@@ -1,0 +1,28 @@
+{
+  "name": "web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@kone/env": "workspace:*",
+    "@nuxt/ui": "^4.9.0",
+    "@vueuse/core": "^14.3.0",
+    "dotenv": "catalog:",
+    "motion-v": "^2.3.0",
+    "nuxt": "^4.4.8",
+    "vue": "^3.5.39",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@iconify-json/lucide": "^1.2.115",
+    "@kone/config": "workspace:*",
+    "tailwindcss": "^4.3.2",
+    "typescript": "catalog:"
+  }
+}
