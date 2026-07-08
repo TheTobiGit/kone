@@ -1,7 +1,7 @@
 <script setup></script>
 
 <template>
-    <div class="bg-white dark:bg-[#0c0c0e] transition-colors duration-300">
+    <div class="bg-[#fafafa] dark:bg-[#070708] transition-colors duration-700">
         <slot />
     </div>
 </template>
