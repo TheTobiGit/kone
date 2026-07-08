@@ -1,53 +1,188 @@
 <script setup lang="ts">
-import { onClickOutside } from "@vueuse/core";
+import { onClickOutside, useElementBounding, useEventListener } from "@vueuse/core";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   MODEL_CATALOG,
   type ProviderId,
   getModelLabel,
+  getModelProviderId,
   getModelsForProvider,
-  getProviderLabel,
 } from "~/lib/model-catalog";
+import {
+  getDefaultEffort,
+  getEffortLabel,
+  getEffortLevels,
+  modelSupportsFastMode,
+  modelSupportsThinkingToggle,
+  normalizeEffort,
+} from "~/lib/model-capabilities";
+import { useRecentModels, type RecentModelSelection } from "~/lib/recent-models";
+import { getEffortLevelIndex } from "~/lib/thinking-level-icon";
 import ProviderIcon from "~/components/ProviderIcon.vue";
+import ThinkingLevelIcon from "~/components/ThinkingLevelIcon.vue";
 import {
   composerControlButtonClass,
   composerControlIconClass,
   composerControlLabelClass,
   composerControlValueClass,
+  effortToggleClass,
+  fastModeToggleActiveClass,
+  fastModeToggleClass,
+  pickerBackButtonClass,
+  pickerModelActiveClass,
+  pickerModelClass,
+  pickerModelIconClass,
+  thinkingToggleActiveClass,
 } from "~/lib/composer-controls";
 
 const provider = defineModel<ProviderId>("provider", { required: true });
 const model = defineModel<string>("model", { required: true });
+const effort = defineModel<string>("effort", { required: true });
+const fastMode = defineModel<boolean>("fastMode", { required: true });
+const thinking = defineModel<boolean>("thinking", { required: true });
+
+type PickerStep = "providers" | "models" | "effort";
 
 const rootRef = ref<HTMLElement | null>(null);
+const secondaryRowRef = ref<HTMLElement | null>(null);
 const isOpen = ref(false);
-const panelProvider = ref<ProviderId>(provider.value);
+const step = ref<PickerStep>("providers");
+const browseProvider = ref<ProviderId>(provider.value);
 
-const panelModels = computed(() => getModelsForProvider(panelProvider.value));
+const triggerBounds = useElementBounding(rootRef);
+const { recents, recordSelection } = useRecentModels();
+
 const modelLabel = computed(() => getModelLabel(provider.value, model.value));
+const activeModelProviderId = computed(() =>
+  getModelProviderId(provider.value, model.value),
+);
+const browseModels = computed(() => getModelsForProvider(browseProvider.value));
+const supportsFastForSelection = computed(() =>
+  modelSupportsFastMode(provider.value, model.value),
+);
+const effortLevels = computed(() => getEffortLevels(provider.value, model.value));
+const hasEffortControls = computed(() => effortLevels.value.length > 0);
+const supportsThinkingForSelection = computed(() =>
+  modelSupportsThinkingToggle(provider.value, model.value),
+);
+const effortLabel = computed(() =>
+  getEffortLabel(provider.value, model.value, effort.value),
+);
+const currentEffortIndex = computed(() =>
+  getEffortLevelIndex(effortLevels.value, effort.value),
+);
+
+const secondaryRowStyle = computed(() => ({
+  top: `${triggerBounds.bottom.value + 8}px`,
+  left: `${triggerBounds.left.value + triggerBounds.width.value / 2}px`,
+}));
+
+function syncSecondaryRowPosition() {
+  triggerBounds.update();
+}
+
+function syncTraitsForSelection(nextProvider: ProviderId, nextModel: string) {
+  effort.value = getDefaultEffort(nextProvider, nextModel);
+  thinking.value = true;
+}
+
+function rememberSelection(
+  nextProvider: ProviderId,
+  nextModel: string,
+  nextFastMode: boolean,
+) {
+  recordSelection({
+    provider: nextProvider,
+    model: nextModel,
+    fastMode: nextFastMode,
+  });
+}
 
 function openPanel() {
-  panelProvider.value = provider.value;
+  browseProvider.value = provider.value;
+  step.value = "providers";
   isOpen.value = true;
+  nextTick(() => syncSecondaryRowPosition());
+}
+
+function openEffortPanel() {
+  step.value = "effort";
+  isOpen.value = true;
+  nextTick(() => syncSecondaryRowPosition());
 }
 
 function closePanel() {
   isOpen.value = false;
+  step.value = "providers";
 }
 
-function selectProvider(nextProvider: ProviderId) {
-  panelProvider.value = nextProvider;
-  const models = getModelsForProvider(nextProvider);
-  if (!models.some((entry) => entry.id === model.value)) {
-    model.value = DEFAULT_MODEL_BY_PROVIDER[nextProvider];
-  }
-  provider.value = nextProvider;
-}
-
-function selectModel(nextModel: string) {
-  provider.value = panelProvider.value;
-  model.value = nextModel;
+function handleBack() {
   closePanel();
+}
+
+function pickProvider(nextProvider: ProviderId) {
+  browseProvider.value = nextProvider;
+  step.value = "models";
+}
+
+function applySelection(
+  nextProvider: ProviderId,
+  nextModel: string,
+  options?: { fast?: boolean },
+) {
+  const useFast = options?.fast ?? false;
+  provider.value = nextProvider;
+  model.value = nextModel;
+  syncTraitsForSelection(nextProvider, nextModel);
+  fastMode.value = useFast && modelSupportsFastMode(nextProvider, nextModel);
+  rememberSelection(nextProvider, nextModel, fastMode.value);
+  closePanel();
+}
+
+function pickModel(nextModel: string, options?: { fast?: boolean }) {
+  applySelection(browseProvider.value, nextModel, options);
+}
+
+function pickModelFast(nextModel: string) {
+  pickModel(nextModel, { fast: true });
+}
+
+function pickRecent(entry: RecentModelSelection) {
+  applySelection(entry.provider, entry.model, { fast: entry.fastMode });
+}
+
+function toggleFastMode() {
+  fastMode.value = !fastMode.value;
+  rememberSelection(provider.value, model.value, fastMode.value);
+}
+
+function pickEffort(nextEffort: string) {
+  effort.value = nextEffort;
+  closePanel();
+}
+
+function toggleThinking() {
+  thinking.value = !thinking.value;
+}
+
+function isEffortActive(effortId: string) {
+  return effort.value === effortId;
+}
+
+function isModelActive(modelId: string) {
+  return browseProvider.value === provider.value && modelId === model.value;
+}
+
+function isRecentActive(entry: RecentModelSelection) {
+  return (
+    entry.provider === provider.value &&
+    entry.model === model.value &&
+    entry.fastMode === fastMode.value
+  );
+}
+
+function supportsFastForBrowseModel(modelId: string) {
+  return modelSupportsFastMode(browseProvider.value, modelId);
 }
 
 watch(provider, (nextProvider) => {
@@ -55,121 +190,295 @@ watch(provider, (nextProvider) => {
   if (!models.some((entry) => entry.id === model.value)) {
     model.value = DEFAULT_MODEL_BY_PROVIDER[nextProvider];
   }
+  effort.value = normalizeEffort(nextProvider, model.value, effort.value);
+  if (!modelSupportsFastMode(nextProvider, model.value)) {
+    fastMode.value = false;
+  }
+  if (!modelSupportsThinkingToggle(nextProvider, model.value)) {
+    thinking.value = true;
+  }
 });
 
-onClickOutside(rootRef, closePanel);
+watch(model, (nextModel) => {
+  effort.value = normalizeEffort(provider.value, nextModel, effort.value);
+  if (!modelSupportsFastMode(provider.value, nextModel)) {
+    fastMode.value = false;
+  }
+  if (!modelSupportsThinkingToggle(provider.value, nextModel)) {
+    thinking.value = true;
+  }
+});
+
+watch(isOpen, (open) => {
+  if (open) {
+    nextTick(() => syncSecondaryRowPosition());
+  }
+});
+
+watch(step, () => {
+  if (isOpen.value) {
+    nextTick(() => syncSecondaryRowPosition());
+  }
+});
+
+useEventListener(window, "resize", () => {
+  if (isOpen.value) syncSecondaryRowPosition();
+});
+
+useEventListener(
+  window,
+  "scroll",
+  () => {
+    if (isOpen.value) syncSecondaryRowPosition();
+  },
+  { capture: true },
+);
+
+onClickOutside([rootRef, secondaryRowRef], closePanel);
+
+onMounted(() => {
+  window.addEventListener("keydown", onKeyDown);
+  rememberSelection(provider.value, model.value, fastMode.value);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onKeyDown);
+});
+
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key !== "Escape" || !isOpen.value) return;
+  closePanel();
+}
 </script>
 
 <template>
-  <div ref="rootRef" class="relative">
-    <button
-      type="button"
-      :class="[
-        composerControlButtonClass,
-        isOpen ? 'text-zinc-600 dark:text-zinc-300' : '',
-      ]"
-      @click="isOpen ? closePanel() : openPanel()"
+  <div ref="rootRef" class="relative h-5 w-full">
+    <div
+      v-if="!isOpen"
+      class="absolute left-1/2 top-1/2 inline-flex h-5 -translate-x-1/2 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
     >
-      <span :class="composerControlLabelClass">via</span>
-      <ProviderIcon :provider="provider" :class="composerControlIconClass" />
-      <span :class="[composerControlValueClass, 'max-w-[11rem] truncate']">
-        {{ modelLabel }}
-      </span>
-    </button>
+      <div class="inline-flex items-center gap-0.5">
+        <button
+          type="button"
+          :class="composerControlButtonClass"
+          @click="openPanel"
+        >
+          <span :class="composerControlLabelClass">via</span>
+          <span class="inline-flex items-center gap-0.5">
+            <ProviderIcon :provider="provider" :class="composerControlIconClass" />
+            <ProviderIcon
+              v-if="activeModelProviderId !== provider"
+              :provider="activeModelProviderId"
+              :class="[composerControlIconClass, 'opacity-70']"
+            />
+          </span>
+          <span :class="[composerControlValueClass, 'max-w-[12rem] truncate']">
+            {{ modelLabel }}
+          </span>
+        </button>
 
-    <transition name="route-panel">
-      <div
-        v-if="isOpen"
-        class="absolute left-1/2 top-[calc(100%+0.75rem)] z-20 w-[min(20rem,calc(100vw-3rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-zinc-200/50 bg-[#fafafa]/90 shadow-[0_20px_60px_-24px_rgba(0,0,0,0.28)] backdrop-blur-xl dark:border-zinc-800/80 dark:bg-[#0b0b0c]/92"
+        <button
+          v-if="supportsFastForSelection"
+          type="button"
+          :class="[
+            fastModeToggleClass,
+            fastMode ? fastModeToggleActiveClass : '',
+          ]"
+          :aria-pressed="fastMode"
+          aria-label="Toggle fast mode"
+          title="Fast mode"
+          @click="toggleFastMode"
+        >
+          <UIcon name="i-lucide-zap" class="size-3" aria-hidden="true" />
+        </button>
+
+        <button
+          v-if="hasEffortControls"
+          type="button"
+          :class="effortToggleClass"
+          :aria-label="`Reasoning effort: ${effortLabel}`"
+          :title="effortLevels.find((level) => level.id === effort)?.hint ?? 'Reasoning effort'"
+          @click="openEffortPanel"
+        >
+          <ThinkingLevelIcon
+            :level-index="currentEffortIndex"
+            :level-total="effortLevels.length"
+            :effort-id="effort"
+          />
+        </button>
+
+        <button
+          v-if="supportsThinkingForSelection"
+          type="button"
+          :class="[
+            fastModeToggleClass,
+            thinking ? thinkingToggleActiveClass : '',
+          ]"
+          :aria-pressed="thinking"
+          aria-label="Toggle thinking"
+          :title="thinking ? 'Thinking on' : 'Thinking off'"
+          @click="toggleThinking"
+        >
+          <UIcon name="i-lucide-brain" class="size-3" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-else-if="step === 'providers' || step === 'models'"
+      class="absolute left-1/2 top-1/2 flex h-5 -translate-x-1/2 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
+    >
+      <button
+        type="button"
+        :class="pickerBackButtonClass"
+        aria-label="Back"
+        title="Back"
+        @click="handleBack"
       >
-        <div class="border-b border-zinc-200/60 px-3 py-3 dark:border-zinc-800/80">
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-[10px] font-mono uppercase tracking-[0.24em] text-zinc-400">
-              route
-            </span>
-            <span class="truncate text-xs font-light text-zinc-500 dark:text-zinc-500">
-              {{ getProviderLabel(panelProvider) }} → {{ getModelLabel(panelProvider, model) }}
-            </span>
-          </div>
+        <UIcon name="i-lucide-chevron-left" class="size-3.5" aria-hidden="true" />
+      </button>
 
-          <div class="mt-3 flex items-center justify-between gap-1">
-            <button
-              v-for="entry in MODEL_CATALOG"
-              :key="entry.id"
-              type="button"
-              class="flex flex-1 flex-col items-center gap-1 rounded-xl px-1 py-2 transition-all duration-300"
-              :class="
-                entry.id === panelProvider
-                  ? 'bg-zinc-200/70 text-zinc-800 dark:bg-zinc-800/90 dark:text-zinc-100'
-                  : 'text-zinc-400 hover:bg-zinc-100/80 hover:text-zinc-600 dark:hover:bg-zinc-900/70 dark:hover:text-zinc-300'
-              "
-              :title="entry.label"
-              @click="selectProvider(entry.id)"
-            >
-              <ProviderIcon :provider="entry.id" class="size-4 shrink-0" />
-              <span class="max-w-full truncate text-[9px] font-mono uppercase tracking-[0.14em]">
-                {{ entry.label }}
-              </span>
-            </button>
-          </div>
-        </div>
+      <div class="flex items-center gap-3">
+        <button
+          v-for="entry in MODEL_CATALOG"
+          :key="entry.id"
+          type="button"
+          class="transition-opacity duration-300"
+          :class="entry.id === browseProvider ? 'opacity-100' : 'opacity-30 hover:opacity-60'"
+          :title="entry.label"
+          :aria-label="entry.label"
+          :aria-pressed="entry.id === browseProvider"
+          @click="pickProvider(entry.id)"
+        >
+          <ProviderIcon
+            :provider="entry.id"
+            class="size-3.5 shrink-0 text-zinc-500 dark:text-zinc-400"
+          />
+        </button>
+      </div>
+    </div>
 
-        <div class="px-2 py-2">
-          <transition name="model-list" mode="out-in">
-            <div :key="panelProvider" class="flex flex-col">
-              <button
-                v-for="entry in panelModels"
-                :key="entry.id"
-                type="button"
-                class="rounded-xl px-3 py-2.5 text-left transition-all duration-200"
-                :class="
-                  entry.id === model
-                    ? 'bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900'
-                    : 'text-zinc-600 hover:bg-zinc-100/90 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-900/80 dark:hover:text-zinc-100'
-                "
-                @click="selectModel(entry.id)"
-              >
-                <span class="block text-sm font-light tracking-tight">{{ entry.name }}</span>
-                <span class="mt-0.5 block text-[10px] font-mono uppercase tracking-[0.18em] opacity-55">
-                  {{ entry.id }}
-                </span>
-              </button>
-            </div>
-          </transition>
+    <div
+      v-else
+      class="absolute left-1/2 top-1/2 flex h-5 max-w-[min(56rem,calc(100vw-3rem))] -translate-x-1/2 -translate-y-1/2 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
+      <button
+        type="button"
+        :class="pickerBackButtonClass"
+        aria-label="Back"
+        title="Back"
+        @click="handleBack"
+      >
+        <UIcon name="i-lucide-chevron-left" class="size-3.5" aria-hidden="true" />
+      </button>
+
+      <button
+        v-for="(level, index) in effortLevels"
+        :key="level.id"
+        type="button"
+        class="inline-flex shrink-0 items-center px-0.5 transition-transform duration-200 hover:scale-105"
+        :aria-label="level.label"
+        :title="level.hint"
+        @click="pickEffort(level.id)"
+      >
+        <ThinkingLevelIcon
+          :level-index="index"
+          :level-total="effortLevels.length"
+          :effort-id="level.id"
+          :active="isEffortActive(level.id)"
+        />
+      </button>
+    </div>
+  </div>
+
+  <Teleport to="body">
+    <transition name="hint-fade" mode="out-in">
+      <div
+        v-if="isOpen && step === 'providers' && recents.length > 0"
+        key="recents"
+        ref="secondaryRowRef"
+        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-nowrap items-center justify-center gap-x-3 overflow-hidden whitespace-nowrap"
+        :style="secondaryRowStyle"
+      >
+        <button
+          v-for="entry in recents"
+          :key="`${entry.provider}:${entry.model}:${entry.fastMode}`"
+          type="button"
+          :class="[
+            pickerModelClass,
+            'inline-flex shrink-0 items-center gap-1 whitespace-nowrap',
+            isRecentActive(entry) ? pickerModelActiveClass : '',
+          ]"
+          @click="pickRecent(entry)"
+        >
+          <ProviderIcon :provider="entry.provider" :class="pickerModelIconClass" />
+          <ProviderIcon
+            v-if="getModelProviderId(entry.provider, entry.model) !== entry.provider"
+            :provider="getModelProviderId(entry.provider, entry.model)"
+            :class="[pickerModelIconClass, 'opacity-70']"
+          />
+          <span class="max-w-[7rem] truncate">{{ getModelLabel(entry.provider, entry.model) }}</span>
+          <UIcon
+            v-if="entry.fastMode"
+            name="i-lucide-zap"
+            class="size-2.5 shrink-0 text-amber-500/80 dark:text-amber-400/80"
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+
+      <div
+        v-else-if="isOpen && step === 'models'"
+        key="models"
+        ref="secondaryRowRef"
+        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-nowrap items-center justify-center gap-x-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        :style="secondaryRowStyle"
+      >
+        <div
+          v-for="entry in browseModels"
+          :key="entry.id"
+          class="inline-flex shrink-0 items-center gap-0.5"
+        >
+          <button
+            type="button"
+            :class="[
+              pickerModelClass,
+              'inline-flex items-center gap-1 whitespace-nowrap',
+              isModelActive(entry.id) ? pickerModelActiveClass : '',
+            ]"
+            @click="pickModel(entry.id)"
+          >
+            <ProviderIcon :provider="entry.modelProviderId" :class="pickerModelIconClass" />
+            <span>{{ entry.name }}</span>
+          </button>
+
+          <button
+            v-if="supportsFastForBrowseModel(entry.id)"
+            type="button"
+            :class="[fastModeToggleClass, 'hover:text-amber-500/80 dark:hover:text-amber-400/80']"
+            aria-label="Select with fast mode"
+            title="Fast mode"
+            @click="pickModelFast(entry.id)"
+          >
+            <UIcon name="i-lucide-zap" class="size-2.5" aria-hidden="true" />
+          </button>
         </div>
       </div>
     </transition>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
-.route-panel-enter-active,
-.route-panel-leave-active {
-  transition:
-    opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+.hint-fade-enter-active {
+  transition: opacity 0.7s ease-out;
 }
 
-.route-panel-enter-from,
-.route-panel-leave-to {
+.hint-fade-leave-active {
+  transition: opacity 0.2s ease-out;
+}
+
+.hint-fade-enter-from,
+.hint-fade-leave-to {
   opacity: 0;
-  transform: translate(-50%, -6px) scale(0.98);
-}
-
-.model-list-enter-active,
-.model-list-leave-active {
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-}
-
-.model-list-enter-from {
-  opacity: 0;
-  transform: translateY(4px);
-}
-
-.model-list-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
 }
 </style>

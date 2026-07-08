@@ -7,15 +7,28 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER,
   getModelLabel,
+  getModelProviderId,
   getProviderLabel,
+  isRoutedModel,
 } from "~/lib/model-catalog";
+import {
+  getDefaultEffort,
+  getEffortLabel,
+  getEffortLevels,
+  modelSupportsFastMode,
+  modelSupportsThinkingToggle,
+} from "~/lib/model-capabilities";
 
 const prompt = ref("");
 const isFocused = ref(false);
 const isSubmitted = ref(false);
 const responseText = ref("");
+const thinkingText = ref("");
 const selectedProvider = ref(DEFAULT_PROVIDER);
 const selectedModel = ref(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]);
+const selectedEffort = ref(getDefaultEffort(DEFAULT_PROVIDER, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]));
+const selectedFastMode = ref(false);
+const selectedThinking = ref(true);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 
 const BASE_FONT_SIZE = 20;
@@ -72,10 +85,58 @@ const handleInput = () => {
 const simulateStreaming = () => {
   const providerLabel = getProviderLabel(selectedProvider.value);
   const modelLabel = getModelLabel(selectedProvider.value, selectedModel.value);
-  const response = `Using ${providerLabel} · ${modelLabel}. Understood. Creating the new design system details. Setting up clean, responsive layouts, establishing dynamic color schemes, and configuring modern micro-animations for interactions...`;
+  const modelProviderLabel = getProviderLabel(
+    getModelProviderId(selectedProvider.value, selectedModel.value),
+  );
+  const routeSummary = isRoutedModel(selectedProvider.value, selectedModel.value)
+    ? `${providerLabel} → ${modelProviderLabel} · ${modelLabel}`
+    : `${providerLabel} · ${modelLabel}`;
+  const effortLabel = getEffortLabel(
+    selectedProvider.value,
+    selectedModel.value,
+    selectedEffort.value,
+  );
+  const effortLevels = getEffortLevels(selectedProvider.value, selectedModel.value);
+  const hasEffort = effortLevels.length > 0;
+  const showsThinking =
+    modelSupportsThinkingToggle(selectedProvider.value, selectedModel.value) &&
+    selectedThinking.value;
+  const showsReasoning = hasEffort || showsThinking;
+  const traits = [
+    hasEffort && effortLabel ? `${effortLabel} reasoning` : null,
+    modelSupportsFastMode(selectedProvider.value, selectedModel.value) && selectedFastMode.value
+      ? "Fast mode"
+      : null,
+    showsThinking ? "Thinking on" : null,
+    modelSupportsThinkingToggle(selectedProvider.value, selectedModel.value) &&
+    !selectedThinking.value
+      ? "Thinking off"
+      : null,
+  ].filter(Boolean);
+  const traitSummary = traits.length > 0 ? ` · ${traits.join(" · ")}` : "";
+  const response = `Using ${routeSummary}${traitSummary}. Understood. Creating the new design system details. Setting up clean, responsive layouts, establishing dynamic color schemes, and configuring modern micro-animations for interactions...`;
+
+  thinkingText.value = showsReasoning
+    ? `Reasoning at ${effortLabel || "default"} depth before responding. Considering layout constraints, animation timing, and how the composer should surface model traits without breaking the minimal prompt flow...`
+    : "";
+
+  if (thinkingText.value) {
+    setTimeout(() => {
+      responseText.value = response;
+    }, 900);
+    return;
+  }
 
   responseText.value = response;
 };
+
+const thinkingBlocks = computed(() => {
+  if (!thinkingText.value) return [];
+  return thinkingText.value
+    .split(/(?<=[.!?])\s+/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+});
 
 const responseBlocks = computed(() => {
   if (!responseText.value) return [];
@@ -180,16 +241,19 @@ onUnmounted(() => {
         <!-- Composer route + run hint -->
         <div
           v-if="!isSubmitted"
-          class="mt-6 flex w-full max-w-xl items-center justify-between gap-6 px-2 transition-all duration-700 ease-out"
-          :class="[prompt ? 'opacity-100 translate-y-0' : 'opacity-70 translate-y-0']"
+          class="relative mt-6 h-5 w-full max-w-xl shrink-0 px-2 transition-opacity duration-700 ease-out"
+          :class="[prompt ? 'opacity-100' : 'opacity-70']"
         >
           <ProviderModelPicker
             v-model:provider="selectedProvider"
             v-model:model="selectedModel"
+            v-model:effort="selectedEffort"
+            v-model:fast-mode="selectedFastMode"
+            v-model:thinking="selectedThinking"
           />
           <span
-            class="shrink-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
-            :class="[prompt ? 'opacity-100' : 'opacity-0 pointer-events-none']"
+            class="pointer-events-none absolute right-2 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
+            :class="[prompt ? 'opacity-100' : 'opacity-0']"
           >
             enter ↵
           </span>
@@ -200,15 +264,29 @@ onUnmounted(() => {
       <transition name="response-fade">
         <div 
           v-if="isSubmitted"
-          class="absolute top-28 left-0 right-0 overflow-hidden px-4 py-2 text-zinc-700 dark:text-zinc-300 leading-relaxed font-light text-base tracking-normal max-w-2xl mx-auto text-left transition-all duration-[800ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+          class="absolute top-28 left-0 right-0 overflow-hidden px-4 py-2 leading-relaxed font-light text-base tracking-normal max-w-2xl mx-auto text-left transition-all duration-[800ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
         >
+          <SplitText
+            v-for="(block, index) in thinkingBlocks"
+            :key="`thinking-${index}-${block}`"
+            :text="block"
+            by="words"
+            :active="!!thinkingText"
+            :start-delay="index * 280"
+            :delay="55"
+            :duration="0.4"
+            :from="{ opacity: 0, y: 8 }"
+            :to="{ opacity: 1, y: 0 }"
+            class="mb-3 block text-zinc-400 dark:text-zinc-500 leading-relaxed font-light text-sm tracking-normal italic last:mb-0"
+          />
+
           <SplitText
             v-for="(block, index) in responseBlocks"
             :key="`${index}-${block}`"
             :text="block"
             by="words"
             :active="!!responseText"
-            :start-delay="index * 420"
+            :start-delay="thinkingBlocks.length * 280 + index * 420"
             :delay="70"
             :duration="0.45"
             :from="{ opacity: 0, y: 12 }"
