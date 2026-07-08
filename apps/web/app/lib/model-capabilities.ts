@@ -1,5 +1,6 @@
 import type { ProviderId } from "~/lib/model-catalog";
 import { getModelProviderId } from "~/lib/model-catalog";
+import { getDroidModel } from "~/lib/droid-model-store";
 
 export interface EffortLevel {
   id: string;
@@ -13,6 +14,18 @@ export interface ModelCapabilities {
   supportsFastMode: boolean;
   supportsThinkingToggle: boolean;
 }
+
+const EFFORT_LABELS: Record<string, { label: string; hint: string }> = {
+  none: { label: "None", hint: "No extra reasoning" },
+  off: { label: "Off", hint: "Reasoning disabled" },
+  dynamic: { label: "Dynamic", hint: "Adaptive reasoning budget" },
+  minimal: { label: "Minimal", hint: "Very light reasoning" },
+  low: { label: "Low", hint: "Light reasoning" },
+  medium: { label: "Medium", hint: "Balanced reasoning" },
+  high: { label: "High", hint: "Deeper reasoning" },
+  xhigh: { label: "Extra high", hint: "Maximum reasoning depth" },
+  max: { label: "Max", hint: "Highest reasoning budget" },
+};
 
 const CODEX_EFFORT: EffortLevel[] = [
   { id: "low", label: "Quick", hint: "Fast answers with lighter reasoning" },
@@ -82,13 +95,7 @@ const CLAUDE_EXTENDED_CAPS: ModelCapabilities = {
 
 const CLAUDE_SONNET_CAPS: ModelCapabilities = {
   effortLevels: CLAUDE_SONNET_EFFORT,
-  supportsFastMode: false,
-  supportsThinkingToggle: false,
-};
-
-const CURSOR_NATIVE_CAPS: ModelCapabilities = {
-  effortLevels: [],
-  supportsFastMode: false,
+  supportsFastMode: true,
   supportsThinkingToggle: false,
 };
 
@@ -110,14 +117,48 @@ const GROK_CAPS: ModelCapabilities = {
   supportsThinkingToggle: false,
 };
 
+const CURSOR_NATIVE_CAPS: ModelCapabilities = {
+  effortLevels: [],
+  supportsFastMode: false,
+  supportsThinkingToggle: true,
+};
+
 const NO_CAPABILITIES: ModelCapabilities = {
   effortLevels: [],
   supportsFastMode: false,
   supportsThinkingToggle: false,
 };
 
+function getDroidEffortLevels(modelId: string): EffortLevel[] {
+  const descriptor = getDroidModel(modelId);
+  if (!descriptor) return [];
+
+  return descriptor.supportedReasoningEfforts.map((id) => {
+    const copy = EFFORT_LABELS[id] ?? { label: id, hint: id };
+    return {
+      id,
+      label: copy.label,
+      hint: copy.hint,
+      ...(id === descriptor.defaultReasoningEffort ? { isDefault: true } : {}),
+    };
+  });
+}
+
+function getDroidCapabilities(modelId: string): ModelCapabilities {
+  const effortLevels = getDroidEffortLevels(modelId);
+  const descriptor = getDroidModel(modelId);
+  const supportsFastMode = descriptor?.id.includes("-fast") ?? false;
+
+  return {
+    effortLevels,
+    supportsFastMode,
+    supportsThinkingToggle: false,
+  };
+}
+
 /** Native model capabilities keyed by the provider that serves the model. */
 const NATIVE_MODEL_CAPABILITIES: Record<ProviderId, Record<string, ModelCapabilities>> = {
+  droid: {},
   codex: {
     "gpt-5.5": CODEX_CAPS,
     "gpt-5.4": CODEX_CAPS,
@@ -155,6 +196,10 @@ const NATIVE_MODEL_CAPABILITIES: Record<ProviderId, Record<string, ModelCapabili
 };
 
 export function getModelCapabilities(routeProvider: ProviderId, modelId: string): ModelCapabilities {
+  if (routeProvider === "droid") {
+    return getDroidCapabilities(modelId);
+  }
+
   const modelProviderId = getModelProviderId(routeProvider, modelId);
   return NATIVE_MODEL_CAPABILITIES[modelProviderId]?.[modelId] ?? NO_CAPABILITIES;
 }
@@ -165,21 +210,12 @@ export function getEffortLevels(provider: ProviderId, modelId: string) {
 
 export function getDefaultEffort(provider: ProviderId, modelId: string) {
   const levels = getEffortLevels(provider, modelId);
-  return levels.find((level) => level.isDefault)?.id ?? levels[0]?.id ?? "";
-}
-
-export function normalizeEffort(provider: ProviderId, modelId: string, effortId: string) {
-  const levels = getEffortLevels(provider, modelId);
-  if (levels.some((level) => level.id === effortId)) {
-    return effortId;
-  }
-  return getDefaultEffort(provider, modelId);
+  return levels.find((level) => level.isDefault)?.id ?? levels[0]?.id ?? "medium";
 }
 
 export function getEffortLabel(provider: ProviderId, modelId: string, effortId: string) {
-  return (
-    getEffortLevels(provider, modelId).find((level) => level.id === effortId)?.label ?? effortId
-  );
+  const level = getEffortLevels(provider, modelId).find((entry) => entry.id === effortId);
+  return level?.label ?? effortId;
 }
 
 export function modelSupportsFastMode(provider: ProviderId, modelId: string) {
@@ -188,4 +224,10 @@ export function modelSupportsFastMode(provider: ProviderId, modelId: string) {
 
 export function modelSupportsThinkingToggle(provider: ProviderId, modelId: string) {
   return getModelCapabilities(provider, modelId).supportsThinkingToggle;
+}
+
+export function normalizeEffort(provider: ProviderId, modelId: string, effortId: string) {
+  const levels = getEffortLevels(provider, modelId);
+  if (levels.some((level) => level.id === effortId)) return effortId;
+  return getDefaultEffort(provider, modelId);
 }

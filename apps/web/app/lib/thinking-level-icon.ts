@@ -4,7 +4,8 @@ export function getEffortLevelIndex(levels: ReadonlyArray<{ id: string }>, effor
 }
 
 export function isNoThinkingLevel(effortId: string) {
-  return effortId.toLowerCase() === "none";
+  const normalized = effortId.toLowerCase();
+  return normalized === "none" || normalized === "off";
 }
 
 export function isUltrathinkLevel(effortId: string) {

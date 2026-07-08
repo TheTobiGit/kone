@@ -18,7 +18,8 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "check-types": "turbo run check-types",
-    "dev:web": "turbo run dev -F web"
+    "dev:web": "turbo run dev -F web",
+    "dev:bridge": "turbo run dev -F bridge"
   },
   "dependencies": {
     "@kone/env": "workspace:*",

@@ -1,4 +1,7 @@
+import { getDroidModel } from "~/lib/droid-model-store";
+
 export type ProviderId =
+  | "droid"
   | "codex"
   | "claudeAgent"
   | "cursor"
@@ -19,6 +22,11 @@ export interface ProviderOption {
 }
 
 export const MODEL_CATALOG: ProviderOption[] = [
+  {
+    id: "droid",
+    label: "Droid",
+    models: [],
+  },
   {
     id: "codex",
     label: "Codex",
@@ -73,8 +81,9 @@ export const MODEL_CATALOG: ProviderOption[] = [
   },
 ];
 
-export const DEFAULT_PROVIDER: ProviderId = "codex";
+export const DEFAULT_PROVIDER: ProviderId = "droid";
 export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderId, string> = {
+  droid: "",
   codex: "gpt-5.5",
   claudeAgent: "claude-sonnet-4-6",
   cursor: "auto",
@@ -91,6 +100,17 @@ export function getModelsForProvider(providerId: ProviderId) {
 }
 
 export function getModelOption(providerId: ProviderId, modelId: string) {
+  if (providerId === "droid") {
+    const droidModel = getDroidModel(modelId);
+    if (droidModel) {
+      return {
+        id: droidModel.id,
+        name: droidModel.name,
+        modelProviderId: "droid" as ProviderId,
+      };
+    }
+  }
+
   return getModelsForProvider(providerId).find((model) => model.id === modelId);
 }
 
@@ -103,6 +123,11 @@ export function getProviderLabel(providerId: ProviderId) {
 }
 
 export function getModelLabel(providerId: ProviderId, modelId: string) {
+  if (providerId === "droid") {
+    const droidModel = getDroidModel(modelId);
+    if (droidModel) return droidModel.name;
+  }
+
   return getModelOption(providerId, modelId)?.name ?? modelId;
 }
 

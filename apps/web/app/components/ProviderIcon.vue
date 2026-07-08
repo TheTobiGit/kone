@@ -6,7 +6,7 @@ defineProps<{
   class?: string;
 }>();
 
-const ICON_BY_PROVIDER: Record<Exclude<ProviderId, "grok">, string> = {
+const ICON_BY_PROVIDER: Record<Exclude<ProviderId, "grok" | "droid">, string> = {
   codex: "i-simple-icons-openai",
   claudeAgent: "i-simple-icons-anthropic",
   cursor: "i-simple-icons-cursor",
@@ -15,8 +15,15 @@ const ICON_BY_PROVIDER: Record<Exclude<ProviderId, "grok">, string> = {
 </script>
 
 <template>
+  <img
+    v-if="provider === 'droid'"
+    src="/icons/droid.png"
+    alt=""
+    :class="class"
+    aria-hidden="true"
+  />
   <UIcon
-    v-if="provider !== 'grok'"
+    v-else-if="provider !== 'grok'"
     :name="ICON_BY_PROVIDER[provider]"
     :class="class"
     aria-hidden="true"

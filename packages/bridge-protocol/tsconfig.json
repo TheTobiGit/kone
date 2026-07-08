@@ -1,0 +1,4 @@
+{
+  "extends": "@kone/config/tsconfig.base.json",
+  "include": ["src"]
+}

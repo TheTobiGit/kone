@@ -8,6 +8,7 @@ import {
   getModelProviderId,
   getModelsForProvider,
 } from "~/lib/model-catalog";
+import { useDroidModelStore } from "~/lib/droid-model-store";
 import {
   getDefaultEffort,
   getEffortLabel,
@@ -51,12 +52,30 @@ const browseProvider = ref<ProviderId>(provider.value);
 
 const triggerBounds = useElementBounding(rootRef);
 const { recents, recordSelection } = useRecentModels();
+const { droidModels, droidModelsLoaded } = useDroidModelStore();
 
 const modelLabel = computed(() => getModelLabel(provider.value, model.value));
 const activeModelProviderId = computed(() =>
   getModelProviderId(provider.value, model.value),
 );
-const browseModels = computed(() => getModelsForProvider(browseProvider.value));
+const browseModels = computed(() => {
+  if (browseProvider.value === "droid") {
+    return [...droidModels.value]
+      .sort((a, b) => {
+        if (a.isCustom !== b.isCustom) return a.isCustom ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .map((entry) => ({
+        id: entry.id,
+        name: entry.isCustom ? entry.name : entry.shortName,
+        modelProviderId: "droid" as ProviderId,
+        isCustom: entry.isCustom,
+      }));
+  }
+
+  return getModelsForProvider(browseProvider.value);
+});
+const visibleProviders = computed(() => MODEL_CATALOG.filter((entry) => entry.id === "droid"));
 const supportsFastForSelection = computed(() =>
   modelSupportsFastMode(provider.value, model.value),
 );
@@ -207,6 +226,12 @@ watch(model, (nextModel) => {
   if (!modelSupportsThinkingToggle(provider.value, nextModel)) {
     thinking.value = true;
   }
+  rememberSelection(provider.value, nextModel, fastMode.value);
+});
+
+watch(droidModelsLoaded, (loaded) => {
+  if (!loaded) return;
+  rememberSelection(provider.value, model.value, fastMode.value);
 });
 
 watch(isOpen, (open) => {
@@ -257,7 +282,7 @@ function onKeyDown(event: KeyboardEvent) {
       v-if="!isOpen"
       class="absolute left-0 top-1/2 inline-flex h-5 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
     >
-      <div class="inline-flex items-center gap-0.5">
+      <div class="inline-flex items-center gap-1">
         <button
           type="button"
           :class="composerControlButtonClass"
@@ -340,7 +365,7 @@ function onKeyDown(event: KeyboardEvent) {
 
       <div class="flex items-center gap-3">
         <button
-          v-for="entry in MODEL_CATALOG"
+          v-for="entry in visibleProviders"
           :key="entry.id"
           type="button"
           class="transition-opacity duration-300"
@@ -397,7 +422,7 @@ function onKeyDown(event: KeyboardEvent) {
         v-if="isOpen && step === 'providers' && recents.length > 0"
         key="recents"
         ref="secondaryRowRef"
-        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] flex-nowrap items-center justify-start gap-x-3 overflow-hidden whitespace-nowrap"
+        class="pointer-events-auto fixed z-50 flex w-[min(56rem,calc(100vw-1.5rem))] flex-wrap items-center justify-start gap-x-3 gap-y-1.5"
         :style="secondaryRowStyle"
       >
         <button
@@ -406,7 +431,7 @@ function onKeyDown(event: KeyboardEvent) {
           type="button"
           :class="[
             pickerModelClass,
-            'inline-flex shrink-0 items-center gap-1 whitespace-nowrap',
+            'inline-flex max-w-full items-center gap-1 text-left whitespace-normal',
             isRecentActive(entry) ? pickerModelActiveClass : '',
           ]"
           @click="pickRecent(entry)"
@@ -417,7 +442,7 @@ function onKeyDown(event: KeyboardEvent) {
             :provider="getModelProviderId(entry.provider, entry.model)"
             :class="[pickerModelIconClass, 'opacity-70']"
           />
-          <span class="max-w-[7rem] truncate">{{ getModelLabel(entry.provider, entry.model) }}</span>
+          <span>{{ getModelLabel(entry.provider, entry.model) }}</span>
           <UIcon
             v-if="entry.fastMode"
             name="i-lucide-zap"
@@ -431,38 +456,36 @@ function onKeyDown(event: KeyboardEvent) {
         v-else-if="isOpen && step === 'models'"
         key="models"
         ref="secondaryRowRef"
-        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] flex-nowrap items-center justify-start gap-x-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        class="pointer-events-auto fixed z-50 flex w-[min(56rem,calc(100vw-1.5rem))] flex-wrap items-center justify-start gap-x-2 gap-y-1.5"
         :style="secondaryRowStyle"
       >
-        <div
-          v-for="entry in browseModels"
-          :key="entry.id"
-          class="inline-flex shrink-0 items-center gap-0.5"
-        >
-          <button
-            type="button"
-            :class="[
-              pickerModelClass,
-              'inline-flex items-center gap-1 whitespace-nowrap',
-              isModelActive(entry.id) ? pickerModelActiveClass : '',
-            ]"
-            @click="pickModel(entry.id)"
-          >
-            <ProviderIcon :provider="entry.modelProviderId" :class="pickerModelIconClass" />
-            <span>{{ entry.name }}</span>
-          </button>
+        <template v-for="entry in browseModels" :key="entry.id">
+          <div class="inline-flex max-w-full items-center gap-0.5">
+            <button
+              type="button"
+              :class="[
+                pickerModelClass,
+                'inline-flex max-w-full items-center gap-1 text-left whitespace-normal',
+                isModelActive(entry.id) ? pickerModelActiveClass : '',
+              ]"
+              @click="pickModel(entry.id)"
+            >
+              <ProviderIcon :provider="entry.modelProviderId" :class="pickerModelIconClass" />
+              <span>{{ entry.name }}</span>
+            </button>
 
-          <button
-            v-if="supportsFastForBrowseModel(entry.id)"
-            type="button"
-            :class="[fastModeToggleClass, 'hover:text-amber-500/80 dark:hover:text-amber-400/80']"
-            aria-label="Select with fast mode"
-            title="Fast mode"
-            @click="pickModelFast(entry.id)"
-          >
-            <UIcon name="i-lucide-zap" class="size-2.5" aria-hidden="true" />
-          </button>
-        </div>
+            <button
+              v-if="supportsFastForBrowseModel(entry.id)"
+              type="button"
+              :class="[fastModeToggleClass, 'hover:text-amber-500/80 dark:hover:text-amber-400/80']"
+              aria-label="Select with fast mode"
+              title="Fast mode"
+              @click="pickModelFast(entry.id)"
+            >
+              <UIcon name="i-lucide-zap" class="size-2.5" aria-hidden="true" />
+            </button>
+          </div>
+        </template>
       </div>
     </transition>
   </Teleport>

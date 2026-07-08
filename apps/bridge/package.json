@@ -1,0 +1,19 @@
+{
+  "name": "bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@factory/droid-sdk": "^0.6.0",
+    "@kone/bridge-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@kone/config": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "catalog:"
+  }
+}
