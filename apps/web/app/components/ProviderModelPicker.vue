@@ -74,7 +74,7 @@ const currentEffortIndex = computed(() =>
 
 const secondaryRowStyle = computed(() => ({
   top: `${triggerBounds.bottom.value + 8}px`,
-  left: `${triggerBounds.left.value + triggerBounds.width.value / 2}px`,
+  left: `${triggerBounds.left.value}px`,
 }));
 
 function syncSecondaryRowPosition() {
@@ -255,7 +255,7 @@ function onKeyDown(event: KeyboardEvent) {
   <div ref="rootRef" class="relative h-5 w-full">
     <div
       v-if="!isOpen"
-      class="absolute left-1/2 top-1/2 inline-flex h-5 -translate-x-1/2 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
+      class="absolute left-0 top-1/2 inline-flex h-5 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
     >
       <div class="inline-flex items-center gap-0.5">
         <button
@@ -326,7 +326,7 @@ function onKeyDown(event: KeyboardEvent) {
 
     <div
       v-else-if="step === 'providers' || step === 'models'"
-      class="absolute left-1/2 top-1/2 flex h-5 -translate-x-1/2 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
+      class="absolute left-0 top-1/2 flex h-5 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
     >
       <button
         type="button"
@@ -360,7 +360,7 @@ function onKeyDown(event: KeyboardEvent) {
 
     <div
       v-else
-      class="absolute left-1/2 top-1/2 flex h-5 max-w-[min(56rem,calc(100vw-3rem))] -translate-x-1/2 -translate-y-1/2 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      class="absolute left-0 top-1/2 flex h-5 max-w-[min(56rem,calc(100vw-3rem))] -translate-y-1/2 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       <button
         type="button"
@@ -397,7 +397,7 @@ function onKeyDown(event: KeyboardEvent) {
         v-if="isOpen && step === 'providers' && recents.length > 0"
         key="recents"
         ref="secondaryRowRef"
-        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-nowrap items-center justify-center gap-x-3 overflow-hidden whitespace-nowrap"
+        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] flex-nowrap items-center justify-start gap-x-3 overflow-hidden whitespace-nowrap"
         :style="secondaryRowStyle"
       >
         <button
@@ -431,7 +431,7 @@ function onKeyDown(event: KeyboardEvent) {
         v-else-if="isOpen && step === 'models'"
         key="models"
         ref="secondaryRowRef"
-        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-nowrap items-center justify-center gap-x-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        class="pointer-events-auto fixed z-50 flex w-max max-w-[min(56rem,calc(100vw-1.5rem))] flex-nowrap items-center justify-start gap-x-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         :style="secondaryRowStyle"
       >
         <div

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import RotatingText from "~/components/ui/rotating-text/RotatingText.vue";
 import SplitText from "~/components/ui/split-text/SplitText.vue";
 import ProviderModelPicker from "~/components/ProviderModelPicker.vue";
@@ -32,12 +32,17 @@ const selectedThinking = ref(true);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 
 const BASE_FONT_SIZE = 20;
-const MIN_FONT_SIZE = 14;
+const MIN_FONT_SIZE = 16;
+const LINE_HEIGHT_RATIO = 1.35;
 const promptFontSize = ref(BASE_FONT_SIZE);
+
+const isPromptDimmed = computed(
+  () => isSubmitted.value && Boolean(thinkingText.value || responseText.value),
+);
 
 const promptTypographyStyle = computed(() => ({
   fontSize: `${promptFontSize.value}px`,
-  lineHeight: 1.625,
+  lineHeight: LINE_HEIGHT_RATIO,
 }));
 
 const placeholderPrefix = "What should we";
@@ -50,23 +55,37 @@ const longestRotatingWord = computed(() =>
   ),
 );
 
+const measurePromptLineCount = (el: HTMLTextAreaElement, fontSize: number) => {
+  const previousFontSize = el.style.fontSize;
+  const previousHeight = el.style.height;
+
+  el.style.fontSize = `${fontSize}px`;
+  el.style.height = "0px";
+
+  const lineHeight = fontSize * LINE_HEIGHT_RATIO;
+  const lineCount = Math.max(1, Math.round(el.scrollHeight / lineHeight));
+
+  el.style.fontSize = previousFontSize;
+  el.style.height = previousHeight;
+
+  return lineCount;
+};
+
 const computePromptFontSize = (el: HTMLTextAreaElement) => {
   const length = prompt.value.length;
-  const lineHeight = BASE_FONT_SIZE * 1.625;
-
-  el.style.fontSize = `${BASE_FONT_SIZE}px`;
-  el.style.height = "auto";
-
-  const lineCount = Math.max(1, Math.round(el.scrollHeight / lineHeight));
+  const lineCount = measurePromptLineCount(el, BASE_FONT_SIZE);
   let nextSize = BASE_FONT_SIZE;
 
-  if (length > 140 || lineCount > 5) nextSize = MIN_FONT_SIZE;
-  else if (length > 90 || lineCount > 4) nextSize = 15;
-  else if (length > 55 || lineCount > 3) nextSize = 16;
-  else if (length > 30 || lineCount > 2) nextSize = 18;
+  if (length > 200 || lineCount > 8) nextSize = MIN_FONT_SIZE;
+  else if (length > 140 || lineCount > 6) nextSize = 17;
+  else if (length > 90 || lineCount > 5) nextSize = 18;
+  else if (length > 50 || lineCount > 4) nextSize = 19;
 
   return nextSize;
 };
+
+const supportsFieldSizing =
+  typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
 
 const adjustHeight = () => {
   const el = textareaRef.value;
@@ -74,8 +93,16 @@ const adjustHeight = () => {
 
   promptFontSize.value = computePromptFontSize(el);
   el.style.fontSize = `${promptFontSize.value}px`;
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
+  el.style.lineHeight = String(LINE_HEIGHT_RATIO);
+
+  if (supportsFieldSizing) {
+    el.style.removeProperty("height");
+    return;
+  }
+
+  const minHeight = promptFontSize.value * LINE_HEIGHT_RATIO;
+  el.style.height = "0px";
+  el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
 };
 
 const handleInput = () => {
@@ -156,6 +183,9 @@ const handleKeyDown = (event: KeyboardEvent) => {
       if (textareaRef.value) {
         textareaRef.value.blur();
       }
+      nextTick(() => {
+        adjustHeight();
+      });
       setTimeout(() => {
         simulateStreaming();
       }, 700);
@@ -182,67 +212,81 @@ onMounted(() => {
   });
 });
 
+watch(isSubmitted, (submitted) => {
+  if (!submitted) return;
+  nextTick(() => {
+    adjustHeight();
+  });
+});
+
 onUnmounted(() => {
   window.removeEventListener("keydown", handleKeyDown);
 });
 </script>
 
 <template>
-  <div class="h-screen w-screen flex flex-col items-center justify-center p-6 bg-[#fafafa] dark:bg-[#070708] transition-colors duration-700 relative overflow-hidden">
-    <!-- Main content area container handling layout shifts smoothly -->
-    <div 
-      class="w-full max-w-3xl flex flex-col items-center justify-center transition-all duration-[600ms] ease-[cubic-bezier(0.16,1,0.3,1)] relative h-full w-full"
-    >
-      <!-- Input Area centered initially, then shifts to stick at absolute top -->
-      <div 
-        class="w-full flex flex-col items-center justify-center transition-all duration-[600ms] ease-[cubic-bezier(0.16,1,0.3,1)] absolute"
-        :class="[isSubmitted ? 'top-12 translate-y-0 scale-95' : 'top-1/2 -translate-y-1/2 scale-100']"
-      >
-        <!-- Input wrapper where both the textarea and placeholder share dimensions -->
-        <div class="relative w-full flex justify-center items-center">
-          <textarea
-            ref="textareaRef"
-            v-model="prompt"
-            aria-label="What should we build?"
-            @input="handleInput"
-            @focus="isFocused = true"
-            @blur="isFocused = false"
-            rows="1"
-            :disabled="isSubmitted"
-            class="w-full bg-transparent text-zinc-800 dark:text-zinc-100 resize-none outline-none border-none font-light text-center caret-zinc-500 dark:caret-zinc-400 tracking-tight z-10 transition-[font-size,height] duration-300 ease-out disabled:cursor-default"
-            :style="{ overflow: 'hidden', height: 'auto', ...promptTypographyStyle }"
-          />
-          <div
-            v-if="!prompt && !isFocused"
-            class="absolute inset-0 flex items-center justify-center pointer-events-none z-0"
-            aria-hidden="true"
-          >
-            <span
-              class="inline-flex items-baseline justify-center font-light text-center tracking-tight text-zinc-400 dark:text-zinc-600"
+  <div class="notebook-page h-screen w-screen overflow-x-hidden overflow-y-auto bg-[#fafafa] px-10 pt-28 pb-10 transition-colors duration-700 dark:bg-[#070708] md:px-14 md:pt-36 md:pb-12">
+    <div class="mx-auto flex w-full max-w-2xl flex-col items-start">
+      <div class="w-full shrink-0">
+        <div
+          class="transition-opacity duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
+          :class="[isPromptDimmed ? 'opacity-40' : 'opacity-100']"
+        >
+          <div class="relative w-full text-left">
+            <p
+              v-if="isSubmitted"
+              class="m-0 whitespace-pre-wrap text-left font-light text-zinc-800 tracking-tight dark:text-zinc-100"
               :style="promptTypographyStyle"
             >
-              <span class="shrink-0">{{ placeholderPrefix }}&nbsp;</span>
-              <span class="relative inline-block overflow-hidden text-left">
-                <span class="invisible select-none" aria-hidden="true">
-                  {{ longestRotatingWord }}
-                </span>
-                <span class="absolute inset-0">
-                  <RotatingText
-                    :texts="rotatingWords"
-                    :rotation-interval="4000"
-                    class="size-full"
-                  />
+              {{ prompt }}
+            </p>
+            <textarea
+              v-else
+              ref="textareaRef"
+              v-model="prompt"
+              aria-label="What should we build?"
+              @input="handleInput"
+              @focus="isFocused = true"
+              @blur="isFocused = false"
+              rows="1"
+              class="prompt-input block w-full m-0 p-0 bg-transparent text-left font-light text-zinc-800 caret-zinc-500 resize-none border-none outline-none tracking-tight transition-[font-size,height] duration-300 ease-out dark:text-zinc-100 dark:caret-zinc-400"
+              :style="{ overflow: 'hidden', ...promptTypographyStyle }"
+            />
+            <div
+              v-if="!isSubmitted && !prompt && !isFocused"
+              class="pointer-events-none absolute inset-x-0 top-0 z-0 text-left"
+              aria-hidden="true"
+            >
+              <span
+                class="inline-flex max-w-full items-baseline justify-start text-left font-light tracking-tight text-zinc-400 dark:text-zinc-600"
+                :style="promptTypographyStyle"
+              >
+                <span class="shrink-0">{{ placeholderPrefix }}&nbsp;</span>
+                <span class="relative inline-block overflow-hidden text-left">
+                  <span class="invisible select-none" aria-hidden="true">
+                    {{ longestRotatingWord }}
+                  </span>
+                  <span class="absolute inset-0">
+                    <RotatingText
+                      :texts="rotatingWords"
+                      :rotation-interval="4000"
+                      class="size-full"
+                    />
+                  </span>
                 </span>
               </span>
-            </span>
+            </div>
           </div>
         </div>
-        
-        <!-- Composer route + run hint -->
+
         <div
-          v-if="!isSubmitted"
-          class="relative mt-6 h-5 w-full max-w-xl shrink-0 px-2 transition-opacity duration-700 ease-out"
-          :class="[prompt ? 'opacity-100' : 'opacity-70']"
+          class="relative overflow-hidden transition-all duration-500 ease-out"
+          :class="[
+            isSubmitted
+              ? 'pointer-events-none mt-0 max-h-0 opacity-0'
+              : 'mt-8 h-5 opacity-70',
+            prompt && !isSubmitted ? 'opacity-100' : '',
+          ]"
         >
           <ProviderModelPicker
             v-model:provider="selectedProvider"
@@ -252,7 +296,7 @@ onUnmounted(() => {
             v-model:thinking="selectedThinking"
           />
           <span
-            class="pointer-events-none absolute right-2 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
+            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
             :class="[prompt ? 'opacity-100' : 'opacity-0']"
           >
             enter ↵
@@ -260,12 +304,11 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Simulated Streaming Response Area -->
-      <transition name="response-fade">
-        <div 
-          v-if="isSubmitted"
-          class="absolute top-28 left-0 right-0 overflow-hidden px-4 py-2 leading-relaxed font-light text-base tracking-normal max-w-2xl mx-auto text-left transition-all duration-[800ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
-        >
+      <div
+        v-if="isSubmitted"
+        class="response-scroll mt-3 w-full"
+      >
+        <div class="text-left text-base font-light leading-relaxed tracking-normal">
           <SplitText
             v-for="(block, index) in thinkingBlocks"
             :key="`thinking-${index}-${block}`"
@@ -277,7 +320,7 @@ onUnmounted(() => {
             :duration="0.4"
             :from="{ opacity: 0, y: 8 }"
             :to="{ opacity: 1, y: 0 }"
-            class="mb-3 block text-zinc-400 dark:text-zinc-500 leading-relaxed font-light text-sm tracking-normal italic last:mb-0"
+            class="mb-3 block text-sm font-light italic leading-relaxed tracking-normal text-zinc-400 last:mb-0 dark:text-zinc-500"
           />
 
           <SplitText
@@ -291,21 +334,33 @@ onUnmounted(() => {
             :duration="0.45"
             :from="{ opacity: 0, y: 12 }"
             :to="{ opacity: 1, y: 0 }"
-            class="mb-3 block text-zinc-700 dark:text-zinc-300 leading-relaxed font-light text-base tracking-normal last:mb-0"
+            class="mb-3 block text-base font-light leading-relaxed tracking-normal text-zinc-700 last:mb-0 dark:text-zinc-300"
           />
         </div>
-      </transition>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.response-fade-enter-active {
-  transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-  transition-property: opacity, transform;
+.notebook-page {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
-.response-fade-enter-from {
-  opacity: 0;
-  transform: translateY(20px);
+
+.notebook-page::-webkit-scrollbar {
+  display: none;
+}
+
+.prompt-input {
+  field-sizing: content;
+  min-height: 1lh;
+  vertical-align: top;
+}
+
+@supports not (field-sizing: content) {
+  .prompt-input {
+    overflow: hidden;
+  }
 }
 </style>
