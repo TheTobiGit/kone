@@ -620,7 +620,7 @@ onUnmounted(() => {
 <template>
   <div
     ref="notebookPageRef"
-    class="notebook-page kone-scroll h-dvh min-h-dvh w-full overflow-x-hidden overflow-y-auto bg-transparent px-5 pt-28 pb-10 transition-colors duration-700 sm:px-8 md:px-14 md:pt-36 md:pb-12"
+    class="notebook-page notebook-fade kone-scroll h-dvh min-h-dvh w-full overflow-x-hidden overflow-y-auto bg-transparent px-5 pt-28 pb-10 transition-colors duration-700 sm:px-8 md:px-14 md:pt-36 md:pb-12"
     :class="[hasThread ? 'pt-12 md:pt-14' : '']"
     @scroll.passive="handleTranscriptScroll"
   >
@@ -639,7 +639,7 @@ onUnmounted(() => {
     <div class="mx-auto flex w-full max-w-2xl flex-col items-start">
       <p
         v-if="bridgeError"
-        class="mb-4 w-full text-sm font-light text-amber-700 dark:text-amber-300"
+        class="mb-4 w-full text-sm font-light text-accent-warning"
         role="status"
       >
         {{ bridgeError }}
@@ -647,14 +647,14 @@ onUnmounted(() => {
 
       <p
         v-else-if="connectionStatus !== 'ready'"
-        class="mb-4 flex w-full items-center gap-2 text-xs font-light text-zinc-400"
+        class="mb-4 flex w-full items-center gap-2 text-xs font-light text-ink-muted"
         role="status"
       >
         <span>{{ connectionStatusMessage }}</span>
         <button
           v-if="connectionStatus === 'failed'"
           type="button"
-          class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 underline decoration-zinc-300 underline-offset-2 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:decoration-zinc-700 dark:hover:text-zinc-200"
+          class="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-muted underline decoration-zinc-300 underline-offset-2 transition-colors hover:text-ink-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40 dark:decoration-zinc-700"
           @click="connect"
         >
           Reconnect
@@ -690,7 +690,7 @@ onUnmounted(() => {
             />
             <p
               v-else
-              class="m-0 whitespace-pre-wrap text-left font-light text-zinc-800 tracking-tight dark:text-zinc-100"
+              class="m-0 whitespace-pre-wrap text-left font-light text-ink-primary tracking-tight"
             >
               {{ turn.prompt }}
             </p>
@@ -720,7 +720,7 @@ onUnmounted(() => {
 
           <p
             v-else-if="turn.status === 'completed'"
-            class="mt-4 text-sm font-light text-zinc-400"
+            class="mt-4 text-sm font-light text-ink-muted"
           >
             The turn completed without a text response.
           </p>
@@ -739,7 +739,7 @@ onUnmounted(() => {
               (turn.status === 'error' || turn.status === 'cancelled') &&
               turn.errorMessage
             "
-            class="mt-4 border-l border-rose-500/30 pl-3 text-sm font-light text-rose-600 dark:text-rose-400"
+            class="mt-4 border-l border-accent-error/30 pl-3 text-sm font-light text-accent-error"
             role="alert"
           >
             {{ turn.errorMessage }}
@@ -751,19 +751,19 @@ onUnmounted(() => {
               turn.status === 'error' ||
               turn.status === 'cancelled'
             "
-            class="mt-3 flex items-center gap-3 text-zinc-400 opacity-0 transition-opacity focus-within:opacity-100 hover:opacity-100"
+            class="mt-3 flex items-center gap-3 text-ink-muted opacity-0 transition-opacity focus-within:opacity-100 hover:opacity-100"
           >
             <button
               v-if="turn.responseText"
               type="button"
-              class="text-[10px] font-mono uppercase tracking-[0.12em] transition-colors hover:text-zinc-700 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] transition-colors hover:text-ink-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
               @click="copyTurnResponse(turn)"
             >
               {{ copiedTurnId === turn.id ? "Copied" : "Copy" }}
             </button>
             <button
               type="button"
-              class="text-[10px] font-mono uppercase tracking-[0.12em] transition-colors hover:text-zinc-700 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] transition-colors hover:text-ink-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
               @click="prepareTurnRetry(turn)"
             >
               Retry
@@ -782,7 +782,7 @@ onUnmounted(() => {
             @focus="isLandingFocused = true"
             @blur="isLandingFocused = false"
             rows="1"
-            class="prompt-input block w-full m-0 p-0 bg-transparent text-left font-light text-zinc-800 caret-zinc-500 resize-none border-none outline-none tracking-tight transition-[font-size,height] duration-300 ease-out dark:text-zinc-100 dark:caret-zinc-400"
+            class="prompt-input block w-full m-0 p-0 bg-transparent text-left font-light text-ink-primary caret-zinc-500 resize-none border-none outline-none tracking-tight transition-[font-size,height] duration-300 ease-out dark:caret-zinc-400"
             :style="{ overflow: 'hidden', ...landingTypographyStyle }"
           />
           <div
@@ -791,7 +791,7 @@ onUnmounted(() => {
             aria-hidden="true"
           >
             <span
-              class="inline-flex max-w-full items-baseline justify-start text-left font-light tracking-tight text-zinc-400 dark:text-zinc-600"
+              class="inline-flex max-w-full items-baseline justify-start text-left font-light tracking-tight text-ink-muted"
               :style="landingTypographyStyle"
             >
               <span class="shrink-0">{{ placeholderPrefix }}&nbsp;</span>
@@ -822,7 +822,7 @@ onUnmounted(() => {
             v-model:thinking="selectedThinking"
           />
           <span
-            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
+            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-ink-muted transition-all duration-700 ease-out"
             :class="[draftPrompt || !isConnected ? 'opacity-100' : 'opacity-0']"
           >
             {{ isConnected ? "enter ↵" : "connecting" }}
@@ -842,7 +842,7 @@ onUnmounted(() => {
             @input="handleFollowUpInput"
             @keydown="handleFollowUpKeyDown"
             rows="1"
-            class="prompt-input block w-full m-0 p-0 bg-transparent text-left font-light text-zinc-800 caret-zinc-500 resize-none border-none outline-none tracking-tight transition-[font-size,height] duration-300 ease-out dark:text-zinc-100 dark:caret-zinc-400"
+            class="prompt-input block w-full m-0 p-0 bg-transparent text-left font-light text-ink-primary caret-zinc-500 resize-none border-none outline-none tracking-tight transition-[font-size,height] duration-300 ease-out dark:caret-zinc-400"
             :style="{ overflow: 'hidden', ...followUpTypographyStyle }"
           />
         </div>
@@ -861,7 +861,7 @@ onUnmounted(() => {
           <button
             v-if="activeTurn"
             type="button"
-            class="absolute right-0 top-0 inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400 transition-colors hover:text-rose-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-500/40"
+            class="absolute right-0 top-0 inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.2em] text-ink-muted transition-colors hover:text-accent-error focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error/40"
             @click="stopActiveTurn"
           >
             <UIcon name="i-lucide-square" class="size-2.5" aria-hidden="true" />
@@ -869,7 +869,7 @@ onUnmounted(() => {
           </button>
           <span
             v-else
-            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-300 ease-out dark:text-zinc-600"
+            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-ink-muted transition-all duration-300 ease-out"
             :class="[draftPrompt || !isConnected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100']"
           >
             {{ isConnected ? "enter ↵" : "connecting" }}
@@ -883,7 +883,7 @@ onUnmounted(() => {
     <button
       v-if="hasThread && !followsLiveOutput"
       type="button"
-      class="fixed bottom-6 left-1/2 z-20 -translate-x-1/2 rounded-full border border-zinc-200/80 bg-[var(--kone-surface-raised)] px-3 py-1.5 text-xs font-light text-zinc-600 shadow-sm backdrop-blur-md transition-colors hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+      class="fixed bottom-6 left-1/2 z-20 -translate-x-1/2 rounded-full border border-zinc-200/80 bg-surface-raised px-3 py-1.5 text-xs font-light text-ink-secondary shadow-sm backdrop-blur-md transition-colors hover:text-ink-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40 dark:border-zinc-800"
       @click="resumeLiveOutput"
     >
       Latest response

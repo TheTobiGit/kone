@@ -36,7 +36,7 @@ const emit = defineEmits<{
   <div>
     <button
       type="button"
-      class="fixed left-3 top-10 z-20 flex size-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-black/5 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:bg-white/5 dark:hover:text-zinc-200"
+      class="fixed left-3 top-10 z-20 flex size-8 items-center justify-center rounded-full text-ink-muted transition-colors hover:bg-black/5 hover:text-ink-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40 dark:hover:bg-white/5"
       :aria-expanded="open"
       aria-label="Toggle thread history"
       @click="$emit('toggle')"
@@ -47,16 +47,16 @@ const emit = defineEmits<{
     <Transition name="rail">
       <aside
         v-if="open"
-        class="fixed inset-y-0 left-0 z-10 w-[min(18rem,82vw)] border-r border-zinc-200/70 bg-[var(--kone-surface-base)] px-5 pt-24 pb-6 dark:border-zinc-800/70"
+        class="fixed inset-y-0 left-0 z-10 w-[min(18rem,82vw)] border-r border-zinc-200/70 bg-surface-base px-5 pt-24 pb-6 dark:border-zinc-800/70"
         aria-label="Thread history"
       >
         <div class="mb-6 flex items-center justify-between">
-          <p class="m-0 text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400">
+          <p class="m-0 text-[10px] font-mono uppercase tracking-[0.2em] text-ink-muted">
             Threads
           </p>
           <button
             type="button"
-            class="flex size-7 items-center justify-center text-zinc-400 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+            class="flex size-7 items-center justify-center text-ink-muted hover:text-ink-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
             aria-label="New thread"
             @click="$emit('create')"
           >
@@ -73,7 +73,7 @@ const emit = defineEmits<{
             <input
               v-if="editingId === thread.id"
               v-model="editingTitle"
-              class="min-w-0 flex-1 border-0 border-b border-zinc-300 bg-transparent px-0 py-0.5 text-sm font-light text-zinc-800 outline-none focus:border-sky-500 dark:border-zinc-700 dark:text-zinc-100"
+              class="min-w-0 flex-1 border-0 border-b border-zinc-300 bg-transparent px-0 py-0.5 text-sm font-light text-ink-primary outline-none focus:border-accent-tool dark:border-zinc-700"
               aria-label="Thread title"
               autofocus
               @keydown.enter.prevent="finishRename(thread.id)"
@@ -83,11 +83,11 @@ const emit = defineEmits<{
             <button
               v-else
               type="button"
-              class="min-w-0 flex-1 truncate text-left text-sm font-light transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+              class="min-w-0 flex-1 truncate text-left text-sm font-light transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
               :class="
                 thread.id === activeThreadId
-                  ? 'text-zinc-800 dark:text-zinc-100'
-                  : 'text-zinc-500 hover:text-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300'
+                  ? 'text-ink-primary'
+                  : 'text-ink-muted hover:text-ink-secondary'
               "
               :title="thread.title"
               @click="$emit('activate', thread.id)"
@@ -97,7 +97,7 @@ const emit = defineEmits<{
             </button>
             <button
               type="button"
-              class="ml-2 flex size-6 shrink-0 items-center justify-center text-zinc-400 opacity-0 transition-opacity hover:text-rose-500 group-hover/thread:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-500/40"
+              class="ml-2 flex size-6 shrink-0 items-center justify-center text-ink-muted opacity-0 transition-opacity hover:text-accent-error group-hover/thread:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-error/40"
               :aria-label="`Delete ${thread.title}`"
               @click="$emit('remove', thread.id)"
             >
@@ -106,7 +106,7 @@ const emit = defineEmits<{
           </div>
           <p
             v-if="threads.length === 0"
-            class="m-0 py-4 text-sm font-light text-zinc-400"
+            class="m-0 py-4 text-sm font-light text-ink-muted"
           >
             Your conversations will appear here.
           </p>

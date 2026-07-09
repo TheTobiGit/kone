@@ -32,9 +32,9 @@ const diffLines = computed<DiffLine[]>(() => {
 });
 
 function diffLineClass(line: DiffLine) {
-  if (line.isAdded) return "text-emerald-700 dark:text-emerald-300";
-  if (line.isRemoved) return "text-rose-700 dark:text-rose-300";
-  return "text-zinc-700 dark:text-zinc-300";
+  if (line.isAdded) return "text-accent-success";
+  if (line.isRemoved) return "text-accent-error";
+  return "text-ink-secondary";
 }
 </script>
 
@@ -42,21 +42,21 @@ function diffLineClass(line: DiffLine) {
   <Transition name="preview-lane">
     <aside
       v-if="artifact"
-      class="fixed inset-y-0 right-0 z-30 flex w-[min(42rem,88vw)] flex-col border-l border-zinc-200/70 bg-[var(--kone-surface-base)] dark:border-zinc-800/70"
+      class="fixed inset-y-0 right-0 z-30 flex w-[min(42rem,88vw)] flex-col border-l border-zinc-200/70 bg-surface-base dark:border-zinc-800/70"
       aria-label="Artifact preview"
     >
       <header class="flex min-h-14 items-center gap-3 border-b border-zinc-200/70 px-5 dark:border-zinc-800/70">
         <div class="min-w-0 flex-1">
-          <p class="m-0 truncate text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          <p class="m-0 truncate text-sm font-medium text-ink-secondary">
             {{ artifact.title }}
           </p>
-          <p class="m-0 mt-0.5 truncate font-mono text-[10px] text-zinc-400">
+          <p class="m-0 mt-0.5 truncate font-mono text-[10px] text-ink-muted">
             {{ artifact.source }}
           </p>
         </div>
         <button
           type="button"
-          class="flex size-8 items-center justify-center text-zinc-400 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+          class="flex size-8 items-center justify-center text-ink-muted hover:text-ink-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
           aria-label="Close artifact preview"
           @click="$emit('close')"
         >
@@ -84,9 +84,9 @@ function diffLineClass(line: DiffLine) {
         </div>
         <pre
           v-else-if="artifact.content"
-          class="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-zinc-700 dark:text-zinc-300"
+          class="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-ink-secondary"
         ><code>{{ artifact.content }}</code></pre>
-        <p v-else class="m-0 text-sm font-light text-zinc-500">
+        <p v-else class="m-0 text-sm font-light text-ink-muted">
           This artifact cannot be previewed safely in the app.
         </p>
       </div>

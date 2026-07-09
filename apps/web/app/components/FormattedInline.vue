@@ -68,16 +68,16 @@ const parts = computed(() => parseInlineParts(props.text));
     <template v-for="(part, index) in parts" :key="index">
       <strong
         v-if="part.kind === 'strong'"
-        class="font-medium text-zinc-800 dark:text-zinc-100"
+        class="font-medium text-ink-primary"
       >
         {{ part.value }}
       </strong>
-      <em v-else-if="part.kind === 'em'" class="italic text-zinc-600 dark:text-zinc-300">
+      <em v-else-if="part.kind === 'em'" class="italic text-ink-secondary">
         {{ part.value }}
       </em>
       <code
         v-else-if="part.kind === 'code'"
-        class="rounded bg-zinc-200/70 px-1 py-0.5 font-mono text-[0.92em] text-zinc-800 dark:bg-zinc-800/80 dark:text-zinc-200"
+        class="rounded bg-zinc-200/70 px-1 py-0.5 font-mono text-[0.92em] text-ink-code dark:bg-zinc-800/80"
       >
         {{ part.value }}
       </code>
@@ -86,7 +86,7 @@ const parts = computed(() => parseInlineParts(props.text));
         :href="part.href"
         :target="part.href.startsWith('http') ? '_blank' : undefined"
         :rel="part.href.startsWith('http') ? 'noopener noreferrer' : undefined"
-        class="text-sky-700 underline decoration-sky-500/30 underline-offset-2 transition-colors hover:text-sky-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:text-sky-300 dark:hover:text-sky-200"
+        class="text-accent-tool underline decoration-accent-tool/30 underline-offset-2 transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
       >
         {{ part.value }}
       </a>

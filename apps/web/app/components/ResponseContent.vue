@@ -27,7 +27,7 @@ const BLOCK_STAGGER_MS = 80;
 const WORD_DELAY_MS = 35;
 
 const bodyClass =
-  "font-light leading-relaxed tracking-tight text-zinc-700 dark:text-zinc-300";
+  "font-light leading-relaxed tracking-tight text-ink-secondary";
 
 function blockStartDelay(index: number) {
   return index * BLOCK_STAGGER_MS;
@@ -35,12 +35,12 @@ function blockStartDelay(index: number) {
 
 function headingClass(level: number) {
   if (level <= 1) {
-    return "text-[1.05em] font-medium tracking-tight text-zinc-800 dark:text-zinc-100";
+    return "text-[1.05em] font-medium tracking-tight text-ink-primary";
   }
   if (level === 2) {
-    return "text-[1.02em] font-medium tracking-tight text-zinc-800 dark:text-zinc-100";
+    return "text-[1.02em] font-medium tracking-tight text-ink-primary";
   }
-  return "font-medium tracking-tight text-zinc-700 dark:text-zinc-200";
+  return "font-medium tracking-tight text-ink-primary";
 }
 
 function fadeTransition(startDelay: number) {
@@ -217,20 +217,20 @@ function renderListLevel(
         :style="typographyStyle"
       >
         <div class="flex min-h-8 items-center justify-between border-b border-zinc-200/70 px-3 dark:border-zinc-800">
-          <span class="text-[10px] font-mono uppercase tracking-[0.18em] text-zinc-500">
+          <span class="text-[10px] font-mono uppercase tracking-[0.18em] text-ink-muted">
             {{ block.language || "text" }}
           </span>
           <span class="flex items-center gap-3">
             <button
               type="button"
-              class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-muted opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
               @click="toggleWrap(index)"
             >
               {{ wrappedCodeIndexes.has(index) ? "Nowrap" : "Wrap" }}
             </button>
             <button
               type="button"
-              class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] text-ink-muted opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
               @click="copyCode(block.text, index)"
             >
               {{ copiedCodeIndex === index ? "Copied" : "Copy" }}
@@ -238,7 +238,7 @@ function renderListLevel(
           </span>
         </div>
         <pre
-          class="m-0 px-3 py-2.5 font-mono text-[0.88em] leading-relaxed text-zinc-800 dark:text-zinc-200"
+          class="m-0 px-3 py-2.5 font-mono text-[0.88em] leading-relaxed text-ink-code"
           :class="
             wrappedCodeIndexes.has(index)
               ? 'whitespace-pre-wrap break-words'
@@ -254,7 +254,7 @@ function renderListLevel(
 
       <blockquote
         v-else-if="block.type === 'blockquote'"
-        class="m-0 border-l border-zinc-300 py-0.5 pl-4 text-left font-light italic leading-relaxed text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+        class="m-0 border-l border-zinc-300 py-0.5 pl-4 text-left font-light italic leading-relaxed text-ink-secondary dark:border-zinc-700"
         :style="typographyStyle"
       >
         <FormattedInline :text="block.text" />
@@ -275,7 +275,7 @@ function renderListLevel(
               <th
                 v-for="header in block.headers"
                 :key="header"
-                class="px-2 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                class="px-2 py-2 text-xs font-medium text-ink-secondary"
               >
                 <FormattedInline :text="header" />
               </th>
@@ -290,7 +290,7 @@ function renderListLevel(
               <td
                 v-for="(cell, cellIndex) in row"
                 :key="cellIndex"
-                class="px-2 py-2 font-light text-zinc-600 dark:text-zinc-400"
+                class="px-2 py-2 font-light text-ink-secondary"
               >
                 <FormattedInline :text="cell" />
               </td>

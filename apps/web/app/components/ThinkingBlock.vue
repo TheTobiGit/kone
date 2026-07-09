@@ -26,7 +26,7 @@ const toggle = () => {
   <div class="mt-3 w-full">
     <button
       type="button"
-      class="group flex items-center gap-1.5 rounded-md py-1 text-xs text-zinc-500 transition-colors hover:text-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
+      class="group flex items-center gap-1.5 rounded-md py-1 text-xs text-ink-muted transition-colors hover:text-ink-secondary"
       :aria-expanded="expanded"
       :aria-controls="regionId"
       @click="toggle"
@@ -36,7 +36,7 @@ const toggle = () => {
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         class="size-3.5 shrink-0"
-        :class="active ? 'motion-safe:animate-[kone-breathe_2.4s_ease-in-out_infinite] text-amber-500 dark:text-amber-400' : 'text-zinc-400 dark:text-zinc-600'"
+        :class="active ? 'motion-safe:animate-[kone-breathe_2.4s_ease-in-out_infinite] text-accent-thought' : 'text-ink-muted'"
       >
         <path
           d="M12 18V5"
@@ -110,7 +110,7 @@ const toggle = () => {
         viewBox="0 0 24 24"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        class="size-3 shrink-0 text-zinc-400 transition-transform duration-300 ease-out dark:text-zinc-600"
+        class="size-3 shrink-0 text-ink-muted transition-transform duration-300 ease-out"
         :class="expanded ? 'rotate-90' : 'rotate-0'"
       >
         <path
@@ -132,7 +132,7 @@ const toggle = () => {
     >
       <div class="overflow-hidden">
         <div
-          class="ml-[7px] border-l border-zinc-200 py-1 pl-3 text-xs font-light leading-relaxed text-zinc-500 whitespace-pre-wrap dark:border-zinc-800 dark:text-zinc-500"
+          class="ml-[7px] border-l border-zinc-200 py-1 pl-3 text-xs font-light leading-relaxed text-ink-muted whitespace-pre-wrap dark:border-zinc-800"
         >
           {{ text }}
         </div>

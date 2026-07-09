@@ -352,7 +352,7 @@ function onKeyDown(event: KeyboardEvent) {
         >
           <ProviderIcon
             :provider="entry.id"
-            class="size-3.5 shrink-0 text-zinc-500 dark:text-zinc-400"
+            class="size-3.5 shrink-0 text-ink-secondary"
           />
         </button>
       </div>

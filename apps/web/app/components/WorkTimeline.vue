@@ -93,23 +93,23 @@ function groupLabel(kind: GroupKind, count: number) {
       <div v-else class="py-1.5">
         <button
           type="button"
-          class="flex w-full min-w-0 items-center gap-2 text-left text-xs transition-colors duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+          class="flex w-full min-w-0 items-center gap-2 text-left text-xs transition-colors duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
           :aria-expanded="expandedGroups.has(segment.key)"
           @click="toggleGroup(segment.key)"
         >
-          <span class="flex size-4 shrink-0 items-center justify-center text-zinc-400 dark:text-zinc-600">
+          <span class="flex size-4 shrink-0 items-center justify-center text-ink-muted">
             <UIcon
               :name="segment.kind === 'read' ? 'i-lucide-file-search' : 'i-lucide-search'"
               class="size-3.5"
               aria-hidden="true"
             />
           </span>
-          <span class="min-w-0 flex-1 truncate font-light text-zinc-500">
+          <span class="min-w-0 flex-1 truncate font-light text-ink-muted">
             {{ groupLabel(segment.kind, segment.activities.length) }}
           </span>
           <UIcon
             name="i-lucide-chevron-right"
-            class="size-3 shrink-0 text-zinc-400 transition-transform duration-200 dark:text-zinc-600"
+            class="size-3 shrink-0 text-ink-muted transition-transform duration-200"
             :class="expandedGroups.has(segment.key) ? 'rotate-90' : ''"
             aria-hidden="true"
           />

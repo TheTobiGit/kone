@@ -31,13 +31,13 @@ const safeExternalUrl = computed(() => {
     <div class="flex min-w-0 items-center gap-2">
       <UIcon
         :name="artifact.kind === 'image' ? 'i-lucide-image' : 'i-lucide-file-text'"
-        class="size-3.5 shrink-0 text-zinc-400"
+        class="size-3.5 shrink-0 text-ink-muted"
         aria-hidden="true"
       />
       <button
         v-if="isTextual && artifact.content"
         type="button"
-        class="min-w-0 flex-1 truncate text-left text-xs font-light text-zinc-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:text-zinc-400"
+        class="min-w-0 flex-1 truncate text-left text-xs font-light text-ink-secondary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
         :aria-expanded="expanded"
         @click="expanded = !expanded"
       >
@@ -48,20 +48,20 @@ const safeExternalUrl = computed(() => {
         :href="safeExternalUrl"
         target="_blank"
         rel="noopener noreferrer"
-        class="min-w-0 flex-1 truncate text-xs font-light text-zinc-600 underline decoration-zinc-300 underline-offset-2 dark:text-zinc-400 dark:decoration-zinc-700"
+        class="min-w-0 flex-1 truncate text-xs font-light text-ink-secondary underline decoration-zinc-300 underline-offset-2 dark:decoration-zinc-700"
       >
         {{ artifact.title }}
       </a>
-      <span v-else class="min-w-0 flex-1 truncate text-xs font-light text-zinc-600 dark:text-zinc-400">
+      <span v-else class="min-w-0 flex-1 truncate text-xs font-light text-ink-secondary">
         {{ artifact.title }}
       </span>
-      <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-400">
+      <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-muted">
         {{ artifact.kind }}
       </span>
       <button
         v-if="artifact.content || artifact.kind === 'image'"
         type="button"
-        class="flex size-6 shrink-0 items-center justify-center text-zinc-400 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+        class="flex size-6 shrink-0 items-center justify-center text-ink-muted hover:text-ink-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-tool/40"
         :aria-label="`Open ${artifact.title} in preview lane`"
         @click="$emit('inspect', artifact)"
       >
@@ -76,7 +76,7 @@ const safeExternalUrl = computed(() => {
     >
       <div class="overflow-hidden">
         <pre
-          class="mt-2 mb-0 max-h-80 overflow-auto whitespace-pre-wrap break-words border-l border-zinc-200 py-1 pl-4 font-mono text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-800 dark:text-zinc-300"
+          class="mt-2 mb-0 max-h-80 overflow-auto whitespace-pre-wrap break-words border-l border-zinc-200 py-1 pl-4 font-mono text-[11px] leading-relaxed text-ink-secondary dark:border-zinc-800"
         ><code>{{ artifact.content }}</code></pre>
       </div>
     </div>
