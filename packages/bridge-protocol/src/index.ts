@@ -28,6 +28,26 @@ export type TurnToolKind =
 
 export type TurnCancellationReason = "user" | "timeout" | "disconnect";
 
+export type BridgeArtifactKind =
+  | "text"
+  | "code"
+  | "markdown"
+  | "image"
+  | "diff"
+  | "url"
+  | "file";
+
+export type BridgeArtifact = {
+  id?: string;
+  kind: BridgeArtifactKind;
+  title: string;
+  source: string;
+  language?: string;
+  content?: string;
+  mimeType?: string;
+  size?: number;
+};
+
 export type BridgeClientMessage =
   | {
       type: "prompt.submit";
@@ -89,6 +109,7 @@ export type BridgeServerMessage =
       outputLength?: number;
       isError?: boolean;
       errorMessage?: string;
+      artifacts?: BridgeArtifact[];
     }
   | {
       type: "turn.completed";
@@ -152,6 +173,16 @@ const TURN_CANCELLATION_REASONS = new Set<TurnCancellationReason>([
   "user",
   "timeout",
   "disconnect",
+]);
+
+const BRIDGE_ARTIFACT_KINDS = new Set<BridgeArtifactKind>([
+  "text",
+  "code",
+  "markdown",
+  "image",
+  "diff",
+  "url",
+  "file",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -230,6 +261,39 @@ function parseTurnCancellationReason(value: unknown): TurnCancellationReason | n
     TURN_CANCELLATION_REASONS.has(value as TurnCancellationReason)
     ? (value as TurnCancellationReason)
     : null;
+}
+
+function parseBridgeArtifactKind(value: unknown): BridgeArtifactKind | null {
+  return typeof value === "string" && BRIDGE_ARTIFACT_KINDS.has(value as BridgeArtifactKind)
+    ? (value as BridgeArtifactKind)
+    : null;
+}
+
+function parseArtifact(value: unknown): BridgeArtifact | null {
+  if (!isRecord(value)) return null;
+  const kind = parseBridgeArtifactKind(value.kind);
+  if (!kind || !nonEmptyString(value.title) || !nonEmptyString(value.source)) {
+    return null;
+  }
+
+  return {
+    id: optionalString(value.id),
+    kind,
+    title: value.title,
+    source: value.source,
+    language: optionalString(value.language),
+    content: optionalString(value.content),
+    mimeType: optionalString(value.mimeType),
+    size: optionalNumber(value.size),
+  };
+}
+
+function parseArtifacts(value: unknown): BridgeArtifact[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .map((entry) => parseArtifact(entry))
+    .filter((entry): entry is BridgeArtifact => entry !== null);
+  return items.length > 0 ? items : undefined;
 }
 
 function parseBridgeClientMessageValue(value: unknown): BridgeClientMessage | null {
@@ -352,6 +416,7 @@ function parseBridgeServerMessageValue(value: unknown): BridgeServerMessage | nu
         outputLength: optionalNumber(value.outputLength),
         isError: optionalBoolean(value.isError),
         errorMessage: optionalString(value.errorMessage),
+        artifacts: parseArtifacts(value.artifacts),
       };
     }
 

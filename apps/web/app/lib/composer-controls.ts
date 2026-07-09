@@ -28,14 +28,11 @@ export const pickerModelIconClass =
 export const pickerModelActiveClass =
   "text-zinc-700 opacity-100 dark:text-zinc-100";
 
-export const fastModeToggleClass =
+export const iconToggleClass =
   "inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-400/50 transition-all duration-300 hover:text-zinc-500 dark:hover:text-zinc-300";
 
 export const effortToggleClass =
   "inline-flex h-5 shrink-0 items-center justify-center text-zinc-400/50 transition-all duration-300 hover:text-zinc-500 dark:hover:text-zinc-300";
-
-export const fastModeToggleActiveClass =
-  "text-amber-500/85 hover:text-amber-500 dark:text-amber-400/90 dark:hover:text-amber-400";
 
 export const thinkingToggleActiveClass =
   "text-violet-500/85 hover:text-violet-500 dark:text-violet-400/90 dark:hover:text-violet-400";

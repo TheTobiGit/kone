@@ -20,7 +20,6 @@ describe("thread storage migration boundary", () => {
       provider: "droid",
       modelId: "model",
       reasoningEffort: "medium",
-      fastMode: false,
       thinking: true,
       createdAt: "2026-07-09T00:00:00.000Z",
       updatedAt: "2026-07-09T00:00:00.000Z",
@@ -34,5 +33,30 @@ describe("thread storage migration boundary", () => {
 
     expect(normalized.activeThreadId).toBe("thread-1");
     expect(normalized.threads).toEqual([valid]);
+  });
+
+  test("ignores a stray legacy fastMode field instead of rejecting the thread", () => {
+    const legacyThread = {
+      id: "thread-legacy",
+      title: "Old thread",
+      turns: [],
+      draft: "",
+      provider: "droid",
+      modelId: "model",
+      reasoningEffort: "medium",
+      fastMode: true,
+      thinking: true,
+      createdAt: "2026-07-09T00:00:00.000Z",
+      updatedAt: "2026-07-09T00:00:00.000Z",
+      scrollTop: 0,
+    };
+
+    const normalized = normalizeThreadStorage({
+      version: 1,
+      activeThreadId: "thread-legacy",
+      threads: [legacyThread],
+    });
+
+    expect(normalized.threads).toEqual([legacyThread]);
   });
 });

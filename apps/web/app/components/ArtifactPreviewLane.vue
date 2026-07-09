@@ -19,6 +19,23 @@ const safeImageSource = computed(() => {
     ? props.artifact.source
     : null;
 });
+
+type DiffLine = { text: string; isAdded: boolean; isRemoved: boolean };
+
+const diffLines = computed<DiffLine[]>(() => {
+  if (props.artifact?.kind !== "diff" || !props.artifact.content) return [];
+  return props.artifact.content.split("\n").map((text) => ({
+    text,
+    isAdded: text.startsWith("+") && !text.startsWith("+++"),
+    isRemoved: text.startsWith("-") && !text.startsWith("---"),
+  }));
+});
+
+function diffLineClass(line: DiffLine) {
+  if (line.isAdded) return "text-emerald-700 dark:text-emerald-300";
+  if (line.isRemoved) return "text-rose-700 dark:text-rose-300";
+  return "text-zinc-700 dark:text-zinc-300";
+}
 </script>
 
 <template>
@@ -54,6 +71,17 @@ const safeImageSource = computed(() => {
           :alt="artifact.title"
           class="mx-auto max-h-full max-w-full object-contain"
         />
+        <div
+          v-else-if="artifact.kind === 'diff' && artifact.content"
+          class="font-mono text-xs leading-relaxed"
+        >
+          <div
+            v-for="(line, index) in diffLines"
+            :key="index"
+            class="whitespace-pre-wrap break-words"
+            :class="diffLineClass(line)"
+          >{{ line.text || " " }}</div>
+        </div>
         <pre
           v-else-if="artifact.content"
           class="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-zinc-700 dark:text-zinc-300"

@@ -168,7 +168,138 @@ describe("DroidBridgeConnection", () => {
         name: "Read",
         isError: false,
         resultSummary: "file contents",
+        artifacts: [
+          {
+            kind: "code",
+            title: "index.ts",
+            source: "src/index.ts",
+            language: "typescript",
+            content: "file contents",
+          },
+        ],
       }),
     );
+  });
+
+  test("emits a write artifact derived from the tool input, not a bare result", async () => {
+    (streamMock as { mockImplementationOnce: (fn: () => AsyncGenerator<unknown>) => void }).mockImplementationOnce(
+      async function* (): AsyncGenerator<unknown> {
+        yield {
+          type: DroidMessageType.ToolCall,
+          toolUse: {
+            type: "tool_use",
+            id: "tool-write-1",
+            name: "Write",
+            input: { file_path: "notes/todo.md", content: "- [ ] ship it" },
+          },
+        };
+        yield {
+          type: DroidMessageType.ToolResult,
+          toolUseId: "tool-write-1",
+          toolName: "Write",
+          content: "Wrote 1 file",
+          isError: false,
+        };
+        yield {
+          type: DroidMessageType.Result,
+          subtype: "success",
+          isError: false,
+          sessionId: "session-1",
+          durationMs: 1,
+          numTurns: 1,
+          result: "done",
+          tokenUsage: null,
+          messages: [],
+          text: "done",
+          turnCount: 1,
+          success: true,
+          error: null,
+        };
+      },
+    );
+
+    const connection = new DroidBridgeConnection((message) => {
+      messages.push(message);
+    });
+
+    await connection.handleMessage({
+      type: "prompt.submit",
+      turnId: "turn-3",
+      prompt: "write a todo",
+      modelId: "claude-opus-4-8",
+      reasoningEffort: "medium",
+    });
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "turn.tool",
+        phase: "end",
+        toolCallId: "tool-write-1",
+        artifacts: [
+          {
+            kind: "code",
+            title: "todo.md",
+            source: "notes/todo.md",
+            language: "markdown",
+            content: "- [ ] ship it",
+          },
+        ],
+      }),
+    );
+  });
+
+  test("omits artifacts when no path can be confidently extracted", async () => {
+    (streamMock as { mockImplementationOnce: (fn: () => AsyncGenerator<unknown>) => void }).mockImplementationOnce(
+      async function* (): AsyncGenerator<unknown> {
+        yield {
+          type: DroidMessageType.ToolCall,
+          toolUse: {
+            type: "tool_use",
+            id: "tool-bash-1",
+            name: "Bash",
+            input: { command: "ls" },
+          },
+        };
+        yield {
+          type: DroidMessageType.ToolResult,
+          toolUseId: "tool-bash-1",
+          toolName: "Bash",
+          content: "file1\nfile2",
+          isError: false,
+        };
+        yield {
+          type: DroidMessageType.Result,
+          subtype: "success",
+          isError: false,
+          sessionId: "session-1",
+          durationMs: 1,
+          numTurns: 1,
+          result: "done",
+          tokenUsage: null,
+          messages: [],
+          text: "done",
+          turnCount: 1,
+          success: true,
+          error: null,
+        };
+      },
+    );
+
+    const connection = new DroidBridgeConnection((message) => {
+      messages.push(message);
+    });
+
+    await connection.handleMessage({
+      type: "prompt.submit",
+      turnId: "turn-4",
+      prompt: "list files",
+      modelId: "claude-opus-4-8",
+      reasoningEffort: "medium",
+    });
+
+    const toolEnd = messages.find(
+      (entry) => entry.type === "turn.tool" && entry.phase === "end",
+    ) as { artifacts?: unknown } | undefined;
+    expect(toolEnd?.artifacts).toBeUndefined();
   });
 });

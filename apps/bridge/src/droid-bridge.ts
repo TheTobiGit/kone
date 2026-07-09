@@ -10,6 +10,7 @@ import {
 } from "@factory/droid-sdk";
 import {
   PERMISSION_REQUEST_TTL_MS,
+  type BridgeArtifact,
   type BridgeClientMessage,
   type BridgeServerMessage,
   type PermissionRequestKind,
@@ -234,6 +235,180 @@ function summarizeToolResult(content: string | unknown[] | undefined): {
   return {};
 }
 
+const ARTIFACT_CONTENT_LIMIT = 20_000;
+
+function truncateArtifactContent(text: string): string {
+  return text.length > ARTIFACT_CONTENT_LIMIT ? text.slice(0, ARTIFACT_CONTENT_LIMIT) : text;
+}
+
+function basename(filePath: string): string {
+  const parts = filePath.split(/[\\/]/);
+  return parts[parts.length - 1] || filePath;
+}
+
+const EXTENSION_LANGUAGES: Record<string, string> = {
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  mjs: "javascript",
+  cjs: "javascript",
+  json: "json",
+  md: "markdown",
+  mdx: "markdown",
+  vue: "vue",
+  css: "css",
+  scss: "scss",
+  html: "html",
+  py: "python",
+  rb: "ruby",
+  go: "go",
+  rs: "rust",
+  sh: "bash",
+  bash: "bash",
+  yml: "yaml",
+  yaml: "yaml",
+  sql: "sql",
+  java: "java",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  hpp: "cpp",
+  toml: "toml",
+  xml: "xml",
+};
+
+function languageForPath(filePath: string): string | undefined {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  return ext ? EXTENSION_LANGUAGES[ext] : undefined;
+}
+
+function extractToolResultText(content: string | unknown[] | undefined): string | undefined {
+  if (typeof content === "string") return content;
+
+  if (Array.isArray(content)) {
+    const text = content
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (isRecord(entry) && typeof entry.text === "string") return entry.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    return text || undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Builds an artifact for a file-write/edit/create tool call, preferring the
+ * patch/diff the tool applied over the raw content it wrote. Returns null
+ * when nothing can be confidently extracted from the tool input.
+ */
+function buildWriteArtifact(
+  path: string,
+  input: Record<string, unknown> | undefined,
+): BridgeArtifact | null {
+  if (!input) return null;
+  const language = languageForPath(path);
+  const title = basename(path);
+
+  const patch =
+    typeof input.patch === "string"
+      ? input.patch
+      : typeof input.diff === "string"
+        ? input.diff
+        : undefined;
+  if (patch) {
+    return {
+      kind: "diff",
+      title,
+      source: path,
+      language,
+      content: truncateArtifactContent(patch),
+    };
+  }
+
+  const oldString = typeof input.old_string === "string" ? input.old_string : undefined;
+  const newString = typeof input.new_string === "string" ? input.new_string : undefined;
+  if (oldString !== undefined && newString !== undefined) {
+    const synthesizedDiff = [
+      ...oldString.split("\n").map((line) => `-${line}`),
+      ...newString.split("\n").map((line) => `+${line}`),
+    ].join("\n");
+    return {
+      kind: "diff",
+      title,
+      source: path,
+      language,
+      content: truncateArtifactContent(synthesizedDiff),
+    };
+  }
+
+  const fullContent =
+    typeof input.content === "string"
+      ? input.content
+      : typeof input.file_text === "string"
+        ? input.file_text
+        : typeof input.text === "string"
+          ? input.text
+          : undefined;
+  if (fullContent !== undefined) {
+    return {
+      kind: "code",
+      title,
+      source: path,
+      language,
+      content: truncateArtifactContent(fullContent),
+    };
+  }
+
+  return null;
+}
+
+/** Builds an artifact for a file-read tool result, when the result carries text. */
+function buildReadArtifact(
+  path: string,
+  content: string | unknown[] | undefined,
+): BridgeArtifact | null {
+  const text = extractToolResultText(content);
+  if (!text) return null;
+
+  const language = languageForPath(path);
+  return {
+    kind: language ? "code" : "text",
+    title: basename(path),
+    source: path,
+    language,
+    content: truncateArtifactContent(text),
+  };
+}
+
+type PendingToolCall = {
+  kind: TurnToolKind;
+  input?: Record<string, unknown>;
+};
+
+function deriveToolArtifacts(
+  pending: PendingToolCall | undefined,
+  content: string | unknown[] | undefined,
+): BridgeArtifact[] | undefined {
+  if (!pending) return undefined;
+
+  const [path] = extractToolPaths(pending.input);
+  if (!path) return undefined;
+
+  const artifact =
+    pending.kind === "write"
+      ? buildWriteArtifact(path, pending.input)
+      : pending.kind === "read"
+        ? buildReadArtifact(path, content)
+        : null;
+
+  return artifact ? [artifact] : undefined;
+}
+
 export class DroidBridgeConnection {
   private session: DroidSession | null = null;
   private sessionModelId: string | null = null;
@@ -400,6 +575,7 @@ export class DroidBridgeConnection {
     this.activeTurnId = message.turnId;
     const abortController = new AbortController();
     this.activeTurnAbort = abortController;
+    const pendingToolCalls = new Map<string, PendingToolCall>();
 
     try {
       const session = await this.ensureSession(
@@ -436,13 +612,15 @@ export class DroidBridgeConnection {
 
           case DroidMessageType.ToolCall: {
             const input = isRecord(event.toolUse.input) ? event.toolUse.input : undefined;
+            const kind = inferToolKind(event.toolUse.name);
+            pendingToolCalls.set(event.toolUse.id, { kind, input });
             this.send({
               type: "turn.tool",
               turnId: message.turnId,
               name: event.toolUse.name,
               phase: "start",
               toolCallId: event.toolUse.id,
-              kind: inferToolKind(event.toolUse.name),
+              kind,
               inputSummary: summarizeToolInput(input),
               command: extractToolCommand(input),
               paths: extractToolPaths(input),
@@ -454,6 +632,11 @@ export class DroidBridgeConnection {
 
           case DroidMessageType.ToolResult: {
             const summary = summarizeToolResult(event.content);
+            const pending = pendingToolCalls.get(event.toolUseId);
+            pendingToolCalls.delete(event.toolUseId);
+            const artifacts = event.isError
+              ? undefined
+              : deriveToolArtifacts(pending, event.content);
             this.send({
               type: "turn.tool",
               turnId: message.turnId,
@@ -466,6 +649,7 @@ export class DroidBridgeConnection {
               resultSummary: summary.resultSummary,
               outputLength: summary.outputLength,
               errorMessage: event.isError ? summary.errorMessage ?? summary.resultSummary : undefined,
+              artifacts,
             });
             break;
           }

@@ -72,6 +72,58 @@ describe("parseBridgeServerMessage", () => {
     });
   });
 
+  test("accepts turn.tool events carrying artifacts", () => {
+    const message = parseBridgeServerMessage(
+      JSON.stringify({
+        type: "turn.tool",
+        turnId: "turn-1",
+        name: "Write",
+        phase: "end",
+        toolCallId: "tool-1",
+        artifacts: [
+          {
+            kind: "diff",
+            title: "index.ts",
+            source: "/repo/src/index.ts",
+            language: "typescript",
+            content: "-old\n+new",
+          },
+          { kind: "bogus", title: "nope", source: "x" },
+          { kind: "code", title: "", source: "/repo/src/blank.ts" },
+        ],
+      }),
+    );
+
+    expect(message).toMatchObject({
+      type: "turn.tool",
+      artifacts: [
+        {
+          kind: "diff",
+          title: "index.ts",
+          source: "/repo/src/index.ts",
+          language: "typescript",
+          content: "-old\n+new",
+        },
+      ],
+    });
+  });
+
+  test("omits artifacts entirely when the array has no valid entries", () => {
+    const message = parseBridgeServerMessage(
+      JSON.stringify({
+        type: "turn.tool",
+        turnId: "turn-1",
+        name: "Write",
+        phase: "end",
+        toolCallId: "tool-1",
+        artifacts: [{ kind: "bogus", title: "nope", source: "x" }],
+      }),
+    );
+
+    expect(message).toMatchObject({ type: "turn.tool" });
+    expect((message as { artifacts?: unknown })?.artifacts).toBeUndefined();
+  });
+
   test("falls back to tool name when toolCallId is missing", () => {
     const message = parseBridgeServerMessage(
       JSON.stringify({

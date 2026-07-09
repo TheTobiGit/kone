@@ -33,6 +33,7 @@ const {
   updateThinkingExpanded,
   markToolAwaitingPermission,
   applyMessage,
+  failActiveTurn,
 } = useConversationTurns();
 const {
   threads,
@@ -50,7 +51,6 @@ const isLandingFocused = ref(false);
 const selectedProvider = ref(DEFAULT_PROVIDER);
 const selectedModel = ref(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]);
 const selectedEffort = ref(getDefaultEffort(DEFAULT_PROVIDER, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]));
-const selectedFastMode = ref(false);
 const selectedThinking = ref(true);
 const isSubmitting = ref(false);
 const landingTextareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -75,7 +75,9 @@ const {
   cancelTurn,
   respondToPermission,
   onMessage,
+  onDisconnect,
   onModelsReady,
+  connect,
 } = useDroidBridge();
 
 const BASE_FONT_SIZE = 17;
@@ -92,6 +94,17 @@ const canSubmit = computed(
     Boolean(selectedModel.value) &&
     !isSubmitting.value,
 );
+
+const connectionStatusMessage = computed(() => {
+  switch (connectionStatus.value) {
+    case "reconnecting":
+      return "Reconnecting to Droid…";
+    case "failed":
+      return "Lost connection to Droid.";
+    default:
+      return "Connecting to Droid…";
+  }
+});
 
 const landingTypographyStyle = computed(() => ({
   fontSize: `${landingFontSize.value}px`,
@@ -248,7 +261,6 @@ const submitPrompt = () => {
       provider: selectedProvider.value,
       modelId: selectedModel.value,
       reasoningEffort: selectedEffort.value,
-      fastMode: selectedFastMode.value,
       thinking: selectedThinking.value,
       prompt: trimmedPrompt,
     });
@@ -353,7 +365,6 @@ const hydrateThread = () => {
   selectedProvider.value = thread.provider;
   selectedModel.value = thread.modelId;
   selectedEffort.value = thread.reasoningEffort;
-  selectedFastMode.value = thread.fastMode;
   selectedThinking.value = thread.thinking;
   isSubmitting.value = Boolean(activeTurn.value);
   initialHydration = false;
@@ -368,7 +379,6 @@ const createBlankThread = () => {
     provider: selectedProvider.value,
     modelId: selectedModel.value,
     reasoningEffort: selectedEffort.value,
-    fastMode: selectedFastMode.value,
     thinking: selectedThinking.value,
   });
   skipHydrationForThreadId = thread.id;
@@ -446,6 +456,7 @@ const handleFollowUpKeyDown = (event: KeyboardEvent) => {
 
 let unsubscribeMessages: (() => void) | undefined;
 let unsubscribeModels: (() => void) | undefined;
+let unsubscribeDisconnect: (() => void) | undefined;
 const pendingStreamText = new Map<
   string,
   { response: string; thinking: string }
@@ -500,6 +511,13 @@ onMounted(() => {
   hydrateThread();
   nextTick(() => {
     adjustTextareaHeight(landingTextareaRef.value, "landing");
+  });
+
+  unsubscribeDisconnect = onDisconnect(() => {
+    if (activeTurn.value) {
+      failActiveTurn("Connection to Droid was lost during this turn.");
+      isSubmitting.value = false;
+    }
   });
 
   unsubscribeModels = onModelsReady(({ defaultModelId, defaultReasoningEffort }) => {
@@ -573,7 +591,6 @@ const persistActiveThread = useDebounceFn(() => {
     provider: selectedProvider.value,
     modelId: selectedModel.value,
     reasoningEffort: selectedEffort.value,
-    fastMode: selectedFastMode.value,
     thinking: selectedThinking.value,
   });
 }, 180);
@@ -585,7 +602,6 @@ watch(
     selectedProvider,
     selectedModel,
     selectedEffort,
-    selectedFastMode,
     selectedThinking,
   ],
   persistActiveThread,
@@ -596,6 +612,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeyDown);
   unsubscribeMessages?.();
   unsubscribeModels?.();
+  unsubscribeDisconnect?.();
   if (streamFrame !== null) cancelAnimationFrame(streamFrame);
 });
 </script>
@@ -630,10 +647,18 @@ onUnmounted(() => {
 
       <p
         v-else-if="connectionStatus !== 'ready'"
-        class="mb-4 w-full text-xs font-light text-zinc-400"
+        class="mb-4 flex w-full items-center gap-2 text-xs font-light text-zinc-400"
         role="status"
       >
-        {{ connectionStatus === "reconnecting" ? "Reconnecting to Droid…" : "Connecting to Droid…" }}
+        <span>{{ connectionStatusMessage }}</span>
+        <button
+          v-if="connectionStatus === 'failed'"
+          type="button"
+          class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 underline decoration-zinc-300 underline-offset-2 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:decoration-zinc-700 dark:hover:text-zinc-200"
+          @click="connect"
+        >
+          Reconnect
+        </button>
       </p>
 
       <PermissionRequestInline
@@ -794,7 +819,6 @@ onUnmounted(() => {
             v-model:provider="selectedProvider"
             v-model:model="selectedModel"
             v-model:effort="selectedEffort"
-            v-model:fast-mode="selectedFastMode"
             v-model:thinking="selectedThinking"
           />
           <span
@@ -832,7 +856,6 @@ onUnmounted(() => {
             v-model:provider="selectedProvider"
             v-model:model="selectedModel"
             v-model:effort="selectedEffort"
-            v-model:fast-mode="selectedFastMode"
             v-model:thinking="selectedThinking"
           />
           <button

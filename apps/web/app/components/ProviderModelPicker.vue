@@ -26,8 +26,7 @@ import {
   composerControlLabelClass,
   composerControlValueClass,
   effortToggleClass,
-  fastModeToggleActiveClass,
-  fastModeToggleClass,
+  iconToggleClass,
   pickerBackButtonClass,
   pickerModelActiveClass,
   pickerModelClass,
@@ -47,7 +46,6 @@ const props = withDefaults(
 const provider = defineModel<ProviderId>("provider", { required: true });
 const model = defineModel<string>("model", { required: true });
 const effort = defineModel<string>("effort", { required: true });
-const fastMode = defineModel<boolean>("fastMode", { required: true });
 const thinking = defineModel<boolean>("thinking", { required: true });
 
 type PickerStep = "providers" | "models" | "effort";
@@ -90,7 +88,6 @@ const controlPositionClass = computed(() =>
     ? "absolute right-0 top-1/2 -translate-y-1/2"
     : "absolute left-0 top-1/2 -translate-y-1/2",
 );
-const supportsFastForSelection = computed(() => false);
 const effortLevels = computed(() => getEffortLevels(provider.value, model.value));
 const hasEffortControls = computed(() => effortLevels.value.length > 0);
 const supportsThinkingForSelection = computed(() =>
@@ -131,15 +128,11 @@ function syncTraitsForSelection(nextProvider: ProviderId, nextModel: string) {
   thinking.value = true;
 }
 
-function rememberSelection(
-  nextProvider: ProviderId,
-  nextModel: string,
-  nextFastMode: boolean,
-) {
+function rememberSelection(nextProvider: ProviderId, nextModel: string) {
   recordSelection({
     provider: nextProvider,
     model: nextModel,
-    fastMode: nextFastMode,
+    fastMode: false,
   });
 }
 
@@ -170,34 +163,20 @@ function pickProvider(nextProvider: ProviderId) {
   step.value = "models";
 }
 
-function applySelection(
-  nextProvider: ProviderId,
-  nextModel: string,
-  options?: { fast?: boolean },
-) {
+function applySelection(nextProvider: ProviderId, nextModel: string) {
   provider.value = nextProvider;
   model.value = nextModel;
   syncTraitsForSelection(nextProvider, nextModel);
-  fastMode.value = false;
-  rememberSelection(nextProvider, nextModel, fastMode.value);
+  rememberSelection(nextProvider, nextModel);
   closePanel();
 }
 
-function pickModel(nextModel: string, options?: { fast?: boolean }) {
-  applySelection(browseProvider.value, nextModel, options);
-}
-
-function pickModelFast(nextModel: string) {
-  pickModel(nextModel, { fast: true });
+function pickModel(nextModel: string) {
+  applySelection(browseProvider.value, nextModel);
 }
 
 function pickRecent(entry: RecentModelSelection) {
-  applySelection(entry.provider, entry.model, { fast: entry.fastMode });
-}
-
-function toggleFastMode() {
-  fastMode.value = !fastMode.value;
-  rememberSelection(provider.value, model.value, fastMode.value);
+  applySelection(entry.provider, entry.model);
 }
 
 function pickEffort(nextEffort: string) {
@@ -218,15 +197,7 @@ function isModelActive(modelId: string) {
 }
 
 function isRecentActive(entry: RecentModelSelection) {
-  return (
-    entry.provider === provider.value &&
-    entry.model === model.value &&
-    entry.fastMode === fastMode.value
-  );
-}
-
-function supportsFastForBrowseModel(modelId: string) {
-  return false;
+  return entry.provider === provider.value && entry.model === model.value;
 }
 
 watch(provider, (nextProvider) => {
@@ -235,7 +206,6 @@ watch(provider, (nextProvider) => {
     model.value = DEFAULT_MODEL_BY_PROVIDER[nextProvider];
   }
   effort.value = normalizeEffort(nextProvider, model.value, effort.value);
-  fastMode.value = false;
   if (!modelSupportsThinkingToggle(nextProvider, model.value)) {
     thinking.value = true;
   }
@@ -243,16 +213,15 @@ watch(provider, (nextProvider) => {
 
 watch(model, (nextModel) => {
   effort.value = normalizeEffort(provider.value, nextModel, effort.value);
-  fastMode.value = false;
   if (!modelSupportsThinkingToggle(provider.value, nextModel)) {
     thinking.value = true;
   }
-  rememberSelection(provider.value, nextModel, fastMode.value);
+  rememberSelection(provider.value, nextModel);
 });
 
 watch(droidModelsLoaded, (loaded) => {
   if (!loaded) return;
-  rememberSelection(provider.value, model.value, fastMode.value);
+  rememberSelection(provider.value, model.value);
 });
 
 watch(isOpen, (open) => {
@@ -284,7 +253,7 @@ onClickOutside(rootRef, closePanel, { ignore: [secondaryRowRef] });
 
 onMounted(() => {
   window.addEventListener("keydown", onKeyDown);
-  rememberSelection(provider.value, model.value, fastMode.value);
+  rememberSelection(provider.value, model.value);
 });
 
 onUnmounted(() => {
@@ -324,21 +293,6 @@ function onKeyDown(event: KeyboardEvent) {
         </button>
 
         <button
-          v-if="supportsFastForSelection"
-          type="button"
-          :class="[
-            fastModeToggleClass,
-            fastMode ? fastModeToggleActiveClass : '',
-          ]"
-          :aria-pressed="fastMode"
-          aria-label="Toggle fast mode"
-          title="Fast mode"
-          @click="toggleFastMode"
-        >
-          <UIcon name="i-lucide-zap" class="size-3" aria-hidden="true" />
-        </button>
-
-        <button
           v-if="hasEffortControls"
           type="button"
           :class="effortToggleClass"
@@ -357,7 +311,7 @@ function onKeyDown(event: KeyboardEvent) {
           v-if="supportsThinkingForSelection"
           type="button"
           :class="[
-            fastModeToggleClass,
+            iconToggleClass,
             thinking ? thinkingToggleActiveClass : '',
           ]"
           :aria-pressed="thinking"
@@ -452,7 +406,7 @@ function onKeyDown(event: KeyboardEvent) {
       >
         <button
           v-for="entry in recents"
-          :key="`${entry.provider}:${entry.model}:${entry.fastMode}`"
+          :key="`${entry.provider}:${entry.model}`"
           type="button"
           :class="[
             pickerModelClass,
@@ -468,12 +422,6 @@ function onKeyDown(event: KeyboardEvent) {
             :class="[pickerModelIconClass, 'opacity-70']"
           />
           <span>{{ getModelLabel(entry.provider, entry.model) }}</span>
-          <UIcon
-            v-if="entry.fastMode"
-            name="i-lucide-zap"
-            class="size-2.5 shrink-0 text-amber-500/80 dark:text-amber-400/80"
-            aria-hidden="true"
-          />
         </button>
       </div>
 
@@ -486,31 +434,18 @@ function onKeyDown(event: KeyboardEvent) {
         :style="secondaryRowStyle"
       >
         <template v-for="entry in browseModels" :key="entry.id">
-          <div class="inline-flex max-w-full items-center gap-0.5">
-            <button
-              type="button"
-              :class="[
-                pickerModelClass,
-                'inline-flex max-w-full items-center gap-1 text-left whitespace-normal',
-                isModelActive(entry.id) ? pickerModelActiveClass : '',
-              ]"
-              @click="pickModel(entry.id)"
-            >
-              <ProviderIcon :provider="entry.modelProviderId" :class="pickerModelIconClass" />
-              <span>{{ entry.name }}</span>
-            </button>
-
-            <button
-              v-if="supportsFastForBrowseModel(entry.id)"
-              type="button"
-              :class="[fastModeToggleClass, 'hover:text-amber-500/80 dark:hover:text-amber-400/80']"
-              aria-label="Select with fast mode"
-              title="Fast mode"
-              @click="pickModelFast(entry.id)"
-            >
-              <UIcon name="i-lucide-zap" class="size-2.5" aria-hidden="true" />
-            </button>
-          </div>
+          <button
+            type="button"
+            :class="[
+              pickerModelClass,
+              'inline-flex max-w-full items-center gap-1 text-left whitespace-normal',
+              isModelActive(entry.id) ? pickerModelActiveClass : '',
+            ]"
+            @click="pickModel(entry.id)"
+          >
+            <ProviderIcon :provider="entry.modelProviderId" :class="pickerModelIconClass" />
+            <span>{{ entry.name }}</span>
+          </button>
         </template>
       </div>
     </transition>

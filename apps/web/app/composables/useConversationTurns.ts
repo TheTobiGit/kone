@@ -116,6 +116,21 @@ export function useConversationTurns() {
     turns.value = turns.value.filter((turn) => turn.id !== turnId);
   }
 
+  function failActiveTurn(message: string) {
+    const turn = activeTurn.value;
+    if (!turn) return;
+    turn.status = "error";
+    turn.errorMessage = message;
+    turn.completedAt = new Date().toISOString();
+    if (!turn.thinkingUserToggled) turn.thinkingExpanded = false;
+    for (const tool of turn.tools) {
+      if (tool.status === "running" || tool.status === "awaiting_permission") {
+        tool.status = "error";
+        tool.completedAt = turn.completedAt;
+      }
+    }
+  }
+
   function updateThinkingExpanded(turnId: string, expanded: boolean) {
     const turn = findTurn(turnId);
     if (!turn) return;
@@ -278,5 +293,6 @@ export function useConversationTurns() {
     updateThinkingExpanded,
     markToolAwaitingPermission,
     applyMessage,
+    failActiveTurn,
   };
 }

@@ -12,7 +12,6 @@ export type StoredThread = {
   provider: ProviderId;
   modelId: string;
   reasoningEffort: string;
-  fastMode: boolean;
   thinking: boolean;
   createdAt: string;
   updatedAt: string;
@@ -100,7 +99,6 @@ export function useThreadStore() {
     provider: ProviderId;
     modelId: string;
     reasoningEffort: string;
-    fastMode: boolean;
     thinking: boolean;
     prompt?: string;
   }) {
@@ -113,7 +111,6 @@ export function useThreadStore() {
       provider: input.provider,
       modelId: input.modelId,
       reasoningEffort: input.reasoningEffort,
-      fastMode: input.fastMode,
       thinking: input.thinking,
       createdAt: now,
       updatedAt: now,

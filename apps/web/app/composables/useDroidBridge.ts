@@ -19,19 +19,23 @@ function getBridgeWsUrl(): string {
   return resolveBridgeWsUrl(config.public.bridgeWsUrl);
 }
 
+const MAX_RECONNECT_ATTEMPTS = 8;
+
 export function useDroidBridge() {
   const socket = shallowRef<WebSocket | null>(null);
   const isConnected = ref(false);
   const isBridgeReady = ref(false);
   const isReconnecting = ref(false);
+  const hasReconnectFailed = ref(false);
   const bridgeError = ref<string | null>(null);
   const permissionRequests = ref<PermissionRequest[]>([]);
   const { setDroidModels } = useDroidModelStore();
   const pendingPermission = computed(() => permissionRequests.value[0] ?? null);
   const connectionStatus = computed<
-    "connecting" | "ready" | "reconnecting" | "offline"
+    "connecting" | "ready" | "reconnecting" | "offline" | "failed"
   >(() => {
     if (isConnected.value) return "ready";
+    if (hasReconnectFailed.value) return "failed";
     if (isReconnecting.value) return "reconnecting";
     return socket.value ? "connecting" : "offline";
   });
@@ -44,6 +48,7 @@ export function useDroidBridge() {
   let reconnectFailures = 0;
   let disposed = false;
   const handlers = new Set<(message: BridgeServerMessage) => void>();
+  const disconnectHandlers = new Set<() => void>();
   const modelReadyHandlers = new Set<
     (payload: {
       models: DroidModelDescriptor[];
@@ -52,7 +57,7 @@ export function useDroidBridge() {
     }) => void
   >();
 
-  const connect = () => {
+  const openSocket = () => {
     if (
       disposed ||
       (socket.value &&
@@ -68,6 +73,7 @@ export function useDroidBridge() {
     ws.addEventListener("open", () => {
       isConnected.value = true;
       isReconnecting.value = false;
+      hasReconnectFailed.value = false;
       reconnectFailures = 0;
       bridgeError.value = null;
     });
@@ -160,18 +166,38 @@ export function useDroidBridge() {
       socket.value = null;
       if (disposed) return;
 
+      for (const handler of disconnectHandlers) handler();
+
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectFailures++;
+      if (reconnectFailures > MAX_RECONNECT_ATTEMPTS) {
+        isReconnecting.value = false;
+        hasReconnectFailed.value = true;
+        return;
+      }
       isReconnecting.value = true;
       const baseDelay = Math.min(30_000, 750 * 2 ** (reconnectFailures - 1));
       const jitter = Math.round(baseDelay * (Math.random() * 0.2 - 0.1));
-      reconnectTimer = setTimeout(connect, Math.max(500, baseDelay + jitter));
+      reconnectTimer = setTimeout(openSocket, Math.max(500, baseDelay + jitter));
     });
 
     ws.addEventListener("error", () => {
       bridgeError.value = "Could not connect to the Droid bridge.";
     });
 
+  };
+
+  const connect = () => {
+    if (disposed) return;
+    if (hasReconnectFailed.value) {
+      hasReconnectFailed.value = false;
+      reconnectFailures = 0;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
+    openSocket();
   };
 
   const send = (message: BridgeClientMessage) => {
@@ -227,6 +253,11 @@ export function useDroidBridge() {
     return () => handlers.delete(handler);
   };
 
+  const onDisconnect = (handler: () => void) => {
+    disconnectHandlers.add(handler);
+    return () => disconnectHandlers.delete(handler);
+  };
+
   const onModelsReady = (
     handler: (payload: {
       models: DroidModelDescriptor[];
@@ -247,6 +278,7 @@ export function useDroidBridge() {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     socket.value?.close();
     handlers.clear();
+    disconnectHandlers.clear();
     modelReadyHandlers.clear();
     for (const timer of permissionExpiryTimers.values()) clearTimeout(timer);
     permissionExpiryTimers.clear();
@@ -264,6 +296,7 @@ export function useDroidBridge() {
     cancelTurn,
     respondToPermission,
     onMessage,
+    onDisconnect,
     onModelsReady,
     refreshModels,
     connect,
