@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import RotatingText from "~/components/ui/rotating-text/RotatingText.vue";
-import SplitText from "~/components/ui/split-text/SplitText.vue";
+import { ShinyText } from "~/components/ui/shiny-text";
+import ResponseContent from "~/components/ResponseContent.vue";
 import ProviderModelPicker from "~/components/ProviderModelPicker.vue";
 import { useDroidBridge } from "~/composables/useDroidBridge";
 import {
@@ -34,6 +35,7 @@ const selectedThinking = ref(true);
 const isSubmitting = ref(false);
 const landingTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const followUpTextareaRef = ref<HTMLTextAreaElement | null>(null);
+const followUpPickerOpen = ref(false);
 const transcriptEndRef = ref<HTMLDivElement | null>(null);
 
 const {
@@ -48,7 +50,6 @@ const {
 const BASE_FONT_SIZE = 17;
 const FOLLOW_UP_FONT_SIZE = 15;
 const MIN_FONT_SIZE = 14;
-const RESPONSE_FONT_SIZE = 14;
 const LINE_HEIGHT_RATIO = 1.35;
 const landingFontSize = ref(BASE_FONT_SIZE);
 const followUpFontSize = ref(FOLLOW_UP_FONT_SIZE);
@@ -71,10 +72,16 @@ const threadPromptStyle = computed(() => ({
   lineHeight: LINE_HEIGHT_RATIO,
 }));
 
-const responseTypographyStyle = computed(() => ({
-  fontSize: `${RESPONSE_FONT_SIZE}px`,
-  lineHeight: LINE_HEIGHT_RATIO,
-}));
+const typographyForTurn = (turnIndex: number) =>
+  turnIndex === 0 ? landingTypographyStyle.value : threadPromptStyle.value;
+
+const colorMode = useColorMode();
+
+const awaitingShinyColors = computed(() =>
+  colorMode.value === "dark"
+    ? { color: "#a1a1aa", shineColor: "#f4f4f5" }
+    : { color: "#71717a", shineColor: "#ffffff" },
+);
 
 const placeholderPrefix = "What should we";
 const rotatingWords = ["build?", "ship?", "launch?", "design?"];
@@ -164,14 +171,15 @@ const handleFollowUpInput = () => {
   adjustTextareaHeight(followUpTextareaRef.value, "follow-up");
 };
 
-const splitIntoBlocks = (text: string) =>
-  text
-    .split(/(?<=[.!?])\s+/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-
 const isTurnDimmed = (turn: ConversationTurn) =>
-  turn.status === "completed" || turn.status === "error" || Boolean(turn.responseText);
+  turn.status === "completed" || turn.status === "error";
+
+const isTurnAwaitingResponse = (turn: ConversationTurn) =>
+  turn.status === "pending" ||
+  (turn.status === "streaming" && !turn.thinkingText);
+
+const shouldAnimateResponse = (turn: ConversationTurn) =>
+  turn.status === "completed" && Boolean(turn.responseText);
 
 const findTurn = (turnId: string) => turns.value.find((turn) => turn.id === turnId);
 
@@ -385,10 +393,18 @@ onUnmounted(() => {
           <div
             class="transition-opacity duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
             :class="[isTurnDimmed(turn) ? 'opacity-40' : 'opacity-100']"
+            :style="typographyForTurn(turnIndex)"
           >
+            <ShinyText
+              v-if="isTurnAwaitingResponse(turn)"
+              :text="turn.prompt"
+              class="whitespace-pre-wrap font-light tracking-tight"
+              :speed="2.5"
+              v-bind="awaitingShinyColors"
+            />
             <p
+              v-else
               class="m-0 whitespace-pre-wrap text-left font-light text-zinc-800 tracking-tight dark:text-zinc-100"
-              :style="turnIndex === 0 ? landingTypographyStyle : threadPromptStyle"
             >
               {{ turn.prompt }}
             </p>
@@ -402,40 +418,14 @@ onUnmounted(() => {
           </div>
 
           <div
-            v-if="turn.status === 'streaming' && turn.responseText"
-            class="response-scroll mt-3 w-full whitespace-pre-wrap text-left font-light leading-relaxed tracking-normal text-zinc-700 dark:text-zinc-300"
-            :style="responseTypographyStyle"
-          >
-            {{ turn.responseText }}
-          </div>
-
-          <div
-            v-else-if="turn.responseText"
+            v-if="shouldAnimateResponse(turn)"
             class="response-scroll mt-3 w-full"
           >
-            <div class="text-left font-light leading-relaxed tracking-normal" :style="responseTypographyStyle">
-              <SplitText
-                v-for="(block, index) in splitIntoBlocks(turn.responseText)"
-                :key="`${turn.id}-response-${index}-${block}`"
-                :text="block"
-                by="words"
-                :active="turn.status === 'completed'"
-                :start-delay="index * 420"
-                :delay="70"
-                :duration="0.45"
-                :from="{ opacity: 0, y: 12 }"
-                :to="{ opacity: 1, y: 0 }"
-                class="mb-3 block font-light leading-relaxed tracking-normal text-zinc-700 last:mb-0 dark:text-zinc-300"
-              />
-            </div>
+            <ResponseContent
+              :text="turn.responseText"
+              :typography-style="typographyForTurn(turnIndex)"
+            />
           </div>
-
-          <p
-            v-else-if="turn.status === 'pending'"
-            class="mt-3 text-sm font-light text-zinc-400 dark:text-zinc-600"
-          >
-            Thinking...
-          </p>
 
           <p
             v-if="turn.status === 'error' && turn.errorMessage"
@@ -523,10 +513,11 @@ onUnmounted(() => {
         </div>
 
         <div
-          class="relative mt-5 h-5 overflow-hidden opacity-70 transition-all duration-500 ease-out"
-          :class="[draftPrompt ? 'opacity-100' : '']"
+          class="group relative mt-5 h-5 w-full overflow-hidden transition-opacity duration-300"
+          :class="followUpPickerOpen ? 'opacity-100' : 'opacity-25 hover:opacity-100'"
         >
           <ProviderModelPicker
+            v-model:open="followUpPickerOpen"
             v-model:provider="selectedProvider"
             v-model:model="selectedModel"
             v-model:effort="selectedEffort"
@@ -534,8 +525,8 @@ onUnmounted(() => {
             v-model:thinking="selectedThinking"
           />
           <span
-            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
-            :class="[draftPrompt ? 'opacity-100' : 'opacity-0']"
+            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-300 ease-out dark:text-zinc-600"
+            :class="[draftPrompt ? 'opacity-100' : 'opacity-0 group-hover:opacity-100']"
           >
             enter ↵
           </span>

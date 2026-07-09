@@ -6,6 +6,15 @@ defineProps<{
   class?: string;
 }>();
 
+const DROID_ICON_LIGHT = "/icons/droid.png";
+const DROID_ICON_DARK =
+  "https://factory.gallerycdn.vsassets.io/extensions/factory/factory-vscode-extension/0.2.3/1778193077846/Microsoft.VisualStudio.Services.Icons.Default";
+
+const colorMode = useColorMode();
+const droidIconSrc = computed(() =>
+  colorMode.value === "dark" ? DROID_ICON_DARK : DROID_ICON_LIGHT,
+);
+
 const ICON_BY_PROVIDER: Record<Exclude<ProviderId, "grok" | "droid">, string> = {
   codex: "i-simple-icons-openai",
   claudeAgent: "i-simple-icons-anthropic",
@@ -17,7 +26,7 @@ const ICON_BY_PROVIDER: Record<Exclude<ProviderId, "grok" | "droid">, string> = 
 <template>
   <img
     v-if="provider === 'droid'"
-    src="/icons/droid.png"
+    :src="droidIconSrc"
     alt=""
     :class="class"
     aria-hidden="true"

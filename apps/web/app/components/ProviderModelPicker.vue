@@ -36,6 +36,15 @@ import {
   thinkingToggleActiveClass,
 } from "~/lib/composer-controls";
 
+const props = withDefaults(
+  defineProps<{
+    align?: "left" | "right";
+  }>(),
+  {
+    align: "left",
+  },
+);
+
 const provider = defineModel<ProviderId>("provider", { required: true });
 const model = defineModel<string>("model", { required: true });
 const effort = defineModel<string>("effort", { required: true });
@@ -46,7 +55,7 @@ type PickerStep = "providers" | "models" | "effort";
 
 const rootRef = ref<HTMLElement | null>(null);
 const secondaryRowRef = ref<HTMLElement | null>(null);
-const isOpen = ref(false);
+const isOpen = defineModel<boolean>("open", { default: false });
 const step = ref<PickerStep>("providers");
 const browseProvider = ref<ProviderId>(provider.value);
 
@@ -76,6 +85,12 @@ const browseModels = computed(() => {
   return getModelsForProvider(browseProvider.value);
 });
 const visibleProviders = computed(() => MODEL_CATALOG.filter((entry) => entry.id === "droid"));
+const isRightAligned = computed(() => props.align === "right");
+const controlPositionClass = computed(() =>
+  isRightAligned.value
+    ? "absolute right-0 top-1/2 -translate-y-1/2"
+    : "absolute left-0 top-1/2 -translate-y-1/2",
+);
 const supportsFastForSelection = computed(() =>
   modelSupportsFastMode(provider.value, model.value),
 );
@@ -91,10 +106,24 @@ const currentEffortIndex = computed(() =>
   getEffortLevelIndex(effortLevels.value, effort.value),
 );
 
-const secondaryRowStyle = computed(() => ({
-  top: `${triggerBounds.bottom.value + 8}px`,
-  left: `${triggerBounds.left.value}px`,
-}));
+const secondaryRowStyle = computed(() => {
+  const base = {
+    top: `${triggerBounds.bottom.value + 8}px`,
+  };
+
+  if (isRightAligned.value) {
+    return {
+      ...base,
+      right: `${window.innerWidth - triggerBounds.right.value}px`,
+      left: "auto",
+    };
+  }
+
+  return {
+    ...base,
+    left: `${triggerBounds.left.value}px`,
+  };
+});
 
 function syncSecondaryRowPosition() {
   triggerBounds.update();
@@ -280,7 +309,7 @@ function onKeyDown(event: KeyboardEvent) {
   <div ref="rootRef" class="relative h-5 w-full">
     <div
       v-if="!isOpen"
-      class="absolute left-0 top-1/2 inline-flex h-5 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
+      :class="[controlPositionClass, 'inline-flex h-5 items-center gap-2 whitespace-nowrap']"
     >
       <div class="inline-flex items-center gap-1">
         <button
@@ -351,7 +380,7 @@ function onKeyDown(event: KeyboardEvent) {
 
     <div
       v-else-if="step === 'providers' || step === 'models'"
-      class="absolute left-0 top-1/2 flex h-5 -translate-y-1/2 items-center gap-2 whitespace-nowrap"
+      :class="[controlPositionClass, 'flex h-5 items-center gap-2 whitespace-nowrap']"
     >
       <button
         type="button"
@@ -385,7 +414,10 @@ function onKeyDown(event: KeyboardEvent) {
 
     <div
       v-else
-      class="absolute left-0 top-1/2 flex h-5 max-w-[min(56rem,calc(100vw-3rem))] -translate-y-1/2 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      :class="[
+        controlPositionClass,
+        'flex h-5 max-w-[min(56rem,calc(100vw-3rem))] items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+      ]"
     >
       <button
         type="button"
@@ -422,7 +454,8 @@ function onKeyDown(event: KeyboardEvent) {
         v-if="isOpen && step === 'providers' && recents.length > 0"
         key="recents"
         ref="secondaryRowRef"
-        class="pointer-events-auto fixed z-50 flex w-[min(56rem,calc(100vw-1.5rem))] flex-wrap items-center justify-start gap-x-3 gap-y-1.5"
+        class="pointer-events-auto fixed z-50 flex w-[min(56rem,calc(100vw-1.5rem))] flex-wrap items-center gap-x-3 gap-y-1.5"
+        :class="[isRightAligned ? 'justify-end' : 'justify-start']"
         :style="secondaryRowStyle"
       >
         <button
@@ -456,7 +489,8 @@ function onKeyDown(event: KeyboardEvent) {
         v-else-if="isOpen && step === 'models'"
         key="models"
         ref="secondaryRowRef"
-        class="pointer-events-auto fixed z-50 flex w-[min(56rem,calc(100vw-1.5rem))] flex-wrap items-center justify-start gap-x-2 gap-y-1.5"
+        class="pointer-events-auto fixed z-50 flex w-[min(56rem,calc(100vw-1.5rem))] flex-wrap items-center gap-x-2 gap-y-1.5"
+        :class="[isRightAligned ? 'justify-end' : 'justify-start']"
         :style="secondaryRowStyle"
       >
         <template v-for="entry in browseModels" :key="entry.id">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useIntersectionObserver } from "@vueuse/core";
 import { motion } from "motion-v";
 import { cn } from "~/lib/utils";
@@ -15,6 +16,7 @@ const props = withDefaults(
     active?: boolean;
     startDelay?: number;
     class?: string;
+    as?: "p" | "div" | "span";
   }>(),
   {
     by: "chars",
@@ -26,11 +28,13 @@ const props = withDefaults(
     active: undefined,
     startDelay: 0,
     class: "",
+    as: "p",
   },
 );
 
 const el = ref<HTMLElement>();
 const isInView = ref(false);
+const isReady = ref(false);
 
 watch(
   () => props.active,
@@ -43,12 +47,23 @@ watch(
 useIntersectionObserver(
   el,
   ([entry]) => {
+    if (props.active !== undefined) return;
     if (entry?.isIntersecting) {
       isInView.value = true;
     }
   },
   { threshold: props.threshold },
 );
+
+onMounted(() => {
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      isReady.value = true;
+    });
+  });
+});
+
+const shouldAnimate = computed(() => isReady.value && isInView.value);
 
 const words = computed(() => {
   if (props.by === "words") {
@@ -69,7 +84,11 @@ function getDelay(globalIndex: number): number {
 </script>
 
 <template>
-  <p ref="el" :class="cn('flex flex-wrap whitespace-pre-wrap overflow-hidden', props.class)">
+  <component
+    :is="as"
+    ref="el"
+    :class="cn('flex flex-wrap whitespace-pre-wrap overflow-hidden', !isReady && 'opacity-0', props.class)"
+  >
     <span v-for="(word, wi) in words" :key="wi" class="inline-flex">
       <component
         :is="motion.span"
@@ -77,7 +96,7 @@ function getDelay(globalIndex: number): number {
         :key="`${wi}-${ci}`"
         class="inline-block"
         :initial="from"
-        :animate="isInView ? to : from"
+        :animate="shouldAnimate ? to : from"
         :transition="{
           duration,
           delay: getDelay(
@@ -95,5 +114,5 @@ function getDelay(globalIndex: number): number {
       </component>
       <span v-if="word.needsSpace" class="whitespace-pre">&nbsp;</span>
     </span>
-  </p>
+  </component>
 </template>
