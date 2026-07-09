@@ -15,10 +15,15 @@ export type ResponseHeadingBlock = {
   text: string;
 };
 
+export type ResponseListItem = {
+  text: string;
+  children?: ResponseListBlock;
+};
+
 export type ResponseListBlock = {
   type: "list";
   ordered: boolean;
-  items: string[];
+  items: ResponseListItem[];
 };
 
 export type ResponseBlockquoteBlock = {
@@ -64,6 +69,49 @@ export function stripInlineMarkdown(text: string) {
     .replace(/\*(.+?)\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+
+// Two spaces (or one tab) of leading indentation count as one nesting level.
+function indentLevel(line: string): number {
+  let spaces = 0;
+  for (const char of line) {
+    if (char === "\t") spaces += 2;
+    else if (char === " ") spaces += 1;
+    else break;
+  }
+  return Math.floor(spaces / 2);
+}
+
+function parseListAtLevel(
+  lines: string[],
+  startIndex: number,
+  level: number,
+): { block: ResponseListBlock; nextIndex: number } {
+  const ordered = /^\s*\d+\./.test(lines[startIndex] ?? "");
+  const items: ResponseListItem[] = [];
+  let index = startIndex;
+
+  while (
+    index < lines.length &&
+    LIST_ITEM_PATTERN.test(lines[index] ?? "") &&
+    indentLevel(lines[index] ?? "") === level &&
+    /^\s*\d+\./.test(lines[index] ?? "") === ordered
+  ) {
+    const text = (lines[index] ?? "").replace(LIST_ITEM_PATTERN, "").trim();
+    index++;
+
+    let children: ResponseListBlock | undefined;
+    const nextLine = lines[index] ?? "";
+    if (LIST_ITEM_PATTERN.test(nextLine) && indentLevel(nextLine) > level) {
+      const nested = parseListAtLevel(lines, index, indentLevel(nextLine));
+      children = nested.block;
+      index = nested.nextIndex;
+    }
+
+    items.push(children ? { text, children } : { text });
+  }
+
+  return { block: { type: "list", ordered, items }, nextIndex: index };
 }
 
 function splitTableRow(line: string) {
@@ -139,21 +187,9 @@ export function parseResponseBlocks(text: string): ResponseBlock[] {
     }
 
     if (LIST_ITEM_PATTERN.test(line)) {
-      const ordered = /^\s*\d+\./.test(line);
-      const items: string[] = [];
-      while (
-        index < lines.length &&
-        LIST_ITEM_PATTERN.test(lines[index] ?? "") &&
-        /^\s*\d+\./.test(lines[index] ?? "") === ordered
-      ) {
-        items.push((lines[index] ?? "").replace(LIST_ITEM_PATTERN, "").trim());
-        index++;
-      }
-      blocks.push({
-        type: "list",
-        ordered,
-        items,
-      });
+      const { block, nextIndex } = parseListAtLevel(lines, index, indentLevel(line));
+      blocks.push(block);
+      index = nextIndex;
       continue;
     }
 

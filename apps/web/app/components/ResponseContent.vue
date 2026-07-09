@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, type StyleValue } from "vue";
+import { computed, h, ref, type StyleValue, type VNode } from "vue";
 import { motion } from "motion-v";
 import SplitText from "~/components/ui/split-text/SplitText.vue";
 import FormattedInline from "~/components/FormattedInline.vue";
@@ -7,6 +7,8 @@ import {
   hasInlineMarkdown,
   parseResponseBlocks,
   stripInlineMarkdown,
+  type ResponseListBlock,
+  type ResponseListItem,
 } from "~/lib/response-blocks";
 
 const props = defineProps<{
@@ -19,6 +21,7 @@ const blocks = computed(() => parseResponseBlocks(props.text));
 const wordCount = computed(() => props.text.trim().split(/\s+/).filter(Boolean).length);
 const shouldSplitText = computed(() => !props.streaming && wordCount.value <= 150);
 const copiedCodeIndex = ref<number | null>(null);
+const wrappedCodeIndexes = ref<Set<number>>(new Set());
 
 const BLOCK_STAGGER_MS = 80;
 const WORD_DELAY_MS = 35;
@@ -57,6 +60,78 @@ async function copyCode(text: string, index: number) {
   window.setTimeout(() => {
     if (copiedCodeIndex.value === index) copiedCodeIndex.value = null;
   }, 1400);
+}
+
+function toggleWrap(index: number) {
+  const next = new Set(wrappedCodeIndexes.value);
+  if (next.has(index)) next.delete(index);
+  else next.add(index);
+  wrappedCodeIndexes.value = next;
+}
+
+// Nested lists are rendered with small inline render functions (rather than a
+// dedicated child component) so item markup — including the leaf-level
+// SplitText/FormattedInline treatment — can recurse across indent levels
+// without adding a new file.
+function renderListItemContent(item: ResponseListItem, delay: number): VNode {
+  if (!hasInlineMarkdown(item.text) && shouldSplitText.value) {
+    return h(SplitText, {
+      text: item.text,
+      by: "words",
+      as: "span",
+      active: true,
+      startDelay: delay,
+      delay: WORD_DELAY_MS,
+      duration: 0.32,
+      from: { opacity: 0, y: 6 },
+      to: { opacity: 1, y: 0 },
+      class: `inline ${bodyClass}`,
+    });
+  }
+
+  const content = h(FormattedInline, { text: item.text });
+
+  if (props.streaming) {
+    return h("span", { class: "inline" }, [content]);
+  }
+
+  return h(
+    motion.span,
+    {
+      initial: { opacity: 0, y: 6 },
+      animate: { opacity: 1, y: 0 },
+      transition: fadeTransition(delay),
+      class: "inline",
+    },
+    [content],
+  );
+}
+
+function renderListLevel(
+  block: ResponseListBlock,
+  baseDelay: number,
+  depth: number,
+  style?: StyleValue,
+): VNode {
+  return h(
+    block.ordered ? "ol" : "ul",
+    {
+      class: [
+        "m-0 space-y-1.5 text-left",
+        block.ordered ? "list-decimal" : "list-disc",
+        bodyClass,
+        depth > 0 ? "mt-1.5 pl-5" : "pl-5",
+      ],
+      style: depth === 0 ? style : undefined,
+    },
+    block.items.map((item, itemIndex) => {
+      const delay = baseDelay + itemIndex * 80;
+      return h("li", { key: itemIndex, class: "pl-1" }, [
+        renderListItemContent(item, delay),
+        item.children ? renderListLevel(item.children, delay, depth + 1) : null,
+      ]);
+    }),
+  );
 }
 </script>
 
@@ -145,61 +220,37 @@ async function copyCode(text: string, index: number) {
           <span class="text-[10px] font-mono uppercase tracking-[0.18em] text-zinc-500">
             {{ block.language || "text" }}
           </span>
-          <button
-            type="button"
-            class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
-            @click="copyCode(block.text, index)"
-          >
-            {{ copiedCodeIndex === index ? "Copied" : "Copy" }}
-          </button>
+          <span class="flex items-center gap-3">
+            <button
+              type="button"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+              @click="toggleWrap(index)"
+            >
+              {{ wrappedCodeIndexes.has(index) ? "Nowrap" : "Wrap" }}
+            </button>
+            <button
+              type="button"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+              @click="copyCode(block.text, index)"
+            >
+              {{ copiedCodeIndex === index ? "Copied" : "Copy" }}
+            </button>
+          </span>
         </div>
         <pre
-          class="m-0 overflow-x-auto px-3 py-2.5 font-mono text-[0.88em] leading-relaxed text-zinc-800 dark:text-zinc-200"
+          class="m-0 px-3 py-2.5 font-mono text-[0.88em] leading-relaxed text-zinc-800 dark:text-zinc-200"
+          :class="
+            wrappedCodeIndexes.has(index)
+              ? 'whitespace-pre-wrap break-words'
+              : 'overflow-x-auto'
+          "
         ><code>{{ block.text }}</code></pre>
       </component>
 
       <component
-        :is="block.ordered ? 'ol' : 'ul'"
+        :is="() => renderListLevel(block, blockStartDelay(index), 0, typographyStyle)"
         v-else-if="block.type === 'list'"
-        class="m-0 space-y-1.5 pl-5 text-left"
-        :class="[block.ordered ? 'list-decimal' : 'list-disc', bodyClass]"
-        :style="typographyStyle"
-      >
-        <li v-for="(item, itemIndex) in block.items" :key="itemIndex" class="pl-1">
-          <SplitText
-            v-if="!hasInlineMarkdown(item) && shouldSplitText"
-            :text="item"
-            by="words"
-            as="span"
-            :active="true"
-            :start-delay="blockStartDelay(index) + itemIndex * 80"
-            :delay="WORD_DELAY_MS"
-            :duration="0.32"
-            :from="{ opacity: 0, y: 6 }"
-            :to="{ opacity: 1, y: 0 }"
-            class="inline"
-            :class="bodyClass"
-          />
-          <component
-            :is="streaming ? 'span' : motion.span"
-            v-else
-            v-bind="
-              streaming
-                ? {}
-                : {
-                    initial: { opacity: 0, y: 6 },
-                    animate: { opacity: 1, y: 0 },
-                    transition: fadeTransition(
-                      blockStartDelay(index) + itemIndex * 80,
-                    ),
-                  }
-            "
-            class="inline"
-          >
-            <FormattedInline :text="item" />
-          </component>
-        </li>
-      </component>
+      />
 
       <blockquote
         v-else-if="block.type === 'blockquote'"

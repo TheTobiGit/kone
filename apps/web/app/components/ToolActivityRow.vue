@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { useNow } from "@vueuse/core";
+import { computed, ref, watch } from "vue";
 
+import { useMotionPreference } from "~/composables/useMotionPreference";
+import { toolActivityLabel } from "~/lib/tool-labels";
 import type { ToolActivity } from "~/types/conversation";
 
 const props = defineProps<{
@@ -14,6 +17,55 @@ const isActive = computed(
     props.activity.status === "running" ||
     props.activity.status === "awaiting_permission",
 );
+
+const label = computed(() => toolActivityLabel(props.activity));
+
+const { isDocumentVisible } = useMotionPreference();
+const { now, pause, resume } = useNow({ interval: 1000, controls: true });
+
+// Only tick the live clock while a tool is actually active and the tab is
+// visible, so backgrounded/settled rows don't keep an interval running.
+watch(
+  () => isActive.value && isDocumentVisible.value,
+  (shouldTick) => (shouldTick ? resume() : pause()),
+  { immediate: true },
+);
+
+function formatDuration(ms: number, precise: boolean): string {
+  const totalSeconds = Math.max(0, ms) / 1000;
+  if (totalSeconds < 60) {
+    if (precise && totalSeconds < 10) {
+      return `${(Math.round(totalSeconds * 10) / 10).toFixed(1)}s`;
+    }
+    return `${Math.round(totalSeconds)}s`;
+  }
+  const totalWhole = Math.round(totalSeconds);
+  const minutes = Math.floor(totalWhole / 60);
+  const seconds = totalWhole % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+const elapsedMs = computed(() => {
+  const started = new Date(props.activity.startedAt).getTime();
+  if (Number.isNaN(started)) return null;
+
+  if (isActive.value) {
+    return now.value.getTime() - started;
+  }
+
+  if (props.activity.completedAt) {
+    const completed = new Date(props.activity.completedAt).getTime();
+    if (Number.isNaN(completed)) return null;
+    return completed - started;
+  }
+
+  return null;
+});
+
+const durationLabel = computed(() => {
+  if (elapsedMs.value === null) return null;
+  return formatDuration(elapsedMs.value, !isActive.value);
+});
 const hasDetails = computed(
   () =>
     Boolean(props.activity.command) ||
@@ -76,12 +128,12 @@ const statusLabel = computed(() => {
         <UIcon :name="iconName" class="size-3.5" aria-hidden="true" />
       </span>
       <span class="min-w-0 flex-1 truncate font-light text-zinc-600 dark:text-zinc-400">
-        {{ activity.name }}
+        {{ label }}
       </span>
       <span
         class="shrink-0 text-[10px] font-mono uppercase tracking-[0.14em] text-zinc-400 dark:text-zinc-600"
       >
-        {{ statusLabel }}
+        <template v-if="durationLabel">{{ durationLabel }} · </template>{{ statusLabel }}
       </span>
       <UIcon
         v-if="hasDetails"
@@ -101,6 +153,9 @@ const statusLabel = computed(() => {
         <div
           class="ml-2 mt-1.5 space-y-2 border-l border-zinc-200/80 py-1 pl-4 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-500"
         >
+          <p class="m-0 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-400 dark:text-zinc-600">
+            {{ activity.name }}
+          </p>
           <p v-if="activity.inputSummary" class="m-0 whitespace-pre-wrap">
             {{ activity.inputSummary }}
           </p>
