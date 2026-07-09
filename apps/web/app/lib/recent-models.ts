@@ -30,15 +30,21 @@ export function useRecentModels() {
   }
 
   const recents = computed(() =>
-    stored.value.filter(isValidRecent).slice(0, MAX_RECENT),
+    stored.value
+      .filter(isValidRecent)
+      .map((entry) => ({ ...entry, fastMode: false }))
+      .slice(0, MAX_RECENT),
   );
 
   function recordSelection(entry: RecentModelSelection) {
     if (entry.provider !== "droid" && !isValidRecent(entry)) return;
+    const normalizedEntry = { ...entry, fastMode: false };
 
     const next = [
-      entry,
-      ...stored.value.filter((item) => selectionKey(item) !== selectionKey(entry)),
+      normalizedEntry,
+      ...stored.value.filter(
+        (item) => selectionKey(item) !== selectionKey(normalizedEntry),
+      ),
     ].slice(0, MAX_RECENT);
 
     stored.value = next;

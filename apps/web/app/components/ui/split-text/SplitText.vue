@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useIntersectionObserver } from "@vueuse/core";
 import { motion } from "motion-v";
 import { cn } from "~/lib/utils";
+import { useMotionPreference } from "~/composables/useMotionPreference";
 
 const props = withDefaults(
   defineProps<{
@@ -10,8 +11,8 @@ const props = withDefaults(
     by?: "chars" | "words";
     delay?: number;
     duration?: number;
-    from?: Record<string, unknown>;
-    to?: Record<string, unknown>;
+    from?: Record<string, string | number | Array<string | number>>;
+    to?: Record<string, string | number | Array<string | number>>;
     threshold?: number;
     active?: boolean;
     startDelay?: number;
@@ -31,6 +32,8 @@ const props = withDefaults(
     as: "p",
   },
 );
+
+const { prefersReducedMotion } = useMotionPreference();
 
 const el = ref<HTMLElement>();
 const isInView = ref(false);
@@ -56,6 +59,12 @@ useIntersectionObserver(
 );
 
 onMounted(() => {
+  if (prefersReducedMotion.value) {
+    isReady.value = true;
+    isInView.value = true;
+    return;
+  }
+
   nextTick(() => {
     requestAnimationFrame(() => {
       isReady.value = true;
@@ -63,7 +72,9 @@ onMounted(() => {
   });
 });
 
-const shouldAnimate = computed(() => isReady.value && isInView.value);
+const shouldAnimate = computed(
+  () => !prefersReducedMotion.value && isReady.value && isInView.value,
+);
 
 const words = computed(() => {
   if (props.by === "words") {
@@ -87,32 +98,43 @@ function getDelay(globalIndex: number): number {
   <component
     :is="as"
     ref="el"
-    :class="cn('flex flex-wrap whitespace-pre-wrap overflow-hidden', !isReady && 'opacity-0', props.class)"
+    :class="
+      cn(
+        'flex flex-wrap whitespace-pre-wrap overflow-hidden',
+        !isReady && !prefersReducedMotion && 'opacity-0',
+        props.class,
+      )
+    "
   >
-    <span v-for="(word, wi) in words" :key="wi" class="inline-flex">
-      <component
-        :is="motion.span"
-        v-for="(char, ci) in word.characters"
-        :key="`${wi}-${ci}`"
-        class="inline-block"
-        :initial="from"
-        :animate="shouldAnimate ? to : from"
-        :transition="{
-          duration,
-          delay: getDelay(
-            words
-              .slice(0, wi)
-              .reduce((sum, w) => sum + w.characters.length, 0) + ci,
-          ),
-          type: 'spring',
-          damping: 25,
-          stiffness: 300,
-        }"
-        style="will-change: transform, opacity"
-      >
-        {{ char }}
-      </component>
-      <span v-if="word.needsSpace" class="whitespace-pre">&nbsp;</span>
-    </span>
+    <template v-if="prefersReducedMotion">
+      {{ text }}
+    </template>
+    <template v-else>
+      <span v-for="(word, wi) in words" :key="wi" class="inline-flex">
+        <component
+          :is="motion.span"
+          v-for="(char, ci) in word.characters"
+          :key="`${wi}-${ci}`"
+          class="inline-block"
+          :initial="from"
+          :animate="shouldAnimate ? to : from"
+          :transition="{
+            duration,
+            delay: getDelay(
+              words
+                .slice(0, wi)
+                .reduce((sum, w) => sum + w.characters.length, 0) + ci,
+            ),
+            type: 'spring',
+            damping: 25,
+            stiffness: 300,
+          }"
+          style="will-change: transform, opacity"
+        >
+          {{ char }}
+        </component>
+        <span v-if="word.needsSpace" class="whitespace-pre">&nbsp;</span>
+      </span>
+    </template>
   </component>
 </template>

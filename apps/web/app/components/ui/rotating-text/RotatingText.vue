@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed, ref, watch } from "vue";
 import { useIntervalFn } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { cn } from "~/lib/utils";
+import { useMotionPreference } from "~/composables/useMotionPreference";
 
 const props = withDefaults(
   defineProps<{
@@ -25,6 +27,8 @@ const props = withDefaults(
   },
 );
 
+const { prefersReducedMotion, shouldRunContinuousMotion } = useMotionPreference();
+
 const currentIndex = ref(0);
 
 function next() {
@@ -35,9 +39,25 @@ function next() {
   }
 }
 
-if (props.auto) {
-  useIntervalFn(next, () => props.rotationInterval);
-}
+const { pause, resume } = useIntervalFn(
+  next,
+  () => props.rotationInterval,
+  { immediate: false },
+);
+
+watch(
+  [() => props.auto, shouldRunContinuousMotion, prefersReducedMotion],
+  ([auto, canRun, reduced]) => {
+    if (!auto || reduced || !canRun) {
+      pause();
+      return;
+    }
+    resume();
+  },
+  { immediate: true },
+);
+
+const staticText = computed(() => props.texts[0] ?? "");
 
 const elements = computed(() => {
   const text = props.texts[currentIndex.value] ?? "";
@@ -74,40 +94,45 @@ function getStaggerDelay(index: number, total: number): number {
       )
     "
   >
-    <span class="sr-only">{{ texts[currentIndex] }}</span>
-    <AnimatePresence>
-      <component
-        :is="motion.span"
-        :key="currentIndex"
-        class="absolute left-0 top-0 inline-flex items-baseline whitespace-nowrap"
-        aria-hidden="true"
-      >
-        <span v-for="(word, wi) in elements" :key="wi" class="inline-flex">
-          <component
-            :is="motion.span"
-            v-for="(char, ci) in word.characters"
-            :key="ci"
-            class="inline-block"
-            :initial="{ y: '100%', opacity: 0 }"
-            :animate="{ y: 0, opacity: 1 }"
-            :exit="{ y: '-120%', opacity: 0 }"
-            :transition="{
-              type: 'spring',
-              damping: 25,
-              stiffness: 300,
-              delay: getStaggerDelay(
-                elements
-                  .slice(0, wi)
-                  .reduce((s, w) => s + w.characters.length, 0) + ci,
-                elements.reduce((s, w) => s + w.characters.length, 0),
-              ),
-            }"
-          >
-            {{ char }}
-          </component>
-          <span v-if="word.needsSpace" class="whitespace-pre">&nbsp;</span>
-        </span>
-      </component>
-    </AnimatePresence>
+    <span v-if="prefersReducedMotion" class="inline-block">
+      {{ staticText }}
+    </span>
+    <template v-else>
+      <span class="sr-only">{{ texts[currentIndex] }}</span>
+      <AnimatePresence>
+        <component
+          :is="motion.span"
+          :key="currentIndex"
+          class="absolute left-0 top-0 inline-flex items-baseline whitespace-nowrap"
+          aria-hidden="true"
+        >
+          <span v-for="(word, wi) in elements" :key="wi" class="inline-flex">
+            <component
+              :is="motion.span"
+              v-for="(char, ci) in word.characters"
+              :key="ci"
+              class="inline-block"
+              :initial="{ y: '100%', opacity: 0 }"
+              :animate="{ y: 0, opacity: 1 }"
+              :exit="{ y: '-120%', opacity: 0 }"
+              :transition="{
+                type: 'spring',
+                damping: 25,
+                stiffness: 300,
+                delay: getStaggerDelay(
+                  elements
+                    .slice(0, wi)
+                    .reduce((s, w) => s + w.characters.length, 0) + ci,
+                  elements.reduce((s, w) => s + w.characters.length, 0),
+                ),
+              }"
+            >
+              {{ char }}
+            </component>
+            <span v-if="word.needsSpace" class="whitespace-pre">&nbsp;</span>
+          </span>
+        </component>
+      </AnimatePresence>
+    </template>
   </span>
 </template>

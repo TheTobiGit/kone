@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { StyleValue } from "vue";
+import { computed, ref, type StyleValue } from "vue";
 import { motion } from "motion-v";
 import SplitText from "~/components/ui/split-text/SplitText.vue";
 import FormattedInline from "~/components/FormattedInline.vue";
@@ -12,12 +12,16 @@ import {
 const props = defineProps<{
   text: string;
   typographyStyle?: StyleValue;
+  streaming?: boolean;
 }>();
 
 const blocks = computed(() => parseResponseBlocks(props.text));
+const wordCount = computed(() => props.text.trim().split(/\s+/).filter(Boolean).length);
+const shouldSplitText = computed(() => !props.streaming && wordCount.value <= 150);
+const copiedCodeIndex = ref<number | null>(null);
 
-const BLOCK_STAGGER_MS = 120;
-const WORD_DELAY_MS = 50;
+const BLOCK_STAGGER_MS = 80;
+const WORD_DELAY_MS = 35;
 
 const bodyClass =
   "font-light leading-relaxed tracking-tight text-zinc-700 dark:text-zinc-300";
@@ -45,32 +49,54 @@ function fadeTransition(startDelay: number) {
     stiffness: 320,
   };
 }
+
+async function copyCode(text: string, index: number) {
+  if (!import.meta.client || !navigator.clipboard) return;
+  await navigator.clipboard.writeText(text);
+  copiedCodeIndex.value = index;
+  window.setTimeout(() => {
+    if (copiedCodeIndex.value === index) copiedCodeIndex.value = null;
+  }, 1400);
+}
 </script>
 
 <template>
-  <div class="response-content space-y-3">
+  <div
+    class="response-content space-y-3"
+    :aria-busy="streaming"
+  >
     <template v-for="(block, index) in blocks" :key="`${index}-${block.type}`">
       <SplitText
-        v-if="block.type === 'paragraph' && !hasInlineMarkdown(block.text)"
+        v-if="
+          block.type === 'paragraph' &&
+          !hasInlineMarkdown(block.text) &&
+          shouldSplitText
+        "
         :text="block.text"
         by="words"
         as="div"
         :active="true"
         :start-delay="blockStartDelay(index)"
         :delay="WORD_DELAY_MS"
-        :duration="0.38"
+        :duration="0.32"
         :from="{ opacity: 0, y: 6 }"
         :to="{ opacity: 1, y: 0 }"
-        :class="['m-0 text-left', bodyClass]"
+        :class="`m-0 text-left ${bodyClass}`"
         :style="typographyStyle"
       />
 
       <component
-        :is="motion.div"
+        :is="streaming ? 'div' : motion.div"
         v-else-if="block.type === 'paragraph'"
-        :initial="{ opacity: 0, y: 6 }"
-        :animate="{ opacity: 1, y: 0 }"
-        :transition="fadeTransition(blockStartDelay(index))"
+        v-bind="
+          streaming
+            ? {}
+            : {
+                initial: { opacity: 0, y: 6 },
+                animate: { opacity: 1, y: 0 },
+                transition: fadeTransition(blockStartDelay(index)),
+              }
+        "
         :class="['m-0 text-left', bodyClass]"
         :style="typographyStyle"
       >
@@ -84,34 +110,48 @@ function fadeTransition(startDelay: number) {
         :style="typographyStyle"
       >
         <SplitText
+          v-if="shouldSplitText"
           :text="block.text"
           by="words"
           as="span"
           :active="true"
           :start-delay="blockStartDelay(index)"
           :delay="WORD_DELAY_MS"
-          :duration="0.38"
+          :duration="0.32"
           :from="{ opacity: 0, y: 6 }"
           :to="{ opacity: 1, y: 0 }"
           class="inline"
           :class="headingClass(block.level)"
         />
+        <FormattedInline v-else :text="block.text" />
       </component>
 
       <component
-        :is="motion.div"
+        :is="streaming ? 'div' : motion.div"
         v-else-if="block.type === 'code'"
-        :initial="{ opacity: 0, y: 8 }"
-        :animate="{ opacity: 1, y: 0 }"
-        :transition="fadeTransition(blockStartDelay(index))"
-        class="overflow-hidden rounded-xl border border-zinc-200/80 bg-zinc-100/80 dark:border-zinc-800 dark:bg-zinc-900/70"
+        v-bind="
+          streaming
+            ? {}
+            : {
+                initial: { opacity: 0, y: 8 },
+                animate: { opacity: 1, y: 0 },
+                transition: fadeTransition(blockStartDelay(index)),
+              }
+        "
+        class="group/code -mx-2 overflow-hidden rounded-lg border border-zinc-200/70 bg-black/[0.025] dark:border-zinc-800 dark:bg-white/[0.035]"
         :style="typographyStyle"
       >
-        <div
-          v-if="block.language"
-          class="border-b border-zinc-200/80 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-500 dark:border-zinc-800 dark:text-zinc-500"
-        >
-          {{ block.language }}
+        <div class="flex min-h-8 items-center justify-between border-b border-zinc-200/70 px-3 dark:border-zinc-800">
+          <span class="text-[10px] font-mono uppercase tracking-[0.18em] text-zinc-500">
+            {{ block.language || "text" }}
+          </span>
+          <button
+            type="button"
+            class="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-400 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40"
+            @click="copyCode(block.text, index)"
+          >
+            {{ copiedCodeIndex === index ? "Copied" : "Copy" }}
+          </button>
         </div>
         <pre
           class="m-0 overflow-x-auto px-3 py-2.5 font-mono text-[0.88em] leading-relaxed text-zinc-800 dark:text-zinc-200"
@@ -127,31 +167,86 @@ function fadeTransition(startDelay: number) {
       >
         <li v-for="(item, itemIndex) in block.items" :key="itemIndex" class="pl-1">
           <SplitText
-            v-if="!hasInlineMarkdown(item)"
+            v-if="!hasInlineMarkdown(item) && shouldSplitText"
             :text="item"
             by="words"
             as="span"
             :active="true"
             :start-delay="blockStartDelay(index) + itemIndex * 80"
             :delay="WORD_DELAY_MS"
-            :duration="0.38"
+            :duration="0.32"
             :from="{ opacity: 0, y: 6 }"
             :to="{ opacity: 1, y: 0 }"
             class="inline"
             :class="bodyClass"
           />
           <component
-            :is="motion.span"
+            :is="streaming ? 'span' : motion.span"
             v-else
-            :initial="{ opacity: 0, y: 6 }"
-            :animate="{ opacity: 1, y: 0 }"
-            :transition="fadeTransition(blockStartDelay(index) + itemIndex * 80)"
+            v-bind="
+              streaming
+                ? {}
+                : {
+                    initial: { opacity: 0, y: 6 },
+                    animate: { opacity: 1, y: 0 },
+                    transition: fadeTransition(
+                      blockStartDelay(index) + itemIndex * 80,
+                    ),
+                  }
+            "
             class="inline"
           >
             <FormattedInline :text="item" />
           </component>
         </li>
       </component>
+
+      <blockquote
+        v-else-if="block.type === 'blockquote'"
+        class="m-0 border-l border-zinc-300 py-0.5 pl-4 text-left font-light italic leading-relaxed text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+        :style="typographyStyle"
+      >
+        <FormattedInline :text="block.text" />
+      </blockquote>
+
+      <hr
+        v-else-if="block.type === 'rule'"
+        class="my-6 border-0 border-t border-zinc-200/80 dark:border-zinc-800/80"
+      />
+
+      <div
+        v-else-if="block.type === 'table'"
+        class="-mx-2 overflow-x-auto border-y border-zinc-200/80 dark:border-zinc-800/80"
+      >
+        <table class="w-full min-w-max border-collapse text-left text-sm">
+          <thead>
+            <tr class="border-b border-zinc-200/80 dark:border-zinc-800/80">
+              <th
+                v-for="header in block.headers"
+                :key="header"
+                class="px-2 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300"
+              >
+                <FormattedInline :text="header" />
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(row, rowIndex) in block.rows"
+              :key="rowIndex"
+              class="border-b border-zinc-200/50 last:border-b-0 dark:border-zinc-800/60"
+            >
+              <td
+                v-for="(cell, cellIndex) in row"
+                :key="cellIndex"
+                class="px-2 py-2 font-light text-zinc-600 dark:text-zinc-400"
+              >
+                <FormattedInline :text="cell" />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
   </div>
 </template>

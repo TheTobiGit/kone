@@ -3,14 +3,28 @@ type InlinePart =
   | { kind: "text"; value: string }
   | { kind: "strong"; value: string }
   | { kind: "em"; value: string }
-  | { kind: "code"; value: string };
+  | { kind: "code"; value: string }
+  | { kind: "link"; value: string; href: string };
 
 const props = defineProps<{
   text: string;
 }>();
 
 const INLINE_PATTERN =
-  /(\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|\*([^*]+)\*)/;
+  /(\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|\*([^*]+)\*|\[([^\]]+)\]\(([^)]+)\))/;
+
+function safeHref(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("/") || trimmed.startsWith("#")) return trimmed;
+  try {
+    const url = new URL(trimmed);
+    return ["http:", "https:", "mailto:"].includes(url.protocol)
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function parseInlineParts(text: string): InlinePart[] {
   const parts: InlinePart[] = [];
@@ -31,6 +45,14 @@ function parseInlineParts(text: string): InlinePart[] {
     else if (match[3]) parts.push({ kind: "strong", value: match[3] });
     else if (match[4]) parts.push({ kind: "code", value: match[4] });
     else if (match[5]) parts.push({ kind: "em", value: match[5] });
+    else if (match[6] && match[7]) {
+      const href = safeHref(match[7]);
+      parts.push(
+        href
+          ? { kind: "link", value: match[6], href }
+          : { kind: "text", value: match[6] },
+      );
+    }
 
     remaining = remaining.slice(match.index + match[0].length);
   }
@@ -59,6 +81,15 @@ const parts = computed(() => parseInlineParts(props.text));
       >
         {{ part.value }}
       </code>
+      <a
+        v-else-if="part.kind === 'link'"
+        :href="part.href"
+        :target="part.href.startsWith('http') ? '_blank' : undefined"
+        :rel="part.href.startsWith('http') ? 'noopener noreferrer' : undefined"
+        class="text-sky-700 underline decoration-sky-500/30 underline-offset-2 transition-colors hover:text-sky-600 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:text-sky-300 dark:hover:text-sky-200"
+      >
+        {{ part.value }}
+      </a>
       <span v-else>{{ part.value }}</span>
     </template>
   </span>

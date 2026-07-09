@@ -13,7 +13,6 @@ import {
   getDefaultEffort,
   getEffortLabel,
   getEffortLevels,
-  modelSupportsFastMode,
   modelSupportsThinkingToggle,
   normalizeEffort,
 } from "~/lib/model-capabilities";
@@ -91,9 +90,7 @@ const controlPositionClass = computed(() =>
     ? "absolute right-0 top-1/2 -translate-y-1/2"
     : "absolute left-0 top-1/2 -translate-y-1/2",
 );
-const supportsFastForSelection = computed(() =>
-  modelSupportsFastMode(provider.value, model.value),
-);
+const supportsFastForSelection = computed(() => false);
 const effortLevels = computed(() => getEffortLevels(provider.value, model.value));
 const hasEffortControls = computed(() => effortLevels.value.length > 0);
 const supportsThinkingForSelection = computed(() =>
@@ -178,11 +175,10 @@ function applySelection(
   nextModel: string,
   options?: { fast?: boolean },
 ) {
-  const useFast = options?.fast ?? false;
   provider.value = nextProvider;
   model.value = nextModel;
   syncTraitsForSelection(nextProvider, nextModel);
-  fastMode.value = useFast && modelSupportsFastMode(nextProvider, nextModel);
+  fastMode.value = false;
   rememberSelection(nextProvider, nextModel, fastMode.value);
   closePanel();
 }
@@ -230,7 +226,7 @@ function isRecentActive(entry: RecentModelSelection) {
 }
 
 function supportsFastForBrowseModel(modelId: string) {
-  return modelSupportsFastMode(browseProvider.value, modelId);
+  return false;
 }
 
 watch(provider, (nextProvider) => {
@@ -239,9 +235,7 @@ watch(provider, (nextProvider) => {
     model.value = DEFAULT_MODEL_BY_PROVIDER[nextProvider];
   }
   effort.value = normalizeEffort(nextProvider, model.value, effort.value);
-  if (!modelSupportsFastMode(nextProvider, model.value)) {
-    fastMode.value = false;
-  }
+  fastMode.value = false;
   if (!modelSupportsThinkingToggle(nextProvider, model.value)) {
     thinking.value = true;
   }
@@ -249,9 +243,7 @@ watch(provider, (nextProvider) => {
 
 watch(model, (nextModel) => {
   effort.value = normalizeEffort(provider.value, nextModel, effort.value);
-  if (!modelSupportsFastMode(provider.value, nextModel)) {
-    fastMode.value = false;
-  }
+  fastMode.value = false;
   if (!modelSupportsThinkingToggle(provider.value, nextModel)) {
     thinking.value = true;
   }
@@ -288,7 +280,7 @@ useEventListener(
   { capture: true },
 );
 
-onClickOutside([rootRef, secondaryRowRef], closePanel);
+onClickOutside(rootRef, closePanel, { ignore: [secondaryRowRef] });
 
 onMounted(() => {
   window.addEventListener("keydown", onKeyDown);

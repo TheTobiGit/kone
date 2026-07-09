@@ -5,9 +5,10 @@ import {
   type DroidModelDescriptor,
   parseBridgeServerMessage,
 } from "@kone/bridge-protocol";
-import { onMounted, onUnmounted, ref, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 
 import { useDroidModelStore } from "~/lib/droid-model-store";
+import type { PermissionRequest } from "~/types/conversation";
 
 function getBridgeWsUrl(): string {
   if (import.meta.client && window.koneDesktop?.bridgeWsUrl) {
@@ -18,20 +19,30 @@ function getBridgeWsUrl(): string {
   return resolveBridgeWsUrl(config.public.bridgeWsUrl);
 }
 
-export type PendingPermission = {
-  requestId: string;
-  detail: string;
-};
-
 export function useDroidBridge() {
   const socket = shallowRef<WebSocket | null>(null);
   const isConnected = ref(false);
   const isBridgeReady = ref(false);
+  const isReconnecting = ref(false);
   const bridgeError = ref<string | null>(null);
-  const pendingPermission = ref<PendingPermission | null>(null);
+  const permissionRequests = ref<PermissionRequest[]>([]);
   const { setDroidModels } = useDroidModelStore();
+  const pendingPermission = computed(() => permissionRequests.value[0] ?? null);
+  const connectionStatus = computed<
+    "connecting" | "ready" | "reconnecting" | "offline"
+  >(() => {
+    if (isConnected.value) return "ready";
+    if (isReconnecting.value) return "reconnecting";
+    return socket.value ? "connecting" : "offline";
+  });
 
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  const permissionExpiryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  let reconnectFailures = 0;
+  let disposed = false;
   const handlers = new Set<(message: BridgeServerMessage) => void>();
   const modelReadyHandlers = new Set<
     (payload: {
@@ -42,12 +53,22 @@ export function useDroidBridge() {
   >();
 
   const connect = () => {
-    if (socket.value && socket.value.readyState === WebSocket.OPEN) return;
+    if (
+      disposed ||
+      (socket.value &&
+        (socket.value.readyState === WebSocket.OPEN ||
+          socket.value.readyState === WebSocket.CONNECTING))
+    ) {
+      return;
+    }
 
     const ws = new WebSocket(getBridgeWsUrl());
+    socket.value = ws;
 
     ws.addEventListener("open", () => {
       isConnected.value = true;
+      isReconnecting.value = false;
+      reconnectFailures = 0;
       bridgeError.value = null;
     });
 
@@ -75,10 +96,57 @@ export function useDroidBridge() {
       }
 
       if (message.type === "permission.request") {
-        pendingPermission.value = {
+        const payload = message as typeof message & Record<string, unknown>;
+        const request: PermissionRequest = {
           requestId: message.requestId,
           detail: message.detail,
+          turnId:
+            typeof payload.turnId === "string" ? payload.turnId : undefined,
+          toolCallId:
+            typeof payload.toolCallId === "string"
+              ? payload.toolCallId
+              : undefined,
+          requestKind:
+            payload.requestKind === "command" ||
+            payload.requestKind === "file-read" ||
+            payload.requestKind === "file-change" ||
+            payload.requestKind === "network"
+              ? payload.requestKind
+              : "unknown",
+          target:
+            typeof payload.target === "string"
+              ? payload.target
+              : typeof payload.command === "string"
+                ? payload.command
+                : Array.isArray(payload.paths) &&
+                    typeof payload.paths[0] === "string"
+                  ? payload.paths[0]
+                  : undefined,
+          expiresAt:
+            typeof payload.expiresAt === "string"
+              ? payload.expiresAt
+              : undefined,
         };
+        permissionRequests.value = [
+          ...permissionRequests.value.filter(
+            (entry) => entry.requestId !== request.requestId,
+          ),
+          request,
+        ];
+        const expiresAt = request.expiresAt
+          ? new Date(request.expiresAt).getTime()
+          : Date.now() + 120_000;
+        const existingTimer = permissionExpiryTimers.get(request.requestId);
+        if (existingTimer) clearTimeout(existingTimer);
+        permissionExpiryTimers.set(
+          request.requestId,
+          setTimeout(() => {
+            permissionRequests.value = permissionRequests.value.filter(
+              (entry) => entry.requestId !== request.requestId,
+            );
+            permissionExpiryTimers.delete(request.requestId);
+          }, Math.max(0, expiresAt - Date.now() + 250)),
+        );
       }
 
       for (const handler of handlers) {
@@ -90,16 +158,20 @@ export function useDroidBridge() {
       isConnected.value = false;
       isBridgeReady.value = false;
       socket.value = null;
+      if (disposed) return;
 
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connect, 1500);
+      reconnectFailures++;
+      isReconnecting.value = true;
+      const baseDelay = Math.min(30_000, 750 * 2 ** (reconnectFailures - 1));
+      const jitter = Math.round(baseDelay * (Math.random() * 0.2 - 0.1));
+      reconnectTimer = setTimeout(connect, Math.max(500, baseDelay + jitter));
     });
 
     ws.addEventListener("error", () => {
       bridgeError.value = "Could not connect to the Droid bridge.";
     });
 
-    socket.value = ws;
   };
 
   const send = (message: BridgeClientMessage) => {
@@ -117,23 +189,38 @@ export function useDroidBridge() {
     prompt: string;
     modelId: string;
     reasoningEffort: string;
+    thinking?: boolean;
   }) =>
-    send({
-      type: "prompt.submit",
-      ...input,
-    });
+    send(
+      {
+        type: "prompt.submit",
+        ...input,
+      } as BridgeClientMessage,
+    );
 
-  const respondToPermission = (approved: boolean) => {
-    const request = pendingPermission.value;
+  const respondToPermission = (approved: boolean, requestId?: string) => {
+    const request =
+      permissionRequests.value.find((entry) => entry.requestId === requestId) ??
+      pendingPermission.value;
     if (!request) return;
 
-    send({
+    const sent = send({
       type: "permission.respond",
       requestId: request.requestId,
       approved,
     });
-    pendingPermission.value = null;
+    if (sent) {
+      const expiryTimer = permissionExpiryTimers.get(request.requestId);
+      if (expiryTimer) clearTimeout(expiryTimer);
+      permissionExpiryTimers.delete(request.requestId);
+      permissionRequests.value = permissionRequests.value.filter(
+        (entry) => entry.requestId !== request.requestId,
+      );
+    }
   };
+
+  const cancelTurn = (turnId: string) =>
+    send({ type: "turn.cancel", turnId } as BridgeClientMessage);
 
   const onMessage = (handler: (message: BridgeServerMessage) => void) => {
     handlers.add(handler);
@@ -156,17 +243,25 @@ export function useDroidBridge() {
   onMounted(connect);
 
   onUnmounted(() => {
+    disposed = true;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     socket.value?.close();
     handlers.clear();
+    modelReadyHandlers.clear();
+    for (const timer of permissionExpiryTimers.values()) clearTimeout(timer);
+    permissionExpiryTimers.clear();
   });
 
   return {
     isConnected,
     isBridgeReady,
+    isReconnecting,
+    connectionStatus,
     bridgeError,
     pendingPermission,
+    permissionRequests,
     submitPrompt,
+    cancelTurn,
     respondToPermission,
     onMessage,
     onModelsReady,

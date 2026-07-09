@@ -1,10 +1,21 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { useDebounceFn } from "@vueuse/core";
 import RotatingText from "~/components/ui/rotating-text/RotatingText.vue";
 import ShinyText from "~/components/ui/shiny-text/ShinyText.vue";
 import ResponseContent from "~/components/ResponseContent.vue";
+import ThinkingBlock from "~/components/ThinkingBlock.vue";
+import WorkTimeline from "~/components/WorkTimeline.vue";
+import PermissionRequestInline from "~/components/PermissionRequestInline.vue";
+import ArtifactPreview from "~/components/ArtifactPreview.vue";
+import ArtifactPreviewLane from "~/components/ArtifactPreviewLane.vue";
+import ThreadHistoryRail from "~/components/ThreadHistoryRail.vue";
 import ProviderModelPicker from "~/components/ProviderModelPicker.vue";
 import { useDroidBridge } from "~/composables/useDroidBridge";
+import { useConversationTurns } from "~/composables/useConversationTurns";
+import { useThreadStore } from "~/composables/useThreadStore";
+import { useMotionPreference } from "~/composables/useMotionPreference";
+import type { ArtifactReference, ConversationTurn } from "~/types/conversation";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER,
@@ -13,18 +24,27 @@ import {
   getDefaultEffort,
 } from "~/lib/model-capabilities";
 
-type TurnStatus = "pending" | "streaming" | "completed" | "error";
-
-type ConversationTurn = {
-  id: string;
-  prompt: string;
-  responseText: string;
-  thinkingText: string;
-  status: TurnStatus;
-  errorMessage?: string;
-};
-
-const turns = ref<ConversationTurn[]>([]);
+const {
+  turns,
+  hasThread,
+  activeTurn,
+  createTurn,
+  replaceTurns,
+  updateThinkingExpanded,
+  markToolAwaitingPermission,
+  applyMessage,
+} = useConversationTurns();
+const {
+  threads,
+  activeThread,
+  activeThreadId,
+  createThread,
+  updateThread,
+  renameThread,
+  deleteThread,
+  activateThread,
+} = useThreadStore();
+const { scrollBehavior } = useMotionPreference();
 const draftPrompt = ref("");
 const isLandingFocused = ref(false);
 const selectedProvider = ref(DEFAULT_PROVIDER);
@@ -37,11 +57,22 @@ const landingTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const followUpTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const followUpPickerOpen = ref(false);
 const transcriptEndRef = ref<HTMLDivElement | null>(null);
+const notebookPageRef = ref<HTMLElement | null>(null);
+const followsLiveOutput = ref(true);
+const historyOpen = ref(false);
+const selectedArtifact = ref<ArtifactReference | null>(null);
+const copiedTurnId = ref<string | null>(null);
+const hasHydratedThread = ref(false);
+let skipHydrationForThreadId: string | null = null;
+let initialHydration = true;
 
 const {
+  isConnected,
+  connectionStatus,
   bridgeError,
-  pendingPermission,
+  permissionRequests,
   submitPrompt: submitPromptToBridge,
+  cancelTurn,
   respondToPermission,
   onMessage,
   onModelsReady,
@@ -54,8 +85,13 @@ const LINE_HEIGHT_RATIO = 1.35;
 const landingFontSize = ref(BASE_FONT_SIZE);
 const followUpFontSize = ref(FOLLOW_UP_FONT_SIZE);
 
-const hasThread = computed(() => turns.value.length > 0);
 const isLanding = computed(() => !hasThread.value);
+const canSubmit = computed(
+  () =>
+    isConnected.value &&
+    Boolean(selectedModel.value) &&
+    !isSubmitting.value,
+);
 
 const landingTypographyStyle = computed(() => ({
   fontSize: `${landingFontSize.value}px`,
@@ -176,34 +212,58 @@ const isTurnDimmed = (turn: ConversationTurn) =>
 
 const isTurnAwaitingResponse = (turn: ConversationTurn) =>
   turn.status === "pending" ||
-  (turn.status === "streaming" && !turn.thinkingText);
+  (turn.status === "streaming" &&
+    !turn.thinkingText &&
+    !turn.responseText &&
+    turn.tools.length === 0);
 
-const shouldAnimateResponse = (turn: ConversationTurn) =>
-  turn.status === "completed" && Boolean(turn.responseText);
-
-const findTurn = (turnId: string) => turns.value.find((turn) => turn.id === turnId);
-
-const scrollTranscriptToEnd = () => {
+const scrollTranscriptToEnd = (force = false) => {
+  if (!force && !followsLiveOutput.value) return;
   nextTick(() => {
-    transcriptEndRef.value?.scrollIntoView({ behavior: "smooth", block: "end" });
+    transcriptEndRef.value?.scrollIntoView({
+      behavior: force ? scrollBehavior.value : "auto",
+      block: "end",
+    });
   });
+};
+
+const handleTranscriptScroll = () => {
+  const page = notebookPageRef.value;
+  if (!page) return;
+  const distanceFromEnd = page.scrollHeight - page.scrollTop - page.clientHeight;
+  followsLiveOutput.value = distanceFromEnd < 96;
+};
+
+const resumeLiveOutput = () => {
+  followsLiveOutput.value = true;
+  scrollTranscriptToEnd(true);
 };
 
 const submitPrompt = () => {
   const trimmedPrompt = draftPrompt.value.trim();
-  if (!trimmedPrompt || isSubmitting.value) return;
+  if (!trimmedPrompt || !canSubmit.value) return;
 
-  const turn: ConversationTurn = {
-    id: crypto.randomUUID(),
+  if (!activeThreadId.value) {
+    const thread = createThread({
+      provider: selectedProvider.value,
+      modelId: selectedModel.value,
+      reasoningEffort: selectedEffort.value,
+      fastMode: selectedFastMode.value,
+      thinking: selectedThinking.value,
+      prompt: trimmedPrompt,
+    });
+    skipHydrationForThreadId = thread.id;
+    hasHydratedThread.value = true;
+  }
+
+  const turn = createTurn({
     prompt: trimmedPrompt,
-    responseText: "",
-    thinkingText: "",
-    status: "pending",
-  };
-
-  turns.value.push(turn);
+    modelId: selectedModel.value,
+    reasoningEffort: selectedEffort.value,
+  });
   draftPrompt.value = "";
   isSubmitting.value = true;
+  followsLiveOutput.value = true;
 
   nextTick(() => {
     if (hasThread.value) {
@@ -212,7 +272,7 @@ const submitPrompt = () => {
     } else {
       adjustTextareaHeight(landingTextareaRef.value, "landing");
     }
-    scrollTranscriptToEnd();
+    scrollTranscriptToEnd(true);
   });
 
   const sent = submitPromptToBridge({
@@ -220,6 +280,7 @@ const submitPrompt = () => {
     prompt: trimmedPrompt,
     modelId: selectedModel.value,
     reasoningEffort: selectedEffort.value,
+    thinking: selectedThinking.value,
   });
 
   if (!sent) {
@@ -229,12 +290,112 @@ const submitPrompt = () => {
   }
 };
 
+const stopActiveTurn = () => {
+  if (!activeTurn.value) return;
+  cancelTurn(activeTurn.value.id);
+};
+
+const handlePermissionDecision = (approved: boolean) => {
+  const request = permissionRequests.value[0];
+  if (!request) return;
+  markToolAwaitingPermission(request.turnId, request.toolCallId, false);
+  respondToPermission(approved, request.requestId);
+};
+
+const copyTurnResponse = async (turn: ConversationTurn) => {
+  if (!turn.responseText || !navigator.clipboard) return;
+  await navigator.clipboard.writeText(turn.responseText);
+  copiedTurnId.value = turn.id;
+  window.setTimeout(() => {
+    if (copiedTurnId.value === turn.id) copiedTurnId.value = null;
+  }, 1400);
+};
+
+const prepareTurnRetry = (turn: ConversationTurn) => {
+  if (isSubmitting.value) return;
+  draftPrompt.value = turn.prompt;
+  nextTick(() => {
+    adjustTextareaHeight(followUpTextareaRef.value, "follow-up");
+    followUpTextareaRef.value?.focus();
+  });
+};
+
+const hydrateThread = () => {
+  const thread = activeThread.value;
+  hasHydratedThread.value = false;
+  if (!thread) {
+    replaceTurns([]);
+    draftPrompt.value = "";
+    isSubmitting.value = false;
+    nextTick(() => {
+      hasHydratedThread.value = true;
+    });
+    initialHydration = false;
+    return;
+  }
+
+  const restoredTurns = structuredClone(thread.turns).map((turn) =>
+    initialHydration &&
+    (turn.status === "queued" ||
+      turn.status === "pending" ||
+      turn.status === "streaming")
+      ? {
+          ...turn,
+          status: "error" as const,
+          errorMessage:
+            "This turn was interrupted when the previous session ended.",
+          completedAt: new Date().toISOString(),
+        }
+      : turn,
+  );
+  replaceTurns(restoredTurns);
+  draftPrompt.value = thread.draft;
+  selectedProvider.value = thread.provider;
+  selectedModel.value = thread.modelId;
+  selectedEffort.value = thread.reasoningEffort;
+  selectedFastMode.value = thread.fastMode;
+  selectedThinking.value = thread.thinking;
+  isSubmitting.value = Boolean(activeTurn.value);
+  initialHydration = false;
+  nextTick(() => {
+    hasHydratedThread.value = true;
+    scrollTranscriptToEnd(true);
+  });
+};
+
+const createBlankThread = () => {
+  const thread = createThread({
+    provider: selectedProvider.value,
+    modelId: selectedModel.value,
+    reasoningEffort: selectedEffort.value,
+    fastMode: selectedFastMode.value,
+    thinking: selectedThinking.value,
+  });
+  skipHydrationForThreadId = thread.id;
+  replaceTurns([]);
+  draftPrompt.value = "";
+  hasHydratedThread.value = true;
+  historyOpen.value = false;
+};
+
+const selectThread = (threadId: string) => {
+  activateThread(threadId);
+  historyOpen.value = false;
+};
+
+const removeThread = (threadId: string) => {
+  const thread = threads.value.find((entry) => entry.id === threadId);
+  if (!thread) return;
+  if (!window.confirm(`Delete “${thread.title}”?`)) return;
+  deleteThread(threadId);
+};
+
 const handleLandingKeyDown = (event: KeyboardEvent) => {
   if (!isLanding.value) return;
 
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    if (draftPrompt.value.trim()) {
+    if (draftPrompt.value.trim() && canSubmit.value) {
       landingTextareaRef.value?.blur();
       submitPrompt();
     }
@@ -276,61 +437,94 @@ const handleFollowUpKeyDown = (event: KeyboardEvent) => {
 
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    if (draftPrompt.value.trim()) {
+    if (draftPrompt.value.trim() && canSubmit.value) {
       followUpTextareaRef.value?.blur();
       submitPrompt();
     }
   }
 };
 
+let unsubscribeMessages: (() => void) | undefined;
+let unsubscribeModels: (() => void) | undefined;
+const pendingStreamText = new Map<
+  string,
+  { response: string; thinking: string }
+>();
+let streamFrame: number | null = null;
+
+const flushStreamText = () => {
+  if (streamFrame !== null) {
+    cancelAnimationFrame(streamFrame);
+    streamFrame = null;
+  }
+  for (const [turnId, pending] of pendingStreamText) {
+    if (pending.thinking) {
+      applyMessage({
+        type: "turn.thinking",
+        turnId,
+        text: pending.thinking,
+      } as Parameters<typeof applyMessage>[0]);
+    }
+    if (pending.response) {
+      applyMessage({
+        type: "turn.delta",
+        turnId,
+        text: pending.response,
+      } as Parameters<typeof applyMessage>[0]);
+    }
+  }
+  pendingStreamText.clear();
+  scrollTranscriptToEnd();
+};
+
+const queueStreamText = (
+  message: Extract<
+    Parameters<typeof applyMessage>[0],
+    { type: "turn.delta" | "turn.thinking" }
+  >,
+) => {
+  const pending = pendingStreamText.get(message.turnId) ?? {
+    response: "",
+    thinking: "",
+  };
+  if (message.type === "turn.delta") pending.response += message.text;
+  else pending.thinking += message.text;
+  pendingStreamText.set(message.turnId, pending);
+  if (streamFrame === null) {
+    streamFrame = requestAnimationFrame(flushStreamText);
+  }
+};
+
 onMounted(() => {
   window.addEventListener("keydown", handleGlobalKeyDown);
+  hydrateThread();
   nextTick(() => {
     adjustTextareaHeight(landingTextareaRef.value, "landing");
   });
 
-  onModelsReady(({ defaultModelId, defaultReasoningEffort }) => {
-    if (defaultModelId) {
+  unsubscribeModels = onModelsReady(({ defaultModelId, defaultReasoningEffort }) => {
+    if (defaultModelId && !selectedModel.value) {
       selectedModel.value = defaultModelId;
       selectedEffort.value = defaultReasoningEffort;
     }
   });
 
-  onMessage((message) => {
-    if (message.type === "turn.delta") {
-      const turn = findTurn(message.turnId);
-      if (!turn) return;
-      turn.status = "streaming";
-      turn.responseText += message.text;
-      scrollTranscriptToEnd();
+  unsubscribeMessages = onMessage((message) => {
+    if (message.type === "turn.delta" || message.type === "turn.thinking") {
+      queueStreamText(message);
       return;
     }
-
-    if (message.type === "turn.thinking") {
-      const turn = findTurn(message.turnId);
-      if (!turn) return;
-      turn.thinkingText += message.text;
-      scrollTranscriptToEnd();
-      return;
-    }
-
-    if (message.type === "turn.completed") {
-      const turn = findTurn(message.turnId);
-      if (!turn) return;
-      turn.status = "completed";
+    flushStreamText();
+    const turn = applyMessage(message);
+    if (!turn) return;
+    if (
+      turn.status === "completed" ||
+      turn.status === "error" ||
+      turn.status === "cancelled"
+    ) {
       isSubmitting.value = false;
-      scrollTranscriptToEnd();
-      return;
     }
-
-    if (message.type === "turn.error") {
-      const turn = findTurn(message.turnId);
-      if (!turn) return;
-      turn.status = "error";
-      turn.errorMessage = message.message;
-      isSubmitting.value = false;
-      scrollTranscriptToEnd();
-    }
+    scrollTranscriptToEnd();
   });
 });
 
@@ -342,48 +536,115 @@ watch(hasThread, (inThread) => {
   });
 });
 
+watch(activeThreadId, () => {
+  if (!import.meta.client) return;
+  if (
+    activeThreadId.value &&
+    activeThreadId.value === skipHydrationForThreadId
+  ) {
+    skipHydrationForThreadId = null;
+    return;
+  }
+  hydrateThread();
+});
+
+watch(
+  permissionRequests,
+  (current, previous) => {
+    for (const request of current) {
+      markToolAwaitingPermission(request.turnId, request.toolCallId, true);
+    }
+    for (const request of previous ?? []) {
+      if (
+        !current.some((entry) => entry.requestId === request.requestId)
+      ) {
+        markToolAwaitingPermission(request.turnId, request.toolCallId, false);
+      }
+    }
+  },
+  { deep: true },
+);
+
+const persistActiveThread = useDebounceFn(() => {
+  if (!hasHydratedThread.value || !activeThreadId.value) return;
+  updateThread(activeThreadId.value, {
+    turns: structuredClone(turns.value),
+    draft: draftPrompt.value,
+    provider: selectedProvider.value,
+    modelId: selectedModel.value,
+    reasoningEffort: selectedEffort.value,
+    fastMode: selectedFastMode.value,
+    thinking: selectedThinking.value,
+  });
+}, 180);
+
+watch(
+  [
+    turns,
+    draftPrompt,
+    selectedProvider,
+    selectedModel,
+    selectedEffort,
+    selectedFastMode,
+    selectedThinking,
+  ],
+  persistActiveThread,
+  { deep: true },
+);
+
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeyDown);
+  unsubscribeMessages?.();
+  unsubscribeModels?.();
+  if (streamFrame !== null) cancelAnimationFrame(streamFrame);
 });
 </script>
 
 <template>
   <div
-    class="notebook-page h-screen w-screen overflow-x-hidden overflow-y-auto bg-[#fafafa] px-10 pt-28 pb-10 transition-colors duration-700 dark:bg-[#070708] md:px-14 md:pt-36 md:pb-12"
+    ref="notebookPageRef"
+    class="notebook-page kone-scroll h-dvh min-h-dvh w-full overflow-x-hidden overflow-y-auto bg-transparent px-5 pt-28 pb-10 transition-colors duration-700 sm:px-8 md:px-14 md:pt-36 md:pb-12"
     :class="[hasThread ? 'pt-12 md:pt-14' : '']"
+    @scroll.passive="handleTranscriptScroll"
   >
+    <ThreadHistoryRail
+      :open="historyOpen"
+      :threads="threads"
+      :active-thread-id="activeThreadId"
+      @toggle="historyOpen = !historyOpen"
+      @close="historyOpen = false"
+      @create="createBlankThread"
+      @activate="selectThread"
+      @remove="removeThread"
+      @rename="renameThread"
+    />
+
     <div class="mx-auto flex w-full max-w-2xl flex-col items-start">
       <p
         v-if="bridgeError"
-        class="mb-6 w-full text-sm font-light text-amber-700 dark:text-amber-300"
+        class="mb-4 w-full text-sm font-light text-amber-700 dark:text-amber-300"
+        role="status"
       >
         {{ bridgeError }}
       </p>
 
-      <div
-        v-if="pendingPermission"
-        class="mb-6 w-full rounded-xl border border-zinc-200 bg-white/80 p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900/80"
+      <p
+        v-else-if="connectionStatus !== 'ready'"
+        class="mb-4 w-full text-xs font-light text-zinc-400"
+        role="status"
       >
-        <p class="m-0 font-light text-zinc-700 dark:text-zinc-300">
-          {{ pendingPermission.detail }}
-        </p>
-        <div class="mt-3 flex gap-2">
-          <button
-            type="button"
-            class="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
-            @click="respondToPermission(true)"
-          >
-            Allow
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
-            @click="respondToPermission(false)"
-          >
-            Deny
-          </button>
-        </div>
-      </div>
+        {{ connectionStatus === "reconnecting" ? "Reconnecting to Droid…" : "Connecting to Droid…" }}
+      </p>
+
+      <PermissionRequestInline
+        v-if="permissionRequests[0]"
+        class="mb-6"
+        :request="permissionRequests[0]"
+        :position="1"
+        :total="permissionRequests.length"
+        @allow="handlePermissionDecision(true)"
+        @deny="handlePermissionDecision(false)"
+      />
 
       <template v-for="(turn, turnIndex) in turns" :key="turn.id">
         <div
@@ -410,29 +671,79 @@ onUnmounted(() => {
             </p>
           </div>
 
-          <div
+          <ThinkingBlock
             v-if="turn.thinkingText"
-            class="mt-3 w-full text-xs font-light leading-relaxed text-zinc-500 dark:text-zinc-500"
-          >
-            {{ turn.thinkingText }}
-          </div>
+            :text="turn.thinkingText"
+            :active="turn.status === 'pending' || turn.status === 'streaming'"
+            :expanded="turn.thinkingExpanded"
+            @update:expanded="updateThinkingExpanded(turn.id, $event)"
+          />
+
+          <WorkTimeline :tools="turn.tools" />
 
           <div
-            v-if="shouldAnimateResponse(turn)"
-            class="response-scroll mt-3 w-full"
+            v-if="turn.responseText"
+            class="response-scroll mt-4 w-full"
+            aria-live="polite"
           >
             <ResponseContent
               :text="turn.responseText"
               :typography-style="typographyForTurn(turnIndex)"
+              :streaming="turn.status === 'streaming' || turn.status === 'pending'"
             />
           </div>
 
           <p
-            v-if="turn.status === 'error' && turn.errorMessage"
-            class="mt-3 text-sm font-light text-red-600 dark:text-red-400"
+            v-else-if="turn.status === 'completed'"
+            class="mt-4 text-sm font-light text-zinc-400"
+          >
+            The turn completed without a text response.
+          </p>
+
+          <div v-if="turn.artifacts.length" class="mt-5 w-full">
+            <ArtifactPreview
+              v-for="artifact in turn.artifacts"
+              :key="artifact.id"
+              :artifact="artifact"
+              @inspect="selectedArtifact = $event"
+            />
+          </div>
+
+          <p
+            v-if="
+              (turn.status === 'error' || turn.status === 'cancelled') &&
+              turn.errorMessage
+            "
+            class="mt-4 border-l border-rose-500/30 pl-3 text-sm font-light text-rose-600 dark:text-rose-400"
+            role="alert"
           >
             {{ turn.errorMessage }}
           </p>
+
+          <div
+            v-if="
+              turn.status === 'completed' ||
+              turn.status === 'error' ||
+              turn.status === 'cancelled'
+            "
+            class="mt-3 flex items-center gap-3 text-zinc-400 opacity-0 transition-opacity focus-within:opacity-100 hover:opacity-100"
+          >
+            <button
+              v-if="turn.responseText"
+              type="button"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] transition-colors hover:text-zinc-700 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+              @click="copyTurnResponse(turn)"
+            >
+              {{ copiedTurnId === turn.id ? "Copied" : "Copy" }}
+            </button>
+            <button
+              type="button"
+              class="text-[10px] font-mono uppercase tracking-[0.12em] transition-colors hover:text-zinc-700 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:hover:text-zinc-200"
+              @click="prepareTurnRetry(turn)"
+            >
+              Retry
+            </button>
+          </div>
         </div>
       </template>
 
@@ -488,9 +799,9 @@ onUnmounted(() => {
           />
           <span
             class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-700 ease-out dark:text-zinc-600"
-            :class="[draftPrompt ? 'opacity-100' : 'opacity-0']"
+            :class="[draftPrompt || !isConnected ? 'opacity-100' : 'opacity-0']"
           >
-            enter ↵
+            {{ isConnected ? "enter ↵" : "connecting" }}
           </span>
         </div>
       </div>
@@ -524,30 +835,45 @@ onUnmounted(() => {
             v-model:fast-mode="selectedFastMode"
             v-model:thinking="selectedThinking"
           />
-          <span
-            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-300 ease-out dark:text-zinc-600"
-            :class="[draftPrompt ? 'opacity-100' : 'opacity-0 group-hover:opacity-100']"
+          <button
+            v-if="activeTurn"
+            type="button"
+            class="absolute right-0 top-0 inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.2em] text-zinc-400 transition-colors hover:text-rose-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-500/40"
+            @click="stopActiveTurn"
           >
-            enter ↵
+            <UIcon name="i-lucide-square" class="size-2.5" aria-hidden="true" />
+            stop
+          </button>
+          <span
+            v-else
+            class="pointer-events-none absolute right-0 top-0 text-[10px] font-mono uppercase tracking-[0.28em] text-zinc-400 transition-all duration-300 ease-out dark:text-zinc-600"
+            :class="[draftPrompt || !isConnected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100']"
+          >
+            {{ isConnected ? "enter ↵" : "connecting" }}
           </span>
         </div>
       </div>
 
       <div ref="transcriptEndRef" class="h-px w-full shrink-0" aria-hidden="true" />
     </div>
+
+    <button
+      v-if="hasThread && !followsLiveOutput"
+      type="button"
+      class="fixed bottom-6 left-1/2 z-20 -translate-x-1/2 rounded-full border border-zinc-200/80 bg-[var(--kone-surface-raised)] px-3 py-1.5 text-xs font-light text-zinc-600 shadow-sm backdrop-blur-md transition-colors hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/40 dark:border-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+      @click="resumeLiveOutput"
+    >
+      Latest response
+    </button>
+
+    <ArtifactPreviewLane
+      :artifact="selectedArtifact"
+      @close="selectedArtifact = null"
+    />
   </div>
 </template>
 
 <style scoped>
-.notebook-page {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.notebook-page::-webkit-scrollbar {
-  display: none;
-}
-
 .prompt-input {
   field-sizing: content;
   min-height: 1lh;

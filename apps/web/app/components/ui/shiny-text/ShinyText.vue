@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useElementHover, useRafFn } from "@vueuse/core";
 import { cn } from "~/lib/utils";
+import { useMotionPreference } from "~/composables/useMotionPreference";
 
 const props = withDefaults(
   defineProps<{
@@ -31,9 +32,18 @@ const props = withDefaults(
   },
 );
 
+const { prefersReducedMotion, shouldRunContinuousMotion } = useMotionPreference();
+
 const spanRef = ref<HTMLSpanElement>();
 const isHovered = useElementHover(spanRef);
 const backgroundPosition = ref("150% center");
+
+const isShimmerActive = computed(
+  () =>
+    shouldRunContinuousMotion.value &&
+    !props.disabled &&
+    !(props.pauseOnHover && isHovered.value),
+);
 
 let elapsed = 0;
 let lastTime: number | null = null;
@@ -51,7 +61,7 @@ const animationDuration = () => props.speed * 1000;
 const delayDuration = () => props.delay * 1000;
 
 useRafFn(({ timestamp }) => {
-  if (props.disabled || (props.pauseOnHover && isHovered.value)) {
+  if (!isShimmerActive.value) {
     lastTime = null;
     return;
   }
@@ -104,6 +114,15 @@ useRafFn(({ timestamp }) => {
 
 <template>
   <span
+    v-if="prefersReducedMotion || disabled"
+    ref="spanRef"
+    :class="cn('inline-block', props.class)"
+    :style="{ color: props.color }"
+  >
+    {{ text }}
+  </span>
+  <span
+    v-else
     ref="spanRef"
     :class="cn('inline-block', props.class)"
     :style="{

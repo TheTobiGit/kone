@@ -3,12 +3,11 @@ import type { ProviderId } from "~/lib/model-catalog";
 
 defineProps<{
   provider: ProviderId;
-  class?: string;
+  class?: string | string[];
 }>();
 
 const DROID_ICON_LIGHT = "/icons/droid.png";
-const DROID_ICON_DARK =
-  "https://factory.gallerycdn.vsassets.io/extensions/factory/factory-vscode-extension/0.2.3/1778193077846/Microsoft.VisualStudio.Services.Icons.Default";
+const DROID_ICON_DARK = "/icons/droid.png";
 
 const colorMode = useColorMode();
 const droidIconSrc = computed(() =>

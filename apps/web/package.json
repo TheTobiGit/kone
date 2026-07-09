@@ -8,6 +8,9 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
+    "check-types": "nuxi typecheck",
+    "test": "bun test tests/*.test.ts",
+    "test:e2e": "playwright test",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
@@ -25,7 +28,12 @@
     "@iconify-json/lucide": "^1.2.115",
     "@iconify-json/simple-icons": "^1.2.89",
     "@kone/config": "workspace:*",
+    "@playwright/test": "^1.61.1",
+    "@vue/test-utils": "^2.4.11",
+    "happy-dom": "^20.10.6",
     "tailwindcss": "^4.3.2",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vue-router": "^5.1.0",
+    "vue-tsc": "^3.3.7"
   }
 }
