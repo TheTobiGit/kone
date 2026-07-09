@@ -1,5 +1,8 @@
 import "@kone/env/web";
 
+const isDesktop =
+  process.env.KONE_DESKTOP === "1" || process.env.NUXT_DESKTOP === "1";
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: "latest",
@@ -7,7 +10,7 @@ export default defineNuxtConfig({
     preference: "system",
     fallback: "light",
   },
-  devtools: { enabled: true },
+  devtools: { enabled: false },
   experimental: {
     payloadExtraction: "client",
   },
@@ -16,4 +19,25 @@ export default defineNuxtConfig({
   devServer: {
     port: 3001,
   },
+  ssr: isDesktop ? false : undefined,
+  app: isDesktop
+    ? {
+        baseURL: "./",
+        buildAssetsDir: "_nuxt/",
+      }
+    : undefined,
+  runtimeConfig: {
+    public: {
+      bridgeWsUrl: process.env.NUXT_PUBLIC_BRIDGE_WS_URL ?? "",
+      isDesktop,
+    },
+  },
+  nitro: isDesktop
+    ? {
+        preset: "static",
+        prerender: {
+          crawlLinks: true,
+        },
+      }
+    : undefined,
 });

@@ -11,6 +11,9 @@ build
 .nuxt
 .nitro
 .data
+apps/desktop/resources
+apps/desktop/release
+apps/bridge/kone-bridge
 
 # Generated files
 apps/web/src/routeTree.gen.ts

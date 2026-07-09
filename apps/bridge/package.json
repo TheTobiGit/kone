@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
+    "build:binary": "bun build --compile src/index.ts --outfile dist/kone-bridge",
     "check-types": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 import {
-  BRIDGE_WS_URL,
+  resolveBridgeWsUrl,
   type BridgeClientMessage,
   type BridgeServerMessage,
   type DroidModelDescriptor,
@@ -8,6 +8,15 @@ import {
 import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 
 import { useDroidModelStore } from "~/lib/droid-model-store";
+
+function getBridgeWsUrl(): string {
+  if (import.meta.client && window.koneDesktop?.bridgeWsUrl) {
+    return resolveBridgeWsUrl(window.koneDesktop.bridgeWsUrl);
+  }
+
+  const config = useRuntimeConfig();
+  return resolveBridgeWsUrl(config.public.bridgeWsUrl);
+}
 
 export type PendingPermission = {
   requestId: string;
@@ -35,7 +44,7 @@ export function useDroidBridge() {
   const connect = () => {
     if (socket.value && socket.value.readyState === WebSocket.OPEN) return;
 
-    const ws = new WebSocket(BRIDGE_WS_URL);
+    const ws = new WebSocket(getBridgeWsUrl());
 
     ws.addEventListener("open", () => {
       isConnected.value = true;

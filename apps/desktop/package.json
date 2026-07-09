@@ -1,0 +1,53 @@
+{
+  "name": "desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "bun run scripts/dev.ts",
+    "build": "bun run scripts/build.ts",
+    "package": "bun run scripts/package.ts",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kone/bridge-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@kone/config": "workspace:*",
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12",
+    "typescript": "catalog:"
+  },
+  "build": {
+    "appId": "dev.kone.desktop",
+    "productName": "Kone",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/renderer",
+        "to": "renderer"
+      },
+      {
+        "from": "resources/bridge",
+        "to": "bridge"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dir"]
+    },
+    "linux": {
+      "target": ["dir"]
+    },
+    "win": {
+      "target": ["dir"]
+    }
+  }
+}

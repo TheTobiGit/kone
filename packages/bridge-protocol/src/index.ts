@@ -74,7 +74,14 @@ export type BridgeServerMessage =
     };
 
 export const BRIDGE_WS_PORT = 8787;
-export const BRIDGE_WS_URL = `ws://localhost:${BRIDGE_WS_PORT}`;
+export const DEFAULT_BRIDGE_WS_URL = `ws://localhost:${BRIDGE_WS_PORT}`;
+/** @deprecated Use {@link DEFAULT_BRIDGE_WS_URL} or {@link resolveBridgeWsUrl}. */
+export const BRIDGE_WS_URL = DEFAULT_BRIDGE_WS_URL;
+
+export function resolveBridgeWsUrl(override?: string | null): string {
+  const value = override?.trim();
+  return value ? value : DEFAULT_BRIDGE_WS_URL;
+}
 
 export function parseBridgeClientMessage(raw: string): BridgeClientMessage | null {
   try {

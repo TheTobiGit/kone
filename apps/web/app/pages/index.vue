@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import RotatingText from "~/components/ui/rotating-text/RotatingText.vue";
-import { ShinyText } from "~/components/ui/shiny-text";
+import ShinyText from "~/components/ui/shiny-text/ShinyText.vue";
 import ResponseContent from "~/components/ResponseContent.vue";
 import ProviderModelPicker from "~/components/ProviderModelPicker.vue";
 import { useDroidBridge } from "~/composables/useDroidBridge";
