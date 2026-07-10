@@ -23,6 +23,7 @@ import {
 import {
   getDefaultEffort,
 } from "~/lib/model-capabilities";
+import { clonePlain } from "~/lib/utils";
 
 const {
   turns,
@@ -346,7 +347,7 @@ const hydrateThread = () => {
     return;
   }
 
-  const restoredTurns = structuredClone(thread.turns).map((turn) =>
+  const restoredTurns = clonePlain(thread.turns).map((turn) =>
     initialHydration &&
     (turn.status === "queued" ||
       turn.status === "pending" ||
@@ -586,7 +587,7 @@ watch(
 const persistActiveThread = useDebounceFn(() => {
   if (!hasHydratedThread.value || !activeThreadId.value) return;
   updateThread(activeThreadId.value, {
-    turns: structuredClone(turns.value),
+    turns: clonePlain(turns.value),
     draft: draftPrompt.value,
     provider: selectedProvider.value,
     modelId: selectedModel.value,
