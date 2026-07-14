@@ -1,6 +1,3 @@
-import { BRIDGE_WS_PORT } from "@kone/bridge-protocol";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -11,7 +8,6 @@ const isDev = process.env.KONE_DEV === "1";
 const devServerUrl = process.env.KONE_DEV_SERVER_URL ?? "http://localhost:3001";
 
 let mainWindow: BrowserWindow | null = null;
-let bridgeProcess: ChildProcessWithoutNullStreams | null = null;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -35,65 +31,6 @@ function getResourcesPath(...segments: string[]) {
 
 function getRendererPath() {
   return getResourcesPath("renderer");
-}
-
-function getBridgeSpawnSpec(): { command: string; args: string[]; cwd: string } | null {
-  const bridgeDir = getResourcesPath("bridge");
-  const compiledBridge = path.join(bridgeDir, process.platform === "win32" ? "kone-bridge.exe" : "kone-bridge");
-  const bridgeEntry = path.join(bridgeDir, "src", "index.ts");
-
-  if (existsSync(compiledBridge)) {
-    return { command: compiledBridge, args: [], cwd: bridgeDir };
-  }
-
-  if (existsSync(bridgeEntry)) {
-    return { command: "bun", args: ["run", "src/index.ts"], cwd: bridgeDir };
-  }
-
-  if (isDev) {
-    const monorepoBridge = path.resolve(__dirname, "..", "..", "bridge");
-    return { command: "bun", args: ["run", "src/index.ts"], cwd: monorepoBridge };
-  }
-
-  return null;
-}
-
-function startBridge() {
-  if (isDev) return;
-
-  const spec = getBridgeSpawnSpec();
-  if (!spec) {
-    console.warn("Bridge runtime not found in packaged resources.");
-    return;
-  }
-
-  bridgeProcess = spawn(spec.command, spec.args, {
-    cwd: spec.cwd,
-    env: {
-      ...process.env,
-      KONE_CWD: process.env.KONE_CWD ?? app.getPath("home"),
-    },
-    stdio: "pipe",
-  });
-
-  bridgeProcess.stdout.on("data", (chunk) => {
-    console.log(`[bridge] ${String(chunk)}`.trimEnd());
-  });
-
-  bridgeProcess.stderr.on("data", (chunk) => {
-    console.error(`[bridge] ${String(chunk)}`.trimEnd());
-  });
-
-  bridgeProcess.on("exit", (code) => {
-    console.log(`Bridge exited with code ${code ?? "unknown"}`);
-    bridgeProcess = null;
-  });
-}
-
-function stopBridge() {
-  if (!bridgeProcess) return;
-  bridgeProcess.kill();
-  bridgeProcess = null;
 }
 
 function registerAppProtocol() {
@@ -148,7 +85,6 @@ async function createWindow() {
 app.whenReady().then(async () => {
   if (!isDev) {
     registerAppProtocol();
-    startBridge();
   }
 
   await createWindow();
@@ -166,16 +102,8 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  stopBridge();
-});
-
-process.on("exit", () => {
-  stopBridge();
-});
-
 console.log(
   isDev
-    ? `Kone desktop dev shell (renderer: ${devServerUrl}, bridge ws port: ${BRIDGE_WS_PORT})`
-    : `Kone desktop shell (bridge ws port: ${BRIDGE_WS_PORT})`,
+    ? `Kone desktop dev shell (renderer: ${devServerUrl})`
+    : "Kone desktop shell",
 );

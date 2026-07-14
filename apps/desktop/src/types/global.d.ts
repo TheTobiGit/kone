@@ -1,6 +1,5 @@
 export type KoneDesktopApi = {
   isDesktop: true;
-  bridgeWsUrl: string;
   platform: NodeJS.Platform;
   version: string;
 };

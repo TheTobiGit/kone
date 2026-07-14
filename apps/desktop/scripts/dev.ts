@@ -9,7 +9,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(__dirname, "..");
 const rootDir = path.resolve(desktopDir, "../..");
 const webDir = path.join(rootDir, "apps/web");
-const bridgeDir = path.join(rootDir, "apps/bridge");
 const devServerUrl = "http://localhost:3001";
 
 const children: ChildProcess[] = [];
@@ -44,11 +43,6 @@ process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
 console.log("Starting Kone desktop dev stack...");
-
-run("bun", ["run", "src/index.ts"], bridgeDir, {
-  ...process.env,
-  KONE_CWD: process.env.KONE_CWD ?? process.cwd(),
-});
 
 run("bun", ["run", "dev"], webDir, {
   ...process.env,

@@ -1,4 +1,4 @@
-import "@kone/env/web";
+import tailwindcss from "@tailwindcss/vite";
 
 const isDesktop =
   process.env.KONE_DESKTOP === "1" || process.env.NUXT_DESKTOP === "1";
@@ -6,16 +6,11 @@ const isDesktop =
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: "latest",
-  colorMode: {
-    preference: "system",
-    fallback: "light",
-  },
   devtools: { enabled: false },
-  experimental: {
-    payloadExtraction: "client",
-  },
-  modules: ["@nuxt/ui"],
   css: ["~/assets/css/main.css"],
+  vite: {
+    plugins: [tailwindcss()],
+  },
   devServer: {
     port: 3001,
   },
@@ -28,7 +23,6 @@ export default defineNuxtConfig({
     : undefined,
   runtimeConfig: {
     public: {
-      bridgeWsUrl: process.env.NUXT_PUBLIC_BRIDGE_WS_URL ?? "",
       isDesktop,
     },
   },

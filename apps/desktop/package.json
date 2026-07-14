@@ -10,9 +10,6 @@
     "package": "bun run scripts/package.ts",
     "check-types": "tsc --noEmit"
   },
-  "dependencies": {
-    "@kone/bridge-protocol": "workspace:*"
-  },
   "devDependencies": {
     "@kone/config": "workspace:*",
     "electron": "^35.1.5",
@@ -33,10 +30,6 @@
       {
         "from": "resources/renderer",
         "to": "renderer"
-      },
-      {
-        "from": "resources/bridge",
-        "to": "bridge"
       }
     ],
     "mac": {
