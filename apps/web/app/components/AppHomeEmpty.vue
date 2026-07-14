@@ -13,6 +13,8 @@ const actions = [
 
 type ActionKey = (typeof actions)[number]["key"];
 
+// Key of the action currently in session (e.g. folder picker open), or null.
+defineProps<{ pending?: ActionKey | null }>();
 const emit = defineEmits<{ start: [key: ActionKey] }>();
 </script>
 
@@ -34,6 +36,8 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
           v-for="action in actions"
           :key="action.key"
           :label="action.label"
+          :loading="pending === action.key"
+          :disabled="!!pending && pending !== action.key"
           @select="emit('start', action.key)"
         >
           <template #icon>
