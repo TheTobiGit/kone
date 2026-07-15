@@ -4,11 +4,12 @@ import {
   nextTick,
   onMounted,
   onBeforeUnmount,
+  reactive,
   ref,
   watch,
 } from "vue";
 import { motion } from "motion-v";
-import type { DirEntry } from "~/types/desktop";
+import type { DirEntry, GitRepo } from "~/types/desktop";
 
 // In-app folder browser — a "focus stack" menu modelled on a reference gesture
 // menu. The list is anchored in the upper third (so the focused folder stays put
@@ -23,13 +24,17 @@ const emit = defineEmits<{
 }>();
 
 const { home, listDir } = useFileSystem();
+const { detect } = useGit();
 
-type Crumb = { name: string; path: string };
+type Crumb = { name: string; path: string; repo: boolean };
 
 // The path from home (index 0) down to the folder in focus (last).
 const trail = ref<Crumb[]>([]);
 // Subdirectories of the focused folder.
 const entries = ref<DirEntry[]>([]);
+// Lazily-resolved git summaries (branch + line diffstat), keyed by absolute
+// path and cached, so re-visiting a folder never re-runs git.
+const summaries = reactive<Record<string, GitRepo>>({});
 const loading = ref(false);
 // Drives the overlay's open/close fade.
 const shown = ref(false);
@@ -38,6 +43,10 @@ const current = computed<Crumb | null>(
   () => trail.value[trail.value.length - 1] ?? null,
 );
 const currentPath = computed(() => current.value?.path ?? "");
+// Git summary for the folder in focus (the one the Open button would open).
+const currentGit = computed(() =>
+  current.value ? summaries[current.value.path] : undefined,
+);
 // Breadcrumbs are every trail node below home, tagged with their trail index.
 const crumbs = computed(() =>
   trail.value
@@ -63,8 +72,10 @@ type Row =
       path: string;
       index: number;
       current: boolean;
+      repo: boolean;
+      git?: GitRepo;
     }
-  | { kind: "entry"; name: string; path: string };
+  | { kind: "entry"; name: string; path: string; repo: boolean; git?: GitRepo };
 
 const rows = computed<Row[]>(() => {
   const last = trail.value.length - 1;
@@ -75,11 +86,15 @@ const rows = computed<Row[]>(() => {
       path: c.node.path,
       index: c.index,
       current: c.index === last,
+      repo: c.node.repo,
+      git: summaries[c.node.path],
     })),
     ...entries.value.map((e) => ({
       kind: "entry" as const,
       name: e.name,
       path: e.path,
+      repo: e.repo,
+      git: summaries[e.path],
     })),
   ];
 });
@@ -87,6 +102,36 @@ const rows = computed<Row[]>(() => {
 function rowIndent(row: Row): number {
   return row.kind === "crumb" ? indent(row.index - 1) : childIndent.value;
 }
+
+// ── git summaries ───────────────────────────────────────────────────────────
+// Repo rows are flagged synchronously (from `entry.repo`) so they render at
+// once; their branch + line diffstat resolve lazily and fill in afterwards.
+const pending = new Set<string>();
+
+async function ensureSummary(path: string) {
+  if (summaries[path] || pending.has(path)) return;
+  pending.add(path);
+  try {
+    const repo = await detect(path);
+    if (repo) summaries[path] = repo;
+  } finally {
+    pending.delete(path);
+  }
+}
+
+// Enrich every repo in view (the trail's repo crumbs + the focused folder's
+// repo children) whenever the listing changes. Keyed off `trail`/`entries` — not
+// `rows`, which reads `summaries` — so resolving a summary can't retrigger this.
+watch(
+  () => [
+    ...trail.value.filter((c) => c.repo).map((c) => c.path),
+    ...entries.value.filter((e) => e.repo).map((e) => e.path),
+  ],
+  (paths) => {
+    for (const path of paths) void ensureSummary(path);
+  },
+  { immediate: true },
+);
 
 // ── transition ────────────────────────────────────────────────────────────────
 // Bouncy spring for the picker's entrance (underdamped → a little overshoot).
@@ -250,7 +295,10 @@ async function navigate(opts: { loadPath: string; nextTrail: Crumb[] }) {
 function descend(entry: DirEntry) {
   return navigate({
     loadPath: entry.path,
-    nextTrail: [...trail.value, { name: entry.name, path: entry.path }],
+    nextTrail: [
+      ...trail.value,
+      { name: entry.name, path: entry.path, repo: entry.repo },
+    ],
   });
 }
 
@@ -275,7 +323,9 @@ async function submitPath() {
   loading.value = true;
   try {
     const listing = await listDir(target);
-    trail.value = [{ name: listing.name, path: listing.path }];
+    trail.value = [
+      { name: listing.name, path: listing.path, repo: listing.repo },
+    ];
     entries.value = listing.entries;
     pathError.value = false;
   } catch {
@@ -322,7 +372,7 @@ function onKeydown(event: KeyboardEvent) {
 onMounted(async () => {
   const root = await home();
   const listing = await listDir(root);
-  trail.value = [{ name: listing.name, path: listing.path }];
+  trail.value = [{ name: listing.name, path: listing.path, repo: listing.repo }];
   entries.value = listing.entries;
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", measure);
@@ -479,6 +529,39 @@ onBeforeUnmount(() => {
               </svg>
             </span>
             <span class="picker-label">{{ row.name }}</span>
+            <span v-if="row.repo" class="picker-git">
+              <span class="picker-repo" title="Git repository">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <line x1="6" x2="6" y1="3" y2="15" />
+                  <circle cx="18" cy="6" r="3" />
+                  <circle cx="6" cy="18" r="3" />
+                  <path d="M18 9a9 9 0 0 1-9 9" />
+                </svg>
+                <span class="sr-only">Git repository</span>
+              </span>
+              <template v-if="row.git">
+                <span class="picker-branch">{{
+                  row.git.branch ?? "detached"
+                }}</span>
+                <span
+                  v-if="row.git.added || row.git.removed"
+                  class="picker-diff"
+                >
+                  <span class="picker-add">+{{ row.git.added }}</span>
+                  <span class="picker-del">−{{ row.git.removed }}</span>
+                </span>
+              </template>
+            </span>
           </span>
         </motion.button>
 
@@ -506,6 +589,39 @@ onBeforeUnmount(() => {
           @click="open"
         >
           Open <span class="text-ink-soft">“{{ current?.name }}”</span>
+          <span v-if="current?.repo" class="picker-git picker-git-inline">
+            <span class="picker-repo" title="Git repository">
+              <svg
+                viewBox="0 0 24 24"
+                width="13"
+                height="13"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <line x1="6" x2="6" y1="3" y2="15" />
+                <circle cx="18" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              <span class="sr-only">Git repository</span>
+            </span>
+            <template v-if="currentGit">
+              <span class="picker-branch">{{
+                currentGit.branch ?? "detached"
+              }}</span>
+              <span
+                v-if="currentGit.added || currentGit.removed"
+                class="picker-diff"
+              >
+                <span class="picker-add">+{{ currentGit.added }}</span>
+                <span class="picker-del">−{{ currentGit.removed }}</span>
+              </span>
+            </template>
+          </span>
         </button>
       </div>
     </motion.div>
@@ -552,6 +668,93 @@ onBeforeUnmount(() => {
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.1;
+}
+
+/* Git metadata: a branch glyph, the branch name, and a line diffstat, sitting
+   just after the folder name. The whole group is `flex: none` so it stays put
+   while a long folder name truncates ahead of it. */
+.picker-git {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+  margin-left: 0.5rem;
+  min-width: 0;
+}
+
+/* The branch glyph — tinted with the accent; calm at rest, firms on hover. */
+.picker-repo {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--accent);
+  opacity: 0.7;
+  transition: opacity 0.18s ease;
+}
+.group:hover .picker-repo {
+  opacity: 1;
+}
+
+/* Branch name — quiet mono, recedes behind the folder name. Truncates rather
+   than pushing the diffstat off the edge. */
+.picker-branch {
+  min-width: 0;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: -0.01em;
+  /* Line diffstat + branch resolve after the row paints — ease them in. */
+  animation: metaIn 0.3s ease both;
+}
+
+/* Line diffstat — green insertions, warm-red deletions. */
+.picker-diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  animation: metaIn 0.3s ease both;
+}
+.picker-add {
+  color: #5f9e6a;
+}
+.picker-del {
+  color: #c2745c;
+}
+@media (prefers-color-scheme: dark) {
+  .picker-add {
+    color: #7fb98a;
+  }
+  .picker-del {
+    color: #dc8a6f;
+  }
+}
+
+@keyframes metaIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Footer "Open …" variant — nudge the row onto the text baseline. */
+.picker-git-inline {
+  vertical-align: -3px;
+}
+.picker-git-inline .picker-repo {
+  opacity: 0.85;
+}
+.picker-action:hover .picker-git-inline .picker-repo {
+  opacity: 1;
 }
 
 /* Outgoing rows: sit exactly where they were, fade out in place. */

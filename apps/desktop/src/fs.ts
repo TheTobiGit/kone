@@ -14,6 +14,8 @@ export type DirEntry = {
   name: string;
   /** Absolute path. */
   path: string;
+  /** True when this directory is a git repository root (holds a `.git`). */
+  repo: boolean;
 };
 
 export type DirListing = {
@@ -23,6 +25,8 @@ export type DirListing = {
   name: string;
   /** Parent directory, or null at a filesystem root. */
   parent: string | null;
+  /** True when the listed folder is itself a git repository root. */
+  repo: boolean;
   /** Immediate subdirectories, sorted case-insensitively by name. */
   entries: DirEntry[];
 };
@@ -34,13 +38,25 @@ function isHidden(name: string): boolean {
   return name.startsWith(".");
 }
 
+/** True when `dir` is a git repository root. A repo root holds a `.git` —
+ *  usually a directory, but a `.git` file for worktrees and submodules — so we
+ *  just probe for its presence rather than shelling out to git. */
+async function isRepoRoot(dir: string): Promise<boolean> {
+  try {
+    await stat(path.join(dir, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** List the immediate subdirectories of `dir`. Files and dotfiles are omitted.
  *  Symlinks are followed only when they resolve to a directory. */
 export async function listDir(dir: string): Promise<DirListing> {
   const abs = path.resolve(dir);
   const dirents = await readdir(abs, { withFileTypes: true });
 
-  const entries: DirEntry[] = [];
+  const dirs: { name: string; path: string }[] = [];
   for (const dirent of dirents) {
     if (isHidden(dirent.name)) continue;
 
@@ -54,8 +70,17 @@ export async function listDir(dir: string): Promise<DirListing> {
     }
     if (!isDir) continue;
 
-    entries.push({ name: dirent.name, path: path.join(abs, dirent.name) });
+    dirs.push({ name: dirent.name, path: path.join(abs, dirent.name) });
   }
+
+  // Flag repo roots in parallel — one cheap `.git` probe per subdirectory,
+  // plus one for the listed folder itself.
+  const [repo, entries] = await Promise.all([
+    isRepoRoot(abs),
+    Promise.all(
+      dirs.map(async (d) => ({ ...d, repo: await isRepoRoot(d.path) })),
+    ),
+  ]);
 
   entries.sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
@@ -66,6 +91,7 @@ export async function listDir(dir: string): Promise<DirListing> {
     path: abs,
     name: path.basename(abs) || abs,
     parent: parent === abs ? null : parent,
+    repo,
     entries,
   };
 }

@@ -48,6 +48,14 @@ const MOCK_TREE: Record<string, string[]> = {
   "/Users/you/Downloads": [],
 };
 
+// Absolute paths the mock treats as git repo roots — so the picker's repo
+// indicator is demoable in `nuxt dev`, without a real filesystem.
+const MOCK_REPOS = new Set([
+  "/Users/you/Developer/kone",
+  "/Users/you/Developer/nxui",
+  "/Users/you/Developer/sandbox",
+]);
+
 function mockListDir(dir: string): DirListing {
   const names = MOCK_TREE[dir] ?? [];
   const parts = dir.split("/").filter(Boolean);
@@ -57,6 +65,10 @@ function mockListDir(dir: string): DirListing {
     path: dir,
     name,
     parent: parent === "" ? "/" : parent,
-    entries: names.map((n) => ({ name: n, path: `${dir}/${n}` })),
+    repo: MOCK_REPOS.has(dir),
+    entries: names.map((n) => {
+      const p = `${dir}/${n}`;
+      return { name: n, path: p, repo: MOCK_REPOS.has(p) };
+    }),
   };
 }

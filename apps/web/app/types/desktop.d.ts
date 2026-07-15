@@ -5,12 +5,16 @@ export {};
 export type DirEntry = {
   name: string;
   path: string;
+  /** True when this directory is a git repository root (holds a `.git`). */
+  repo: boolean;
 };
 
 export type DirListing = {
   path: string;
   name: string;
   parent: string | null;
+  /** True when the listed folder is itself a git repository root. */
+  repo: boolean;
   entries: DirEntry[];
 };
 
@@ -81,6 +85,10 @@ export type GitRepo = {
   behind: number;
   changeCount: number;
   clean: boolean;
+  /** Lines inserted across uncommitted tracked changes (working tree vs HEAD). */
+  added: number;
+  /** Lines deleted across uncommitted tracked changes. */
+  removed: number;
 };
 
 export type KoneGitApi = {

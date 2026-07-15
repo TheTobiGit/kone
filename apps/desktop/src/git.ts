@@ -86,6 +86,10 @@ export type GitRepo = {
   behind: number;
   changeCount: number;
   clean: boolean;
+  /** Lines inserted across uncommitted tracked changes (working tree vs HEAD). */
+  added: number;
+  /** Lines deleted across uncommitted tracked changes. */
+  removed: number;
 };
 
 // ── git runner ──────────────────────────────────────────────────────────────
@@ -298,10 +302,41 @@ export async function status(dir: string): Promise<GitStatus | null> {
   return parseStatus(root, out);
 }
 
+/** Parse `git diff --shortstat` output, e.g.
+ *  " 3 files changed, 42 insertions(+), 13 deletions(-)". */
+function parseShortStat(out: string): { added: number; removed: number } {
+  const added = out.match(/(\d+) insertion/);
+  const removed = out.match(/(\d+) deletion/);
+  return {
+    added: added ? Number(added[1]) : 0,
+    removed: removed ? Number(removed[1]) : 0,
+  };
+}
+
+/** Lines added/removed across all uncommitted tracked changes (working tree +
+ *  index, measured against HEAD). Clean tree → 0/0. */
+async function diffStat(
+  root: string,
+): Promise<{ added: number; removed: number }> {
+  try {
+    return parseShortStat(await git(root, ["diff", "--shortstat", "HEAD"]));
+  } catch {
+    // No HEAD yet (unborn branch): fall back to the staged diff, then give up.
+    try {
+      return parseShortStat(
+        await git(root, ["diff", "--cached", "--shortstat"]),
+      );
+    } catch {
+      return { added: 0, removed: 0 };
+    }
+  }
+}
+
 /** Recognize a repo and summarize it — cheap enough to call on open. */
 export async function detect(dir: string): Promise<GitRepo | null> {
   const full = await status(dir);
   if (!full) return null;
+  const { added, removed } = await diffStat(full.root);
   return {
     root: full.root,
     name: path.basename(full.root),
@@ -311,6 +346,8 @@ export async function detect(dir: string): Promise<GitRepo | null> {
     behind: full.behind,
     changeCount: full.staged + full.unstaged + full.untracked,
     clean: full.clean,
+    added,
+    removed,
   };
 }
 
