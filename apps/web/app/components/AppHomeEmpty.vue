@@ -3,6 +3,7 @@ import { motion } from "motion-v";
 import IconPlus from "./icons/IconPlus.vue";
 import IconFolder from "./icons/IconFolder.vue";
 import IconGitHub from "./icons/IconGitHub.vue";
+import { ClosingPlasma } from "~/components/ui/closing-plasma";
 
 // First-run screen: no projects, no sessions yet — just three ways to begin.
 const actions = [
@@ -20,12 +21,10 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
 
 <template>
   <main
-    class="flex h-full min-h-screen flex-col bg-ground px-16 pt-[52px]"
+    class="relative flex h-full min-h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px]"
   >
-    <HomeHeader />
-
     <!-- Hero: the start options rest dead-center in the open space. -->
-    <section class="flex flex-1 flex-col items-center justify-center">
+    <section class="relative z-10 flex flex-1 flex-col items-center justify-center">
       <motion.div
         class="flex w-fit flex-col gap-1"
         :initial="{ opacity: 0, y: 8 }"
@@ -46,5 +45,34 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
         </StartAction>
       </motion.div>
     </section>
+
+    <!-- Ambient close: a warm plasma glow rises from the floor and dissolves
+         into the ground, giving the empty screen depth without a hard edge.
+         Purely decorative — never intercepts pointer events. -->
+    <motion.div
+      class="pointer-events-none absolute inset-x-0 bottom-0 h-[42vh] max-h-[380px] min-h-[220px]"
+      style="
+        mask-image: linear-gradient(to bottom, transparent, black 55%);
+        -webkit-mask-image: linear-gradient(to bottom, transparent, black 55%);
+      "
+      :initial="{ opacity: 0 }"
+      :animate="{ opacity: 1 }"
+      :transition="{ duration: 1.4, delay: 0.2, ease: 'easeOut' }"
+    >
+      <ClosingPlasma
+        class="size-full"
+        :interactive="false"
+        :speed="0.55"
+        :turbulence="0.85"
+        :grain="0.4"
+        :sparkle="0.35"
+        light-color-a="#f6f5f3"
+        light-color-b="#efe4dc"
+        light-color-c="#e4c1af"
+        dark-color-a="#070708"
+        dark-color-b="#15100d"
+        dark-color-c="#9a5238"
+      />
+    </motion.div>
   </main>
 </template>
