@@ -27,7 +27,9 @@ if (!existsSync(path.join(nuxtOutput, "index.html"))) {
 
 console.log("Bundling Electron main/preload...");
 await $`bun build src/main.ts --outfile dist/main.js --target node --external electron`.cwd(desktopDir);
-await $`bun build src/preload.ts --outfile dist/preload.js --target node --external electron`.cwd(desktopDir);
+// Sandboxed preloads must be CommonJS; emit .cjs so it's unambiguous under
+// package.json "type": "module".
+await $`bun build src/preload.ts --outfile dist/preload.cjs --format cjs --target node --external electron`.cwd(desktopDir);
 
 console.log("Staging renderer assets...");
 cleanDir(rendererOut);

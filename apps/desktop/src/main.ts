@@ -1,8 +1,9 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from "electron";
+import { app, BrowserWindow, net, protocol, shell } from "electron";
 
+import { registerFsIpc } from "./fs.js";
 import { registerGitIpc } from "./git.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,25 +51,8 @@ function registerAppProtocol() {
 }
 
 function registerIpc() {
-  // Native folder picker for "Open from local folder". Returns the chosen
-  // directory's absolute path and its basename, or null if dismissed.
-  ipcMain.handle("dialog:open-folder", async () => {
-    const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
-    const options: Electron.OpenDialogOptions = {
-      title: "Open project folder",
-      properties: ["openDirectory", "createDirectory"],
-    };
-    const result = window
-      ? await dialog.showOpenDialog(window, options)
-      : await dialog.showOpenDialog(options);
-
-    const dir = result.filePaths[0];
-    if (result.canceled || !dir) {
-      return null;
-    }
-
-    return { path: dir, name: path.basename(dir) };
-  });
+  // Directory browsing for the in-app folder picker.
+  registerFsIpc();
 
   // Git inspection (recognize repos, read status / branches / commits).
   registerGitIpc();
@@ -84,7 +68,7 @@ async function createWindow() {
     frame: false,
     title: "Kone",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

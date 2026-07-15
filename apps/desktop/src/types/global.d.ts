@@ -1,3 +1,4 @@
+import type { DirListing } from "../fs.js";
 import type {
   GitBranch,
   GitCommit,
@@ -5,9 +6,9 @@ import type {
   GitStatus,
 } from "../git.js";
 
-export type KoneFolder = {
-  path: string;
-  name: string;
+export type KoneFsApi = {
+  home: () => Promise<string>;
+  listDir: (dir: string) => Promise<DirListing>;
 };
 
 export type KoneGitApi = {
@@ -21,7 +22,7 @@ export type KoneDesktopApi = {
   isDesktop: true;
   platform: NodeJS.Platform;
   version: string;
-  openFolder: () => Promise<KoneFolder | null>;
+  fs: KoneFsApi;
   git: KoneGitApi;
 };
 

@@ -57,9 +57,11 @@ const compileMain = spawnSync(
   ["build", "src/main.ts", "--outfile", "dist/main.js", "--target", "node", "--external", "electron"],
   { cwd: desktopDir, stdio: "inherit" },
 );
+// Sandboxed preloads must be CommonJS; emit .cjs so it's unambiguous under
+// package.json "type": "module".
 const compilePreload = spawnSync(
   "bun",
-  ["build", "src/preload.ts", "--outfile", "dist/preload.js", "--target", "node", "--external", "electron"],
+  ["build", "src/preload.ts", "--outfile", "dist/preload.cjs", "--format", "cjs", "--target", "node", "--external", "electron"],
   { cwd: desktopDir, stdio: "inherit" },
 );
 

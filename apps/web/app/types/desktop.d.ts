@@ -2,9 +2,21 @@
 // Mirrors apps/desktop/src/git.ts and apps/desktop/src/types/global.d.ts.
 export {};
 
-export type KoneFolder = {
+export type DirEntry = {
+  name: string;
+  path: string;
+};
+
+export type DirListing = {
   path: string;
   name: string;
+  parent: string | null;
+  entries: DirEntry[];
+};
+
+export type KoneFsApi = {
+  home: () => Promise<string>;
+  listDir: (dir: string) => Promise<DirListing>;
 };
 
 export type GitFileStatus =
@@ -82,7 +94,7 @@ export type KoneDesktopApi = {
   isDesktop: true;
   platform: string;
   version: string;
-  openFolder: () => Promise<KoneFolder | null>;
+  fs: KoneFsApi;
   git: KoneGitApi;
 };
 

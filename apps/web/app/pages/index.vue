@@ -7,29 +7,35 @@ import { ClickSpark } from "~/components/ui/click-spark";
 // swaps to the opened-project view. Will branch across single / populated /
 // many project states as data lands.
 const project = useProject();
-const { openFolder } = useDesktop();
 
 // Action currently in session — locks the row so only one runs at a time.
 const pending = ref<"create" | "open" | "clone" | null>(null);
+// Whether the in-app folder browser is open.
+const pickerOpen = ref(false);
 
-async function onStart(key: "create" | "open" | "clone") {
+function onStart(key: "create" | "open" | "clone") {
   if (pending.value) return;
 
   if (key === "open") {
+    // Custom in-app folder browser (not the native dialog).
     pending.value = "open";
-    try {
-      const opened = await openFolder();
-      if (opened) {
-        project.value = opened;
-      }
-    } finally {
-      pending.value = null;
-    }
+    pickerOpen.value = true;
     return;
   }
 
   // Create / clone wiring lands with the desktop bridge.
   console.info(`[app-home] start: ${key}`);
+}
+
+function onPicked(folder: { path: string; name: string }) {
+  pickerOpen.value = false;
+  pending.value = null;
+  project.value = folder;
+}
+
+function onPickerCancel() {
+  pickerOpen.value = false;
+  pending.value = null;
 }
 
 // Sparks read against the ground: white on dark, black on light.
@@ -51,5 +57,11 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
       @close="project = null"
     />
     <AppHomeEmpty v-else :pending="pending" @start="onStart" />
+
+    <FolderPicker
+      v-if="pickerOpen"
+      @select="onPicked"
+      @cancel="onPickerCancel"
+    />
   </ClickSpark>
 </template>
