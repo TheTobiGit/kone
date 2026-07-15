@@ -8,7 +8,7 @@ defineEmits<{ select: [] }>();
     type="button"
     :disabled="loading || disabled"
     :aria-busy="loading || undefined"
-    class="group flex cursor-pointer items-center gap-3.5 rounded-[14px] py-[11px] pr-3 pl-1.5 text-left transition-[color,opacity] duration-200 hover:bg-hover focus-visible:bg-hover focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent"
+    class="group flex cursor-pointer items-center gap-3.5 rounded-[14px] py-[11px] pr-3 pl-1.5 text-left transition-[background-color,color,opacity] duration-[280ms] ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-hover focus-visible:bg-hover focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent"
     :class="{ 'opacity-35': disabled && !loading }"
     @click="$emit('select')"
   >

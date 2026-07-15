@@ -1,9 +1,18 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { usePreferredDark } from "@vueuse/core";
 import { motion } from "motion-v";
 import IconPlus from "./icons/IconPlus.vue";
 import IconFolder from "./icons/IconFolder.vue";
 import IconGitHub from "./icons/IconGitHub.vue";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
+import { Magnet } from "~/components/ui/magnet";
+
+// On white, the plasma's ridge veins read as a soft cloud; on near-black the
+// same veins glow as high-contrast filaments. Sitting the layer back in dark
+// mode lets it settle into the ground like it does in light.
+const isDark = usePreferredDark();
+const plasmaOpacity = computed(() => (isDark.value ? 0.5 : 1));
 
 // First-run screen: no projects, no sessions yet — just three ways to begin.
 const actions = [
@@ -31,18 +40,31 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
         :animate="{ opacity: 1, y: 0 }"
         :transition="{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }"
       >
-        <StartAction
+        <!-- Each row leans gently toward the cursor as it approaches, then
+             eases back — a soft magnetic pull, not a bouncy magnet. Disabled
+             while any action is pending so a loading row stays put. -->
+        <Magnet
           v-for="action in actions"
           :key="action.key"
-          :label="action.label"
-          :loading="pending === action.key"
-          :disabled="!!pending && pending !== action.key"
-          @select="emit('start', action.key)"
+          class="w-fit"
+          inner-class="w-fit"
+          :padding="12"
+          :magnet-strength="9"
+          :disabled="!!pending"
+          active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+          inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
         >
-          <template #icon>
-            <component :is="action.icon" />
-          </template>
-        </StartAction>
+          <StartAction
+            :label="action.label"
+            :loading="pending === action.key"
+            :disabled="!!pending && pending !== action.key"
+            @select="emit('start', action.key)"
+          >
+            <template #icon>
+              <component :is="action.icon" />
+            </template>
+          </StartAction>
+        </Magnet>
       </motion.div>
     </section>
 
@@ -66,12 +88,13 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
         :turbulence="0.85"
         :grain="0.4"
         :sparkle="0.35"
+        :opacity="plasmaOpacity"
         light-color-a="#f6f5f3"
         light-color-b="#efe4dc"
         light-color-c="#e4c1af"
         dark-color-a="#070708"
-        dark-color-b="#15100d"
-        dark-color-c="#9a5238"
+        dark-color-b="#120d0a"
+        dark-color-c="#43251a"
       />
     </motion.div>
   </main>
