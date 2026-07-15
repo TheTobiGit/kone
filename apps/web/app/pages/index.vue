@@ -58,7 +58,7 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
     />
     <AppHomeEmpty v-else :pending="pending" @start="onStart" />
 
-    <FolderPicker
+    <FolderPickerModal
       v-if="pickerOpen"
       @select="onPicked"
       @cancel="onPickerCancel"

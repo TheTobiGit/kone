@@ -19,7 +19,13 @@ export function useGit() {
     available: Boolean(git),
 
     detect(dir: string): Promise<GitRepo | null> {
-      return git ? git.detect(dir) : Promise.resolve(mockDetect(dir));
+      if (git) return git.detect(dir);
+      const repo = mockDetect(dir);
+      if (!repo) return Promise.resolve(null);
+      // A short, slightly-staggered delay stands in for real git latency, so the
+      // picker's processing→reveal beat is faithful (and visible) in `nuxt dev`.
+      const delay = 140 + Math.random() * 260;
+      return new Promise((resolve) => setTimeout(() => resolve(repo), delay));
     },
     status(dir: string): Promise<GitStatus | null> {
       return git ? git.status(dir) : Promise.resolve(null);
