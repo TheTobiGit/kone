@@ -7,6 +7,7 @@ const isDesktop =
 export default defineNuxtConfig({
   compatibilityDate: "latest",
   devtools: { enabled: false },
+  modules: ["@nuxt/fonts"],
   css: ["~/assets/css/main.css"],
   vite: {
     plugins: [tailwindcss()],
