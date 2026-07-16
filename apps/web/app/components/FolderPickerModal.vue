@@ -32,8 +32,6 @@ const {
   metaHidden,
   metaShown,
   metaEnter,
-  ghosts,
-  ghostsOut,
   navigating,
   TRANSITION_MS,
   canAscend,
@@ -395,45 +393,14 @@ const cardSpring = {
     <!-- Scrim: click to dismiss. -->
     <div class="modal-scrim absolute inset-0" @click="cancel" />
 
-    <!-- Ghost layer: outgoing rows fade out exactly where they sat (viewport
-         coords, so it must span the full screen just like the page shell). -->
-    <div class="pointer-events-none absolute inset-0 z-10">
-      <div
-        v-for="g in ghosts"
-        :key="g.key"
-        class="ghost-row"
-        :class="[
-          ghostsOut ? 'is-out' : '',
-          g.kind === 'crumb'
-            ? g.current
-              ? 'text-ink-soft'
-              : 'text-muted'
-            : 'text-ink',
-        ]"
-        :style="{ top: `${g.top}px`, left: `${g.left}px` }"
-      >
-        <span
-          v-if="g.kind === 'crumb'"
-          class="inline-flex w-5 shrink-0 items-center opacity-55"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M9 14 4 9l5-5" />
-            <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11" />
-          </svg>
-        </span>
-        <span class="picker-label">{{ g.name }}</span>
-      </div>
-    </div>
+    <!-- No ghost layer here (unlike the full-page FolderPicker): outgoing rows
+         would fade out in a full-screen layer BEHIND the card, so the card
+         covers them at all times — except the instant the card shrinks into a
+         smaller listing, when its rising bottom edge (and the footer) would
+         briefly uncover them flickering below the Open button. The layout
+         mechanic that ghosts exist for — dropping outgoing rows from the flex
+         flow so the new level measures cleanly — happens in `useFolderPicker`
+         when it swaps `trail`/`entries`, independent of painting the ghosts. -->
 
     <!-- The card: sized to its content, height springs as the listing reflows. -->
     <motion.div
@@ -451,8 +418,12 @@ const cardSpring = {
       aria-label="Open a project folder"
     >
       <!-- Vertical + left padding only: the scroll area runs to the card's right
-           edge so its scrollbar sits at the edge (the footer re-pads its right). -->
-      <div ref="contentEl" class="flex flex-col py-4 pl-4">
+           edge so its scrollbar sits at the edge (the footer re-pads its right).
+           `shrink-0` keeps the block at its natural height inside the card's
+           bottom-anchored flex column, so the footer stays welded to the card's
+           bottom edge and any height mismatch during the spring is absorbed at
+           the TOP (header) instead of wobbling the footer. -->
+      <div ref="contentEl" class="flex shrink-0 flex-col py-4 pl-4">
         <!-- Header: the focused folder's full path as an editable address bar,
              in a curved band that mirrors the footer — its bottom edge arcs
              DOWN into the walls. Type a path + Enter to jump there. -->
@@ -484,7 +455,8 @@ const cardSpring = {
 
         <!-- Breadcrumbs + focused level as one keyed list. Persisting rows keep
              their :key (no re-animate, stay crisp) and ride the FLIP; incoming
-             rows fade in; outgoing rows leave via the ghost layer above. -->
+             rows fade in; outgoing rows simply drop from the list (their fade
+             would play out behind the card, so this shell doesn't paint it). -->
         <div
           ref="scrollEl"
           class="picker-scroll relative flex max-h-[48vh] w-full flex-col items-start overflow-x-hidden py-1"
@@ -745,6 +717,13 @@ const cardSpring = {
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   transition: height 0.5s cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* Bottom-anchor the content: the footer stays welded to the card's lower
+     edge while the springy `height` transition plays, so the bounce lives at
+     the top (the header) and never lifts the footer off the card's bottom
+     (which used to flash the card's border line beneath it). */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 
 .picker-row {
@@ -887,21 +866,6 @@ const cardSpring = {
 }
 .picker-action:hover .picker-git-inline .picker-repo {
   opacity: 1;
-}
-
-/* Outgoing rows: sit exactly where they were, fade out in place. */
-.ghost-row {
-  position: absolute;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.5rem 0.75rem;
-  opacity: 1;
-  will-change: opacity;
-  transition: opacity 0.4s cubic-bezier(0.45, 0, 0.55, 1);
-}
-.ghost-row.is-out {
-  opacity: 0;
 }
 
 /* Top + bottom bands — full-bleed recessed surfaces set off from the list.
