@@ -50,6 +50,17 @@ const dots = computed<DotTone[]>(() =>
     return "idle";
   }),
 );
+
+// four realistic mini file cards (badge + three diff lines) splayed behind the
+// overlapping pill. Line tones: grey #d0cec9, green #10a56f, red #e5484d,
+// mint #8fd9bd.
+const g = "#d0cec9";
+const bundleCards = [
+  { badge: "TS", bg: "#3178c6", fg: "#fff", size: 7, lines: [[42, g], [30, "#10a56f"], [36, g]], x: 10, y: 4, r: -13 },
+  { badge: "JS", bg: "#f7df1e", fg: "#1a1a1a", size: 7, lines: [[40, g], [28, "#e5484d"], [34, g]], x: 24, y: 0, r: -4 },
+  { badge: "MD", bg: "#64748b", fg: "#fff", size: 7, lines: [[44, "#10a56f"], [32, "#10a56f"], [38, "#8fd9bd"]], x: 38, y: 0, r: 5 },
+  { badge: "CSS", bg: "#1572b6", fg: "#fff", size: 6, lines: [[42, g], [30, g], [36, g]], x: 34, y: 6, r: 14, front: true },
+] as const;
 </script>
 
 <template>
@@ -143,12 +154,30 @@ const dots = computed<DotTone[]>(() =>
         :deleted="c.deleted"
       />
       <button v-if="overflow > 0" type="button" class="bundle">
-        <span class="bundle__stack">
-          <span class="bundle__sheet bundle__sheet--3" />
-          <span class="bundle__sheet bundle__sheet--2" />
-          <span class="bundle__sheet bundle__sheet--1" />
+        <span class="bundle__inner">
+          <span
+            v-for="(card, i) in bundleCards"
+            :key="i"
+            class="bundle__card"
+            :class="{ 'bundle__card--front': card.front }"
+            :style="{ left: `${card.x}px`, top: `${card.y}px`, transform: `rotate(${card.r}deg)` }"
+          >
+            <span class="bundle__badge" :style="{ background: card.bg, color: card.fg, fontSize: `${card.size}px` }">
+              {{ card.badge }}
+            </span>
+            <span class="bundle__lines">
+              <i
+                v-for="(ln, j) in card.lines"
+                :key="j"
+                :style="{ width: `${ln[0]}px`, background: ln[1] }"
+              />
+            </span>
+          </span>
+          <span class="bundle__label">
+            <span class="bundle__count">+{{ overflow }}</span>
+            <span class="bundle__word">more</span>
+          </span>
         </span>
-        <span class="bundle__label">+{{ overflow }} more</span>
       </button>
     </div>
   </div>
@@ -258,51 +287,83 @@ const dots = computed<DotTone[]>(() =>
   gap: 12px;
 }
 
-/* +N bundle: a little stack of sheets you'll be able to unpack. */
+/* +N bundle: a fanned stack of real file cards you'll be able to unpack,
+   with the count pill overlapping the bottom edge (Paper "+9 more"). */
 .bundle {
-  position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
   height: 178px;
   cursor: pointer;
 }
-.bundle__stack {
+.bundle__inner {
   position: relative;
-  width: 46px;
-  height: 56px;
+  width: 132px;
+  height: 138px;
 }
-.bundle__sheet {
+.bundle__card {
   position: absolute;
-  inset: 0;
-  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 80px;
+  height: 100px;
+  padding: 11px;
+  border-radius: 10px;
   background-color: var(--sheet-bg, #fff);
-  border: 1px solid rgb(161 161 170 / 0.18);
-  box-shadow: #1e1b180f 0 3px 8px;
+  border: 1px solid rgb(161 161 170 / 0.16);
+  box-shadow: #1e1b1814 0 4px 12px;
+  transform-origin: top left;
 }
-.bundle__sheet--3 {
-  transform: translate(8px, -6px) rotate(7deg);
-  opacity: 0.55;
+.bundle__card--front {
+  box-shadow: #1e1b1820 0 6px 16px;
 }
-.bundle__sheet--2 {
-  transform: translate(4px, -3px) rotate(3deg);
-  opacity: 0.8;
+.bundle__badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  font-family: "Inter", system-ui, sans-serif;
+  font-weight: 700;
+  line-height: 1;
 }
-.bundle__sheet--1 {
-  transform: translate(0, 0);
+.bundle__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bundle__lines i {
+  height: 3px;
+  border-radius: 2px;
 }
 .bundle__label {
+  position: absolute;
+  left: 50%;
+  top: 112px;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--ground);
+  gap: 5px;
+  height: 22px;
+  padding-inline: 10px;
+  border-radius: 11px;
+  background-color: #27272a;
+  box-shadow: #1e1b1826 0 2px 6px;
+}
+.bundle__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+}
+.bundle__word {
   font-family: "Inter", system-ui, sans-serif;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 500;
+  line-height: 1;
+  color: #d4d4d8;
 }
 
 /* ── empty state ────────────────────────────────────────────────────────── */
@@ -368,11 +429,11 @@ const dots = computed<DotTone[]>(() =>
 }
 
 @media (prefers-color-scheme: dark) {
-  .bundle__sheet,
+  .bundle__card,
   .empty__sheet {
     --sheet-bg: #17171a;
   }
-  .bundle__sheet {
+  .bundle__card {
     border-color: rgb(255 255 255 / 0.08);
   }
   .ch__dot--idle {
