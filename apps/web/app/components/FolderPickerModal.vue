@@ -183,7 +183,9 @@ const cardSpring = {
       }"
       :transition="cardSpring"
     >
-      <div ref="contentEl" class="flex flex-col p-6">
+      <!-- Vertical + left padding only: the scroll area runs to the card's right
+           edge so its scrollbar sits at the edge (the footer re-pads its right). -->
+      <div ref="contentEl" class="flex flex-col py-4 pl-4">
         <!-- Breadcrumbs + focused level as one keyed list. Persisting rows keep
              their :key (no re-animate, stay crisp) and ride the FLIP; incoming
              rows fade in; outgoing rows leave via the ghost layer above. -->
@@ -324,7 +326,7 @@ const cardSpring = {
         </div>
 
         <!-- Footer: open the folder currently in focus, or back out. -->
-        <div class="mt-6 flex items-center justify-end gap-6">
+        <div class="mt-5 flex items-center justify-end gap-6 pr-4">
           <button type="button" class="picker-action text-muted" @click="cancel">
             Cancel
           </button>
