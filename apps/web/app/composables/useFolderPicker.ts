@@ -38,6 +38,14 @@ export function useFolderPicker() {
   // path and cached, so re-visiting a folder never re-runs git.
   const summaries = reactive<Record<string, GitRepo>>({});
   const loading = ref(false);
+  // Set when `init()` itself fails (unreadable home directory) — the modal
+  // has nothing to show, so it renders this message in place of the list
+  // instead of sitting there empty and unresponsive.
+  const error = ref<string | null>(null);
+  // Set when a listing mid-session (descend / climb / typed path) comes back
+  // unreadable — distinct from a folder that's genuinely empty, so the list
+  // can say which one happened instead of showing "No subfolders" for both.
+  const readError = ref(false);
 
   const current = computed<Crumb | null>(
     () => trail.value[trail.value.length - 1] ?? null,
@@ -53,6 +61,34 @@ export function useFolderPicker() {
       .map((node, index) => ({ node, index }))
       .filter((c) => c.index > 0),
   );
+
+  // ── ascend above the trail's anchor ─────────────────────────────────────────
+  // The trail is always anchored at home (or, after a typed path, at "/") — so
+  // clicking around never reaches `/Users` or a sibling of home. `ascend` steps
+  // the anchor itself up to its parent, re-rooting the whole trail one level
+  // higher (`goToPath` decides whether the new anchor is still under home).
+  const rootPath = computed(() => trail.value[0]?.path);
+  // The anchor's parent path, or `null` when there's nowhere left to climb
+  // (no anchor yet, or the anchor already IS the filesystem root).
+  const parentPath = computed(() => {
+    const p = rootPath.value;
+    if (!p || p === "/") return null;
+    const cut = p.lastIndexOf("/");
+    return cut <= 0 ? "/" : p.slice(0, cut);
+  });
+  const canAscend = computed(() => parentPath.value !== null);
+  // Basename of the parent, shown as the up-affordance's label — "/" itself
+  // when ascending lands on the filesystem root (e.g. from `/Users`).
+  const parentName = computed(() => {
+    const p = parentPath.value;
+    if (!p) return "";
+    return p === "/" ? "/" : (p.split("/").filter(Boolean).pop() ?? p);
+  });
+  async function ascend() {
+    const p = parentPath.value;
+    if (!p) return; // nothing above the current anchor
+    await goToPath(p);
+  }
 
   const STEP = 26; // px of indent per level of depth
   const MAX_STEPS = 4; // clamp so deep trees don't march off the edge
@@ -234,9 +270,12 @@ export function useFolderPicker() {
   async function load(path: string): Promise<DirEntry[]> {
     try {
       const listing = await listDir(path);
+      readError.value = false;
       return listing.entries;
     } catch {
-      return []; // unreadable (permissions) — show an empty level
+      readError.value = true; // unreadable (permissions) — flag it so the
+      // modal can tell this apart from a folder that's just empty
+      return [];
     }
   }
 
@@ -262,6 +301,7 @@ export function useFolderPicker() {
     trail.value = opts.nextTrail;
     entries.value = next;
     loading.value = false;
+    error.value = null; // any successful navigation clears init()'s fatal error
 
     const newPaths = new Set(rows.value.map((r) => r.path));
     // Outgoing rows → ghosts that fade out where they were.
@@ -328,25 +368,27 @@ export function useFolderPicker() {
   // Jump straight to a typed absolute path (the header address bar). Leading
   // `~` expands to home; a trailing slash is tolerated. The path is validated
   // by listing it — if it can't be read (typo, permissions) we leave the view
-  // untouched and report failure so the caller can restore the field. The
+  // untouched. The result is discriminated so the caller (the modal's
+  // `submitPath`) can tell "the path was bad" from "we were mid-navigation and
+  // ignored it" apart — the two need very different field behavior. The
   // ancestor chain becomes the breadcrumb trail, anchored at home when the path
   // sits under it, else at the filesystem root.
-  async function goToPath(raw: string): Promise<boolean> {
-    if (loading.value) return false;
+  async function goToPath(raw: string): Promise<"ok" | "invalid" | "busy"> {
+    if (loading.value) return "busy";
     const root = await home();
     homePath.value = root;
     let path = raw.trim();
     if (path === "~") path = root;
     else if (path.startsWith("~/")) path = root + path.slice(1);
     if (path.length > 1) path = path.replace(/\/+$/, ""); // drop trailing slash
-    if (!path) return false;
-    if (path === current.value?.path) return true;
+    if (!path) return "invalid";
+    if (path === current.value?.path) return "ok";
 
     let listing: DirListing;
     try {
       listing = await listDir(path);
     } catch {
-      return false; // unreadable / nonexistent — caller restores the field
+      return "invalid"; // unreadable / nonexistent — caller restores the field
     }
 
     // Anchor the trail at home if `path` lives under it, otherwise at "/".
@@ -365,33 +407,50 @@ export function useFolderPicker() {
     if (last) last.repo = listing.repo;
 
     await navigate({ loadPath: path, nextTrail });
-    return true;
+    return "ok";
   }
 
   // Child directory names of a path, cached, for the header's autocomplete.
-  const childCache = new Map<string, string[]>();
+  // Cached entries expire after a short TTL — long enough to skip re-listing
+  // on every keystroke of a single completion, short enough that a folder
+  // created/removed mid-session shows up without waiting out the whole modal
+  // lifetime (the cache never had a global invalidation otherwise).
+  const CHILD_CACHE_TTL_MS = 10_000;
+  const childCache = new Map<string, { names: string[]; at: number }>();
   async function childDirs(path: string): Promise<string[]> {
     const hit = childCache.get(path);
-    if (hit) return hit;
+    if (hit && Date.now() - hit.at < CHILD_CACHE_TTL_MS) return hit.names;
     try {
       const listing = await listDir(path);
       const names = listing.entries.map((e) => e.name);
-      childCache.set(path, names);
+      childCache.set(path, { names, at: Date.now() });
       return names;
     } catch {
       return [];
     }
   }
 
-  // Load the home directory as the initial level.
+  // Load the home directory as the initial level. Guarded end-to-end: if the
+  // home directory itself can't be read, the modal would otherwise be stuck
+  // invisible and permanently locked (nothing ever sets `shown`, no listeners
+  // get attached). Failing here instead leaves `trail`/`entries` empty and
+  // records `error` so the modal can show a message with Cancel still live.
   async function init() {
-    const root = await home();
-    homePath.value = root;
-    const listing = await listDir(root);
-    trail.value = [
-      { name: listing.name, path: listing.path, repo: listing.repo },
-    ];
-    entries.value = listing.entries;
+    error.value = null;
+    readError.value = false;
+    try {
+      const root = await home();
+      homePath.value = root; // resolved before listDir so the header never blanks
+      const listing = await listDir(root);
+      trail.value = [
+        { name: listing.name, path: listing.path, repo: listing.repo },
+      ];
+      entries.value = listing.entries;
+    } catch {
+      trail.value = [];
+      entries.value = [];
+      error.value = "Couldn't read this folder.";
+    }
   }
 
   return {
@@ -403,6 +462,8 @@ export function useFolderPicker() {
     currentPath,
     currentGit,
     rows,
+    error,
+    readError,
     // layout
     childIndent,
     rowIndent,
@@ -424,6 +485,10 @@ export function useFolderPicker() {
     ghostsOut,
     navigating,
     TRANSITION_MS,
+    // ascend above the trail's anchor
+    canAscend,
+    parentName,
+    ascend,
     // actions
     descend,
     climbTo,
