@@ -102,12 +102,18 @@ export type KoneGitApi = {
   log: (dir: string, limit?: number) => Promise<GitCommit[]>;
 };
 
+export type KoneSystemApi = {
+  /** The signed-in OS account's short username, or null if unreadable. */
+  username: () => Promise<string | null>;
+};
+
 export type KoneDesktopApi = {
   isDesktop: true;
   platform: string;
   version: string;
   fs: KoneFsApi;
   git: KoneGitApi;
+  system: KoneSystemApi;
 };
 
 declare global {

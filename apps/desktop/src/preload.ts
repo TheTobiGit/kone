@@ -33,6 +33,11 @@ const api = {
     log: (dir: string, limit?: number): Promise<GitCommit[]> =>
       ipcRenderer.invoke("git:log", dir, limit),
   },
+  system: {
+    // The signed-in OS account's short username, or null if unreadable.
+    username: (): Promise<string | null> =>
+      ipcRenderer.invoke("system:username"),
+  },
 };
 
 contextBridge.exposeInMainWorld("koneDesktop", api);

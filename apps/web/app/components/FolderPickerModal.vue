@@ -199,32 +199,50 @@ function cancel() {
 }
 
 // ── single-click-descend vs. double-click-open ──────────────────────────────
-// A single click on an entry descends into it (see `descend`), which reflows
-// the list — so a naive `@dblclick` would already have navigated away by the
-// time the second click landed. Instead every click is debounced: the first
-// click schedules a delayed `descend` and the second click (detected via
-// `event.detail`, which increments per click on the same element within the
-// platform's double-click window) cancels that pending descend and opens the
-// folder directly. The tradeoff is that single-click navigation now lands
-// ~260ms late — imperceptible for browsing, but it's what buys the double-click
-// its window to pre-empt it.
-let clickTimer: number | null = null;
-const DOUBLE_CLICK_DEBOUNCE_MS = 260;
+// A single click on an entry descends into it (see `descend`), a double-click
+// opens it directly. We used to debounce single clicks behind the double-click
+// window so a second click could pre-empt the descend — but that taxed EVERY
+// descent with a ~260ms stall before it even began, while a typed path or a
+// breadcrumb climb navigated instantly. So we descend on the first click at
+// once (no stall) and detect the double-click after the fact.
+//
+// Descending reflows the list: the clicked folder keeps its `:key`, so it's the
+// same DOM node — it just turns from an entry into the newest (current) crumb.
+// A double-click's second click therefore lands on that same node, but which
+// handler it hits depends on whether the descend's listing has re-rendered yet:
+//   • not yet  → still an entry → `onEntryClick` with `event.detail >= 2`
+//   • already  → now a crumb    → `onCrumbClick`, recognised by `recentDescend`
+// Either way we open the folder instead of descending/climbing again.
+const DOUBLE_CLICK_MS = 260;
+// The folder the last click descended into, and when — so a quick follow-up
+// click on it (now the current crumb) reads as double-click-to-open, not a
+// climb back out. Timing-gated, so a deliberate later climb still climbs.
+let recentDescend: { path: string; at: number } | null = null;
 
 function onEntryClick(row: Row, event: MouseEvent) {
-  if (clickTimer !== null) {
-    window.clearTimeout(clickTimer);
-    clickTimer = null;
-  }
-  if (event.detail >= 2) {
-    // Second click of a double-click: open this folder directly.
+  if (event.detail >= 2 && recentDescend?.path === row.path) {
+    // Double-click whose second click beat the descend's re-render: open it.
+    recentDescend = null;
     openFolder({ path: row.path, name: row.name });
     return;
   }
-  clickTimer = window.setTimeout(() => {
-    descend(row);
-    clickTimer = null;
-  }, DOUBLE_CLICK_DEBOUNCE_MS);
+  recentDescend = { path: row.path, at: Date.now() };
+  descend(row);
+}
+
+function onCrumbClick(row: Row) {
+  // Double-click on the folder we just descended into (now the current crumb):
+  // open it directly rather than climbing back out.
+  if (
+    row.current &&
+    recentDescend?.path === row.path &&
+    Date.now() - recentDescend.at < DOUBLE_CLICK_MS
+  ) {
+    recentDescend = null;
+    openFolder({ path: row.path, name: row.name });
+    return;
+  }
+  climbTo(row.index);
 }
 
 // Fade + scale the modal out, then hand control back to the caller. The delay
@@ -371,7 +389,6 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", measure);
   ro?.disconnect();
   opener?.focus();
-  if (clickTimer !== null) window.clearTimeout(clickTimer);
 });
 
 // Springy pop for the card's entrance (a little overshoot on the way in).
@@ -533,7 +550,9 @@ const cardSpring = {
                 :animate="itemShown"
                 :transition="enter"
                 @click="
-                  row.kind === 'crumb' ? climbTo(row.index) : onEntryClick(row, $event)
+                  row.kind === 'crumb'
+                    ? onCrumbClick(row)
+                    : onEntryClick(row, $event)
                 "
               >
                 <span class="picker-travel">

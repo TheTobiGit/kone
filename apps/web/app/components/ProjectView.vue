@@ -12,10 +12,15 @@ defineEmits<{ close: [] }>();
 // (canned for the mock repos in `nuxt dev`); `status` gives the per-file change
 // list that feeds both the ChangesPanel cards and the folder's peeking papers.
 const git = useGit();
+const loaded = ref(false);
 const repo = ref(true);
+const hasCommits = ref(true);
 const branch = ref<string | null>(null);
+const clean = ref(false);
 const added = ref(0);
 const removed = ref(0);
+const ahead = ref(0);
+const behind = ref(0);
 const changes = ref<GitChange[]>([]);
 
 function langOf(path: string): FolderFile["lang"] {
@@ -60,22 +65,48 @@ onMounted(async () => {
   added.value = detected?.added ?? 0;
   removed.value = detected?.removed ?? 0;
   changes.value = status?.changes ?? [];
+
+  // A null HEAD is an unborn branch — a repo with no commits yet.
+  hasCommits.value = status ? status.head !== null : true;
+  clean.value = status?.clean ?? detected?.clean ?? true;
+  ahead.value = status?.ahead ?? detected?.ahead ?? 0;
+  behind.value = status?.behind ?? detected?.behind ?? 0;
+  loaded.value = true;
 });
+
+// Files with any change, and how many of them are staged — drives the greeting.
+const fileCount = computed(() => changeItems.value.length);
+const stagedCount = computed(() => changes.value.filter((c) => c.staged).length);
 </script>
 
 <template>
   <main
     class="relative flex h-full min-h-screen items-center justify-center bg-ground px-16 py-16"
   >
-    <!-- The file changes sit in the middle of the page (Project Home language);
-         the agent conversation will grow around this next. -->
-    <ChangesPanel
-      class="w-full max-w-4xl"
-      :branch="branch"
-      :added="added"
-      :removed="removed"
-      :changes="changeItems"
-    />
+    <!-- The greeting + file changes sit in the middle of the page (Project Home
+         language); the agent conversation will grow around this next. -->
+    <div class="flex w-full max-w-4xl flex-col gap-11">
+      <HomeGreeting
+        :project-name="project.name"
+        :loading="!loaded"
+        :repo="repo"
+        :has-commits="hasCommits"
+        :branch="branch"
+        :clean="clean"
+        :added="added"
+        :removed="removed"
+        :file-count="fileCount"
+        :staged="stagedCount"
+        :ahead="ahead"
+        :behind="behind"
+      />
+      <ChangesPanel
+        :branch="branch"
+        :added="added"
+        :removed="removed"
+        :changes="changeItems"
+      />
+    </div>
 
     <!-- Folder anchored in the bottom-left corner, ambient. -->
     <div class="absolute bottom-10 left-10">

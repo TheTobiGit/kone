@@ -5,6 +5,7 @@ import { app, BrowserWindow, net, protocol, shell } from "electron";
 
 import { registerFsIpc } from "./fs.js";
 import { registerGitIpc } from "./git.js";
+import { registerSystemIpc } from "./system.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.KONE_DEV === "1";
@@ -56,6 +57,9 @@ function registerIpc() {
 
   // Git inspection (recognize repos, read status / branches / commits).
   registerGitIpc();
+
+  // Host-machine facts (the signed-in account's username, …).
+  registerSystemIpc();
 }
 
 async function createWindow() {
