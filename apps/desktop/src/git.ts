@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -31,6 +32,10 @@ export type GitChange = {
   staged: boolean;
   /** Present in the working tree (has an unstaged change). */
   unstaged: boolean;
+  /** Lines inserted in this file (working tree vs HEAD; whole file if new). */
+  added?: number;
+  /** Lines deleted in this file (working tree vs HEAD). */
+  removed?: number;
 };
 
 export type GitBranch = {
@@ -287,6 +292,79 @@ function changeFromXY(xy: string, filePath: string, from?: string): GitChange {
   };
 }
 
+// ── per-file line counts ──────────────────────────────────────────────────────
+// `git status` reports what changed but not how much. We layer numstat on top so
+// each change carries its own +/− — the working tree vs HEAD for tracked files,
+// and the whole file for untracked ones (nothing to diff against yet).
+
+/** Map of repo-relative path → {added, removed} for tracked changes vs HEAD. */
+async function trackedLineCounts(
+  root: string,
+): Promise<Map<string, { added: number; removed: number }>> {
+  const map = new Map<string, { added: number; removed: number }>();
+  let out: string;
+  try {
+    // vs HEAD covers staged + unstaged edits to tracked files in one pass.
+    out = await git(root, ["diff", "--numstat", "--no-renames", "HEAD"]);
+  } catch {
+    // Unborn branch (no HEAD): only staged content exists to measure.
+    try {
+      out = await git(root, ["diff", "--numstat", "--no-renames", "--cached"]);
+    } catch {
+      return map;
+    }
+  }
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    // "<added>\t<removed>\t<path>"; binary files report "-\t-".
+    const tab1 = line.indexOf("\t");
+    const tab2 = line.indexOf("\t", tab1 + 1);
+    if (tab1 < 0 || tab2 < 0) continue;
+    const a = line.slice(0, tab1);
+    const r = line.slice(tab1 + 1, tab2);
+    const filePath = line.slice(tab2 + 1);
+    map.set(filePath, {
+      added: a === "-" ? 0 : Number(a),
+      removed: r === "-" ? 0 : Number(r),
+    });
+  }
+  return map;
+}
+
+/** Line count of an untracked file (its whole content is "added"). Binary or
+ *  unreadable files count as 0. */
+async function fileLineCount(root: string, relPath: string): Promise<number> {
+  try {
+    const buf = await readFile(path.join(root, relPath));
+    if (buf.length === 0 || buf.includes(0)) return 0;
+    let lines = 0;
+    for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) lines++;
+    // A final line without a trailing newline still counts.
+    if (buf[buf.length - 1] !== 0x0a) lines++;
+    return lines;
+  } catch {
+    return 0;
+  }
+}
+
+/** Attach per-file +/− to every change in `status`, in place. */
+async function attachLineCounts(status: GitStatus): Promise<void> {
+  const tracked = await trackedLineCounts(status.root);
+  await Promise.all(
+    status.changes.map(async (change) => {
+      if (change.status === "ignored") return;
+      if (change.status === "untracked") {
+        change.added = await fileLineCount(status.root, change.path);
+        change.removed = 0;
+        return;
+      }
+      const counts = tracked.get(change.path);
+      change.added = counts?.added ?? 0;
+      change.removed = counts?.removed ?? 0;
+    }),
+  );
+}
+
 // ── public operations ────────────────────────────────────────────────────────
 
 /** Full working-tree status, or null when `dir` isn't inside a git repo. */
@@ -299,7 +377,9 @@ export async function status(dir: string): Promise<GitStatus | null> {
     "--branch",
     "-z",
   ]);
-  return parseStatus(root, out);
+  const parsed = parseStatus(root, out);
+  await attachLineCounts(parsed);
+  return parsed;
 }
 
 /** Parse `git diff --shortstat` output, e.g.

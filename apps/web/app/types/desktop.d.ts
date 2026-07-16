@@ -40,6 +40,10 @@ export type GitChange = {
   status: GitFileStatus;
   staged: boolean;
   unstaged: boolean;
+  /** Lines inserted in this file (working tree vs HEAD), when known. */
+  added?: number;
+  /** Lines deleted in this file, when known. */
+  removed?: number;
 };
 
 export type GitBranch = {
