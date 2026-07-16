@@ -1,5 +1,5 @@
 import { computed, nextTick, reactive, ref, watch } from "vue";
-import type { DirEntry, GitRepo } from "~/types/desktop";
+import type { DirEntry, DirListing, GitRepo } from "~/types/desktop";
 
 // Shared brain for the in-app folder browser. Both shells — the full-page
 // `FolderPicker` and the elastic `FolderPickerModal` — consume this, so the
@@ -28,6 +28,8 @@ export function useFolderPicker() {
   const { home, listDir } = useFileSystem();
   const { detect } = useGit();
 
+  // Absolute home path, resolved once — used to display paths as `~/…`.
+  const homePath = ref("");
   // The path from home (index 0) down to the folder in focus (last).
   const trail = ref<Crumb[]>([]);
   // Subdirectories of the focused folder.
@@ -323,9 +325,68 @@ export function useFolderPicker() {
     });
   }
 
+  // Jump straight to a typed absolute path (the header address bar). Leading
+  // `~` expands to home; a trailing slash is tolerated. The path is validated
+  // by listing it — if it can't be read (typo, permissions) we leave the view
+  // untouched and report failure so the caller can restore the field. The
+  // ancestor chain becomes the breadcrumb trail, anchored at home when the path
+  // sits under it, else at the filesystem root.
+  async function goToPath(raw: string): Promise<boolean> {
+    if (loading.value) return false;
+    const root = await home();
+    homePath.value = root;
+    let path = raw.trim();
+    if (path === "~") path = root;
+    else if (path.startsWith("~/")) path = root + path.slice(1);
+    if (path.length > 1) path = path.replace(/\/+$/, ""); // drop trailing slash
+    if (!path) return false;
+    if (path === current.value?.path) return true;
+
+    let listing: DirListing;
+    try {
+      listing = await listDir(path);
+    } catch {
+      return false; // unreadable / nonexistent — caller restores the field
+    }
+
+    // Anchor the trail at home if `path` lives under it, otherwise at "/".
+    const base = path === root || path.startsWith(root + "/") ? root : "/";
+    const baseName =
+      base === "/" ? "/" : (base.split("/").filter(Boolean).pop() ?? base);
+    const nextTrail: Crumb[] = [{ name: baseName, path: base, repo: false }];
+    const rel = path === base ? "" : path.slice(base.length).replace(/^\/+/, "");
+    let acc = base === "/" ? "" : base;
+    for (const seg of rel ? rel.split("/") : []) {
+      acc = `${acc}/${seg}`;
+      nextTrail.push({ name: seg, path: acc, repo: false });
+    }
+    // The focused folder's repo flag is known from the listing we just read.
+    const last = nextTrail[nextTrail.length - 1];
+    if (last) last.repo = listing.repo;
+
+    await navigate({ loadPath: path, nextTrail });
+    return true;
+  }
+
+  // Child directory names of a path, cached, for the header's autocomplete.
+  const childCache = new Map<string, string[]>();
+  async function childDirs(path: string): Promise<string[]> {
+    const hit = childCache.get(path);
+    if (hit) return hit;
+    try {
+      const listing = await listDir(path);
+      const names = listing.entries.map((e) => e.name);
+      childCache.set(path, names);
+      return names;
+    } catch {
+      return [];
+    }
+  }
+
   // Load the home directory as the initial level.
   async function init() {
     const root = await home();
+    homePath.value = root;
     const listing = await listDir(root);
     trail.value = [
       { name: listing.name, path: listing.path, repo: listing.repo },
@@ -335,6 +396,7 @@ export function useFolderPicker() {
 
   return {
     // state
+    homePath,
     trail,
     entries,
     current,
@@ -365,6 +427,8 @@ export function useFolderPicker() {
     // actions
     descend,
     climbTo,
+    goToPath,
+    childDirs,
     init,
   };
 }

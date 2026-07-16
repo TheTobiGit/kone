@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from "vue";
+import { onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { motion } from "motion-v";
 import { Magnet } from "~/components/ui/magnet";
 
@@ -37,12 +37,102 @@ const {
   TRANSITION_MS,
   descend,
   climbTo,
+  goToPath,
+  childDirs,
+  homePath,
   init,
   entries,
 } = useFolderPicker();
 
 // Drives the modal's open/close fade + scale.
 const shown = ref(false);
+
+// ── header address bar ──────────────────────────────────────────────────────
+// The header shows the focused folder's path as an editable field, with the
+// home directory shown as `~`. It tracks `current` while the user browses;
+// typing autocompletes the folder name against the parent's children, Enter
+// jumps to the path, and a failed jump (or Escape) restores it.
+const pathInput = ref<HTMLInputElement | null>(null);
+const pathDraft = ref("");
+
+// `~/…` for display; expanded back to absolute for filesystem calls. (goToPath
+// re-expands on its own, but autocomplete needs the absolute parent too.)
+function collapse(path: string): string {
+  const home = homePath.value;
+  if (!home) return path;
+  if (path === home) return "~/"; // home itself always keeps the trailing slash
+  if (path.startsWith(home + "/")) return "~" + path.slice(home.length);
+  return path;
+}
+function expand(display: string): string {
+  const home = homePath.value;
+  if (!home) return display;
+  if (display === "~") return home;
+  if (display.startsWith("~/")) return home + display.slice(1);
+  return display;
+}
+
+watch(current, (folder) => (pathDraft.value = collapse(folder?.path ?? "")), {
+  immediate: true,
+});
+
+// Autocomplete: on each keystroke (not deletions, caret at end), find the first
+// child of the parent directory that the trailing segment prefixes, append the
+// remainder, and select it — so continued typing overwrites it and Tab / → / /
+// accept it.
+async function onType(event: Event) {
+  const el = event.target as HTMLInputElement;
+  const value = el.value;
+  pathDraft.value = value;
+  const inputType = (event as InputEvent).inputType ?? "";
+  if (inputType.startsWith("delete")) return;
+  if (el.selectionStart !== value.length) return;
+
+  const frag = value.slice(value.lastIndexOf("/") + 1);
+  if (!frag) return;
+  const expanded = expand(value);
+  const cut = expanded.lastIndexOf("/");
+  const parent = cut <= 0 ? "/" : expanded.slice(0, cut);
+  const names = await childDirs(parent);
+  if (el.value !== value) return; // field moved on while we listed
+  const match = names.find(
+    (n) =>
+      n.length > frag.length && n.toLowerCase().startsWith(frag.toLowerCase()),
+  );
+  if (!match) return;
+
+  // frag + match share display/absolute form (only the home prefix differs),
+  // so we can splice the completion straight onto the displayed value.
+  const completed = value + match.slice(frag.length);
+  el.value = completed;
+  pathDraft.value = completed;
+  el.setSelectionRange(value.length, completed.length);
+}
+
+// Tab / → accept the selected completion; `/` accepts it then descends.
+function onFieldKeydown(event: KeyboardEvent) {
+  const el = pathInput.value;
+  if (!el || el.selectionStart === el.selectionEnd) return;
+  if (event.key === "Tab" || event.key === "ArrowRight") {
+    event.preventDefault();
+  } else if (event.key !== "/") {
+    return;
+  }
+  const end = el.value.length;
+  el.setSelectionRange(end, end); // collapse selection to the end (accept)
+  pathDraft.value = el.value;
+}
+
+async function submitPath() {
+  const ok = await goToPath(pathDraft.value);
+  if (ok) pathInput.value?.blur();
+  else pathDraft.value = collapse(current.value?.path ?? ""); // bad path — restore
+}
+
+function resetPath() {
+  pathDraft.value = collapse(current.value?.path ?? "");
+  pathInput.value?.blur();
+}
 
 // ── elastic height ────────────────────────────────────────────────────────────
 // The card is sized to its content and re-sized whenever the content reflows, so
@@ -76,6 +166,27 @@ function close(done: () => void) {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  // Type-to-focus: a printable key while the address bar is unfocused jumps into
+  // it and continues from the folder in focus — seeded with the current path plus
+  // a trailing slash, so the keystroke lands as a child of where you are (and
+  // autocomplete resolves it against the current folder).
+  const field = pathInput.value;
+  if (
+    field &&
+    document.activeElement !== field &&
+    event.key.length === 1 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey
+  ) {
+    field.focus();
+    const base = collapse(current.value?.path ?? "");
+    const seed = base.endsWith("/") ? base : base + "/";
+    field.value = seed;
+    pathDraft.value = seed;
+    field.setSelectionRange(seed.length, seed.length);
+    return; // let the character land right after the current path's slash
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     cancel();
@@ -186,6 +297,34 @@ const cardSpring = {
       <!-- Vertical + left padding only: the scroll area runs to the card's right
            edge so its scrollbar sits at the edge (the footer re-pads its right). -->
       <div ref="contentEl" class="flex flex-col py-4 pl-4">
+        <!-- Header: the focused folder's full path as an editable address bar,
+             in a curved band that mirrors the footer — its bottom edge arcs
+             DOWN into the walls. Type a path + Enter to jump there. -->
+        <div class="picker-header -ml-4 -mt-4 mb-4 flex items-center gap-4">
+          <input
+            ref="pathInput"
+            :value="pathDraft"
+            class="picker-path-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            aria-label="Directory path — edit and press Enter to go there"
+            @input="onType"
+            @keydown="onFieldKeydown"
+            @keydown.enter.stop.prevent="submitPath"
+            @keydown.esc.stop.prevent="resetPath"
+          />
+          <button
+            type="button"
+            class="picker-action shrink-0 text-muted"
+            @click="cancel"
+          >
+            Cancel
+          </button>
+        </div>
+
         <!-- Breadcrumbs + focused level as one keyed list. Persisting rows keep
              their :key (no re-animate, stay crisp) and ride the FLIP; incoming
              rows fade in; outgoing rows leave via the ghost layer above. -->
@@ -325,18 +464,21 @@ const cardSpring = {
           </p>
         </div>
 
-        <!-- Footer: open the folder currently in focus, or back out. -->
-        <div class="mt-5 flex items-center justify-end gap-6 pr-4">
-          <button type="button" class="picker-action text-muted" @click="cancel">
-            Cancel
-          </button>
+        <!-- Footer: open the folder currently in focus, or back out. Breaks out
+             of the content padding to sit as a full-bleed band with its own
+             surface, clipped to the card's rounded bottom corners. -->
+        <div
+          class="picker-footer -mb-4 -ml-4 mt-4 flex items-center justify-end gap-6"
+        >
           <button
             type="button"
-            class="picker-action text-ink"
+            class="picker-action min-w-0 text-ink"
             :disabled="!current"
             @click="open"
           >
-            Open <span class="text-ink-soft">“{{ current?.name }}”</span>
+            <span class="picker-open-label"
+              >Open <span class="text-ink-soft">“{{ current?.name }}”</span></span
+            >
             <span v-if="current?.repo" class="picker-git picker-git-inline">
               <span
                 class="picker-repo"
@@ -371,13 +513,6 @@ const cardSpring = {
                 <span class="picker-branch">{{
                   currentGit.branch ?? "detached"
                 }}</span>
-                <span
-                  v-if="currentGit.added || currentGit.removed"
-                  class="picker-diff"
-                >
-                  <span class="picker-add">+{{ currentGit.added }}</span>
-                  <span class="picker-del">−{{ currentGit.removed }}</span>
-                </span>
               </motion.span>
             </span>
           </button>
@@ -399,6 +534,11 @@ const cardSpring = {
    gives it the springy overshoot as it grows and shrinks with the listing; a
    hairline ring settles it on the scrim without a heavy drop shadow. */
 .modal-card {
+  /* Shared surface for the top (path) and bottom (actions) bands: all but the
+     same as the card, only a hair recessed so a band barely reads as its own.
+     `--band-arc` is the radius of the concave scoop at each band's inner edge. */
+  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-arc: 14px;
   background: var(--surface, var(--ground));
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
@@ -534,9 +674,11 @@ const cardSpring = {
   }
 }
 
-/* Footer "Open …" variant — nudge the row onto the text baseline. */
+/* Footer "Open …" variant — allowed to shrink so the branch truncates instead
+   of wrapping the button onto a second line. */
 .picker-git-inline {
-  vertical-align: -3px;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .picker-git-inline .picker-repo {
   opacity: 0.85;
@@ -560,12 +702,117 @@ const cardSpring = {
   opacity: 0;
 }
 
+/* Top + bottom bands — full-bleed recessed surfaces set off from the list.
+   Each has a flat inner edge across the middle that arcs into the side walls at
+   both ends (concave corners), so the band scoops to meet the card. The header
+   scoops DOWN (arcs below it); the footer scoops UP (arcs above it). */
+.picker-header,
+.picker-footer {
+  position: relative;
+  padding: 0.625rem 1rem;
+  background-color: var(--band-bg);
+}
+
+/* Each concave arc sits in a band-arc × band-arc box just past the band's inner
+   corner; a radial-gradient carves the scoop, filling the wall-side quarter. */
+.picker-header::before,
+.picker-header::after,
+.picker-footer::before,
+.picker-footer::after {
+  content: "";
+  position: absolute;
+  width: var(--band-arc);
+  height: var(--band-arc);
+  pointer-events: none;
+}
+
+/* Footer: arcs above, filled toward the bottom (wall + band side). */
+.picker-footer::before,
+.picker-footer::after {
+  bottom: 100%;
+}
+.picker-footer::before {
+  left: 0;
+  background: radial-gradient(
+    circle at top right,
+    transparent var(--band-arc),
+    var(--band-bg) 0
+  );
+}
+.picker-footer::after {
+  right: 0;
+  background: radial-gradient(
+    circle at top left,
+    transparent var(--band-arc),
+    var(--band-bg) 0
+  );
+}
+
+/* Header: arcs below, filled toward the top (wall + band side). */
+.picker-header::before,
+.picker-header::after {
+  top: 100%;
+}
+.picker-header::before {
+  left: 0;
+  background: radial-gradient(
+    circle at bottom right,
+    transparent var(--band-arc),
+    var(--band-bg) 0
+  );
+}
+.picker-header::after {
+  right: 0;
+  background: radial-gradient(
+    circle at bottom left,
+    transparent var(--band-arc),
+    var(--band-bg) 0
+  );
+}
+
+/* Full path of the current selection as an editable address bar — quiet mono
+   at rest, firming to full ink while focused. Borderless: it reads as text
+   until you click in. Truncates (ellipsis) while unfocused. */
+.picker-path-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  outline: none;
+  transition: color 0.18s ease;
+}
+.picker-path-input:hover {
+  color: var(--ink-soft);
+}
+.picker-path-input:focus {
+  color: var(--ink);
+  text-overflow: clip;
+}
+.picker-path-input::selection {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
 .picker-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  white-space: nowrap;
   cursor: pointer;
   transition: opacity 0.18s ease;
+}
+/* "Open “name”" stays intact; only the git branch beside it truncates. */
+.picker-open-label {
+  flex: none;
 }
 .picker-action:hover {
   opacity: 0.7;
