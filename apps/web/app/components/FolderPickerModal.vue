@@ -716,11 +716,15 @@ const cardSpring = {
   background: var(--surface, var(--ground));
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
-  transition: height 0.5s cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* Decelerating ease with NO overshoot: the card resizes to its new height
+     smoothly instead of springing past it. That keeps the frame — the header
+     on the top edge and the footer on the bottom — from bouncing; the only
+     spring left is the row content itself easing in (see `enter`). */
+  transition: height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
   /* Bottom-anchor the content: the footer stays welded to the card's lower
-     edge while the springy `height` transition plays, so the bounce lives at
-     the top (the header) and never lifts the footer off the card's bottom
-     (which used to flash the card's border line beneath it). */
+     edge as the height transition plays, so it never lifts off the bottom
+     (which used to flash the card's border line beneath it) — the height
+     change is taken up at the top instead. */
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
