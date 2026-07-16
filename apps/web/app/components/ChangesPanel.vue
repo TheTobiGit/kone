@@ -40,12 +40,12 @@ const visible = computed(() =>
 const overflow = computed(() => Math.max(0, total.value - (CAP - 1)));
 
 // One dot per file, coloured by what changed (not by staging — that's shown on
-// the cards). Additions read green, removals/deletions red, and a pure no-op
-// delta (rename, mode, binary) stays grey.
+// the cards). Addition-dominant files read green, deletion-dominant red, and a
+// "Changes header" dot row, which mixes green/red/grey by change shape.
 type DotTone = "add" | "del" | "idle";
 const dots = computed<DotTone[]>(() =>
   props.changes.map((c) => {
-    if (c.deleted || (c.removed > 0 && c.added === 0)) return "del";
+    if (c.deleted || c.removed > c.added) return "del";
     if (c.added > 0) return "add";
     return "idle";
   }),
