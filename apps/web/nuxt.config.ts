@@ -3,11 +3,18 @@ import tailwindcss from "@tailwindcss/vite";
 const isDesktop =
   process.env.KONE_DESKTOP === "1" || process.env.NUXT_DESKTOP === "1";
 
-// https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: "latest",
   devtools: { enabled: false },
   modules: ["@nuxt/fonts"],
+  // Ignore nxui barrels so Nuxt only auto-registers the `.vue` files.
+  components: [
+    {
+      path: "~/components",
+      pathPrefix: true,
+      ignore: ["**/index.ts", "**/types.ts"],
+    },
+  ],
   css: ["~/assets/css/main.css"],
   vite: {
     plugins: [tailwindcss()],

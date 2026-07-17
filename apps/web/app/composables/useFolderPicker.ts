@@ -273,8 +273,9 @@ export function useFolderPicker() {
       readError.value = false;
       return listing.entries;
     } catch {
-      readError.value = true; // unreadable (permissions) — flag it so the
-      // modal can tell this apart from a folder that's just empty
+      // Unreadable (permissions) — flag it so the modal can tell this apart
+      // from a folder that's just empty.
+      readError.value = true;
       return [];
     }
   }
