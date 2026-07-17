@@ -245,13 +245,15 @@ const body = computed<Seg[]>(() => {
   color: var(--hi-muted);
 }
 
-/* Mono figures — 26px, bold, baseline-aligned with the prose. */
+/* Mono figures — 26px, bold, baseline-aligned with the prose. Tabular so the
+   counts don't reflow the line as they update between reads. */
 .t-add,
 .t-del,
 .t-num {
   font-family: var(--font-mono);
   font-size: 26px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 .t-add {
   color: #059669;

@@ -76,7 +76,8 @@ const hoveredPath = ref<string | null>(null);
   <main
     class="relative flex h-full min-h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px] pb-16"
   >
-    
+    <h1 class="sr-only">Your projects</h1>
+
     <HomeHeader>
       <template #trailing>
         <div class="flex items-center gap-3">
@@ -95,7 +96,7 @@ const hoveredPath = ref<string | null>(null);
               v-model="query"
               type="text"
               placeholder="Search projects"
-              class="w-44 bg-transparent text-sm text-ink outline-none placeholder:text-muted"
+              class="w-44 bg-transparent text-base text-ink outline-none placeholder:text-muted sm:text-sm"
             />
             <kbd
               class="rounded-[5px] border border-muted/25 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted"
@@ -252,7 +253,7 @@ const hoveredPath = ref<string | null>(null);
         v-if="shown.length === 0"
         class="py-6 font-mono text-xs tracking-wide text-muted"
       >
-        No projects match "{{ query }}"
+        No projects match “{{ query }}”
       </p>
     </section>
   </main>

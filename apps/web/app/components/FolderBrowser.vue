@@ -436,7 +436,7 @@ onBeforeUnmount(() => {
                 aria-hidden="true"
               />
             </span>
-            <span class="picker-label">{{ parentName }}</span>
+            <span class="picker-label" :title="parentName">{{ parentName }}</span>
           </span>
         </button>
 
@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
                   aria-hidden="true"
                 />
               </span>
-              <span class="picker-label">{{ row.name }}</span>
+              <span class="picker-label" :title="row.name">{{ row.name }}</span>
               <span v-if="row.repo" class="picker-git">
                 <span
                   class="picker-repo"
@@ -538,7 +538,7 @@ onBeforeUnmount(() => {
           class="picker-label px-3 py-2.5 text-muted"
           :style="{ marginLeft: `${childIndent + 20}px` }"
         >
-          {{ readError ? "Can't read this folder" : "No subfolders" }}
+          {{ readError ? "Can’t read this folder" : "No subfolders" }}
         </p>
       </template>
     </div>
@@ -586,6 +586,7 @@ onBeforeUnmount(() => {
             }}</span>
           </motion.span>
         </span>
+        <span class="picker-submit-arrow" aria-hidden="true">→</span>
       </button>
     </div>
   </div>
@@ -866,6 +867,17 @@ onBeforeUnmount(() => {
 .picker-action:disabled {
   cursor: default;
   opacity: 0.4;
+}
+/* Forward cue on the confirm action — the accent arrow eases right on hover,
+   matching the clone submit button. */
+.picker-submit-arrow {
+  flex: none;
+  color: var(--accent);
+  font-weight: 500;
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.picker-action:not(:disabled):hover .picker-submit-arrow {
+  transform: translateX(3px);
 }
 
 /* Subtle, self-effacing scrollbar that firms up on hover. The stable gutter

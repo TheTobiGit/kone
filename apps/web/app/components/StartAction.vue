@@ -27,6 +27,7 @@ defineEmits<{ select: [] }>();
         font-weight: 600;
         letter-spacing: -0.01em;
         line-height: 1;
+        white-space: nowrap;
       "
     >
       {{ label }}

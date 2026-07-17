@@ -250,7 +250,7 @@ const bundleCards = [
   height: 27px;
   padding-inline: 11px;
   border-radius: 8px;
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 500;
   color: var(--ink-soft);
@@ -325,7 +325,7 @@ const bundleCards = [
   width: 14px;
   height: 14px;
   border-radius: 4px;
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-weight: 700;
   line-height: 1;
 }
@@ -359,7 +359,7 @@ const bundleCards = [
   color: #fff;
 }
 .bundle__word {
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 500;
   line-height: 1;

@@ -21,6 +21,8 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
   <main
     class="relative flex h-full min-h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px]"
   >
+    <h1 class="sr-only">Start a project</h1>
+
     <!-- Hero: the start options rest dead-center in the open space. -->
     <section class="relative z-10 flex flex-1 flex-col items-center justify-center">
       <motion.div

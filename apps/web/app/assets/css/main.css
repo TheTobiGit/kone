@@ -59,3 +59,28 @@ body {
   -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
 }
+
+/* Native-feel selection model: the interface itself isn't selectable, so
+   drag-selecting chrome — folder names, branch labels, +/− diffstats, the
+   search pill, buttons, headings — does nothing, like a real desktop app.
+   Real content opts back in: form fields always, plus anything marked
+   .selectable (diffs, code, conversation copy worth grabbing). */
+:root {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+[contenteditable]:not([contenteditable="false"]),
+.selectable,
+.selectable * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Selection carries the warm accent as a subtle brand cue; ink text keeps
+   full legibility on the tinted highlight. */
+::selection {
+  background-color: color-mix(in oklab, var(--accent) 24%, transparent);
+  color: var(--ink);
+}

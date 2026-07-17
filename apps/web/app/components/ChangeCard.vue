@@ -196,7 +196,7 @@ const marks = computed<Mark[]>(() => {
   width: 18px;
   height: 18px;
   border-radius: 5px;
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
@@ -313,7 +313,7 @@ const marks = computed<Mark[]>(() => {
   align-items: center;
   gap: 5px;
   color: #e11d48;
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.1px;
