@@ -130,17 +130,23 @@ const hoveredPath = ref<string | null>(null);
     <section class="relative z-10 mx-auto mt-24 flex w-full max-w-[820px] flex-col">
       <!-- Project grid — three across, generously spaced. The start actions
            flow as trailing cells right after the last project, so they read as
-           part of the same run rather than a separate block below. -->
-      <motion.div
-        class="grid grid-cols-3 gap-x-14 gap-y-6"
-        :initial="{ opacity: 0, y: 8 }"
-        :animate="{ opacity: 1, y: 0 }"
-        :transition="{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }"
-      >
-        <div
-          v-for="project in shown"
+           part of the same run rather than a separate block below. Each cell
+           rises and settles in reading order (a small per-index delay) so the
+           grid assembles itself instead of appearing all at once. -->
+      <div class="grid grid-cols-3 gap-x-14 gap-y-6">
+        <motion.div
+          v-for="(project, i) in shown"
           :key="project.path"
           class="relative w-fit pr-9"
+          :initial="{ opacity: 0, y: 12, scale: 0.97 }"
+          :animate="{ opacity: 1, y: 0, scale: 1 }"
+          :transition="{
+            type: 'spring',
+            stiffness: 340,
+            damping: 13,
+            mass: 0.85,
+            delay: i * 0.06,
+          }"
           @mouseenter="hoveredPath = project.path"
           @mouseleave="hoveredPath = null"
         >
@@ -238,16 +244,28 @@ const hoveredPath = ref<string | null>(null);
               />
             </button>
           </motion.div>
-        </div>
+        </motion.div>
 
         <!-- Start actions — the same three-way column as the first-run hero,
              kept as one unit but flowed as a trailing cell so it continues the
-             grid run rather than starting a fresh block below. Centers against
-             the taller folder cells sharing its row. -->
-        <div class="-ml-1.5 self-center">
+             grid run rather than starting a fresh block below. Rises in right
+             after the last project, closing the stagger. Centers against the
+             taller folder cells sharing its row. -->
+        <motion.div
+          class="-ml-1.5 self-center"
+          :initial="{ opacity: 0, y: 12, scale: 0.97 }"
+          :animate="{ opacity: 1, y: 0, scale: 1 }"
+          :transition="{
+            type: 'spring',
+            stiffness: 340,
+            damping: 13,
+            mass: 0.85,
+            delay: shown.length * 0.06,
+          }"
+        >
           <StartActions :pending="pending" @start="emit('start', $event)" />
-        </div>
-      </motion.div>
+        </motion.div>
+      </div>
 
       <!-- No match for the current search. -->
       <p

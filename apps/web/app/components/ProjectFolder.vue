@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { motion } from "motion-v";
+import { CountUp } from "~/components/ui/count-up";
 
 // kone's signature project "folder" — a physical folder whose pocket carries
 // the repo identity (GitHub mark · name · branch · line diffstat) while
@@ -158,8 +159,12 @@ const showDiff = computed(
             <span class="folder__branch-name">{{ branch }}</span>
           </span>
           <span v-if="showDiff" class="folder__diff">
-            <span v-if="added > 0" class="folder__add">+{{ added }}</span>
-            <span v-if="removed > 0" class="folder__del">−{{ removed }}</span>
+            <span v-if="added > 0" class="folder__add"
+              >+<CountUp :to="added" :duration="1.1"
+            /></span>
+            <span v-if="removed > 0" class="folder__del"
+              >−<CountUp :to="removed" :duration="1.1"
+            /></span>
           </span>
         </div>
       </div>
