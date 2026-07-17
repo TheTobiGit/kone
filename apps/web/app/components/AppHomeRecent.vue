@@ -81,6 +81,8 @@ const hoveredPath = ref<string | null>(null);
     <HomeHeader>
       <template #trailing>
         <div class="flex items-center gap-3">
+          <SoundToggle />
+
           <label
             class="flex h-9 items-center gap-2.5 rounded-[11px] bg-hover px-3 transition-colors focus-within:bg-hover"
           >

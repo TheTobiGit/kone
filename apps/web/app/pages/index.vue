@@ -8,6 +8,7 @@ const project = useProject();
 const { recents, remember, forget, togglePin } = useRecentProjects();
 const { reveal } = useReveal();
 const { reset: resetClone } = useGitClone();
+const { cue } = useSound();
 
 // Gate empty-vs-recent on mount so SSR and first client paint agree.
 const mounted = ref(false);
@@ -20,6 +21,9 @@ const cloneOpen = ref(false); // clone-from-github modal
 
 function onStart(key: "create" | "open" | "clone") {
   if (pending.value) return;
+
+  // Acknowledge the chosen way to begin — one soft press as the flow commits.
+  cue("press");
 
   if (key === "open") {
     pending.value = "open";
@@ -48,7 +52,14 @@ function onPicked(folder: { path: string; name: string }) {
 }
 
 function onOpenRecent(recent: RecentProject) {
+  cue("press");
   openProject({ path: recent.path, name: recent.name });
+}
+
+// Pin/unpin is the one launcher toggle worth a sound — a discrete state flip.
+function onTogglePin(path: string) {
+  cue("toggle");
+  togglePin(path);
 }
 
 function onRevealRecent(path: string) {
@@ -65,6 +76,7 @@ function onPickerCancel() {
 // its own card, so there's no separate picker for the page to juggle. It only
 // tells us when a clone finished (open it) or was cancelled.
 function onCloned(folder: { path: string; name: string }) {
+  cue("success");
   cloneOpen.value = false;
   pending.value = null;
   resetClone();
@@ -95,7 +107,7 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
       :pending="pending"
       @open="onOpenRecent"
       @start="onStart"
-      @pin="togglePin"
+      @pin="onTogglePin"
       @reveal="onRevealRecent"
       @forget="forget"
     />

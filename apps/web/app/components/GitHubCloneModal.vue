@@ -40,6 +40,15 @@ const {
   abort,
 } = useGitClone();
 
+const { cue } = useSound();
+
+// A failed clone gets a quiet error cue as its message surfaces. Success is
+// sounded once by the parent when it opens the freshly-cloned folder, so it
+// isn't doubled here.
+watch(phase, (next, prev) => {
+  if (next === "error" && prev !== "error") cue("error");
+});
+
 // Which view fills the card. Progress is driven by `phase` within the form view;
 // `view` only toggles the form/progress side against the destination browser.
 const view = ref<"form" | "dest">("form");
