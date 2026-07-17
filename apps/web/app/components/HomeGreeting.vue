@@ -256,10 +256,10 @@ const body = computed<Seg[]>(() => {
   font-variant-numeric: tabular-nums;
 }
 .t-add {
-  color: #059669;
+  color: var(--diff-add);
 }
 .t-del {
-  color: #e11d48;
+  color: var(--diff-del);
 }
 .t-num {
   color: var(--ink);

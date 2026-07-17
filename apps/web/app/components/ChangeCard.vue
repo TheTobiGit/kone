@@ -176,7 +176,7 @@ const marks = computed<Mark[]>(() => {
 }
 .card--torn {
   background-color: color-mix(in srgb, var(--card-bg) 45%, transparent);
-  border: 1.5px dashed #e11d48;
+  border: 1.5px dashed var(--diff-del);
 }
 
 .card__top {
@@ -219,7 +219,7 @@ const marks = computed<Mark[]>(() => {
   width: 8px;
   height: 8px;
   border-radius: 4px;
-  background-color: #10a56f;
+  background-color: var(--diff-add);
   border: 2px solid var(--card-bg);
 }
 
@@ -236,10 +236,10 @@ const marks = computed<Mark[]>(() => {
   background-color: var(--ctx);
 }
 .card__mark--add {
-  background-color: #10a56f;
+  background-color: var(--diff-add);
 }
 .card__mark--del {
-  background-color: #e5484d;
+  background-color: var(--diff-del);
 }
 .card__placeholder {
   width: 44px;
@@ -279,10 +279,10 @@ const marks = computed<Mark[]>(() => {
   font-variant-numeric: tabular-nums;
 }
 .card__add {
-  color: #059669;
+  color: var(--diff-add);
 }
 .card__del {
-  color: #e11d48;
+  color: var(--diff-del);
 }
 .card__empty {
   font-family: var(--font-mono);
@@ -301,8 +301,8 @@ const marks = computed<Mark[]>(() => {
   border: 1.5px solid var(--check-off);
 }
 .card__check--on {
-  background-color: #059669;
-  border-color: #059669;
+  background-color: var(--diff-add);
+  border-color: var(--diff-add);
 }
 
 .card__revert {
@@ -312,7 +312,7 @@ const marks = computed<Mark[]>(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: #e11d48;
+  color: var(--diff-del);
   font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 500;

@@ -155,14 +155,6 @@ export function useFolderPicker() {
   );
 
   // ── transition constants ────────────────────────────────────────────────────
-  // Bouncy spring for a shell's entrance (underdamped → a little overshoot).
-  const spring = {
-    type: "spring",
-    stiffness: 260,
-    damping: 15,
-    mass: 0.9,
-  } as const;
-
   // Incoming rows rise up + fade in on a bouncy spring — they "push up" into
   // place. Persisting rows keep their :key so they never re-run this (they stay
   // put and ride the FLIP instead); only incoming rows animate.
@@ -189,21 +181,8 @@ export function useFolderPicker() {
     delay: 0.08,
   } as const;
 
-  // ── cross-dissolve / FLIP ───────────────────────────────────────────────────
-  // Outgoing rows are captured as absolutely-positioned ghosts that fade out
-  // exactly where they sat — so the new level lays out (and is measured for the
-  // FLIP) cleanly underneath, and nothing collapses or piles up.
-  type Ghost = {
-    key: string;
-    name: string;
-    kind: "crumb" | "entry";
-    current: boolean;
-    top: number;
-    left: number;
-  };
-  const ghosts = ref<Ghost[]>([]);
-  const ghostsOut = ref(false);
-  // How long the cross-dissolve (ghost fade + FLIP + entrance) takes to settle.
+  // ── FLIP ─────────────────────────────────────────────────────────────────────
+  // How long the cross-dissolve (FLIP + entrance) takes to settle.
   const TRANSITION_MS = 440;
   // True while a cross-dissolve is in flight (and during the first paint) —
   // locks the scroll overflow closed so the reflowing rows can't flash the
@@ -281,15 +260,14 @@ export function useFolderPicker() {
   }
 
   // One navigation for both directions: snapshot the current rows, load the new
-  // level, then cross-dissolve — ghosts fade out, survivors FLIP, incomers fade in.
+  // level, then FLIP — survivors glide to their new slot, incomers fade in.
   async function navigate(opts: { loadPath: string; nextTrail: Crumb[] }) {
     if (loading.value) return;
     loading.value = true;
     navigating.value = true;
 
-    // FIRST: snapshot every visible row's screen rect + look.
+    // FIRST: snapshot every visible row's screen rect.
     const oldRects = new Map<string, DOMRect>();
-    const prevRows = rows.value;
     const container = scrollEl.value;
     if (container) {
       for (const el of container.querySelectorAll<HTMLElement>("[data-path]")) {
@@ -305,23 +283,6 @@ export function useFolderPicker() {
     error.value = null; // any successful navigation clears init()'s fatal error
 
     const newPaths = new Set(rows.value.map((r) => r.path));
-    // Outgoing rows → ghosts that fade out where they were.
-    ghosts.value = prevRows.flatMap((r) => {
-      if (newPaths.has(r.path)) return [];
-      const rect = oldRects.get(r.path);
-      if (!rect) return [];
-      return [
-        {
-          key: r.path,
-          name: r.name,
-          kind: r.kind,
-          current: r.kind === "crumb" ? r.current : false,
-          top: rect.top,
-          left: rect.left,
-        },
-      ];
-    });
-    ghostsOut.value = false;
 
     await nextTick();
     // LAST / INVERT / PLAY: FLIP every row that persisted.
@@ -330,13 +291,7 @@ export function useFolderPicker() {
       if (from) flipRow(path, from);
     }
     measure();
-    // Blur the ghosts away, then drop them.
-    requestAnimationFrame(() => {
-      ghostsOut.value = true;
-    });
     window.setTimeout(() => {
-      ghosts.value = [];
-      ghostsOut.value = false;
       navigating.value = false;
       measure();
     }, TRANSITION_MS);
@@ -474,16 +429,13 @@ export function useFolderPicker() {
     measure,
     settle,
     // transition constants
-    spring,
     enter,
     itemHidden,
     itemShown,
     metaHidden,
     metaShown,
     metaEnter,
-    // cross-dissolve
-    ghosts,
-    ghostsOut,
+    // FLIP
     navigating,
     TRANSITION_MS,
     // ascend above the trail's anchor

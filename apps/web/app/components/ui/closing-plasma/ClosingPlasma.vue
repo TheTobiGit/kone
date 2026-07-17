@@ -197,16 +197,16 @@ void main(){
     mouse.x += (targetMouse.x - mouse.x) * 0.05;
     mouse.y += (targetMouse.y - mouse.y) * 0.05;
 
-    gl.uniform1f(uniforms.u_time, elapsed);
-    gl.uniform2f(uniforms.u_mouse, mouse.x, mouse.y);
-    gl.uniform1f(uniforms.u_isDark, isDark.value ? 1 : 0);
-    gl.uniform1f(uniforms.u_speed, props.speed);
-    gl.uniform1f(uniforms.u_turbulence, props.turbulence);
-    gl.uniform1f(uniforms.u_mouseInfluence, props.mouseInfluence);
-    gl.uniform1f(uniforms.u_grain, props.grain);
-    gl.uniform1f(uniforms.u_sparkle, props.sparkle);
-    gl.uniform1f(uniforms.u_vignette, props.vignette);
-    gl.uniform1f(uniforms.u_opacity, props.opacity);
+    gl.uniform1f(uniforms.u_time ?? null, elapsed);
+    gl.uniform2f(uniforms.u_mouse ?? null, mouse.x, mouse.y);
+    gl.uniform1f(uniforms.u_isDark ?? null, isDark.value ? 1 : 0);
+    gl.uniform1f(uniforms.u_speed ?? null, props.speed);
+    gl.uniform1f(uniforms.u_turbulence ?? null, props.turbulence);
+    gl.uniform1f(uniforms.u_mouseInfluence ?? null, props.mouseInfluence);
+    gl.uniform1f(uniforms.u_grain ?? null, props.grain);
+    gl.uniform1f(uniforms.u_sparkle ?? null, props.sparkle);
+    gl.uniform1f(uniforms.u_vignette ?? null, props.vignette);
+    gl.uniform1f(uniforms.u_opacity ?? null, props.opacity);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     rafId = requestAnimationFrame(render);
   }
@@ -277,12 +277,12 @@ void main(){
     const lA = hexToRgb(props.lightColorA, LA);
     const lB = hexToRgb(props.lightColorB, LB);
     const lC = hexToRgb(props.lightColorC, LC);
-    gl.uniform3f(uniforms.u_darkA, dA[0], dA[1], dA[2]);
-    gl.uniform3f(uniforms.u_darkB, dB[0], dB[1], dB[2]);
-    gl.uniform3f(uniforms.u_darkC, dC[0], dC[1], dC[2]);
-    gl.uniform3f(uniforms.u_lightA, lA[0], lA[1], lA[2]);
-    gl.uniform3f(uniforms.u_lightB, lB[0], lB[1], lB[2]);
-    gl.uniform3f(uniforms.u_lightC, lC[0], lC[1], lC[2]);
+    gl.uniform3f(uniforms.u_darkA ?? null, dA[0], dA[1], dA[2]);
+    gl.uniform3f(uniforms.u_darkB ?? null, dB[0], dB[1], dB[2]);
+    gl.uniform3f(uniforms.u_darkC ?? null, dC[0], dC[1], dC[2]);
+    gl.uniform3f(uniforms.u_lightA ?? null, lA[0], lA[1], lA[2]);
+    gl.uniform3f(uniforms.u_lightB ?? null, lB[0], lB[1], lB[2]);
+    gl.uniform3f(uniforms.u_lightC ?? null, lC[0], lC[1], lC[2]);
 
     resize();
     startTime = performance.now();

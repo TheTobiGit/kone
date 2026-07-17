@@ -32,6 +32,14 @@
   --accent: #d97757;
   --orb-ring: #1c1c1f;
   --hover: rgb(39 39 42 / 0.04);
+
+  /* Diffstat semantics — insertions/deletions. `--diff-*` is the crisp
+     diffstat pair (numbers, dots, badges); `--diff-*-soft` is the warmer,
+     lower-contrast pair used in the folder picker's branch/diff meta. */
+  --diff-add: #059669;
+  --diff-del: #e11d48;
+  --diff-add-soft: #5f9e6a;
+  --diff-del-soft: #c2745c;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -43,6 +51,8 @@
     --accent: #d97757;
     --orb-ring: #f4f4f5;
     --hover: rgb(244 244 245 / 0.06);
+    --diff-add-soft: #7fb98a;
+    --diff-del-soft: #dc8a6f;
   }
 }
 

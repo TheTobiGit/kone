@@ -697,18 +697,10 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 .picker-add {
-  color: #5f9e6a;
+  color: var(--diff-add-soft);
 }
 .picker-del {
-  color: #c2745c;
-}
-@media (prefers-color-scheme: dark) {
-  .picker-add {
-    color: #7fb98a;
-  }
-  .picker-del {
-    color: #dc8a6f;
-  }
+  color: var(--diff-del-soft);
 }
 
 @keyframes repoPulse {
@@ -824,12 +816,7 @@ onBeforeUnmount(() => {
 
 .picker-path-input.is-error {
   animation: pathShake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97);
-  color: #c2745c;
-}
-@media (prefers-color-scheme: dark) {
-  .picker-path-input.is-error {
-    color: #dc8a6f;
-  }
+  color: var(--diff-del-soft);
 }
 @keyframes pathShake {
   0%,

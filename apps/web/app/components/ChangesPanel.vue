@@ -55,12 +55,23 @@ const dots = computed<DotTone[]>(() =>
 // overlapping pill. Line tones: grey #d0cec9, green #10a56f, red #e5484d,
 // mint #8fd9bd.
 const g = "#d0cec9";
-const bundleCards = [
+interface BundleCard {
+  badge: string;
+  bg: string;
+  fg: string;
+  size: number;
+  lines: [number, string][];
+  x: number;
+  y: number;
+  r: number;
+  front?: boolean;
+}
+const bundleCards: BundleCard[] = [
   { badge: "TS", bg: "#3178c6", fg: "#fff", size: 7, lines: [[42, g], [30, "#10a56f"], [36, g]], x: 10, y: 4, r: -13 },
   { badge: "JS", bg: "#f7df1e", fg: "#1a1a1a", size: 7, lines: [[40, g], [28, "#e5484d"], [34, g]], x: 24, y: 0, r: -4 },
   { badge: "MD", bg: "#64748b", fg: "#fff", size: 7, lines: [[44, "#10a56f"], [32, "#10a56f"], [38, "#8fd9bd"]], x: 38, y: 0, r: 5 },
   { badge: "CSS", bg: "#1572b6", fg: "#fff", size: 6, lines: [[42, g], [30, g], [36, g]], x: 34, y: 6, r: 14, front: true },
-] as const;
+];
 </script>
 
 <template>

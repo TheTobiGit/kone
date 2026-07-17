@@ -199,13 +199,13 @@ const showDiff = computed(
   --paper-bg: #ffffff;
   --mark-edit-1: #d8d7d3;
   --mark-edit-2: #e4e3df;
-  --mark-new-1: #10a56f;
+  --mark-new-1: var(--diff-add);
   --mark-new-2: #8fd9bd;
   --mark-name: #27272a;
   --mark-gh: #3f3f46;
   --branch: #a1a1aa;
-  --add: #059669;
-  --del: #e11d48;
+  --add: var(--diff-add);
+  --del: var(--diff-del);
 
   --sheet: linear-gradient(
     160deg in oklab,

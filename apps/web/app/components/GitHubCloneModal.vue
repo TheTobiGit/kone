@@ -694,7 +694,7 @@ const viewMorph = {
   font-size: 11.5px;
   letter-spacing: -0.01em;
   line-height: 1.35;
-  color: color-mix(in srgb, #e5484d 82%, var(--ink));
+  color: color-mix(in srgb, var(--diff-del) 82%, var(--ink));
 }
 
 /* ── progress ── */
