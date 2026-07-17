@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { motion } from "motion-v";
 
 // kone's signature project "folder" — a physical folder whose pocket carries
 // the repo identity (GitHub mark · name · branch · line diffstat) while
@@ -34,6 +35,8 @@ const props = withDefaults(
     files?: FolderFile[];
     /** Uniform scale of the whole folder. 1 = the 200×116 Paper base. */
     scale?: number;
+    /** When true, the peeking papers spring out into a wider fan. */
+    hovered?: boolean;
   }>(),
   {
     repo: true,
@@ -42,14 +45,19 @@ const props = withDefaults(
     removed: 0,
     files: () => [],
     scale: 1,
+    hovered: false,
   },
 );
 
-// Fixed slots the papers fan into — position + tilt, back-to-front.
+// Fixed slots the papers fan into. At rest they sit low — tucked deep in the
+// pocket so only a short strip peeks out (`bottom` keeps most of the tall paper
+// hidden behind the pocket). On hover each springs UP by `dy`, drawing its full
+// length into view, while the outer two also throw a little wider (`dx`) and
+// tilt harder (`dr`) so the stack blooms open as it rises.
 const SLOTS = [
-  { left: 44, bottom: 72, rotate: -10 },
-  { left: 78, bottom: 78, rotate: 1 },
-  { left: 112, bottom: 72, rotate: 11 },
+  { left: 44, bottom: 54, rotate: -10, dx: -14, dy: -42, dr: -10 },
+  { left: 78, bottom: 60, rotate: 1, dx: 0, dy: -48, dr: 0 },
+  { left: 112, bottom: 54, rotate: 11, dx: 14, dy: -42, dr: 10 },
 ] as const;
 
 const papers = computed(() =>
@@ -70,16 +78,27 @@ const showDiff = computed(
       <!-- Back sheet: the folder's rear tab peeking above the pocket. -->
       <div class="folder__sheet" />
 
-      <!-- Peeking papers: uncommitted changes fanned out the top. -->
-      <div
+      <!-- Peeking papers: uncommitted changes fanned out the top. They spring
+           into a wider bloom on hover; each is anchored by left/bottom, and
+           motion owns x/y/rotate so the fan and the spring stay in sync. -->
+      <motion.div
         v-for="(paper, i) in papers"
         :key="i"
         class="folder__paper"
         :class="{ 'folder__paper--torn': paper.change === 'deleted' }"
-        :style="{
-          left: `${paper.left}px`,
-          bottom: `${paper.bottom}px`,
-          rotate: `${paper.rotate}deg`,
+        :style="{ left: `${paper.left}px`, bottom: `${paper.bottom}px` }"
+        :initial="{ x: 0, y: 0, rotate: paper.rotate }"
+        :animate="{
+          x: hovered ? paper.dx : 0,
+          y: hovered ? paper.dy : 0,
+          rotate: hovered ? paper.rotate + paper.dr : paper.rotate,
+        }"
+        :transition="{
+          type: 'spring',
+          stiffness: 340,
+          damping: 15,
+          mass: 0.7,
+          delay: hovered ? i * 0.04 : 0,
         }"
       >
         <!-- Language badge. -->
@@ -106,7 +125,7 @@ const showDiff = computed(
           <i class="folder__mark folder__mark--long" />
           <i class="folder__mark folder__mark--short" />
         </span>
-      </div>
+      </motion.div>
 
       <!-- Front pocket: the repo's identity card. -->
       <div class="folder__pocket">
@@ -211,8 +230,8 @@ const showDiff = computed(
 /* ── peeking papers ─────────────────────────────────────────────────────── */
 .folder__paper {
   position: absolute;
-  width: 54px;
-  height: 44px;
+  width: 50px;
+  height: 62px;
   padding: 7px 8px;
   border-radius: 6px;
   background-color: var(--paper-bg);

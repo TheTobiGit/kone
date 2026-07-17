@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion } from "motion-v";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import {
+  PinIcon,
+  AppleFinderIcon,
+  Cancel01Icon,
+  Search01Icon,
+  ArrowDown01Icon,
+} from "@hugeicons/core-free-icons";
 import type { ActionKey } from "./StartActions.vue";
 import type { RecentProject } from "~/composables/useRecentProjects";
 
@@ -15,8 +23,10 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   open: [project: RecentProject];
-  forget: [path: string];
   start: [key: ActionKey];
+  pin: [path: string];
+  reveal: [path: string];
+  forget: [path: string];
 }>();
 
 const { summaries, enrich } = useProjectSummaries();
@@ -62,6 +72,9 @@ onMounted(() => window.addEventListener("keydown", onKeydown));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 const anyPending = computed(() => !!props.pending);
+
+// Which card the pointer/focus is on — drives the folder's papers springing out.
+const hoveredPath = ref<string | null>(null);
 </script>
 
 <template>
@@ -75,28 +88,13 @@ const anyPending = computed(() => !!props.pending);
           <label
             class="flex h-9 items-center gap-2.5 rounded-[11px] bg-hover px-3 transition-colors focus-within:bg-hover"
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
+            <HugeiconsIcon
+              :icon="Search01Icon"
+              :size="15"
+              :stroke-width="2"
               class="shrink-0 text-muted"
               aria-hidden="true"
-            >
-              <circle
-                cx="11"
-                cy="11"
-                r="7"
-                stroke="currentColor"
-                stroke-width="2"
-              />
-              <path
-                d="m20 20-3.5-3.5"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-              />
-            </svg>
+            />
             <input
               ref="searchEl"
               v-model="query"
@@ -116,22 +114,13 @@ const anyPending = computed(() => !!props.pending);
             @click="cycleSort"
           >
             <span>{{ sortLabel }}</span>
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
+            <HugeiconsIcon
+              :icon="ArrowDown01Icon"
+              :size="12"
+              :stroke-width="2"
               class="text-muted"
               aria-hidden="true"
-            >
-              <path
-                d="m6 9 6 6 6-6"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            />
           </button>
         </div>
       </template>
@@ -151,12 +140,23 @@ const anyPending = computed(() => !!props.pending);
         <div
           v-for="project in shown"
           :key="project.path"
-          class="group/card relative w-fit"
+          class="relative w-fit pr-9"
+          @mouseenter="hoveredPath = project.path"
+          @mouseleave="hoveredPath = null"
         >
-          <button
+          <!-- Springy lift on hover/focus (driven by the card-level hover so it
+               stays lifted while the pointer is on the action rail). Motion
+               physics gives a soft overshoot-and-settle; held flat while any
+               action is pending. -->
+          <motion.button
             type="button"
             :disabled="anyPending"
-            class="block cursor-pointer rounded-[22px] text-left transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-1 focus-visible:-translate-y-1 focus-visible:outline-none disabled:cursor-default disabled:hover:translate-y-0"
+            class="block cursor-pointer rounded-[22px] text-left focus-visible:outline-none disabled:cursor-default"
+            :animate="{ y: !anyPending && hoveredPath === project.path ? -6 : 0 }"
+            :while-tap="anyPending ? {} : { y: -3, scale: 0.985 }"
+            :transition="{ type: 'spring', stiffness: 420, damping: 17, mass: 0.85 }"
+            @focus="hoveredPath = project.path"
+            @blur="hoveredPath = null"
             @click="emit('open', project)"
           >
             <ProjectFolder
@@ -166,31 +166,78 @@ const anyPending = computed(() => !!props.pending);
               :added="summaries[project.path]?.added ?? 0"
               :removed="summaries[project.path]?.removed ?? 0"
               :files="summaries[project.path]?.files ?? []"
+              :hovered="!anyPending && hoveredPath === project.path"
             />
-          </button>
+          </motion.button>
 
-          <!-- Remove from recents — appears on hover, top-right of the card. -->
-          <button
-            type="button"
-            aria-label="Remove from recents"
-            class="absolute right-1.5 top-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted opacity-0 shadow-sm transition-opacity duration-200 hover:text-ink group-hover/card:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
-            @click.stop="emit('forget', project.path)"
+          <!-- Hover action rail — a quiet vertical stack floating just outside
+               the folder's right edge (in the card's padding gutter), revealed
+               on hover: Pin · Reveal · Remove. The gutter keeps it within the
+               column track so it never clips at the last column, and inside the
+               card's hover box so hovering it holds the card's hover state. -->
+          <motion.div
+            class="absolute right-0 top-0 bottom-0 flex flex-col justify-center gap-1.5"
+            :initial="{ opacity: 0, x: 4 }"
+            :animate="{
+              opacity: !anyPending && hoveredPath === project.path ? 1 : 0,
+              x: !anyPending && hoveredPath === project.path ? 0 : 4,
+              y: !anyPending && hoveredPath === project.path ? -6 : 0,
+            }"
+            :transition="{ type: 'spring', stiffness: 500, damping: 30 }"
+            :style="{
+              pointerEvents:
+                !anyPending && hoveredPath === project.path ? 'auto' : 'none',
+            }"
           >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
+            <!-- Pin to top — filled star when pinned. -->
+            <button
+              type="button"
+              :aria-label="project.pinned ? 'Unpin project' : 'Pin to top'"
+              :title="project.pinned ? 'Unpin' : 'Pin to top'"
+              class="flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground shadow-sm transition-colors hover:text-ink"
+              :class="project.pinned ? 'text-ink' : 'text-muted'"
+              @click.stop="emit('pin', project.path)"
             >
-              <path
-                d="M6 6l12 12M18 6L6 18"
-                stroke="currentColor"
-                stroke-width="2.2"
-                stroke-linecap="round"
+              <HugeiconsIcon
+                :icon="PinIcon"
+                :size="14"
+                :stroke-width="project.pinned ? 2.4 : 1.8"
+                aria-hidden="true"
               />
-            </svg>
-          </button>
+            </button>
+
+            <!-- Reveal in Finder. -->
+            <button
+              type="button"
+              aria-label="Reveal in Finder"
+              title="Reveal in Finder"
+              class="flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
+              @click.stop="emit('reveal', project.path)"
+            >
+              <HugeiconsIcon
+                :icon="AppleFinderIcon"
+                :size="15"
+                :stroke-width="1.7"
+                aria-hidden="true"
+              />
+            </button>
+
+            <!-- Remove from recents. -->
+            <button
+              type="button"
+              aria-label="Remove from recents"
+              title="Remove"
+              class="flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
+              @click.stop="emit('forget', project.path)"
+            >
+              <HugeiconsIcon
+                :icon="Cancel01Icon"
+                :size="14"
+                :stroke-width="2"
+                aria-hidden="true"
+              />
+            </button>
+          </motion.div>
         </div>
 
         <!-- Start actions — the same three-way column as the first-run hero,

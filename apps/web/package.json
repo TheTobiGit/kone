@@ -12,6 +12,8 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "@hugeicons/core-free-icons": "^4.2.2",
+    "@hugeicons/vue": "^1.0.7",
     "@vueuse/core": "^14.3.0",
     "motion-v": "^2.3.0",
     "nuxt": "^4.4.8",

@@ -8,6 +8,8 @@ import type { Project } from "~/composables/useProject";
 export type RecentProject = Project & {
   /** Epoch ms of the last time this project was opened. */
   lastOpenedAt: number;
+  /** Pinned projects lead the grid regardless of last-opened order. */
+  pinned?: boolean;
 };
 
 const STORAGE_KEY = "kone:recent-projects";
@@ -20,9 +22,12 @@ export function useRecentProjects() {
   // hydrates from localStorage on the client.
   const store = useStorage<RecentProject[]>(STORAGE_KEY, []);
 
-  // Always read newest-first, regardless of write order.
+  // Pinned first, then newest-first — regardless of write order.
   const recents = computed(() =>
-    [...store.value].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt),
+    [...store.value].sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return b.lastOpenedAt - a.lastOpenedAt;
+    }),
   );
 
   // Record (or bump) a project as just-opened. Dedupes on path.
@@ -37,5 +42,12 @@ export function useRecentProjects() {
     store.value = store.value.filter((p) => p.path !== path);
   }
 
-  return { recents, remember, forget };
+  // Pin/unpin a project so it leads (or rejoins) the recents order.
+  function togglePin(path: string): void {
+    store.value = store.value.map((p) =>
+      p.path === path ? { ...p, pinned: !p.pinned } : p,
+    );
+  }
+
+  return { recents, remember, forget, togglePin };
 }

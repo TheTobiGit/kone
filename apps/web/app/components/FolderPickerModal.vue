@@ -2,6 +2,13 @@
 import { onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { motion } from "motion-v";
 import { Magnet } from "~/components/ui/magnet";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import {
+  ArrowUp01Icon,
+  ArrowTurnBackwardIcon,
+  Folder01Icon,
+  GitBranchIcon,
+} from "@hugeicons/core-free-icons";
 
 // In-app folder browser (elastic modal shell). Same focus-stack brain as the
 // full-page `FolderPicker` — via `useFolderPicker` — but housed in a card
@@ -513,19 +520,12 @@ const cardSpring = {
                 <span
                   class="pointer-events-none inline-flex w-5 shrink-0 items-center opacity-55 transition-opacity group-hover:opacity-100"
                 >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
+                  <HugeiconsIcon
+                    :icon="ArrowUp01Icon"
+                    :size="16"
+                    :stroke-width="2"
                     aria-hidden="true"
-                  >
-                    <path d="m18 15-6-6-6 6" />
-                  </svg>
+                  />
                 </span>
                 <span class="picker-label">{{ parentName }}</span>
               </span>
@@ -565,47 +565,28 @@ const cardSpring = {
               >
                 <span class="picker-travel">
                   <!-- Leading glyph: a back-arrow for breadcrumbs, a folder for
-                       the focused level's child directories (hugeicons folder-01). -->
+                       the focused level's child directories. -->
                   <span
                     v-if="row.kind === 'crumb'"
                     class="pointer-events-none inline-flex w-5 shrink-0 items-center opacity-55 transition-opacity group-hover:opacity-100"
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      width="16"
-                      height="16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                    <HugeiconsIcon
+                      :icon="ArrowTurnBackwardIcon"
+                      :size="16"
+                      :stroke-width="2"
                       aria-hidden="true"
-                    >
-                      <path d="M9 14 4 9l5-5" />
-                      <path
-                        d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"
-                      />
-                    </svg>
+                    />
                   </span>
                   <span
                     v-else
                     class="pointer-events-none inline-flex w-5 shrink-0 items-center opacity-45 transition-opacity group-hover:opacity-80"
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      width="16"
-                      height="16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                    <HugeiconsIcon
+                      :icon="Folder01Icon"
+                      :size="16"
+                      :stroke-width="1.5"
                       aria-hidden="true"
-                    >
-                      <path
-                        d="M8 7h8.75c2.107 0 3.16 0 3.917.506a3 3 0 0 1 .827.827C22 9.09 22 10.143 22 12.25c0 3.511 0 5.267-.843 6.528a5 5 0 0 1-1.38 1.38C18.518 21 16.762 21 13.25 21H12c-4.714 0-7.071 0-8.536-1.465C2 18.072 2 15.715 2 11V7.944c0-1.816 0-2.724.38-3.406A3 3 0 0 1 3.538 3.38C4.22 3 5.128 3 6.944 3C8.108 3 8.69 3 9.2 3.191c1.163.436 1.643 1.493 2.168 2.542L12 7"
-                      />
-                    </svg>
+                    />
                   </span>
                   <span class="picker-label">{{ row.name }}</span>
                   <span v-if="row.repo" class="picker-git">
@@ -614,22 +595,12 @@ const cardSpring = {
                       :class="{ 'is-loading': !row.git }"
                       title="Git repository"
                     >
-                      <svg
-                        viewBox="0 0 24 24"
-                        width="13"
-                        height="13"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
+                      <HugeiconsIcon
+                        :icon="GitBranchIcon"
+                        :size="13"
+                        :stroke-width="2"
                         aria-hidden="true"
-                      >
-                        <line x1="6" x2="6" y1="3" y2="15" />
-                        <circle cx="18" cy="6" r="3" />
-                        <circle cx="6" cy="18" r="3" />
-                        <path d="M18 9a9 9 0 0 1-9 9" />
-                      </svg>
+                      />
                       <span class="sr-only">Git repository</span>
                     </span>
                     <motion.span
@@ -686,22 +657,12 @@ const cardSpring = {
                 :class="{ 'is-loading': !currentGit }"
                 title="Git repository"
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="13"
-                  height="13"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
+                <HugeiconsIcon
+                  :icon="GitBranchIcon"
+                  :size="13"
+                  :stroke-width="2"
                   aria-hidden="true"
-                >
-                  <line x1="6" x2="6" y1="3" y2="15" />
-                  <circle cx="18" cy="6" r="3" />
-                  <circle cx="6" cy="18" r="3" />
-                  <path d="M18 9a9 9 0 0 1-9 9" />
-                </svg>
+                />
                 <span class="sr-only">Git repository</span>
               </span>
               <motion.span

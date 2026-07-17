@@ -8,7 +8,7 @@ import { ClickSpark } from "~/components/ui/click-spark";
 // the recents list has entries (persisted across quits) the home shows the
 // populated launcher. Opening a project swaps to the opened-project view.
 const project = useProject();
-const { recents, remember, forget } = useRecentProjects();
+const { recents, remember, forget, togglePin } = useRecentProjects();
 
 // Recents live in localStorage, which is only readable on the client. Gate the
 // empty-vs-populated choice on mount so SSR (nuxt dev) and the first client
@@ -53,6 +53,11 @@ function onOpenRecent(recent: RecentProject) {
   openProject({ path: recent.path, name: recent.name });
 }
 
+function onRevealRecent(path: string) {
+  // Reveal-in-Finder wiring lands with the desktop bridge.
+  console.info(`[app-home] reveal: ${path}`);
+}
+
 function onPickerCancel() {
   pickerOpen.value = false;
   pending.value = null;
@@ -81,8 +86,10 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
       :recents="recents"
       :pending="pending"
       @open="onOpenRecent"
-      @forget="forget"
       @start="onStart"
+      @pin="togglePin"
+      @reveal="onRevealRecent"
+      @forget="forget"
     />
     <AppHomeEmpty v-else :pending="pending" @start="onStart" />
 

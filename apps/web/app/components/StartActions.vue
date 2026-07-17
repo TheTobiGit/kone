@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import IconPlus from "./icons/IconPlus.vue";
-import IconFolder from "./icons/IconFolder.vue";
-import IconGitHub from "./icons/IconGitHub.vue";
 import { Magnet } from "~/components/ui/magnet";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import {
+  PlusSignIcon,
+  FolderOpenIcon,
+  GithubIcon,
+} from "@hugeicons/core-free-icons";
 
 // The three ways to begin a project — shared by the first-run home (centered as
 // the hero) and the populated home (a single unit that flows after the project
 // grid). Kept together as one column in both places.
 const actions = [
-  { key: "create", label: "Create a new project", icon: IconPlus },
-  { key: "open", label: "Open from local folder", icon: IconFolder },
-  { key: "clone", label: "Clone from GitHub", icon: IconGitHub },
+  { key: "create", label: "Create a new project", icon: PlusSignIcon },
+  { key: "open", label: "Open from local folder", icon: FolderOpenIcon },
+  { key: "clone", label: "Clone from GitHub", icon: GithubIcon },
 ] as const;
 
 export type ActionKey = (typeof actions)[number]["key"];
@@ -43,7 +46,12 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
         @select="emit('start', action.key)"
       >
         <template #icon>
-          <component :is="action.icon" />
+          <HugeiconsIcon
+            :icon="action.icon"
+            :size="18"
+            :stroke-width="1.7"
+            class="shrink-0 text-ink"
+          />
         </template>
       </StartAction>
     </Magnet>
