@@ -401,14 +401,22 @@ const cardSpring = {
 </script>
 
 <template>
-  <motion.div
-    class="fixed inset-0 z-50 flex items-end justify-end overflow-hidden p-6"
-    :initial="{ opacity: 0 }"
-    :animate="{ opacity: shown ? 1 : 0 }"
-    :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
-  >
-    <!-- Scrim: click to dismiss. -->
-    <div class="modal-scrim absolute inset-0" @click="cancel" />
+  <div class="fixed inset-0 z-50 flex items-end justify-end overflow-hidden p-6">
+    <!-- Scrim: click to dismiss. The dim and the blur ramp together on one
+         tween so they read as a single coalescing effect. We animate the
+         backdrop blur explicitly (rather than revealing a static blur through a
+         parent's opacity fade — which makes browsers snap the blur in a beat
+         after the dim, the "darken then blur" two-step). -->
+    <motion.div
+      class="modal-scrim absolute inset-0"
+      :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
+      :animate="{
+        opacity: shown ? 1 : 0,
+        backdropFilter: shown ? 'blur(4px)' : 'blur(0px)',
+      }"
+      :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
+      @click="cancel"
+    />
 
     <!-- No ghost layer here (unlike the full-page FolderPicker): outgoing rows
          would fade out in a full-screen layer BEHIND the card, so the card
@@ -712,15 +720,15 @@ const cardSpring = {
         </div>
       </div>
     </motion.div>
-  </motion.div>
+  </div>
 </template>
 
 <style scoped>
-/* Scrim behind the card — a soft dim + blur over whatever's underneath. */
+/* Scrim behind the card — a soft dim over whatever's underneath. The blur is
+   animated inline (motion) so it ramps in lockstep with this dim; see the
+   template note on the two-step "darken then blur" it avoids. */
 .modal-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
 }
 
 /* The elastic card, anchored to the bottom-right corner. `transition: height`

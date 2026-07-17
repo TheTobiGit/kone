@@ -2,11 +2,8 @@
 import { computed } from "vue";
 import { usePreferredDark } from "@vueuse/core";
 import { motion } from "motion-v";
-import IconPlus from "./icons/IconPlus.vue";
-import IconFolder from "./icons/IconFolder.vue";
-import IconGitHub from "./icons/IconGitHub.vue";
+import type { ActionKey } from "./StartActions.vue";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
-import { Magnet } from "~/components/ui/magnet";
 
 // On white, the plasma's ridge veins read as a soft cloud; on near-black the
 // same veins glow as high-contrast filaments. Sitting the layer back in dark
@@ -15,14 +12,6 @@ const isDark = usePreferredDark();
 const plasmaOpacity = computed(() => (isDark.value ? 0.5 : 1));
 
 // First-run screen: no projects, no sessions yet — just three ways to begin.
-const actions = [
-  { key: "create", label: "Create a new project", icon: IconPlus },
-  { key: "open", label: "Open from local folder", icon: IconFolder },
-  { key: "clone", label: "Clone from GitHub", icon: IconGitHub },
-] as const;
-
-type ActionKey = (typeof actions)[number]["key"];
-
 // Key of the action currently in session (e.g. folder picker open), or null.
 defineProps<{ pending?: ActionKey | null }>();
 const emit = defineEmits<{ start: [key: ActionKey] }>();
@@ -35,36 +24,11 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
     <!-- Hero: the start options rest dead-center in the open space. -->
     <section class="relative z-10 flex flex-1 flex-col items-center justify-center">
       <motion.div
-        class="flex w-fit flex-col gap-1"
         :initial="{ opacity: 0, y: 8 }"
         :animate="{ opacity: 1, y: 0 }"
         :transition="{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }"
       >
-        <!-- Each row leans gently toward the cursor as it approaches, then
-             eases back — a soft magnetic pull, not a bouncy magnet. Disabled
-             while any action is pending so a loading row stays put. -->
-        <Magnet
-          v-for="action in actions"
-          :key="action.key"
-          class="w-fit"
-          inner-class="w-fit"
-          :padding="12"
-          :magnet-strength="9"
-          :disabled="!!pending"
-          active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-          inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
-        >
-          <StartAction
-            :label="action.label"
-            :loading="pending === action.key"
-            :disabled="!!pending && pending !== action.key"
-            @select="emit('start', action.key)"
-          >
-            <template #icon>
-              <component :is="action.icon" />
-            </template>
-          </StartAction>
-        </Magnet>
+        <StartActions :pending="pending" @start="emit('start', $event)" />
       </motion.div>
     </section>
 
