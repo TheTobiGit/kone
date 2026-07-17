@@ -1,10 +1,10 @@
 import { computed, ref } from "vue";
 
-// Brain for the "Clone from GitHub" flow. The clone action's real work (spawning
-// `git clone` in the Electron main process, streaming its progress) is a
-// follow-up — for now `runClone` is a faithful mock that walks the same phases a
-// real clone would, so the modal's morph → progress → open choreography is built
-// and demoable in `nuxt dev`.
+// Brain for the "Clone from GitHub" flow. In the desktop app `runClone` drives a
+// real `git clone` in the Electron main process and follows its streamed
+// progress; in `nuxt dev` (no bridge) it falls back to a faithful mock that
+// walks the same phases, so the modal's morph → progress → open choreography
+// stays demoable in the browser.
 //
 // State lives at module scope on purpose: while the user detours through the
 // folder picker to choose a destination, `GitHubCloneModal` unmounts — the typed
@@ -13,6 +13,7 @@ import { computed, ref } from "vue";
 
 export type ParsedRepo = { owner: string; name: string; url: string };
 export type ClonePhase = "idle" | "cloning" | "done" | "error";
+export type CloneTarget = { path: string; name: string };
 
 // The raw text in the reference field (owner/repo, an https URL, or git@ SSH).
 const raw = ref("");
@@ -28,6 +29,9 @@ const stage = ref(""); // human caption for the current clone phase
 const cloneError = ref<string | null>(null);
 
 let raf: number | null = null;
+// Set while the user is deliberately aborting the clone in flight, so its
+// rejection reads as a cancellation (quiet return to idle) rather than a failure.
+let aborting = false;
 
 // ── reference parsing ─────────────────────────────────────────────────────────
 // Accept the shapes a person actually pastes: `owner/repo`, a github.com web URL
@@ -95,6 +99,20 @@ function stageFor(t: number): string {
   return "Checking out files…";
 }
 
+// A rejected `git:clone` invoke arrives wrapped by Electron's IPC layer, e.g.
+// "Error invoking remote method 'git:clone': GitError: <what git said>". Peel
+// those prefixes off so the modal shows just git's own message.
+function cloneErrorMessage(error: unknown): string {
+  const raw =
+    error instanceof Error ? error.message : String(error ?? "");
+  const cleaned = raw
+    .replace(/^Error invoking remote method '[^']*':\s*/, "")
+    .replace(/^\w*Error:\s*/, "")
+    .replace(/^fatal:\s*/i, "")
+    .trim();
+  return cleaned || "Clone failed";
+}
+
 export function useGitClone() {
   const { home } = useFileSystem();
 
@@ -125,18 +143,81 @@ export function useGitClone() {
     if (path) destParent.value = path;
   }
 
-  // Mock clone: ramp progress 0→1 over ~2.1s on rAF, updating the stage caption,
-  // then resolve with the folder that would have been created. Bails to null if
-  // there's nothing valid to clone or one is already running.
-  function runClone(): Promise<{ path: string; name: string } | null> {
-    return new Promise((resolve) => {
-      if (!repo.value || phase.value === "cloning") return resolve(null);
-      const target = { path: destPath.value, name: repo.value.name };
-      phase.value = "cloning";
-      cloneError.value = null;
-      progress.value = 0;
-      stage.value = stageFor(0);
+  // Run the clone. On the desktop this spawns a real `git clone` and follows its
+  // streamed progress; without the bridge it falls back to the mock ramp. Either
+  // way it resolves with the created folder, or null when nothing valid is
+  // pending / one is already running (a failure sets `cloneError` + the error
+  // phase and resolves null).
+  function runClone(): Promise<CloneTarget | null> {
+    if (!repo.value || phase.value === "cloning") return Promise.resolve(null);
+    const target = { path: destPath.value, name: repo.value.name };
+    const url = repo.value.url;
+    aborting = false;
+    phase.value = "cloning";
+    cloneError.value = null;
+    progress.value = 0;
+    stage.value = stageFor(0);
 
+    const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
+    return bridge?.clone ? realClone(bridge, url, target) : mockClone(target);
+  }
+
+  // Real clone: subscribe to streamed progress, then await the spawned process.
+  async function realClone(
+    bridge: NonNullable<Window["koneDesktop"]>["git"],
+    url: string,
+    target: CloneTarget,
+  ): Promise<CloneTarget | null> {
+    const off = bridge.onCloneProgress((p) => {
+      // Guard against a stray tick arriving after we've settled the phase.
+      if (phase.value !== "cloning") return;
+      progress.value = p.progress;
+      stage.value = p.stage;
+    });
+    try {
+      const result = await bridge.clone(url, target.path);
+      progress.value = 1;
+      stage.value = "Done";
+      phase.value = "done";
+      // Let the filled bar + "done" read for a beat before handing back.
+      await new Promise((r) => window.setTimeout(r, 420));
+      return { path: result.root, name: result.name };
+    } catch (error) {
+      // A deliberate abort isn't a failure — drop back to the form silently.
+      if (aborting) {
+        phase.value = "idle";
+      } else {
+        cloneError.value = cloneErrorMessage(error);
+        phase.value = "error";
+      }
+      return null;
+    } finally {
+      off();
+    }
+  }
+
+  // Abort the clone in flight. On the desktop this kills the git process (its
+  // promise then rejects, handled quietly above); in the dev mock it just stops
+  // the rAF ramp. No-op when nothing is cloning.
+  function abort(): void {
+    if (phase.value !== "cloning") return;
+    const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
+    if (bridge?.cancelClone) {
+      aborting = true;
+      void bridge.cancelClone();
+      return;
+    }
+    if (raf !== null) {
+      cancelAnimationFrame(raf);
+      raf = null;
+    }
+    phase.value = "idle";
+  }
+
+  // Mock clone: ramp progress 0→1 over ~2.1s on rAF, updating the stage caption,
+  // then resolve with the folder that would have been created.
+  function mockClone(target: CloneTarget): Promise<CloneTarget | null> {
+    return new Promise((resolve) => {
       const start = performance.now();
       const DURATION = 2100;
       const tick = (now: number) => {
@@ -148,7 +229,6 @@ export function useGitClone() {
         } else {
           raf = null;
           phase.value = "done";
-          // Let the filled bar + "done" read for a beat before handing back.
           window.setTimeout(() => resolve(target), 420);
         }
       };
@@ -189,6 +269,7 @@ export function useGitClone() {
     ensureHome,
     setDestParent,
     runClone,
+    abort,
     reset,
   };
 }

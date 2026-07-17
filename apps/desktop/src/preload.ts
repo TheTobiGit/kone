@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 
 import type { DirListing } from "./fs.js";
 import type {
+  CloneProgress,
+  CloneResult,
   GitBranch,
   GitCommit,
   GitRepo,
@@ -26,6 +28,17 @@ const api = {
       ipcRenderer.invoke("git:branches", dir),
     log: (dir: string, limit?: number): Promise<GitCommit[]> =>
       ipcRenderer.invoke("git:log", dir, limit),
+    clone: (url: string, dest: string): Promise<CloneResult> =>
+      ipcRenderer.invoke("git:clone", url, dest),
+    // Abort the clone currently in flight (its git.clone() invoke then rejects).
+    cancelClone: (): Promise<void> => ipcRenderer.invoke("git:clone-cancel"),
+    // Subscribe to clone progress; returns an unsubscribe fn. Only meaningful
+    // while a git.clone() invoke is in flight.
+    onCloneProgress: (cb: (p: CloneProgress) => void): (() => void) => {
+      const listener = (_event: unknown, p: CloneProgress) => cb(p);
+      ipcRenderer.on("git:clone-progress", listener);
+      return () => ipcRenderer.removeListener("git:clone-progress", listener);
+    },
   },
   system: {
     username: (): Promise<string | null> =>

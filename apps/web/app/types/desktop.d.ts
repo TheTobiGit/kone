@@ -91,11 +91,28 @@ export type GitRepo = {
   removed: number;
 };
 
+export type CloneProgress = {
+  /** Overall progress across all clone phases, 0..1. */
+  progress: number;
+  /** Human caption for the current phase, e.g. "Receiving objects…". */
+  stage: string;
+};
+
+export type CloneResult = {
+  root: string;
+  name: string;
+};
+
 export type KoneGitApi = {
   detect: (dir: string) => Promise<GitRepo | null>;
   status: (dir: string) => Promise<GitStatus | null>;
   branches: (dir: string) => Promise<GitBranch[]>;
   log: (dir: string, limit?: number) => Promise<GitCommit[]>;
+  clone: (url: string, dest: string) => Promise<CloneResult>;
+  /** Abort the clone in flight; its clone() promise then rejects. */
+  cancelClone: () => Promise<void>;
+  /** Subscribe to clone progress; returns an unsubscribe fn. */
+  onCloneProgress: (cb: (p: CloneProgress) => void) => () => void;
 };
 
 export type KoneSystemApi = {

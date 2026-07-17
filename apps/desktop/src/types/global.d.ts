@@ -1,5 +1,7 @@
 import type { DirListing } from "../fs.js";
 import type {
+  CloneProgress,
+  CloneResult,
   GitBranch,
   GitCommit,
   GitRepo,
@@ -16,6 +18,9 @@ export type KoneGitApi = {
   status: (dir: string) => Promise<GitStatus | null>;
   branches: (dir: string) => Promise<GitBranch[]>;
   log: (dir: string, limit?: number) => Promise<GitCommit[]>;
+  clone: (url: string, dest: string) => Promise<CloneResult>;
+  cancelClone: () => Promise<void>;
+  onCloneProgress: (cb: (p: CloneProgress) => void) => () => void;
 };
 
 export type KoneDesktopApi = {

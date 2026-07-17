@@ -31,11 +31,13 @@ const {
   phase,
   progress,
   stage,
+  cloneError,
   destParentDisplay,
   destPathDisplay,
   setDestParent,
   ensureHome,
   runClone,
+  abort,
 } = useGitClone();
 
 // Which view fills the card. Progress is driven by `phase` within the form view;
@@ -73,7 +75,12 @@ function close(done: () => void) {
 }
 
 function cancel() {
-  if (closing.value || busy.value) return; // don't abandon a clone in flight
+  // Hold steady through the final "done" beat — the clone succeeded and is
+  // committing; don't let a stray Escape emit cancel over it.
+  if (closing.value || phase.value === "done") return;
+  // Cancelling mid-clone aborts it (kills git, sweeps the partial folder) and
+  // then closes — "Cancel" means abandon the whole operation.
+  if (busy.value) abort();
   close(() => emit("cancel"));
 }
 
@@ -271,7 +278,7 @@ const viewMorph = {
               <button
                 type="button"
                 class="clone-action shrink-0 text-muted"
-                :disabled="busy"
+                :disabled="phase === 'done'"
                 @click="cancel"
               >
                 Cancel
@@ -359,6 +366,17 @@ const viewMorph = {
                     <span class="clone-dest-path">{{ destParentDisplay }}</span>
                     <span class="clone-dest-edit" aria-hidden="true">Change</span>
                   </button>
+
+                  <!-- Clone failure: git's own message, surfaced quietly. The
+                       form stays intact so the reference/destination can be
+                       fixed and re-submitted. -->
+                  <p
+                    v-if="phase === 'error' && cloneError"
+                    class="clone-error"
+                    role="alert"
+                  >
+                    {{ cloneError }}
+                  </p>
                 </motion.div>
 
                 <!-- ── PROGRESS ── -->
@@ -666,6 +684,17 @@ const viewMorph = {
 }
 .clone-dest:focus-visible .clone-dest-path {
   text-decoration-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+/* ── error ── quiet failure line beneath the form, in a warm red. */
+.clone-error {
+  margin-top: 0.875rem;
+  padding-left: calc(18px + 0.625rem);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: color-mix(in srgb, #e5484d 82%, var(--ink));
 }
 
 /* ── progress ── */

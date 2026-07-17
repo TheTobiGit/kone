@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, net, protocol, shell } from "electron";
 
 import { registerFsIpc } from "./fs.js";
-import { registerGitIpc } from "./git.js";
+import { cancelClone, registerGitIpc } from "./git.js";
 import { registerSystemIpc } from "./system.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -117,6 +117,10 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
+
+// Don't leave a `git clone` running (and a half-written folder behind) if the
+// app quits mid-clone.
+app.on("before-quit", () => cancelClone());
 
 console.log(
   isDev
