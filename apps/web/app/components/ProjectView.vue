@@ -8,9 +8,6 @@ import type { Project } from "~/composables/useProject";
 const props = defineProps<{ project: Project }>();
 defineEmits<{ close: [] }>();
 
-// Live git for the rail. `detect` gives the branch + overall line diffstat
-// (canned for the mock repos in `nuxt dev`); `status` gives the per-file change
-// list that feeds both the ChangesPanel cards and the folder's peeking papers.
 const git = useGit();
 const loaded = ref(false);
 const repo = ref(true);
@@ -33,7 +30,6 @@ function isNew(status: GitFileStatus): boolean {
   return status === "added" || status === "untracked";
 }
 
-// The full change list, for the panel's cards.
 const changeItems = computed<ChangeItem[]>(() =>
   changes.value.map((c) => ({
     name: c.path.split("/").pop() ?? c.path,
@@ -46,11 +42,13 @@ const changeItems = computed<ChangeItem[]>(() =>
   })),
 );
 
-// A trimmed cut of the same list, for the folder's peeking papers.
 const folderFiles = computed<FolderFile[]>(() =>
   changes.value.slice(0, 3).map((c) => ({
     lang: langOf(c.path),
     change: c.status === "deleted" ? "deleted" : isNew(c.status) ? "new" : "edit",
+    added: c.added ?? 0,
+    removed: c.removed ?? 0,
+    name: c.path,
   })),
 );
 
@@ -74,7 +72,6 @@ onMounted(async () => {
   loaded.value = true;
 });
 
-// Files with any change, and how many of them are staged — drives the greeting.
 const fileCount = computed(() => changeItems.value.length);
 const stagedCount = computed(() => changes.value.filter((c) => c.staged).length);
 </script>
@@ -83,8 +80,7 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
   <main
     class="relative flex h-full min-h-screen items-center justify-center bg-ground px-16 py-16"
   >
-    <!-- The greeting + file changes sit in the middle of the page (Project Home
-         language); the agent conversation will grow around this next. -->
+    
     <div class="flex w-full max-w-4xl flex-col gap-11">
       <HomeGreeting
         :project-name="project.name"
@@ -108,7 +104,7 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
       />
     </div>
 
-    <!-- Folder anchored in the bottom-left corner, ambient. -->
+    
     <div class="absolute bottom-10 left-10">
       <ProjectFolder
         :name="project.name"

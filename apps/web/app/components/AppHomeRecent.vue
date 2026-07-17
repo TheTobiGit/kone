@@ -12,11 +12,6 @@ import {
 import type { ActionKey } from "./StartActions.vue";
 import type { RecentProject } from "~/composables/useRecentProjects";
 
-// The populated App Home — shown once you've opened at least one project.
-// search + sort, a grid of project folders, then the quiet start-action column.
-// Each folder is enriched with live git (branch · diffstat · peeking papers)
-// the same way the opened-project view is.
-
 const props = defineProps<{
   recents: RecentProject[];
   pending?: ActionKey | null;
@@ -31,7 +26,6 @@ const emit = defineEmits<{
 
 const { summaries, enrich } = useProjectSummaries();
 
-// Resolve git for every project in view, and for any that get added later.
 watch(
   () => props.recents.map((p) => p.path),
   (paths) => {
@@ -40,7 +34,6 @@ watch(
   { immediate: true },
 );
 
-// ── search + sort ───────────────────────────────────────────────────────────
 const query = ref("");
 type Sort = "recent" | "name";
 const sort = ref<Sort>("recent");
@@ -55,12 +48,15 @@ const shown = computed(() => {
     ? props.recents.filter((p) => p.name.toLowerCase().includes(q))
     : props.recents;
   if (sort.value === "name") {
-    return [...list].sort((a, b) => a.name.localeCompare(b.name));
+    // Name sort still keeps pins leading (alpha within each group).
+    return [...list].sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
   }
-  return list; // already newest-first from the store
+  return list;
 });
 
-// ⌘K / Ctrl-K focuses the search field.
 const searchEl = ref<HTMLInputElement | null>(null);
 function onKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -73,7 +69,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 const anyPending = computed(() => !!props.pending);
 
-// Which card the pointer/focus is on — drives the folder's papers springing out.
 const hoveredPath = ref<string | null>(null);
 </script>
 
@@ -81,7 +76,7 @@ const hoveredPath = ref<string | null>(null);
   <main
     class="relative flex h-full min-h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px] pb-16"
   >
-    <!-- Header: date on the left; search + sort trailing. -->
+    
     <HomeHeader>
       <template #trailing>
         <div class="flex items-center gap-3">
@@ -126,13 +121,9 @@ const hoveredPath = ref<string | null>(null);
       </template>
     </HomeHeader>
 
-    <!-- Content block sits toward the top-center of the open space. -->
+    
     <section class="relative z-10 mx-auto mt-24 flex w-full max-w-[820px] flex-col">
-      <!-- Project grid — three across, generously spaced. The start actions
-           flow as trailing cells right after the last project, so they read as
-           part of the same run rather than a separate block below. Each cell
-           rises and settles in reading order (a small per-index delay) so the
-           grid assembles itself instead of appearing all at once. -->
+      
       <div class="grid grid-cols-3 gap-x-14 gap-y-6">
         <motion.div
           v-for="(project, i) in shown"
@@ -150,10 +141,7 @@ const hoveredPath = ref<string | null>(null);
           @mouseenter="hoveredPath = project.path"
           @mouseleave="hoveredPath = null"
         >
-          <!-- Springy lift on hover/focus (driven by the card-level hover so it
-               stays lifted while the pointer is on the action rail). Motion
-               physics gives a soft overshoot-and-settle; held flat while any
-               action is pending. -->
+          
           <motion.button
             type="button"
             :disabled="anyPending"
@@ -176,11 +164,7 @@ const hoveredPath = ref<string | null>(null);
             />
           </motion.button>
 
-          <!-- Hover action rail — a quiet vertical stack floating just outside
-               the folder's right edge (in the card's padding gutter), revealed
-               on hover: Pin · Reveal · Remove. The gutter keeps it within the
-               column track so it never clips at the last column, and inside the
-               card's hover box so hovering it holds the card's hover state. -->
+          
           <motion.div
             class="absolute right-0 top-0 bottom-0 flex flex-col justify-center gap-1.5"
             :initial="{ opacity: 0, x: 4 }"
@@ -195,7 +179,7 @@ const hoveredPath = ref<string | null>(null);
                 !anyPending && hoveredPath === project.path ? 'auto' : 'none',
             }"
           >
-            <!-- Pin to top — filled star when pinned. -->
+            
             <button
               type="button"
               :aria-label="project.pinned ? 'Unpin project' : 'Pin to top'"
@@ -212,7 +196,7 @@ const hoveredPath = ref<string | null>(null);
               />
             </button>
 
-            <!-- Reveal in Finder. -->
+            
             <button
               type="button"
               aria-label="Reveal in Finder"
@@ -228,7 +212,7 @@ const hoveredPath = ref<string | null>(null);
               />
             </button>
 
-            <!-- Remove from recents. -->
+            
             <button
               type="button"
               aria-label="Remove from recents"
@@ -246,11 +230,7 @@ const hoveredPath = ref<string | null>(null);
           </motion.div>
         </motion.div>
 
-        <!-- Start actions — the same three-way column as the first-run hero,
-             kept as one unit but flowed as a trailing cell so it continues the
-             grid run rather than starting a fresh block below. Rises in right
-             after the last project, closing the stagger. Centers against the
-             taller folder cells sharing its row. -->
+        
         <motion.div
           class="-ml-1.5 self-center"
           :initial="{ opacity: 0, y: 12, scale: 0.97 }"
@@ -267,7 +247,7 @@ const hoveredPath = ref<string | null>(null);
         </motion.div>
       </div>
 
-      <!-- No match for the current search. -->
+      
       <p
         v-if="shown.length === 0"
         class="py-6 font-mono text-xs tracking-wide text-muted"

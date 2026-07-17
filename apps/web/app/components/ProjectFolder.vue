@@ -3,40 +3,28 @@ import { computed } from "vue";
 import { motion } from "motion-v";
 import { CountUp } from "~/components/ui/count-up";
 
-// kone's signature project "folder" — a physical folder whose pocket carries
-// the repo identity (GitHub mark · name · branch · line diffstat) while
-// uncommitted changes peek out the top as little paper cards. Traced from the
-// data:
-//   • active     — repo with papers + a +/− diffstat
-//   • clean      — repo, no papers, no diffstat
-//   • deletions  — repo, torn (dashed-red) papers, only a −removed count
-//   • not-a-repo — bare folder: just the name, no git chrome, no papers
-//
-// It's a self-contained material (near-white in light, near-black in dark) with
-// its own palette rather than the semantic ink/ground tokens, and scales as one
-// piece via the `scale` prop.
-
 type FileLang = "ts" | "js" | "vue";
 type FileChange = "new" | "edit" | "deleted";
 
 export interface FolderFile {
   lang: FileLang;
   change: FileChange;
+  /** Lines added/removed for this file — drives the paper's diff-shape marks. */
+  added?: number;
+  removed?: number;
+  /** File path — seeds the deterministic mark jitter so no two read alike. */
+  name?: string;
 }
 
 const props = withDefaults(
   defineProps<{
     name: string;
-    /** Whether the folder is a git repository. false → no git chrome. */
     repo?: boolean;
     branch?: string | null;
     added?: number;
     removed?: number;
-    /** Uncommitted changes peeking out the top (max 3 render). */
     files?: FolderFile[];
-    /** Uniform scale of the whole folder. 1 = the 200×116 Paper base. */
     scale?: number;
-    /** When true, the peeking papers spring out into a wider fan. */
     hovered?: boolean;
   }>(),
   {
@@ -50,21 +38,55 @@ const props = withDefaults(
   },
 );
 
-// Fixed slots the papers fan into. At rest they sit low — tucked deep in the
-// pocket so only a short strip peeks out (`bottom` keeps most of the tall paper
-// hidden behind the pocket). On hover each springs UP by `dy`, drawing its full
-// length into view, while the outer two also throw a little wider (`dx`) and
-// tilt harder (`dr`) so the stack blooms open as it rises.
+// Rest positions + hover deltas for the peeking paper fan.
 const SLOTS = [
   { left: 44, bottom: 54, rotate: -10, dx: -14, dy: -42, dr: -10 },
   { left: 78, bottom: 60, rotate: 1, dx: 0, dy: -48, dr: 0 },
   { left: 112, bottom: 54, rotate: 11, dx: 14, dy: -42, dr: 10 },
 ] as const;
 
+// Sketch each paper's diff shape from its +/− magnitude — the same
+// representative-hunk sketch the opened project's ChangeCard draws, scaled down
+// to the mini paper. Widths jitter deterministically off the file path so no
+// two papers read identically. This is what makes the peeking papers read as
+// the real changed files, not decoration.
+type Mark = { w: number; tone: "ctx" | "add" | "del" };
+function marksFor(file: FolderFile): Mark[] {
+  const seed = [...(file.name ?? "")].reduce((a, c) => a + c.charCodeAt(0), 0);
+  const jit = (base: number, i: number) =>
+    Math.max(6, base + ((seed + i * 7) % 5) - 2);
+  const added = file.added ?? 0;
+  const removed = file.removed ?? 0;
+  if (added > 0 && removed > 0)
+    return [
+      { w: jit(16, 0), tone: "ctx" },
+      { w: jit(10, 1), tone: "del" },
+      { w: jit(13, 2), tone: "add" },
+    ];
+  if (added > 0 || file.change === "new")
+    return [
+      { w: jit(15, 0), tone: "add" },
+      { w: jit(10, 1), tone: "add" },
+      { w: jit(8, 2), tone: "ctx" },
+    ];
+  if (removed > 0)
+    return [
+      { w: jit(15, 0), tone: "del" },
+      { w: jit(9, 1), tone: "del" },
+      { w: jit(7, 2), tone: "ctx" },
+    ];
+  // No line delta (rename, mode change) — a quiet two-line context sketch.
+  return [
+    { w: 15, tone: "ctx" },
+    { w: 10, tone: "ctx" },
+  ];
+}
+
 const papers = computed(() =>
   (props.repo ? props.files : []).slice(0, SLOTS.length).map((file, i) => ({
     ...file,
     ...SLOTS[i]!,
+    marks: marksFor(file),
   })),
 );
 
@@ -76,12 +98,10 @@ const showDiff = computed(
 <template>
   <div class="folder" :style="{ '--s': scale }">
     <div class="folder__stage">
-      <!-- Back sheet: the folder's rear tab peeking above the pocket. -->
+      
       <div class="folder__sheet" />
 
-      <!-- Peeking papers: uncommitted changes fanned out the top. They spring
-           into a wider bloom on hover; each is anchored by left/bottom, and
-           motion owns x/y/rotate so the fan and the spring stay in sync. -->
+      
       <motion.div
         v-for="(paper, i) in papers"
         :key="i"
@@ -102,7 +122,7 @@ const showDiff = computed(
           delay: hovered ? i * 0.04 : 0,
         }"
       >
-        <!-- Language badge. -->
+        
         <span v-if="paper.lang === 'vue'" class="folder__lang-vue">
           <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
             <path d="M3 3 L7 3 L12 11 L17 3 L21 3 L12 20 Z" fill="#41B883" />
@@ -117,18 +137,19 @@ const showDiff = computed(
           {{ paper.lang === "ts" ? "TS" : "JS" }}
         </span>
 
-        <!-- Two line marks (skipped on torn papers). -->
-        <span
-          v-if="paper.change !== 'deleted'"
-          class="folder__marks"
-          :class="`folder__marks--${paper.change}`"
-        >
-          <i class="folder__mark folder__mark--long" />
-          <i class="folder__mark folder__mark--short" />
+        
+        <span v-if="paper.change !== 'deleted'" class="folder__marks">
+          <i
+            v-for="(m, mi) in paper.marks"
+            :key="mi"
+            class="folder__mark"
+            :class="`folder__mark--${m.tone}`"
+            :style="{ width: `${m.w}px` }"
+          />
         </span>
       </motion.div>
 
-      <!-- Front pocket: the repo's identity card. -->
+      
       <div class="folder__pocket">
         <div class="folder__row folder__row--name">
           <svg
@@ -174,7 +195,7 @@ const showDiff = computed(
 
 <style scoped>
 .folder {
-  /* Self-contained material palette — light. */
+  
   --paper-bg: #ffffff;
   --mark-edit-1: #d8d7d3;
   --mark-edit-2: #e4e3df;
@@ -220,7 +241,6 @@ const showDiff = computed(
   line-height: 16px;
 }
 
-/* ── back sheet ─────────────────────────────────────────────────────────── */
 .folder__sheet {
   position: absolute;
   left: 16px;
@@ -232,7 +252,6 @@ const showDiff = computed(
   box-shadow: var(--sheet-inset) 0 1px 0 inset;
 }
 
-/* ── peeking papers ─────────────────────────────────────────────────────── */
 .folder__paper {
   position: absolute;
   width: 50px;
@@ -249,6 +268,12 @@ const showDiff = computed(
   opacity: 0.9;
 }
 
+.folder__badge,
+.folder__lang-vue {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+}
 .folder__badge {
   display: inline-flex;
   align-items: center;
@@ -285,26 +310,16 @@ const showDiff = computed(
   height: 3px;
   border-radius: 2px;
 }
-.folder__mark--long {
-  width: 16px;
-}
-.folder__mark--short {
-  width: 11px;
-}
-.folder__marks--edit .folder__mark--long {
+.folder__mark--ctx {
   background-color: var(--mark-edit-1);
 }
-.folder__marks--edit .folder__mark--short {
-  background-color: var(--mark-edit-2);
-}
-.folder__marks--new .folder__mark--long {
+.folder__mark--add {
   background-color: var(--mark-new-1);
 }
-.folder__marks--new .folder__mark--short {
-  background-color: var(--mark-new-2);
+.folder__mark--del {
+  background-color: var(--del);
 }
 
-/* ── front pocket ───────────────────────────────────────────────────────── */
 .folder__pocket {
   position: absolute;
   left: 0;
@@ -385,7 +400,6 @@ const showDiff = computed(
   color: var(--del);
 }
 
-/* ── dark material ──────────────────────────────────────────────────────── */
 @media (prefers-color-scheme: dark) {
   .folder {
     --paper-bg: #2c2c31;

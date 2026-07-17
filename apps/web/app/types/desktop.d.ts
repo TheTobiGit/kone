@@ -5,7 +5,6 @@ export {};
 export type DirEntry = {
   name: string;
   path: string;
-  /** True when this directory is a git repository root (holds a `.git`). */
   repo: boolean;
 };
 
@@ -13,7 +12,6 @@ export type DirListing = {
   path: string;
   name: string;
   parent: string | null;
-  /** True when the listed folder is itself a git repository root. */
   repo: boolean;
   entries: DirEntry[];
 };
@@ -42,7 +40,6 @@ export type GitChange = {
   unstaged: boolean;
   /** Lines inserted in this file (working tree vs HEAD), when known. */
   added?: number;
-  /** Lines deleted in this file, when known. */
   removed?: number;
 };
 
@@ -91,7 +88,6 @@ export type GitRepo = {
   clean: boolean;
   /** Lines inserted across uncommitted tracked changes (working tree vs HEAD). */
   added: number;
-  /** Lines deleted across uncommitted tracked changes. */
   removed: number;
 };
 
@@ -103,8 +99,8 @@ export type KoneGitApi = {
 };
 
 export type KoneSystemApi = {
-  /** The signed-in OS account's short username, or null if unreadable. */
   username: () => Promise<string | null>;
+  reveal: (path: string) => Promise<void>;
 };
 
 export type KoneDesktopApi = {
