@@ -4,6 +4,8 @@ import type { DirListing } from "./fs.js";
 import type {
   CloneProgress,
   CloneResult,
+  CreateProjectOptions,
+  CreateProjectResult,
   GitBranch,
   GitCommit,
   GitRepo,
@@ -32,6 +34,8 @@ const api = {
       ipcRenderer.invoke("git:clone", url, dest),
     // Abort the clone currently in flight (its git.clone() invoke then rejects).
     cancelClone: (): Promise<void> => ipcRenderer.invoke("git:clone-cancel"),
+    create: (opts: CreateProjectOptions): Promise<CreateProjectResult> =>
+      ipcRenderer.invoke("git:create", opts),
     // Subscribe to clone progress; returns an unsubscribe fn. Only meaningful
     // while a git.clone() invoke is in flight.
     onCloneProgress: (cb: (p: CloneProgress) => void): (() => void) => {

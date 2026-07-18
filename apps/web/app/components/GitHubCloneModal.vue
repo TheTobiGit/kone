@@ -265,25 +265,16 @@ const viewMorph = {
           <motion.div
             v-if="view === 'form'"
             key="clone"
-            class="flex flex-col px-5 py-4"
+            class="flex flex-col px-4 py-4"
             :initial="{ opacity: 0, y: 10, filter: 'blur(3px)' }"
             :animate="{ opacity: 1, y: 0, filter: 'blur(0px)' }"
             :exit="{ opacity: 0, y: -10, filter: 'blur(3px)' }"
             :transition="viewMorph"
           >
-            <!-- Header band: mono eyebrow + Cancel. -->
+            <!-- Header band: just Cancel (no title). -->
             <div
-              class="clone-band clone-header -mx-5 -mt-4 mb-4 flex items-center gap-4"
+              class="clone-band clone-header -mx-4 -mt-4 mb-4 flex items-center justify-end"
             >
-              <span class="clone-eyebrow flex items-center gap-2">
-                <HugeiconsIcon
-                  :icon="GithubIcon"
-                  :size="14"
-                  :stroke-width="1.8"
-                  aria-hidden="true"
-                />
-                Clone from GitHub
-              </span>
               <button
                 type="button"
                 class="clone-action shrink-0 text-muted"
@@ -432,7 +423,7 @@ const viewMorph = {
               <motion.div
                 v-if="phase !== 'cloning' && phase !== 'done'"
                 key="footer"
-                class="clone-band clone-footer -mx-5 -mb-4 mt-4 flex items-center justify-end"
+                class="clone-band clone-footer -mx-4 -mb-4 mt-4 flex items-center justify-end"
                 :exit="{ opacity: 0, y: 10 }"
                 :transition="{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }"
               >
@@ -498,7 +489,7 @@ const viewMorph = {
    picker's header/footer) */
 .clone-band {
   position: relative;
-  padding: 0.625rem 1.25rem;
+  padding: 0.625rem 1rem;
   background-color: var(--band-bg);
 }
 .clone-eyebrow {

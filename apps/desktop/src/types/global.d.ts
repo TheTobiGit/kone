@@ -2,6 +2,8 @@ import type { DirListing } from "../fs.js";
 import type {
   CloneProgress,
   CloneResult,
+  CreateProjectOptions,
+  CreateProjectResult,
   GitBranch,
   GitCommit,
   GitRepo,
@@ -21,6 +23,7 @@ export type KoneGitApi = {
   clone: (url: string, dest: string) => Promise<CloneResult>;
   cancelClone: () => Promise<void>;
   onCloneProgress: (cb: (p: CloneProgress) => void) => () => void;
+  create: (opts: CreateProjectOptions) => Promise<CreateProjectResult>;
 };
 
 export type KoneDesktopApi = {

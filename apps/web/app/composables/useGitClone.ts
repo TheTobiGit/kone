@@ -1,4 +1,6 @@
 import { computed, ref } from "vue";
+import { collapseHome, joinPath } from "~/utils/paths";
+import { peelIpcError } from "~/utils/ipcError";
 
 // Brain for the "Clone from GitHub" flow. In the desktop app `runClone` drives a
 // real `git clone` in the Electron main process and follows its streamed
@@ -74,20 +76,6 @@ function parseRepoRef(input: string): ParsedRepo | null {
   return { owner, name, url: `https://github.com/${owner}/${name}.git` };
 }
 
-// `/abs/path` → `~/path` for display, when it sits under home.
-function collapse(path: string, home: string): string {
-  if (!path) return "";
-  if (!home) return path;
-  if (path === home) return "~";
-  if (path.startsWith(home + "/")) return "~" + path.slice(home.length);
-  return path;
-}
-
-function joinPath(dir: string, name: string): string {
-  if (!dir) return name;
-  return dir.endsWith("/") ? dir + name : `${dir}/${name}`;
-}
-
 // Caption + coarse progress a git clone reports, mapped onto the 0..1 ramp — so
 // the mock reads like the real thing (receiving is the long middle stretch).
 function stageFor(t: number): string {
@@ -99,20 +87,6 @@ function stageFor(t: number): string {
   return "Checking out files…";
 }
 
-// A rejected `git:clone` invoke arrives wrapped by Electron's IPC layer, e.g.
-// "Error invoking remote method 'git:clone': GitError: <what git said>". Peel
-// those prefixes off so the modal shows just git's own message.
-function cloneErrorMessage(error: unknown): string {
-  const raw =
-    error instanceof Error ? error.message : String(error ?? "");
-  const cleaned = raw
-    .replace(/^Error invoking remote method '[^']*':\s*/, "")
-    .replace(/^\w*Error:\s*/, "")
-    .replace(/^fatal:\s*/i, "")
-    .trim();
-  return cleaned || "Clone failed";
-}
-
 export function useGitClone() {
   const { home } = useFileSystem();
 
@@ -121,13 +95,13 @@ export function useGitClone() {
   const busy = computed(() => phase.value === "cloning");
 
   const destParentDisplay = computed(() =>
-    collapse(destParent.value, homePath.value),
+    collapseHome(destParent.value, homePath.value),
   );
   const destPath = computed(() =>
     repo.value ? joinPath(destParent.value, repo.value.name) : "",
   );
   const destPathDisplay = computed(() =>
-    collapse(destPath.value, homePath.value),
+    collapseHome(destPath.value, homePath.value),
   );
 
   // Resolve home once and seed the destination to the home directory itself the
@@ -187,7 +161,7 @@ export function useGitClone() {
       if (aborting) {
         phase.value = "idle";
       } else {
-        cloneError.value = cloneErrorMessage(error);
+        cloneError.value = peelIpcError(error, "Clone failed");
         phase.value = "error";
       }
       return null;

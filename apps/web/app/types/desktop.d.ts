@@ -103,6 +103,24 @@ export type CloneResult = {
   name: string;
 };
 
+export type CreateProjectOptions = {
+  parent: string;
+  name: string;
+  git: boolean;
+  branch?: string;
+  gitignore?: string | null;
+  readme?: boolean;
+  remote?: boolean;
+  repoName?: string;
+  visibility?: "public" | "private";
+  command?: string;
+};
+
+export type CreateProjectResult = {
+  root: string;
+  name: string;
+};
+
 export type KoneGitApi = {
   detect: (dir: string) => Promise<GitRepo | null>;
   status: (dir: string) => Promise<GitStatus | null>;
@@ -113,6 +131,8 @@ export type KoneGitApi = {
   cancelClone: () => Promise<void>;
   /** Subscribe to clone progress; returns an unsubscribe fn. */
   onCloneProgress: (cb: (p: CloneProgress) => void) => () => void;
+  /** Create a new project folder (optionally a git repo); resolves the folder. */
+  create: (opts: CreateProjectOptions) => Promise<CreateProjectResult>;
 };
 
 export type KoneSystemApi = {

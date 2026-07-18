@@ -362,20 +362,18 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- Vertical + left padding only, both hosts, so the scroll area (and its
-       scrollbar) runs to the card's right edge. Standalone insets 4; embedded
-       insets 5 to match the clone card's px-5 form. `shrink-0` keeps the block
-       at its natural height inside the host's bottom-anchored flex column. -->
+  <!-- Vertical + left padding only (16px), so the scroll area (and its
+       scrollbar) runs to the card's right edge. Matches the px-4 form of both
+       host cards. `shrink-0` keeps the block at its natural height inside the
+       host's bottom-anchored flex column. -->
   <div
     ref="rootEl"
-    class="folder-browser flex shrink-0 flex-col"
-    :class="embedded ? 'py-4 pl-5' : 'py-4 pl-4'"
+    class="folder-browser flex shrink-0 flex-col py-4 pl-4"
   >
     <!-- Header: the focused folder's full path as an editable address bar, in a
          curved band that mirrors the footer. Type a path + Enter to jump. -->
     <div
-      class="picker-header -mt-4 mb-4 flex items-center gap-4"
-      :class="embedded ? '-ml-5' : '-ml-4'"
+      class="picker-header -ml-4 -mt-4 mb-4 flex items-center gap-4"
     >
       <input
         ref="pathInput"
@@ -547,8 +545,7 @@ onBeforeUnmount(() => {
          content padding to sit as a full-bleed band clipped to the card's
          rounded bottom corners. -->
     <div
-      class="picker-footer -mb-4 mt-4 flex items-center justify-end gap-6"
-      :class="embedded ? '-ml-5' : '-ml-4'"
+      class="picker-footer -ml-4 -mb-4 mt-4 flex items-center justify-end gap-6"
     >
       <button
         type="button"

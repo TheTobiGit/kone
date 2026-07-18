@@ -8,6 +8,7 @@ const project = useProject();
 const { recents, remember, forget, togglePin } = useRecentProjects();
 const { reveal } = useReveal();
 const { reset: resetClone } = useGitClone();
+const { reset: resetCreate } = useCreateProject();
 const { cue } = useSound();
 
 // Gate empty-vs-recent on mount so SSR and first client paint agree.
@@ -18,6 +19,7 @@ const showRecent = computed(() => mounted.value && recents.value.length > 0);
 const pending = ref<"create" | "open" | "clone" | null>(null);
 const pickerOpen = ref(false); // open-a-project browser
 const cloneOpen = ref(false); // clone-from-github modal
+const createOpen = ref(false); // create-new-project modal
 
 function onStart(key: "create" | "open" | "clone") {
   if (pending.value) return;
@@ -37,7 +39,11 @@ function onStart(key: "create" | "open" | "clone") {
     return;
   }
 
-  console.info(`[app-home] start: ${key}`);
+  if (key === "create") {
+    pending.value = "create";
+    createOpen.value = true;
+    return;
+  }
 }
 
 function openProject(folder: { path: string; name: string }) {
@@ -88,6 +94,23 @@ function onCloneCancel() {
   resetClone();
 }
 
+// ── create a new project ─────────────────────────────────────────────────────
+// Like the clone modal, the create modal owns its whole flow (the location
+// browser morphs into its own card). It only tells us when a project was
+// created (open it) or the flow was cancelled.
+function onCreated(folder: { path: string; name: string }) {
+  cue("success");
+  createOpen.value = false;
+  pending.value = null;
+  resetCreate();
+  openProject(folder);
+}
+function onCreateCancel() {
+  createOpen.value = false;
+  pending.value = null;
+  resetCreate();
+}
+
 const isDark = usePreferredDark();
 const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
 </script>
@@ -123,6 +146,12 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
       v-if="cloneOpen"
       @clone="onCloned"
       @cancel="onCloneCancel"
+    />
+
+    <CreateProjectModal
+      v-if="createOpen"
+      @create="onCreated"
+      @cancel="onCreateCancel"
     />
   </ClickSpark>
 </template>
