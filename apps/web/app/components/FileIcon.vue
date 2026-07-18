@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Icon } from "@iconify/vue";
-import { iconForFile } from "~/utils/fileLang";
+import { iconForFile } from "~/utils/fileIcon";
 
 // The real VS Code file-type logo for a path, resolved from its filename.
 const props = withDefaults(

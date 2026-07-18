@@ -2,12 +2,10 @@
 import { computed } from "vue";
 import { motion } from "motion-v";
 import { CountUp } from "~/components/ui/count-up";
-import type { FileLang } from "~/utils/fileLang";
 
 type FileChange = "new" | "edit" | "deleted";
 
 export interface FolderFile {
-  lang: FileLang;
   change: FileChange;
   /** Lines added/removed for this file — drives the paper's diff-shape marks. */
   added?: number;

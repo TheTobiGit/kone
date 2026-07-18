@@ -4,7 +4,6 @@ import type { FolderFile } from "~/components/ProjectFolder.vue";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
 import type { GitChange, GitFileStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
-import { langOf } from "~/utils/fileLang";
 
 const props = defineProps<{ project: Project }>();
 defineEmits<{ close: [] }>();
@@ -35,7 +34,6 @@ function isNew(status: GitFileStatus): boolean {
 const changeItems = computed<ChangeItem[]>(() =>
   changes.value.map((c) => ({
     name: basename(c.path),
-    lang: langOf(c.path),
     added: c.added ?? 0,
     removed: c.removed ?? 0,
     staged: c.staged,
@@ -46,7 +44,6 @@ const changeItems = computed<ChangeItem[]>(() =>
 
 const folderFiles = computed<FolderFile[]>(() =>
   changes.value.slice(0, 3).map((c) => ({
-    lang: langOf(c.path),
     change: c.status === "deleted" ? "deleted" : isNew(c.status) ? "new" : "edit",
     added: c.added ?? 0,
     removed: c.removed ?? 0,

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { FileLang } from "~/utils/fileLang";
 
 // board. One card, every form: freshly created (new · empty), added, removed,
 // edited, staged/unstaged, or deleted (torn). Hovering reveals a Revert control.
@@ -10,7 +9,6 @@ import type { FileLang } from "~/utils/fileLang";
 const props = withDefaults(
   defineProps<{
     name: string;
-    lang: FileLang;
     added?: number;
     removed?: number;
     staged?: boolean;

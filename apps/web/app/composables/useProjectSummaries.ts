@@ -11,12 +11,6 @@ export interface ProjectSummary {
   files: FolderFile[];
 }
 
-function langOf(path: string): FolderFile["lang"] {
-  if (path.endsWith(".vue")) return "vue";
-  if (/\.(js|mjs|cjs|jsx)$/.test(path)) return "js";
-  return "ts";
-}
-
 function isNew(status: GitFileStatus): boolean {
   return status === "added" || status === "untracked";
 }
@@ -49,7 +43,6 @@ export function useProjectSummaries() {
       added: detected?.added ?? 0,
       removed: detected?.removed ?? 0,
       files: changes.slice(0, 3).map((c) => ({
-        lang: langOf(c.path),
         change:
           c.status === "deleted"
             ? "deleted"

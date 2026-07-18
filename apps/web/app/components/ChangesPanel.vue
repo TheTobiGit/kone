@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useResizeObserver } from "@vueuse/core";
-import type { FileLang } from "~/utils/fileLang";
 
 // The file-changes block that heads the project rail. Composes the adaptive
 // controls change with the working tree) over a grid of ChangeCards that fills,
@@ -12,7 +11,6 @@ import type { FileLang } from "~/utils/fileLang";
 
 export interface ChangeItem {
   name: string;
-  lang: FileLang;
   added: number;
   removed: number;
   staged: boolean;
@@ -195,7 +193,6 @@ const bundleCards: BundleCard[] = [
         v-for="c in visible"
         :key="c.name"
         :name="c.name"
-        :lang="c.lang"
         :added="c.added"
         :removed="c.removed"
         :staged="c.staged"
