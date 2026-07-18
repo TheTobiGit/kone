@@ -2,8 +2,8 @@
 import { computed } from "vue";
 import { motion } from "motion-v";
 import { CountUp } from "~/components/ui/count-up";
+import type { FileLang } from "~/utils/fileLang";
 
-type FileLang = "ts" | "js" | "vue";
 type FileChange = "new" | "edit" | "deleted";
 
 export interface FolderFile {
@@ -123,19 +123,7 @@ const showDiff = computed(
         }"
       >
         
-        <span v-if="paper.lang === 'vue'" class="folder__lang-vue">
-          <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
-            <path d="M3 3 L7 3 L12 11 L17 3 L21 3 L12 20 Z" fill="#41B883" />
-            <path d="M7 3 L9.5 3 L12 7.2 L14.5 3 L17 3 L12 11 Z" fill="#35495E" />
-          </svg>
-        </span>
-        <span
-          v-else
-          class="folder__badge"
-          :class="`folder__badge--${paper.lang}`"
-        >
-          {{ paper.lang === "ts" ? "TS" : "JS" }}
-        </span>
+        <FileIcon :path="paper.name ?? ''" :size="10" class="folder__icon" />
 
         
         <span v-if="paper.change !== 'deleted'" class="folder__marks">
@@ -268,36 +256,10 @@ const showDiff = computed(
   opacity: 0.9;
 }
 
-.folder__badge,
-.folder__lang-vue {
+.folder__icon {
   position: absolute;
   top: 8px;
   left: 8px;
-}
-.folder__badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 10px;
-  height: 10px;
-  border-radius: 2.5px;
-  font-family: var(--font-sans);
-  font-size: 5px;
-  font-weight: 700;
-  /* Tiny all-caps mark — a touch of tracking keeps TS/JS from crowding. */
-  letter-spacing: 0.02em;
-  line-height: 1;
-}
-.folder__badge--ts {
-  background-color: #3178c6;
-  color: #ffffff;
-}
-.folder__badge--js {
-  background-color: #f7df1e;
-  color: #1a1a1a;
-}
-.folder__lang-vue {
-  display: inline-flex;
 }
 
 .folder__marks {

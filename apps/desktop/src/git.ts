@@ -390,6 +390,8 @@ async function trackedLineCounts(
  *  unreadable files count as 0. */
 async function fileLineCount(root: string, relPath: string): Promise<number> {
   try {
+    // A `/`-terminated path is a directory; readFile would throw (EISDIR).
+    if (relPath.endsWith("/")) return 0;
     const buf = await readFile(path.join(root, relPath));
     if (buf.length === 0 || buf.includes(0)) return 0;
     let lines = 0;
@@ -430,6 +432,10 @@ export async function status(dir: string): Promise<GitStatus | null> {
     "status",
     "--porcelain=v2",
     "--branch",
+    // Expand untracked directories into their files — otherwise git collapses
+    // e.g. `.agents/` into one entry, and a `/`-terminated path yields nameless,
+    // unreadable "empty" cards downstream.
+    "--untracked-files=all",
     "-z",
   ]);
   const parsed = parseStatus(root, out);

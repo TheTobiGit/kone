@@ -4,6 +4,7 @@ import type { FolderFile } from "~/components/ProjectFolder.vue";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
 import type { GitChange, GitFileStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
+import { langOf } from "~/utils/fileLang";
 
 const props = defineProps<{ project: Project }>();
 defineEmits<{ close: [] }>();
@@ -20,10 +21,11 @@ const ahead = ref(0);
 const behind = ref(0);
 const changes = ref<GitChange[]>([]);
 
-function langOf(path: string): FolderFile["lang"] {
-  if (path.endsWith(".vue")) return "vue";
-  if (/\.(js|mjs|cjs|jsx)$/.test(path)) return "js";
-  return "ts";
+// Last path segment, tolerant of a trailing slash (a directory entry) so it
+// never yields an empty name.
+function basename(path: string): string {
+  const segments = path.split("/").filter(Boolean);
+  return segments[segments.length - 1] ?? path;
 }
 
 function isNew(status: GitFileStatus): boolean {
@@ -32,7 +34,7 @@ function isNew(status: GitFileStatus): boolean {
 
 const changeItems = computed<ChangeItem[]>(() =>
   changes.value.map((c) => ({
-    name: c.path.split("/").pop() ?? c.path,
+    name: basename(c.path),
     lang: langOf(c.path),
     added: c.added ?? 0,
     removed: c.removed ?? 0,
@@ -78,7 +80,7 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
 
 <template>
   <main
-    class="relative flex h-full min-h-screen items-center justify-center bg-ground px-16 py-16"
+    class="relative flex h-full min-h-screen items-start justify-center bg-ground px-16 py-24"
   >
     
     <div class="flex w-full max-w-4xl flex-col gap-11">

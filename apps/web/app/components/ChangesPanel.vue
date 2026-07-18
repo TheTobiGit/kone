@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { useResizeObserver } from "@vueuse/core";
+import type { FileLang } from "~/utils/fileLang";
 
 // The file-changes block that heads the project rail. Composes the adaptive
 // controls change with the working tree) over a grid of ChangeCards that fills,
@@ -10,7 +12,7 @@ import { computed } from "vue";
 
 export interface ChangeItem {
   name: string;
-  lang: "ts" | "js" | "vue";
+  lang: FileLang;
   added: number;
   removed: number;
   staged: boolean;
@@ -32,12 +34,29 @@ const stagedCount = computed(() => props.changes.filter((c) => c.staged).length)
 const allStaged = computed(() => total.value > 0 && stagedCount.value === total.value);
 const noneStaged = computed(() => stagedCount.value === 0);
 
-// Cap at ~two rows; the rest fold into one bundle in the last slot.
-const CAP = 8;
+// Cap at two rows exactly. The grid is responsive (auto-fill), so how many
+// cards make two rows depends on width — we measure the live column count and
+// derive the cap from it. Cards + card gap must stay in sync with `.grid`.
+const CARD = 158;
+const GAP = 12;
+const gridEl = ref<HTMLElement | null>(null);
+const cols = ref(4); // sensible pre-hydration default (matches ~max-w-4xl)
+useResizeObserver(gridEl, (entries) => {
+  const w = entries[0]?.contentRect.width ?? 0;
+  cols.value = Math.max(1, Math.floor((w + GAP) / (CARD + GAP)));
+});
+
+// Two full rows' worth of slots. When everything fits we show it all; when it
+// overflows we surrender the very last slot to the +N bundle, so "more" is
+// always the final item and the grid never spills past two rows.
+const maxSlots = computed(() => cols.value * 2);
+const hasOverflow = computed(() => total.value > maxSlots.value);
 const visible = computed(() =>
-  total.value > CAP ? props.changes.slice(0, CAP - 1) : props.changes,
+  hasOverflow.value ? props.changes.slice(0, maxSlots.value - 1) : props.changes,
 );
-const overflow = computed(() => Math.max(0, total.value - (CAP - 1)));
+const overflow = computed(() =>
+  hasOverflow.value ? total.value - (maxSlots.value - 1) : 0,
+);
 
 // One dot per file, coloured by what changed (not by staging — that's shown on
 // the cards). Addition-dominant files read green, deletion-dominant red, and a
@@ -151,8 +170,8 @@ const bundleCards: BundleCard[] = [
       </span>
     </header>
 
-    <!-- Card grid: two columns, capped at two rows + a bundle. -->
-    <div class="grid">
+    <!-- Card grid: responsive columns, capped at two rows + a bundle. -->
+    <div ref="gridEl" class="grid">
       <ChangeCard
         v-for="c in visible"
         :key="c.name"

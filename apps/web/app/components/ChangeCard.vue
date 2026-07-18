@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import type { FileLang } from "~/utils/fileLang";
 
 // board. One card, every form: freshly created (new · empty), added, removed,
 // edited, staged/unstaged, or deleted (torn). Hovering reveals a Revert control.
 // The diff "marks" are a representative sketch of the hunk shape (git status
 // carries no per-line hunks), seeded from the path so they stay stable.
-
-type FileLang = "ts" | "js" | "vue";
 
 const props = withDefaults(
   defineProps<{
@@ -65,15 +64,7 @@ const marks = computed<Mark[]>(() => {
     <!-- Top: language badge (+ new dot) and the diff sketch. -->
     <div class="card__top">
       <div class="card__badge-wrap">
-        <span v-if="lang === 'vue'" class="card__vue">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-            <path d="M3 3 L7 3 L12 11 L17 3 L21 3 L12 20 Z" fill="#41B883" />
-            <path d="M7 3 L9.5 3 L12 7.2 L14.5 3 L17 3 L12 11 Z" fill="#35495E" />
-          </svg>
-        </span>
-        <span v-else class="card__badge" :class="`card__badge--${lang}`">
-          {{ lang === "ts" ? "TS" : "JS" }}
-        </span>
+        <FileIcon :path="name" :size="18" />
         <span v-if="isNew" class="card__dot" />
       </div>
 
@@ -188,29 +179,6 @@ const marks = computed<Mark[]>(() => {
   position: relative;
   width: 18px;
   height: 18px;
-}
-.card__badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  font-family: var(--font-sans);
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1;
-}
-.card__badge--ts {
-  background-color: #3178c6;
-  color: #fff;
-}
-.card__badge--js {
-  background-color: #f7df1e;
-  color: #1a1a1a;
-}
-.card__vue {
-  display: inline-flex;
 }
 .card__dot {
   position: absolute;
