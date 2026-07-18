@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useResizeObserver } from "@vueuse/core";
 import type { FileLang } from "~/utils/fileLang";
 
@@ -35,27 +35,46 @@ const allStaged = computed(() => total.value > 0 && stagedCount.value === total.
 const noneStaged = computed(() => stagedCount.value === 0);
 
 // Cap at two rows exactly. The grid is responsive (auto-fill), so how many
-// cards make two rows depends on width — we measure the live column count and
-// derive the cap from it. Cards + card gap must stay in sync with `.grid`.
-const CARD = 158;
-const GAP = 12;
+// cards make two rows depends on width. Rather than re-derive the column count
+// from a width formula — which drifts a track off from what the browser's
+// layout actually did at sub-pixel boundaries, spilling a third row — we read
+// the truth back out of the rendered grid: count the tracks auto-fill produced.
 const gridEl = ref<HTMLElement | null>(null);
 const cols = ref(4); // sensible pre-hydration default (matches ~max-w-4xl)
-useResizeObserver(gridEl, (entries) => {
-  const w = entries[0]?.contentRect.width ?? 0;
-  cols.value = Math.max(1, Math.floor((w + GAP) / (CARD + GAP)));
-});
+function measureCols() {
+  const el = gridEl.value;
+  if (!el) return;
+  const tracks = getComputedStyle(el).gridTemplateColumns;
+  const n = tracks.split(" ").filter((t) => t && t !== "none").length;
+  if (n > 0) cols.value = n;
+}
+useResizeObserver(gridEl, measureCols);
+onMounted(measureCols);
 
 // Two full rows' worth of slots. When everything fits we show it all; when it
 // overflows we surrender the very last slot to the +N bundle, so "more" is
 // always the final item and the grid never spills past two rows.
 const maxSlots = computed(() => cols.value * 2);
 const hasOverflow = computed(() => total.value > maxSlots.value);
+
+// Clicking the bundle unfolds the full list; a "Show less" tile folds it back.
+const { cue } = useSound();
+const expanded = ref(false);
+const collapsed = computed(() => hasOverflow.value && !expanded.value);
+function expand() {
+  expanded.value = true;
+  cue("toggle");
+}
+function collapse() {
+  expanded.value = false;
+  cue("toggle");
+}
+
 const visible = computed(() =>
-  hasOverflow.value ? props.changes.slice(0, maxSlots.value - 1) : props.changes,
+  collapsed.value ? props.changes.slice(0, maxSlots.value - 1) : props.changes,
 );
 const overflow = computed(() =>
-  hasOverflow.value ? total.value - (maxSlots.value - 1) : 0,
+  collapsed.value ? total.value - (maxSlots.value - 1) : 0,
 );
 
 // One dot per file, coloured by what changed (not by staging — that's shown on
@@ -183,7 +202,7 @@ const bundleCards: BundleCard[] = [
         :is-new="c.isNew"
         :deleted="c.deleted"
       />
-      <button v-if="overflow > 0" type="button" class="bundle">
+      <button v-if="overflow > 0" type="button" class="bundle" @click="expand">
         <span class="bundle__inner">
           <span
             v-for="(card, i) in bundleCards"
@@ -208,6 +227,27 @@ const bundleCards: BundleCard[] = [
             <span class="bundle__word">more</span>
           </span>
         </span>
+      </button>
+
+      <button
+        v-if="hasOverflow && expanded"
+        type="button"
+        class="fold"
+        @click="collapse"
+      >
+        <span class="fold__chevron">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path
+              d="m6 15 6-6 6 6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
+        <span class="fold__label">Show less</span>
       </button>
     </div>
   </div>
@@ -394,6 +434,45 @@ const bundleCards: BundleCard[] = [
   font-weight: 500;
   line-height: 1;
   color: #d4d4d8;
+}
+
+/* "Show less" tile — a quiet ghost matching the card footprint, no filled
+   surface until hover, so folding back reads as the calm inverse of the fan. */
+.fold {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 178px;
+  border-radius: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+.fold:hover {
+  background-color: var(--hover);
+  color: var(--ink-soft);
+}
+.fold__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background-color: var(--hover);
+  transition: background-color 0.16s ease;
+}
+.fold:hover .fold__chevron {
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+.fold__label {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 /* ── empty state ────────────────────────────────────────────────────────── */
