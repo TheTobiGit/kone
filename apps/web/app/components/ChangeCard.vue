@@ -21,6 +21,16 @@ const props = withDefaults(
   { added: 0, removed: 0, isNew: false, deleted: false },
 );
 
+// Clicking a card opens its file detail — the detail grows out of the card, so
+// we hand up the card's viewport rect as the grow origin. Otherwise the card is
+// purely presentational.
+const emit = defineEmits<{ open: [rect: DOMRect] }>();
+
+function onOpen(e: Event) {
+  const el = e.currentTarget as HTMLElement;
+  emit("open", el.getBoundingClientRect());
+}
+
 // A new file with no content yet: show a dashed placeholder, "empty" label.
 const empty = computed(
   () => props.isNew && props.added === 0 && props.removed === 0,
@@ -59,7 +69,15 @@ const marks = computed<Mark[]>(() => {
 </script>
 
 <template>
-  <div class="card" :class="{ 'card--torn': deleted }">
+  <div
+    class="card"
+    :class="{ 'card--torn': deleted }"
+    role="button"
+    tabindex="0"
+    @click="onOpen"
+    @keydown.enter.prevent="onOpen"
+    @keydown.space.prevent="onOpen"
+  >
     <!-- Top: file icon and the diff sketch. -->
     <div class="card__top">
       <div class="card__badge-wrap">
@@ -116,6 +134,7 @@ const marks = computed<Mark[]>(() => {
   background-color: var(--card-bg);
   border: 1px solid var(--card-border);
   box-shadow: var(--card-shadow);
+  cursor: pointer;
   /* Bouncy, spring-like hover — mirrors the home project folders' lift. The
      back-out easing overshoots then settles, so it reads springy in pure CSS. */
   transition:

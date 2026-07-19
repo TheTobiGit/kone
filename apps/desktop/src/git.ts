@@ -39,6 +39,39 @@ export type GitChange = {
   removed?: number;
 };
 
+/** One rendered line of a file diff, carrying both side's line numbers so the
+ *  UI can print a two-gutter view (old | new | text). */
+export type GitDiffLine = {
+  kind: "context" | "add" | "del";
+  /** Line content, marker stripped. */
+  text: string;
+  /** 1-based line number in the old file, or null on an added line. */
+  oldNo: number | null;
+  /** 1-based line number in the new file, or null on a removed line. */
+  newNo: number | null;
+};
+
+/** A contiguous change region — the run under one `@@ … @@` header. */
+export type GitDiffHunk = {
+  /** The section heading trailing the "@@" markers (often the enclosing fn). */
+  header: string;
+  oldStart: number;
+  newStart: number;
+  lines: GitDiffLine[];
+};
+
+/** The parsed diff for a single file — working tree vs index, or index vs HEAD
+ *  for a staged view. Untracked files diff against empty (all added). */
+export type GitFileDiff = {
+  path: string;
+  status: GitFileStatus;
+  /** git reported a binary file — no textual hunks to show. */
+  binary: boolean;
+  hunks: GitDiffHunk[];
+  added: number;
+  removed: number;
+};
+
 export type GitBranch = {
   /** Short name, e.g. "main" or "origin/main". */
   name: string;
@@ -153,6 +186,9 @@ class GitError extends Error {
   constructor(
     message: string,
     readonly code: number | null,
+    /** stdout captured on the failing run — some commands (e.g. `git diff
+     *  --no-index`) exit non-zero yet still produce their real output here. */
+    readonly stdout = "",
   ) {
     super(message);
     this.name = "GitError";
@@ -179,10 +215,11 @@ async function git(cwd: string, args: string[]): Promise<string> {
   } catch (error) {
     const err = error as NodeJS.ErrnoException & {
       stderr?: string;
+      stdout?: string;
       code?: number | string;
     };
     const code = typeof err.code === "number" ? err.code : null;
-    throw new GitError(err.stderr?.trim() || err.message, code);
+    throw new GitError(err.stderr?.trim() || err.message, code, err.stdout ?? "");
   }
 }
 
@@ -442,6 +479,147 @@ export async function status(dir: string): Promise<GitStatus | null> {
   const parsed = parseStatus(root, out);
   await attachLineCounts(parsed);
   return parsed;
+}
+
+// ── single-file diff ──────────────────────────────────────────────────────────
+// The detail view opens one file at a time, so we ask git for just that file's
+// unified diff and parse it into numbered hunks. Staged files diff index-vs-HEAD;
+// unstaged files diff worktree-vs-index; an untracked file has neither, so it
+// diffs against /dev/null and reads as wholly added.
+
+/** Run a diff, tolerating the exit-1 that `git diff --no-index` uses to mean
+ *  "the files differ" — its real output is on stdout. Any other failure throws. */
+async function diffRun(cwd: string, args: string[]): Promise<string> {
+  try {
+    return await git(cwd, args);
+  } catch (error) {
+    if (error instanceof GitError && error.code === 1) return error.stdout;
+    throw error;
+  }
+}
+
+/** Parse one file's unified diff into numbered hunks. Header/metadata lines set
+ *  the status; `@@` lines seed the old/new counters that each body line then
+ *  advances. */
+function parseFileDiff(relPath: string, out: string): GitFileDiff {
+  const result: GitFileDiff = {
+    path: relPath,
+    status: "modified",
+    binary: false,
+    hunks: [],
+    added: 0,
+    removed: 0,
+  };
+  let hunk: GitDiffHunk | null = null;
+  let oldNo = 0;
+  let newNo = 0;
+
+  for (const raw of out.split("\n")) {
+    if (raw.startsWith("Binary files")) {
+      result.binary = true;
+      continue;
+    }
+    const at = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+    if (at) {
+      oldNo = Number(at[1]);
+      newNo = Number(at[2]);
+      hunk = { header: (at[3] ?? "").trim(), oldStart: oldNo, newStart: newNo, lines: [] };
+      result.hunks.push(hunk);
+      continue;
+    }
+    // Diff header / metadata — before the first hunk. Note the file's disposition.
+    if (!hunk) {
+      if (raw.startsWith("new file")) result.status = "added";
+      else if (raw.startsWith("deleted file")) result.status = "deleted";
+      else if (raw.startsWith("rename ")) result.status = "renamed";
+      continue;
+    }
+    if (raw.startsWith("\\")) continue; // "\ No newline at end of file"
+    const marker = raw[0];
+    const text = raw.slice(1);
+    if (marker === "+") {
+      hunk.lines.push({ kind: "add", text, oldNo: null, newNo });
+      newNo += 1;
+      result.added += 1;
+    } else if (marker === "-") {
+      hunk.lines.push({ kind: "del", text, oldNo, newNo: null });
+      oldNo += 1;
+      result.removed += 1;
+    } else {
+      hunk.lines.push({ kind: "context", text, oldNo, newNo });
+      oldNo += 1;
+      newNo += 1;
+    }
+  }
+  return result;
+}
+
+/** The working-tree text of one file, for the detail view's plain-content
+ *  preview. Binary / oversize / unreadable files return null text with a flag. */
+export type GitFileContent = {
+  text: string | null;
+  binary: boolean;
+  /** text is a prefix — the file exceeded the read cap. */
+  truncated: boolean;
+};
+
+const CONTENT_CAP = 512 * 1024; // 512 KB — ample for source, guards huge blobs
+
+/** Read one repo-relative file's current content. Null when `dir` isn't a repo
+ *  or the path escapes it; a null `text` with `binary`/`truncated` flags marks a
+ *  file we can show a note for instead of code. */
+export async function content(
+  dir: string,
+  relPath: string,
+): Promise<GitFileContent | null> {
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  const abs = safeRepoPath(root, relPath);
+  if (abs === null) return null;
+  if (relPath.endsWith("/")) return { text: null, binary: false, truncated: false };
+  try {
+    const buf = await readFile(abs);
+    if (buf.includes(0)) return { text: null, binary: true, truncated: false };
+    const truncated = buf.length > CONTENT_CAP;
+    const slice = truncated ? buf.subarray(0, CONTENT_CAP) : buf;
+    return { text: slice.toString("utf8"), binary: false, truncated };
+  } catch {
+    // Missing (e.g. a deleted file) or unreadable — no content to preview.
+    return { text: null, binary: false, truncated: false };
+  }
+}
+
+/** The unified diff for one repo-relative path. `staged` picks index-vs-HEAD
+ *  over worktree-vs-index; an untracked file falls back to a diff against empty.
+ *  Null when `dir` isn't in a repo or the path escapes it. */
+export async function diff(
+  dir: string,
+  relPath: string,
+  staged: boolean,
+): Promise<GitFileDiff | null> {
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  if (safeRepoPath(root, relPath) === null) return null;
+  const common = ["--no-color", "--no-ext-diff"];
+  let out: string;
+  if (staged) {
+    out = await diffRun(root, ["diff", "--cached", ...common, "--", relPath]);
+  } else {
+    out = await diffRun(root, ["diff", ...common, "--", relPath]);
+    if (!out.trim()) {
+      // Nothing tracked to diff — an untracked file. Diff against empty so the
+      // whole file reads as added.
+      out = await diffRun(root, [
+        "diff",
+        "--no-index",
+        ...common,
+        "--",
+        "/dev/null",
+        relPath,
+      ]);
+    }
+  }
+  return parseFileDiff(relPath, out);
 }
 
 /** Parse `git diff --shortstat` output, e.g.
@@ -1145,6 +1323,14 @@ function stopWatcher(id: number): void {
 export function registerGitIpc(): void {
   ipcMain.handle("git:detect", (_event, dir: string) => detect(dir));
   ipcMain.handle("git:status", (_event, dir: string) => status(dir));
+  ipcMain.handle(
+    "git:diff",
+    (_event, dir: string, path: string, staged: boolean) =>
+      diff(dir, path, staged),
+  );
+  ipcMain.handle("git:content", (_event, dir: string, path: string) =>
+    content(dir, path),
+  );
   // Start (or restart) live status watching for the calling renderer; fresh
   // status is pushed on the "git:status-changed" channel until git:unwatch.
   ipcMain.handle("git:watch", async (event, dir: string) => {

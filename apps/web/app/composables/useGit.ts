@@ -2,6 +2,9 @@ import type {
   GitBranch,
   GitChange,
   GitCommit,
+  GitDiffLine,
+  GitFileContent,
+  GitFileDiff,
   GitRepo,
   GitStatus,
 } from "~/types/desktop";
@@ -34,6 +37,19 @@ export function useGit() {
       if (!status) return Promise.resolve(null);
       const delay = 140 + Math.random() * 260;
       return new Promise((resolve) => setTimeout(() => resolve(status), delay));
+    },
+    diff(dir: string, path: string, staged: boolean): Promise<GitFileDiff | null> {
+      if (git) return git.diff(dir, path, staged);
+      const d = mockDiff(dir, path);
+      // A touch of latency so the detail view's loading beat is visible in dev.
+      const delay = 120 + Math.random() * 220;
+      return new Promise((resolve) => setTimeout(() => resolve(d), delay));
+    },
+    content(dir: string, path: string): Promise<GitFileContent | null> {
+      if (git) return git.content(dir, path);
+      const c = mockContent(dir, path);
+      const delay = 120 + Math.random() * 220;
+      return new Promise((resolve) => setTimeout(() => resolve(c), delay));
     },
     branches(dir: string): Promise<GitBranch[]> {
       return git ? git.branches(dir) : Promise.resolve([]);
@@ -124,6 +140,140 @@ const MOCK_CHANGES: Record<string, GitChange[]> = {
   ],
   "/Users/you/Developer/nxui": [],
 };
+
+// Plausible source lines to fill a mock hunk, chosen by file extension so the
+// dev preview reads like the file it claims to be (never used in the desktop
+// build — real `git diff` drives that).
+function linePool(path: string): string[] {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "vue")
+    return [
+      '<template>',
+      '  <section class="panel">',
+      '    <header class="panel__head">{{ title }}</header>',
+      '    <div v-for="item in items" :key="item.id" class="row">',
+      '      <span class="row__name">{{ item.name }}</span>',
+      '    </div>',
+      '  </section>',
+      '</template>',
+      '',
+      'const items = computed(() => props.data);',
+    ];
+  if (ext === "css")
+    return [
+      '.panel {',
+      '  display: flex;',
+      '  flex-direction: column;',
+      '  gap: 14px;',
+      '  padding: 16px;',
+      '  border-radius: 12px;',
+      '  background-color: var(--ground);',
+      '  color: var(--ink);',
+      '}',
+      '.panel__head { font-weight: 500; }',
+    ];
+  if (ext === "json" || ext === "js" && path.includes("config"))
+    return [
+      'export default {',
+      '  css: ["~/assets/css/main.css"],',
+      '  modules: ["@vueuse/nuxt"],',
+      '  devtools: { enabled: true },',
+      '  app: { head: { title: "kone" } },',
+      '  nitro: { preset: "node-server" },',
+      '  vite: { clearScreen: false },',
+      '};',
+      '',
+      '// generated',
+    ];
+  return [
+    'export function resolve(input: string) {',
+    '  const trimmed = input.trim();',
+    '  if (!trimmed) return null;',
+    '  const parts = trimmed.split("/");',
+    '  return parts.filter(Boolean);',
+    '}',
+    '',
+    'const cache = new Map<string, string>();',
+    'let pending = 0;',
+    'return { resolve, cache };',
+  ];
+}
+
+// Synthesize a readable diff for a mock change so the detail view is demoable in
+// `nuxt dev`. Added/untracked → all inserts; deleted → all deletes; modified →
+// a small centred hunk. Line counts drive the volume (capped so it stays legible).
+function mockDiff(dir: string, relPath: string): GitFileDiff | null {
+  const change = MOCK_CHANGES[dir]?.find((c) => c.path === relPath);
+  if (!change) return null;
+  const pool = linePool(relPath);
+  const pick = (i: number) => pool[i % pool.length]!;
+  const nAdd = Math.min(change.added ?? 0, 9);
+  const nDel = Math.min(change.removed ?? 0, 7);
+
+  const lines: GitDiffLine[] = [];
+  let oldNo: number;
+  let newNo: number;
+  const ctx = (t: string) => {
+    lines.push({ kind: "context", text: t, oldNo, newNo });
+    oldNo++;
+    newNo++;
+  };
+  const del = (t: string) => {
+    lines.push({ kind: "del", text: t, oldNo, newNo: null });
+    oldNo++;
+  };
+  const add = (t: string) => {
+    lines.push({ kind: "add", text: t, oldNo: null, newNo });
+    newNo++;
+  };
+
+  if (change.status === "added" || change.status === "untracked") {
+    oldNo = 0;
+    newNo = 1;
+    for (let i = 0; i < Math.max(nAdd, 1); i++) add(pick(i));
+  } else if (change.status === "deleted") {
+    oldNo = 1;
+    newNo = 0;
+    for (let i = 0; i < Math.max(nDel, 1); i++) del(pick(i));
+  } else {
+    oldNo = 18;
+    newNo = 18;
+    ctx(pick(0));
+    for (let i = 0; i < nDel; i++) del(pick(i + 1));
+    for (let i = 0; i < nAdd; i++) add(pick(i + 1 + nDel));
+    ctx(pick(9));
+  }
+
+  return {
+    path: relPath,
+    status: change.status,
+    binary: false,
+    hunks: [
+      {
+        header: "",
+        oldStart: lines[0]?.oldNo ?? 1,
+        newStart: lines[0]?.newNo ?? 1,
+        lines,
+      },
+    ],
+    added: change.added ?? 0,
+    removed: change.removed ?? 0,
+  };
+}
+
+// A plausible file body for the detail view's content preview in `nuxt dev`.
+// Deleted files have no working-tree content (null text). Others repeat the
+// extension's line pool to a believable length.
+function mockContent(dir: string, relPath: string): GitFileContent | null {
+  const change = MOCK_CHANGES[dir]?.find((c) => c.path === relPath);
+  if (!change) return null;
+  if (change.status === "deleted") return { text: null, binary: false, truncated: false };
+  const pool = linePool(relPath);
+  const len = Math.min(60, Math.max(pool.length, (change.added ?? 0) + 8));
+  const lines: string[] = [];
+  for (let i = 0; i < len; i++) lines.push(pool[i % pool.length]!);
+  return { text: lines.join("\n"), binary: false, truncated: false };
+}
 
 function mockStatus(dir: string): GitStatus | null {
   const summary = MOCK_SUMMARIES[dir];

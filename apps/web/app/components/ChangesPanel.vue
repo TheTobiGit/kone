@@ -35,6 +35,7 @@ const emit = defineEmits<{
   unstageAll: [];
   commit: [];
   discardPaths: [paths: string[]];
+  open: [item: ChangeItem, rect: DOMRect];
 }>();
 
 const { cue } = useSound();
@@ -133,6 +134,7 @@ function discardUnstaged() {
         :items="staged"
         :rows="laneRows"
         @sweep="emit('unstageAll')"
+        @open="(item, rect) => emit('open', item, rect)"
       />
       <ChangeLane
         v-if="unstaged.length"
@@ -142,6 +144,7 @@ function discardUnstaged() {
         :rows="laneRows"
         @sweep="emit('stageAll')"
         @discard-lane="discardUnstaged"
+        @open="(item, rect) => emit('open', item, rect)"
       />
     </div>
   </div>

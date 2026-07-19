@@ -43,6 +43,35 @@ export type GitChange = {
   removed?: number;
 };
 
+export type GitDiffLine = {
+  kind: "context" | "add" | "del";
+  text: string;
+  oldNo: number | null;
+  newNo: number | null;
+};
+
+export type GitDiffHunk = {
+  header: string;
+  oldStart: number;
+  newStart: number;
+  lines: GitDiffLine[];
+};
+
+export type GitFileDiff = {
+  path: string;
+  status: GitFileStatus;
+  binary: boolean;
+  hunks: GitDiffHunk[];
+  added: number;
+  removed: number;
+};
+
+export type GitFileContent = {
+  text: string | null;
+  binary: boolean;
+  truncated: boolean;
+};
+
 export type GitBranch = {
   name: string;
   current: boolean;
@@ -124,6 +153,14 @@ export type CreateProjectResult = {
 export type KoneGitApi = {
   detect: (dir: string) => Promise<GitRepo | null>;
   status: (dir: string) => Promise<GitStatus | null>;
+  /** The unified diff for one file. `staged` picks the index-vs-HEAD view. */
+  diff: (
+    dir: string,
+    path: string,
+    staged: boolean,
+  ) => Promise<GitFileDiff | null>;
+  /** One file's current working-tree text (for a plain content preview). */
+  content: (dir: string, path: string) => Promise<GitFileContent | null>;
   branches: (dir: string) => Promise<GitBranch[]>;
   log: (dir: string, limit?: number) => Promise<GitCommit[]>;
   clone: (url: string, dest: string) => Promise<CloneResult>;

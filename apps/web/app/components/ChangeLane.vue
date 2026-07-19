@@ -27,6 +27,8 @@ const emit = defineEmits<{
   sweep: [];
   /** Discard the whole lane — only offered on the Changed (unstaged) lane. */
   discardLane: [];
+  /** Open a single file's detail view, with the clicked card's rect (grow origin). */
+  open: [item: ChangeItem, rect: DOMRect];
 }>();
 
 const { cue } = useSound();
@@ -133,6 +135,7 @@ const bundleCards: BundleCard[] = [
         :removed="c.removed"
         :is-new="c.isNew"
         :deleted="c.deleted"
+        @open="(rect) => emit('open', c, rect)"
       />
       <button
         v-if="overflow > 0"

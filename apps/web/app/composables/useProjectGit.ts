@@ -162,6 +162,8 @@ export function useProjectGit(project: Ref<Project>) {
     stagedCount,
     clean,
     refresh,
+    stagePaths,
+    unstagePaths,
     discardPaths,
     stageAll,
     unstageAll,

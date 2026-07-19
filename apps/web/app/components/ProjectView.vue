@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, toRef } from "vue";
+import { computed, onBeforeUnmount, ref, toRef, watch } from "vue";
+import { onKeyStroke } from "@vueuse/core";
 import { motion } from "motion-v";
 import type { FolderFile } from "~/components/ProjectFolder.vue";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
@@ -38,6 +39,28 @@ const changeItems = computed<ChangeItem[]>(() =>
   })),
 );
 
+// The file whose detail is open, tracked by path so it survives a staging flip
+// (the item is re-derived from live data). It self-closes when the file leaves
+// the working tree — discarded, or swept away by a commit.
+const activePath = ref<string | null>(null);
+// The clicked card's viewport rect — the detail grows out of it.
+const originRect = ref<DOMRect | null>(null);
+const activeFile = computed(
+  () => changeItems.value.find((c) => c.path === activePath.value) ?? null,
+);
+// Self-close when the file leaves the tree; lock the page while the overlay is
+// up so only the file's own body scrolls.
+function lockPage(locked: boolean) {
+  if (import.meta.client) {
+    document.documentElement.style.overflow = locked ? "hidden" : "";
+  }
+}
+watch(activeFile, (f) => {
+  if (activePath.value && !f) activePath.value = null;
+  lockPage(Boolean(f));
+});
+onBeforeUnmount(() => lockPage(false));
+
 const folderFiles = computed<FolderFile[]>(() =>
   g.changes.value.slice(0, 3).map((c) => ({
     change: c.status === "deleted" ? "deleted" : isNew(c.status) ? "new" : "edit",
@@ -65,6 +88,35 @@ function onDiscardPaths(paths: string[]) {
 function onCommit() {
   cue("success");
   g.commit();
+}
+
+// ── file detail ───────────────────────────────────────────────────────────────
+function onOpenFile(item: ChangeItem, rect: DOMRect) {
+  cue("press");
+  originRect.value = rect;
+  activePath.value = item.path;
+}
+function onCloseFile() {
+  activePath.value = null;
+}
+// Esc backs out of the detail view (only while one is open).
+onKeyStroke("Escape", () => {
+  if (activePath.value) onCloseFile();
+});
+function onStageFile(path: string) {
+  cue("toggle");
+  g.stagePaths([path]);
+}
+function onUnstageFile(path: string) {
+  cue("toggle");
+  g.unstagePaths([path]);
+}
+// Discarding from the detail closes it — the file's gone; the auto-close watcher
+// also covers it, but clearing here avoids a frame of stale content.
+function onDiscardFile(path: string) {
+  cue("press");
+  g.discardPaths([path]);
+  activePath.value = null;
 }
 </script>
 
@@ -98,6 +150,7 @@ function onCommit() {
         @unstage-all="onUnstageAll"
         @commit="onCommit"
         @discard-paths="onDiscardPaths"
+        @open="onOpenFile"
       />
     </div>
 
@@ -119,5 +172,45 @@ function onCommit() {
         :scale="1.15"
       />
     </motion.div>
+
+    <!-- A file's detail: it grows out of the clicked card (origin --ox/--oy) to
+         fill the screen over everything else, then shrinks back on close. -->
+    <Transition name="pop">
+      <FileDetail
+        v-if="activeFile"
+        :file="activeFile"
+        :repo-path="project.path"
+        :origin="originRect"
+        @close="onCloseFile"
+        @stage="onStageFile"
+        @unstage="onUnstageFile"
+        @discard="onDiscardFile"
+      />
+    </Transition>
   </main>
 </template>
+
+<style scoped>
+/* The detail grows out of the clicked card and settles — a small overshoot reads
+   as a "pop". Origin comes from --ox/--oy (the card's centre), set inline on the
+   overlay root. On close it runs in reverse, shrinking back into the card. */
+@keyframes pop-grow {
+  from { opacity: 0.35; transform: scale(0.16); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: scale(1); }
+}
+.pop-enter-active {
+  animation: pop-grow 0.46s cubic-bezier(0.34, 1.3, 0.64, 1);
+  transform-origin: var(--ox, 50%) var(--oy, 50%);
+}
+.pop-leave-active {
+  animation: pop-grow 0.26s cubic-bezier(0.4, 0, 0.9, 1) reverse;
+  transform-origin: var(--ox, 50%) var(--oy, 50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pop-enter-active,
+  .pop-leave-active {
+    animation-duration: 0.01s;
+  }
+}
+</style>
