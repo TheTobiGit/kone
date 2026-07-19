@@ -3,22 +3,22 @@ import { computed } from "vue";
 import { CountUp } from "~/components/ui/count-up";
 
 // board. One card, every form: freshly created (new · empty), added, removed,
-// edited, staged/unstaged, or deleted (torn). Hovering reveals a Revert control.
-// The diff "marks" are a representative sketch of the hunk shape (git status
-// carries no per-line hunks), seeded from the path so they stay stable.
+// edited, or deleted (torn). Staged-ness is shown by which group the card sits
+// in, so the card itself is purely presentational. The diff "marks" are a
+// representative sketch of the hunk shape (git status carries no per-line
+// hunks), seeded from the path so they stay stable.
 
 const props = withDefaults(
   defineProps<{
     name: string;
     added?: number;
     removed?: number;
-    staged?: boolean;
-    /** Freshly added file — badge wears a green "new" dot. */
+    /** Freshly added file — carries a quiet "new" marker. */
     isNew?: boolean;
     /** Deleted file — torn (dashed-red) card, strikethrough name. */
     deleted?: boolean;
   }>(),
-  { added: 0, removed: 0, staged: false, isNew: false, deleted: false },
+  { added: 0, removed: 0, isNew: false, deleted: false },
 );
 
 // A new file with no content yet: show a dashed placeholder, "empty" label.
@@ -60,11 +60,10 @@ const marks = computed<Mark[]>(() => {
 
 <template>
   <div class="card" :class="{ 'card--torn': deleted }">
-    <!-- Top: language badge (+ new dot) and the diff sketch. -->
+    <!-- Top: file icon and the diff sketch. -->
     <div class="card__top">
       <div class="card__badge-wrap">
         <FileIcon :path="name" :size="18" />
-        <span v-if="isNew" class="card__dot" />
       </div>
 
       <span v-if="empty" class="card__placeholder" />
@@ -79,7 +78,7 @@ const marks = computed<Mark[]>(() => {
       </div>
     </div>
 
-    <!-- Bottom: filename, diffstat, staged checkbox. -->
+    <!-- Bottom: filename + diffstat. "new" is a quiet marker, not a badge. -->
     <div class="card__bottom">
       <span class="card__name" :class="{ 'card__name--del': deleted }">
         {{ name }}
@@ -94,49 +93,9 @@ const marks = computed<Mark[]>(() => {
             >−<CountUp :to="removed" :duration="1.1"
           /></span>
         </span>
-        <span class="card__check" :class="{ 'card__check--on': staged }">
-          <svg
-            v-if="staged"
-            viewBox="0 0 24 24"
-            width="9"
-            height="9"
-            aria-hidden="true"
-          >
-            <path
-              d="M20 6 9 17l-5-5"
-              fill="none"
-              stroke="#fff"
-              stroke-width="3.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </span>
+        <span v-if="isNew && !empty" class="card__new">new</span>
       </div>
     </div>
-
-    <!-- Hover: Revert (non-functional for now). -->
-    <span class="card__revert" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="12.5" height="12.5">
-        <path
-          d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M3 3v5h5"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
-      Revert
-    </span>
   </div>
 </template>
 
@@ -147,9 +106,7 @@ const marks = computed<Mark[]>(() => {
   --card-shadow: #1e1b180f 0 4px 14px;
   --ctx: #d0cec9;
   --name: #3f3f46;
-  --check-off: #c8c6c1;
 
-  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -159,14 +116,16 @@ const marks = computed<Mark[]>(() => {
   background-color: var(--card-bg);
   border: 1px solid var(--card-border);
   box-shadow: var(--card-shadow);
+  /* Bouncy, spring-like hover — mirrors the home project folders' lift. The
+     back-out easing overshoots then settles, so it reads springy in pure CSS. */
   transition:
-    box-shadow 0.2s ease,
-    transform 0.2s ease;
+    box-shadow 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.44s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .card:hover {
-  box-shadow:
-    #1e1b1c1f 0 12px 26px,
-    #0000000a 0 0 0 1px;
+  /* Lifts on hover. Soft shadow only — no heavy drop shadows anywhere. */
+  box-shadow: #1e1b1814 0 8px 20px;
+  transform: translateY(-6px);
 }
 .card--torn {
   background-color: color-mix(in srgb, var(--card-bg) 45%, transparent);
@@ -179,19 +138,8 @@ const marks = computed<Mark[]>(() => {
   gap: 14px;
 }
 .card__badge-wrap {
-  position: relative;
   width: 18px;
   height: 18px;
-}
-.card__dot {
-  position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 4px;
-  background-color: var(--diff-add);
-  border: 2px solid var(--card-bg);
 }
 
 .card__marks {
@@ -261,43 +209,13 @@ const marks = computed<Mark[]>(() => {
   line-height: 1;
   color: #a1a1aa;
 }
-.card__check {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 15px;
-  height: 15px;
-  border-radius: 4px;
-  border: 1.5px solid var(--check-off);
-}
-.card__check--on {
-  background-color: var(--diff-add);
-  border-color: var(--diff-add);
-}
-
-.card__revert {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--diff-del);
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.1px;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition:
-    opacity 0.18s ease,
-    transform 0.18s ease;
-  pointer-events: none;
-}
-.card:hover .card__revert {
-  opacity: 1;
-  transform: translateY(0);
+/* Quiet "new" marker — a muted lowercase tag, not a coloured badge. */
+.card__new {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.3px;
+  color: var(--muted);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -307,12 +225,18 @@ const marks = computed<Mark[]>(() => {
     --card-shadow: #00000040 0 4px 14px;
     --ctx: #3f3f46;
     --name: #d4d4d8;
-    --check-off: #52525b;
   }
   .card:hover {
-    box-shadow:
-      #00000066 0 12px 26px,
-      #ffffff0f 0 0 0 1px;
+    box-shadow: #00000047 0 8px 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition: box-shadow 0.2s ease;
+  }
+  .card:hover {
+    transform: none;
   }
 }
 </style>

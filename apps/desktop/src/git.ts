@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -570,6 +571,233 @@ export async function log(dir: string, limit = 50): Promise<GitCommit[]> {
   return commits;
 }
 
+// ── live status watching ──────────────────────────────────────────────────────
+// Keep the open project in sync with the disk: watch the repo and re-read status
+// whenever the working tree or the index moves — an editor save, a `git add` in
+// the terminal, a commit, a branch switch. Bursts (a save touches several files;
+// git rewrites the index through a lock file) are coalesced by a short debounce,
+// then a single fresh `git status` is pushed to the caller.
+
+/** Whether a changed path under the repo root is worth re-reading status for.
+ *  Working-tree files count; inside `.git` only the refs that staging/committing
+ *  move matter (index, HEAD, refs) — object/log churn is ignored. node_modules
+ *  is skipped entirely (git ignores it, and watching it is pure noise). */
+function watchRelevant(filename: string | null): boolean {
+  // A null filename means the platform couldn't name the file — re-check to be
+  // safe rather than miss a real change.
+  if (!filename) return true;
+  const p = filename.split(path.sep).join("/");
+  // Skip node_modules at any depth (monorepo package installs churn constantly).
+  if (/(^|\/)node_modules(\/|$)/.test(p)) return false;
+  if (p === ".git" || p.startsWith(".git/")) {
+    const rest = p.slice(5);
+    return (
+      rest === "index" ||
+      rest === "HEAD" ||
+      rest === "ORIG_HEAD" ||
+      rest === "MERGE_HEAD" ||
+      rest.startsWith("refs/")
+    );
+  }
+  return true;
+}
+
+/** Watch `dir`'s repository and call `onStatus` (debounced) with a fresh status
+ *  whenever it changes on disk. Resolves the repo root first; a non-repo yields a
+ *  no-op stop fn and no callbacks. Returns a function that stops watching. */
+export async function watchStatus(
+  dir: string,
+  onStatus: (status: GitStatus) => void,
+): Promise<() => void> {
+  const resolved = await repoRoot(dir);
+  if (!resolved) return () => {};
+  const root: string = resolved;
+
+  let closed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+  let dirty = false; // a change arrived while a read was in flight
+
+  async function emit(): Promise<void> {
+    if (closed || running) {
+      dirty = dirty || !closed;
+      return;
+    }
+    running = true;
+    try {
+      const fresh = await status(root);
+      if (fresh && !closed) onStatus(fresh);
+    } catch {
+      // A transient read failure (mid-write, lock contention) is fine — the next
+      // change reschedules another read.
+    } finally {
+      running = false;
+      if (dirty && !closed) {
+        dirty = false;
+        schedule();
+      }
+    }
+  }
+
+  function schedule(): void {
+    if (closed) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      void emit();
+    }, 180);
+  }
+
+  let watcher: FSWatcher | null = null;
+  try {
+    watcher = fsWatch(root, { recursive: true }, (_event, filename) => {
+      if (closed || !watchRelevant(filename)) return;
+      schedule();
+    });
+  } catch {
+    // Recursive watch unsupported or the OS refused (too many files) — degrade to
+    // no live sync rather than crash; the initial read still stands.
+    return () => {};
+  }
+
+  return () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    watcher?.close();
+  };
+}
+
+// ── mutations ─────────────────────────────────────────────────────────────────
+// Write operations behind the changes UI. Each resolves the repo root and runs
+// git; the caller learns the resulting state from the watcher's next status push.
+
+/** Resolve a repo-relative path to an absolute path, but only if it stays inside
+ *  the repo. Guards the fs-level deletes below: git refuses out-of-tree
+ *  pathspecs, but `fs.rm` would happily follow `..` out of the repository.
+ *  Returns null for escapes (`..`) and absolute paths. */
+function safeRepoPath(root: string, relPath: string): string | null {
+  const abs = path.resolve(root, relPath);
+  const rel = path.relative(root, abs);
+  if (
+    rel === "" ||
+    rel === ".." ||
+    rel.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(rel)
+  ) {
+    return null;
+  }
+  return abs;
+}
+
+/** Reject a batch that names any path outside the repo root, before we run git
+ *  or touch the filesystem. */
+function assertWithinRepo(root: string, paths: string[]): void {
+  for (const p of paths) {
+    if (safeRepoPath(root, p) === null) {
+      throw new GitError(
+        `Refusing to operate on a path outside the repository: ${p}`,
+        null,
+      );
+    }
+  }
+}
+
+/** Stage the given repo-relative paths — added, modified and deleted alike. */
+export async function stage(dir: string, paths: string[]): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root || paths.length === 0) return;
+  assertWithinRepo(root, paths);
+  await git(root, ["add", "--", ...paths]);
+}
+
+/** Unstage the given paths (index back to HEAD) without touching the working
+ *  tree. A no-op for paths that weren't staged. */
+export async function unstage(dir: string, paths: string[]): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root || paths.length === 0) return;
+  assertWithinRepo(root, paths);
+  await git(root, ["reset", "-q", "--", ...paths]);
+}
+
+/** Whether `relPath` exists in the current HEAD commit. */
+async function inHead(root: string, relPath: string): Promise<boolean> {
+  try {
+    await git(root, ["cat-file", "-e", `HEAD:${relPath}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Map of renamed-to path → original path, for renames against HEAD (staged or
+ *  not). Lets `discard` restore the original rather than delete it — a rename
+ *  carries the new path only, so without this the source content is lost. */
+async function renameSources(root: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  let out: string;
+  try {
+    out = await git(root, ["diff", "--name-status", "-M", "-z", "HEAD"]);
+  } catch {
+    return map; // unborn branch / no HEAD — nothing to reconcile
+  }
+  // -z records are NUL-separated fields: "<status>\0<path>", or for renames /
+  // copies "<status>\0<from>\0<to>".
+  const fields = out.split("\0");
+  for (let i = 0; i < fields.length; i++) {
+    const code = fields[i];
+    if (!code) continue;
+    if (code[0] === "R" || code[0] === "C") {
+      const from = fields[i + 1];
+      const to = fields[i + 2];
+      i += 2;
+      if (code[0] === "R" && from && to) map.set(to, from);
+    } else {
+      i += 1; // single-path record (M / A / D / T …)
+    }
+  }
+  return map;
+}
+
+/** Discard the given paths' uncommitted changes — destructive. A file in HEAD is
+ *  reset there (reverting staged + working-tree edits and restoring deletions);
+ *  a renamed file is put back at its original path; a file with no HEAD version
+ *  (new, whether staged or merely untracked) is dropped from the index and
+ *  deleted from disk. */
+export async function discard(dir: string, paths: string[]): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root || paths.length === 0) return;
+  assertWithinRepo(root, paths);
+  const renames = await renameSources(root);
+  for (const relPath of paths) {
+    const from = renames.get(relPath);
+    if (from) {
+      // Restore the original file (in HEAD), then drop the renamed-to copy.
+      await git(root, ["checkout", "-q", "HEAD", "--", from]);
+      try {
+        await git(root, ["rm", "--cached", "--quiet", "--", relPath]);
+      } catch {
+        // The new path wasn't staged — nothing to unstage.
+      }
+      const abs = safeRepoPath(root, relPath);
+      if (abs) await rm(abs, { recursive: true, force: true });
+      continue;
+    }
+    if (await inHead(root, relPath)) {
+      // Resets index + working tree for this path to HEAD in one step.
+      await git(root, ["checkout", "-q", "HEAD", "--", relPath]);
+    } else {
+      // New file: unstage it if it's in the index, then remove it from disk.
+      try {
+        await git(root, ["rm", "--cached", "--quiet", "--", relPath]);
+      } catch {
+        // Plain untracked — nothing in the index to drop.
+      }
+      const abs = safeRepoPath(root, relPath);
+      if (abs) await rm(abs, { recursive: true, force: true });
+    }
+  }
+}
+
 // ── clone ─────────────────────────────────────────────────────────────────────
 // `git clone --progress` narrates its work on stderr, updating a line in place
 // with `\r` as each phase advances. We parse those percentages and fold them
@@ -901,10 +1129,60 @@ export async function createProject(
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 
+// One live watcher per renderer (webContents). Starting a new watch replaces the
+// previous one; the sender's teardown stops it so a closed window leaks nothing.
+const activeWatchers = new Map<number, () => void>();
+// Senders we've already hooked "destroyed" on, so re-watching doesn't pile up
+// listeners on the same webContents.
+const watchTeardownHooked = new Set<number>();
+
+function stopWatcher(id: number): void {
+  activeWatchers.get(id)?.();
+  activeWatchers.delete(id);
+}
+
 /** Register the git:* IPC handlers. Call once, before creating the window. */
 export function registerGitIpc(): void {
   ipcMain.handle("git:detect", (_event, dir: string) => detect(dir));
   ipcMain.handle("git:status", (_event, dir: string) => status(dir));
+  // Start (or restart) live status watching for the calling renderer; fresh
+  // status is pushed on the "git:status-changed" channel until git:unwatch.
+  ipcMain.handle("git:watch", async (event, dir: string) => {
+    const id = event.sender.id;
+    stopWatcher(id);
+    const stop = await watchStatus(dir, (status) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send("git:status-changed", status);
+      }
+    });
+    // The renderer may have navigated away (or unwatched) while we resolved the
+    // repo root — don't install a now-orphaned watcher.
+    if (event.sender.isDestroyed()) {
+      stop();
+      return;
+    }
+    // A concurrent git:watch may have installed a watcher during the await; stop
+    // it so its handle can't leak past this overwrite.
+    stopWatcher(id);
+    activeWatchers.set(id, stop);
+    if (!watchTeardownHooked.has(id)) {
+      watchTeardownHooked.add(id);
+      event.sender.once("destroyed", () => {
+        stopWatcher(id);
+        watchTeardownHooked.delete(id);
+      });
+    }
+  });
+  ipcMain.handle("git:unwatch", (event) => stopWatcher(event.sender.id));
+  ipcMain.handle("git:stage", (_event, dir: string, paths: string[]) =>
+    stage(dir, paths),
+  );
+  ipcMain.handle("git:unstage", (_event, dir: string, paths: string[]) =>
+    unstage(dir, paths),
+  );
+  ipcMain.handle("git:discard", (_event, dir: string, paths: string[]) =>
+    discard(dir, paths),
+  );
   ipcMain.handle("git:branches", (_event, dir: string) => branches(dir));
   ipcMain.handle("git:log", (_event, dir: string, limit?: number) =>
     log(dir, limit),

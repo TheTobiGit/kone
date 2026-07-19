@@ -133,6 +133,15 @@ export type KoneGitApi = {
   onCloneProgress: (cb: (p: CloneProgress) => void) => () => void;
   /** Create a new project folder (optionally a git repo); resolves the folder. */
   create: (opts: CreateProjectOptions) => Promise<CreateProjectResult>;
+  /** Watch a repo for on-disk changes; `cb` fires with fresh status on every
+   *  edit / stage / commit. Returns an unsubscribe fn that stops the watcher. */
+  watchStatus: (dir: string, cb: (status: GitStatus) => void) => () => void;
+  /** Stage the given repo-relative paths. */
+  stage: (dir: string, paths: string[]) => Promise<void>;
+  /** Unstage the given paths (index back to HEAD; working tree untouched). */
+  unstage: (dir: string, paths: string[]) => Promise<void>;
+  /** Discard the given paths' uncommitted changes — destructive. */
+  discard: (dir: string, paths: string[]) => Promise<void>;
 };
 
 export type KoneSystemApi = {

@@ -39,28 +39,35 @@
     return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
   }
 
-  function startCount() {
-    if (hasTriggered.value) return;
-    hasTriggered.value = true;
+  let frame = 0;
 
+  // Tween the displayed value from wherever it is now to `target`. Used for the
+  // first reveal and again whenever `to` changes, so a live data update (a
+  // discarded file dropping the total, a commit clearing it) animates rather
+  // than snapping.
+  function tweenTo(target: number) {
+    cancelAnimationFrame(frame);
+    const startValue = currentValue.value;
     const startTime = performance.now();
     const durationMs = props.duration * 1000;
 
     function animate(now: number) {
-      const elapsed = now - startTime;
-      const progress = Math.min(elapsed / durationMs, 1);
-      const eased = easeOutExpo(progress);
-
-      currentValue.value = props.from + (props.to - props.from) * eased;
-
+      const progress = Math.min((now - startTime) / durationMs, 1);
+      currentValue.value = startValue + (target - startValue) * easeOutExpo(progress);
       if (progress < 1) {
-        requestAnimationFrame(animate);
+        frame = requestAnimationFrame(animate);
       } else {
-        currentValue.value = props.to;
+        currentValue.value = target;
       }
     }
 
-    requestAnimationFrame(animate);
+    frame = requestAnimationFrame(animate);
+  }
+
+  function startCount() {
+    if (hasTriggered.value) return;
+    hasTriggered.value = true;
+    tweenTo(props.to);
   }
 
   const displayValue = computed(() => formatNumber(currentValue.value));
@@ -70,6 +77,16 @@
       startCount();
     }
   });
+
+  // After the first reveal, follow subsequent `to` changes live.
+  watch(
+    () => props.to,
+    (next) => {
+      if (hasTriggered.value) tweenTo(next);
+    },
+  );
+
+  onBeforeUnmount(() => cancelAnimationFrame(frame));
 </script>
 
 <template>

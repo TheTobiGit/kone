@@ -41,6 +41,22 @@ export function useGit() {
     log(dir: string, limit?: number): Promise<GitCommit[]> {
       return git ? git.log(dir, limit) : Promise.resolve([]);
     },
+    // Live status. Only the desktop bridge can watch a real filesystem, so in
+    // `nuxt dev` this is a no-op (the mock repos never change on disk anyway).
+    watchStatus(dir: string, cb: (status: GitStatus) => void): () => void {
+      return git ? git.watchStatus(dir, cb) : () => {};
+    },
+    // Mutations. Without the bridge (browser dev) they resolve as no-ops — the
+    // renderer's optimistic update is the only effect there.
+    stage(dir: string, paths: string[]): Promise<void> {
+      return git ? git.stage(dir, paths) : Promise.resolve();
+    },
+    unstage(dir: string, paths: string[]): Promise<void> {
+      return git ? git.unstage(dir, paths) : Promise.resolve();
+    },
+    discard(dir: string, paths: string[]): Promise<void> {
+      return git ? git.discard(dir, paths) : Promise.resolve();
+    },
   };
 }
 

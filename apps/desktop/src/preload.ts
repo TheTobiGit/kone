@@ -36,6 +36,26 @@ const api = {
     cancelClone: (): Promise<void> => ipcRenderer.invoke("git:clone-cancel"),
     create: (opts: CreateProjectOptions): Promise<CreateProjectResult> =>
       ipcRenderer.invoke("git:create", opts),
+    // Live status: watch the repo and receive a fresh GitStatus whenever it moves
+    // on disk (edit, terminal `git add`, commit, branch switch). Returns an
+    // unsubscribe fn that also stops the watcher in the main process.
+    watchStatus: (dir: string, cb: (status: GitStatus) => void): (() => void) => {
+      const listener = (_event: unknown, status: GitStatus) => cb(status);
+      ipcRenderer.on("git:status-changed", listener);
+      void ipcRenderer.invoke("git:watch", dir);
+      return () => {
+        ipcRenderer.removeListener("git:status-changed", listener);
+        void ipcRenderer.invoke("git:unwatch");
+      };
+    },
+    // Working-tree mutations. They resolve once git has run; the open project's
+    // watcher then pushes the resulting status.
+    stage: (dir: string, paths: string[]): Promise<void> =>
+      ipcRenderer.invoke("git:stage", dir, paths),
+    unstage: (dir: string, paths: string[]): Promise<void> =>
+      ipcRenderer.invoke("git:unstage", dir, paths),
+    discard: (dir: string, paths: string[]): Promise<void> =>
+      ipcRenderer.invoke("git:discard", dir, paths),
     // Subscribe to clone progress; returns an unsubscribe fn. Only meaningful
     // while a git.clone() invoke is in flight.
     onCloneProgress: (cb: (p: CloneProgress) => void): (() => void) => {

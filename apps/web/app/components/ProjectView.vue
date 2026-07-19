@@ -1,25 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, toRef } from "vue";
 import { motion } from "motion-v";
 import type { FolderFile } from "~/components/ProjectFolder.vue";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
-import type { GitChange, GitFileStatus } from "~/types/desktop";
+import type { GitFileStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 
 const props = defineProps<{ project: Project }>();
 defineEmits<{ close: [] }>();
 
-const git = useGit();
-const loaded = ref(false);
-const repo = ref(true);
-const hasCommits = ref(true);
-const branch = ref<string | null>(null);
-const clean = ref(false);
-const added = ref(0);
-const removed = ref(0);
-const ahead = ref(0);
-const behind = ref(0);
-const changes = ref<GitChange[]>([]);
+// One reactive git model drives the whole page; every surface below reads from
+// its derived counts, and the action handlers edit it in place so a change
+// shows up everywhere at once.
+const g = useProjectGit(toRef(props, "project"));
+const { cue } = useSound();
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it
 // never yields an empty name.
@@ -33,7 +27,8 @@ function isNew(status: GitFileStatus): boolean {
 }
 
 const changeItems = computed<ChangeItem[]>(() =>
-  changes.value.map((c) => ({
+  g.changes.value.map((c) => ({
+    path: c.path,
     name: basename(c.path),
     added: c.added ?? 0,
     removed: c.removed ?? 0,
@@ -44,7 +39,7 @@ const changeItems = computed<ChangeItem[]>(() =>
 );
 
 const folderFiles = computed<FolderFile[]>(() =>
-  changes.value.slice(0, 3).map((c) => ({
+  g.changes.value.slice(0, 3).map((c) => ({
     change: c.status === "deleted" ? "deleted" : isNew(c.status) ? "new" : "edit",
     added: c.added ?? 0,
     removed: c.removed ?? 0,
@@ -52,56 +47,57 @@ const folderFiles = computed<FolderFile[]>(() =>
   })),
 );
 
-onMounted(async () => {
-  const [detected, status] = await Promise.all([
-    git.detect(props.project.path),
-    git.status(props.project.path),
-  ]);
-
-  repo.value = detected !== null;
-  branch.value = detected?.branch ?? null;
-  added.value = detected?.added ?? 0;
-  removed.value = detected?.removed ?? 0;
-  changes.value = status?.changes ?? [];
-
-  // A null HEAD is an unborn branch — a repo with no commits yet.
-  hasCommits.value = status ? status.head !== null : true;
-  clean.value = status?.clean ?? detected?.clean ?? true;
-  ahead.value = status?.ahead ?? detected?.ahead ?? 0;
-  behind.value = status?.behind ?? detected?.behind ?? 0;
-  loaded.value = true;
-});
-
-const fileCount = computed(() => changeItems.value.length);
-const stagedCount = computed(() => changes.value.filter((c) => c.staged).length);
+// ── action handlers — mutate the model, then sound the gesture ────────────────
+function onStageAll() {
+  cue("toggle");
+  g.stageAll();
+}
+function onUnstageAll() {
+  cue("toggle");
+  g.unstageAll();
+}
+// Discard is hold-to-confirm (HoldToConfirm) in the Changed lane — by the time
+// this fires the user has held through the confirm, so no modal interrupts.
+// (ChangesPanel already sounds the gesture.)
+function onDiscardPaths(paths: string[]) {
+  g.discardPaths(paths);
+}
+function onCommit() {
+  cue("success");
+  g.commit();
+}
 </script>
 
 <template>
   <main
-    class="relative flex h-full min-h-screen items-start justify-center bg-ground px-16 py-24"
+    class="relative flex min-h-screen items-start justify-center bg-ground px-16 pt-24 pb-56"
   >
-    
+
     <div class="flex w-full max-w-4xl flex-col gap-11">
       <HomeGreeting
         :project-name="project.name"
-        :loading="!loaded"
-        :repo="repo"
-        :has-commits="hasCommits"
-        :branch="branch"
-        :clean="clean"
-        :added="added"
-        :removed="removed"
-        :file-count="fileCount"
-        :staged="stagedCount"
-        :ahead="ahead"
-        :behind="behind"
+        :loading="!g.loaded.value"
+        :repo="g.repo.value"
+        :has-commits="g.hasCommits.value"
+        :branch="g.branch.value"
+        :clean="g.clean.value"
+        :added="g.added.value"
+        :removed="g.removed.value"
+        :file-count="g.fileCount.value"
+        :staged="g.stagedCount.value"
+        :ahead="g.ahead.value"
+        :behind="g.behind.value"
       />
       <ChangesPanel
-        :loading="!loaded"
-        :branch="branch"
-        :added="added"
-        :removed="removed"
+        :loading="!g.loaded.value"
+        :branch="g.branch.value"
+        :added="g.added.value"
+        :removed="g.removed.value"
         :changes="changeItems"
+        @stage-all="onStageAll"
+        @unstage-all="onUnstageAll"
+        @commit="onCommit"
+        @discard-paths="onDiscardPaths"
       />
     </div>
 
@@ -115,10 +111,10 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
     >
       <ProjectFolder
         :name="project.name"
-        :repo="repo"
-        :branch="branch"
-        :added="added"
-        :removed="removed"
+        :repo="g.repo.value"
+        :branch="g.branch.value"
+        :added="g.added.value"
+        :removed="g.removed.value"
         :files="folderFiles"
         :scale="1.15"
       />
