@@ -44,7 +44,7 @@ const accentCounts = computed(() =>
 
 <template>
   <div
-    class="flex select-none items-baseline gap-[0.28em] font-serif text-[19px] font-medium leading-[1.15] tracking-normal text-ink"
+    class="flex select-none items-baseline gap-[0.28em] font-serif text-[15px] font-medium leading-[1.15] tracking-normal text-ink"
     style="font-optical-sizing: auto"
     role="img"
     aria-label="kone"
