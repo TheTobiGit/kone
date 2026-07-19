@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { motion } from "motion-v";
 import type { FolderFile } from "~/components/ProjectFolder.vue";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
 import type { GitChange, GitFileStatus } from "~/types/desktop";
@@ -96,6 +97,7 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
         :behind="behind"
       />
       <ChangesPanel
+        :loading="!loaded"
         :branch="branch"
         :added="added"
         :removed="removed"
@@ -103,8 +105,14 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
       />
     </div>
 
-    
-    <div class="absolute bottom-10 left-10">
+    <!-- The folder settles into the corner last — rising into place with a soft
+         spring, the physical grace note after the greeting + changes land. -->
+    <motion.div
+      class="absolute bottom-10 left-10"
+      :initial="{ opacity: 0, y: 44, scale: 0.94 }"
+      :animate="{ opacity: 1, y: 0, scale: 1 }"
+      :transition="{ type: 'spring', stiffness: 210, damping: 22, mass: 0.9, delay: 0.55 }"
+    >
       <ProjectFolder
         :name="project.name"
         :repo="repo"
@@ -114,6 +122,6 @@ const stagedCount = computed(() => changes.value.filter((c) => c.staged).length)
         :files="folderFiles"
         :scale="1.15"
       />
-    </div>
+    </motion.div>
   </main>
 </template>

@@ -193,15 +193,21 @@ const body = computed<Seg[]>(() => {
       <span v-else class="t-ink">there</span>
     </p>
 
-    <!-- The state message — one continuous, wrapping paragraph. -->
-    <p class="line line--body">
+    <!-- The state message — one continuous, wrapping paragraph. Segments reveal
+         in sequence, each resolving from soft focus, so the sentence assembles
+         itself; the stagger re-fires when the git read swaps loading → loaded.
+         Keyed by content (not index) so unchanged leading segments — the project
+         name — hold still while the tail streams in. -->
+    <TransitionGroup tag="p" name="seg" class="line line--body" appear>
       <span
         v-for="(seg, i) in body"
-        :key="`b${i}`"
+        :key="`${i}:${seg.tone}:${seg.t}`"
+        class="seg"
         :class="`t-${seg.tone}`"
+        :style="{ '--i': i }"
         >{{ seg.t }}</span
       >
-    </p>
+    </TransitionGroup>
   </div>
 </template>
 
@@ -212,6 +218,43 @@ const body = computed<Seg[]>(() => {
   flex-direction: column;
   gap: 2px;
   font-family: var(--font-sans);
+  /* The whole greeting settles up into place on mount — one soft, unhurried
+     motion under the per-segment reveal. */
+  animation: greet-rise 640ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes greet-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Per-segment reveal — each word-group fades up out of soft focus, delayed by
+   its position so the sentence writes itself left-to-right. Blur + opacity are
+   inline-safe, so the prose still wraps as one continuous paragraph. */
+.seg {
+  transition:
+    opacity 520ms ease,
+    filter 520ms ease;
+  transition-delay: calc(var(--i, 0) * 42ms);
+}
+.seg-enter-from {
+  opacity: 0;
+  filter: blur(6px);
+}
+/* A segment that drops out (a state change) leaves without a stagger so the
+   line never holds a stale word next to its replacement. */
+.seg-leave-active {
+  position: absolute;
+  transition: opacity 160ms ease;
+}
+.seg-leave-to {
+  opacity: 0;
 }
 
 .line {
@@ -284,6 +327,22 @@ const body = computed<Seg[]>(() => {
 @media (prefers-color-scheme: dark) {
   .greet {
     --hi-muted: #6c6c74;
+  }
+}
+
+/* Honour a reduced-motion preference: show the greeting settled, no rise, no
+   blur-in, no stagger. */
+@media (prefers-reduced-motion: reduce) {
+  .greet {
+    animation: none;
+  }
+  .seg {
+    transition: none;
+    transition-delay: 0ms;
+  }
+  .seg-enter-from {
+    opacity: 1;
+    filter: none;
   }
 }
 </style>

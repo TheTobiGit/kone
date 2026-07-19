@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useResizeObserver } from "@vueuse/core";
+import { CountUp } from "~/components/ui/count-up";
 
 // The file-changes block that heads the project rail. Composes the adaptive
 // controls change with the working tree) over a grid of ChangeCards that fills,
@@ -19,6 +20,10 @@ export interface ChangeItem {
 }
 
 const props = defineProps<{
+  /** false until the first git read resolves — suppresses the "No changes"
+   *  empty state (and the whole block) so nothing flashes before the working
+   *  tree is known; the header + cards then cascade in when data lands. */
+  loading: boolean;
   branch: string | null;
   added: number;
   removed: number;
@@ -111,8 +116,12 @@ const bundleCards: BundleCard[] = [
 </script>
 
 <template>
+  <!-- Hold until the first git read resolves — render nothing so the block
+       simply arrives with the data, no "No changes" flash on the way in. -->
+  <template v-if="loading" />
+
   <!-- Clean: quiet empty state. -->
-  <div v-if="total === 0" class="empty">
+  <div v-else-if="total === 0" class="empty">
     <div class="empty__glyph">
       <span class="empty__sheet empty__sheet--back" />
       <span class="empty__sheet empty__sheet--front" />
@@ -173,8 +182,12 @@ const bundleCards: BundleCard[] = [
 
       <span class="ch__meta">
         <span class="ch__diff">
-          <span v-if="added > 0" class="ch__add">+{{ added }}</span>
-          <span v-if="removed > 0" class="ch__del">−{{ removed }}</span>
+          <span v-if="added > 0" class="ch__add"
+            >+<CountUp :to="added" :duration="1.1"
+          /></span>
+          <span v-if="removed > 0" class="ch__del"
+            >−<CountUp :to="removed" :duration="1.1"
+          /></span>
         </span>
         <span class="ch__dots">
           <i
@@ -182,6 +195,7 @@ const bundleCards: BundleCard[] = [
             :key="i"
             class="ch__dot"
             :class="`ch__dot--${d}`"
+            :style="{ '--i': i }"
           />
         </span>
       </span>
@@ -190,8 +204,9 @@ const bundleCards: BundleCard[] = [
     <!-- Card grid: responsive columns, capped at two rows + a bundle. -->
     <div ref="gridEl" class="grid">
       <ChangeCard
-        v-for="c in visible"
+        v-for="(c, i) in visible"
         :key="c.name"
+        :style="{ '--i': i }"
         :name="c.name"
         :added="c.added"
         :removed="c.removed"
@@ -199,7 +214,13 @@ const bundleCards: BundleCard[] = [
         :is-new="c.isNew"
         :deleted="c.deleted"
       />
-      <button v-if="overflow > 0" type="button" class="bundle" @click="expand">
+      <button
+        v-if="overflow > 0"
+        type="button"
+        class="bundle"
+        :style="{ '--i': visible.length }"
+        @click="expand"
+      >
         <span class="bundle__inner">
           <span
             v-for="(card, i) in bundleCards"
@@ -230,6 +251,7 @@ const bundleCards: BundleCard[] = [
         v-if="hasOverflow && expanded"
         type="button"
         class="fold"
+        :style="{ '--i': visible.length }"
         @click="collapse"
       >
         <span class="fold__chevron">
@@ -255,6 +277,71 @@ const bundleCards: BundleCard[] = [
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+/* ── entrance ───────────────────────────────────────────────────────────────
+   The block arrives when the git read lands (below the greeting, which is
+   already settling): the header lifts in first, then the tiles cascade in
+   order — each card, then the +N bundle, staggered by its position. The stagger
+   also drives the unfold, so expanding the bundle spills the hidden cards in
+   the same cadence. */
+@keyframes ch-header-in {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ch-tile-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ch {
+  animation: ch-header-in 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.grid > :deep(.card),
+.bundle,
+.fold {
+  animation: ch-tile-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(120ms + var(--i, 0) * 52ms);
+}
+
+/* The per-file dots pop in one by one once the header has settled — the change
+   set tallying itself, alongside the +/− totals counting up. */
+@keyframes ch-dot-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.ch__dot {
+  animation: ch-dot-pop 340ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
+  /* Cap the stagger tail so a large change set still finishes tallying quickly
+     rather than trickling dots for seconds. */
+  animation-delay: calc(240ms + min(var(--i, 0) * 46ms, 620ms));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch,
+  .ch__dot,
+  .grid > :deep(.card),
+  .bundle,
+  .fold {
+    animation: none;
+  }
 }
 
 /* ── header ─────────────────────────────────────────────────────────────── */

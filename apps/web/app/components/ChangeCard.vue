@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { CountUp } from "~/components/ui/count-up";
 
 // board. One card, every form: freshly created (new · empty), added, removed,
 // edited, staged/unstaged, or deleted (torn). Hovering reveals a Revert control.
@@ -86,8 +87,12 @@ const marks = computed<Mark[]>(() => {
       <div class="card__foot">
         <span v-if="empty" class="card__empty">empty</span>
         <span v-else class="card__diff">
-          <span v-if="added > 0" class="card__add">+{{ added }}</span>
-          <span v-if="removed > 0" class="card__del">−{{ removed }}</span>
+          <span v-if="added > 0" class="card__add"
+            >+<CountUp :to="added" :duration="1.1"
+          /></span>
+          <span v-if="removed > 0" class="card__del"
+            >−<CountUp :to="removed" :duration="1.1"
+          /></span>
         </span>
         <span class="card__check" :class="{ 'card__check--on': staged }">
           <svg
