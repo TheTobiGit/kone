@@ -33,9 +33,17 @@ const props = defineProps<{
 const total = computed(() => props.changes.length);
 const stagedCount = computed(() => props.changes.filter((c) => c.staged).length);
 
-// unstaged → all-staged spectrum drives which primary action shows.
-const allStaged = computed(() => total.value > 0 && stagedCount.value === total.value);
+// With nothing staged, Stage all is the primary first move.
 const noneStaged = computed(() => stagedCount.value === 0);
+
+// Which actions are actually meaningful for the current staging split — the
+// header shows exactly the buttons that would do something, never an inert one:
+//   • nothing staged → Stage all (primary) · Discard
+//   • some staged    → Commit (primary) · Stage all · Unstage all · Discard
+//   • all staged     → Commit (primary) · Unstage all · Discard
+const canStage = computed(() => stagedCount.value < total.value); // unstaged files remain
+const canUnstage = computed(() => stagedCount.value > 0);
+const canCommit = computed(() => stagedCount.value > 0);
 
 // Cap at two rows exactly. The grid is responsive (auto-fill), so how many
 // cards make two rows depends on width. Rather than re-derive the column count
@@ -154,23 +162,40 @@ const bundleCards: BundleCard[] = [
     <!-- Adaptive header: controls left, diffstat + progress right. -->
     <header class="ch">
       <div class="ch__actions">
-        <button type="button" class="ch__btn ch__btn--primary">
-          <svg v-if="allStaged" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+        <!-- Commit — surfaces the moment anything is staged; it's the primary
+             move once you've staged work. -->
+        <button v-if="canCommit" type="button" class="ch__btn ch__btn--primary">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
             <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2.4" />
             <line x1="3" y1="12" x2="9" y2="12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
             <line x1="15" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
           </svg>
-          <svg v-else viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+          Commit
+        </button>
+
+        <!-- Stage all — primary when nothing's staged yet (the first move),
+             else a secondary sweep for what's left; gone once all is staged. -->
+        <button
+          v-if="canStage"
+          type="button"
+          class="ch__btn"
+          :class="{ 'ch__btn--primary': noneStaged }"
+        >
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
             <path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-          {{ allStaged ? "Commit" : "Stage all" }}
+          Stage all
         </button>
-        <button type="button" class="ch__btn" :class="{ 'ch__btn--off': noneStaged }">
+
+        <!-- Unstage all — only when there's something staged to pull back. -->
+        <button v-if="canUnstage" type="button" class="ch__btn">
           <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
             <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
           </svg>
           Unstage all
         </button>
+
+        <!-- Discard — always available while the tree is dirty. -->
         <button type="button" class="ch__btn ch__btn--ghost">
           <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
             <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
@@ -427,10 +452,6 @@ const bundleCards: BundleCard[] = [
 .ch__btn--ghost {
   font-weight: 400;
   color: var(--muted);
-}
-.ch__btn--off {
-  opacity: 0.45;
-  pointer-events: none;
 }
 
 /* ── card grid ──────────────────────────────────────────────────────────── */
