@@ -23,6 +23,11 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
   >
     <h1 class="sr-only">Start a project</h1>
 
+    <!-- Wordmark anchored top-left, matching the page's px-16 / pt-[52px] inset. -->
+    <div class="relative z-10">
+      <RotatingWordmark />
+    </div>
+
     <!-- Hero: the start options rest dead-center in the open space. -->
     <section class="relative z-10 flex flex-1 flex-col items-center justify-center">
       <motion.div

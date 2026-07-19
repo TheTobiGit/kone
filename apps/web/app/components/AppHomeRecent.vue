@@ -79,6 +79,10 @@ const hoveredPath = ref<string | null>(null);
     <h1 class="sr-only">Your projects</h1>
 
     <HomeHeader>
+      <template #leading>
+        <RotatingWordmark />
+      </template>
+
       <template #trailing>
         <div class="flex items-center gap-3">
           <SoundToggle />

@@ -10,6 +10,9 @@
   --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas,
     "Liberation Mono", monospace;
+  /* Editorial display serif — deliberate contrast to Geist, used for the
+     rotating wordmark. Variable weight + optical sizing; @nuxt/fonts serves it. */
+  --font-serif: "Fraunces", ui-serif, Georgia, "Times New Roman", serif;
 }
 
 /* Bind semantic color utilities (bg-ground, text-ink, …) to the
