@@ -17,12 +17,15 @@ const props = withDefaults(
     sets?: string[][];
     brand?: string;
     interval?: number;
+    // The brand word lingers longer before the next set starts.
+    brandHold?: number;
     prefix?: string;
   }>(),
   {
     prefix: "make it",
     brand: "kone.",
     interval: 2200,
+    brandHold: 4600,
     sets: () => [
       ["kompiled.", "kompatible.", "konkurrent.", "konekted."],
       ["kached.", "kohesive.", "konfigured.", "konektiv."],
@@ -40,6 +43,10 @@ const words = computed(() => props.sets.flatMap((set) => [...set, props.brand]))
 const accentCounts = computed(() =>
   props.sets.flatMap((set) => [...set.map((_, i) => i + 1), props.brand.length]),
 );
+// Build words tick at `interval`; the brand word (end of each set) holds longer.
+const intervals = computed(() =>
+  props.sets.flatMap((set) => [...set.map(() => props.interval), props.brandHold]),
+);
 </script>
 
 <template>
@@ -53,6 +60,7 @@ const accentCounts = computed(() =>
     <RotatingText
       :texts="words"
       :rotation-interval="interval"
+      :intervals="intervals"
       stagger-from="first"
       highlight-class="text-accent"
       :highlight-counts="accentCounts"

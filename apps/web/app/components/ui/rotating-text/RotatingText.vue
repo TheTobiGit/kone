@@ -18,6 +18,8 @@ const props = withDefaults(
     highlightClass?: string;
     /** Per-phrase count of leading characters to apply `highlightClass` to. */
     highlightCounts?: number[];
+    /** Per-phrase display interval (ms); falls back to `rotationInterval`. */
+    intervals?: number[];
   }>(),
   {
     rotationInterval: 2000,
@@ -29,6 +31,7 @@ const props = withDefaults(
     class: "",
     highlightClass: "",
     highlightCounts: () => [],
+    intervals: () => [],
   },
 );
 
@@ -43,7 +46,9 @@ function next() {
 }
 
 if (props.auto) {
-  useIntervalFn(next, () => props.rotationInterval);
+  // Re-read per tick so a phrase can hold longer than the default (e.g. the
+  // brand word); useIntervalFn resets the timer whenever the value changes.
+  useIntervalFn(next, () => props.intervals[currentIndex.value] ?? props.rotationInterval);
 }
 
 const elements = computed(() => {
