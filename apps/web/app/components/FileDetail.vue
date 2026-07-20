@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { usePreferredDark } from "@vueuse/core";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
 import type { GitFileContent } from "~/types/desktop";
+import type { CodeLine } from "~/composables/useHighlighter";
 
 // The overlay a change opens into — the file appears to enlarge out of its card
 // (the grow is driven by ProjectView's transition, anchored on --ox/--oy) and
@@ -26,12 +28,22 @@ const emit = defineEmits<{
 }>();
 
 const git = useGit();
+const { highlight } = useHighlighter();
+const dark = usePreferredDark();
 
 const content = ref<GitFileContent | null>(null);
+const tokenLines = ref<CodeLine[] | null>(null);
 const loading = ref(true);
 
-// Re-read whenever the file changes. A token guards a slow earlier read landing
-// after a newer one.
+// View controls (right-rail footer). Wrap on = long lines fold at the frame
+// width; off = they run out to their own horizontal scroll. Line numbers on =
+// the gutter shows.
+const wrap = ref(true);
+const lineNumbers = ref(true);
+
+// Re-read whenever the file changes, then highlight before revealing (skeleton →
+// coloured code, no plain flash). A token guards a slow earlier read/highlight
+// landing after a newer one.
 let token = 0;
 watch(
   () => props.file.path,
@@ -39,13 +51,27 @@ watch(
     const mine = ++token;
     loading.value = true;
     content.value = null;
+    tokenLines.value = null;
     const result = await git.content(props.repoPath, props.file.path);
     if (mine !== token) return;
     content.value = result;
+    if (result?.text) {
+      tokenLines.value = await highlight(result.text, props.file.path, dark.value);
+      if (mine !== token) return;
+    }
     loading.value = false;
   },
   { immediate: true },
 );
+
+// Re-tint (not re-read) when the colour scheme flips.
+watch(dark, async () => {
+  const text = content.value?.text;
+  if (!text) return;
+  const mine = token;
+  const tinted = await highlight(text, props.file.path, dark.value);
+  if (mine === token) tokenLines.value = tinted;
+});
 
 // Grow from the clicked card's centre — ProjectView's <Transition> reads these.
 const originStyle = computed(() => {
@@ -98,8 +124,10 @@ const boxes = computed<("add" | "del")[]>(() => {
   ];
 });
 
-// The body's plain lines, or null when there's a note to show instead.
+// The rows to render: coloured token lines when highlighting succeeded,
+// otherwise the raw text split into plain lines.
 const lines = computed(() => (content.value?.text ?? "").split("\n"));
+const rows = computed<CodeLine[] | string[]>(() => tokenLines.value ?? lines.value);
 const note = computed(() => {
   if (loading.value) return null;
   if (props.file.deleted) return "This file was deleted.";
@@ -171,10 +199,20 @@ function toggleStage() {
             <span v-for="n in 12" :key="n" class="fd__skeleton-row" :style="{ '--i': n, width: `${34 + ((n * 41) % 58)}%` }" />
           </div>
           <div v-else-if="note" class="fd__note">{{ note }}</div>
-          <div v-else class="code">
-            <div v-for="(text, i) in lines" :key="i" class="code__line">
-              <span class="code__no">{{ i + 1 }}</span>
-              <span class="code__text">{{ text || " " }}</span>
+          <div v-else class="code" :class="{ 'code--nowrap': !wrap }">
+            <div v-for="(row, i) in rows" :key="i" class="code__line">
+              <span v-if="lineNumbers" class="code__no">{{ i + 1 }}</span>
+              <span class="code__text">
+                <template v-if="Array.isArray(row)">
+                  <span
+                    v-for="(t, j) in row"
+                    :key="j"
+                    :style="{ color: t.color }"
+                    >{{ t.content }}</span
+                  ><span v-if="row.length === 0"> </span>
+                </template>
+                <template v-else>{{ row || " " }}</template>
+              </span>
             </div>
           </div>
         </div>
@@ -207,6 +245,40 @@ function toggleStage() {
           <div class="meta">
             <span class="meta__k">Staged</span>
             <span class="meta__v">{{ file.staged ? "Yes" : "No" }}</span>
+          </div>
+
+          <!-- View controls, seated near the foot of the rail. Only the switch
+               toggles — the label is just a caption. -->
+          <div class="fd__controls">
+            <span class="meta__k">Controls</span>
+            <div class="ctl" :class="{ 'ctl--on': wrap }">
+              <span class="ctl__k">Line wrap</span>
+              <button
+                type="button"
+                class="ctl__sw"
+                :class="{ 'ctl__sw--on': wrap }"
+                role="switch"
+                :aria-checked="wrap"
+                aria-label="Wrap lines"
+                @click="wrap = !wrap"
+              >
+                <span class="ctl__dot" />
+              </button>
+            </div>
+            <div class="ctl" :class="{ 'ctl--on': lineNumbers }">
+              <span class="ctl__k">Line numbers</span>
+              <button
+                type="button"
+                class="ctl__sw"
+                :class="{ 'ctl__sw--on': lineNumbers }"
+                role="switch"
+                :aria-checked="lineNumbers"
+                aria-label="Show line numbers"
+                @click="lineNumbers = !lineNumbers"
+              >
+                <span class="ctl__dot" />
+              </button>
+            </div>
           </div>
         </aside>
       </div>
@@ -340,17 +412,15 @@ function toggleStage() {
 .fd__main::-webkit-scrollbar { width: 0; height: 0; }
 
 .code {
-  overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.75;
 }
-.code::-webkit-scrollbar { height: 8px; }
-.code::-webkit-scrollbar-thumb { background-color: var(--hover); border-radius: 4px; }
+/* The frame width is fixed, so a long line wraps instead of scrolling sideways —
+   its number stays pinned to the first visual row while the text flows below. */
 .code__line {
   display: flex;
-  width: max-content;
-  min-width: 100%;
+  align-items: flex-start;
 }
 .code__no {
   flex: none;
@@ -364,10 +434,28 @@ function toggleStage() {
   user-select: none;
 }
 .code__text {
-  white-space: pre;
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--ink-soft);
   padding-right: 24px;
   tab-size: 2;
+}
+/* Wrap off: lines run to their natural width and the block scrolls sideways. */
+.code--nowrap {
+  overflow-x: auto;
+}
+.code--nowrap::-webkit-scrollbar { height: 8px; }
+.code--nowrap::-webkit-scrollbar-thumb { background-color: var(--hover); border-radius: 4px; }
+.code--nowrap .code__line {
+  width: max-content;
+  min-width: 100%;
+}
+.code--nowrap .code__text {
+  flex: none;
+  white-space: pre;
+  overflow-wrap: normal;
 }
 
 .fd__note {
@@ -429,8 +517,68 @@ function toggleStage() {
 .meta__box--add { background-color: var(--diff-add); }
 .meta__box--del { background-color: var(--diff-del); }
 
+/* ── view controls (rail footer) ──────────────────────────────────────────── */
+.fd__controls {
+  margin-top: auto;
+  /* Lift off the very bottom so it doesn't hug the frame edge. */
+  padding: 22px 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ctl {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+.ctl__k {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+  color: var(--muted);
+  transition: color 0.18s ease;
+}
+.ctl--on .ctl__k { color: var(--ink-soft); }
+/* Pill switch — track fills on, thumb springs across with a hairline ring. The
+   thumb is --ground (always the opposite of --ink), so it stays legible against
+   the --ink on-track in both light and dark. */
+.ctl__sw {
+  flex: none;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  background-color: var(--hover);
+  box-shadow: inset 0 0 0 1px #1e1b1810;
+  padding: 2.5px;
+  cursor: pointer;
+  transition: background-color 0.24s ease;
+}
+.ctl__sw--on {
+  background-color: var(--ink);
+  box-shadow: none;
+}
+.ctl__dot {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background-color: var(--ground);
+  box-shadow: #1e1b1833 0 1px 2px;
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.ctl__sw--on .ctl__dot { transform: translateX(15px); }
+
 @media (prefers-color-scheme: dark) {
   .fd__back { background-color: #17171a; box-shadow: #00000038 0 2px 8px; }
+  /* Off-track ring for definition; the thumb stays --ground so it reads on the
+     light --ink on-track. */
+  .ctl__sw { box-shadow: inset 0 0 0 1px #ffffff12; }
+  .ctl__sw--on { box-shadow: none; }
+  .ctl__dot { box-shadow: #00000045 0 1px 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .fd__skeleton-row { animation: none; }

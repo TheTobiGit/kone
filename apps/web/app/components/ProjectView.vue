@@ -15,6 +15,7 @@ defineEmits<{ close: [] }>();
 // shows up everywhere at once.
 const g = useProjectGit(toRef(props, "project"));
 const { cue } = useSound();
+const { warm } = useHighlighter();
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it
 // never yields an empty name.
@@ -60,6 +61,17 @@ watch(activeFile, (f) => {
   lockPage(Boolean(f));
 });
 onBeforeUnmount(() => lockPage(false));
+
+// Preload the highlighter grammars for the file types in this project's changes
+// (plus the engine + themes) the moment they're known — so the first file the
+// user opens paints instantly, with no on-demand load.
+watch(
+  changeItems,
+  (items) => {
+    if (items.length) void warm(items.map((c) => c.path));
+  },
+  { immediate: true },
+);
 
 const folderFiles = computed<FolderFile[]>(() =>
   g.changes.value.slice(0, 3).map((c) => ({
