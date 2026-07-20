@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useResizeObserver } from "@vueuse/core";
-import type { ChangeItem } from "~/components/ChangesPanel.vue";
+import type { ChangeItem } from "~/types/change";
 import { Magnet } from "~/components/ui/magnet";
 
 // One lane of the changes panel — a titled section ("Staged" / "Changed") over

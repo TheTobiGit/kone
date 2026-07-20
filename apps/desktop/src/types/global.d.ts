@@ -8,7 +8,7 @@ import type {
   GitCommit,
   GitRepo,
   GitStatus,
-} from "../git.js";
+} from "../git/index.js";
 
 export type KoneFsApi = {
   home: () => Promise<string>;

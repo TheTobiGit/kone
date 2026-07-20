@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, net, protocol, shell } from "electron";
 
 import { registerFsIpc } from "./fs.js";
-import { cancelClone, registerGitIpc } from "./git.js";
+import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

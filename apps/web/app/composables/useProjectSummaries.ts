@@ -1,5 +1,5 @@
 import { reactive } from "vue";
-import type { FolderFile } from "~/components/ProjectFolder.vue";
+import type { FolderFile } from "~/types/folder";
 import type { GitFileStatus } from "~/types/desktop";
 
 export interface ProjectSummary {

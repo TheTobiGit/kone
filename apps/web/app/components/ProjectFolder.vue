@@ -2,17 +2,7 @@
 import { computed } from "vue";
 import { motion } from "motion-v";
 import { CountUp } from "~/components/ui/count-up";
-
-type FileChange = "new" | "edit" | "deleted";
-
-export interface FolderFile {
-  change: FileChange;
-  /** Lines added/removed for this file — drives the paper's diff-shape marks. */
-  added?: number;
-  removed?: number;
-  /** File path — seeds the deterministic mark jitter so no two read alike. */
-  name?: string;
-}
+import type { FolderFile } from "~/types/folder";
 
 const props = withDefaults(
   defineProps<{

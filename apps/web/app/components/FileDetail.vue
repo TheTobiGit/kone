@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { usePreferredDark } from "@vueuse/core";
 import { Magnet } from "~/components/ui/magnet";
-import type { ChangeItem } from "~/components/ChangesPanel.vue";
+import type { ChangeItem } from "~/types/change";
 import type { GitFileContent, GitFileDiff } from "~/types/desktop";
 import type { CodeLine } from "~/composables/useHighlighter";
 import type { DiffRow } from "~/composables/useDiff";

@@ -12,7 +12,7 @@ import type {
   GitFileDiff,
   GitRepo,
   GitStatus,
-} from "./git.js";
+} from "./git/index.js";
 
 const api = {
   isDesktop: true as const,

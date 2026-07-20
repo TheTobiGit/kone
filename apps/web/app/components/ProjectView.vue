@@ -2,8 +2,8 @@
 import { computed, onBeforeUnmount, ref, toRef, watch } from "vue";
 import { onKeyStroke } from "@vueuse/core";
 import { motion } from "motion-v";
-import type { FolderFile } from "~/components/ProjectFolder.vue";
-import type { ChangeItem } from "~/components/ChangesPanel.vue";
+import type { FolderFile } from "~/types/folder";
+import type { ChangeItem } from "~/types/change";
 import type { GitFileStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 

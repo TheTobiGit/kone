@@ -1,23 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { CountUp } from "~/components/ui/count-up";
+import type { ChangeItem } from "~/types/change";
 
 // The file-changes block that heads the project rail. Splits the working tree
 // into two lanes — Staged and Changed — each a ChangeLane with its own sweep
 // (Unstage all / Stage all), and the Changed lane owns Discard (it only ever
 // touches unstaged work). A compact header carries Commit + the diffstat
 // summary. When the tree is clean it collapses to a quiet empty state.
-
-export interface ChangeItem {
-  /** Full repo-relative path — the stable id actions address. */
-  path: string;
-  name: string;
-  added: number;
-  removed: number;
-  staged: boolean;
-  isNew: boolean;
-  deleted: boolean;
-}
 
 const props = defineProps<{
   /** false until the first git read resolves — suppresses the "No changes"
