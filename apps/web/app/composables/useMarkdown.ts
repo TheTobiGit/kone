@@ -46,7 +46,11 @@ export function useMarkdown() {
   async function render(src: string): Promise<string | null> {
     if (import.meta.server || src.length > MAX_RENDER) return null;
     const md = await getMd();
-    return md.render(src);
+    // Fenced/indented code blocks scroll horizontally (pre { overflow-x: auto }),
+    // which would make each one a focusable scroller — an extra Tab stop inside
+    // the preview. The whole body scrolls by arrow key, so take them out of the
+    // tab order; Tab then visits only the real controls and links.
+    return md.render(src).replaceAll("<pre>", '<pre tabindex="-1">');
   }
 
   return { render };

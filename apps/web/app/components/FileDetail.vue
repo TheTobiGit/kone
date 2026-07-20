@@ -311,7 +311,9 @@ function onTrapKeydown(e: KeyboardEvent) {
           <!-- Rich Markdown preview (safe HTML from markdown-it). -->
           <!-- eslint-disable-next-line vue/no-v-html -->
           <article v-else-if="showPreview" class="md" v-html="renderedMd" />
-          <div v-else class="code" :class="{ 'code--nowrap': !wrap }">
+          <!-- tabindex -1: with wrap off this scrolls sideways, which would make
+               it a focusable scroller (an extra tab stop). Arrow keys scroll it. -->
+          <div v-else class="code" :class="{ 'code--nowrap': !wrap }" tabindex="-1">
             <div v-for="(row, i) in rows" :key="i" class="code__line">
               <span v-if="lineNumbers" class="code__no">{{ i + 1 }}</span>
               <span class="code__text">
