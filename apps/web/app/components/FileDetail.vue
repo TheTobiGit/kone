@@ -3,8 +3,9 @@ import { computed, onMounted, ref, watch } from "vue";
 import { usePreferredDark } from "@vueuse/core";
 import { Magnet } from "~/components/ui/magnet";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
-import type { GitFileContent } from "~/types/desktop";
+import type { GitFileContent, GitFileDiff } from "~/types/desktop";
 import type { CodeLine } from "~/composables/useHighlighter";
+import type { DiffRow } from "~/composables/useDiff";
 
 // The overlay a change opens into — the file appears to enlarge out of its card
 // (the grow is driven by ProjectView's transition, anchored on --ox/--oy) and
@@ -31,11 +32,16 @@ const emit = defineEmits<{
 const git = useGit();
 const { highlight } = useHighlighter();
 const { render: renderMd } = useMarkdown();
+const { buildRows } = useDiff();
 const dark = usePreferredDark();
 
 const content = ref<GitFileContent | null>(null);
 const tokenLines = ref<CodeLine[] | null>(null);
 const renderedMd = ref<string | null>(null);
+// The parsed diff is kept so a colour-scheme flip can re-tint its rows without a
+// second read; diffRows are the built (highlighted) rows the view renders.
+const diffData = ref<GitFileDiff | null>(null);
+const diffRows = ref<DiffRow[] | null>(null);
 const loading = ref(true);
 
 // Markdown files get the rich/raw switch; everything else is always raw.
@@ -44,17 +50,25 @@ const isMarkdown = computed(() => {
   return ext === "md" || ext === "mdx" || ext === "markdown";
 });
 
-// View controls (right-rail footer). Rich preview (Markdown only) renders the
-// file; off falls back to the raw source. Wrap on = long lines fold at the frame
-// width; off = they run out to their own horizontal scroll. Line numbers on =
-// the gutter shows. Wrap/numbers only apply to the raw view.
+// View controls (right-rail footer). Diff view shows the change as a unified
+// diff; off shows the file's own content. Rich preview (Markdown only) renders
+// the file; off falls back to the raw source. Wrap on = long lines fold at the
+// frame width; off = they run out to their own horizontal scroll. Line numbers
+// on = the gutter shows (raw file view only — the diff carries its own).
+const diffView = ref(true);
 const richPreview = ref(true);
 const wrap = ref(true);
 const lineNumbers = ref(true);
-// The user wants the preview (intent) — drives which controls apply. The
-// preview is actually on screen (vs. the raw code view) only once its HTML has
-// rendered; showPreview gates the body swap so there's no flash mid-load.
-const wantsPreview = computed(() => isMarkdown.value && richPreview.value);
+
+// The diff is on screen only once its rows are built (and there's something to
+// show); showDiff gates the body so there's no flash mid-load. When it can't be
+// shown (no diff, or toggled off) the file content takes over.
+const hasDiff = computed(() => !!diffRows.value && diffRows.value.length > 0);
+const showDiff = computed(() => diffView.value && hasDiff.value);
+// The rich preview only applies in the file view (not while the diff is up).
+const wantsPreview = computed(
+  () => !showDiff.value && isMarkdown.value && richPreview.value,
+);
 const showPreview = computed(
   () => wantsPreview.value && renderedMd.value !== null,
 );
@@ -71,33 +85,46 @@ watch(
     content.value = null;
     tokenLines.value = null;
     renderedMd.value = null;
-    const result = await git.content(props.repoPath, props.file.path);
+    diffData.value = null;
+    diffRows.value = null;
+    // Read the working-tree content and the change's diff together.
+    const [result, diff] = await Promise.all([
+      git.content(props.repoPath, props.file.path),
+      git.diff(props.repoPath, props.file.path, props.file.staged),
+    ]);
     if (mine !== token) return;
     content.value = result;
-    if (result?.text) {
-      // Highlight the raw source and render the rich preview together — they're
-      // independent, so preparing both up front keeps the switch instant either
-      // way without serialising the two passes.
-      const [tokens, md] = await Promise.all([
-        highlight(result.text, props.file.path, dark.value),
-        isMarkdown.value ? renderMd(result.text) : Promise.resolve(null),
-      ]);
-      if (mine !== token) return;
-      tokenLines.value = tokens;
-      renderedMd.value = md;
-    }
+    diffData.value = diff;
+    // Highlight the raw source, render the rich preview, and build the diff rows
+    // together — they're independent, so preparing all three up front keeps
+    // every toggle instant without serialising the passes. Everything's held
+    // behind `loading` so the view arrives complete (no plain→coloured flash,
+    // no file→diff flash).
+    const [tokens, md, rows] = await Promise.all([
+      result?.text ? highlight(result.text, props.file.path, dark.value) : null,
+      result?.text && isMarkdown.value ? renderMd(result.text) : null,
+      buildRows(diff, dark.value),
+    ]);
+    if (mine !== token) return;
+    tokenLines.value = tokens;
+    renderedMd.value = md;
+    diffRows.value = rows;
     loading.value = false;
   },
   { immediate: true },
 );
 
-// Re-tint (not re-read) when the colour scheme flips.
+// Re-tint (not re-read) when the colour scheme flips — both the file tokens and
+// the diff rows carry theme colours. Rebuilds from what's already loaded.
 watch(dark, async () => {
-  const text = content.value?.text;
-  if (!text) return;
   const mine = token;
-  const tinted = await highlight(text, props.file.path, dark.value);
-  if (mine === token) tokenLines.value = tinted;
+  const [tinted, rows] = await Promise.all([
+    content.value?.text ? highlight(content.value.text, props.file.path, dark.value) : null,
+    buildRows(diffData.value, dark.value),
+  ]);
+  if (mine !== token) return;
+  if (tinted) tokenLines.value = tinted;
+  if (diffData.value) diffRows.value = rows;
 });
 
 // Grow from the clicked card's centre — ProjectView's <Transition> reads these.
@@ -307,6 +334,27 @@ function onTrapKeydown(e: KeyboardEvent) {
           <div v-if="loading" class="fd__skeleton">
             <span v-for="n in 12" :key="n" class="fd__skeleton-row" :style="{ '--i': n, width: `${34 + ((n * 41) % 58)}%` }" />
           </div>
+          <!-- Unified diff: one column, syntax-highlighted, with word-level
+               emphasis on the changed spans. Its own old/new number gutter. -->
+          <!-- tabindex -1: nowrap scrolls sideways (a focusable scroller). -->
+          <div v-else-if="showDiff" class="diff" :class="{ 'diff--nowrap': !wrap }" tabindex="-1">
+            <template v-for="(row, i) in diffRows" :key="i">
+              <div v-if="row.kind === 'gap'" class="diff__gap" aria-hidden="true">
+                <span /><span /><span />
+              </div>
+              <div v-else class="dl" :class="`dl--${row.kind}`">
+                <span class="dl__no">{{ row.oldNo ?? "" }}</span>
+                <span class="dl__no">{{ row.newNo ?? "" }}</span>
+                <span class="dl__sign" aria-hidden="true">{{ row.kind === "add" ? "+" : row.kind === "del" ? "−" : "" }}</span>
+                <span class="dl__text"><span
+                    v-for="(c, j) in row.chunks"
+                    :key="j"
+                    :class="{ dl__emph: c.emph }"
+                    :style="{ color: c.color }"
+                  >{{ c.text }}</span></span>
+              </div>
+            </template>
+          </div>
           <div v-else-if="note" class="fd__note">{{ note }}</div>
           <!-- Rich Markdown preview (safe HTML from markdown-it). -->
           <!-- eslint-disable-next-line vue/no-v-html -->
@@ -365,7 +413,21 @@ function onTrapKeydown(e: KeyboardEvent) {
                toggles — the label is just a caption. -->
           <div class="fd__controls">
             <span class="meta__k">Controls</span>
-            <div v-if="isMarkdown" class="ctl" :class="{ 'ctl--on': richPreview }">
+            <div v-if="hasDiff" class="ctl" :class="{ 'ctl--on': diffView }">
+              <span class="ctl__k">Diff view</span>
+              <button
+                type="button"
+                class="ctl__sw"
+                :class="{ 'ctl__sw--on': diffView }"
+                role="switch"
+                :aria-checked="diffView"
+                aria-label="Show unified diff"
+                @click="diffView = !diffView"
+              >
+                <span class="ctl__dot" />
+              </button>
+            </div>
+            <div v-if="!showDiff && isMarkdown" class="ctl" :class="{ 'ctl--on': richPreview }">
               <span class="ctl__k">Rich preview</span>
               <button
                 type="button"
@@ -394,7 +456,8 @@ function onTrapKeydown(e: KeyboardEvent) {
                 <span class="ctl__dot" />
               </button>
             </div>
-            <div v-if="!wantsPreview" class="ctl" :class="{ 'ctl--on': lineNumbers }">
+            <!-- Line numbers shape only the raw file view; the diff has its own. -->
+            <div v-if="!showDiff && !wantsPreview" class="ctl" :class="{ 'ctl--on': lineNumbers }">
               <span class="ctl__k">Line numbers</span>
               <button
                 type="button"
@@ -598,6 +661,81 @@ function onTrapKeydown(e: KeyboardEvent) {
   white-space: pre;
   overflow-wrap: normal;
 }
+
+/* ── unified diff ─────────────────────────────────────────────────────────── */
+.diff {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+.dl {
+  display: flex;
+  align-items: flex-start;
+  /* A calm tint over the row, and a coloured rule down the inside edge — no
+     saturated fills (kone keeps changes reading like a page). The rule doubles
+     as the left border so context lines stay flush. */
+  border-inline-start: 2px solid transparent;
+}
+.dl--add { background-color: color-mix(in srgb, var(--diff-add) 8%, transparent); border-inline-start-color: color-mix(in srgb, var(--diff-add) 55%, transparent); }
+.dl--del { background-color: color-mix(in srgb, var(--diff-del) 8%, transparent); border-inline-start-color: color-mix(in srgb, var(--diff-del) 55%, transparent); }
+.dl__no {
+  flex: none;
+  width: 40px;
+  padding-inline-end: 12px;
+  text-align: right;
+  color: var(--muted);
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.dl__no:first-child { padding-inline-start: 6px; }
+.dl__sign {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.dl--add .dl__sign { color: var(--diff-add); }
+.dl--del .dl__sign { color: var(--diff-del); }
+.dl__text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  padding-inline-end: 18px;
+  tab-size: 2;
+}
+/* Word-level emphasis: the exact span that changed gets a stronger tint, so the
+   eye lands on the edit rather than the whole line. */
+.dl__emph { border-radius: 3px; padding: 1px 0; }
+.dl--add .dl__emph { background-color: color-mix(in srgb, var(--diff-add) 22%, transparent); }
+.dl--del .dl__emph { background-color: color-mix(in srgb, var(--diff-del) 22%, transparent); }
+
+/* A quiet break between non-adjacent hunks — three faint dots, no @@ header. */
+.diff__gap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 12px 0;
+}
+.diff__gap span {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background-color: var(--muted);
+  opacity: 0.4;
+}
+
+/* Wrap off: rows run to their natural width and the block scrolls sideways. */
+.diff--nowrap { overflow-x: auto; }
+.diff--nowrap::-webkit-scrollbar { height: 8px; }
+.diff--nowrap::-webkit-scrollbar-thumb { background-color: var(--hover); border-radius: 4px; }
+.diff--nowrap .dl { width: max-content; min-width: 100%; }
+.diff--nowrap .dl__text { flex: none; white-space: pre; overflow-wrap: normal; }
 
 .fd__note {
   padding: 48px 4px;

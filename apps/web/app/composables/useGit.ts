@@ -225,6 +225,19 @@ function linePool(path: string): string[] {
   ];
 }
 
+// A small in-place edit to a line, so a mock modification reads like a real one
+// (one token changed) rather than a wholesale line swap — this is what gives the
+// diff's word-level highlighting something believable to emphasise.
+function tweak(line: string, seed: number): string {
+  const num = line.match(/\d+/);
+  if (num) return line.replace(/\d+/, String(Number(num[0]) + 1 + (seed % 3)));
+  if (line.includes("const ")) return line.replace("const ", "let ");
+  if (line.includes("return ")) return line.replace("return ", "yield ");
+  const word = line.match(/[A-Za-z_]{4,}/);
+  if (word) return line.replace(word[0], `${word[0]}X`);
+  return `${line} //~`;
+}
+
 // Synthesize a readable diff for a mock change so the detail view is demoable in
 // `nuxt dev`. Added/untracked → all inserts; deleted → all deletes; modified →
 // a small centred hunk. Line counts drive the volume (capped so it stays legible).
@@ -262,11 +275,19 @@ function mockDiff(dir: string, relPath: string): GitFileDiff | null {
     newNo = 0;
     for (let i = 0; i < Math.max(nDel, 1); i++) del(pick(i));
   } else {
+    // A realistic modification: the first `paired` lines are edited in place
+    // (each deletion has a matching, lightly-tweaked addition, so the diff's
+    // word-level view highlights just the changed token); any remaining
+    // additions are fresh lines. Deletions lead, then additions — as git orders
+    // a hunk — and the pairing lines up del[i] with add[i].
     oldNo = 18;
     newNo = 18;
+    const paired = Math.min(nDel, nAdd);
     ctx(pick(0));
     for (let i = 0; i < nDel; i++) del(pick(i + 1));
-    for (let i = 0; i < nAdd; i++) add(pick(i + 1 + nDel));
+    for (let i = 0; i < nAdd; i++) {
+      add(i < paired ? tweak(pick(i + 1), i) : pick(i + 1 + nDel));
+    }
     ctx(pick(9));
   }
 

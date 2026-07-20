@@ -18,6 +18,7 @@
     "@iconify/vue": "^5.0.1",
     "@vueuse/core": "^14.3.0",
     "cuelume": "^0.1.2",
+    "diff": "^8.0.0",
     "markdown-it": "^14.3.0",
     "motion-v": "^2.3.0",
     "nuxt": "^4.4.8",
