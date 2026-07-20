@@ -29,17 +29,34 @@ const emit = defineEmits<{
 
 const git = useGit();
 const { highlight } = useHighlighter();
+const { render: renderMd } = useMarkdown();
 const dark = usePreferredDark();
 
 const content = ref<GitFileContent | null>(null);
 const tokenLines = ref<CodeLine[] | null>(null);
+const renderedMd = ref<string | null>(null);
 const loading = ref(true);
 
-// View controls (right-rail footer). Wrap on = long lines fold at the frame
+// Markdown files get the rich/raw switch; everything else is always raw.
+const isMarkdown = computed(() => {
+  const ext = props.file.name.split(".").pop()?.toLowerCase();
+  return ext === "md" || ext === "mdx" || ext === "markdown";
+});
+
+// View controls (right-rail footer). Rich preview (Markdown only) renders the
+// file; off falls back to the raw source. Wrap on = long lines fold at the frame
 // width; off = they run out to their own horizontal scroll. Line numbers on =
-// the gutter shows.
+// the gutter shows. Wrap/numbers only apply to the raw view.
+const richPreview = ref(true);
 const wrap = ref(true);
 const lineNumbers = ref(true);
+// The user wants the preview (intent) — drives which controls apply. The
+// preview is actually on screen (vs. the raw code view) only once its HTML has
+// rendered; showPreview gates the body swap so there's no flash mid-load.
+const wantsPreview = computed(() => isMarkdown.value && richPreview.value);
+const showPreview = computed(
+  () => wantsPreview.value && renderedMd.value !== null,
+);
 
 // Re-read whenever the file changes, then highlight before revealing (skeleton →
 // coloured code, no plain flash). A token guards a slow earlier read/highlight
@@ -52,12 +69,21 @@ watch(
     loading.value = true;
     content.value = null;
     tokenLines.value = null;
+    renderedMd.value = null;
     const result = await git.content(props.repoPath, props.file.path);
     if (mine !== token) return;
     content.value = result;
     if (result?.text) {
-      tokenLines.value = await highlight(result.text, props.file.path, dark.value);
+      // Highlight the raw source and render the rich preview together — they're
+      // independent, so preparing both up front keeps the switch instant either
+      // way without serialising the two passes.
+      const [tokens, md] = await Promise.all([
+        highlight(result.text, props.file.path, dark.value),
+        isMarkdown.value ? renderMd(result.text) : Promise.resolve(null),
+      ]);
       if (mine !== token) return;
+      tokenLines.value = tokens;
+      renderedMd.value = md;
     }
     loading.value = false;
   },
@@ -199,6 +225,9 @@ function toggleStage() {
             <span v-for="n in 12" :key="n" class="fd__skeleton-row" :style="{ '--i': n, width: `${34 + ((n * 41) % 58)}%` }" />
           </div>
           <div v-else-if="note" class="fd__note">{{ note }}</div>
+          <!-- Rich Markdown preview (safe HTML from markdown-it). -->
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <article v-else-if="showPreview" class="md" v-html="renderedMd" />
           <div v-else class="code" :class="{ 'code--nowrap': !wrap }">
             <div v-for="(row, i) in rows" :key="i" class="code__line">
               <span v-if="lineNumbers" class="code__no">{{ i + 1 }}</span>
@@ -251,7 +280,22 @@ function toggleStage() {
                toggles — the label is just a caption. -->
           <div class="fd__controls">
             <span class="meta__k">Controls</span>
-            <div class="ctl" :class="{ 'ctl--on': wrap }">
+            <div v-if="isMarkdown" class="ctl" :class="{ 'ctl--on': richPreview }">
+              <span class="ctl__k">Rich preview</span>
+              <button
+                type="button"
+                class="ctl__sw"
+                :class="{ 'ctl__sw--on': richPreview }"
+                role="switch"
+                :aria-checked="richPreview"
+                aria-label="Rich Markdown preview"
+                @click="richPreview = !richPreview"
+              >
+                <span class="ctl__dot" />
+              </button>
+            </div>
+            <!-- Wrap & line numbers only shape the raw view. -->
+            <div v-if="!wantsPreview" class="ctl" :class="{ 'ctl--on': wrap }">
               <span class="ctl__k">Line wrap</span>
               <button
                 type="button"
@@ -265,7 +309,7 @@ function toggleStage() {
                 <span class="ctl__dot" />
               </button>
             </div>
-            <div class="ctl" :class="{ 'ctl--on': lineNumbers }">
+            <div v-if="!wantsPreview" class="ctl" :class="{ 'ctl--on': lineNumbers }">
               <span class="ctl__k">Line numbers</span>
               <button
                 type="button"
@@ -463,6 +507,122 @@ function toggleStage() {
   color: var(--muted);
   font-size: 13px;
 }
+
+/* ── rich Markdown preview ────────────────────────────────────────────────── */
+/* v-html output isn't scoped, so the prose is styled through :deep(). Calm
+   editorial defaults: a capped measure, a descending heading scale, roomy body
+   line-height. */
+.md {
+  max-width: 68ch;
+  padding: 4px 0 8px;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+}
+.md :deep(> :first-child) { margin-top: 0; }
+.md :deep(p),
+.md :deep(ul),
+.md :deep(ol),
+.md :deep(blockquote),
+.md :deep(pre),
+.md :deep(table) {
+  margin: 0 0 1.05em;
+}
+.md :deep(p) { text-wrap: pretty; }
+
+/* Headings — descending scale, tight leading, balanced wrap, ink. */
+.md :deep(h1),
+.md :deep(h2),
+.md :deep(h3),
+.md :deep(h4),
+.md :deep(h5),
+.md :deep(h6) {
+  margin: 1.9em 0 0.6em;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--ink);
+  text-wrap: balance;
+}
+.md :deep(h1) { font-size: 27px; letter-spacing: -0.02em; }
+.md :deep(h2) { font-size: 21px; letter-spacing: -0.015em; }
+.md :deep(h3) { font-size: 17px; letter-spacing: -0.01em; }
+.md :deep(h4) { font-size: 15px; }
+.md :deep(h5) { font-size: 13px; }
+.md :deep(h6) {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.md :deep(strong) { font-weight: 650; color: var(--ink); }
+.md :deep(em) { font-style: italic; }
+
+/* Links — accent, underline pulled from the font's own metrics. */
+.md :deep(a) {
+  color: var(--accent, #4f46e5);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: from-font;
+  text-decoration-skip-ink: auto;
+}
+
+.md :deep(ul),
+.md :deep(ol) { padding-inline-start: 1.4em; }
+.md :deep(li) { margin: 0.28em 0; }
+.md :deep(li)::marker { color: var(--muted); }
+
+.md :deep(blockquote) {
+  padding-inline-start: 1em;
+  border-inline-start: 2px solid var(--hover);
+  color: var(--muted);
+}
+
+/* Inline code + fenced blocks — mono on a recessed fill (no border). */
+.md :deep(code) {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.12em 0.36em;
+  border-radius: 5px;
+  background-color: var(--hover);
+}
+.md :deep(pre) {
+  padding: 14px 16px;
+  border-radius: 10px;
+  background-color: var(--hover);
+  overflow-x: auto;
+  line-height: 1.6;
+}
+.md :deep(pre code) {
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+}
+
+.md :deep(hr) {
+  margin: 1.8em 0;
+  border: 0;
+  border-top: 1px solid var(--hover);
+}
+
+.md :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+.md :deep(table) {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.md :deep(th),
+.md :deep(td) {
+  padding: 7px 14px 7px 0;
+  text-align: start;
+  border-bottom: 1px solid var(--hover);
+}
+.md :deep(th) { font-weight: 600; color: var(--ink); }
 
 @keyframes fd-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.8; } }
 .fd__skeleton {

@@ -133,6 +133,7 @@ const MOCK_CHANGES: Record<string, GitChange[]> = {
     { path: "apps/web/nuxt.config.js", status: "modified", staged: true, unstaged: false, added: 5, removed: 1 },
     { path: "apps/web/app/assets/css/main.css", status: "modified", staged: false, unstaged: true, added: 4, removed: 25 },
     { path: "apps/web/app/pages/index.vue", status: "modified", staged: false, unstaged: true, added: 1, removed: 2 },
+    { path: "README.md", status: "modified", staged: false, unstaged: true, added: 8, removed: 2 },
   ],
   "/Users/you/Developer/sandbox": [
     { path: "src/legacy-emitter.js", status: "deleted", staged: false, unstaged: true, added: 0, removed: 34 },
@@ -171,6 +172,31 @@ function linePool(path: string): string[] {
       '  color: var(--ink);',
       '}',
       '.panel__head { font-weight: 500; }',
+    ];
+  if (ext === "md" || ext === "mdx" || ext === "markdown")
+    return [
+      '# kone',
+      '',
+      'A **calm** git client — changes read like a page, not a diff dump.',
+      '',
+      '## Getting started',
+      '',
+      'Clone the repo and start the dev server:',
+      '',
+      '```bash',
+      'bun install',
+      'bun run dev:web',
+      '```',
+      '',
+      '## Principles',
+      '',
+      '- Borderless surfaces over boxed cards',
+      '- Soft, low elevation — never a heavy shadow',
+      '- Sound and motion stay _sparse_',
+      '',
+      '> Restraint is the feature.',
+      '',
+      'See the [handbook](https://example.com) for the full story.',
     ];
   if (ext === "json" || ext === "js" && path.includes("config"))
     return [
