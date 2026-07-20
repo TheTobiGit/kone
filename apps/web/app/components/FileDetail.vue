@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { usePreferredDark } from "@vueuse/core";
+import { Magnet } from "~/components/ui/magnet";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
 import type { GitFileContent } from "~/types/desktop";
 import type { CodeLine } from "~/composables/useHighlighter";
@@ -187,35 +188,54 @@ function toggleStage() {
       </header>
 
       <div class="fd__body">
-        <!-- Left action rail — file-scoped actions (room to grow). -->
+        <!-- Left action rail — file-scoped actions (room to grow). Each leans
+             gently toward the cursor as it nears, then eases back. -->
         <div class="fd__left">
-          <button type="button" class="act" @click="toggleStage">
-            <span class="act__ic">
-              <svg v-if="file.staged" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
-              </svg>
-              <svg v-else viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </span>
-            {{ file.staged ? "Unstage" : "Stage" }}
-          </button>
-          <!-- Discard only ever touches an unstaged file. -->
-          <HoldToConfirm
-            v-if="!file.staged"
-            variant="lane-discard"
-            title="Hold to discard this file's changes"
-            aria-label="Hold to discard this file"
-            @confirm="emit('discard', file.path)"
+          <Magnet
+            class="w-fit"
+            inner-class="w-fit"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
           >
-            <span class="act__ic">
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </span>
-            Discard
-          </HoldToConfirm>
+            <button type="button" class="act" @click="toggleStage">
+              <span class="act__ic">
+                <svg v-if="file.staged" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              {{ file.staged ? "Unstage" : "Stage" }}
+            </button>
+          </Magnet>
+          <!-- Discard only ever touches an unstaged file. -->
+          <Magnet
+            v-if="!file.staged"
+            class="w-fit"
+            inner-class="w-fit"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <HoldToConfirm
+              variant="lane-discard"
+              title="Hold to discard this file's changes"
+              aria-label="Hold to discard this file"
+              @confirm="emit('discard', file.path)"
+            >
+              <span class="act__ic">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              Discard
+            </HoldToConfirm>
+          </Magnet>
         </div>
 
         <!-- Body: the file's own content, softened at the top/bottom edges. Only
@@ -422,15 +442,13 @@ function toggleStage() {
   cursor: pointer;
   transition: background-color 0.16s ease, color 0.16s ease;
 }
-.act:hover { background-color: var(--hover); color: var(--ink); }
+.act:hover { color: var(--ink); }
 .act__ic {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 7px;
-  background-color: var(--hover);
 }
 /* The Discard hold styled like the other rail actions, red only on the hold. */
 .fd__left :deep(.hold--lane-discard) {

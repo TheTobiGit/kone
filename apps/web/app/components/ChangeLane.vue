@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useResizeObserver } from "@vueuse/core";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
+import { Magnet } from "~/components/ui/magnet";
 
 // One lane of the changes panel — a titled section ("Staged" / "Changed") over
 // a responsive grid of ChangeCards, capped at two rows with the overflow packed
@@ -97,31 +98,50 @@ const bundleCards: BundleCard[] = [
         <span class="lane__name">{{ title }}</span>
         <span class="lane__count">{{ total }}</span>
       </span>
+      <!-- Actions lean gently toward the cursor as it nears, then ease back. -->
       <div class="lane__actions">
-        <button type="button" class="lane__sweep" @click="emit('sweep')">
-          <!-- Unstage all → minus · Stage all → plus (staging adds, so a plus). -->
-          <svg v-if="tone === 'staged'" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-            <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-            <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          {{ tone === "staged" ? "Unstage all" : "Stage all" }}
-        </button>
-        <!-- Discard belongs to the unstaged lane — it never touches staged work. -->
-        <HoldToConfirm
-          v-if="tone === 'changed'"
-          variant="lane-discard"
-          title="Hold to discard all changed (unstaged) files"
-          aria-label="Hold to discard all changed files"
-          @confirm="emit('discardLane')"
+        <Magnet
+          class="w-fit"
+          inner-class="w-fit"
+          :padding="12"
+          :magnet-strength="9"
+          active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+          inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
         >
-          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-            <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          Discard
-        </HoldToConfirm>
+          <button type="button" class="lane__sweep" @click="emit('sweep')">
+            <!-- Unstage all → minus · Stage all → plus (staging adds, so a plus). -->
+            <svg v-if="tone === 'staged'" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            {{ tone === "staged" ? "Unstage all" : "Stage all" }}
+          </button>
+        </Magnet>
+        <!-- Discard belongs to the unstaged lane — it never touches staged work. -->
+        <Magnet
+          v-if="tone === 'changed'"
+          class="w-fit"
+          inner-class="w-fit"
+          :padding="12"
+          :magnet-strength="9"
+          active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+          inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+        >
+          <HoldToConfirm
+            variant="lane-discard"
+            title="Hold to discard all changed (unstaged) files"
+            aria-label="Hold to discard all changed files"
+            @confirm="emit('discardLane')"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <path d="M3 7v6h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            Discard
+          </HoldToConfirm>
+        </Magnet>
       </div>
     </header>
 
