@@ -69,7 +69,28 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 const anyPending = computed(() => !!props.pending);
 
+// A folder is lifted (papers fanned, side-actions shown) when the pointer is
+// over it OR the keyboard focus sits anywhere in its group. Tracking focus at
+// the group level — not on the folder button alone — keeps the pin/reveal/remove
+// actions revealed while you tab through them, instead of hiding the instant
+// focus leaves the button and stranding you on an invisible control.
 const hoveredPath = ref<string | null>(null);
+const focusedPath = ref<string | null>(null);
+
+function isActive(path: string) {
+  return (
+    !anyPending.value &&
+    (hoveredPath.value === path || focusedPath.value === path)
+  );
+}
+
+// Clear the group's focus only when focus lands outside it (relatedTarget is the
+// element gaining focus); moving between the folder button and its side actions
+// keeps the group active.
+function onFolderFocusOut(e: FocusEvent) {
+  const wrap = e.currentTarget as HTMLElement;
+  if (!wrap.contains(e.relatedTarget as Node | null)) focusedPath.value = null;
+}
 </script>
 
 <template>
@@ -112,7 +133,7 @@ const hoveredPath = ref<string | null>(null);
 
           <button
             type="button"
-            class="flex h-9 cursor-pointer items-center gap-1.5 rounded-[11px] px-3 text-sm font-medium text-ink-soft transition-colors hover:bg-hover"
+            class="flex h-9 cursor-pointer items-center gap-1.5 rounded-[11px] px-3 text-sm font-medium text-ink-soft transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
             @click="cycleSort"
           >
             <span>{{ sortLabel }}</span>
@@ -147,17 +168,17 @@ const hoveredPath = ref<string | null>(null);
           }"
           @mouseenter="hoveredPath = project.path"
           @mouseleave="hoveredPath = null"
+          @focusin="focusedPath = project.path"
+          @focusout="onFolderFocusOut"
         >
           
           <motion.button
             type="button"
             :disabled="anyPending"
-            class="block cursor-pointer rounded-[22px] text-left focus-visible:outline-none disabled:cursor-default"
-            :animate="{ y: !anyPending && hoveredPath === project.path ? -6 : 0 }"
+            class="folder-btn block cursor-pointer rounded-[22px] text-left focus-visible:outline-none disabled:cursor-default"
+            :animate="{ y: isActive(project.path) ? -6 : 0 }"
             :while-tap="anyPending ? {} : { y: -3, scale: 0.985 }"
             :transition="{ type: 'spring', stiffness: 420, damping: 17, mass: 0.85 }"
-            @focus="hoveredPath = project.path"
-            @blur="hoveredPath = null"
             @click="emit('open', project)"
           >
             <ProjectFolder
@@ -167,7 +188,7 @@ const hoveredPath = ref<string | null>(null);
               :added="summaries[project.path]?.added ?? 0"
               :removed="summaries[project.path]?.removed ?? 0"
               :files="summaries[project.path]?.files ?? []"
-              :hovered="!anyPending && hoveredPath === project.path"
+              :hovered="isActive(project.path)"
             />
           </motion.button>
 
@@ -176,14 +197,13 @@ const hoveredPath = ref<string | null>(null);
             class="absolute right-0 top-0 bottom-0 flex flex-col justify-center gap-1.5"
             :initial="{ opacity: 0, x: 4 }"
             :animate="{
-              opacity: !anyPending && hoveredPath === project.path ? 1 : 0,
-              x: !anyPending && hoveredPath === project.path ? 0 : 4,
-              y: !anyPending && hoveredPath === project.path ? -6 : 0,
+              opacity: isActive(project.path) ? 1 : 0,
+              x: isActive(project.path) ? 0 : 4,
+              y: isActive(project.path) ? -6 : 0,
             }"
             :transition="{ type: 'spring', stiffness: 500, damping: 30 }"
             :style="{
-              pointerEvents:
-                !anyPending && hoveredPath === project.path ? 'auto' : 'none',
+              pointerEvents: isActive(project.path) ? 'auto' : 'none',
             }"
           >
             
@@ -191,7 +211,7 @@ const hoveredPath = ref<string | null>(null);
               type="button"
               :aria-label="project.pinned ? 'Unpin project' : 'Pin to top'"
               :title="project.pinned ? 'Unpin' : 'Pin to top'"
-              class="flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground shadow-sm transition-colors hover:text-ink"
+              class="side-act flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground shadow-sm transition-colors hover:text-ink"
               :class="project.pinned ? 'text-ink' : 'text-muted'"
               @click.stop="emit('pin', project.path)"
             >
@@ -208,7 +228,7 @@ const hoveredPath = ref<string | null>(null);
               type="button"
               aria-label="Reveal in Finder"
               title="Reveal in Finder"
-              class="flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
+              class="side-act flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
               @click.stop="emit('reveal', project.path)"
             >
               <HugeiconsIcon
@@ -224,7 +244,7 @@ const hoveredPath = ref<string | null>(null);
               type="button"
               aria-label="Remove from recents"
               title="Remove"
-              class="flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
+              class="side-act flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
               @click.stop="emit('forget', project.path)"
             >
               <HugeiconsIcon
@@ -264,3 +284,21 @@ const hoveredPath = ref<string | null>(null);
     </section>
   </main>
 </template>
+
+<style scoped>
+/* Keyboard-only focus (nothing on mouse — clicking a folder opens it, so no ring
+   is left behind). The folder isn't a card, so rather than box the whole button
+   (which would frame the empty space above the peeking papers), the ring hugs the
+   folder's pocket — the rounded body that reads as the object. */
+.folder-btn:focus-visible :deep(.folder__pocket) {
+  outline: 2px solid color-mix(in srgb, var(--ink) 26%, transparent);
+  outline-offset: 3px;
+}
+
+/* The round pin / reveal / remove actions ring on their own when tabbed to
+   (they stay revealed via the group's focus-within tracking). */
+.side-act:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  outline-offset: 2px;
+}
+</style>

@@ -13,7 +13,7 @@ const { muted, toggleMuted } = useSound();
     :aria-label="muted ? 'Unmute sounds' : 'Mute sounds'"
     :aria-pressed="muted"
     :title="muted ? 'Unmute sounds' : 'Mute sounds'"
-    class="flex size-9 cursor-pointer items-center justify-center rounded-[11px] text-muted transition-colors hover:bg-hover hover:text-ink"
+    class="flex size-9 cursor-pointer items-center justify-center rounded-[11px] text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:text-ink focus-visible:outline-none"
     @click="toggleMuted"
   >
     <HugeiconsIcon
