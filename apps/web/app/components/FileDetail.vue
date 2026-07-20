@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { usePreferredDark } from "@vueuse/core";
 import { Magnet } from "~/components/ui/magnet";
 import type { ChangeItem } from "~/components/ChangesPanel.vue";
@@ -168,14 +168,76 @@ function toggleStage() {
   if (props.file.staged) emit("unstage", props.file.path);
   else emit("stage", props.file.path);
 }
+
+// Take focus when the overlay opens so the triggering card isn't left focused
+// underneath — otherwise an Esc-to-close (a keystroke) would trip the card into
+// showing its keyboard focus ring the moment this closes. On close focus falls
+// to the body (the card unmounts from under it), so nothing rings unbidden.
+const backEl = ref<HTMLButtonElement | null>(null);
+const frameEl = ref<HTMLElement | null>(null);
+const mainEl = ref<HTMLElement | null>(null);
+onMounted(() => backEl.value?.focus());
+
+// While the preview is up the arrow / page / home / end keys drive the file body
+// exclusively — you never have to tab into it (it's out of the tab order), and
+// the keys scroll it wherever focus happens to sit (back, an action, a switch).
+const SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]);
+function onScrollKeys(e: KeyboardEvent) {
+  const el = mainEl.value;
+  if (!el || !SCROLL_KEYS.has(e.key)) return;
+  e.preventDefault();
+  // Hand focus to the body so the keystroke belongs to it — otherwise the arrow
+  // would trip the focus ring on whatever control is focused (e.g. the back
+  // button on open). The body has no ring, so nothing lights up while scrolling.
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+  const page = el.clientHeight * 0.9;
+  const step: Record<string, [number, ScrollBehavior]> = {
+    ArrowDown: [48, "auto"],
+    ArrowUp: [-48, "auto"],
+    PageDown: [page, "smooth"],
+    PageUp: [-page, "smooth"],
+  };
+  if (e.key === "Home") el.scrollTo({ top: 0, behavior: "smooth" });
+  else if (e.key === "End") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  else el.scrollBy({ top: step[e.key]![0], behavior: step[e.key]![1] });
+}
+
+function onKeydown(e: KeyboardEvent) {
+  onScrollKeys(e);
+  if (!e.defaultPrevented) onTrapKeydown(e);
+}
+
+// Keep Tab inside the overlay — it's modal, so focus shouldn't leak to the
+// (inert) page behind. Cycles at both ends; nothing else about Tab changes.
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function onTrapKeydown(e: KeyboardEvent) {
+  if (e.key !== "Tab") return;
+  const root = frameEl.value;
+  if (!root) return;
+  const items = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (el) => el.offsetParent !== null || el === document.activeElement,
+  );
+  if (!items.length) return;
+  const first = items[0]!;
+  const last = items[items.length - 1]!;
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey && (active === first || !root.contains(active))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (active === last || !root.contains(active))) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 </script>
 
 <template>
-  <div class="fd" :style="originStyle">
-    <div class="fd__frame">
+  <div class="fd" :style="originStyle" role="dialog" aria-modal="true" @keydown="onKeydown">
+    <div ref="frameEl" class="fd__frame">
       <!-- Top: back + breadcrumb. Actions live down the left rail. -->
       <header class="fd__bar">
-        <button type="button" class="fd__back" aria-label="Back to changes" @click="emit('close')">
+        <button ref="backEl" type="button" class="fd__back" aria-label="Back to changes" @click="emit('close')">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
@@ -239,8 +301,9 @@ function toggleStage() {
         </div>
 
         <!-- Body: the file's own content, softened at the top/bottom edges. Only
-             this scrolls — the page behind is locked. -->
-        <div class="fd__main">
+             this scrolls — the page behind is locked. Kept out of the tab order
+             (tabindex -1); the arrow/page/home/end keys scroll it instead. -->
+        <div ref="mainEl" class="fd__main" tabindex="-1">
           <div v-if="loading" class="fd__skeleton">
             <span v-for="n in 12" :key="n" class="fd__skeleton-row" :style="{ '--i': n, width: `${34 + ((n * 41) % 58)}%` }" />
           </div>
@@ -394,6 +457,12 @@ function toggleStage() {
   color: var(--ink);
   transform: translateX(-2px);
 }
+/* Keyboard focus rings — soft ink, only when focus is keyboard-driven. */
+.fd__back:focus-visible {
+  outline: none;
+  color: var(--ink);
+  box-shadow: #1e1b1814 0 2px 8px, 0 0 0 2px color-mix(in srgb, var(--ink) 34%, transparent);
+}
 .fd__crumb {
   display: inline-flex;
   align-items: center;
@@ -443,6 +512,11 @@ function toggleStage() {
   transition: background-color 0.16s ease, color 0.16s ease;
 }
 .act:hover { color: var(--ink); }
+.act:focus-visible {
+  outline: none;
+  color: var(--ink);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
+}
 .act__ic {
   display: inline-flex;
   align-items: center;
@@ -472,6 +546,9 @@ function toggleStage() {
   scrollbar-width: none;
 }
 .fd__main::-webkit-scrollbar { width: 0; height: 0; }
+/* Out of the tab order (tabindex -1); the arrow/page keys focus it to scroll.
+   It's a scroll region, not an action — never a ring or the default outline. */
+.fd__main:focus { outline: none; }
 
 .code {
   font-family: var(--font-mono);
@@ -584,6 +661,11 @@ function toggleStage() {
   text-underline-offset: 2px;
   text-decoration-thickness: from-font;
   text-decoration-skip-ink: auto;
+  border-radius: 3px;
+}
+.md :deep(a):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 34%, transparent);
 }
 
 .md :deep(ul),
@@ -739,6 +821,13 @@ function toggleStage() {
   background-color: var(--ink);
   box-shadow: none;
 }
+.ctl__sw:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px #1e1b1810, 0 0 0 2px color-mix(in srgb, var(--ink) 34%, transparent);
+}
+.ctl__sw--on:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 34%, transparent);
+}
 .ctl__dot {
   display: block;
   width: 14px;
@@ -752,10 +841,16 @@ function toggleStage() {
 
 @media (prefers-color-scheme: dark) {
   .fd__back { background-color: #17171a; box-shadow: #00000038 0 2px 8px; }
+  .fd__back:focus-visible {
+    box-shadow: #00000038 0 2px 8px, 0 0 0 2px color-mix(in srgb, var(--ink) 40%, transparent);
+  }
   /* Off-track ring for definition; the thumb stays --ground so it reads on the
      light --ink on-track. */
   .ctl__sw { box-shadow: inset 0 0 0 1px #ffffff12; }
   .ctl__sw--on { box-shadow: none; }
+  .ctl__sw:focus-visible {
+    box-shadow: inset 0 0 0 1px #ffffff12, 0 0 0 2px color-mix(in srgb, var(--ink) 40%, transparent);
+  }
   .ctl__dot { box-shadow: #00000045 0 1px 2px; }
 }
 @media (prefers-reduced-motion: reduce) {

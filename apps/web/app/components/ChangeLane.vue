@@ -262,7 +262,10 @@ const bundleCards: BundleCard[] = [
   opacity: 0;
   transition: opacity 0.18s ease;
 }
-.lane:hover .lane__actions {
+.lane:hover .lane__actions,
+/* Keyboard: reveal the actions when focus enters the lane, so they're never
+   tabbed into while invisible. */
+.lane:focus-within .lane__actions {
   opacity: 1;
 }
 @media (hover: none) {
@@ -299,6 +302,11 @@ const bundleCards: BundleCard[] = [
 .lane__sweep:hover {
   color: var(--ink);
 }
+.lane__sweep:focus-visible {
+  outline: none;
+  color: var(--ink);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
+}
 
 /* ── card grid ──────────────────────────────────────────────────────────── */
 .grid {
@@ -315,7 +323,12 @@ const bundleCards: BundleCard[] = [
   align-items: center;
   justify-content: center;
   height: 178px;
+  border-radius: 12px;
   cursor: pointer;
+}
+.bundle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 28%, transparent);
 }
 .bundle__inner {
   position: relative;
@@ -401,6 +414,11 @@ const bundleCards: BundleCard[] = [
 .fold:hover {
   background-color: var(--hover);
   color: var(--ink-soft);
+}
+.fold:focus-visible {
+  outline: none;
+  color: var(--ink-soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 28%, transparent);
 }
 .fold__chevron {
   display: flex;

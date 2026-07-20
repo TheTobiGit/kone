@@ -146,6 +146,19 @@ const marks = computed<Mark[]>(() => {
   box-shadow: #1e1b1814 0 8px 20px;
   transform: translateY(-6px);
 }
+/* Ring only when the keyboard is driving focus. The detail overlay takes focus
+   when it opens, so the card isn't left focused underneath to get tripped into
+   showing a ring by an Esc-to-close (a keystroke on a still-focused card). */
+/* Outline, not a box-shadow ring: the card transitions box-shadow for its hover
+   lift, which would make a shadow ring fade in a beat behind the Tab. An outline
+   (offset for a small gap, following the radius) snaps in with the focus. */
+.card:focus {
+  outline: none;
+}
+.card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  outline-offset: 2px;
+}
 .card--torn {
   background-color: color-mix(in srgb, var(--card-bg) 45%, transparent);
   border: 1.5px dashed var(--diff-del);

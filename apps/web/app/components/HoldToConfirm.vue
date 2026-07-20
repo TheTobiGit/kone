@@ -126,6 +126,11 @@ onBeforeUnmount(() => cancelAnimationFrame(raf));
 .hold.is-holding {
   transform: scale(0.97); /* a small press-in while the hold is taking */
 }
+/* Keyboard focus ring — the danger hue, since Space/Enter here starts the hold. */
+.hold:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--hold-danger) 42%, transparent);
+}
 
 /* The danger wash tracks `--p`; during the hold it follows rAF frame-by-frame
    (no transition), and on release it eases back to empty. */

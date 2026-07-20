@@ -226,11 +226,19 @@ function discardUnstaged() {
   transition: background-color 0.16s ease, opacity 0.16s ease;
 }
 .ch__btn:hover { background-color: var(--hover); }
+.ch__btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
 .ch__btn--primary {
   background-color: var(--ink);
   color: var(--ground);
 }
 .ch__btn--primary:hover { background-color: var(--ink); opacity: 0.88; }
+/* The primary Commit sits on --ink, so ring it with a --ground gap for contrast. */
+.ch__btn--primary:focus-visible {
+  box-shadow: 0 0 0 2px var(--ground), 0 0 0 4px color-mix(in srgb, var(--ink) 45%, transparent);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ch,

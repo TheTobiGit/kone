@@ -137,7 +137,9 @@ function onDiscardFile(path: string) {
     class="relative flex min-h-screen items-start justify-center bg-ground px-16 pt-24 pb-56"
   >
 
-    <div class="flex w-full max-w-4xl flex-col gap-11">
+    <!-- While the detail overlay is open the page behind is inert — no tab
+         stops, no screen-reader reach; the overlay owns focus. -->
+    <div class="flex w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
       <HomeGreeting
         :project-name="project.name"
         :loading="!g.loaded.value"
@@ -170,6 +172,7 @@ function onDiscardFile(path: string) {
          spring, the physical grace note after the greeting + changes land. -->
     <motion.div
       class="absolute bottom-10 left-10"
+      :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
       :transition="{ type: 'spring', stiffness: 210, damping: 22, mass: 0.9, delay: 0.55 }"
