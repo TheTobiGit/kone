@@ -943,21 +943,17 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
   outline-offset: 2px;
 }
 
-/* ── setup command ── a terminal line on a subtly recessed surface (a fill, not
-   a border), with a $ sigil that warms on focus and a hint beneath. */
+/* ── setup command ── a terminal line on a flat filled surface, styled like the
+   home search input: no border, no focus ring — just the fill. A $ sigil warms
+   on focus and a hint sits beneath. */
 .cp-cmd-field {
   display: flex;
   align-items: center;
   gap: 0.55rem;
   padding: 0.6rem 0.75rem;
   border-radius: 11px;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  box-shadow: inset 0 0 0 1px transparent;
-  transition: box-shadow 0.18s ease, background 0.18s ease;
-}
-.cp-cmd-field:focus-within {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--hover, color-mix(in srgb, var(--ink) 4%, transparent));
+  transition: background 0.18s ease;
 }
 .cp-cmd-sigil {
   flex: none;
