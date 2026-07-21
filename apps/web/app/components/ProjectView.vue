@@ -188,6 +188,16 @@ function onDiscardFile(path: string) {
       />
     </motion.div>
 
+    <!-- The agent composer floats dead-centre at the bottom — dormant until you
+         wake it, then it stretches into the input. It stays docked to the
+         viewport while the page behind scrolls. -->
+    <div
+      class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
+      :inert="Boolean(activeFile)"
+    >
+      <AgentComposer />
+    </div>
+
     <!-- A file's detail: it grows out of the clicked card (origin --ox/--oy) to
          fill the screen over everything else, then shrinks back on close. -->
     <Transition name="pop">
