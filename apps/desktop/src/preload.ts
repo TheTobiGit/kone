@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+import type {
+  ApprovalDecision,
+  ModelDescriptor,
+  ProviderKind,
+  ProviderStatus,
+  RuntimeEvent,
+  SendTurnInput,
+  Session,
+  SessionStartInput,
+  TurnStartResult,
+} from "./agent/index.js";
 import type { DirListing } from "./fs.js";
 import type {
   CloneProgress,
@@ -79,6 +90,39 @@ const api = {
       ipcRenderer.invoke("system:username"),
     reveal: (target: string): Promise<void> =>
       ipcRenderer.invoke("system:reveal", target),
+  },
+  agent: {
+    // Probe which agent CLIs are installed + logged in on this machine.
+    discover: (): Promise<ProviderStatus[]> => ipcRenderer.invoke("agent:discover"),
+    models: (provider: ProviderKind): Promise<ModelDescriptor[]> =>
+      ipcRenderer.invoke("agent:models", provider),
+    // Session lifecycle — these resolve when the turn is *accepted*; the actual
+    // output arrives on the agent:event stream (subscribe via onEvent).
+    startSession: (input: SessionStartInput): Promise<Session> =>
+      ipcRenderer.invoke("agent:start-session", input),
+    sendTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
+      ipcRenderer.invoke("agent:send-turn", input),
+    interrupt: (threadId: string): Promise<void> =>
+      ipcRenderer.invoke("agent:interrupt", threadId),
+    stopSession: (threadId: string): Promise<void> =>
+      ipcRenderer.invoke("agent:stop-session", threadId),
+    respond: (
+      threadId: string,
+      requestId: string,
+      decision: ApprovalDecision,
+    ): Promise<void> => ipcRenderer.invoke("agent:respond", threadId, requestId, decision),
+    listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
+    // The ONE runtime event stream. Subscribing registers this renderer in the
+    // main process; the returned fn unsubscribes and detaches the listener.
+    onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {
+      const listener = (_event: unknown, ev: RuntimeEvent) => cb(ev);
+      ipcRenderer.on("agent:event", listener);
+      void ipcRenderer.invoke("agent:subscribe");
+      return () => {
+        ipcRenderer.removeListener("agent:event", listener);
+        void ipcRenderer.invoke("agent:unsubscribe");
+      };
+    },
   },
 };
 

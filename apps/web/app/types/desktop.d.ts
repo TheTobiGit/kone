@@ -186,6 +186,145 @@ export type KoneSystemApi = {
   reveal: (path: string) => Promise<void>;
 };
 
+// ── Agent layer ────────────────────────────────────────────────────────────
+// Mirrors apps/desktop/src/agent/types.ts. "Bring your own subscription": kone
+// drives the agent CLIs the user already installed + logged into; it never
+// stores provider credentials.
+
+export type ProviderKind = "antigravity";
+export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
+export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
+
+export type ProviderStatus = {
+  provider: ProviderKind;
+  label: string;
+  available: boolean;
+  authStatus: AuthStatus;
+  readiness: ProviderReadiness;
+  version?: string;
+  authLabel?: string;
+  message?: string;
+};
+
+export type ModelDescriptor = { id: string; label: string };
+
+export type InteractionMode = "default" | "accept-edits" | "plan" | "full-access";
+
+export type SessionStartInput = {
+  threadId: string;
+  provider: ProviderKind;
+  cwd: string;
+  model?: string;
+  mode?: InteractionMode;
+};
+
+export type RuntimeSessionState =
+  | "starting"
+  | "ready"
+  | "running"
+  | "waiting"
+  | "stopped"
+  | "error";
+
+export type Session = {
+  threadId: string;
+  provider: ProviderKind;
+  cwd: string;
+  status: RuntimeSessionState;
+  conversationId?: string;
+  activeTurnId?: string;
+  model?: string;
+  mode: InteractionMode;
+};
+
+export type SendTurnInput = {
+  threadId: string;
+  input: string;
+  model?: string;
+  mode?: InteractionMode;
+};
+
+export type TurnStartResult = { threadId: string; turnId: string };
+
+export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
+
+export type RuntimeTurnState = "completed" | "failed" | "interrupted";
+
+export type RuntimeItemKind =
+  | "assistant_text"
+  | "reasoning_text"
+  | "plan_text"
+  | "tool_call"
+  | "command_output";
+
+export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
+
+export type RuntimeItem = {
+  itemId: string;
+  kind: RuntimeItemKind;
+  status: RuntimeItemStatus;
+  text: string;
+  name?: string;
+};
+
+export type TokenUsage = { input?: number; output?: number; total?: number };
+
+export type ProviderRefs = { conversationId?: string; providerTurnId?: string };
+
+export type RuntimeEventSource =
+  | "antigravity.print.stdout"
+  | "antigravity.print.stderr"
+  | "antigravity.print.lifecycle";
+
+type AgentBaseEvent = {
+  threadId: string;
+  provider: ProviderKind;
+  at: number;
+  source: RuntimeEventSource;
+  refs?: ProviderRefs;
+};
+
+export type RuntimeEvent =
+  | (AgentBaseEvent & { type: "session.started" })
+  | (AgentBaseEvent & {
+      type: "session.state.changed";
+      state: RuntimeSessionState;
+      message?: string;
+    })
+  | (AgentBaseEvent & { type: "session.exited"; code: number | null })
+  | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
+  | (AgentBaseEvent & { type: "turn.started"; turnId: string })
+  | (AgentBaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
+  | (AgentBaseEvent & {
+      type: "turn.aborted";
+      turnId: string;
+      reason: RuntimeTurnState;
+      message?: string;
+    })
+  | (AgentBaseEvent & { type: "item.started"; turnId: string; item: RuntimeItem })
+  | (AgentBaseEvent & { type: "item.updated"; turnId: string; item: RuntimeItem })
+  | (AgentBaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem });
+
+export type KoneAgentApi = {
+  /** Probe which agent CLIs are installed + logged in on this machine. */
+  discover: () => Promise<ProviderStatus[]>;
+  models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;
+  /** Start a thread; resolves once the session is ready. */
+  startSession: (input: SessionStartInput) => Promise<Session>;
+  /** Send a turn; resolves when accepted — output flows through onEvent. */
+  sendTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
+  interrupt: (threadId: string) => Promise<void>;
+  stopSession: (threadId: string) => Promise<void>;
+  respond: (
+    threadId: string,
+    requestId: string,
+    decision: ApprovalDecision,
+  ) => Promise<void>;
+  listSessions: () => Promise<Session[]>;
+  /** Subscribe to the runtime event stream; returns an unsubscribe fn. */
+  onEvent: (cb: (event: RuntimeEvent) => void) => () => void;
+};
+
 export type KoneDesktopApi = {
   isDesktop: true;
   platform: string;
@@ -193,6 +332,7 @@ export type KoneDesktopApi = {
   fs: KoneFsApi;
   git: KoneGitApi;
   system: KoneSystemApi;
+  agent: KoneAgentApi;
 };
 
 declare global {

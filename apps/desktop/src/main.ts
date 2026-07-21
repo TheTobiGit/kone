@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { app, BrowserWindow, net, protocol, shell } from "electron";
 
+import { registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
@@ -60,6 +61,10 @@ function registerIpc() {
 
   // Host-machine facts (the signed-in account's username, …).
   registerSystemIpc();
+
+  // Agent layer: discover the user's installed agent CLIs and drive them
+  // (Antigravity first). Streams runtime events on the "agent:event" channel.
+  registerAgentIpc();
 }
 
 async function createWindow() {
@@ -119,8 +124,11 @@ app.on("window-all-closed", () => {
 });
 
 // Don't leave a `git clone` running (and a half-written folder behind) if the
-// app quits mid-clone.
-app.on("before-quit", () => cancelClone());
+// app quits mid-clone, and don't orphan any agent CLI subprocesses.
+app.on("before-quit", () => {
+  cancelClone();
+  void shutdownAgents();
+});
 
 console.log(
   isDev
