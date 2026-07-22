@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion } from "motion-v";
 import ProviderLogo from "~/components/ProviderLogo.vue";
-import { type BrandKey, type EffortTier, type ModelOption } from "~/utils/modelCatalog";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { AiBrain01Icon, FlashIcon, StarIcon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { EFFORT_META, type BrandKey, type EffortTier, type ModelOption } from "~/utils/modelCatalog";
 
 // The model picker — a persistent left rail of providers next to a masked model
 // list, wearing the same shell as our folder/location picker: a scrim + an
@@ -22,7 +24,14 @@ const props = defineProps<{
   modelId?: string;
 }>();
 
-const emit = defineEmits<{ select: [id: string]; cancel: [] }>();
+const emit = defineEmits<{
+  /** Commit a model + close the picker. */
+  select: [id: string];
+  /** Live-apply a tweak (reasoning effort) without closing — rides straight to
+   *  the composer input so the setting takes effect and sticks as you adjust. */
+  apply: [id: string];
+  cancel: [];
+}>();
 
 // ── data model ────────────────────────────────────────────────────────────────
 // Efforts still carry a tier (used to pick a sane default effort per model) but
@@ -214,41 +223,36 @@ const DEMO: MProvider[] = [
 // order seedPending walks so the current model resolves to its real home.
 const realProviders = computed<MProvider[]>(() => [antigravity.value, ...DEMO]);
 
-// ── Favorites (demo) ──────────────────────────────────────────────────────────
-// A curated, cross-provider shelf of starred models — the shape of "your
-// favourites, wherever they live". Each row keeps a handle on the provider it
-// came from, so a favourited Antigravity model applies for real while demo ones
-// stay preview-only. Demo data, but it stays in sync with the catalogs above.
+// ── Favorites ───────────────────────────────────────────────────────────────
+// A live shelf of the models the user has starred. Only real (ready) models can
+// be favourited — so in today's world that's Antigravity's catalog — which keeps
+// the bring-your-own-subscription rule intact: everything on this shelf actually
+// applies. Each row keeps a handle on the provider it came from (its `origin`) so
+// selecting it works exactly as it would in that provider's own list.
 const favorites = computed<MProvider>(() => {
   const picks: MModel[] = [];
-  const star = (p: MProvider, key: string) => {
-    const m = p.models.find((x) => x.key === key);
-    if (m) picks.push({ ...m, origin: { label: p.label, ready: p.ready } });
-  };
-  // Top of the shelf: the first real Antigravity model (whatever the catalog
-  // leads with) — a genuine, applicable favourite.
-  const ag = antigravity.value.models[0];
-  if (ag) picks.push({ ...ag, origin: { label: antigravity.value.label, ready: true } });
-  // A spread across the demo providers, so the cross-provider idea reads.
-  const demo = (id: string) => DEMO.find((d) => d.id === id);
-  const cc = demo("claude-code");
-  if (cc) star(cc, "demo-cc-opus");
-  const gk = demo("grok");
-  if (gk) star(gk, "demo-grok-45");
-  const cx = demo("codex");
-  if (cx) star(cx, "demo-codex-sol");
+  for (const p of realProviders.value) {
+    for (const m of p.models) {
+      if (favoritedKeys.value.has(m.key)) {
+        picks.push({ ...m, origin: { label: p.label, ready: p.ready } });
+      }
+    }
+  }
   return {
     id: "favorites",
     label: "Favorites",
-    sub: "Starred across providers",
+    sub: "Starred models",
     brand: "antigravity",
     ready: false,
     models: picks,
   };
 });
 
-// Favorites leads the rail; the real providers follow.
-const providers = computed<MProvider[]>(() => [favorites.value, ...realProviders.value]);
+// Favorites leads the rail — but only once something's been starred. With an
+// empty shelf the tab would go nowhere, so it stays hidden until it has content.
+const providers = computed<MProvider[]>(() =>
+  favorites.value.models.length ? [favorites.value, ...realProviders.value] : realProviders.value,
+);
 
 // ── navigation ──────────────────────────────────────────────────────────────
 const provider = ref<MProvider | null>(null);
@@ -312,20 +316,26 @@ function focus(m: MModel, e: MEffort) {
 function modelReady(m: MModel): boolean {
   return m.origin ? m.origin.ready : (provider.value?.ready ?? false);
 }
-// A model click resolves straight to its default effort — no reasoning screen.
-// A ready model applies and closes immediately; a demo one only focuses.
+// A model click applies it. Effort precedence: a tweak in its open settings bar
+// wins; else the effort already applied to this model (so re-picking the active
+// model keeps its setting); else the family default. Only ready (real
+// Antigravity) models can be selected; demo models do nothing.
 function selectModel(m: MModel) {
-  const e = m.efforts[m.defaultEffortIndex] ?? m.efforts[0];
+  if (!modelReady(m)) return;
+  const e =
+    (pending.value?.model.key === m.key ? pending.value.effort : undefined) ??
+    m.efforts.find((x) => x.id === props.modelId) ??
+    m.efforts[m.defaultEffortIndex] ??
+    m.efforts[0];
   if (!provider.value || !e) return;
-  if (modelReady(m)) {
-    close(() => emit("select", e.id));
-  } else {
-    focus(m, e);
-  }
+  close(() => emit("select", e.id));
 }
 
 function isCurrent(id: string): boolean {
   return id === props.modelId;
+}
+function isCurrentModel(m: MModel): boolean {
+  return m.efforts.some((e) => isCurrent(e.id));
 }
 function isPending(id: string): boolean {
   return pending.value?.effort.id === id;
@@ -333,6 +343,170 @@ function isPending(id: string): boolean {
 function defaultEffortId(m: MModel): string {
   return (m.efforts[m.defaultEffortIndex] ?? m.efforts[0])?.id ?? "";
 }
+
+// The two spec-y things a row still shows: whether the model exposes a fast-mode
+// switch and its context window. (Reasoning is handled separately — see
+// reasoningMeta — and vision/other capability icons were dropped.) For the REAL
+// Antigravity families these come from a verbatim table; demo providers fall
+// through to the name heuristic.
+//
+// `isFast` means the model exposes a fast-mode switch — NOT just that it's a
+// snappy model. Antigravity has no fast mode (`/fast` was removed from `agy`) and
+// no context-window switch, so every entry is `isFast: false` with a single
+// context; those controls simply don't render for it. Other providers (which do
+// have those knobs) set them and the controls light up.
+type ModelCaps = { isFast: boolean; contextWindow: string };
+const ANTIGRAVITY_CAPS: Record<string, ModelCaps> = {
+  "gemini-3.6-flash": { isFast: false, contextWindow: "1M" },
+  "gemini-3.5-flash": { isFast: false, contextWindow: "1M" },
+  "gemini-3.1-pro": { isFast: false, contextWindow: "1M" },
+  "claude-sonnet-4-6": { isFast: false, contextWindow: "200k" },
+  "claude-opus-4-6": { isFast: false, contextWindow: "200k" },
+  "gpt-oss-120b": { isFast: false, contextWindow: "128k" },
+};
+
+function getModelBadges(m: MModel): ModelCaps {
+  const exact = ANTIGRAVITY_CAPS[m.key];
+  if (exact) return exact;
+
+  const key = m.key.toLowerCase();
+  const label = m.label.toLowerCase();
+
+  const isFast =
+    key.includes("flash") ||
+    key.includes("haiku") ||
+    key.includes("fast") ||
+    key.includes("mini") ||
+    key.includes("luna") ||
+    label.includes("flash") ||
+    label.includes("haiku") ||
+    label.includes("fast") ||
+    label.includes("mini") ||
+    label.includes("luna");
+
+  let contextWindow = "128k";
+  if (key.includes("gemini") || label.includes("gemini")) {
+    contextWindow = label.includes("pro") || key.includes("pro") ? "2M" : "1M";
+  } else if (key.includes("claude") || label.includes("claude") || key.includes("cc-") || key.includes("fd-")) {
+    contextWindow = "200k";
+  } else if (label.includes("sol") || label.includes("opus 4.8") || label.includes("fable") || label.includes("grok 4.5")) {
+    contextWindow = "256k";
+  } else if (key.includes("kimi") || key.includes("glm") || key.includes("minimax")) {
+    contextWindow = "200k";
+  }
+
+  return { isFast, contextWindow };
+}
+
+// The reasoning effort currently set for a model: the pending effort if this row
+// is the one being tuned, else its resting default. Drives the row's brain-stack
+// indicator — which matches the settings dial. Returns null for a `base`-tier
+// model (no reasoning to set), so its row shows no reasoning indicator.
+function reasoningMeta(m: MModel) {
+  const e = pending.value?.model.key === m.key
+    ? pending.value.effort
+    : (m.efforts.find((x) => x.id === props.modelId) ?? m.efforts[m.defaultEffortIndex] ?? m.efforts[0]);
+  if (!e || e.tier === "base") return null;
+  return EFFORT_META[e.tier];
+}
+
+// Fast-mode + context-window state for the settings bar. Only providers whose
+// models advertise these (via caps / heuristic) surface the controls — see
+// getModelBadges.isFast and availableContextOptions.
+const isFastModeOn = ref(false);
+const activeContext = ref("128k");
+// The set of favourited model keys. Only ready (real) models are ever added, so
+// the Favorites shelf stays fully applicable. Seeded on open with the current /
+// first Antigravity model so the shelf isn't empty on first sight.
+const favoritedKeys = ref<Set<string>>(new Set());
+const activeSettingsModelKey = ref<string | null>(null);
+
+function isFavorited(key: string): boolean {
+  return favoritedKeys.value.has(key);
+}
+
+// Star / unstar — real models only (a demo model can't apply, so it can't be a
+// favourite). Reassign the Set so the Favorites computed recomputes.
+function toggleFavorite(m: MModel) {
+  if (!modelReady(m)) return;
+  const next = new Set(favoritedKeys.value);
+  if (next.has(m.key)) next.delete(m.key);
+  else next.add(m.key);
+  favoritedKeys.value = next;
+}
+
+function toggleSettings(m: MModel) {
+  if (!modelReady(m)) return;
+  if (activeSettingsModelKey.value === m.key) {
+    activeSettingsModelKey.value = null;
+  } else {
+    activeSettingsModelKey.value = m.key;
+    // Seed the dial from the effort CURRENTLY applied to this model (when it's
+    // the active one), else its resting default — so the bar reflects reality.
+    const current = m.efforts.find((e) => e.id === props.modelId);
+    const e = current ?? m.efforts[m.defaultEffortIndex] ?? m.efforts[0];
+    if (e && provider.value) {
+      focus(m, e);
+    }
+  }
+}
+
+// Reasoning effort — Antigravity's real knob (`agy --effort`, baked into the id).
+// Cycle through a family's real efforts. For a ready model this applies live:
+// the composer's active model + input update immediately and the choice sticks,
+// without closing the picker.
+function cycleEffort() {
+  if (!pending.value) return;
+  const efforts = pending.value.model.efforts;
+  if (efforts.length <= 1) return;
+  const currentIndex = efforts.findIndex((e) => e.id === pending.value!.effort.id);
+  const nextIndex = (currentIndex + 1) % efforts.length;
+  const next = efforts[nextIndex]!;
+  pending.value.effort = next;
+  if (modelReady(pending.value.model)) emit("apply", next.id);
+}
+
+function brainStack(count?: number): number[] {
+  return Array.from({ length: Math.max(1, count ?? 1) }, (_, i) => i);
+}
+
+// The context windows a model lets you switch between. A single value means no
+// switch (Antigravity's real families); providers that offer a real choice list
+// more than one and the switcher appears.
+function availableContextOptions(m: MModel): string[] {
+  const exact = ANTIGRAVITY_CAPS[m.key];
+  if (exact) return [exact.contextWindow];
+
+  const key = m.key.toLowerCase();
+  if (key.includes("gemini")) return ["1M", "2M"];
+  if (key.includes("claude")) return ["128k", "200k"];
+  if (key.includes("gpt") || key.includes("grok") || key.includes("sol")) return ["128k", "256k"];
+  return ["128k", "200k"];
+}
+
+function cycleContext() {
+  if (!pending.value) return;
+  const options = availableContextOptions(pending.value.model);
+  if (options.length <= 1) return;
+  const currentIndex = options.indexOf(activeContext.value);
+  const nextIndex = (currentIndex + 1) % options.length;
+  activeContext.value = options[nextIndex]!;
+}
+
+// Is there anything to configure? Drives whether the gear button shows, so it
+// never opens an empty bar. A model with one effort, no fast mode and one context
+// has no settings.
+function hasSettings(m: MModel): boolean {
+  return m.efforts.length > 1 || getModelBadges(m).isFast || availableContextOptions(m).length > 1;
+}
+
+watch(pending, (val) => {
+  if (val) {
+    const badges = getModelBadges(val.model);
+    isFastModeOn.value = badges.isFast;
+    activeContext.value = badges.contextWindow;
+  }
+}, { immediate: true });
 
 // ── confirm / cancel with the card's exit ─────────────────────────────────────
 const shown = ref(false);
@@ -355,18 +529,33 @@ function syncHeight() {
   const el = contentEl.value;
   if (el) cardHeight.value = el.offsetHeight;
 }
-// When the provider changes: seed the vendor lane (harness) and re-measure.
+// When the provider changes: seed the vendor lane (harness), close any open
+// settings bar (it belongs to a row that's no longer shown), and re-measure.
 watch(provider, (p) => {
   vendorFilter.value = p?.harness ? (p.models[0]?.vendor ?? "") : "";
+  activeSettingsModelKey.value = null;
   void nextTick(syncHeight);
 });
 // Switching vendor lane swaps the list — re-measure for the height spring.
 watch(vendorFilter, () => void nextTick(syncHeight));
+// Unstarring the last favourite hides its tab — step off it if it's open.
+watch(
+  () => favorites.value.models.length,
+  (n) => {
+    if (n === 0 && provider.value?.id === "favorites") {
+      provider.value = realProviders.value[0] ?? null;
+    }
+  },
+);
 
 let opener: HTMLElement | null = null;
 onMounted(() => {
   opener = document.activeElement as HTMLElement | null;
   seedPending();
+  // Seed the shelf with the current model (or the first real one) so Favorites
+  // reads as a live place from the start rather than an empty tab.
+  const seed = pending.value?.provider.ready ? pending.value.model.key : antigravity.value.models[0]?.key;
+  if (seed) favoritedKeys.value = new Set([seed]);
   window.addEventListener("resize", syncHeight);
   void nextTick(() => {
     syncHeight();
@@ -409,56 +598,176 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
         class="mp shrink-0"
         :style="{ '--provider-count': providers.length }"
       >
-        <aside class="mp-rail" aria-label="Model providers">
-          <button
-            v-for="p in providers"
-            :key="p.id"
-            type="button"
-            class="mp-provider"
-            :class="{ 'mp-provider--on': p.id === provider?.id }"
-            :aria-label="p.label"
-            :aria-pressed="p.id === provider?.id"
-            :title="p.label"
-            @click="openProvider(p)"
-          >
-            <svg v-if="p.id === 'favorites'" class="mp-star" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M12 3.6l2.42 4.9 5.41.79-3.92 3.82.93 5.39L12 15.98l-4.84 2.52.93-5.39L4.17 9.29l5.41-.79z"
-                fill="currentColor"
-                fill-opacity="0.16"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <ProviderLogo v-else :brand="p.brand" :size="20" />
-          </button>
-        </aside>
+        <div class="mp-body-grid">
+          <aside class="mp-rail" aria-label="Model providers">
+            <button
+              v-for="p in providers"
+              :key="p.id"
+              type="button"
+              class="mp-provider"
+              :class="{ 'mp-provider--on': p.id === provider?.id }"
+              :aria-label="p.label"
+              :aria-pressed="p.id === provider?.id"
+              :title="p.label"
+              @click="openProvider(p)"
+            >
+              <svg v-if="p.id === 'favorites'" class="mp-star" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 3.6l2.42 4.9 5.41.79-3.92 3.82.93 5.39L12 15.98l-4.84 2.52.93-5.39L4.17 9.29l5.41-.79z"
+                  fill="currentColor"
+                  fill-opacity="0.16"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <ProviderLogo v-else :brand="p.brand" :size="20" />
+            </button>
+          </aside>
 
-        <!-- The model list is the dark content well inside the lighter shell. -->
-        <div class="mp-content relative">
-          <Transition name="mp-swap" mode="out-in">
-            <div v-if="provider" :key="provider.id" class="mp-scroll">
-              <button
-                v-for="m in provider.models"
-                :key="m.key"
-                type="button"
-                class="mp-row group"
-                :class="{ 'mp-row--on': isPending(defaultEffortId(m)) }"
-                @click="selectModel(m)"
+          <!-- The model list is the dark content well inside the lighter shell. -->
+          <div class="mp-content relative">
+            <Transition name="mp-swap" mode="out-in">
+              <div v-if="provider" :key="provider.id" class="mp-scroll">
+                <p v-if="!provider.models.length" class="mp-empty">
+                  {{ provider.id === 'favorites'
+                    ? 'No favorites yet — star a model to keep it here.'
+                    : 'No models available.' }}
+                </p>
+                <button
+                  v-for="m in provider.models"
+                  :key="m.key"
+                  type="button"
+                  class="mp-row group"
+                  :class="{ 'mp-row--on': isCurrentModel(m) || isPending(defaultEffortId(m)) }"
+                  @click="selectModel(m)"
+                >
+                  <span class="mp-icon"><ProviderLogo :brand="m.brand" :size="17" /></span>
+                  <span class="mp-body">
+                    <span class="mp-label">{{ m.label }}</span>
+                    <span class="mp-meta">
+                      <span
+                        v-if="reasoningMeta(m)"
+                        class="mp-meta-brains"
+                        :class="{ 'mp-stack--glow': reasoningMeta(m)!.glow }"
+                        :title="`Reasoning effort: ${reasoningMeta(m)!.label}`"
+                      >
+                        <HugeiconsIcon
+                          v-for="i in brainStack(reasoningMeta(m)!.brains)"
+                          :key="i"
+                          :icon="AiBrain01Icon"
+                          :size="13"
+                          :stroke-width="1.8"
+                          :style="{ color: reasoningMeta(m)!.hue }"
+                        />
+                      </span>
+                      <span
+                        v-if="getModelBadges(m).isFast"
+                        class="mp-meta-icon mp-meta-icon--fast"
+                        title="Fast execution mode"
+                      >
+                        <HugeiconsIcon :icon="FlashIcon" :size="14" :stroke-width="1.8" />
+                      </span>
+                      <span class="mp-meta-context" title="Context window">
+                        {{ getModelBadges(m).contextWindow }}
+                      </span>
+                    </span>
+                  </span>
+                  <!-- Actions: Favorite & Settings — real models only. The current
+                       model keeps them shown; others reveal them on hover. -->
+                  <span
+                    v-if="modelReady(m)"
+                    class="mp-actions"
+                    :class="{ 'mp-actions--shown': isCurrentModel(m) }"
+                    @click.stop
+                  >
+                    <button
+                      type="button"
+                      class="mp-action-btn"
+                      :class="{ 'mp-action-btn--active': isFavorited(m.key) }"
+                      :title="isFavorited(m.key) ? 'Unstar model' : 'Favorite model'"
+                      @click.stop="toggleFavorite(m)"
+                    >
+                      <HugeiconsIcon :icon="StarIcon" :size="13" :stroke-width="1.8" />
+                    </button>
+                    <button
+                      v-if="hasSettings(m)"
+                      type="button"
+                      class="mp-action-btn"
+                      :class="{ 'mp-action-btn--active': activeSettingsModelKey === m.key }"
+                      title="Model settings"
+                      @click.stop="toggleSettings(m)"
+                    >
+                      <HugeiconsIcon :icon="Settings02Icon" :size="13" :stroke-width="1.8" />
+                    </button>
+                  </span>
+                </button>
+              </div>
+            </Transition>
+          </div>
+        </div>
+
+        <!-- Shell Bottom: Full-bleed control strip, revealed when clicking Settings on a model -->
+        <div v-if="activeSettingsModelKey && pending" class="mp-shell-bottom">
+          <!-- Reasoning Effort Chooser: Clickable brain-stack + effort level text -->
+          <div v-if="pending.model.efforts.length > 1" class="mp-footer-group">
+            <button
+              type="button"
+              class="mp-effort-toggle"
+              :aria-label="`Reasoning effort: ${EFFORT_META[pending.effort.tier]?.label}. Click to cycle.`"
+              @click.stop="cycleEffort"
+            >
+              <span class="mp-stack" :class="{ 'mp-stack--glow': EFFORT_META[pending.effort.tier]?.glow }">
+                <HugeiconsIcon
+                  v-for="i in brainStack(EFFORT_META[pending.effort.tier]?.brains)"
+                  :key="i"
+                  :icon="AiBrain01Icon"
+                  :size="14"
+                  :stroke-width="1.8"
+                  :style="{ color: EFFORT_META[pending.effort.tier]?.hue ?? '#a78bfa' }"
+                />
+              </span>
+              <span
+                class="mp-effort-level-text"
+                :style="{ color: EFFORT_META[pending.effort.tier]?.hue ?? 'var(--ink)' }"
               >
-                <span class="mp-icon"><ProviderLogo :brand="m.brand" :size="17" /></span>
-                <span class="mp-body">
-                  <span class="mp-label">{{ m.label }}</span>
-                  <span class="mp-sub">{{ m.origin ? m.origin.label : m.vendor }}</span>
-                </span>
-                <span v-if="m.efforts.some((e) => isCurrent(e.id))" class="mp-now">current</span>
-                <svg v-else-if="isPending(defaultEffortId(m))" class="mp-check" viewBox="0 0 14 14" aria-hidden="true">
-                  <path d="M3 7.5L6 10.5L11 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </button>
-            </div>
-          </Transition>
+                {{ EFFORT_META[pending.effort.tier]?.label }}
+              </span>
+            </button>
+          </div>
+
+          <!-- Fast / Normal toggle — only for models that expose a fast mode. -->
+          <div v-if="getModelBadges(pending.model).isFast" class="mp-footer-group">
+            <button
+              type="button"
+              class="mp-fast-btn"
+              :class="{ 'mp-fast-btn--on': isFastModeOn }"
+              :aria-label="`Toggle speed mode: currently ${isFastModeOn ? 'Fast' : 'Normal'}`"
+              @click.stop="isFastModeOn = !isFastModeOn"
+            >
+              <HugeiconsIcon
+                :icon="FlashIcon"
+                :size="14"
+                :stroke-width="1.8"
+                :style="{ color: isFastModeOn ? '#facc15' : 'var(--muted)' }"
+              />
+              <span :style="{ color: isFastModeOn ? '#facc15' : 'var(--muted)' }">
+                {{ isFastModeOn ? "Fast" : "Normal" }}
+              </span>
+            </button>
+          </div>
+
+          <!-- Context-window switch — only when the model offers a real choice. -->
+          <div v-if="availableContextOptions(pending.model).length > 1" class="mp-footer-group">
+            <button
+              type="button"
+              class="mp-ctx-btn"
+              :aria-label="`Context window size: ${activeContext}. Click to toggle.`"
+              @click.stop="cycleContext"
+            >
+              <span>{{ activeContext }}</span>
+            </button>
+          </div>
         </div>
       </div>
     </motion.div>
@@ -480,6 +789,11 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   justify-content: flex-end;
 }
 .mp {
+  display: flex;
+  flex-direction: column;
+}
+
+.mp-body-grid {
   --provider-stack-height: calc(
     var(--provider-count) * 44px + (var(--provider-count) - 1) * 10px
   );
@@ -534,6 +848,8 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
 .mp-content {
   grid-column: 2;
   grid-row: 1;
+  display: flex;
+  flex-direction: column;
   height: var(--provider-stack-height);
   min-height: 0;
   overflow: hidden;
@@ -567,10 +883,72 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   cursor: pointer;
   text-align: left;
   color: var(--ink);
-  transition: background-color 0.14s ease;
+  opacity: 0.72;
+  transition:
+    opacity 0.18s ease,
+    background 0.16s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.mp-row:hover { background: var(--hover); }
-.mp-row--on { background: var(--hover); }
+.mp-row:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.mp-row:active {
+  transform: scale(0.985);
+}
+.mp-row--on {
+  opacity: 1;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.mp-row--on:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.mp-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.mp-meta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.65;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.mp-row:hover .mp-meta-icon {
+  opacity: 0.95;
+}
+
+.mp-meta-icon--fast {
+  color: #facc15;
+}
+
+/* The reasoning indicator: a compact brain-stack whose count / glow / hue match
+   the effort currently set for the model (mirrors the settings dial). */
+.mp-meta-brains {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.8;
+  transition: opacity 0.14s ease;
+}
+.mp-meta-brains > :deep(svg) { margin-left: -4px; }
+.mp-meta-brains > :deep(svg:first-child) { margin-left: 0; }
+.mp-meta-brains.mp-stack--glow > :deep(svg) { filter: drop-shadow(0 0 4px currentColor); }
+.mp-row:hover .mp-meta-brains { opacity: 1; }
+
+.mp-meta-context {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  opacity: 0.65;
+}
+.mp-row:hover .mp-meta-context {
+  opacity: 0.95;
+}
 
 .mp-icon {
   display: inline-flex;
@@ -580,17 +958,149 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   flex-shrink: 0;
 }
 
-.mp-body { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.mp-body { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
 .mp-label { font-size: 15px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mp-sub { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.mp-now {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--accent);
+.mp-empty {
+  margin: auto;
+  padding: 22px 14px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  opacity: 0.7;
 }
-.mp-check { width: 15px; height: 15px; flex-shrink: 0; color: var(--accent); }
+
+.mp-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.mp-row:hover .mp-actions,
+.mp-actions--shown,
+.mp-action-btn--active {
+  opacity: 1;
+}
+
+.mp-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.65;
+  cursor: pointer;
+  transition: color 0.14s ease, opacity 0.14s ease, transform 0.14s ease;
+}
+.mp-action-btn:hover {
+  color: var(--ink);
+  opacity: 1;
+}
+.mp-action-btn:active {
+  transform: scale(0.92);
+}
+.mp-action-btn--active {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* ── Shell Bottom Controls ────────────────────────────────────────────────── */
+.mp-shell-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 4px 14px 8px 14px;
+  margin-top: 2px;
+}
+
+.mp-footer-group {
+  display: flex;
+  align-items: center;
+}
+
+.mp-stack { display: inline-flex; align-items: center; }
+.mp-stack > :deep(svg) { margin-left: -5px; }
+.mp-stack > :deep(svg:first-child) { margin-left: 0; }
+.mp-stack--glow > :deep(svg) { filter: drop-shadow(0 0 4px currentColor); }
+
+.mp-effort-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 15px;
+  font-weight: 500;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.88;
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mp-effort-toggle:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.mp-effort-toggle:active {
+  transform: translateY(0) scale(0.95);
+}
+
+.mp-effort-level-text {
+  font-weight: 500;
+  transition: color 0.18s ease;
+}
+
+.mp-fast-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 15px;
+  font-weight: 500;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.88;
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mp-fast-btn:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.mp-fast-btn:active {
+  transform: translateY(0) scale(0.95);
+}
+
+.mp-ctx-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.88;
+  transition: opacity 0.18s ease, color 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mp-ctx-btn:hover {
+  color: var(--ink);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.mp-ctx-btn:active {
+  transform: translateY(0) scale(0.95);
+}
 
 /* ── Provider swap ────────────────────────────────────────────────────────── */
 .mp-swap-enter-active,
