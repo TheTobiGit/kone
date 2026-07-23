@@ -4,6 +4,7 @@ import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/ProviderLogo.vue";
+import ParticleOrb from "~/components/ParticleOrb.vue";
 import type { InteractionMode } from "~/types/desktop";
 import {
   effortForId,
@@ -161,13 +162,7 @@ const SPRING_MIN = 64;
 let lastCard = false;
 
 type Chip = { id: number; name: string; kind: "pdf" | "ts" | "folder"; count?: number };
-const chipPool: Omit<Chip, "id">[] = [
-  { name: "brief.pdf", kind: "pdf" },
-  { name: "useDroidBridge.ts", kind: "ts" },
-  { name: "droid/", kind: "folder", count: 12 },
-];
 const chips = ref<Chip[]>([]);
-let chipSeq = 0;
 
 const hasChips = computed(() => chips.value.length > 0);
 const hasText = computed(() => text.value.trim().length > 0);
@@ -335,12 +330,6 @@ async function onGlobalKey(e: KeyboardEvent) {
 }
 useEventListener(window, "keydown", onGlobalKey);
 
-function addChip() {
-  chips.value.push({ id: chipSeq++, ...chipPool[chips.value.length % chipPool.length]! });
-  cue("toggle");
-  field.value?.focus();
-  syncSoon();
-}
 function removeChip(id: number) {
   chips.value = chips.value.filter((c) => c.id !== id);
   cue("toggle");
@@ -386,22 +375,9 @@ watch(text, () => nextTick(sync));
          wants to be. Kept in the same type as the textarea. -->
     <div ref="mirror" class="mirror" aria-hidden="true">{{ (text || "Ask anything…") + " " }}</div>
 
-    <!-- Controls sit beside the input, not in it. +/image hug its left; they
-         fade in as it opens and ride outward on the surface's growing edge. -->
+    <!-- Controls sit beside the input, not in it. They fade in as it opens and
+         ride outward on the surface's growing edge. -->
     <div class="side side--lead" :class="{ 'is-shown': open }" :inert="!open">
-      <button type="button" class="ibtn" aria-label="Add context" @click.stop="addChip">
-        <svg viewBox="0 0 18 18" aria-hidden="true">
-          <path d="M9 4.5V13.5M4.5 9H13.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-        </svg>
-      </button>
-      <button type="button" class="ibtn" aria-label="Attach image">
-        <svg viewBox="0 0 18 18" aria-hidden="true">
-          <rect x="3" y="4" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" />
-          <circle cx="6.6" cy="7.4" r="1.1" fill="currentColor" />
-          <path d="M4 12.5L7.5 9.5L10 11.5L12 10L14 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
-
       <!-- Permission mode — no dropdown. Clicking cycles up the autonomy ladder
            (Plan → Ask → Edits → Full) and wraps; the hued icon + label carry it. -->
       <button
@@ -447,6 +423,12 @@ watch(text, () => nextTick(sync));
       :aria-label="open ? undefined : 'Wake the agent'"
       @click="onSurfaceClick"
     >
+      <!-- Resting particle bead: the iris marble broken into a turning cloud of
+           light. Fades out as the surface morphs into the field. -->
+      <div class="orbfx" aria-hidden="true">
+        <ParticleOrb :size="55" :energy="busy ? 1 : 0" :active="!open" />
+      </div>
+
       <!-- Context chips ride the gradient at the top of the card -->
       <Transition name="fade">
         <div v-if="hasChips" class="chips">
@@ -524,9 +506,6 @@ watch(text, () => nextTick(sync));
       <button type="button" class="model" @click.stop="openModels">
         <ProviderLogo :brand="modelBrand" :size="15" />
         <span class="model__name">{{ modelName }}</span>
-        <svg class="model__chev" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="M3 4.8L6 7.8L9 4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
       </button>
 
       <!-- Effort — no dropdown. Clicking the brain steps to the next real effort
@@ -641,7 +620,6 @@ watch(text, () => nextTick(sync));
   width: 55px;
   padding: 0;
   border-radius: 50%;
-  background-image: var(--iris);
   cursor: pointer;
   pointer-events: auto;
   /* Collapse: it shrinks back to the orb first, then the corners round off into
@@ -652,10 +630,18 @@ watch(text, () => nextTick(sync));
     padding 0.22s ease 0.16s,
     border-radius 0.26s ease 0.18s;
 }
+/* At rest the surface carries no gradient — the particle orb IS the mark, and it
+   bleeds past the box (no circular clip). The iris returns only as the pill rim
+   once it opens. */
+.surface:not(.is-open) {
+  overflow: visible;
+  background-image: none;
+}
 .surface.is-open {
   width: 360px; /* fallback; the pill's real width is driven inline to fit text */
   padding: 2.5px;
   border-radius: 32px;
+  background-image: var(--iris);
   cursor: default;
   /* Open + everyday sizing: width tracks the text and height follows. This is
      the typing curve — short and snappy with no overshoot, so per-keystroke
@@ -706,11 +692,34 @@ watch(text, () => nextTick(sync));
 }
 .surface.is-card .panel { border-radius: 23.5px; }
 
-/* ── Dormant face ─────────────────────────────────────────────────────────── */
-.face {
+/* ── Resting particle bead ────────────────────────────────────────────────── */
+/* The turning cloud sits centred over the surface at rest. It fades and scales
+   away the instant the surface starts to open, so the morph into the field
+   isn't cluttered by a lingering orb. */
+.orbfx {
   position: absolute;
   inset: 0;
   display: grid;
+  place-items: center;
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 0.18s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 1;
+}
+.surface.is-open .orbfx {
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 0.14s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+
+/* ── Dormant face ─────────────────────────────────────────────────────────── */
+/* Retired: the particle globe is the resting mark now, so the sleeping eyes/z
+   would only poke out past the orb. Kept in the DOM but hidden. */
+.face {
+  position: absolute;
+  inset: 0;
+  display: none;
   place-items: center;
   opacity: 1;
   transition: opacity 0.18s ease;
@@ -896,7 +905,6 @@ watch(text, () => nextTick(sync));
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.model__chev { width: 12px; height: 12px; flex-shrink: 0; opacity: 0.7; }
 
 /* ── Permission mode (autonomy ladder) ────────────────────────────────────── */
 /* Borderless like the model/effort controls: the hued icon carries the rung, a
