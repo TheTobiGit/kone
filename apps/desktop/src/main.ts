@@ -7,6 +7,7 @@ import { registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
+import { getInitialWindowState, manageWindowState } from "./windowState.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.KONE_DEV === "1";
@@ -68,9 +69,13 @@ function registerIpc() {
 }
 
 async function createWindow() {
+  const windowState = getInitialWindowState();
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -83,6 +88,12 @@ async function createWindow() {
       sandbox: true,
     },
   });
+
+  // Remember size / position between launches.
+  if (windowState.isMaximized) {
+    mainWindow.maximize();
+  }
+  manageWindowState(mainWindow);
 
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
