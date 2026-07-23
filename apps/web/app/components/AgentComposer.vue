@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { AiBrain01Icon } from "@hugeicons/core-free-icons";
+import ProviderLogo from "~/components/ProviderLogo.vue";
+import type { InteractionMode } from "~/types/desktop";
+import {
+  effortForId,
+  familyForId,
+  hasEffortChoice,
+  type ModelOption,
+} from "~/utils/modelCatalog";
 
 // "Agent input — Iris states" board. One object walks four states:
 //   dormant  · a calm iris orb at rest, breathing
@@ -8,9 +18,111 @@ import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 //   typing   · the pill grows to fit the text (auto-height, never a scrollbar)
 //   composing· attach context and it widens into a card; chips ride the top
 // The whole thing is one surface that morphs — it expands and collapses, it
-// never swaps one element out for another. Look-and-feel only; no agent yet.
+// never swaps one element out for another.
+//
+// It's now wired: it sends the draft to the agent session (via @send), and the
+// seed turns into a stop button while a turn is in flight. Both model controls
+// sit on the RIGHT of the field: the model picker (each family with its own
+// provider logomark) and — only when the chosen model exposes more than one —
+// The effort has no dropdown: clicking the brain CYCLES to the next real effort
+// for that model and wraps. The effort is encoded into the model id we emit, so
+// the parent stays oblivious to whether a provider bakes it into ids or a flag.
+
+const props = defineProps<{
+  /** A turn is running — the send seed becomes a stop, Enter is inert. */
+  busy?: boolean;
+  /** The full model picker is open (hosted by the parent, outside our dock).
+   *  While it is, a click in it — or on its scrim — must NOT collapse us. */
+  picking?: boolean;
+  /** The provider's models, grouped into families with real efforts. */
+  models?: ModelOption[];
+  /** The selected raw model id (carries the effort), or undefined for default. */
+  modelId?: string;
+  /** The agent's permission mode — how much it may do without asking. */
+  mode?: InteractionMode;
+}>();
+
+const emit = defineEmits<{
+  send: [text: string];
+  interrupt: [];
+  "update:modelId": [id: string];
+  "update:mode": [mode: InteractionMode];
+  /** Ask the host to open the full providers→models→effort picker. */
+  "open-models": [];
+}>();
 
 const { cue } = useSound();
+
+// ── model + effort pickers (both on the right) ─────────────────────────────────
+// The selected model id decomposes into its family and the effort within it, so
+// the two pickers stay in sync from a single source of truth (the id).
+const catalog = computed<ModelOption[]>(() => props.models ?? []);
+const currentFamily = computed(() => familyForId(catalog.value, props.modelId));
+const currentEffort = computed(() => effortForId(currentFamily.value, props.modelId));
+const showEffort = computed(() => hasEffortChoice(currentFamily.value));
+
+const modelName = computed(
+  () => currentFamily.value?.label ?? props.modelId ?? "Default model",
+);
+const modelBrand = computed(() => currentFamily.value?.brand ?? "generic");
+
+// The model name opens the full picker (hosted by the parent); the composer
+// only displays the current family + brand.
+function openModels() {
+  emit("open-models");
+  cue("toggle");
+}
+// Cycle the effort: each click steps to the next real effort for this model and
+// wraps at the end. No dropdown — the brain-stack + label carry the state.
+const bumping = ref(false);
+function cycleEffort() {
+  const fam = currentFamily.value;
+  if (!fam || fam.efforts.length < 2) return;
+  const idx = fam.efforts.findIndex((e) => e.id === props.modelId);
+  const next = fam.efforts[(idx + 1) % fam.efforts.length];
+  if (!next) return;
+  emit("update:modelId", next.id);
+  cue("toggle");
+  // A quick tactile bump so the step registers.
+  bumping.value = false;
+  void nextTick(() => {
+    bumping.value = true;
+    window.setTimeout(() => (bumping.value = false), 240);
+  });
+}
+// Brain-stack: N glyphs whose count + fill climb with the tier.
+function brainStack(n: number): number[] {
+  return Array.from({ length: Math.max(1, n) }, (_, i) => i);
+}
+
+// ── permission mode (how much the agent may do without asking) ─────────────────
+// A climbing ladder of autonomy, cycled on click like the effort control — no
+// dropdown. Each rung maps to a real agy flag downstream (plan / accept-edits /
+// --dangerously-skip-permissions); the icon carries a soft hue cue, calm at the
+// bottom and warm at the top. The label always names the current rung so the
+// cycle stays discoverable.
+type ModeMeta = { id: InteractionMode; label: string; title: string; hue: string };
+const MODES: ModeMeta[] = [
+  { id: "plan", label: "Plan", title: "Plan — reads and proposes, makes no changes", hue: "#6E8BEF" },
+  { id: "default", label: "Ask", title: "Ask — prompts before each action", hue: "#9A9A97" },
+  { id: "accept-edits", label: "Edits", title: "Auto-edit — applies edits, asks before commands", hue: "#E0A83A" },
+  { id: "full-access", label: "Full", title: "Full access — runs everything without prompting", hue: "#D08466" },
+];
+const currentMode = computed(
+  () => MODES.find((m) => m.id === (props.mode ?? "default")) ?? MODES[1]!,
+);
+const modeBump = ref(false);
+function cycleMode() {
+  const idx = MODES.findIndex((m) => m.id === currentMode.value.id);
+  const next = MODES[(idx + 1) % MODES.length]!;
+  emit("update:mode", next.id);
+  cue("toggle");
+  modeBump.value = false;
+  void nextTick(() => {
+    modeBump.value = true;
+    window.setTimeout(() => (modeBump.value = false), 240);
+  });
+}
 
 const open = ref(false);
 const text = ref("");
@@ -28,8 +140,9 @@ const REST = 55;
 const MIN_W = 360;
 const MAX_W = 720;
 // Each side control slot (matches .side width in CSS) — reserved so the pill
-// never grows wide enough to push them off the window.
-const SIDE_W = 140;
+// never grows wide enough to push them off the window. The trailing side now
+// carries two controls (model + effort), so the reserve is wider.
+const SIDE_W = 200;
 // Horizontal budget around the text: left pad + gap + send seed + right pad + rim.
 const EXTRAS = 78;
 const surfaceH = ref(REST);
@@ -39,6 +152,13 @@ const isTall = ref(false);
 // True only during the wake expand, so the corner-lead stagger applies then but
 // not on every keystroke width change.
 const opening = ref(false);
+// A big/structural size change (paste, drop, wrap toggle, pill↔card) springs;
+// the small per-keystroke nudges of ordinary typing stay snappy so the field
+// tracks the cursor instead of wobbling behind it.
+const springy = ref(false);
+// Size changes below this (px) read as incremental typing → snappy, not spring.
+const SPRING_MIN = 64;
+let lastCard = false;
 
 type Chip = { id: number; name: string; kind: "pdf" | "ts" | "folder"; count?: number };
 const chipPool: Omit<Chip, "id">[] = [
@@ -90,8 +210,24 @@ function sync() {
   const ta = field.value;
   // Width first: the pill widens to fit the text, up to the cap.
   const cap = maxW();
+  // Freeze the width transition around the measurement below. scrollHeight
+  // depends on how the text wraps, so reading it while the width is still easing
+  // (e.g. right after a paste jumps the pill open) over-wraps the text and locks
+  // in a too-tall box — the empty gap under the text. We snap to the target
+  // width with no transition, measure, then put the width back where it was
+  // painting and re-enable the transition — all in one synchronous pass, so the
+  // eased motion is the only thing the browser ever paints.
+  const savedTransition = el ? el.style.transition : "";
+  const paintedWidth = el ? getComputedStyle(el).width : "";
+  if (el) el.style.transition = "none";
+
+  const prevW = surfaceW.value;
+  const prevH = surfaceH.value;
+
+  // A pill drives its own width inline to fit the text; the card lets CSS own it.
+  const pill = open.value && !card.value;
   let desired = cap;
-  if (open.value && !card.value) {
+  if (pill) {
     const m = mirror.value;
     desired = (m ? m.offsetWidth : 0) + EXTRAS;
     surfaceW.value = Math.max(MIN_W, Math.min(cap, Math.round(desired)));
@@ -107,7 +243,31 @@ function sync() {
     ta.style.height = "0px";
     ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`;
   }
+  // The surface's auto height derives from the textarea's now-correct explicit
+  // height, so this reads the settled height even while the width is frozen.
   surfaceH.value = open.value ? measure() : REST;
+
+  // Spring only for the big moves: a large width/height jump (paste, drop) or a
+  // structural change (pill↔card, the wake expand). A keystroke — including the
+  // one that first wraps a line — is a small change and stays snappy, so the
+  // field keeps up with the cursor instead of wobbling behind it.
+  const jumped =
+    Math.abs(surfaceW.value - prevW) > SPRING_MIN ||
+    Math.abs(surfaceH.value - prevH) > SPRING_MIN;
+  const structural = card.value !== lastCard || opening.value;
+  springy.value = jumped || structural;
+  lastCard = card.value;
+
+  if (el) {
+    // Keep the imperative class in step with the ref so the synchronous width
+    // reapply below eases on the right curve (Vue would only patch it next tick).
+    el.classList.toggle("is-springy", springy.value);
+    const target = pill ? `${surfaceW.value}px` : "";
+    el.style.width = paintedWidth; // back to where it was painting…
+    void el.offsetWidth; // …flush that before transitions come back…
+    el.style.transition = savedTransition;
+    el.style.width = target; // …then ease to the target from there.
+  }
 }
 // A width change (open, pill↔card) is mid-flight when it fires, so measuring
 // now would read the wrong wrap. Re-measure once the morph has settled.
@@ -136,8 +296,15 @@ function close() {
   open.value = false;
   surfaceH.value = REST;
 }
-onClickOutside(dock, close);
-onKeyStroke("Escape", () => close());
+onClickOutside(dock, () => {
+  // The picker lives outside our dock, so its clicks read as "outside" — but it
+  // is our own surface, one step removed. Don't collapse while it's up.
+  if (props.picking) return;
+  close();
+});
+onKeyStroke("Escape", () => {
+  close();
+});
 
 function onSurfaceClick() {
   if (!open.value) {
@@ -181,18 +348,35 @@ function removeChip(id: number) {
 }
 
 function send() {
+  // While a turn runs the seed is a stop button.
+  if (props.busy) {
+    emit("interrupt");
+    cue("press");
+    return;
+  }
   if (!armed.value) {
     void wake();
     return;
   }
+  const draft = text.value.trim();
+  if (!draft) return;
+  emit("send", draft);
   cue("success");
   text.value = "";
   chips.value = [];
   syncSoon();
 }
 
+// Enter submits — but never while a turn is running (that would read as a stop).
+function onEnter() {
+  if (props.busy) return;
+  send();
+}
+
 onMounted(sync);
-// Typing changes height at a settled width — measure immediately.
+// Typing (and pasting) changes height at a settled width — sync() freezes the
+// width transition while it measures, so a single immediate measure is right
+// even when the paste jumps the pill's width open.
 watch(text, () => nextTick(sync));
 </script>
 
@@ -217,13 +401,47 @@ watch(text, () => nextTick(sync));
           <path d="M4 12.5L7.5 9.5L10 11.5L12 10L14 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
+
+      <!-- Permission mode — no dropdown. Clicking cycles up the autonomy ladder
+           (Plan → Ask → Edits → Full) and wraps; the hued icon + label carry it. -->
+      <button
+        type="button"
+        class="mode"
+        :class="{ 'mode--bump': modeBump }"
+        :style="{ '--mode-hue': currentMode.hue }"
+        :aria-label="currentMode.title"
+        :title="currentMode.title"
+        @click.stop="cycleMode"
+      >
+        <svg class="mode__icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <!-- Plan · an eye (reads only) -->
+          <template v-if="currentMode.id === 'plan'">
+            <path d="M2.5 9S5 4.6 9 4.6 15.5 9 15.5 9 13 13.4 9 13.4 2.5 9 2.5 9Z" />
+            <circle cx="9" cy="9" r="1.7" />
+          </template>
+          <!-- Ask · a chat bubble (prompts first) -->
+          <template v-else-if="currentMode.id === 'default'">
+            <path d="M3.5 5.2A1.2 1.2 0 0 1 4.7 4h8.6a1.2 1.2 0 0 1 1.2 1.2v5a1.2 1.2 0 0 1-1.2 1.2H8l-3 2.4v-2.4H4.7a1.2 1.2 0 0 1-1.2-1.2Z" />
+          </template>
+          <!-- Auto-edit · a pencil (applies edits) -->
+          <template v-else-if="currentMode.id === 'accept-edits'">
+            <path d="M11.4 3.7 14.3 6.6 6.9 14H4v-2.9Z" />
+            <path d="M10.4 4.7 13.3 7.6" />
+          </template>
+          <!-- Full access · a bolt (no limits) -->
+          <template v-else>
+            <path d="M10 2.5 4.6 9.9H8l-.9 5.6L13.4 8H9.5Z" />
+          </template>
+        </svg>
+        <span class="mode__label">{{ currentMode.label }}</span>
+      </button>
     </div>
 
     <!-- One surface, morphing. Closed it's the iris orb; open it's the field. -->
     <div
       ref="surface"
       class="surface"
-      :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening }"
+      :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-springy': springy }"
       :style="{ height: surfaceH + 'px', width: widthStyle }"
       role="button"
       :aria-label="open ? undefined : 'Wake the agent'"
@@ -275,18 +493,22 @@ watch(text, () => nextTick(sync));
             rows="1"
             placeholder="Ask anything…"
             :tabindex="open ? 0 : -1"
-            @keydown.enter.exact.prevent="send"
+            @keydown.enter.exact.prevent="onEnter"
           />
           <button
             type="button"
             class="seed"
-            :class="{ 'seed--armed': armed }"
-            aria-label="Send"
+            :class="{ 'seed--armed': armed || busy, 'seed--busy': busy }"
+            :aria-label="busy ? 'Stop' : 'Send'"
             :tabindex="open ? 0 : -1"
             @mousedown.prevent
             @click.stop="send"
           >
-            <svg class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
+            <!-- Stop square while a turn runs; the send arrow otherwise. -->
+            <svg v-if="busy" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
+              <rect x="5" y="5" width="8" height="8" rx="2" fill="#FFFFFF" />
+            </svg>
+            <svg v-else class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
               <path d="M9 14V4.2M9 4.2L4.3 8.9M9 4.2L13.7 8.9" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </button>
@@ -294,16 +516,39 @@ watch(text, () => nextTick(sync));
       </div>
     </div>
 
-    <!-- The model picker sits beside the input on the right. -->
+    <!-- Both pickers sit beside the input on the right: the model (with its own
+         provider logomark) and — when the model exposes more than one — the
+         effort. -->
     <div class="side side--trail" :class="{ 'is-shown': open }" :inert="!open">
-      <button type="button" class="model">
-        <svg class="model__logo" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m4.714 15.956 4.717-2.647.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.696-.0729-2.337-.0971-2.265-.1214-.5707-.1215-.5343-.7042.055-.3522.48-.3218.686.061 1.518.103 2.277.158 1.651.097 2.447.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.836l-2.55-1.688-1.336-.9714-.7225-.4918-.3643-.4614-.1578-1.8.656-.7225.88.607.225.607.893.686 1.906 1.475 2.489 1.834.364.303.146-.1032.018-.0728-.164-.2733-1.354-2.447-1.445-2.489-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.134 6.7 0l.9957.134.419.364.619 1.415 1.002 2.228 1.554 3.3.455.899.243.832.091.255h.1579v-.1457l.1275-1.706.237-2.95.231-2.696.079-.7589.376-.9107.747-.4918.583.279.48.686-.668.443-.2853 1.852-.5586 2.902-.3643 1.943h.2125l.2429-.2429.983-1.305 1.651-2.64.729-.8196.85-.9046.546-.4311h1.032l.759 1.129-.34 1.166-1.063 1.348-.8804 1.141-1.263 1.7-.7893 1.36.73.109.188-.0183 2.853-.607 1.542-.2794 1.84-.3157.832.389.91.395-.3278.807-1.967.486-2.307.461-3.436.814-.425.03.486.061 1.548.146.662.036h1.621l3.18.225.789.522.474.638-.79.486-1.214.619-1.639-.3886-3.825-.9107-1.311-.3279h-.1822v.1093l1.093 1.069 2.003 1.809 2.507 2.331.127.577-.3218.455-.34-.0486-2.204-1.657-.85-.7468-1.925-1.621h-.1275v.17l.4432.65 2.344 3.521.121 1.081-.17.352-.6071.212-.6679-.1214-1.372-1.925L14.38 17.959l-1.141-1.943-.1397.079-.674 7.255-.3156.37-.7286.279-.6071-.4614-.3218-.7468.322-1.475.389-1.925.316-1.53.285-1.9.17-.6314-.0121-.0425-.1397.018-1.433 1.967-2.18 2.945-1.724 1.846-.4128.164-.7164-.3704.067-.6618.401-.5889 2.386-3.036 1.439-1.882.929-1.087-.0062-.1579h-.0546l-6.338 4.116-1.129.146-.4857-.4554.061-.7467.231-.2429 1.906-1.311Z" fill="#D97757" />
-        </svg>
-        <span class="model__name">Opus 4.8</span>
+      <!-- Model — the name opens the full providers→models→effort picker. -->
+      <button type="button" class="model" @click.stop="openModels">
+        <ProviderLogo :brand="modelBrand" :size="15" />
+        <span class="model__name">{{ modelName }}</span>
         <svg class="model__chev" viewBox="0 0 12 12" aria-hidden="true">
           <path d="M3 4.8L6 7.8L9 4.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
+      </button>
+
+      <!-- Effort — no dropdown. Clicking the brain steps to the next real effort
+           for this model and wraps; the stack + label carry the state. -->
+      <button
+        v-if="showEffort && currentEffort"
+        type="button"
+        class="effort"
+        :class="{ 'effort--bump': bumping }"
+        :aria-label="`Reasoning effort: ${currentEffort.label}. Click to change.`"
+        @click.stop="cycleEffort"
+      >
+        <span class="stack" :class="{ 'stack--glow': currentEffort.glow }">
+          <HugeiconsIcon
+            v-for="i in brainStack(currentEffort.brains)"
+            :key="i"
+            :icon="AiBrain01Icon"
+            :size="15"
+            :stroke-width="2"
+            :style="{ color: currentEffort.hue }"
+          />
+        </span>
       </button>
     </div>
   </div>
@@ -354,13 +599,13 @@ watch(text, () => nextTick(sync));
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  width: 140px;
+  width: 200px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.26s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .side--lead { justify-content: flex-end; gap: 8px; padding-right: 10px; transform: translateX(10px); }
-.side--trail { justify-content: flex-start; padding-left: 10px; transform: translateX(-10px); }
+.side--trail { justify-content: flex-start; gap: 2px; padding-left: 10px; transform: translateX(-10px); }
 .side.is-shown {
   opacity: 1;
   transform: none;
@@ -412,22 +657,33 @@ watch(text, () => nextTick(sync));
   padding: 2.5px;
   border-radius: 32px;
   cursor: default;
-  /* Open + everyday sizing: width tracks the text and height follows, snappy
-     with no delay so typing feels responsive. */
+  /* Open + everyday sizing: width tracks the text and height follows. This is
+     the typing curve — short and snappy with no overshoot, so per-keystroke
+     nudges keep up with the cursor instead of wobbling behind it. */
   transition:
     border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
     padding 0.13s ease,
-    width 0.16s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    width 0.12s cubic-bezier(0.4, 0, 0.2, 1),
+    height 0.14s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* Big/structural moves (paste, drop, first/last wrap, pill↔card) overshoot and
+   settle back — a little spring so a large size change feels physical. */
+.surface.is-open.is-springy {
+  transition:
+    border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.13s ease,
+    width 0.34s cubic-bezier(0.34, 1.56, 0.64, 1),
+    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 /* Only through the wake expand: corners square off to the input's radius first,
-   then the body stretches out — so it never passes through an ellipse. */
+   then the body stretches out — so it never passes through an ellipse. Placed
+   after .is-springy so it wins during opening (both classes are on then). */
 .surface.is-open.is-opening {
   transition:
     border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
     padding 0.13s ease,
-    width 0.28s cubic-bezier(0.22, 1, 0.36, 1) 0.09s,
-    height 0.28s cubic-bezier(0.22, 1, 0.36, 1) 0.09s;
+    width 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
+    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s;
 }
 .surface.is-card {
   width: clamp(400px, 56vw, 720px);
@@ -630,9 +886,146 @@ watch(text, () => nextTick(sync));
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 .model:hover { opacity: 1; transform: translateY(-1px); }
-.model__logo { width: 15px; height: 15px; flex-shrink: 0; }
-.model__name { color: var(--chip-ink); font-size: 13px; font-weight: 500; line-height: 16px; }
-.model__chev { width: 12px; height: 12px; flex-shrink: 0; }
+.model__name {
+  color: var(--chip-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  max-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model__chev { width: 12px; height: 12px; flex-shrink: 0; opacity: 0.7; }
+
+/* ── Permission mode (autonomy ladder) ────────────────────────────────────── */
+/* Borderless like the model/effort controls: the hued icon carries the rung, a
+   neutral label names it. Cycles on click, with the same tactile pop. */
+.mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--mode-hue, #9a9a97);
+  cursor: pointer;
+  opacity: 0.9;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.mode:hover { opacity: 1; transform: translateY(-1px); }
+.mode:active { transform: translateY(0) scale(0.96); }
+.mode__icon { width: 16px; height: 16px; }
+.mode__label {
+  color: var(--chip-ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.mode--bump .mode__icon { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+
+/* ── Effort control (brain-stack) ─────────────────────────────────────────── */
+.effort {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.88;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.effort:hover { opacity: 1; transform: translateY(-1px); }
+.effort:active { transform: translateY(0) scale(0.96); }
+/* Each cycle step gives the stack a quick tactile pop. */
+.effort--bump .stack { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+@keyframes effort-pop {
+  0% { transform: scale(0.82); }
+  60% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+/* The brains overlap into a tight cluster; a soft halo blooms at the top tier. */
+.stack { display: inline-flex; align-items: center; }
+.stack > :deep(svg) { margin-left: -6px; }
+.stack > :deep(svg:first-child) { margin-left: 0; }
+.stack--glow > :deep(svg) { filter: drop-shadow(0 0 3px currentColor); }
+
+/* ── Popovers (model picker · reasoning dial) ─────────────────────────────── */
+.pop { position: relative; display: flex; }
+.menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow:
+    rgb(0 0 0 / 0.10) 0 8px 28px -6px,
+    rgb(0 0 0 / 0.06) 0 2px 8px -2px,
+    var(--btn-border) 0 0 0 1px;
+}
+.menu--model { right: 0; min-width: 232px; max-width: 320px; max-height: 340px; overflow-y: auto; }
+.menu__empty {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--chip-x);
+  font-size: 13px;
+}
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.14s ease;
+}
+.opt:hover { background: var(--hover); }
+.opt--on { background: var(--hover); }
+.opt__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--hover);
+}
+.opt__stack { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.opt__label { flex: 1 1 auto; color: var(--chip-ink); font-size: 13.5px; font-weight: 500; }
+.opt__stack .opt__label { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt__vendor { color: var(--chip-x); font-size: 11px; line-height: 1.2; }
+.opt__hint { color: var(--chip-x); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+.opt--model { align-items: center; }
+.opt .stack { flex-shrink: 0; }
+.opt__check { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent); }
+
+.menu-enter-active { transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1); }
+.menu-leave-active { transition: opacity 0.12s ease, transform 0.12s ease; }
+.menu-enter-from, .menu-leave-to { opacity: 0; transform: translateY(6px) scale(0.98); }
+
+/* ── Stop glyph (seed while a turn runs) ──────────────────────────────────── */
+.seed__stop { width: 15px; height: 15px; }
+.surface.is-card .seed__stop { width: 16px; height: 16px; }
+.seed--busy { animation: seed-pulse 1.8s ease-in-out infinite; }
+@keyframes seed-pulse {
+  0%, 100% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(139 124 240 / 0.10) 0 0 0 3px; }
+  50% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(139 124 240 / 0.28) 0 0 0 6px; }
+}
 
 .fade-enter-active { transition: opacity 0.24s ease 0.08s; }
 .fade-leave-active { transition: opacity 0.14s ease; }
@@ -641,7 +1034,9 @@ watch(text, () => nextTick(sync));
 @media (prefers-reduced-motion: reduce) {
   .surface, .panel, .face, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
   .face { animation: none; }
+  .seed--busy { animation: none; }
   .side { transition-duration: 0.01s; transition-delay: 0s; }
   .fade-enter-active, .fade-leave-active { transition-duration: 0.01s; }
+  .menu-enter-active, .menu-leave-active { transition-duration: 0.01s; }
 }
 </style>
