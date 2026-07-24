@@ -16,6 +16,12 @@ const loading = ref(false);
 const loadError = ref<string | null>(null);
 let probed = false;
 
+// Prettified model lists, cached per provider at module scope. Populated on the
+// first `models()` call (or eagerly by `prepare()` at app open) so entering a
+// project reads a warm list instead of re-shelling out to the CLI.
+const modelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
+let preparing: Promise<void> | null = null;
+
 const MOCK_STATUSES: ProviderStatus[] = [
   {
     provider: "antigravity",
@@ -28,11 +34,22 @@ const MOCK_STATUSES: ProviderStatus[] = [
   },
 ];
 
+// The real `agy models` set (v1.1.5). Kept verbatim so browser dev shows the
+// exact same model list the desktop bridge returns — labels are prettified in
+// one place (below) via modelLabel.
 const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
   antigravity: [
-    { id: "Gemini 3.5 Flash (Medium)", label: "Gemini 3.5 Flash (Medium)" },
-    { id: "Gemini 3.1 Pro (High)", label: "Gemini 3.1 Pro (High)" },
-    { id: "Claude Sonnet 4.6 (Thinking)", label: "Claude Sonnet 4.6 (Thinking)" },
+    { id: "gemini-3.6-flash-high", label: "gemini-3.6-flash-high" },
+    { id: "gemini-3.6-flash-medium", label: "gemini-3.6-flash-medium" },
+    { id: "gemini-3.6-flash-low", label: "gemini-3.6-flash-low" },
+    { id: "gemini-3.5-flash-high", label: "gemini-3.5-flash-high" },
+    { id: "gemini-3.5-flash-medium", label: "gemini-3.5-flash-medium" },
+    { id: "gemini-3.5-flash-low", label: "gemini-3.5-flash-low" },
+    { id: "gemini-3.1-pro-high", label: "gemini-3.1-pro-high" },
+    { id: "gemini-3.1-pro-low", label: "gemini-3.1-pro-low" },
+    { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+    { id: "claude-opus-4-6-thinking", label: "claude-opus-4-6-thinking" },
+    { id: "gpt-oss-120b-medium", label: "gpt-oss-120b-medium" },
   ],
 };
 
@@ -61,14 +78,47 @@ export function useAgentProviders() {
     }
   }
 
-  /** Models a provider offers (its own `list models` surface). */
-  async function models(provider: ProviderKind): Promise<ModelDescriptor[]> {
+  /** Models a provider offers (its own `list models` surface). Labels are
+   *  prettified from the raw CLI ids here so the picker reads cleanly while the
+   *  id we send back as `--model` stays exactly what the CLI emitted. Cached at
+   *  module scope after the first fetch (bypass with `force`). */
+  async function models(provider: ProviderKind, force = false): Promise<ModelDescriptor[]> {
+    const cached = modelCache.value[provider];
+    if (cached && !force) return cached;
     const api = bridge();
-    if (!api) return MOCK_MODELS[provider] ?? [];
+    let raw: ModelDescriptor[];
+    if (!api) raw = MOCK_MODELS[provider] ?? [];
+    else {
+      try {
+        raw = await api.models(provider);
+      } catch {
+        raw = [];
+      }
+    }
+    const list = raw.map((m) => ({ ...m, label: modelLabel(m.id) }));
+    // Only cache a real list — an empty result means the CLI errored or wasn't
+    // reachable, and we want the next call to retry rather than serve the miss.
+    if (list.length) modelCache.value = { ...modelCache.value, [provider]: list };
+    return list;
+  }
+
+  /** Warm the whole provider surface at app open: probe the machine once, then
+   *  prefetch models for every installed provider so opening a project is
+   *  instant. Deduped — concurrent callers await the same run. */
+  async function prepare(): Promise<void> {
+    if (preparing) return preparing;
+    preparing = (async () => {
+      const found = await discover();
+      await Promise.all(
+        found
+          .filter((s) => s.available && !modelCache.value[s.provider])
+          .map((s) => models(s.provider)),
+      );
+    })();
     try {
-      return await api.models(provider);
-    } catch {
-      return [];
+      await preparing;
+    } finally {
+      preparing = null;
     }
   }
 
@@ -80,5 +130,6 @@ export function useAgentProviders() {
     byProvider,
     discover,
     models,
+    prepare,
   };
 }

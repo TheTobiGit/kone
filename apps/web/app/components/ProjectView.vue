@@ -48,8 +48,10 @@ const MODES: InteractionMode[] = ["default", "plan", "accept-edits", "full-acces
 const view = ref<"work" | "chat">("work");
 
 onMounted(async () => {
-  // Detect the provider + its models, pick a default, then open the session.
-  await providers.discover();
+  // Providers + models are warmed at app open (agent-warmup plugin); this awaits
+  // that in-flight run (deduped — no second probe) or returns instantly if done,
+  // then reads the cached model list. Pick a default, then open the session.
+  await providers.prepare();
   rawModels.value = await providers.models("antigravity");
   if (!model.value) {
     const saved = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
