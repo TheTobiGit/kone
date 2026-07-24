@@ -2,6 +2,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { usePreferredDark } from "@vueuse/core";
 import { Magnet } from "~/components/ui/magnet";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import type { ChangeItem } from "~/types/change";
 import type { GitFileContent, GitFileDiff } from "~/types/desktop";
 import type { CodeLine } from "~/composables/useHighlighter";
@@ -265,9 +267,13 @@ function onTrapKeydown(e: KeyboardEvent) {
       <!-- Top: back + breadcrumb. Actions live down the left rail. -->
       <header class="fd__bar">
         <button ref="backEl" type="button" class="fd__back" aria-label="Back to changes" @click="emit('close')">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <HugeiconsIcon
+            class="fd__back-glyph"
+            :icon="ArrowTurnBackwardIcon"
+            :size="18"
+            :stroke-width="2"
+            aria-hidden="true"
+          />
         </button>
         <span class="fd__crumb">
           <FileIcon :path="file.name" :size="15" />
@@ -505,28 +511,29 @@ function onTrapKeydown(e: KeyboardEvent) {
   flex: none;
   padding-bottom: 22px;
 }
+/* Matches the project page's corner return glyph: bare, no chrome, brightening
+   from muted to full ink on hover. No magnet pull here — the overlay is a
+   focused, held space, so the control stays put. */
 .fd__back {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  color: var(--ink-soft);
-  background-color: var(--ground);
-  box-shadow: #1e1b1814 0 2px 8px;
+  color: var(--muted);
+  opacity: 0.7;
   cursor: pointer;
-  transition: transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.16s ease;
+  transition:
+    opacity 0.18s ease,
+    color 0.25s ease;
 }
-.fd__back:hover {
-  color: var(--ink);
-  transform: translateX(-2px);
-}
-/* Keyboard focus rings — soft ink, only when focus is keyboard-driven. */
+.fd__back:hover,
 .fd__back:focus-visible {
   outline: none;
+  opacity: 1;
   color: var(--ink);
-  box-shadow: #1e1b1814 0 2px 8px, 0 0 0 2px color-mix(in srgb, var(--ink) 34%, transparent);
+}
+/* Turned upside down, then mirrored left-to-right — the same glyph as home. */
+.fd__back-glyph {
+  transform: rotate(180deg) scaleX(-1);
 }
 .fd__crumb {
   display: inline-flex;
@@ -980,10 +987,6 @@ function onTrapKeydown(e: KeyboardEvent) {
 .ctl__sw--on .ctl__dot { transform: translateX(15px); }
 
 @media (prefers-color-scheme: dark) {
-  .fd__back { background-color: #17171a; box-shadow: #00000038 0 2px 8px; }
-  .fd__back:focus-visible {
-    box-shadow: #00000038 0 2px 8px, 0 0 0 2px color-mix(in srgb, var(--ink) 40%, transparent);
-  }
   /* Off-track ring for definition; the thumb stays --ground so it reads on the
      light --ink on-track. */
   .ctl__sw { box-shadow: inset 0 0 0 1px #ffffff12; }

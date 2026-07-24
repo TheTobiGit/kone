@@ -2,6 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
 import { onClickOutside, onKeyStroke } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
+import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
 import type { GitFileStatus, InteractionMode, ModelDescriptor } from "~/types/desktop";
@@ -122,10 +125,21 @@ function switchTo(p: RecentProject) {
 }
 
 // "All projects" backs out to the launcher — the same exit the folder's close
-// gives, so the switcher and the (future) back control agree.
+// gives, so the switcher and the back control agree.
 function toLauncher() {
   switcherOpen.value = false;
   emit("close");
+}
+
+// The corner back arrow steps out one layer at a time: from the conversation it
+// returns to the project's working tree (the thread stays put); from there it
+// leaves for the launcher.
+function onBack() {
+  if (view.value === "chat") {
+    view.value = "work";
+    return;
+  }
+  toLauncher();
 }
 
 // Hovering the corner folder fans its peeking papers up out of the pocket.
@@ -268,6 +282,38 @@ function onDiscardFile(path: string) {
     class="relative flex justify-center bg-ground"
     :class="view === 'chat' ? 'is-chat' : 'is-work'"
   >
+    <!-- Back to the launcher — a bare return glyph in the corner, on the same
+         magnet-pull the app's other buttons ride, lighting up to the iris
+         accent on hover. It steps aside only for the file-detail overlay. -->
+    <Magnet
+      class="project-back-magnet"
+      inner-class="w-fit"
+      :padding="12"
+      :magnet-strength="9"
+      :disabled="Boolean(activeFile)"
+      active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+      inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+    >
+      <motion.button
+        type="button"
+        class="project-back"
+        :inert="Boolean(activeFile)"
+        :aria-label="view === 'chat' ? 'Back to project' : 'Back to projects'"
+        :initial="{ opacity: 0, x: -6 }"
+        :animate="{ opacity: 1, x: 0 }"
+        :transition="{ duration: 0.4, delay: 0.2 }"
+        @click="onBack"
+      >
+        <HugeiconsIcon
+          class="back-glyph"
+          :icon="ArrowTurnBackwardIcon"
+          :size="18"
+          :stroke-width="2"
+          aria-hidden="true"
+        />
+      </motion.button>
+    </Magnet>
+
     <!-- CHAT · the page itself never scrolls — only the thread does, fading into
          a soft smoke mask at the top and just above the docked composer, the
          same easing as the file-preview body. -->
@@ -404,6 +450,38 @@ function onDiscardFile(path: string) {
 </template>
 
 <style scoped>
+/* ── Back to launcher ─────────────────────────────────────────────────────── */
+/* A quiet return glyph in the top-left corner — mirrors the folder's own perch
+   in the bottom-left. Bare, no chrome; it rides the same magnet pull as the
+   app's other buttons and brightens to full ink on hover. */
+.project-back-magnet {
+  position: fixed;
+  top: 2rem;
+  left: 2rem;
+  z-index: 40;
+}
+.project-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  opacity: 0.7;
+  cursor: pointer;
+  transition:
+    opacity 0.18s ease,
+    color 0.25s ease;
+}
+.project-back:hover,
+.project-back:focus-visible {
+  outline: none;
+  opacity: 1;
+  color: var(--ink);
+}
+/* Turn the return arrow upside down, then mirror it left-to-right. */
+.back-glyph {
+  transform: rotate(180deg) scaleX(-1);
+}
+
 /* ── Page modes ───────────────────────────────────────────────────────────── */
 /* Home scrolls the page normally; the conversation locks the page and scrolls
    the thread inside itself (like the rest of the app). */
