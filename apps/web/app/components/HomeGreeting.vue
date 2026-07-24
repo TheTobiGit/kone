@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 
 // "Project Home" boards). Three lines: a constant "Hey, {you}" welcome, then a
 // headline + subline that adapt to the repo's state. The Paper active board
@@ -33,7 +35,15 @@ const props = defineProps<{
   staged: number;
   ahead: number;
   behind: number;
+  /** When set, the leading project name (segment 0) becomes a switcher trigger
+   *  that opens the project switcher on click. */
+  switchable?: boolean;
 }>();
+
+const emit = defineEmits<{ switch: [] }>();
+
+// Only the leading segment (the project name) is the switcher trigger.
+const isTrigger = (i: number) => props.switchable && i === 0;
 
 const { displayName, initial, resolve } = useUser();
 onMounted(resolve);
@@ -199,14 +209,29 @@ const body = computed<Seg[]>(() => {
          Keyed by content (not index) so unchanged leading segments — the project
          name — hold still while the tail streams in. -->
     <TransitionGroup tag="p" name="seg" class="line line--body" appear>
-      <span
+      <component
+        :is="isTrigger(i) ? 'button' : 'span'"
         v-for="(seg, i) in body"
         :key="`${i}:${seg.tone}:${seg.t}`"
         class="seg"
-        :class="`t-${seg.tone}`"
+        :class="[`t-${seg.tone}`, { proj: isTrigger(i) }]"
         :style="{ '--i': i }"
-        >{{ seg.t }}</span
+        :type="isTrigger(i) ? 'button' : undefined"
+        :aria-haspopup="isTrigger(i) ? 'menu' : undefined"
+        @click="isTrigger(i) && emit('switch')"
       >
+        <template v-if="isTrigger(i)">
+          {{ seg.t }}
+          <HugeiconsIcon
+            :icon="ArrowDown01Icon"
+            :size="15"
+            :stroke-width="2.2"
+            class="proj__chev"
+            aria-hidden="true"
+          />
+        </template>
+        <template v-else>{{ seg.t }}</template>
+      </component>
     </TransitionGroup>
   </div>
 </template>
@@ -259,19 +284,22 @@ const body = computed<Seg[]>(() => {
 
 .line {
   margin: 0;
-  line-height: 44px;
+  line-height: 1.1;
   letter-spacing: -0.01em;
 }
-/* Welcome row: chip + words share one centered lane. */
+/* Welcome row: chip + words share one centered lane. Sized down to a quiet
+   secondary line so the project-state headline below reads as the hero. */
 .line--hey {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-/* State message: flowing prose that wraps rather than fixed one-per-row lines. */
+/* State message: the hero — a large statement that wraps as flowing prose.
+   Heading-tight leading, slightly negative tracking, measure capped ~60ch. */
 .line--body {
   max-width: 620px;
-  line-height: 40px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
   text-wrap: pretty;
 }
 
@@ -286,6 +314,62 @@ const body = computed<Seg[]>(() => {
 }
 .t-muted {
   color: var(--hi-muted);
+}
+
+/* The switchable project name — the name + a chevron that sits inline in the
+   sentence (so the prose still flows) but reads as touchable: a soft pill warms
+   in on hover. The chevron is the affordance, so the name carries no underline.
+   It inherits the family/metrics and lets .t-ink supply the 30px prose size,
+   matching the surrounding headline. */
+.seg.proj {
+  /* inline-block, not inline-flex: an inline-block's baseline is the baseline of
+     its own text ("kone"), so it lines up with the surrounding prose for free —
+     where inline-flex reports the wrong baseline and drags the unit below the
+     line. (A <button> ignores display:inline and scatters its children across
+     lines, so inline-block is also what keeps icon + name + chevron together.) */
+  display: inline-block;
+  vertical-align: baseline;
+  white-space: nowrap;
+  /* Pull the pill's padding back out of the line so the name keeps its place in
+     the sentence rather than shifting the following words right. */
+  margin: 0 -4px;
+  padding: 1px 5px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  font-family: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  color: var(--ink);
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    opacity 520ms ease,
+    filter 520ms ease;
+}
+.seg.proj:hover {
+  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.seg.proj:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 26%, transparent);
+  outline-offset: 1px;
+}
+/* The chevron is the sole affordance now — an inline SVG centred on the name.
+   The explicit inline-block overrides the global `svg { display: block }` reset,
+   which would otherwise drop it onto its own line inside the trigger. */
+.proj__chev {
+  display: inline-block;
+  vertical-align: middle;
+  margin-top: -0.1em;
+  margin-left: 3px;
+  color: var(--hi-muted);
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease;
+}
+.seg.proj:hover .proj__chev {
+  color: var(--ink);
+  transform: translateY(1px);
 }
 
 /* Mono figures — 26px, bold, baseline-aligned with the prose. Tabular so the

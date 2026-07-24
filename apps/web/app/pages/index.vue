@@ -5,7 +5,8 @@ import type { RecentProject } from "~/composables/useRecentProjects";
 import { ClickSpark } from "~/components/ui/click-spark";
 
 const project = useProject();
-const { recents, remember, forget, togglePin } = useRecentProjects();
+const { recents, forget, togglePin } = useRecentProjects();
+const openProject = useOpenProject();
 const { reveal } = useReveal();
 const { reset: resetClone } = useGitClone();
 const { reset: resetCreate } = useCreateProject();
@@ -44,11 +45,6 @@ function onStart(key: "create" | "open" | "clone") {
     createOpen.value = true;
     return;
   }
-}
-
-function openProject(folder: { path: string; name: string }) {
-  remember(folder);
-  project.value = folder;
 }
 
 function onPicked(folder: { path: string; name: string }) {
@@ -123,7 +119,7 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
     :spark-radius="18"
     :duration="480"
   >
-    <ProjectView v-if="project" :project="project" @close="project = null" />
+    <ProjectView v-if="project" :key="project.path" :project="project" @close="project = null" />
     <AppHomeRecent
       v-else-if="showRecent"
       :recents="recents"

@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, toRef, watch } from "vue";
-import { onKeyStroke } from "@vueuse/core";
-import { motion } from "motion-v";
+import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
+import { onClickOutside, onKeyStroke } from "@vueuse/core";
+import { AnimatePresence, motion } from "motion-v";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
-import type { GitFileStatus } from "~/types/desktop";
+import type { GitFileStatus, InteractionMode, ModelDescriptor } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
+import type { RecentProject } from "~/composables/useRecentProjects";
+import { buildModelCatalog, effortForId, familyForId } from "~/utils/modelCatalog";
 
 const props = defineProps<{ project: Project }>();
-defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: [] }>();
 
 // One reactive git model drives the whole page; every surface below reads from
 // its derived counts, and the action handlers edit it in place so a change
@@ -16,6 +18,129 @@ defineEmits<{ close: [] }>();
 const g = useProjectGit(toRef(props, "project"));
 const { cue } = useSound();
 const { warm } = useHighlighter();
+
+// ── the live agent session ────────────────────────────────────────────────────
+// One provider session, scoped to this project. The composer feeds it turns and
+// the thread renders them — the same normalized event stream drives both, so
+// nothing here knows it's Antigravity underneath. In `nuxt dev` (no bridge) the
+// composable streams a faithful mock so the whole flow is demoable in a browser.
+const providers = useAgentProviders();
+// cwd is a getter so the session always boots in whatever project is active —
+// paired with a per-project key on <ProjectView> so switching projects gives a
+// fresh session rooted in the new directory.
+const agent = useAgent({ provider: "antigravity", cwd: () => props.project.path });
+const { blocks, busy, model, mode, now: agentNow } = agent;
+
+// The provider's flat model list, grouped into families with real efforts. The
+// composer drives everything off the catalog; the raw id (which carries the
+// effort) is what we send to the session.
+const rawModels = ref<ModelDescriptor[]>([]);
+const modelOptions = computed(() => buildModelCatalog(rawModels.value));
+
+// Remember the last model + permission mode per project across quits.
+const MODEL_KEY = `kone:model:${props.project.path}`;
+const MODE_KEY = `kone:mode:${props.project.path}`;
+const MODES: InteractionMode[] = ["default", "plan", "accept-edits", "full-access"];
+
+// Two views over the same page: the working tree ("work") and the conversation
+// ("chat"). Sending the first turn flips to chat. (A way back to the working
+// tree will land later — the thread never clears, so it's safe to leave for now.)
+const view = ref<"work" | "chat">("work");
+
+onMounted(async () => {
+  // Detect the provider + its models, pick a default, then open the session.
+  await providers.discover();
+  rawModels.value = await providers.models("antigravity");
+  if (!model.value) {
+    const saved = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
+    const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.id === saved));
+    if (saved && inCatalog) agent.setModel(saved);
+    else {
+      const first = modelOptions.value[0];
+      const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+      if (eff) agent.setModel(eff.id);
+    }
+  }
+  // Restore the last permission mode for this project.
+  if (import.meta.client) {
+    const savedMode = localStorage.getItem(MODE_KEY);
+    if (savedMode && (MODES as string[]).includes(savedMode)) {
+      agent.setMode(savedMode as InteractionMode);
+    }
+  }
+  await agent.start();
+});
+
+// The raw id carries the effort; derive the tier and ride it along on each turn
+// (Antigravity ignores it — baked in the id — but a flag-based provider maps
+// it). Also persist the choice per project.
+watch(
+  model,
+  (id) => {
+    const eff = effortForId(familyForId(modelOptions.value, id), id);
+    if (eff) agent.setReasoning(eff.tier);
+    if (import.meta.client && id) localStorage.setItem(MODEL_KEY, id);
+  },
+  { immediate: true },
+);
+
+// Persist the permission mode per project.
+watch(mode, (m) => {
+  if (import.meta.client) localStorage.setItem(MODE_KEY, m);
+});
+
+// The full providers→models→effort picker (opened from the composer's model
+// name). It applies a raw model id, exactly like the composer's inline paths.
+const modelPickerOpen = ref(false);
+
+// ── project switching ─────────────────────────────────────────────────────────
+// The switcher opens from the greeting: click the folder+name to reveal the
+// *other* recent projects as small live folders; picking one swaps the active
+// project. Because <ProjectView> is keyed on project.path, setting it here
+// remounts the page with a fresh git + agent session rooted in the new directory.
+const { recents } = useRecentProjects();
+const openProject = useOpenProject();
+const otherProjects = computed<RecentProject[]>(() =>
+  recents.value.filter((p) => p.path !== props.project.path),
+);
+
+// The greeting popover — click-toggled, closes on Esc / outside click.
+const switcherOpen = ref(false);
+const greetWrap = ref<HTMLElement | null>(null);
+onClickOutside(greetWrap, () => (switcherOpen.value = false));
+
+function switchTo(p: RecentProject) {
+  switcherOpen.value = false;
+  if (p.path === props.project.path) return;
+  cue("press");
+  // A turn in flight would be torn down by the remount anyway — stop it cleanly
+  // first so the provider isn't left mid-stream.
+  if (busy.value) void agent.interrupt();
+  openProject({ path: p.path, name: p.name });
+}
+
+// "All projects" backs out to the launcher — the same exit the folder's close
+// gives, so the switcher and the (future) back control agree.
+function toLauncher() {
+  switcherOpen.value = false;
+  emit("close");
+}
+
+// Hovering the corner folder fans its peeking papers up out of the pocket.
+const folderHovered = ref(false);
+function onModelSelect(id: string) {
+  agent.setModel(id);
+  modelPickerOpen.value = false;
+  cue("toggle");
+}
+
+function onSend(text: string) {
+  view.value = "chat";
+  void agent.send(text);
+}
+function onInterrupt() {
+  void agent.interrupt();
+}
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it
 // never yields an empty name.
@@ -111,9 +236,13 @@ function onOpenFile(item: ChangeItem, rect: DOMRect) {
 function onCloseFile() {
   activePath.value = null;
 }
-// Esc backs out of the detail view (only while one is open).
+// Esc backs out of whatever's frontmost: the detail view, then an open switcher.
 onKeyStroke("Escape", () => {
-  if (activePath.value) onCloseFile();
+  if (activePath.value) {
+    onCloseFile();
+    return;
+  }
+  if (switcherOpen.value) switcherOpen.value = false;
 });
 function onStageFile(path: string) {
   cue("toggle");
@@ -134,26 +263,56 @@ function onDiscardFile(path: string) {
 
 <template>
   <main
-    class="relative flex min-h-screen items-start justify-center bg-ground px-16 pt-24 pb-56"
+    class="relative flex justify-center bg-ground"
+    :class="view === 'chat' ? 'is-chat' : 'is-work'"
   >
-
-    <!-- While the detail overlay is open the page behind is inert — no tab
-         stops, no screen-reader reach; the overlay owns focus. -->
-    <div class="flex w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
-      <HomeGreeting
-        :project-name="project.name"
-        :loading="!g.loaded.value"
-        :repo="g.repo.value"
-        :has-commits="g.hasCommits.value"
-        :branch="g.branch.value"
-        :clean="g.clean.value"
-        :added="g.added.value"
-        :removed="g.removed.value"
-        :file-count="g.fileCount.value"
-        :staged="g.stagedCount.value"
-        :ahead="g.ahead.value"
-        :behind="g.behind.value"
+    <!-- CHAT · the page itself never scrolls — only the thread does, fading into
+         a soft smoke mask at the top and just above the docked composer, the
+         same easing as the file-preview body. -->
+    <div
+      v-if="view === 'chat'"
+      class="chat-scroll selectable"
+      :inert="Boolean(activeFile)"
+    >
+      <ConversationThread
+        :blocks="blocks"
+        :now="agentNow"
       />
+    </div>
+
+    <!-- WORK · the working-tree home, page scrolls normally.
+         While the detail overlay is open the page behind is inert — no tab
+         stops, no screen-reader reach; the overlay owns focus. -->
+    <div v-else class="flex w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
+      <!-- The greeting's project name doubles as a switcher trigger; the popover
+           drops just beneath it, anchored to the name. -->
+      <div ref="greetWrap" class="relative w-fit">
+        <HomeGreeting
+          :project-name="project.name"
+          :loading="!g.loaded.value"
+          :repo="g.repo.value"
+          :has-commits="g.hasCommits.value"
+          :branch="g.branch.value"
+          :clean="g.clean.value"
+          :added="g.added.value"
+          :removed="g.removed.value"
+          :file-count="g.fileCount.value"
+          :staged="g.stagedCount.value"
+          :ahead="g.ahead.value"
+          :behind="g.behind.value"
+          switchable
+          @switch="switcherOpen = !switcherOpen"
+        />
+        <AnimatePresence>
+          <ProjectSwitcher
+            v-if="switcherOpen"
+            class="greet-switcher"
+            :projects="otherProjects"
+            @switch="switchTo"
+            @all="toLauncher"
+          />
+        </AnimatePresence>
+      </div>
       <ChangesPanel
         :loading="!g.loaded.value"
         :branch="g.branch.value"
@@ -169,13 +328,17 @@ function onDiscardFile(path: string) {
     </div>
 
     <!-- The folder settles into the corner last — rising into place with a soft
-         spring, the physical grace note after the greeting + changes land. -->
+         spring, the physical grace note after the greeting + changes land.
+         (Home only — it steps aside once the conversation takes over.) -->
     <motion.div
-      class="absolute bottom-10 left-10"
+      v-if="view !== 'chat'"
+      class="project-folder absolute bottom-10 left-10"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
       :transition="{ type: 'spring', stiffness: 210, damping: 22, mass: 0.9, delay: 0.55 }"
+      @mouseenter="folderHovered = true"
+      @mouseleave="folderHovered = false"
     >
       <ProjectFolder
         :name="project.name"
@@ -185,6 +348,7 @@ function onDiscardFile(path: string) {
         :removed="g.removed.value"
         :files="folderFiles"
         :scale="1.15"
+        :hovered="folderHovered"
       />
     </motion.div>
 
@@ -195,7 +359,18 @@ function onDiscardFile(path: string) {
       class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
       :inert="Boolean(activeFile)"
     >
-      <AgentComposer />
+      <AgentComposer
+        :busy="busy"
+        :picking="modelPickerOpen"
+        :models="modelOptions"
+        :model-id="model"
+        :mode="mode"
+        @send="onSend"
+        @interrupt="onInterrupt"
+        @update:model-id="agent.setModel"
+        @update:mode="agent.setMode"
+        @open-models="modelPickerOpen = true"
+      />
     </div>
 
     <!-- A file's detail: it grows out of the clicked card (origin --ox/--oy) to
@@ -212,10 +387,93 @@ function onDiscardFile(path: string) {
         @discard="onDiscardFile"
       />
     </Transition>
+
+    <!-- The full providers → models → effort picker, in the folder-picker shell. -->
+    <ModelPickerModal
+      v-if="modelPickerOpen"
+      :models="modelOptions"
+      :model-id="model"
+      @select="onModelSelect"
+      @apply="agent.setModel"
+      @cancel="modelPickerOpen = false"
+    />
   </main>
 </template>
 
 <style scoped>
+/* ── Page modes ───────────────────────────────────────────────────────────── */
+/* Home scrolls the page normally; the conversation locks the page and scrolls
+   the thread inside itself (like the rest of the app). */
+.is-work {
+  min-height: 100vh;
+  align-items: flex-start;
+  padding: 6rem 4rem 14rem;
+}
+.is-chat {
+  height: 100vh;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+/* The greeting's switcher drops just beneath the name trigger. */
+.greet-switcher {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+}
+
+/* The folder reads as touchable: on hover it lifts a hair and warms its
+   cursor while its papers fan up out of the pocket (driven by :hovered). */
+.project-folder {
+  cursor: pointer;
+}
+/* The whole folder lifts a hair on hover. Targets the plain inner .folder root
+   (not the motion.div wrapper, whose transform is driven inline by motion). */
+.project-folder :deep(.folder) {
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.project-folder:hover :deep(.folder) {
+  transform: translateY(-3px);
+}
+
+/* Once the centered work column reaches the folder's footprint, remove the
+   decorative folder so it cannot overlap actionable page content. */
+@media (max-width: 1440px) {
+  .project-folder {
+    display: none;
+  }
+}
+
+/* The one scroll region in chat mode. Its content fades into a soft smoke mask
+   at the top and just above the docked composer, so turns scroll into and out
+   of view rather than clipping at a hard edge. */
+.chat-scroll {
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 92px 2rem 208px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 76px,
+    #000 calc(100% - 176px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 76px,
+    #000 calc(100% - 176px),
+    transparent 100%
+  );
+  scrollbar-width: none;
+}
+.chat-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 /* The detail grows out of the clicked card and settles — a small overshoot reads
    as a "pop". Origin comes from --ox/--oy (the card's centre), set inline on the
    overlay root. On close it runs in reverse, shrinking back into the card. */

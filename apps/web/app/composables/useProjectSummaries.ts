@@ -1,4 +1,3 @@
-import { reactive } from "vue";
 import type { FolderFile } from "~/types/folder";
 import type { GitFileStatus } from "~/types/desktop";
 
@@ -17,7 +16,13 @@ function isNew(status: GitFileStatus): boolean {
 
 export function useProjectSummaries() {
   const git = useGit();
-  const summaries = reactive<Record<string, ProjectSummary>>({});
+  // Shared, SSR-safe cache: keyed by path and kept in useState so it survives
+  // component unmounts (the switcher remounts on every open) and is reused across
+  // the launcher grid and the switcher — so a reopen is a cache hit, not more git.
+  const summaries = useState<Record<string, ProjectSummary>>(
+    "kone:project-summaries",
+    () => ({}),
+  ).value;
 
   async function enrich(path: string): Promise<void> {
     if (summaries[path]) return; // already resolved (or resolving)
