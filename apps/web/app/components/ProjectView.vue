@@ -317,6 +317,7 @@ function onDiscardFile(path: string) {
       </div>
       <ChangesPanel
         :loading="!g.loaded.value"
+        :repo="g.repo.value"
         :branch="g.branch.value"
         :added="g.added.value"
         :removed="g.removed.value"
