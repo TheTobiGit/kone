@@ -211,7 +211,7 @@ function onFolderFocusOut(e: FocusEvent) {
               type="button"
               :aria-label="project.pinned ? 'Unpin project' : 'Pin to top'"
               :title="project.pinned ? 'Unpin' : 'Pin to top'"
-              class="side-act flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground shadow-sm transition-colors hover:text-ink"
+              class="side-act flex size-6 cursor-pointer items-center justify-center transition-colors hover:text-ink"
               :class="project.pinned ? 'text-ink' : 'text-muted'"
               @click.stop="emit('pin', project.path)"
             >
@@ -228,7 +228,7 @@ function onFolderFocusOut(e: FocusEvent) {
               type="button"
               aria-label="Reveal in Finder"
               title="Reveal in Finder"
-              class="side-act flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
+              class="side-act flex size-6 cursor-pointer items-center justify-center text-muted transition-colors hover:text-ink"
               @click.stop="emit('reveal', project.path)"
             >
               <HugeiconsIcon
@@ -244,7 +244,7 @@ function onFolderFocusOut(e: FocusEvent) {
               type="button"
               aria-label="Remove from recents"
               title="Remove"
-              class="side-act flex size-6 cursor-pointer items-center justify-center rounded-full bg-ground text-muted shadow-sm transition-colors hover:text-ink"
+              class="side-act flex size-6 cursor-pointer items-center justify-center text-muted transition-colors hover:text-ink"
               @click.stop="emit('forget', project.path)"
             >
               <HugeiconsIcon

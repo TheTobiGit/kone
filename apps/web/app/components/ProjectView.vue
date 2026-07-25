@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
+import { ArrowTurnBackwardIcon, AppleFinderIcon } from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
@@ -207,6 +207,10 @@ function onBack() {
 
 // Hovering the corner folder fans its peeking papers up out of the pocket.
 const folderHovered = ref(false);
+const { reveal } = useReveal();
+function onRevealProject() {
+  void reveal(props.project.path);
+}
 function onModelSelect(id: string) {
   agent.setModel(id);
   modelPickerOpen.value = false;
@@ -444,7 +448,7 @@ function onDiscardFile(path: string) {
          (Home only — it steps aside once the conversation takes over.) -->
     <motion.div
       v-if="view !== 'chat'"
-      class="project-folder absolute bottom-10 left-10"
+      class="project-folder-row absolute bottom-10 left-10 flex items-center gap-4"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
@@ -452,16 +456,31 @@ function onDiscardFile(path: string) {
       @mouseenter="folderHovered = true"
       @mouseleave="folderHovered = false"
     >
-      <ProjectFolder
-        :name="project.name"
-        :repo="g.repo.value"
-        :branch="g.branch.value"
-        :added="g.added.value"
-        :removed="g.removed.value"
-        :files="folderFiles"
-        :scale="1.15"
-        :hovered="folderHovered"
-      />
+      <div class="project-folder">
+        <ProjectFolder
+          :name="project.name"
+          :repo="g.repo.value"
+          :branch="g.branch.value"
+          :added="g.added.value"
+          :removed="g.removed.value"
+          :files="folderFiles"
+          :scale="1.15"
+          :hovered="folderHovered"
+        />
+      </div>
+
+      <div class="folder-actions" :class="{ 'is-visible': folderHovered }">
+        <button
+          type="button"
+          class="folder-action"
+          aria-label="Reveal in Finder"
+          title="Reveal in Finder"
+          @click="onRevealProject"
+        >
+          <HugeiconsIcon :icon="AppleFinderIcon" :size="15" :stroke-width="1.7" aria-hidden="true" />
+          <span>Open in Finder</span>
+        </button>
+      </div>
     </motion.div>
 
     <!-- The agent composer floats dead-centre at the bottom — dormant until you
@@ -590,10 +609,41 @@ function onDiscardFile(path: string) {
   transform: translateY(-3px);
 }
 
+/* Reveal button beside the folder: quiet, plain text + icon (no pill/fill),
+   surfaced only while the folder itself is hovered. */
+.folder-actions {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.folder-actions.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.folder-action {
+  display: flex;
+  cursor: pointer;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  transition: color 0.2s ease;
+}
+.folder-action:hover {
+  color: var(--ink);
+}
+
 /* Once the centered work column reaches the folder's footprint, remove the
-   decorative folder so it cannot overlap actionable page content. */
+   decorative folder + its actions so they cannot overlap actionable page
+   content. */
 @media (max-width: 1440px) {
-  .project-folder {
+  .project-folder-row {
     display: none;
   }
 }
