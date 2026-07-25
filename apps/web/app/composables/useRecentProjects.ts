@@ -1,5 +1,5 @@
 import { computed } from "vue";
-import { useStorage } from "@vueuse/core";
+import { createGlobalState, useStorage } from "@vueuse/core";
 import type { Project } from "~/composables/useProject";
 
 // The projects you've opened, most-recent first. Persisted to localStorage so
@@ -17,17 +17,38 @@ const STORAGE_KEY = "kone:recent-projects";
 // the list growing without bound.
 const MAX = 24;
 
-export function useRecentProjects() {
+// The backing store lives in one app-scoped effect scope, created once and
+// shared by every caller — NOT re-created per component. This matters because
+// the in-project switcher records a project (remember) and then swaps the active
+// project in the same tick, which remounts <ProjectView> (it's keyed on path).
+// If the store were owned by that component's setup, its useStorage persist
+// watcher would be torn down by the remount before the localStorage write ever
+// flushed — so switching from inside a project silently failed to reorder the
+// recents. A global scope keeps the watcher alive across every remount.
+const useRecentStore = createGlobalState(() =>
   // useStorage is SSR-safe: it returns the default ([]) on the server and
   // hydrates from localStorage on the client.
-  const store = useStorage<RecentProject[]>(STORAGE_KEY, []);
+  useStorage<RecentProject[]>(STORAGE_KEY, []),
+);
 
-  // Pinned first, then newest-first — regardless of write order.
+export function useRecentProjects() {
+  const store = useRecentStore();
+
+  // Pinned first, then newest-first — regardless of write order. This is the
+  // launcher-grid order: pins are a "keep it in front" affordance there.
   const recents = computed(() =>
     [...store.value].sort((a, b) => {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return b.lastOpenedAt - a.lastOpenedAt;
     }),
+  );
+
+  // Pure most-recently-used order, pins ignored. The Ctrl+Tab switcher wants
+  // this: it's an Alt+Tab-style toggle, so the project you were just on has to
+  // sit at the front regardless of what's pinned — otherwise a single tap keeps
+  // landing on the pinned lead instead of alternating between your last two.
+  const byRecency = computed(() =>
+    [...store.value].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt),
   );
 
   // Record (or bump) a project as just-opened. Dedupes on path.
@@ -49,5 +70,5 @@ export function useRecentProjects() {
     );
   }
 
-  return { recents, remember, forget, togglePin };
+  return { recents, byRecency, remember, forget, togglePin };
 }

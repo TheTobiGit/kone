@@ -50,8 +50,12 @@ const cellMove = {
 // cell scrolls itself into view as the index moves, so cycling past the edge
 // of the shelf brings the next folder into frame automatically.
 const cellRefs = ref<(HTMLElement | null)[]>([]);
-function setCellRef(el: Element | null, i: number) {
-  cellRefs.value[i] = el as HTMLElement | null;
+function setCellRef(el: unknown, i: number) {
+  // The ref sits on a <motion.div> (a component), so a template ref hands back
+  // the component instance, not the DOM node — reach through `$el` to the real
+  // element (plain elements pass straight through) so scrollIntoView exists.
+  const node = (el as { $el?: unknown } | null)?.$el ?? el;
+  cellRefs.value[i] = node instanceof HTMLElement ? node : null;
 }
 watch(
   () => props.selectedIndex,

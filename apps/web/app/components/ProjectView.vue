@@ -104,10 +104,16 @@ const modelPickerOpen = ref(false);
 // *other* recent projects as small live folders; picking one swaps the active
 // project. Because <ProjectView> is keyed on project.path, setting it here
 // remounts the page with a fresh git + agent session rooted in the new directory.
-const { recents } = useRecentProjects();
+const { recents, byRecency } = useRecentProjects();
 const openProject = useOpenProject();
 const otherProjects = computed<RecentProject[]>(() =>
   recents.value.filter((p) => p.path !== props.project.path),
+);
+// The Ctrl+Tab cycle is an Alt+Tab-style toggle, so it ignores pins and uses a
+// pure most-recently-used order: the project you were just on is always index 1,
+// which is what makes a single tap flip between your two most-recent projects.
+const cycleProjects = computed<RecentProject[]>(() =>
+  byRecency.value.filter((p) => p.path !== props.project.path),
 );
 
 // The greeting popover — click-toggled, closes on Esc / outside click.
@@ -144,7 +150,7 @@ function stepCycle(forward: boolean) {
 function startCycle(forward: boolean) {
   const entries: CycleEntry[] = [
     { path: props.project.path, name: props.project.name, isSelf: true },
-    ...otherProjects.value.map((p) => ({ path: p.path, name: p.name, isSelf: false })),
+    ...cycleProjects.value.map((p) => ({ path: p.path, name: p.name, isSelf: false })),
   ];
   if (entries.length < 2) return; // nothing else to switch to — don't open the HUD for a no-op
   cycleEntries.value = entries;
@@ -158,7 +164,7 @@ function commitCycle() {
   cycling.value = false;
   cycleEntries.value = [];
   if (!chosen || chosen.isSelf) return;
-  const p = otherProjects.value.find((o) => o.path === chosen.path);
+  const p = cycleProjects.value.find((o) => o.path === chosen.path);
   if (p) switchTo(p);
 }
 
