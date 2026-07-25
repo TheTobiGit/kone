@@ -8,9 +8,9 @@ import { createInterface } from "node:readline";
 /** A running agent invocation and the plumbing to observe/stop it. */
 export type StreamingRun = {
   /** Resolves when the process exits — never rejects; inspect `code`. `stdout`
-   *  / `stderr` are the fully accumulated streams. Some agent CLIs (agy print
-   *  mode) exit non-zero yet still produce their real answer on stdout, so the
-   *  caller decides success from `stdout`, not `code` alone. */
+   *  / `stderr` are the fully accumulated streams. Some agent CLIs exit
+   *  non-zero yet still produce their real answer on stdout, so the caller
+   *  decides success from `stdout`, not `code` alone. */
   done: Promise<{ code: number | null; stdout: string; stderr: string }>;
   /** Terminate the process (and its children). Idempotent. */
   kill: () => void;
@@ -82,7 +82,7 @@ export function runStreaming(
 
 /** Kill a process and the tool subprocesses it spawned. Agent CLIs fork shells
  *  and tools; a plain SIGTERM to the parent can orphan them. */
-function killTree(pid: number | undefined): void {
+export function killTree(pid: number | undefined): void {
   if (pid === undefined) return;
   if (process.platform === "win32") {
     spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
@@ -105,10 +105,10 @@ function killTree(pid: number | undefined): void {
  *  installed". A non-zero exit that still printed output yields that output
  *  (some agent CLIs exit non-zero yet produce their real result).
  *
- *  Critically, stdin is closed: agent CLIs (e.g. `agy models`) block forever on
- *  an open stdin pipe when not attached to a TTY, so a probe that leaves stdin
- *  open just hangs until the timeout. For quick, bounded probes (`--version`,
- *  `list models`) — never for turns. */
+ *  Critically, stdin is closed: some agent CLIs block forever on an open stdin
+ *  pipe when not attached to a TTY, so a probe that leaves stdin open just
+ *  hangs until the timeout. For quick, bounded probes (`--version` and the
+ *  like) — never for turns. */
 export function probe(
   command: string,
   args: string[],

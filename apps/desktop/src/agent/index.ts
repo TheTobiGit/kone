@@ -1,5 +1,5 @@
 // The agent module's public surface. The multi-provider agent layer runs in the
-// main process (it spawns and streams from the user's own agent CLIs — Antigravity
+// main process (it spawns and streams from the user's own agent CLIs — Codex
 // first), bridged to the renderer through the agent:* IPC in ipc.ts. This barrel
 // is what main.ts and the preload bridge types reach for.
 //

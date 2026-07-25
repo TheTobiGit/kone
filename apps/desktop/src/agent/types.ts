@@ -9,8 +9,8 @@
 // union. The renderer is written once against that union and never learns which
 // CLI is underneath. Adding a provider is a new adapter, not a UI change.
 
-/** A supported agent provider. Grows as adapters land (claudeAgent, codex, …). */
-export type ProviderKind = "antigravity";
+/** A supported agent provider. Grows as adapters land (claudeAgent, …). */
+export type ProviderKind = "codex";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "err
  *  logged-in CLI. */
 export type ProviderStatus = {
   provider: ProviderKind;
-  /** Display name, e.g. "Antigravity". */
+  /** Display name, e.g. "Codex". */
   label: string;
   /** Binary present on PATH and runnable. */
   available: boolean;
@@ -33,9 +33,9 @@ export type ProviderStatus = {
   readiness: ProviderReadiness;
   /** CLI version string, when detected. */
   version?: string;
-  /** How the CLI is authenticated, e.g. "Google Sign-In" / "Antigravity API Key". */
+  /** How the CLI is authenticated, e.g. "ChatGPT Sign-In" / "API Key". */
   authLabel?: string;
-  /** Human message — a hint to fix a not-ready provider (e.g. run `agy` to log in). */
+  /** Human message — a hint to fix a not-ready provider (e.g. run `codex login`). */
   message?: string;
 };
 
@@ -44,12 +44,34 @@ export type ModelDescriptor = {
   /** Stable id passed back on a turn (what the CLI's --model flag expects). */
   id: string;
   label: string;
+  /** Real reasoning-effort ids this model supports (Codex's `model/list`
+   *  `supportedReasoningEfforts`), in the order the API returned them. Absent
+   *  for a model with no reasoning-effort axis at all. */
+  reasoningEfforts?: string[];
+  /** Which of `reasoningEfforts` the provider itself defaults to. */
+  defaultReasoningEffort?: string;
+  /** Real speed/service tiers this model supports (Codex's `model/list`
+   *  `serviceTiers`, falling back to the deprecated `additionalSpeedTiers` id
+   *  list). Absent for a model with no speed-tier axis at all — most models
+   *  don't have one; where it exists it's almost always just a "fast" tier. */
+  serviceTiers?: { id: string; label: string; description?: string }[];
 };
 
 // ── Session / turn IO ────────────────────────────────────────────────────────
 
 /** How much the agent may do without asking. Mirrors the calm-UI intent. */
-export type InteractionMode = "default" | "accept-edits" | "plan" | "full-access";
+/** The approval-policy ladder — how much the agent may do without asking,
+ *  from most to least restrictive: `ask` always asks first (read-only
+ *  sandbox); `accept-edits` auto-approves file edits but still asks before
+ *  commands/other actions; `full-access` never prompts. Maps onto research's
+ *  own `RuntimeMode` axis (approval-required/auto-accept-edits/full-access) —
+ *  see CodexAdapter.ts's mapModeTo*Overrides. kone deliberately stops short of
+ *  research's 4th rung (`auto`, an AI-reviewed middle ground) since that's a
+ *  brand-new, unshipped addition there, not the shipped research model this
+ *  ladder otherwise tracks. This is also deliberately NOT the same axis as a
+ *  provider's separate plan/build turn mode (research's
+ *  `ProviderInteractionMode`) — kone doesn't have that second toggle yet. */
+export type InteractionMode = "ask" | "accept-edits" | "full-access";
 
 export type SessionStartInput = {
   /** Caller-chosen thread id — kone owns this; the CLI's native id is mapped
@@ -83,6 +105,12 @@ export type SendTurnInput = {
   /** Override the session model for this turn. */
   model?: string;
   mode?: InteractionMode;
+  /** Reasoning effort tier. Providers that bake effort into the model id
+   *  ignore it; flag-based providers (Codex) map it to their own turn param. */
+  effort?: string;
+  /** A model's chosen service tier (e.g. Codex's "fast" tier id) for this
+   *  turn. Absent means the provider's default tier. */
+  serviceTier?: string;
 };
 
 export type TurnStartResult = {
@@ -115,25 +143,27 @@ export type RuntimeSessionState =
 
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
 
-/** A unit of work inside a turn the UI renders as one block. */
-export type RuntimeItemKind =
-  | "assistant_text"
-  | "reasoning_text"
-  | "plan_text"
-  | "tool_call"
-  | "command_output";
+/** A unit of work inside a turn the UI renders as one block. A shell command
+ *  execution is a `tool_call` like any other — it doesn't get its own kind. */
+export type RuntimeItemKind = "assistant_text" | "reasoning_text" | "plan_text" | "tool_call";
 
 export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
 
-/** One rendered item within a turn (text block, tool call, command run). */
+/** One rendered item within a turn (text block or tool call). */
 export type RuntimeItem = {
   itemId: string;
   kind: RuntimeItemKind;
   status: RuntimeItemStatus;
-  /** Accumulated text for this item (assistant/reasoning/plan/output). */
+  /** Accumulated text for this item: the streamed narrative for the three text
+   *  kinds, or a short inline target/summary (path, command, query) for a
+   *  tool_call. */
   text: string;
-  /** Tool/command name, for tool_call / command_output items. */
+  /** Tool/command name, for tool_call items. */
   name?: string;
+  /** A tool_call's full result body — command stdout/stderr, a diff, a
+   *  changed-file list — shown on demand. Undefined when there's nothing to
+   *  expand. */
+  detail?: string;
 };
 
 /** Token accounting for a thread, when the provider exposes it. */
@@ -152,9 +182,9 @@ export type ProviderRefs = {
 /** Tags the transport an event came from — for debugging + provider-specific
  *  extension without polluting the union. */
 export type RuntimeEventSource =
-  | "antigravity.print.stdout"
-  | "antigravity.print.stderr"
-  | "antigravity.print.lifecycle";
+  | "codex.rpc.notification"
+  | "codex.rpc.stderr"
+  | "codex.rpc.lifecycle";
 
 type BaseEvent = {
   threadId: string;

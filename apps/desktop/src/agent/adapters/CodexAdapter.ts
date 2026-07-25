@@ -1,0 +1,699 @@
+import { homedir } from "node:os";
+
+import { readCodexAuth, isCodexCliVersionSupported, MIN_CODEX_CLI_VERSION, parseCodexCliVersion } from "../codexHome.js";
+import { JsonRpcClient } from "../jsonRpc.js";
+import { buildAgentEnv } from "../processEnv.js";
+import { probe } from "../spawn.js";
+import type {
+  AdapterCapabilities,
+  ApprovalDecision,
+  EmitEvent,
+  InteractionMode,
+  ModelDescriptor,
+  ProviderAdapter,
+  ProviderStatus,
+  RuntimeItem,
+  RuntimeItemKind,
+  RuntimeItemStatus,
+  Session,
+  SendTurnInput,
+  SessionStartInput,
+  TurnStartResult,
+} from "../types.js";
+
+// Codex adapter — drives `codex app-server` as a persistent JSON-RPC-over-stdio
+// child process per thread (transport: jsonRpc.ts). One session = one live
+// app-server process bound to a Codex-native "thread" (kone's threadId maps
+// 1:1 onto it — there's no separate kone-side turn-id scheme, we just use
+// Codex's own turn ids directly).
+//
+// "Bring your own subscription": kone never runs `codex login` or writes
+// auth.json — see codexHome.ts. discover() only reads what's already there.
+//
+// No approval UI in kone v1: every server-initiated approval request (command
+// execution, file change, file read, permissions) is auto-resolved the
+// instant it arrives — see wireRequests(). respondToRequest() is therefore a
+// no-op; nothing is ever left pending for the UI to answer. This mirrors
+// running every turn as if in "full-access" mode from Codex's own point of
+// view even when kone's InteractionMode is more conservative — the mode still
+// controls the sandbox (what Codex is actually allowed to touch), just not
+// whether it stops to ask first.
+//
+// kone's three InteractionModes ARE the approval-policy ladder. research (a WIP
+// branch of the same product) has expanded this to a 4-rung `RuntimeMode`
+// (approval-required/auto-accept-edits/auto/full-access), but the 4th rung
+// ("auto", an AI-reviewed middle ground via `approvalsReviewer: "auto_review"`)
+// only landed there 2 days ago and has never shipped in the actual product —
+// kone deliberately tracks the proven 3-rung shape instead: ask → research's
+// "approval-required", accept-edits → "auto-accept-edits", full-access →
+// "full-access". (There's also a second, orthogonal "ProviderInteractionMode"
+// expose yet; don't confuse it with this ladder.) mapModeTo*Overrides below is
+// the exact per-rung mapping (approvalPolicy/sandbox/approvalsReviewer),
+// ported from research's runtimeModeToThreadConfig / runtimeModeToTurnSandboxPolicy
+// rather than reasoned out independently.
+//
+// Verified directly against research's generated JSON-RPC method table
+// (meta.gen.ts): the current app-server protocol has no standalone
+// `turn/aborted` server notification — interruption/failure surfaces via
+// `turn/completed` with `status: "interrupted" | "failed" | "cancelled"`. We
+// rely on that alone; a reference implementation elsewhere handles a
+// `turn/aborted` notification too, but that appears to target an older
+// protocol revision this file doesn't need to match.
+
+const CODEX_BINARY = "codex";
+
+const CODEX_INITIALIZE_PARAMS = {
+  clientInfo: { name: "kone", title: "kone", version: "0.1.0" },
+  capabilities: { experimentalApi: true },
+} as const;
+
+const NON_FATAL_CODEX_ERROR_SNIPPETS = ["write_stdin failed: stdin is closed for this session"];
+
+type CodexItemBuffer = {
+  itemId: string;
+  kind: RuntimeItemKind;
+  name?: string;
+  text: string;
+  detail: string;
+};
+
+type CodexSession = {
+  threadId: string;
+  cwd: string;
+  model?: string;
+  mode: InteractionMode;
+  conversationId?: string;
+  activeTurnId?: string;
+  rpc: JsonRpcClient;
+  items: Map<string, CodexItemBuffer>;
+};
+
+// ── small JSON helpers ───────────────────────────────────────────────────────
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function readString(value: unknown, ...path: string[]): string | undefined {
+  let cursor: unknown = value;
+  for (const key of path) cursor = asRecord(cursor)?.[key];
+  return typeof cursor === "string" ? cursor : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function isNonFatalCodexError(message: string): boolean {
+  const lower = message.trim().toLowerCase();
+  return NON_FATAL_CODEX_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
+}
+
+// ── mode → Codex approval/sandbox mapping ───────────────────────────────────
+// Thread-level `sandbox` is a flat kebab-case enum; turn-level `sandboxPolicy`
+// is an object with a camelCase `type` — this asymmetry is Codex's own, not a
+// typo (confirmed from the reference implementation's turn/thread param
+// builders). `approvalsReviewer` is sent explicitly on every mode change
+// (thread AND turn) regardless — it's always "user" here since kone's ladder
+// stops short of research's unshipped "auto" rung (the only one that ever sets
+// it to "auto_review").
+
+function mapModeToThreadOverrides(
+  mode: InteractionMode,
+): { approvalPolicy: string; sandbox: string; approvalsReviewer: string } {
+  switch (mode) {
+    case "ask":
+      return { approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" };
+    case "full-access":
+      return { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" };
+    case "accept-edits":
+    default:
+      return { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "user" };
+  }
+}
+
+function mapModeToTurnOverrides(mode: InteractionMode): {
+  approvalPolicy: string;
+  approvalsReviewer: string;
+  sandboxPolicy: { type: string };
+} {
+  switch (mode) {
+    case "ask":
+      return { approvalPolicy: "untrusted", approvalsReviewer: "user", sandboxPolicy: { type: "readOnly" } };
+    case "full-access":
+      return { approvalPolicy: "never", approvalsReviewer: "user", sandboxPolicy: { type: "dangerFullAccess" } };
+    case "accept-edits":
+    default:
+      return { approvalPolicy: "on-request", approvalsReviewer: "user", sandboxPolicy: { type: "workspaceWrite" } };
+  }
+}
+
+// ── item type canonicalization ───────────────────────────────────────────────
+// Codex's raw item.type spellings vary (camelCase/kebab/etc.); normalize then
+// substring-match down to kone's 4-kind RuntimeItem model. Types kone doesn't
+// render (the user's own message echoed back, review-mode markers, raw
+// protocol errors, anything unrecognized) return null and are dropped.
+
+function normalizeItemType(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._/-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultName?: string } | null {
+  const type = normalizeItemType(rawType);
+  if (!type || type.includes("user")) return null;
+  if (type.includes("agent message") || type.includes("assistant") || type.includes("exited review")) {
+    return { kind: "assistant_text" };
+  }
+  if (type.includes("reasoning") || type.includes("thought")) return { kind: "reasoning_text" };
+  if (type.includes("plan") || type.includes("todo")) return { kind: "plan_text" };
+  if (type.includes("command")) return { kind: "tool_call", defaultName: "Run" };
+  if (type.includes("file change") || type.includes("patch") || type.includes("edit")) {
+    return { kind: "tool_call", defaultName: "File change" };
+  }
+  if (type.includes("mcp")) return { kind: "tool_call", defaultName: "MCP tool call" };
+  if (type.includes("dynamic tool") || type.includes("collab")) return { kind: "tool_call", defaultName: "Tool call" };
+  if (type.includes("web search")) return { kind: "tool_call", defaultName: "Web search" };
+  if (type.includes("image")) {
+    return { kind: "tool_call", defaultName: type.includes("generat") ? "Generated image" : "Image" };
+  }
+  return null; // review_entered, context_compaction, error, unknown
+}
+
+/** Scavenges a human-readable blob out of an item's many possible shapes —
+ *  Codex item payloads vary too much for a per-type field map. */
+function itemDetail(item: Record<string, unknown> | undefined): string | undefined {
+  if (!item) return undefined;
+  const nestedResult = asRecord(item.result);
+  const candidates = [
+    item.command,
+    item.title,
+    item.summary,
+    item.text,
+    item.path,
+    item.file_path,
+    item.prompt,
+    nestedResult?.command,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+  }
+  return undefined;
+}
+
+/** The richer body for a tool call's expandable `detail` — a diff, a before/
+ *  after text pair, stdout/stderr, or a changed-file list. Only consulted on
+ *  completion, when a delta stream hasn't already accumulated one. */
+function itemDetailBody(item: Record<string, unknown> | undefined): string | undefined {
+  if (!item) return undefined;
+  const nestedResult = asRecord(item.result);
+
+  if (typeof item.diff === "string" && item.diff.trim().length > 0) return item.diff;
+
+  const oldText = typeof item.oldText === "string" ? item.oldText : undefined;
+  const newText = typeof item.newText === "string" ? item.newText : undefined;
+  if (oldText || newText) {
+    const parts: string[] = [];
+    if (oldText) parts.push(`--- before\n${oldText}`);
+    if (newText) parts.push(`+++ after\n${newText}`);
+    return parts.join("\n\n");
+  }
+
+  const stdout = typeof item.stdout === "string" ? item.stdout : undefined;
+  const stderr = typeof item.stderr === "string" ? item.stderr : undefined;
+  if (stdout || stderr) return [stdout, stderr].filter((v): v is string => Boolean(v)).join("\n");
+
+  const output = [item.output, nestedResult?.output].find((v) => typeof v === "string") as string | undefined;
+  if (output && output.trim().length > 0) return output;
+
+  const fileList = Array.isArray(item.files) ? item.files : Array.isArray(item.paths) ? item.paths : undefined;
+  if (fileList) {
+    const joined = fileList.filter((v): v is string => typeof v === "string").join("\n");
+    if (joined.length > 0) return joined;
+  }
+
+  return undefined;
+}
+
+function parseModelListResponse(response: Record<string, unknown> | undefined): ModelDescriptor[] {
+  const list =
+    (Array.isArray(response?.items) && (response.items as unknown[])) ||
+    (Array.isArray(response?.data) && (response.data as unknown[])) ||
+    (Array.isArray(response?.models) && (response.models as unknown[])) ||
+    [];
+  const seen = new Set<string>();
+  const models: ModelDescriptor[] = [];
+  for (const entry of list) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const id = [record.id, record.slug, record.model].find((v) => typeof v === "string") as string | undefined;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    // Real `model/list` responses carry the human name as `displayName` (e.g.
+    // "GPT-5.6-Terra" for id `gpt-5.6-terra`) — `label` was a guess at a field
+    // name that doesn't actually appear in the response.
+    const label = [record.displayName, record.label].find((v) => typeof v === "string") as string | undefined;
+    // Real efforts vary per model (e.g. gpt-5.6-terra: low/medium/high/xhigh/max/ultra) —
+    // read them straight off the response rather than assuming a fixed ladder.
+    const effortEntries = Array.isArray(record.supportedReasoningEfforts)
+      ? (record.supportedReasoningEfforts as unknown[])
+      : [];
+    const reasoningEfforts = effortEntries
+      .map((entry) => asRecord(entry)?.reasoningEffort)
+      .filter((v): v is string => typeof v === "string");
+    const defaultReasoningEffort =
+      typeof record.defaultReasoningEffort === "string" ? record.defaultReasoningEffort : undefined;
+    // Real `serviceTiers` entries carry {id, name, description}; the older
+    // `additionalSpeedTiers` a bare id list (deprecated, "fast" in practice).
+    // Either way we normalize to the same {id, label, description} shape.
+    const serviceTierEntries = Array.isArray(record.serviceTiers) ? (record.serviceTiers as unknown[]) : [];
+    const serviceTiers = serviceTierEntries
+      .map((entry) => {
+        const r = asRecord(entry);
+        const tierId = typeof r?.id === "string" ? r.id : undefined;
+        const name = typeof r?.name === "string" ? r.name : undefined;
+        if (!tierId) return undefined;
+        return {
+          id: tierId,
+          label: name ?? tierId,
+          ...(typeof r?.description === "string" && r.description ? { description: r.description } : {}),
+        };
+      })
+      .filter((v): v is { id: string; label: string; description?: string } => v !== undefined);
+    if (!serviceTiers.length && Array.isArray(record.additionalSpeedTiers)) {
+      for (const tierId of record.additionalSpeedTiers as unknown[]) {
+        if (typeof tierId === "string") serviceTiers.push({ id: tierId, label: tierId === "fast" ? "Fast" : tierId });
+      }
+    }
+    models.push({
+      id,
+      label: label ?? id,
+      ...(reasoningEfforts.length ? { reasoningEfforts } : {}),
+      ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+      ...(serviceTiers.length ? { serviceTiers } : {}),
+    });
+  }
+  return models;
+}
+
+export class CodexAdapter implements ProviderAdapter {
+  readonly provider = "codex" as const;
+  readonly capabilities: AdapterCapabilities = {
+    sessionModelSwitch: "in-session",
+    streamsText: true,
+    supportsToolEvents: true,
+    supportsResume: true,
+    supportsModelList: true,
+  };
+
+  private readonly emit: EmitEvent;
+  private readonly sessions = new Map<string, CodexSession>();
+  private modelsCache: Promise<ModelDescriptor[]> | null = null;
+
+  constructor(emit: EmitEvent) {
+    this.emit = emit;
+  }
+
+  // ── discovery ─────────────────────────────────────────────────────────────
+
+  async discover(): Promise<ProviderStatus> {
+    const env = await buildAgentEnv();
+    const output = await probe(CODEX_BINARY, ["--version"], env, 5_000);
+    if (output === null) {
+      return {
+        provider: this.provider,
+        label: "Codex",
+        available: false,
+        authStatus: "unknown",
+        readiness: "not-installed",
+        message: "Codex CLI not found. Install it and run `codex login`.",
+      };
+    }
+
+    const version = parseCodexCliVersion(output) ?? undefined;
+    if (!isCodexCliVersionSupported(version ?? null)) {
+      return {
+        provider: this.provider,
+        label: "Codex",
+        available: true,
+        authStatus: "unknown",
+        readiness: "error",
+        version,
+        message: `Codex CLI v${version} is too old — upgrade to v${MIN_CODEX_CLI_VERSION} or newer.`,
+      };
+    }
+
+    const auth = readCodexAuth();
+    if (!auth.authenticated) {
+      return {
+        provider: this.provider,
+        label: "Codex",
+        available: true,
+        authStatus: "unauthenticated",
+        readiness: "needs-login",
+        version,
+        message: "Run `codex login` to sign in.",
+      };
+    }
+
+    return {
+      provider: this.provider,
+      label: "Codex",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      version,
+      authLabel: auth.label,
+    };
+  }
+
+  async listModels(): Promise<ModelDescriptor[]> {
+    if (!this.modelsCache) {
+      this.modelsCache = this.fetchModels().catch((error: unknown) => {
+        this.modelsCache = null;
+        throw error;
+      });
+    }
+    return this.modelsCache;
+  }
+
+  /** A short-lived handshake-only app-server just to call model/list — spawned
+   *  fresh and killed immediately after, since there's no thread to keep alive
+   *  for it. Result is cached for the adapter's lifetime (kone's warmup plugin
+   *  calls this once at app open). */
+  private async fetchModels(): Promise<ModelDescriptor[]> {
+    const env = await buildAgentEnv();
+    const rpc = new JsonRpcClient(CODEX_BINARY, ["app-server"], { cwd: homedir(), env });
+    try {
+      await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
+      rpc.notify("initialized");
+      const response = await rpc.call<Record<string, unknown>>("model/list", {
+        cursor: null,
+        limit: 50,
+        includeHidden: false,
+      });
+      return parseModelListResponse(response);
+    } finally {
+      rpc.kill();
+    }
+  }
+
+  // ── lifecycle ────────────────────────────────────────────────────────────
+
+  async startSession(input: SessionStartInput): Promise<Session> {
+    const env = await buildAgentEnv();
+    const rpc = new JsonRpcClient(CODEX_BINARY, ["app-server"], { cwd: input.cwd, env });
+    const mode: InteractionMode = input.mode ?? "accept-edits";
+
+    const session: CodexSession = {
+      threadId: input.threadId,
+      cwd: input.cwd,
+      model: input.model,
+      mode,
+      rpc,
+      items: new Map(),
+    };
+    this.wireNotifications(session);
+    this.wireRequests(session);
+    rpc.onExit((code) => {
+      this.sessions.delete(input.threadId);
+      this.emit({ ...this.base(session), type: "session.exited", code });
+    });
+
+    try {
+      await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
+      rpc.notify("initialized");
+
+      const response = await rpc.call<Record<string, unknown>>("thread/start", {
+        model: input.model ?? null,
+        cwd: input.cwd,
+        ...mapModeToThreadOverrides(mode),
+        experimentalRawEvents: false,
+      });
+      const thread = asRecord(response)?.thread;
+      const conversationId = readString(thread, "id") ?? readString(response, "threadId");
+      if (!conversationId) throw new Error("thread/start response did not include a thread id.");
+      session.conversationId = conversationId;
+    } catch (error) {
+      rpc.kill();
+      throw error;
+    }
+
+    this.sessions.set(input.threadId, session);
+    this.emit({ ...this.base(session), type: "session.started" });
+    return this.toSession(session);
+  }
+
+  async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const session = this.requireSession(input.threadId);
+    const mode = input.mode ?? session.mode;
+    session.mode = mode;
+    if (input.model) session.model = input.model;
+
+    const text = input.input.trim();
+    if (text.length === 0) throw new Error("Turn input must include text.");
+
+    const response = await session.rpc.call<Record<string, unknown>>("turn/start", {
+      threadId: session.conversationId,
+      input: [{ type: "text", text: input.input, text_elements: [] }],
+      ...mapModeToTurnOverrides(mode),
+      ...(session.model ? { model: session.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    });
+    const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
+    if (!turnId) throw new Error("turn/start response did not include a turn id.");
+    session.activeTurnId = turnId;
+    return { threadId: input.threadId, turnId };
+  }
+
+  async interruptTurn(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session?.activeTurnId || !session.conversationId) return;
+    await session.rpc.call("turn/interrupt", {
+      threadId: session.conversationId,
+      turnId: session.activeTurnId,
+    });
+  }
+
+  async stopSession(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    session.rpc.kill();
+    this.sessions.delete(threadId);
+  }
+
+  async stopAll(): Promise<void> {
+    for (const session of this.sessions.values()) session.rpc.kill();
+    this.sessions.clear();
+  }
+
+  async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
+    // No-op — see wireRequests(): every Codex approval prompt is auto-resolved
+    // the instant it arrives, so nothing is ever left pending to respond to.
+  }
+
+  async listSessions(): Promise<Session[]> {
+    return [...this.sessions.values()].map((s) => this.toSession(s));
+  }
+
+  async hasSession(threadId: string): Promise<boolean> {
+    return this.sessions.has(threadId);
+  }
+
+  // ── notifications / server requests ─────────────────────────────────────
+
+  private wireNotifications(session: CodexSession): void {
+    const { rpc } = session;
+
+    rpc.onNotification("turn/started", (params) => {
+      const turnId = readString(params, "turn", "id") ?? readString(params, "turnId");
+      if (!turnId) return;
+      session.activeTurnId = turnId;
+      this.emit({ ...this.base(session), type: "turn.started", turnId });
+    });
+
+    rpc.onNotification("turn/completed", (params) => {
+      const turn = asRecord(params)?.turn;
+      const turnId = readString(turn, "id") ?? readString(params, "turnId") ?? session.activeTurnId;
+      const status = readString(turn, "status") ?? "completed";
+      session.activeTurnId = undefined;
+      if (!turnId) return;
+      if (status === "completed") {
+        this.emit({
+          ...this.base(session),
+          type: "turn.completed",
+          turnId,
+          conversationId: session.conversationId,
+        });
+        return;
+      }
+      const reason = status === "failed" ? "failed" : "interrupted";
+      const message = readString(turn, "errorMessage") ?? readString(asRecord(turn)?.error, "message");
+      this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason, message });
+    });
+
+    rpc.onNotification("thread/tokenUsage/updated", (params) => {
+      const usage = asRecord(asRecord(params)?.usage) ?? asRecord(params) ?? {};
+      this.emit({
+        ...this.base(session),
+        type: "thread.token-usage.updated",
+        usage: {
+          input: numberOrUndefined(usage?.inputTokens ?? usage?.input),
+          output: numberOrUndefined(usage?.outputTokens ?? usage?.output),
+          total: numberOrUndefined(usage?.totalTokens ?? usage?.total),
+        },
+      });
+    });
+
+    rpc.onNotification("item/started", (params) => this.handleItemLifecycle(session, params, "started"));
+    rpc.onNotification("item/completed", (params) => this.handleItemLifecycle(session, params, "completed"));
+
+    const deltaMethods = [
+      "item/agentMessage/delta",
+      "item/reasoning/textDelta",
+      "item/reasoning/summaryTextDelta",
+      "item/commandExecution/outputDelta",
+      "item/fileChange/outputDelta",
+      "item/plan/delta",
+    ];
+    for (const method of deltaMethods) {
+      rpc.onNotification(method, (params) => this.handleDelta(session, params));
+    }
+
+    rpc.onNotification("error", (params) => {
+      const message = readString(params, "message") ?? "Codex reported an error.";
+      if (isNonFatalCodexError(message)) return;
+      this.emit({ ...this.base(session), type: "session.state.changed", state: "error", message });
+    });
+  }
+
+  /** No approval UI in kone v1 — auto-resolve every server-initiated approval
+   *  request the instant it arrives (see the file header comment). Unhandled
+   *  methods fall through to jsonRpc.ts's own "method not found" reply. */
+  private wireRequests(session: CodexSession): void {
+    const { rpc } = session;
+    const autoApprove = async () => ({ decision: "acceptForSession" });
+    rpc.onRequest("item/commandExecution/requestApproval", autoApprove);
+    rpc.onRequest("item/fileChange/requestApproval", autoApprove);
+    rpc.onRequest("item/fileRead/requestApproval", autoApprove);
+    rpc.onRequest("item/permissions/requestApproval", autoApprove);
+    rpc.onRequest("item/tool/requestUserInput", async () => ({ answers: {} }));
+  }
+
+  private handleItemLifecycle(session: CodexSession, params: unknown, lifecycle: "started" | "completed"): void {
+    const payload = asRecord(params);
+    const raw = asRecord(payload?.item) ?? payload;
+    if (!raw) return;
+    const itemId = readString(raw, "id") ?? readString(raw, "itemId");
+    if (!itemId) return;
+
+    const mapped = toRuntimeItemKind(raw.type);
+
+    if (lifecycle === "started") {
+      if (!mapped) return;
+      const isTextKind =
+        mapped.kind === "assistant_text" || mapped.kind === "reasoning_text" || mapped.kind === "plan_text";
+      const buffer: CodexItemBuffer = {
+        itemId,
+        kind: mapped.kind,
+        name: isTextKind ? undefined : (itemDetail(raw) ?? mapped.defaultName),
+        text: isTextKind ? "" : (itemDetail(raw) ?? ""),
+        detail: "",
+      };
+      session.items.set(itemId, buffer);
+      this.emitItem(session, "item.started", buffer, "in-progress");
+      return;
+    }
+
+    const existing = session.items.get(itemId);
+    const kind = existing?.kind ?? mapped?.kind;
+    if (!kind) return;
+    const label = itemDetail(raw);
+    const body = itemDetailBody(raw);
+    const buffer: CodexItemBuffer = {
+      itemId,
+      kind,
+      name: existing?.name ?? mapped?.defaultName,
+      text: existing?.text && existing.text.length > 0 ? existing.text : (label ?? existing?.text ?? ""),
+      detail: existing?.detail && existing.detail.length > 0 ? existing.detail : (body ?? existing?.detail ?? ""),
+    };
+    session.items.set(itemId, buffer);
+    const failed = readString(raw, "status") === "failed" || Boolean(asRecord(raw.error));
+    this.emitItem(session, "item.completed", buffer, failed ? "failed" : "completed");
+  }
+
+  private handleDelta(session: CodexSession, params: unknown): void {
+    const payload = asRecord(params);
+    if (!payload) return;
+    const itemId = readString(payload, "itemId") ?? readString(payload.item, "id");
+    if (!itemId) return;
+    const delta = readString(payload, "delta") ?? readString(payload, "text") ?? readString(payload.content, "text");
+    if (!delta) return;
+    const buffer = session.items.get(itemId);
+    if (!buffer) return;
+    // Text kinds stream their narrative into `text`; a tool call's output
+    // deltas (command stdout, file-change progress) accumulate in `detail`
+    // instead so they never clobber the short inline summary.
+    if (buffer.kind === "tool_call") {
+      buffer.detail += delta;
+    } else {
+      buffer.text += delta;
+    }
+    this.emitItem(session, "item.updated", buffer, "in-progress");
+  }
+
+  private emitItem(
+    session: CodexSession,
+    type: "item.started" | "item.updated" | "item.completed",
+    buffer: CodexItemBuffer,
+    status: RuntimeItemStatus,
+  ): void {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    const item: RuntimeItem = {
+      itemId: buffer.itemId,
+      kind: buffer.kind,
+      status,
+      text: buffer.text,
+      name: buffer.name,
+      ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
+    };
+    this.emit({ ...this.base(session), type, turnId, item });
+  }
+
+  // ── shared helpers ───────────────────────────────────────────────────────
+
+  private base(session: CodexSession) {
+    return {
+      threadId: session.threadId,
+      provider: this.provider,
+      at: Date.now(),
+      source: "codex.rpc.notification" as const,
+    };
+  }
+
+  private toSession(session: CodexSession): Session {
+    return {
+      threadId: session.threadId,
+      provider: this.provider,
+      cwd: session.cwd,
+      status: session.activeTurnId ? "running" : "ready",
+      conversationId: session.conversationId,
+      activeTurnId: session.activeTurnId,
+      model: session.model,
+      mode: session.mode,
+    };
+  }
+
+  private requireSession(threadId: string): CodexSession {
+    const session = this.sessions.get(threadId);
+    if (!session) throw new Error(`No Codex session for thread ${threadId}`);
+    return session;
+  }
+}

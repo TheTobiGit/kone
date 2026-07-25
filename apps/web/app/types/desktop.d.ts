@@ -191,7 +191,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "antigravity";
+export type ProviderKind = "codex";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
 
@@ -206,9 +206,29 @@ export type ProviderStatus = {
   message?: string;
 };
 
-export type ModelDescriptor = { id: string; label: string };
+export type ModelDescriptor = {
+  id: string;
+  label: string;
+  /** Real reasoning-effort ids this model supports (Codex's `model/list`
+   *  `supportedReasoningEfforts`), in the order the API returned them. Absent
+   *  for a model with no reasoning-effort axis at all. */
+  reasoningEfforts?: string[];
+  /** Which of `reasoningEfforts` the provider itself defaults to. */
+  defaultReasoningEffort?: string;
+  /** Real speed/service tiers this model supports (Codex's `model/list`
+   *  `serviceTiers`, falling back to the deprecated `additionalSpeedTiers` id
+   *  list). Absent for a model with no speed-tier axis at all — most models
+   *  don't have one; where it exists it's almost always just a "fast" tier. */
+  serviceTiers?: { id: string; label: string; description?: string }[];
+};
 
-export type InteractionMode = "default" | "accept-edits" | "plan" | "full-access";
+/** The approval-policy ladder — how much the agent may do without asking,
+ *  from most to least restrictive: `ask` always asks first (read-only
+ *  sandbox); `accept-edits` auto-approves file edits but still asks before
+ *  commands/other actions; `full-access` never prompts. Maps onto research's
+ *  own `RuntimeMode` axis (minus its unshipped 4th "auto" rung) — see
+ *  CodexAdapter.ts. */
+export type InteractionMode = "ask" | "accept-edits" | "full-access";
 
 export type SessionStartInput = {
   threadId: string;
@@ -242,6 +262,12 @@ export type SendTurnInput = {
   input: string;
   model?: string;
   mode?: InteractionMode;
+  /** Reasoning effort tier. Providers that bake effort into the model id
+   *  ignore it; providers that expose it as a flag (Codex) use it. */
+  effort?: string;
+  /** A model's chosen service tier (e.g. Codex's "fast" tier id) for this
+   *  turn. Absent means the provider's default tier. */
+  serviceTier?: string;
 };
 
 export type TurnStartResult = { threadId: string; turnId: string };
@@ -250,12 +276,9 @@ export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
 
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
 
-export type RuntimeItemKind =
-  | "assistant_text"
-  | "reasoning_text"
-  | "plan_text"
-  | "tool_call"
-  | "command_output";
+/** A shell command execution is a `tool_call` like any other — it doesn't get
+ *  its own kind. */
+export type RuntimeItemKind = "assistant_text" | "reasoning_text" | "plan_text" | "tool_call";
 
 export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
 
@@ -263,8 +286,13 @@ export type RuntimeItem = {
   itemId: string;
   kind: RuntimeItemKind;
   status: RuntimeItemStatus;
+  /** Streamed narrative for text kinds, or a short inline target/summary for
+   *  a tool_call. */
   text: string;
   name?: string;
+  /** A tool_call's full result body (command output, a diff, a changed-file
+   *  list) — shown on demand. Undefined when there's nothing to expand. */
+  detail?: string;
 };
 
 export type TokenUsage = { input?: number; output?: number; total?: number };
@@ -272,9 +300,9 @@ export type TokenUsage = { input?: number; output?: number; total?: number };
 export type ProviderRefs = { conversationId?: string; providerTurnId?: string };
 
 export type RuntimeEventSource =
-  | "antigravity.print.stdout"
-  | "antigravity.print.stderr"
-  | "antigravity.print.lifecycle";
+  | "codex.rpc.notification"
+  | "codex.rpc.stderr"
+  | "codex.rpc.lifecycle";
 
 type AgentBaseEvent = {
   threadId: string;

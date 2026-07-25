@@ -2,14 +2,15 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, FlashIcon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import ParticleOrb from "~/components/ParticleOrb.vue";
 import type { InteractionMode } from "~/types/desktop";
 import {
-  effortForId,
+  effortForTier,
   familyForId,
   hasEffortChoice,
+  type EffortTier,
   type ModelOption,
 } from "~/utils/modelCatalog";
 
@@ -37,17 +38,27 @@ const props = defineProps<{
   picking?: boolean;
   /** The provider's models, grouped into families with real efforts. */
   models?: ModelOption[];
-  /** The selected raw model id (carries the effort), or undefined for default. */
+  /** The selected raw model id (carries the effort for a baked-suffix provider),
+   *  or undefined for default. */
   modelId?: string;
+  /** The current reasoning-effort tier. For a flag-based provider (Codex) this
+   *  is the ONLY thing that tells a family's synthetic ladder rungs apart —
+   *  they all share one `modelId`. */
+  reasoning?: EffortTier;
   /** The agent's permission mode — how much it may do without asking. */
   mode?: InteractionMode;
+  /** Is the model's real "fast" service tier (Codex's `serviceTiers`) active
+   *  for this turn? Only meaningful when the current model has one. */
+  fastMode?: boolean;
 }>();
 
 const emit = defineEmits<{
   send: [text: string];
   interrupt: [];
   "update:modelId": [id: string];
+  "update:reasoning": [tier: EffortTier];
   "update:mode": [mode: InteractionMode];
+  "update:fastMode": [on: boolean];
   /** Ask the host to open the full providers→models→effort picker. */
   "open-models": [];
 }>();
@@ -55,12 +66,15 @@ const emit = defineEmits<{
 const { cue } = useSound();
 
 // ── model + effort pickers (both on the right) ─────────────────────────────────
-// The selected model id decomposes into its family and the effort within it, so
-// the two pickers stay in sync from a single source of truth (the id).
+// The family comes from the model id; the effort within it comes from the
+// reasoning tier (not the id — a synthetic ladder's rungs all share one id).
 const catalog = computed<ModelOption[]>(() => props.models ?? []);
 const currentFamily = computed(() => familyForId(catalog.value, props.modelId));
-const currentEffort = computed(() => effortForId(currentFamily.value, props.modelId));
+const currentEffort = computed(() => effortForTier(currentFamily.value, props.reasoning));
 const showEffort = computed(() => hasEffortChoice(currentFamily.value));
+// Fast mode — a plain on/off toggle for the current family's real "fast"
+// service tier (Codex's `serviceTiers`), when it has one. Most models don't.
+const fastTier = computed(() => currentFamily.value?.fastTier);
 
 const modelName = computed(
   () => currentFamily.value?.label ?? props.modelId ?? "Default model",
@@ -79,10 +93,11 @@ const bumping = ref(false);
 function cycleEffort() {
   const fam = currentFamily.value;
   if (!fam || fam.efforts.length < 2) return;
-  const idx = fam.efforts.findIndex((e) => e.id === props.modelId);
+  const idx = fam.efforts.findIndex((e) => e.tier === props.reasoning);
   const next = fam.efforts[(idx + 1) % fam.efforts.length];
   if (!next) return;
-  emit("update:modelId", next.id);
+  emit("update:modelId", next.modelId);
+  emit("update:reasoning", next.tier);
   cue("toggle");
   // A quick tactile bump so the step registers.
   bumping.value = false;
@@ -95,22 +110,29 @@ function cycleEffort() {
 function brainStack(n: number): number[] {
   return Array.from({ length: Math.max(1, n) }, (_, i) => i);
 }
+// Toggle the current family's fast tier on/off — a plain boolean, not a cycle.
+function toggleFastMode() {
+  if (!fastTier.value) return;
+  emit("update:fastMode", !props.fastMode);
+  cue("toggle");
+}
 
 // ── permission mode (how much the agent may do without asking) ─────────────────
-// A climbing ladder of autonomy, cycled on click like the effort control — no
-// dropdown. Each rung maps to a real agy flag downstream (plan / accept-edits /
-// --dangerously-skip-permissions); the icon carries a soft hue cue, calm at the
-// bottom and warm at the top. The label always names the current rung so the
-// cycle stays discoverable.
+// This IS the approval policy — a climbing ladder of autonomy, cycled on click
+// like the effort control — no dropdown. Each rung maps to a real Codex
+// approval/sandbox pairing downstream (ask / accept-edits / full-access); the
+// icon carries a soft hue cue, calm at the bottom and warm at the top. The
+// label always names the current rung so the cycle stays discoverable. (Not
+// to be confused with a provider's separate plan/build turn mode — kone
+// doesn't expose that as its own toggle yet.)
 type ModeMeta = { id: InteractionMode; label: string; title: string; hue: string };
 const MODES: ModeMeta[] = [
-  { id: "plan", label: "Plan", title: "Plan — reads and proposes, makes no changes", hue: "#6E8BEF" },
-  { id: "default", label: "Ask", title: "Ask — prompts before each action", hue: "#9A9A97" },
-  { id: "accept-edits", label: "Edits", title: "Auto-edit — applies edits, asks before commands", hue: "#E0A83A" },
+  { id: "ask", label: "Ask", title: "Ask — reads and asks before any change", hue: "#6E8BEF" },
+  { id: "accept-edits", label: "Edits", title: "Edits — auto-approves file edits, asks before commands", hue: "#5EAF8C" },
   { id: "full-access", label: "Full", title: "Full access — runs everything without prompting", hue: "#D08466" },
 ];
 const currentMode = computed(
-  () => MODES.find((m) => m.id === (props.mode ?? "default")) ?? MODES[1]!,
+  () => MODES.find((m) => m.id === (props.mode ?? "accept-edits")) ?? MODES[1]!,
 );
 const modeBump = ref(false);
 function cycleMode() {
@@ -379,7 +401,7 @@ watch(text, () => nextTick(sync));
          ride outward on the surface's growing edge. -->
     <div class="side side--lead" :class="{ 'is-shown': open }" :inert="!open">
       <!-- Permission mode — no dropdown. Clicking cycles up the autonomy ladder
-           (Plan → Ask → Edits → Full) and wraps; the hued icon + label carry it. -->
+           (Ask → Edits → Full) and wraps; the hued icon + label carry it. -->
       <button
         type="button"
         class="mode"
@@ -390,23 +412,20 @@ watch(text, () => nextTick(sync));
         @click.stop="cycleMode"
       >
         <svg class="mode__icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <!-- Plan · an eye (reads only) -->
-          <template v-if="currentMode.id === 'plan'">
-            <path d="M2.5 9S5 4.6 9 4.6 15.5 9 15.5 9 13 13.4 9 13.4 2.5 9 2.5 9Z" />
-            <circle cx="9" cy="9" r="1.7" />
+          <!-- Ask · a chat bubble with a question (the agent asks first) -->
+          <template v-if="currentMode.id === 'ask'">
+            <path d="M3 5.2c0-.9.7-1.6 1.6-1.6h8.8c.9 0 1.6.7 1.6 1.6v4.6c0 .9-.7 1.6-1.6 1.6H8l-3 2.4V11.4H4.6c-.9 0-1.6-.7-1.6-1.6Z" />
+            <path d="M7.6 6.7a1.4 1.4 0 1 1 1.9 1.3c-.5.3-.7.6-.7 1.1" />
+            <path d="M8.8 10.7v.02" />
           </template>
-          <!-- Ask · a chat bubble (prompts first) -->
-          <template v-else-if="currentMode.id === 'default'">
-            <path d="M3.5 5.2A1.2 1.2 0 0 1 4.7 4h8.6a1.2 1.2 0 0 1 1.2 1.2v5a1.2 1.2 0 0 1-1.2 1.2H8l-3 2.4v-2.4H4.7a1.2 1.2 0 0 1-1.2-1.2Z" />
-          </template>
-          <!-- Auto-edit · a pencil (applies edits) -->
+          <!-- Edits · a pencil (auto-applies edits) -->
           <template v-else-if="currentMode.id === 'accept-edits'">
             <path d="M11.4 3.7 14.3 6.6 6.9 14H4v-2.9Z" />
             <path d="M10.4 4.7 13.3 7.6" />
           </template>
-          <!-- Full access · a bolt (no limits) -->
+          <!-- Full access · a shield (no limits, nothing held back) -->
           <template v-else>
-            <path d="M10 2.5 4.6 9.9H8l-.9 5.6L13.4 8H9.5Z" />
+            <path d="M9 2.6 14 4.6V9C14 12 11.9 14 9 15.4 6.1 14 4 12 4 9V4.6Z" />
           </template>
         </svg>
         <span class="mode__label">{{ currentMode.label }}</span>
@@ -528,6 +547,20 @@ watch(text, () => nextTick(sync));
             :style="{ color: currentEffort.hue }"
           />
         </span>
+      </button>
+
+      <!-- Fast mode — a plain on/off for the model's real "fast" service tier,
+           when it has one. -->
+      <button
+        v-if="fastTier"
+        type="button"
+        class="fast"
+        :class="{ 'fast--on': fastMode }"
+        :aria-pressed="Boolean(fastMode)"
+        :aria-label="`${fastTier.label}: ${fastMode ? 'on' : 'off'}. Click to toggle.`"
+        @click.stop="toggleFastMode"
+      >
+        <HugeiconsIcon :icon="FlashIcon" :size="15" :stroke-width="2" />
       </button>
     </div>
   </div>
@@ -953,6 +986,28 @@ watch(text, () => nextTick(sync));
 .effort:active { transform: translateY(0) scale(0.96); }
 /* Each cycle step gives the stack a quick tactile pop. */
 .effort--bump .stack { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+/* ── Fast mode toggle ─────────────────────────────────────────────────────── */
+.fast {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  width: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--chip-ink);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
+}
+.fast:hover { opacity: 1; transform: translateY(-1px); }
+.fast:active { transform: translateY(0) scale(0.96); }
+.fast--on {
+  color: #f5b300;
+  opacity: 1;
+  filter: drop-shadow(0 0 4px rgba(245, 179, 0, 0.5));
+}
 @keyframes effort-pop {
   0% { transform: scale(0.82); }
   60% { transform: scale(1.12); }

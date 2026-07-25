@@ -1,4 +1,4 @@
-import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
+import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import type {
   ApprovalDecision,
   EmitEvent,
@@ -32,7 +32,7 @@ export class AgentService {
     const emit: EmitEvent = (event) => {
       for (const listener of this.listeners) listener(event);
     };
-    this.register(new AntigravityAdapter(emit));
+    this.register(new CodexAdapter(emit));
   }
 
   private register(adapter: ProviderAdapter): void {

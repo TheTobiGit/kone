@@ -24,32 +24,46 @@ let preparing: Promise<void> | null = null;
 
 const MOCK_STATUSES: ProviderStatus[] = [
   {
-    provider: "antigravity",
-    label: "Antigravity",
+    provider: "codex",
+    label: "Codex",
     available: true,
     authStatus: "authenticated",
     readiness: "ready",
-    version: "1.1.4",
-    authLabel: "Google Sign-In",
+    version: "0.48.0",
+    authLabel: "ChatGPT Sign-In",
   },
 ];
 
-// The real `agy models` set (v1.1.5). Kept verbatim so browser dev shows the
-// exact same model list the desktop bridge returns — labels are prettified in
-// one place (below) via modelLabel.
+// Real ids + display names + reasoning efforts, captured live from
+// `codex app-server`'s `model/list` — no baked effort suffix, so browser dev
+// exercises the same real-per-model ladder buildModelCatalog() builds.
 const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
-  antigravity: [
-    { id: "gemini-3.6-flash-high", label: "gemini-3.6-flash-high" },
-    { id: "gemini-3.6-flash-medium", label: "gemini-3.6-flash-medium" },
-    { id: "gemini-3.6-flash-low", label: "gemini-3.6-flash-low" },
-    { id: "gemini-3.5-flash-high", label: "gemini-3.5-flash-high" },
-    { id: "gemini-3.5-flash-medium", label: "gemini-3.5-flash-medium" },
-    { id: "gemini-3.5-flash-low", label: "gemini-3.5-flash-low" },
-    { id: "gemini-3.1-pro-high", label: "gemini-3.1-pro-high" },
-    { id: "gemini-3.1-pro-low", label: "gemini-3.1-pro-low" },
-    { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
-    { id: "claude-opus-4-6-thinking", label: "claude-opus-4-6-thinking" },
-    { id: "gpt-oss-120b-medium", label: "gpt-oss-120b-medium" },
+  codex: [
+    {
+      id: "gpt-5.6-terra",
+      label: "GPT-5.6-Terra",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "gpt-5.6-luna",
+      label: "GPT-5.6-Luna",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "gpt-5.5",
+      label: "GPT-5.5",
+      reasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "gpt-5.4-mini",
+      label: "GPT-5.4-Mini",
+      reasoningEfforts: ["minimal", "low", "medium"],
+      defaultReasoningEffort: "low",
+    },
   ],
 };
 
@@ -78,10 +92,11 @@ export function useAgentProviders() {
     }
   }
 
-  /** Models a provider offers (its own `list models` surface). Labels are
-   *  prettified from the raw CLI ids here so the picker reads cleanly while the
-   *  id we send back as `--model` stays exactly what the CLI emitted. Cached at
-   *  module scope after the first fetch (bypass with `force`). */
+  /** Models a provider offers (its own `list models` surface). The label is
+   *  whatever the CLI's own response called it (Codex's `model/list` returns a
+   *  real `displayName` per model) — kone shows that verbatim rather than
+   *  re-guessing a name from the id. Cached at module scope after the first
+   *  fetch (bypass with `force`). */
   async function models(provider: ProviderKind, force = false): Promise<ModelDescriptor[]> {
     const cached = modelCache.value[provider];
     if (cached && !force) return cached;
@@ -95,11 +110,10 @@ export function useAgentProviders() {
         raw = [];
       }
     }
-    const list = raw.map((m) => ({ ...m, label: modelLabel(m.id) }));
     // Only cache a real list — an empty result means the CLI errored or wasn't
     // reachable, and we want the next call to retry rather than serve the miss.
-    if (list.length) modelCache.value = { ...modelCache.value, [provider]: list };
-    return list;
+    if (raw.length) modelCache.value = { ...modelCache.value, [provider]: raw };
+    return raw;
   }
 
   /** Warm the whole provider surface at app open: probe the machine once, then

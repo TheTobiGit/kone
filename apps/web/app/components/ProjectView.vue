@@ -10,7 +10,8 @@ import type { ChangeItem } from "~/types/change";
 import type { GitFileStatus, InteractionMode, ModelDescriptor } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import { buildModelCatalog, effortForId, familyForId } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
+import type { EffortTier } from "~/utils/modelCatalog";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -25,14 +26,14 @@ const { warm } = useHighlighter();
 // ── the live agent session ────────────────────────────────────────────────────
 // One provider session, scoped to this project. The composer feeds it turns and
 // the thread renders them — the same normalized event stream drives both, so
-// nothing here knows it's Antigravity underneath. In `nuxt dev` (no bridge) the
+// nothing here knows it's Codex underneath. In `nuxt dev` (no bridge) the
 // composable streams a faithful mock so the whole flow is demoable in a browser.
 const providers = useAgentProviders();
 // cwd is a getter so the session always boots in whatever project is active —
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
-const agent = useAgent({ provider: "antigravity", cwd: () => props.project.path });
-const { blocks, busy, model, mode, now: agentNow } = agent;
+const agent = useAgent({ provider: "codex", cwd: () => props.project.path });
+const { blocks, busy, model, mode, reasoning, serviceTier, now: agentNow, error: agentError } = agent;
 
 // The provider's flat model list, grouped into families with real efforts. The
 // composer drives everything off the catalog; the raw id (which carries the
@@ -43,7 +44,7 @@ const modelOptions = computed(() => buildModelCatalog(rawModels.value));
 // Remember the last model + permission mode per project across quits.
 const MODEL_KEY = `kone:model:${props.project.path}`;
 const MODE_KEY = `kone:mode:${props.project.path}`;
-const MODES: InteractionMode[] = ["default", "plan", "accept-edits", "full-access"];
+const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
 
 // Two views over the same page: the working tree ("work") and the conversation
 // ("chat"). Sending the first turn flips to chat. (A way back to the working
@@ -55,15 +56,15 @@ onMounted(async () => {
   // that in-flight run (deduped — no second probe) or returns instantly if done,
   // then reads the cached model list. Pick a default, then open the session.
   await providers.prepare();
-  rawModels.value = await providers.models("antigravity");
+  rawModels.value = await providers.models("codex");
   if (!model.value) {
     const saved = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
-    const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.id === saved));
+    const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === saved));
     if (saved && inCatalog) agent.setModel(saved);
     else {
       const first = modelOptions.value[0];
       const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-      if (eff) agent.setModel(eff.id);
+      if (eff) agent.setModel(eff.modelId);
     }
   }
   // Restore the last permission mode for this project.
@@ -76,13 +77,13 @@ onMounted(async () => {
   await agent.start();
 });
 
-// The raw id carries the effort; derive the tier and ride it along on each turn
-// (Antigravity ignores it — baked in the id — but a flag-based provider maps
-// it). Also persist the choice per project.
+// Derive the effort tier for the current model id and ride it along on each
+// turn — Codex maps it to its own reasoning-effort turn param. Also persist
+// the choice per project.
 watch(
   model,
   (id) => {
-    const eff = effortForId(familyForId(modelOptions.value, id), id);
+    const eff = effortForTier(familyForId(modelOptions.value, id), reasoning.value);
     if (eff) agent.setReasoning(eff.tier);
     if (import.meta.client && id) localStorage.setItem(MODEL_KEY, id);
   },
@@ -211,10 +212,28 @@ const { reveal } = useReveal();
 function onRevealProject() {
   void reveal(props.project.path);
 }
-function onModelSelect(id: string) {
-  agent.setModel(id);
+// The full picker and the composer's inline effort cycle both know the exact
+// tier they picked — set it directly rather than relying on the model watcher,
+// which only re-fires when the *modelId* changes and stays silent when cycling
+// effort within a Codex family (every rung there shares one modelId).
+function applyModelEffort(picked: { modelId: string; tier: EffortTier; fastMode: boolean }) {
+  agent.setModel(picked.modelId);
+  agent.setReasoning(picked.tier);
+  const fam = familyForId(modelOptions.value, picked.modelId);
+  agent.setServiceTier(picked.fastMode ? fam?.fastTier?.id : undefined);
+}
+function onModelSelect(picked: { modelId: string; tier: EffortTier; fastMode: boolean }) {
+  applyModelEffort(picked);
   modelPickerOpen.value = false;
   cue("toggle");
+}
+// The composer's inline fast-mode toggle acts on the CURRENT model only — it
+// doesn't change modelId/tier, just whether that model's real "fast" tier is
+// applied on the next turn.
+const fastActive = computed(() => Boolean(serviceTier.value));
+function onUpdateFastMode(on: boolean) {
+  const fam = familyForId(modelOptions.value, model.value);
+  agent.setServiceTier(on ? fam?.fastTier?.id : undefined);
 }
 
 function onSend(text: string) {
@@ -392,6 +411,7 @@ function onDiscardFile(path: string) {
       <ConversationThread
         :blocks="blocks"
         :now="agentNow"
+        :session-error="agentError"
       />
     </div>
 
@@ -495,11 +515,15 @@ function onDiscardFile(path: string) {
         :picking="modelPickerOpen"
         :models="modelOptions"
         :model-id="model"
+        :reasoning="reasoning"
         :mode="mode"
+        :fast-mode="fastActive"
         @send="onSend"
         @interrupt="onInterrupt"
         @update:model-id="agent.setModel"
+        @update:reasoning="agent.setReasoning"
         @update:mode="agent.setMode"
+        @update:fast-mode="onUpdateFastMode"
         @open-models="modelPickerOpen = true"
       />
     </div>
@@ -524,8 +548,10 @@ function onDiscardFile(path: string) {
       v-if="modelPickerOpen"
       :models="modelOptions"
       :model-id="model"
+      :reasoning="reasoning"
+      :fast-mode="fastActive"
       @select="onModelSelect"
-      @apply="agent.setModel"
+      @apply="applyModelEffort"
       @cancel="modelPickerOpen = false"
     />
 

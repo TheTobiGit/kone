@@ -64,7 +64,7 @@ function registerIpc() {
   registerSystemIpc();
 
   // Agent layer: discover the user's installed agent CLIs and drive them
-  // (Antigravity first). Streams runtime events on the "agent:event" channel.
+  // (Codex first). Streams runtime events on the "agent:event" channel.
   registerAgentIpc();
 }
 
