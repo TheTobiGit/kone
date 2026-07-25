@@ -52,9 +52,23 @@ run("bun", ["run", "dev"], webDir, {
 await waitForUrl(devServerUrl);
 
 console.log("Compiling Electron main/preload...");
+// Keep the Claude Agent SDK external — it resolves its own native `claude` CLI
+// binary relative to its real node_modules location, so bundling it (which moves
+// the import.meta.url anchor) breaks that resolution at runtime. See build.ts.
 const compileMain = spawnSync(
   "bun",
-  ["build", "src/main.ts", "--outfile", "dist/main.js", "--target", "node", "--external", "electron"],
+  [
+    "build",
+    "src/main.ts",
+    "--outfile",
+    "dist/main.js",
+    "--target",
+    "node",
+    "--external",
+    "electron",
+    "--external",
+    "@anthropic-ai/claude-agent-sdk",
+  ],
   { cwd: desktopDir, stdio: "inherit" },
 );
 // Sandboxed preloads must be CommonJS; emit .cjs so it's unambiguous under

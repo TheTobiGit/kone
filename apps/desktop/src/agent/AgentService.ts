@@ -1,3 +1,4 @@
+import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import type {
   ApprovalDecision,
@@ -33,6 +34,7 @@ export class AgentService {
       for (const listener of this.listeners) listener(event);
     };
     this.register(new CodexAdapter(emit));
+    this.register(new ClaudeAdapter(emit));
   }
 
   private register(adapter: ProviderAdapter): void {

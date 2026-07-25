@@ -7,11 +7,11 @@ import { ArrowTurnBackwardIcon, AppleFinderIcon } from "@hugeicons/core-free-ico
 import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
-import type { GitFileStatus, InteractionMode, ModelDescriptor } from "~/types/desktop";
+import type { GitFileStatus, InteractionMode, ProviderKind } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
-import type { EffortTier } from "~/utils/modelCatalog";
+import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -32,19 +32,42 @@ const providers = useAgentProviders();
 // cwd is a getter so the session always boots in whatever project is active —
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
+// Provider is chosen in onMounted (below) from what's installed + last used;
+// "codex" is just the pre-mount default the ref carries until then.
 const agent = useAgent({ provider: "codex", cwd: () => props.project.path });
 const { blocks, busy, model, mode, reasoning, serviceTier, now: agentNow, error: agentError } = agent;
 
-// The provider's flat model list, grouped into families with real efforts. The
-// composer drives everything off the catalog; the raw id (which carries the
-// effort) is what we send to the session.
-const rawModels = ref<ModelDescriptor[]>([]);
-const modelOptions = computed(() => buildModelCatalog(rawModels.value));
+// The catalog for each installed provider — its flat model list grouped into
+// families with real efforts. The composer + picker drive everything off these;
+// the raw id (which carries the effort) is what we send to the session.
+const catalogs = ref<Partial<Record<ProviderKind, ModelOption[]>>>({});
+// The active provider's catalog feeds the composer's own model name + effort dial.
+const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 
-// Remember the last model + permission mode per project across quits.
+// A model change on a provider that bakes model/effort at spawn (Claude) can't
+// apply to a running session — it needs a fresh one. Codex takes model/effort
+// per turn, so it changes in place. Mirrors each adapter's `sessionModelSwitch`.
+const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent"]);
+const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic" };
+const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude" };
+
+// Remember the last provider + model + permission mode per project across quits.
+const PROVIDER_KEY = `kone:provider:${props.project.path}`;
 const MODEL_KEY = `kone:model:${props.project.path}`;
 const MODE_KEY = `kone:mode:${props.project.path}`;
 const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
+
+// The provider rail the model picker shows — one ready provider per catalog.
+const pickerProviders = computed<PickerProvider[]>(() =>
+  providers.ready.value.map((s) => ({
+    id: s.provider,
+    label: s.label,
+    sub: `${PROVIDER_VENDOR[s.provider]} · ${catalogs.value[s.provider]?.length ?? 0} models`,
+    brand: PROVIDER_BRAND[s.provider],
+    ready: s.readiness === "ready",
+    models: catalogs.value[s.provider] ?? [],
+  })),
+);
 
 // Two views over the same page: the working tree ("work") and the conversation
 // ("chat"). Sending the first turn flips to chat. (A way back to the working
@@ -54,13 +77,32 @@ const view = ref<"work" | "chat">("work");
 onMounted(async () => {
   // Providers + models are warmed at app open (agent-warmup plugin); this awaits
   // that in-flight run (deduped — no second probe) or returns instantly if done,
-  // then reads the cached model list. Pick a default, then open the session.
+  // then reads the cached lists. Build a catalog for every ready provider.
   await providers.prepare();
-  rawModels.value = await providers.models("codex");
+  const readyProviders = providers.ready.value;
+  await Promise.all(
+    readyProviders.map(async (s) => {
+      const raw = await providers.models(s.provider);
+      catalogs.value = { ...catalogs.value, [s.provider]: buildModelCatalog(raw) };
+    }),
+  );
+
+  // Pick the provider to run: the last one used here (if still ready), else the
+  // preferred order (Codex first for continuity), else whatever's ready.
+  const saved = import.meta.client ? localStorage.getItem(PROVIDER_KEY) : null;
+  const isReady = (p: string | null): p is ProviderKind =>
+    Boolean(p) && readyProviders.some((s) => s.provider === p);
+  const chosen: ProviderKind | undefined = isReady(saved)
+    ? saved
+    : readyProviders.find((s) => s.provider === "codex")?.provider ?? readyProviders[0]?.provider;
+  if (chosen) agent.setProvider(chosen);
+
+  // Pick a default model within the chosen provider (restoring the saved one when
+  // it's still in that provider's catalog).
   if (!model.value) {
-    const saved = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
-    const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === saved));
-    if (saved && inCatalog) agent.setModel(saved);
+    const savedModel = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
+    const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === savedModel));
+    if (savedModel && inCatalog) agent.setModel(savedModel);
     else {
       const first = modelOptions.value[0];
       const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
@@ -221,15 +263,33 @@ function onRevealProject() {
 // The full picker and the composer's inline effort cycle both know the exact
 // tier they picked — set it directly rather than relying on the model watcher,
 // which only re-fires when the *modelId* changes and stays silent when cycling
-// effort within a Codex family (every rung there shares one modelId).
-function applyModelEffort(picked: { modelId: string; tier: EffortTier; fastMode: boolean }) {
+// effort within a family (every rung there shares one modelId).
+//
+// A pick can also switch providers (Codex → Claude): those are separate CLIs
+// with no shared session, so the change is applied and the session restarted on
+// the new engine. A same-provider model change on a spawn-fixed provider (Claude)
+// also needs a restart — its model/effort are baked when the SDK process spawns.
+// Codex changes ride the next turn in-session, no restart.
+type ModelPick = { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean };
+async function applyModelEffort(picked: ModelPick) {
+  const providerChanged = picked.provider !== agent.provider.value;
+  const modelChanged = picked.modelId !== model.value;
+  if (providerChanged) agent.setProvider(picked.provider);
   agent.setModel(picked.modelId);
   agent.setReasoning(picked.tier);
-  const fam = familyForId(modelOptions.value, picked.modelId);
+  const fam = familyForId(catalogs.value[picked.provider] ?? [], picked.modelId);
   agent.setServiceTier(picked.fastMode ? fam?.fastTier?.id : undefined);
+
+  const needsRestart = providerChanged || (RESTART_ON_MODEL_CHANGE.has(picked.provider) && modelChanged);
+  if (needsRestart) {
+    if (import.meta.client && providerChanged) localStorage.setItem(PROVIDER_KEY, picked.provider);
+    // A turn in flight is torn down by the restart — stop it cleanly first.
+    if (busy.value) await agent.interrupt();
+    await agent.restart();
+  }
 }
-function onModelSelect(picked: { modelId: string; tier: EffortTier; fastMode: boolean }) {
-  applyModelEffort(picked);
+function onModelSelect(picked: ModelPick) {
+  void applyModelEffort(picked);
   modelPickerOpen.value = false;
   cue("toggle");
 }
@@ -552,7 +612,8 @@ function onDiscardFile(path: string) {
     <!-- The full providers → models → effort picker, in the folder-picker shell. -->
     <ModelPickerModal
       v-if="modelPickerOpen"
-      :models="modelOptions"
+      :providers="pickerProviders"
+      :active-provider="agent.provider.value"
       :model-id="model"
       :reasoning="reasoning"
       :fast-mode="fastActive"

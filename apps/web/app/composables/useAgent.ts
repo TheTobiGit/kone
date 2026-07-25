@@ -70,6 +70,10 @@ export function useAgent(options: UseAgentOptions) {
   const error = ref<string | null>(null);
   const tokenUsage = ref<TokenUsage | null>(null);
 
+  // The provider is mutable so a thread can switch engines (Codex ↔ Claude).
+  // Because the two are separate CLIs with no shared conversation, a switch is a
+  // fresh session — restart() below tears the old one down and starts anew.
+  const provider = ref<ProviderKind>(options.provider);
   const model = ref(options.model);
   const mode = ref<InteractionMode>(options.mode ?? "accept-edits");
   const reasoning = ref<ReasoningTier>(options.reasoning ?? "medium");
@@ -206,10 +210,14 @@ export function useAgent(options: UseAgentOptions) {
     try {
       session.value = await api.startSession({
         threadId: threadId.value,
-        provider: options.provider,
+        provider: provider.value,
         cwd: resolveCwd(),
         model: model.value,
         mode: mode.value,
+        // Providers that fix effort when the session process spawns (Claude)
+        // read it here; flag-based ones (Codex) ignore it and take effort per
+        // turn instead. Safe to always send — the adapter picks what it needs.
+        effort: reasoning.value,
       });
       sessionState.value = session.value.status;
     } catch (e) {
@@ -270,6 +278,9 @@ export function useAgent(options: UseAgentOptions) {
     }
   }
 
+  function setProvider(next: ProviderKind): void {
+    provider.value = next;
+  }
   function setModel(id: string | undefined): void {
     model.value = id;
   }
@@ -296,6 +307,21 @@ export function useAgent(options: UseAgentOptions) {
     }
     detach?.();
     detach = null;
+  }
+
+  /** Tear the live session down and start a fresh one under a new thread id.
+   *  Used when a change can't be applied to a running session — switching
+   *  provider (a different CLI entirely), or changing a Claude model, whose
+   *  effort/model are baked when the SDK subprocess spawns (the adapter reports
+   *  `sessionModelSwitch: "restart-session"`). The prior turns stay on screen as
+   *  history; new turns stream in under the new session. */
+  async function restart(): Promise<void> {
+    await dispose();
+    threadId.value = uid();
+    tokenUsage.value = null;
+    error.value = null;
+    sessionState.value = "starting";
+    await start();
   }
 
   onBeforeUnmount(() => {
@@ -416,7 +442,7 @@ export function useAgent(options: UseAgentOptions) {
       // The final answer.
       await stream(
         "assistant_text",
-        `Done — for "${prompt}", the parts now render in the true order they arrived: thinking, tool calls, and text interleaved, exactly like a real ${options.provider} session. This is a mocked reply (no agent ran in the browser), but every event flowed through the same stream.`,
+        `Done — for "${prompt}", the parts now render in the true order they arrived: thinking, tool calls, and text interleaved, exactly like a real ${provider.value} session. This is a mocked reply (no agent ran in the browser), but every event flowed through the same stream.`,
       );
       if (cancelled) return;
       reduce({ ...base("turn.completed"), type: "turn.completed", turnId } as RuntimeEvent);
@@ -428,7 +454,7 @@ export function useAgent(options: UseAgentOptions) {
   function base(_type: string) {
     return {
       threadId: threadId.value,
-      provider: options.provider,
+      provider: provider.value,
       at: Date.now(),
       source: "codex.rpc.lifecycle" as const,
     };
@@ -437,7 +463,7 @@ export function useAgent(options: UseAgentOptions) {
   return {
     // identity
     threadId,
-    provider: options.provider,
+    provider,
     // state
     blocks,
     session,
@@ -452,8 +478,10 @@ export function useAgent(options: UseAgentOptions) {
     now,
     // actions
     start,
+    restart,
     send,
     interrupt,
+    setProvider,
     setModel,
     setMode,
     setReasoning,

@@ -191,7 +191,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "codex";
+export type ProviderKind = "codex" | "claudeAgent";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
 
@@ -236,6 +236,11 @@ export type SessionStartInput = {
   cwd: string;
   model?: string;
   mode?: InteractionMode;
+  /** Reasoning-effort tier. Flag-based providers (Codex) take effort per turn
+   *  and ignore this; providers that fix effort when the session process spawns
+   *  (Claude — the SDK `effort` is a spawn-time option) read it here, so
+   *  changing it restarts the session. */
+  effort?: string;
 };
 
 export type RuntimeSessionState =
@@ -302,7 +307,12 @@ export type ProviderRefs = { conversationId?: string; providerTurnId?: string };
 export type RuntimeEventSource =
   | "codex.rpc.notification"
   | "codex.rpc.stderr"
-  | "codex.rpc.lifecycle";
+  | "codex.rpc.lifecycle"
+  // Claude Agent SDK: `message` = a translated SDKMessage from the query
+  // stream; `lifecycle` = session start/exit; `stderr` = the CLI's stderr line.
+  | "claude.sdk.message"
+  | "claude.sdk.stderr"
+  | "claude.sdk.lifecycle";
 
 type AgentBaseEvent = {
   threadId: string;

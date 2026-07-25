@@ -9,8 +9,10 @@
 // union. The renderer is written once against that union and never learns which
 // CLI is underneath. Adding a provider is a new adapter, not a UI change.
 
-/** A supported agent provider. Grows as adapters land (claudeAgent, …). */
-export type ProviderKind = "codex";
+/** A supported agent provider. `claudeAgent` drives Claude Code through the
+ *  `@anthropic-ai/claude-agent-sdk` (which runs the user's own Claude login);
+ *  `codex` drives `codex app-server`. Grows as adapters land. */
+export type ProviderKind = "codex" | "claudeAgent";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -83,6 +85,12 @@ export type SessionStartInput = {
   /** Provider model id (ModelDescriptor.id); provider default when omitted. */
   model?: string;
   mode?: InteractionMode;
+  /** Reasoning-effort tier to run at. Flag-based providers (Codex) take effort
+   *  per turn and ignore this; providers that fix effort when the session
+   *  process spawns (Claude, whose SDK `effort` is a spawn-time option) read it
+   *  here — changing it means restarting the session (AdapterCapabilities
+   *  `sessionModelSwitch: "restart-session"`). */
+  effort?: string;
 };
 
 export type Session = {
@@ -184,7 +192,12 @@ export type ProviderRefs = {
 export type RuntimeEventSource =
   | "codex.rpc.notification"
   | "codex.rpc.stderr"
-  | "codex.rpc.lifecycle";
+  | "codex.rpc.lifecycle"
+  // Claude Agent SDK: `message` = a translated SDKMessage from the query
+  // stream; `lifecycle` = session start/exit; `stderr` = the CLI's stderr line.
+  | "claude.sdk.message"
+  | "claude.sdk.stderr"
+  | "claude.sdk.lifecycle";
 
 type BaseEvent = {
   threadId: string;

@@ -32,6 +32,15 @@ const MOCK_STATUSES: ProviderStatus[] = [
     version: "0.48.0",
     authLabel: "ChatGPT Sign-In",
   },
+  {
+    provider: "claudeAgent",
+    label: "Claude",
+    available: true,
+    authStatus: "authenticated",
+    readiness: "ready",
+    version: "2.1.0",
+    authLabel: "Claude Max",
+  },
 ];
 
 // Real ids + display names + reasoning efforts, captured live from
@@ -63,6 +72,29 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
       label: "GPT-5.4-Mini",
       reasoningEfforts: ["minimal", "low", "medium"],
       defaultReasoningEffort: "low",
+    },
+  ],
+  // Real ids + effort ladders from the Claude Agent SDK's model list
+  // (initializationResult().models). Effort is a spawn-time SDK option, so
+  // picking a rung restarts the session (see ClaudeAdapter capabilities).
+  claudeAgent: [
+    {
+      id: "claude-opus-5",
+      label: "Claude Opus 5",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+    },
+    {
+      id: "claude-sonnet-5",
+      label: "Claude Sonnet 5",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "claude-haiku-4-5",
+      label: "Claude Haiku 4.5",
+      reasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
     },
   ],
 };

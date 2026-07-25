@@ -4,7 +4,8 @@ import { motion } from "motion-v";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon } from "@hugeicons/core-free-icons";
-import { EFFORT_META, type BrandKey, type EffortTier, type ModelOption } from "~/utils/modelCatalog";
+import { EFFORT_META, type BrandKey, type EffortTier, type PickerProvider } from "~/utils/modelCatalog";
+import type { ProviderKind } from "~/types/desktop";
 
 // The model picker — a persistent left rail of providers next to a masked model
 // list, wearing the same shell as our folder/location picker: a scrim + an
@@ -14,13 +15,19 @@ import { EFFORT_META, type BrandKey, type EffortTier, type ModelOption } from "~
 // own settings bar (gear icon) with the same reasoning-effort cycle, so both
 // surfaces need to agree on which tier is actually active.
 //
-// Codex is the only provider — its models come straight from the live catalog.
-// Favorites is the one other rail tab, a pseudo-provider that re-lists starred
-// Codex models (see `favorites` below).
+// One rail entry per installed, logged-in provider (Codex, Claude, …), each
+// with its own live catalog. Selecting a model from a provider other than the
+// active one switches the running engine — the payload carries `provider` so
+// the host (ProjectView) can restart the session on the right CLI. Favorites is
+// the one extra rail tab, a pseudo-provider that re-lists starred models from
+// every provider (each row keeps a handle on its real origin — see `favorites`).
 
 const props = defineProps<{
-  /** The real Codex catalog (families with real efforts). */
-  models: ModelOption[];
+  /** Every installed provider's catalog (families with real efforts). */
+  providers: PickerProvider[];
+  /** Which provider the session is currently running on — its matching model is
+   *  the one marked current, and it's the rail tab opened first. */
+  activeProvider: ProviderKind;
   /** The active raw model id — marked as current. For Codex this is a bare
    *  family id (e.g. `gpt-5.6-terra`); it does NOT carry the effort. */
   modelId?: string;
@@ -33,12 +40,13 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  /** Commit a model + effort + fast-mode, and close the picker. */
-  select: [picked: { modelId: string; tier: EffortTier; fastMode: boolean }];
+  /** Commit a provider + model + effort + fast-mode, and close the picker. */
+  select: [picked: { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean }];
   /** Live-apply a tweak (reasoning effort/fast mode) without closing — rides
    *  straight to the composer input so the setting takes effect and sticks as
-   *  you adjust. */
-  apply: [picked: { modelId: string; tier: EffortTier; fastMode: boolean }];
+   *  you adjust. Only fired for the active provider (a cross-provider tweak is
+   *  staged until you select, since it can't apply to the running session). */
+  apply: [picked: { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean }];
   cancel: [];
 }>();
 
@@ -57,6 +65,10 @@ type MModel = {
   defaultEffortIndex: number;
   /** This model's real "fast" service tier, when it has one. */
   fastTier?: { id: string; label: string };
+  /** The provider this model runs on — carried through so a select/apply can
+   *  tell the host which engine to run (and, under Favorites, which origin a
+   *  starred row belongs to). */
+  providerId: ProviderKind;
   /**
    * Only set for rows shown under Favorites: the provider this favourite was
    * starred from. Its `ready` overrides the (pseudo) Favorites provider —
@@ -74,32 +86,32 @@ type MProvider = {
   models: MModel[];
 };
 
-// Codex — the real thing, mapped from the live catalog.
-const codex = computed<MProvider>(() => ({
-  id: "codex",
-  label: "Codex",
-  sub: `OpenAI · ${props.models.length} models`,
-  brand: "codex",
-  ready: true,
-  models: props.models.map((o) => ({
-    key: o.key,
-    label: o.label,
-    brand: o.brand,
-    vendor: o.vendor,
-    efforts: o.efforts.map((e) => ({ id: e.id, modelId: e.modelId, tier: e.tier })),
-    defaultEffortIndex: o.defaultEffortIndex,
-    ...(o.fastTier ? { fastTier: o.fastTier } : {}),
+// One rail entry per real provider, mapped straight from the live catalogs the
+// host handed in. Keeping this a list (not a single value) lets the rail,
+// seedPending, and Favorites all walk providers uniformly.
+const realProviders = computed<MProvider[]>(() =>
+  props.providers.map((p) => ({
+    id: p.id,
+    label: p.label,
+    sub: p.sub,
+    brand: p.brand,
+    ready: p.ready,
+    models: p.models.map((o) => ({
+      key: `${p.id}:${o.key}`,
+      label: o.label,
+      brand: o.brand,
+      vendor: o.vendor,
+      efforts: o.efforts.map((e) => ({ id: `${p.id}:${e.id}`, modelId: e.modelId, tier: e.tier })),
+      defaultEffortIndex: o.defaultEffortIndex,
+      providerId: p.id,
+      ...(o.fastTier ? { fastTier: o.fastTier } : {}),
+    })),
   })),
-}));
-
-// Codex is currently the only real provider. `realProviders` stays a list (not
-// a single value) so a second provider can be added later without reshaping
-// every call site that walks it (seedPending, favorites, the rail).
-const realProviders = computed<MProvider[]>(() => [codex.value]);
+);
 
 // ── Favorites ───────────────────────────────────────────────────────────────
-// A live shelf of the models the user has starred. Only real (ready) models can
-// be favourited — so in today's world that's Codex's catalog — which keeps the
+// A live shelf of the models the user has starred, drawn from every installed
+// provider. Only real (ready) models can be favourited — which keeps the
 // bring-your-own-subscription rule intact: everything on this shelf actually
 // applies. Each row keeps a handle on the provider it came from (its `origin`) so
 // selecting it works exactly as it would in that provider's own list.
@@ -160,8 +172,12 @@ function matchFastMode(m: MModel): boolean {
 
 function seedPending() {
   // Walk the REAL providers so the active model resolves to its true home, not
-  // its (duplicated) Favorites row.
-  for (const p of realProviders.value) {
+  // its (duplicated) Favorites row. Check the active provider first so the seed
+  // lands on the engine the session is actually running.
+  const ordered = [...realProviders.value].sort(
+    (a, b) => Number(b.id === props.activeProvider) - Number(a.id === props.activeProvider),
+  );
+  for (const p of ordered) {
     for (const m of p.models) {
       const e = m.efforts.find((x) => x.modelId === props.modelId && x.tier === props.reasoning);
       if (e) {
@@ -171,7 +187,9 @@ function seedPending() {
       }
     }
   }
-  provider.value = realProviders.value[0] ?? null;
+  // No match — open the active provider's tab (or the first) so the list isn't blank.
+  provider.value =
+    realProviders.value.find((p) => p.id === props.activeProvider) ?? realProviders.value[0] ?? null;
 }
 function openProvider(p: MProvider) {
   provider.value = p;
@@ -195,13 +213,15 @@ function selectModel(m: MModel) {
   const e = isPendingModel ? pending.value!.effort : matchEffort(m);
   const fastMode = isPendingModel ? pending.value!.fastMode : matchFastMode(m);
   if (!provider.value || !e) return;
-  close(() => emit("select", { modelId: e.modelId, tier: e.tier, fastMode }));
+  close(() => emit("select", { provider: m.providerId, modelId: e.modelId, tier: e.tier, fastMode }));
 }
 
-// Whether this model row is the one active in the session — modelId alone is
-// enough here (row granularity is per-model, not per-tier).
+// Whether this model row is the one active in the session — it must both run on
+// the active provider and carry the active model id (row granularity is
+// per-model, not per-tier). The provider guard keeps a model from lighting up as
+// "current" while you're browsing a different engine's list.
 function isCurrentModel(m: MModel): boolean {
-  return m.efforts.some((e) => e.modelId === props.modelId);
+  return m.providerId === props.activeProvider && m.efforts.some((e) => e.modelId === props.modelId);
 }
 function isPending(id: string): boolean {
   return pending.value?.effort.id === id;
@@ -261,10 +281,21 @@ function toggleSettings(m: MModel) {
   }
 }
 
-// Reasoning effort — Codex's real knob (a turn-level flag, not baked into the
-// model id). Cycle through a family's real efforts. For a ready model this
-// applies live: the composer's active model + input update immediately and
-// the choice sticks, without closing the picker.
+// A live tweak (effort/fast mode) can only ride straight to the running session
+// when the tuned model is on the ACTIVE provider — a cross-provider tweak has no
+// live session to apply to, so it stays staged in `pending` until the user
+// selects (which switches engines). This gate keeps `apply` a pure in-session
+// nudge, never a silent provider switch.
+function applyLive(fastMode: boolean) {
+  const p = pending.value;
+  if (!p || !modelReady(p.model)) return;
+  if (p.model.providerId !== props.activeProvider) return;
+  emit("apply", { provider: p.model.providerId, modelId: p.effort.modelId, tier: p.effort.tier, fastMode });
+}
+
+// Reasoning effort — cycle through a family's real efforts. For an active-
+// provider model this applies live: the composer's active model + input update
+// immediately and the choice sticks, without closing the picker.
 function cycleEffort() {
   if (!pending.value) return;
   const efforts = pending.value.model.efforts;
@@ -273,9 +304,7 @@ function cycleEffort() {
   const nextIndex = (currentIndex + 1) % efforts.length;
   const next = efforts[nextIndex]!;
   pending.value.effort = next;
-  if (modelReady(pending.value.model)) {
-    emit("apply", { modelId: next.modelId, tier: next.tier, fastMode: pending.value.fastMode });
-  }
+  applyLive(pending.value.fastMode);
 }
 
 // Fast mode — a plain on/off for the model's real "fast" service tier. Applies
@@ -283,13 +312,7 @@ function cycleEffort() {
 function toggleFastMode() {
   if (!pending.value?.model.fastTier) return;
   pending.value.fastMode = !pending.value.fastMode;
-  if (modelReady(pending.value.model)) {
-    emit("apply", {
-      modelId: pending.value.effort.modelId,
-      tier: pending.value.effort.tier,
-      fastMode: pending.value.fastMode,
-    });
-  }
+  applyLive(pending.value.fastMode);
 }
 
 function brainStack(count?: number): number[] {
@@ -346,7 +369,9 @@ onMounted(() => {
   seedPending();
   // Seed the shelf with the current model (or the first real one) so Favorites
   // reads as a live place from the start rather than an empty tab.
-  const seed = pending.value?.provider.ready ? pending.value.model.key : codex.value.models[0]?.key;
+  const seed = pending.value?.provider.ready
+    ? pending.value.model.key
+    : realProviders.value[0]?.models[0]?.key;
   if (seed) favoritedKeys.value = new Set([seed]);
   window.addEventListener("resize", syncHeight);
   void nextTick(() => {

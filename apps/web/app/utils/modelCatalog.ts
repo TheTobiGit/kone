@@ -23,7 +23,7 @@
 // one, an effort picker. `Effort.id` is a unique key for the picker; the id
 // actually sent to the backend as `--model`/turn param is always `modelId`.
 
-import type { ModelDescriptor } from "~/types/desktop";
+import type { ModelDescriptor, ProviderKind } from "~/types/desktop";
 
 export type BrandKey = "gemini" | "claude" | "gpt" | "codex" | "generic";
 
@@ -93,6 +93,19 @@ export type Effort = {
   hint: string;
   brains: number;
   glow: boolean;
+};
+
+/** One installed provider's catalog as the model picker consumes it — a rail
+ *  entry plus its built families. Lives here (not in the .vue) so both the
+ *  picker and its host can share the type. */
+export type PickerProvider = {
+  id: ProviderKind;
+  label: string;
+  /** Rail subtitle, e.g. "OpenAI · 4 models". */
+  sub: string;
+  brand: BrandKey;
+  ready: boolean;
+  models: ModelOption[];
 };
 
 export type ModelOption = {

@@ -26,7 +26,14 @@ if (!existsSync(path.join(nuxtOutput, "index.html"))) {
 }
 
 console.log("Bundling Electron main/preload...");
-await $`bun build src/main.ts --outfile dist/main.js --target node --external electron`.cwd(desktopDir);
+// The Claude Agent SDK must stay external: it locates its own native `claude`
+// CLI binary via `createRequire(import.meta.url).resolve(...)`, so it has to run
+// from its real node_modules location. Bundling it into dist/main.js moves that
+// anchor and the sibling native-binary package (@anthropic-ai/claude-agent-sdk-*)
+// becomes unresolvable at runtime ("Native CLI binary not found").
+await $`bun build src/main.ts --outfile dist/main.js --target node --external electron --external @anthropic-ai/claude-agent-sdk`.cwd(
+  desktopDir,
+);
 // Sandboxed preloads must be CommonJS; emit .cjs so it's unambiguous under
 // package.json "type": "module".
 await $`bun build src/preload.ts --outfile dist/preload.cjs --format cjs --target node --external electron`.cwd(desktopDir);
