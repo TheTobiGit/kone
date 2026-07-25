@@ -1,4 +1,5 @@
 import type MarkdownIt from "markdown-it";
+import type Token from "markdown-it/lib/token.mjs";
 
 // Rich rendering for the file-detail preview of Markdown files. markdown-it is
 // loaded once (module-level singleton, code-split via dynamic import) the first
@@ -23,6 +24,18 @@ function getMd(): Promise<MarkdownIt> {
         linkify: true,
         typographer: true,
       });
+      // Agents constantly write bare filenames — README.md, config.io, run.sh —
+      // and linkify's fuzzy mode would auto-link them because .md/.io/.sh are
+      // real ccTLDs. That turns file references into bogus web links, so switch
+      // fuzzy matching off: only explicit [text](url) links and real schemed /
+      // www. URLs become links.
+      md.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+      // markdown-it blocks the `file:` scheme by default (it's a potential
+      // exfiltration vector in a browser). We render local file links as inert
+      // file chips — never navigations — so it's safe to let them through here;
+      // otherwise `[README.md](file:///…)` collapses to raw text.
+      const safeLink = md.validateLink.bind(md);
+      md.validateLink = (url: string) => /^file:/i.test(url.trim()) || safeLink(url);
       // Force links to open externally: in the desktop shell a bare in-page
       // navigation would replace the whole app, so every link goes through the
       // window-open handler (→ system browser) and carries noopener.
@@ -53,5 +66,16 @@ export function useMarkdown() {
     return md.render(src).replaceAll("<pre>", '<pre tabindex="-1">');
   }
 
-  return { render };
+  /** Parse Markdown to markdown-it's token stream, or null on the server. The
+   *  conversation thread walks these tokens into a Vue component tree (rather
+   *  than a v-html string) so it can mount rich elements — syntax-highlighted
+   *  code blocks, favicon links, file chips — that raw HTML can't carry. Shares
+   *  the same parser (and its safe config) as `render`. */
+  async function parse(src: string): Promise<Token[] | null> {
+    if (import.meta.server) return null;
+    const md = await getMd();
+    return md.parse(src, {});
+  }
+
+  return { render, parse };
 }

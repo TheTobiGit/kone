@@ -48,6 +48,34 @@ function langFor(path: string): string {
   return LANG_BY_EXT[ext] ?? "plaintext";
 }
 
+// A fenced code block carries a free-form info string — ```ts, ```sh, ```jsonc,
+// ```zsh — not an extension. Resolve those aliases to a Shiki language id. The
+// extension map already covers most of them; this layer adds the id-style names
+// and shell/misc aliases people actually type in fences.
+const LANG_ALIAS: Record<string, string> = {
+  ts: "typescript", typescript: "typescript",
+  js: "javascript", javascript: "javascript", node: "javascript",
+  jsx: "jsx", tsx: "tsx",
+  sh: "shellscript", shell: "shellscript", bash: "shellscript",
+  zsh: "shellscript", console: "shellscript", shellsession: "shellscript",
+  py: "python", python: "python", rb: "ruby", ruby: "ruby",
+  yml: "yaml", yaml: "yaml", md: "markdown", markdown: "markdown",
+  rs: "rust", rust: "rust", golang: "go", go: "go",
+  "c++": "cpp", cpp: "cpp", "c#": "csharp", cs: "csharp", csharp: "csharp",
+  kt: "kotlin", kotlin: "kotlin", objc: "objective-c",
+  html: "html", vue: "vue", svg: "xml", xml: "xml",
+  json: "json", jsonc: "jsonc", json5: "json5", toml: "toml",
+  sql: "sql", graphql: "graphql", gql: "graphql", proto: "proto",
+  dockerfile: "docker", docker: "docker", diff: "diff", patch: "diff",
+  make: "make", makefile: "make", ini: "ini", env: "dotenv", dotenv: "dotenv",
+  text: "plaintext", txt: "plaintext", plain: "plaintext", "": "plaintext",
+};
+function langForInfo(info: string): string {
+  // The info string can be "ts title=foo" — take the first bareword.
+  const id = info.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return LANG_ALIAS[id] ?? id ?? "plaintext";
+}
+
 /** Make sure `lang`'s grammar is loaded, de-duping concurrent loads. Returns the
  *  usable lang id — the original once loaded, or "plaintext" if it can't be. */
 async function ensureLang(hl: Highlighter, lang: string): Promise<string> {
@@ -103,5 +131,28 @@ export function useHighlighter() {
     }
   }
 
-  return { warm, highlight };
+  /** Like `highlight`, but keyed off a fenced block's info string (```ts) rather
+   *  than a file path — for code inside an agent's Markdown reply. Also returns
+   *  the resolved Shiki language id so the block can label itself. */
+  async function highlightCode(
+    code: string,
+    info: string,
+    dark: boolean,
+  ): Promise<{ lines: CodeLine[] | null; lang: string }> {
+    const resolved = langForInfo(info);
+    if (import.meta.server || code.length > MAX_HIGHLIGHT) return { lines: null, lang: resolved };
+    try {
+      const hl = await getHighlighter();
+      const lang = await ensureLang(hl, resolved);
+      const { tokens } = hl.codeToTokens(code, {
+        lang: lang as BundledLanguage,
+        theme: dark ? "dark-plus" : "light-plus",
+      });
+      return { lines: tokens, lang: resolved };
+    } catch {
+      return { lines: null, lang: resolved };
+    }
+  }
+
+  return { warm, highlight, highlightCode };
 }
