@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
-import { onClickOutside, onKeyStroke } from "@vueuse/core";
+import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
@@ -123,6 +123,69 @@ function switchTo(p: RecentProject) {
   if (busy.value) void agent.interrupt();
   openProject({ path: p.path, name: p.name });
 }
+
+// ── Ctrl+Tab cycling ─────────────────────────────────────────────────────────
+// Hold Ctrl, tap Tab to step through the same recents list the greeting switcher
+// shows (Shift+Tab steps backward); the project itself sits at index 0 so a
+// light tap-and-release lands back on a no-op. Releasing Ctrl commits through
+// the same switchTo the click path uses — same busy-interrupt, same cue.
+type CycleEntry = { path: string; name: string; isSelf: boolean };
+const cycling = ref(false);
+const cycleIndex = ref(0);
+const cycleEntries = ref<CycleEntry[]>([]);
+
+function stepCycle(forward: boolean) {
+  const n = cycleEntries.value.length;
+  if (!n) return;
+  cycleIndex.value = ((cycleIndex.value + (forward ? 1 : -1)) % n + n) % n;
+}
+
+function startCycle(forward: boolean) {
+  const entries: CycleEntry[] = [
+    { path: props.project.path, name: props.project.name, isSelf: true },
+    ...otherProjects.value.map((p) => ({ path: p.path, name: p.name, isSelf: false })),
+  ];
+  if (entries.length < 2) return; // nothing else to switch to — don't open the HUD for a no-op
+  cycleEntries.value = entries;
+  cycleIndex.value = 0;
+  cycling.value = true;
+  stepCycle(forward);
+}
+
+function commitCycle() {
+  const chosen = cycleEntries.value[cycleIndex.value];
+  cycling.value = false;
+  cycleEntries.value = [];
+  if (!chosen || chosen.isSelf) return;
+  const p = otherProjects.value.find((o) => o.path === chosen.path);
+  if (p) switchTo(p);
+}
+
+function cancelCycle() {
+  cycling.value = false;
+  cycleEntries.value = [];
+}
+
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (e.key === "Escape" && cycling.value) {
+    e.preventDefault();
+    cancelCycle();
+    return;
+  }
+  if (e.key !== "Tab" || !e.ctrlKey) return;
+  e.preventDefault();
+  if (!cycling.value) startCycle(!e.shiftKey);
+  else stepCycle(!e.shiftKey);
+});
+// Ctrl release commits — mirrors a held app-switcher, not a click-to-toggle menu.
+useEventListener(window, "keyup", (e: KeyboardEvent) => {
+  if (cycling.value && e.key === "Control") commitCycle();
+});
+// If the window loses focus mid-hold (e.g. an OS-level app switch), abandon the
+// cycle instead of leaving it stuck open with no keyup to close it.
+useEventListener(window, "blur", () => {
+  if (cycling.value) cancelCycle();
+});
 
 // "All projects" backs out to the launcher — the same exit the folder's close
 // gives, so the switcher and the back control agree.
@@ -446,6 +509,15 @@ function onDiscardFile(path: string) {
       @apply="agent.setModel"
       @cancel="modelPickerOpen = false"
     />
+
+    <!-- Ctrl+Tab HUD — only up while Ctrl is held, gone the instant it's released. -->
+    <AnimatePresence>
+      <ProjectCycleSwitcher
+        v-if="cycling"
+        :entries="cycleEntries"
+        :selected-index="cycleIndex"
+      />
+    </AnimatePresence>
   </main>
 </template>
 
