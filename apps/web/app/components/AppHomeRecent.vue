@@ -115,7 +115,7 @@ function onFolderFocusOut(e: FocusEvent) {
 
 <template>
   <main
-    class="relative flex h-full min-h-screen flex-col overflow-x-hidden overflow-y-auto bg-ground px-16 pt-[52px] pb-16"
+    class="relative flex h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px] pb-16"
   >
     <h1 class="sr-only">Your projects</h1>
 
@@ -170,7 +170,7 @@ function onFolderFocusOut(e: FocusEvent) {
     </HomeHeader>
 
     
-    <section class="relative z-10 mx-auto mt-24 flex w-full max-w-[820px] flex-col">
+    <section class="relative z-10 mx-auto mt-24 flex w-full max-w-[820px] shrink-0 flex-col">
       
       <div class="grid grid-cols-3 gap-x-14 gap-y-6">
         <motion.div
@@ -309,7 +309,7 @@ function onFolderFocusOut(e: FocusEvent) {
          with something to show, so an empty launcher stays exactly as it was. -->
     <section
       v-if="sessions.hasAny.value"
-      class="relative z-10 mx-auto mt-24 mb-4 flex w-full max-w-[820px] flex-col"
+      class="home-sessions relative z-10 mx-auto mt-24 flex min-h-0 w-full max-w-[820px] flex-1 flex-col overflow-y-auto pb-6"
     >
       <RecentSessions
         :pinned="sessions.pinned.value"
@@ -325,6 +325,29 @@ function onFolderFocusOut(e: FocusEvent) {
 </template>
 
 <style scoped>
+/* The page holds the viewport; the header + project grid stay put and only the
+   session ("thread") listing scrolls. Its overflow is hidden from view (no
+   scrollbar) and the bottom edge fades into a soft smoke mask so rows dissolve
+   into the composer margin rather than clipping at a hard line — the same easing
+   as the conversation thread's scroll region. */
+.home-sessions {
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 44px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 44px),
+    transparent 100%
+  );
+}
+.home-sessions::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 /* Keyboard-only focus (nothing on mouse — clicking a folder opens it, so no ring
    is left behind). The folder isn't a card, so rather than box the whole button
    (which would frame the empty space above the peeking papers), the ring hugs the

@@ -240,7 +240,9 @@ function hasDiff(s: SessionSummary): boolean {
 .rs__group {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  /* Head owns the gap to its list now (via padding-bottom) so the sticky band
+     can cover rows sliding under it — see .rs__head. */
+  gap: 0;
 }
 
 /* ── entrance ─────────────────────────────────────────────────────────────
@@ -258,9 +260,23 @@ function hasDiff(s: SessionSummary): boolean {
 
 /* ── section header ─────────────────────────────────────────────────────── */
 .rs__head {
+  /* The section label sticks to the top of the scroll region while its own
+     group's rows scroll beneath it, then hands off to the next group's label.
+     The band carries the page ground and dissolves over its last few pixels so
+     rows melt under it rather than clipping at a hard line — kone's house edge. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 7px;
+  padding-bottom: 14px;
+  background: linear-gradient(
+    to bottom,
+    var(--ground) 0,
+    var(--ground) calc(100% - 12px),
+    transparent 100%
+  );
   animation: rs-head-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   /* Lead the group's first row by the same 90ms the lane head leads its tiles. */
   animation-delay: calc(min(var(--i, 0) * 48ms, 720ms));

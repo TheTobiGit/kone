@@ -628,63 +628,72 @@ function onDiscardFile(path: string) {
       </div>
     </Transition>
 
-    <!-- WORK · the working-tree home, page scrolls normally.
+    <!-- WORK · the working-tree home. The page holds the viewport — greeting +
+         changes stay fixed and only the conversation listing scrolls.
          While the detail overlay is open the page behind is inert — no tab
          stops, no screen-reader reach; the overlay owns focus. -->
-    <div v-if="view === 'work'" class="flex w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
-      <!-- The greeting's project name doubles as a switcher trigger; the popover
-           drops just beneath it, anchored to the name. -->
-      <div ref="greetWrap" class="relative w-fit">
-        <HomeGreeting
-          :project-name="project.name"
+    <div v-if="view === 'work'" class="flex h-full min-h-0 w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
+      <!-- Greeting + changes stay put at the top; only the conversation listing
+           below scrolls, so the page itself never moves. -->
+      <div class="flex shrink-0 flex-col gap-11">
+        <!-- The greeting's project name doubles as a switcher trigger; the popover
+             drops just beneath it, anchored to the name. -->
+        <div ref="greetWrap" class="relative w-fit">
+          <HomeGreeting
+            :project-name="project.name"
+            :loading="!g.loaded.value"
+            :repo="g.repo.value"
+            :has-commits="g.hasCommits.value"
+            :branch="g.branch.value"
+            :clean="g.clean.value"
+            :added="g.added.value"
+            :removed="g.removed.value"
+            :file-count="g.fileCount.value"
+            :staged="g.stagedCount.value"
+            :ahead="g.ahead.value"
+            :behind="g.behind.value"
+            switchable
+            @switch="switcherOpen = !switcherOpen"
+          />
+          <AnimatePresence>
+            <ProjectSwitcher
+              v-if="switcherOpen"
+              class="greet-switcher"
+              :projects="otherProjects"
+              @switch="switchTo"
+              @all="toLauncher"
+            />
+          </AnimatePresence>
+        </div>
+        <ChangesPanel
           :loading="!g.loaded.value"
           :repo="g.repo.value"
-          :has-commits="g.hasCommits.value"
           :branch="g.branch.value"
-          :clean="g.clean.value"
           :added="g.added.value"
           :removed="g.removed.value"
-          :file-count="g.fileCount.value"
-          :staged="g.stagedCount.value"
-          :ahead="g.ahead.value"
-          :behind="g.behind.value"
-          switchable
-          @switch="switcherOpen = !switcherOpen"
+          :changes="changeItems"
+          @stage-all="onStageAll"
+          @unstage-all="onUnstageAll"
+          @commit="onCommit"
+          @discard-paths="onDiscardPaths"
+          @open="onOpenFile"
         />
-        <AnimatePresence>
-          <ProjectSwitcher
-            v-if="switcherOpen"
-            class="greet-switcher"
-            :projects="otherProjects"
-            @switch="switchTo"
-            @all="toLauncher"
-          />
-        </AnimatePresence>
       </div>
-      <ChangesPanel
-        :loading="!g.loaded.value"
-        :repo="g.repo.value"
-        :branch="g.branch.value"
-        :added="g.added.value"
-        :removed="g.removed.value"
-        :changes="changeItems"
-        @stage-all="onStageAll"
-        @unstage-all="onUnstageAll"
-        @commit="onCommit"
-        @discard-paths="onDiscardPaths"
-        @open="onOpenFile"
-      />
       <!-- Recent conversations — the project's pinned + recent agent threads,
-           each a vendor mark + title, meta line, and token tally. -->
-      <RecentSessions
-        :pinned="pinnedSessions"
-        :recent="recentSessions"
-        :loading="sessionsLoading"
-        @open="openSession"
-        @pin="togglePinnedSession"
-        @archive="archiveSession"
-        @delete="removeSession"
-      />
+           each a vendor mark + title, meta line, and token tally. This is the
+           one scroll region on the working-tree home; its PINNED / RECENT labels
+           stick as the rows scroll under them. -->
+      <div class="work-sessions min-h-0 flex-1 overflow-y-auto pb-6">
+        <RecentSessions
+          :pinned="pinnedSessions"
+          :recent="recentSessions"
+          :loading="sessionsLoading"
+          @open="openSession"
+          @pin="togglePinnedSession"
+          @archive="archiveSession"
+          @delete="removeSession"
+        />
+      </div>
     </div>
 
     <!-- The folder settles into the corner last — rising into place with a soft
@@ -847,12 +856,39 @@ function onDiscardFile(path: string) {
 }
 
 /* ── Page modes ───────────────────────────────────────────────────────────── */
-/* Home scrolls the page normally; the conversation locks the page and scrolls
-   the thread inside itself (like the rest of the app). */
+/* Both modes hold the viewport and scroll a region inside themselves — the
+   conversation scrolls the thread; the working-tree home keeps the greeting +
+   changes fixed and scrolls only the conversation listing beneath them. */
 .is-work {
-  min-height: 100vh;
+  height: 100vh;
   align-items: flex-start;
-  padding: 6rem 4rem 14rem;
+  overflow: hidden;
+  /* Bottom inset clears the docked composer orb. Trimmed from the old
+     full-page-scroll value (14rem) — now that only the listing scrolls, that
+     much reserved space stranded the fade cutoff high above the composer. */
+  padding: 6rem 4rem 8rem;
+}
+
+/* The one scroll region on the working-tree home. Its bottom edge fades into a
+   soft smoke mask so rows dissolve toward the docked composer rather than
+   clipping at a hard line, and the scrollbar stays out of sight — the same
+   treatment as the conversation thread and the launcher's session list. */
+.work-sessions {
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 44px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 44px),
+    transparent 100%
+  );
+}
+.work-sessions::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 .is-chat {
   height: 100vh;
