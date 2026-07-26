@@ -567,10 +567,10 @@ watch(text, () => nextTick(sync));
 </template>
 
 <style scoped>
-/* The orb rim — one conic sweep through indigo → blue → teal → cream → coral,
+/* Pill rim — one conic sweep through indigo → blue → teal → cream → coral,
    plus a sheen the send seed layers on top so it reads as a glossy marble. */
 .dock {
-  --orb-rim: conic-gradient(
+  --pill-rim: conic-gradient(
     in oklab from 205deg at 50% 50%,
     oklab(65.3% 0.048 -0.161) 0%,
     oklab(65.5% -0.02 -0.155) 20%,
@@ -674,7 +674,7 @@ watch(text, () => nextTick(sync));
   width: 360px; /* fallback; the pill's real width is driven inline to fit text */
   padding: 2.5px;
   border-radius: 32px;
-  background-image: var(--orb-rim);
+  background-image: var(--pill-rim);
   cursor: default;
   /* Open + everyday sizing: width tracks the text and height follows. This is
      the typing curve — short and snappy with no overshoot, so per-keystroke
@@ -840,7 +840,7 @@ watch(text, () => nextTick(sync));
   padding: 0;
   border-radius: 50%;
   cursor: pointer;
-  background-image: var(--sheen), var(--orb-rim);
+  background-image: var(--sheen), var(--pill-rim);
   box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset;
   transition: box-shadow 0.3s ease, transform 0.2s ease;
 }

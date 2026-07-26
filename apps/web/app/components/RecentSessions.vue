@@ -305,18 +305,17 @@ function hasDiff(s: SessionSummary): boolean {
   animation: rs-row-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: calc(90ms + min(var(--i, 0) * 48ms, 720ms));
 }
-/* Borderless, card-free affordance — the whole row is clickable; on hover the
-   title shifts color and the trailing actions fade in, no box drawn. */
-.rs__name {
-  transition: color 140ms ease;
-}
+/* Borderless row — the whole row opens the thread; on hover the title lights
+   up (ink-soft → ink, same as lane / file-detail actions) and the trailing
+   actions fade in. */
 .rs__row:hover .rs__name,
-.rs__row:focus-visible .rs__name {
-  color: #6b5bd2;
+.rs__row:focus-visible .rs__name,
+.rs__row:focus-within .rs__name {
+  color: var(--ink);
 }
 .rs__row:focus-visible {
-  outline: 2px solid color-mix(in srgb, #6b5bd2 55%, transparent);
-  outline-offset: 6px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink, #1c1c1f) 30%, transparent);
 }
 .rs__main {
   display: flex;
@@ -336,7 +335,8 @@ function hasDiff(s: SessionSummary): boolean {
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 20px;
-  color: var(--ink, #1c1c1f);
+  color: var(--ink-soft);
+  transition: color 0.16s ease;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -525,6 +525,9 @@ function hasDiff(s: SessionSummary): boolean {
     --rs-count: #ededf0;
     --rs-project: #b6b6bd;
     --pin-ink: #c99b45;
+  }
+  .rs__name {
+    color: var(--muted);
   }
 }
 </style>

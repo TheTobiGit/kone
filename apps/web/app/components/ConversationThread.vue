@@ -2,7 +2,7 @@
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import type { Component } from "vue";
-import { motion } from "motion-v";
+import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 // Tool-call glyphs are Phosphor duotone, each carrying a soft family hue so a run
@@ -26,6 +26,11 @@ import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
 import SiteChip from "~/components/SiteChip.vue";
+import ToolStepOrb from "~/components/ToolStepOrb.vue";
+import ThinkStepOrb from "~/components/ThinkStepOrb.vue";
+import WorkingOrb from "~/components/WorkingOrb.vue";
+import type { ToolOrbFamily } from "~/utils/toolOrbDraw";
+import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
 import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 
 // The live conversation — where the agent's turns become a timeline.
@@ -44,9 +49,11 @@ import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 // feels earned. While a turn runs a quiet highlight travels the tool rail; the
 // moment it settles it collapses to quiet, dotted-leader meta.
 //
-//   · thinking streams live behind a plain muted "Thinking…" label, then
-//     collapses to a "Thought for Xs" disclosure once it settles;
-//   · tool calls hang off a left rail as nodes — icon · plain phrase · status;
+//   · thinking streams live behind a plain muted "Thinking…" label and a violet
+//     dot-globe orb, then collapses to a brain icon + "Thought for Xs" disclosure;
+//   · a general working orb holds any quiet gap — left-aligned particles that
+//     grow longer and denser the longer the wait; step orbs + streaming text
+//     take over once activity starts;
 //   · text renders as rich Markdown the whole way through — streaming or settled
 //     — so a reply reads as a proper preview as it grows, never a raw block;
 //
@@ -70,11 +77,11 @@ const { cue } = useSound();
 // the first chunk.
 if (import.meta.client) void useMarkdown().parse("");
 
-// ── tool-call vocabulary → icon + label + family hue ──────────────────────────
-type ToolMeta = { icon: Component; label: string; hue: string };
+// ── tool-call vocabulary → icon + label + family hue + running orb ──────────
+type ToolMeta = { icon: Component; label: string; hue: string; family: ToolOrbFamily };
 // Family hues — mid-tone so they read on both the warm-light and near-black
-// grounds without a per-theme table. Double-encoded with the node dot on the
-// rail, never colour alone.
+// grounds without a per-theme table. Double-encoded with the tool's icon glyph
+// and label text, never colour alone.
 const HUE = {
   read: "#5b9dd9", // blues — read / list / inspect
   write: "#8b7ff0", // violets — write / edit
@@ -88,60 +95,60 @@ const HUE = {
 } as const;
 const TOOL_TABLE: Record<string, ToolMeta> = {
   // filesystem
-  read_file: { icon: PhFileText, label: "Read", hue: HUE.read },
-  view_file: { icon: PhFileText, label: "Read", hue: HUE.read },
-  read: { icon: PhFileText, label: "Read", hue: HUE.read },
-  write_to_file: { icon: PhNotePencil, label: "Write", hue: HUE.write },
-  create_file: { icon: PhNotePencil, label: "Write", hue: HUE.write },
-  write: { icon: PhNotePencil, label: "Write", hue: HUE.write },
-  edit_file: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
-  apply_patch: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
-  str_replace: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
-  replace_file_content: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
-  edit: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
-  multiedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write }, // Claude
-  notebookedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write }, // Claude
-  list_dir: { icon: PhListBullets, label: "List", hue: HUE.read },
-  ls: { icon: PhListBullets, label: "List", hue: HUE.read },
-  delete_file: { icon: PhTrash, label: "Delete", hue: HUE.del },
-  rm: { icon: PhTrash, label: "Delete", hue: HUE.del },
+  read_file: { icon: PhFileText, label: "Read", hue: HUE.read, family: "read" },
+  view_file: { icon: PhFileText, label: "Read", hue: HUE.read, family: "read" },
+  read: { icon: PhFileText, label: "Read", hue: HUE.read, family: "read" },
+  write_to_file: { icon: PhNotePencil, label: "Write", hue: HUE.write, family: "write" },
+  create_file: { icon: PhNotePencil, label: "Write", hue: HUE.write, family: "write" },
+  write: { icon: PhNotePencil, label: "Write", hue: HUE.write, family: "write" },
+  edit_file: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
+  apply_patch: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
+  str_replace: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
+  replace_file_content: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
+  edit: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
+  multiedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" }, // Claude
+  notebookedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" }, // Claude
+  list_dir: { icon: PhListBullets, label: "List", hue: HUE.read, family: "read" },
+  ls: { icon: PhListBullets, label: "List", hue: HUE.read, family: "read" },
+  delete_file: { icon: PhTrash, label: "Delete", hue: HUE.del, family: "del" },
+  rm: { icon: PhTrash, label: "Delete", hue: HUE.del, family: "del" },
   // search & navigation
-  grep_search: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search },
-  ripgrep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search },
-  glob_file_search: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search },
-  find_by_name: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search },
-  glob: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search }, // Claude
-  codebase_search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search },
-  grep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search },
-  search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search },
-  go_to_definition: { icon: PhCode, label: "Code intel", hue: HUE.intel },
-  view_code_item: { icon: PhCode, label: "Code intel", hue: HUE.intel },
-  lsp: { icon: PhCode, label: "Code intel", hue: HUE.intel },
+  grep_search: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search, family: "search" },
+  ripgrep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search, family: "search" },
+  glob_file_search: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search, family: "search" },
+  find_by_name: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search, family: "search" },
+  glob: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search, family: "search" }, // Claude
+  codebase_search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search, family: "search" },
+  grep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search, family: "search" },
+  search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search, family: "search" },
+  go_to_definition: { icon: PhCode, label: "Code intel", hue: HUE.intel, family: "intel" },
+  view_code_item: { icon: PhCode, label: "Code intel", hue: HUE.intel, family: "intel" },
+  lsp: { icon: PhCode, label: "Code intel", hue: HUE.intel, family: "intel" },
   // execution
-  bash: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
-  run_terminal_cmd: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
-  execute_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
-  run_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
-  run: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
-  command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
+  bash: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
+  run_terminal_cmd: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
+  execute_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
+  run_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
+  run: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
+  command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
   // web
-  web_search: { icon: PhGlobe, label: "Web search", hue: HUE.web },
-  search_web: { icon: PhGlobe, label: "Web search", hue: HUE.web },
-  websearch: { icon: PhGlobe, label: "Web search", hue: HUE.web }, // Claude
-  web_fetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web },
-  read_url_content: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web },
-  view_web_document: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web },
-  webfetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web }, // Claude
+  web_search: { icon: PhGlobe, label: "Web search", hue: HUE.web, family: "web" },
+  search_web: { icon: PhGlobe, label: "Web search", hue: HUE.web, family: "web" },
+  websearch: { icon: PhGlobe, label: "Web search", hue: HUE.web, family: "web" }, // Claude
+  web_fetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" },
+  read_url_content: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" },
+  view_web_document: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" },
+  webfetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" }, // Claude
   // planning & orchestration
-  task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent },
-  new_task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent },
-  agent: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent },
-  mcp: { icon: PhTreeStructure, label: "MCP tool", hue: HUE.agent },
+  task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent, family: "agent" },
+  new_task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent, family: "agent" },
+  agent: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent, family: "agent" },
+  mcp: { icon: PhTreeStructure, label: "MCP tool", hue: HUE.agent, family: "agent" },
   // context & specialized
-  deploy_web_app: { icon: PhRocketLaunch, label: "Deploy", hue: HUE.run },
+  deploy_web_app: { icon: PhRocketLaunch, label: "Deploy", hue: HUE.run, family: "run" },
 };
 function toolMeta(name: string | undefined): ToolMeta {
-  if (!name) return { icon: PhTerminalWindow, label: "Tool", hue: HUE.neutral };
+  if (!name) return { icon: PhTerminalWindow, label: "Tool", hue: HUE.neutral, family: "neutral" };
   const key = name.trim().toLowerCase();
   if (TOOL_TABLE[key]) return TOOL_TABLE[key]!;
   // MCP tools arrive as `mcp__server__tool` — read the last segment as the label
@@ -149,10 +156,10 @@ function toolMeta(name: string | undefined): ToolMeta {
   if (key.startsWith("mcp__")) {
     const tail = key.split("__").filter(Boolean).pop() ?? key;
     const label = tail.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    return { icon: PhTreeStructure, label, hue: HUE.agent };
+    return { icon: PhTreeStructure, label, hue: HUE.agent, family: "agent" };
   }
   const label = key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return { icon: PhTerminalWindow, label, hue: HUE.neutral };
+  return { icon: PhTerminalWindow, label, hue: HUE.neutral, family: "neutral" };
 }
 // The provider hands args as `read_file: src/foo.ts`; peel the name so we're left
 // with the target (path / command / query). Long tails keep their end — the full
@@ -544,6 +551,16 @@ function toggleThinking(seg: Segment): void {
   cue("toggle");
 }
 
+// ── waiting ───────────────────────────────────────────────────────────────────
+// A live turn with nothing currently in flight — the opening gap after send,
+// or a lull between one step settling and the next starting. The working orb
+// fills it; step orbs and streaming text take over while those run.
+function isWaiting(block: AssistantBlock): boolean {
+  if (block.state !== "running") return false;
+  const last = block.items[block.items.length - 1];
+  return !last || last.status !== "in-progress";
+}
+
 // ── tool-call detail expand ───────────────────────────────────────────────────
 // A tool row expands on click only when it carries a `detail` body (command
 // output, a diff, a file list) — no dead affordance otherwise.
@@ -670,7 +687,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
         block.role === 'assistant' && block.state !== 'running' ? 'turn--settled' : '',
         block.role === 'assistant' && flash[block.id] ? 'turn--flash' : '',
       ]"
-      :initial="{ opacity: 0, y: 14, x: block.role === 'user' ? 18 : -6 }"
+      :initial="block.historical ? false : { opacity: 0, y: 14, x: block.role === 'user' ? 18 : -6 }"
       :animate="{ opacity: 1, y: 0, x: 0 }"
       :transition="{ type: 'spring', stiffness: 320, damping: 30, mass: 0.8 }"
     >
@@ -694,7 +711,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                   v-if="seg.kind === 'thinking'"
                   class="step-entry"
                   :style="{ transformOrigin: '0% 50%' }"
-                  :initial="{ opacity: 0, y: 10, scale: 0.96 }"
+                  :initial="block.historical ? false : { opacity: 0, y: 10, scale: 0.96 }"
                   :animate="{ opacity: 1, y: 0, scale: 1 }"
                   :transition="{ ...STEP_SPRING, delay: stepDelay(stepOffset(grp.segments, si)) }"
                   @vue:mounted="layoutStepEntry"
@@ -710,10 +727,12 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                     :type="thinkHasContent(seg) ? 'button' : undefined"
                     class="step"
                     :class="{ 'step--clickable': thinkHasContent(seg) }"
+                    :style="{ '--hue': THINKING_ORB_HUE }"
                     @click="thinkHasContent(seg) && toggleThinking(seg)"
                   >
                     <span class="step__icon">
-                      <HugeiconsIcon :icon="AiBrain01Icon" :size="14" :stroke-width="1.8" />
+                      <ThinkStepOrb v-if="segStreaming(seg)" />
+                      <HugeiconsIcon v-else :icon="AiBrain01Icon" :size="14" :stroke-width="1.8" />
                     </span>
                     <span class="step__label">
                       {{ segStreaming(seg) ? "Thinking…" : `Thought for ${thinkingDuration(seg) ?? 1}s` }}
@@ -744,7 +763,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                     :key="t.itemId"
                     class="step-entry"
                     :style="{ transformOrigin: '0% 50%' }"
-                    :initial="{ opacity: 0, y: 10, scale: 0.96 }"
+                    :initial="block.historical ? false : { opacity: 0, y: 10, scale: 0.96 }"
                     :animate="{ opacity: 1, y: 0, scale: 1 }"
                     :transition="{ ...STEP_SPRING, delay: stepDelay(stepOffset(grp.segments, si) + i) }"
                     @vue:mounted="layoutStepEntry"
@@ -766,7 +785,11 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                       @keydown.enter="toggleTool(t)"
                     >
                       <span class="step__icon">
-                        <span v-if="toolStatus(t) === 'running'" class="step__spinner" />
+                        <ToolStepOrb
+                          v-if="toolStatus(t) === 'running'"
+                          :family="toolMeta(t.name).family"
+                          :hue="toolMeta(t.name).hue"
+                        />
                         <component v-else :is="toolMeta(t.name).icon" :size="14" weight="duotone" />
                       </span>
                       <span class="step__label">
@@ -818,9 +841,24 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                  or settled, so the reply reads as a proper preview as it grows
                  (never a raw block that only formats once complete). -->
             <template v-else>
-              <MarkdownMessage class="answer" :source="segText(grp.seg)" />
+              <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
             </template>
           </template>
+
+          <!-- Working orb — visible while the turn is alive but nothing is
+               streaming (request just sent, or a quiet gap between steps). -->
+          <AnimatePresence>
+            <motion.div
+              v-if="isWaiting(block)"
+              class="waiting"
+              :initial="{ opacity: 0, scale: 0.86 }"
+              :animate="{ opacity: 1, scale: 1 }"
+              :exit="{ opacity: 0, scale: 0.86 }"
+              :transition="{ type: 'spring', stiffness: 300, damping: 26, mass: 0.7 }"
+            >
+              <WorkingOrb />
+            </motion.div>
+          </AnimatePresence>
 
           <!-- Failure note. -->
           <p v-if="block.state === 'failed' && block.error" class="body body--error">
@@ -1040,14 +1078,6 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   font-size: 11px;
   color: var(--diff-del);
 }
-.step__spinner {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1.5px solid var(--rail);
-  border-top-color: var(--ink-soft);
-  animation: tool-spin 0.7s linear infinite;
-}
 .step__chev {
   flex: none;
   opacity: 0.45;
@@ -1080,6 +1110,15 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   overflow-wrap: anywhere;
   text-wrap: pretty;
 }
+
+/* ── Waiting orb ───────────────────────────────────────────────────────────── */
+.waiting {
+  display: flex;
+  align-items: center;
+  margin: -2px 0;
+  will-change: transform, opacity;
+}
+
 .output {
   margin: 0 0 6px;
   padding: 12px 14px;
@@ -1159,16 +1198,8 @@ const hasBlocks = computed(() => props.blocks.length > 0);
     transform: scale(1.14);
   }
 }
-@keyframes tool-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .empty__bead {
-    animation: none;
-  }
-  .step__spinner {
     animation: none;
   }
   .step__chev {

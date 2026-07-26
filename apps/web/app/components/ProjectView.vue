@@ -69,11 +69,30 @@ const {
   remove: removeSession,
 } = useRecentSessions(() => props.project.path);
 
+// Open a stored thread and reveal the chat the instant its transcript lands —
+// openThread sets the blocks before the session subprocess finishes spawning, so
+// gating the view flip on that grows a populated thread (no flash of the empty
+// state, no lingering on the working-tree home) with the chat-open entrance.
+// Falls through to showing chat even on an empty/failed load.
+async function revealThread(threadId: string): Promise<void> {
+  const stop = watch(blocks, (b) => {
+    if (b.length) {
+      view.value = "chat";
+      stop();
+    }
+  });
+  try {
+    await agent.openThread(threadId);
+  } finally {
+    stop();
+    view.value = "chat";
+  }
+}
+
 // Bring a picked recent conversation on-screen and continue it under its own
 // thread id. Best-effort on desktop; a no-op in browser dev (no live session).
 function openSession(threadId: string): void {
-  view.value = "chat";
-  void agent.openThread(threadId);
+  void revealThread(threadId);
 }
 
 // The catalog for each installed provider — its flat model list grouped into
@@ -156,17 +175,18 @@ onMounted(async () => {
       agent.setMode(savedMode as InteractionMode);
     }
   }
-  await agent.start();
-
   // If the launcher asked to resume a specific conversation (a click on the App
-  // Home "recent sessions" list), open it now — over the latest thread start()
-  // just rehydrated — and drop straight into the chat view. Consume the request
-  // so a later plain re-open of this project lands on its home as usual.
+  // Home "recent sessions" list), open THAT thread directly and drop into chat —
+  // don't rehydrate + spawn the project's latest thread first only to tear it
+  // straight down. openThread loads the picked thread and spawns a single
+  // session for it; the plain-open path still lands on the project home.
+  // Consume the request so a later re-open of this project behaves normally.
   const resume = pendingThread.value;
   if (resume) {
     pendingThread.value = null;
-    view.value = "chat";
-    void agent.openThread(resume);
+    await revealThread(resume);
+  } else {
+    await agent.start();
   }
 });
 
@@ -569,22 +589,24 @@ function onDiscardFile(path: string) {
          a soft smoke mask below the sticky title (just above the first prompt)
          and just above the docked composer, the same easing as the file-preview
          body. -->
-    <div
-      v-if="view === 'chat'"
-      class="chat-scroll selectable"
-      :inert="Boolean(activeFile)"
-    >
-      <ConversationThread
-        :blocks="blocks"
-        :now="agentNow"
-        :session-error="agentError"
-      />
-    </div>
+    <Transition name="chat-open" appear>
+      <div
+        v-if="view === 'chat'"
+        class="chat-scroll selectable"
+        :inert="Boolean(activeFile)"
+      >
+        <ConversationThread
+          :blocks="blocks"
+          :now="agentNow"
+          :session-error="agentError"
+        />
+      </div>
+    </Transition>
 
     <!-- WORK · the working-tree home, page scrolls normally.
          While the detail overlay is open the page behind is inert — no tab
          stops, no screen-reader reach; the overlay owns focus. -->
-    <div v-else class="flex w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
+    <div v-if="view === 'work'" class="flex w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
       <!-- The greeting's project name doubles as a switcher trigger; the popover
            drops just beneath it, anchored to the name. -->
       <div ref="greetWrap" class="relative w-fit">
@@ -969,6 +991,37 @@ function onDiscardFile(path: string) {
   .pop-enter-active,
   .pop-leave-active {
     animation-duration: 0.01s;
+  }
+}
+
+/* Arriving at a conversation — the whole thread eases up into place with kone's
+   house entrance easing (the same the change cards use), so opening a thread
+   (from recents, the launcher, or a fresh send) reads as a smooth page-open even
+   though the settled transcript inside carries no motion of its own. Leaving is
+   instant — the working-tree home takes its place with no cross-fade. */
+.chat-open-enter-active {
+  transition:
+    opacity 0.42s ease,
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: 50% 22%;
+  will-change: opacity, transform;
+}
+.chat-open-enter-from {
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+}
+/* Only the arrival animates. On the way out the chat vanishes at once rather than
+   lingering in the DOM beside the incoming working-tree view — that overlap was a
+   flash of the left-aligned home content over the still-present full-width chat. */
+.chat-open-leave-active {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-open-enter-active {
+    transition-duration: 0.01s;
+  }
+  .chat-open-enter-from {
+    transform: none;
   }
 }
 </style>

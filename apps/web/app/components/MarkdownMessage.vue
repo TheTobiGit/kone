@@ -23,7 +23,10 @@ import FileChip from "~/components/FileChip.vue";
 // Everything else (headings, lists, tables, quotes, emphasis) renders as plain
 // semantic elements styled below via `.md :deep(...)`.
 
-const props = defineProps<{ source: string }>();
+// `historical` marks a reply loaded from storage: it mounts already-complete, so
+// it skips the per-word blur-in reveal (and the extra span-per-word nodes) and
+// just renders as settled text — no animation replay when reopening a thread.
+const props = defineProps<{ source: string; historical?: boolean }>();
 
 const { parse } = useMarkdown();
 
@@ -158,13 +161,25 @@ function styleOf(node: MdNode): Record<string, string> | undefined {
 /** Split a text run into words wrapped in individually-keyed spans (so each
  *  one mounts as its own DOM node and can carry the blur-in reveal), with
  *  whitespace passed through untouched between them. */
-function renderWords(content: string, key: number): VNode {
+function renderWords(content: string, key: number): VNode | string {
+  // History: render the run as plain text — no per-word spans, no blur-in.
+  if (props.historical) return content;
   const parts = content.split(/(\s+)/);
   return h(
     Fragment,
     { key },
     parts.map((part) => (/^\s*$/.test(part) ? part : h("span", { key: `w${wordSeq++}`, class: "stream-word" }, part))),
   );
+}
+
+/** Inline atoms that aren't text — a file chip, an inline-code run — carry no
+ *  `.stream-word` words of their own, so without this they'd mount at full
+ *  opacity while the words around them are still blurring in, reading as if the
+ *  tag arrived *before* its own sentence. Wrap them in the same reveal so a chip
+ *  settles in step with the run it sits in. History mounts settled, untouched. */
+function reveal(vnode: VNode, key: number): VNode {
+  if (props.historical) return vnode;
+  return h("span", { key, class: "stream-word stream-atom" }, [vnode]);
 }
 
 function renderNode(node: MdNode, key: number): VNode | string {
@@ -179,9 +194,12 @@ function renderNode(node: MdNode, key: number): VNode | string {
     case "code_block":
       return h(CodeBlock, { key, code: node.content, info: node.info });
     case "code_inline":
-      return looksLikePath(node.content)
-        ? h(FileChip, { key, path: node.content.trim() })
-        : h("code", { key }, node.content);
+      return reveal(
+        looksLikePath(node.content)
+          ? h(FileChip, { key, path: node.content.trim() })
+          : h("code", { key }, node.content),
+        key,
+      );
     case "image":
       return h(MarkdownImage, { key, src: node.attrs.src ?? "", alt: node.content || node.attrs.alt });
     case "link": {
@@ -192,7 +210,7 @@ function renderNode(node: MdNode, key: number): VNode | string {
       if (/^file:\/\//i.test(href)) {
         const full = decodeURIComponent(href.replace(/^file:\/\/(localhost)?/i, ""));
         const label = textOf(node).trim();
-        return h(FileChip, { key, path: label || full.split("/").pop() || full, title: full });
+        return reveal(h(FileChip, { key, path: label || full.split("/").pop() || full, title: full }), key);
       }
       return h(MarkdownLink, { key, href }, { default: () => renderChildren(node) });
     }
@@ -303,6 +321,13 @@ const Rendered = defineComponent({
   transition:
     opacity 420ms ease,
     filter 420ms ease;
+}
+/* An atom (file chip / inline code) reveals as one unit, hugging its child so
+   the wrapper never disturbs baseline alignment or wrapping. */
+.md :deep(.stream-atom) {
+  display: inline-flex;
+  vertical-align: baseline;
+  max-width: 100%;
 }
 @starting-style {
   .md :deep(.stream-word) {
