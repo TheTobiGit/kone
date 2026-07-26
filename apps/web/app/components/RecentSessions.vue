@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
+import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
+import { Magnet } from "~/components/ui/magnet";
 import type { SessionSummary } from "~/types/session";
 
 // The "recent conversations" block on Project Home — the PINNED / RECENT session
@@ -23,33 +25,36 @@ const emit = defineEmits<{
   pin: [threadId: string];
   /** Hide this thread from the list (recoverable). */
   archive: [threadId: string];
-  /** Permanently delete this thread (already confirmed here). */
+  /** Permanently delete this thread (already confirmed via hold). */
   delete: [threadId: string];
 }>();
 
-// Delete is irreversible, so the trash acts in two taps: the first arms the row
-// (the icon becomes a check), a second within the window confirms. Any other
-// action — or clicking away — disarms it. One row can be armed at a time.
-const armedId = ref<string | null>(null);
-
-function onDelete(threadId: string): void {
-  if (armedId.value === threadId) {
-    armedId.value = null;
-    emit("delete", threadId);
-  } else {
-    armedId.value = threadId;
-  }
-}
-function disarm(): void {
-  armedId.value = null;
-}
+// Shared magnet settings — same soft pull the lane / file-detail actions use.
+const magnet = {
+  padding: 12,
+  magnetStrength: 9,
+  activeTransition: "transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)",
+  inactiveTransition: "transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)",
+} as const;
 
 // One flat pass over both groups so the row markup lives in a single place; the
-// PINNED group leads and wears a gold pin on its header.
+// PINNED group leads and wears a gold pin on its header. `start` is the cascade
+// index of the group's first row so the stagger keeps counting across sections.
 const sections = computed(() => {
-  const out: { kind: "pinned" | "recent"; label: string; rows: SessionSummary[] }[] = [];
-  if (props.pinned.length) out.push({ kind: "pinned", label: "PINNED", rows: props.pinned });
-  if (props.recent.length) out.push({ kind: "recent", label: "RECENT", rows: props.recent });
+  const out: {
+    kind: "pinned" | "recent";
+    label: string;
+    rows: SessionSummary[];
+    start: number;
+  }[] = [];
+  let start = 0;
+  if (props.pinned.length) {
+    out.push({ kind: "pinned", label: "PINNED", rows: props.pinned, start });
+    start += props.pinned.length;
+  }
+  if (props.recent.length) {
+    out.push({ kind: "recent", label: "RECENT", rows: props.recent, start });
+  }
   return out;
 });
 
@@ -93,7 +98,7 @@ function hasDiff(s: SessionSummary): boolean {
        when there's nothing to show — no empty header, no reserved gap. -->
   <section v-if="!loading && hasContent" class="rs">
     <div v-for="section in sections" :key="section.kind" class="rs__group">
-      <div class="rs__head">
+      <div class="rs__head" :style="{ '--i': section.start }">
         <svg
           v-if="section.kind === 'pinned'"
           class="rs__pin"
@@ -109,16 +114,15 @@ function hasDiff(s: SessionSummary): boolean {
 
       <ul class="rs__list">
         <li
-          v-for="s in section.rows"
+          v-for="(s, ri) in section.rows"
           :key="s.threadId"
           class="rs__row"
-          :class="{ 'rs__row--armed': armedId === s.threadId }"
+          :style="{ '--i': section.start + ri }"
           role="button"
           tabindex="0"
           @click="emit('open', s.threadId)"
           @keydown.enter.prevent="emit('open', s.threadId)"
           @keydown.space.prevent="emit('open', s.threadId)"
-          @mouseleave="disarm"
         >
           <div class="rs__main">
             <div class="rs__title">
@@ -153,54 +157,64 @@ function hasDiff(s: SessionSummary): boolean {
               <span class="rs__unit">TOKENS</span>
             </div>
 
-            <!-- Revealed on row hover / focus. Each stops propagation so it never
-                 also opens the thread. -->
-            <div class="rs__actions">
-              <button
-                type="button"
-                class="rs__act"
-                :class="{ 'rs__act--on': s.pinned }"
-                :title="s.pinned ? 'Unpin' : 'Pin'"
-                :aria-label="s.pinned ? 'Unpin conversation' : 'Pin conversation'"
-                @click.stop="emit('pin', s.threadId)"
+            <!-- Overlay the token tally on hover / focus. Each magnet-pulls
+                 like the lane actions; delete is hold-to-confirm. Stops
+                 propagation so they never also open the thread. -->
+            <div class="rs__actions" @click.stop>
+              <Magnet
+                class="w-fit"
+                inner-class="w-fit"
+                v-bind="magnet"
               >
-                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-                  <path d="M9 4h6M10 4l-.6 6.2-2.9 1.9v1.1h11v-1.1l-2.9-1.9L14 4M12 15.2V20" />
-                </svg>
-              </button>
-
-              <button
-                type="button"
-                class="rs__act"
-                title="Archive"
-                aria-label="Archive conversation"
-                @click.stop="emit('archive', s.threadId)"
-              >
-                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-                  <path d="M4 7h16M5 7v11.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7M4 7l1.4-2.5A1 1 0 0 1 6.3 4h11.4a1 1 0 0 1 .9.5L20 7M9.5 12h5" />
-                </svg>
-              </button>
-
-              <button
-                type="button"
-                class="rs__act rs__act--danger"
-                :title="armedId === s.threadId ? 'Confirm delete' : 'Delete'"
-                :aria-label="armedId === s.threadId ? 'Confirm delete' : 'Delete conversation'"
-                @click.stop="onDelete(s.threadId)"
-              >
-                <svg
-                  v-if="armedId === s.threadId"
-                  viewBox="0 0 24 24"
-                  width="15"
-                  height="15"
-                  aria-hidden="true"
+                <button
+                  type="button"
+                  class="rs__act"
+                  :class="{ 'rs__act--on': s.pinned }"
+                  :aria-label="s.pinned ? 'Unpin conversation' : 'Pin conversation'"
+                  @click="emit('pin', s.threadId)"
                 >
-                  <path d="M5 12.5 10 17.5 19 6.5" />
-                </svg>
-                <svg v-else viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-                  <path d="M4 7h16M9 7V4.8a.8.8 0 0 1 .8-.8h4.4a.8.8 0 0 1 .8.8V7M6.5 7l.8 12.1a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9L18.5 7M10 11v6M14 11v6" />
-                </svg>
-              </button>
+                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                    <path d="M9 4h6M10 4l-.6 6.2-2.9 1.9v1.1h11v-1.1l-2.9-1.9L14 4M12 15.2V20" />
+                  </svg>
+                  {{ s.pinned ? "Unpin" : "Pin" }}
+                </button>
+              </Magnet>
+
+              <Magnet
+                class="w-fit"
+                inner-class="w-fit"
+                v-bind="magnet"
+              >
+                <button
+                  type="button"
+                  class="rs__act"
+                  aria-label="Archive conversation"
+                  @click="emit('archive', s.threadId)"
+                >
+                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                    <path d="M4 7h16M5 7v11.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7M4 7l1.4-2.5A1 1 0 0 1 6.3 4h11.4a1 1 0 0 1 .9.5L20 7M9.5 12h5" />
+                  </svg>
+                  Archive
+                </button>
+              </Magnet>
+
+              <Magnet
+                class="w-fit"
+                inner-class="w-fit"
+                v-bind="magnet"
+              >
+                <HoldToConfirm
+                  variant="lane-discard"
+                  title="Hold to delete conversation"
+                  aria-label="Hold to delete conversation"
+                  @confirm="emit('delete', s.threadId)"
+                >
+                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                    <path d="M4 7h16M9 7V4.8a.8.8 0 0 1 .8-.8h4.4a.8.8 0 0 1 .8.8V7M6.5 7l.8 12.1a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9L18.5 7M10 11v6M14 11v6" />
+                  </svg>
+                  Delete
+                </HoldToConfirm>
+              </Magnet>
             </div>
           </div>
         </li>
@@ -222,11 +236,27 @@ function hasDiff(s: SessionSummary): boolean {
   gap: 14px;
 }
 
+/* ── entrance ─────────────────────────────────────────────────────────────
+   Same cadence as the change lanes: the section label lifts in, then each
+   thread row cascades down the list — soft rise + slight settle, staggered
+   across PINNED → RECENT so the page keeps writing itself after the tree. */
+@keyframes rs-head-in {
+  from { opacity: 0; transform: translateY(9px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes rs-row-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
 /* ── section header ─────────────────────────────────────────────────────── */
 .rs__head {
   display: flex;
   align-items: center;
   gap: 7px;
+  animation: rs-head-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  /* Lead the group's first row by the same 90ms the lane head leads its tiles. */
+  animation-delay: calc(min(var(--i, 0) * 48ms, 720ms));
 }
 .rs__pin {
   flex-shrink: 0;
@@ -265,7 +295,8 @@ function hasDiff(s: SessionSummary): boolean {
   cursor: pointer;
   border-radius: 10px;
   outline: none;
-  animation: rs-row-in 500ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: rs-row-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(90ms + min(var(--i, 0) * 48ms, 720ms));
 }
 /* Borderless, card-free affordance — the whole row is clickable; on hover the
    title nudges toward the iris and the trailing actions fade in, no box drawn. */
@@ -342,6 +373,7 @@ function hasDiff(s: SessionSummary): boolean {
   flex-direction: column;
   align-items: flex-end;
   flex-shrink: 0;
+  transition: opacity 0.18s ease;
 }
 .rs__count {
   font-family: var(--font-mono);
@@ -361,53 +393,86 @@ function hasDiff(s: SessionSummary): boolean {
 
 /* ── trailing row actions ───────────────────────────────────────────────── */
 .rs__trail {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-end;
   flex-shrink: 0;
+  min-width: 86px;
+  min-height: 40px;
 }
-/* Reserve the actions' width so revealing them never shifts the token tally;
-   they simply fade in from the right on hover / focus / when armed. */
+/* Overlay the token tally on hover — actions sit in front, tokens fade out
+   underneath so the trail width never shifts. */
 .rs__actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: flex-end;
+  gap: 4px;
   opacity: 0;
-  transform: translateX(4px);
+  transform: translateX(6px);
   pointer-events: none;
-  transition: opacity 140ms ease, transform 140ms ease;
+  /* Same reveal as ChangeLane's lane actions — opacity fade, plus a soft
+     ease-out slide so they settle in rather than pop. */
+  transition:
+    opacity 0.18s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .rs__row:hover .rs__actions,
-.rs__row:focus-within .rs__actions,
-.rs__row--armed .rs__actions {
+.rs__row:focus-within .rs__actions {
   opacity: 1;
   transform: none;
   pointer-events: auto;
 }
+.rs__row:hover .rs__tokens,
+.rs__row:focus-within .rs__tokens {
+  opacity: 0;
+}
+@media (hover: none) {
+  .rs__actions {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+  .rs__tokens { opacity: 0; }
+}
 .rs__act {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
+  gap: 5px;
+  padding: 3px 6px;
   border: none;
   border-radius: 7px;
   background: transparent;
   color: var(--rs-muted, #a1a1aa);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: color 120ms ease, background 120ms ease;
+  transition: color 0.16s ease;
 }
 .rs__act svg {
+  flex-shrink: 0;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.rs__act:hover {
+.rs__act:hover,
+.rs__act:focus-visible {
   color: var(--ink, #1c1c1f);
-  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.rs__act:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink, #1c1c1f) 30%, transparent);
 }
 /* Pinned: the pin sits lit in gold even at rest. */
 .rs__act--on {
@@ -416,21 +481,14 @@ function hasDiff(s: SessionSummary): boolean {
 .rs__act--on svg {
   fill: color-mix(in srgb, currentColor 22%, transparent);
 }
-.rs__act--danger:hover {
-  color: #e11d48;
-  background: color-mix(in srgb, #e11d48 12%, transparent);
-}
-/* Armed for deletion — the trash has become a check and reads hot. */
-.rs__row--armed .rs__act--danger {
-  color: #e11d48;
-  background: color-mix(in srgb, #e11d48 14%, transparent);
-}
 
-@keyframes rs-row-in {
-  from { opacity: 0; transform: translateY(8px); }
-}
 @media (prefers-reduced-motion: reduce) {
+  .rs__head,
   .rs__row { animation: none; }
+  .rs__actions {
+    transition: opacity 0.18s ease;
+    transform: none;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
