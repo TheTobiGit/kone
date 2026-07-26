@@ -553,8 +553,9 @@ function onDiscardFile(path: string) {
     </header>
 
     <!-- CHAT · the page itself never scrolls — only the thread does, fading into
-         a soft smoke mask at the top and just above the docked composer, the
-         same easing as the file-preview body. -->
+         a soft smoke mask below the sticky title (just above the first prompt)
+         and just above the docked composer, the same easing as the file-preview
+         body. -->
     <div
       v-if="view === 'chat'"
       class="chat-scroll selectable"
@@ -903,24 +904,28 @@ function onDiscardFile(path: string) {
 }
 
 /* The one scroll region in chat mode. Its content fades into a soft smoke mask
-   at the top and just above the docked composer, so turns scroll into and out
-   of view rather than clipping at a hard edge. */
+   below the sticky title — the band sits just above where the first prompt
+   rests — and just above the docked composer, so turns scroll into and out of
+   view rather than clipping at a hard edge. */
 .chat-scroll {
+  --chat-fade-top: 52px; /* below the fixed title pill */
+  --chat-fade-end: 92px; /* aligns with padding-top / first prompt rest line */
+
   width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 92px 2rem 208px;
+  padding: var(--chat-fade-end) 2rem 208px;
   -webkit-mask-image: linear-gradient(
     to bottom,
-    transparent 0,
-    #000 76px,
+    transparent var(--chat-fade-top),
+    #000 var(--chat-fade-end),
     #000 calc(100% - 176px),
     transparent 100%
   );
   mask-image: linear-gradient(
     to bottom,
-    transparent 0,
-    #000 76px,
+    transparent var(--chat-fade-top),
+    #000 var(--chat-fade-end),
     #000 calc(100% - 176px),
     transparent 100%
   );
