@@ -137,6 +137,50 @@ export type ThreadSnapshot = {
   items: RuntimeItem[];
 };
 
+// ── persisted conversation history ───────────────────────────────────────────
+// What the ConversationStore reads back off disk. Kept in the renderer's own
+// UserBlock | AssistantBlock timeline shape so a reloaded thread drops straight
+// into `blocks` with no translation. Mirror in apps/web/app/types/desktop.d.ts.
+
+/** A stored thread's metadata, without its transcript. */
+export type StoredThreadMeta = {
+  threadId: string;
+  projectPath: string;
+  provider: ProviderKind;
+  model?: string;
+  conversationId?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** The branch the project was on when the thread last ran. */
+  branch?: string | null;
+  /** Working-tree diffstat snapshotted at the thread's last turn. */
+  added?: number;
+  removed?: number;
+  /** Tokens spent on the thread — cumulative for providers that report a running
+   *  total (Codex), summed across turns for per-turn reporters (Claude). */
+  tokens?: number;
+  /** Agent-generated (or first-turn word-fallback) working title. Absent on
+   *  threads that predate title persistence or have never received a turn. */
+  title?: string;
+};
+
+/** One reconstructed block — the persisted form of a renderer timeline block. */
+export type StoredBlock =
+  | { id: string; role: "user"; text: string; at: number }
+  | {
+      id: string;
+      role: "assistant";
+      turnId: string;
+      items: RuntimeItem[];
+      state: "running" | RuntimeTurnState;
+      error?: string;
+      at: number;
+      endedAt?: number;
+    };
+
+/** A thread reloaded from disk: metadata plus its blocks in arrival order. */
+export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
+
 // ── Normalized runtime event model ───────────────────────────────────────────
 // Every adapter translates its transport (print-mode stdout, JSON-RPC, ACP, an
 // SDK) into this union. Keep it flat + serializable.
@@ -197,7 +241,9 @@ export type RuntimeEventSource =
   // stream; `lifecycle` = session start/exit; `stderr` = the CLI's stderr line.
   | "claude.sdk.message"
   | "claude.sdk.stderr"
-  | "claude.sdk.lifecycle";
+  | "claude.sdk.lifecycle"
+  // Main-process store / side-channel work (e.g. first-turn title rename).
+  | "kone.store";
 
 type BaseEvent = {
   threadId: string;
@@ -213,6 +259,7 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "session.state.changed"; state: RuntimeSessionState; message?: string })
   | (BaseEvent & { type: "session.exited"; code: number | null })
   | (BaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
+  | (BaseEvent & { type: "thread.title.updated"; title: string })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: RuntimeTurnState; message?: string })

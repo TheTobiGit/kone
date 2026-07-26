@@ -314,7 +314,9 @@ export type RuntimeEventSource =
   // stream; `lifecycle` = session start/exit; `stderr` = the CLI's stderr line.
   | "claude.sdk.message"
   | "claude.sdk.stderr"
-  | "claude.sdk.lifecycle";
+  | "claude.sdk.lifecycle"
+  // Main-process store / side-channel work (e.g. first-turn title rename).
+  | "kone.store";
 
 type AgentBaseEvent = {
   threadId: string;
@@ -333,6 +335,7 @@ export type RuntimeEvent =
     })
   | (AgentBaseEvent & { type: "session.exited"; code: number | null })
   | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
+  | (AgentBaseEvent & { type: "thread.title.updated"; title: string })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   | (AgentBaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (AgentBaseEvent & {
@@ -345,10 +348,66 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "item.updated"; turnId: string; item: RuntimeItem })
   | (AgentBaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem });
 
+// ── persisted conversation history ───────────────────────────────────────────
+// What the main-process ConversationStore reads back off disk. Kept in the same
+// UserBlock | AssistantBlock timeline shape the renderer uses, so a reloaded
+// thread drops straight into `blocks`. Mirrors apps/desktop/src/agent/types.ts.
+
+export type StoredThreadMeta = {
+  threadId: string;
+  projectPath: string;
+  provider: ProviderKind;
+  model?: string;
+  conversationId?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** The branch the project was on when the thread last ran. */
+  branch?: string | null;
+  /** Working-tree diffstat snapshotted at the thread's last turn. */
+  added?: number;
+  removed?: number;
+  /** Tokens spent on the thread — cumulative for providers that report a running
+   *  total (Codex), summed across turns for per-turn reporters (Claude). */
+  tokens?: number;
+  /** Agent-generated (or first-turn word-fallback) working title. */
+  title?: string;
+};
+
+export type StoredBlock =
+  | { id: string; role: "user"; text: string; at: number }
+  | {
+      id: string;
+      role: "assistant";
+      turnId: string;
+      items: RuntimeItem[];
+      state: "running" | RuntimeTurnState;
+      error?: string;
+      at: number;
+      endedAt?: number;
+    };
+
+export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
+
+export type KoneAgentHistoryApi = {
+  /** The project's most recently active thread, fully reconstructed — or null. */
+  latest: (projectPath: string) => Promise<StoredThread | null>;
+  /** One stored thread by id, fully reconstructed — or null. */
+  thread: (threadId: string) => Promise<StoredThread | null>;
+  /** Every stored thread for a project (metadata only), newest first. Excludes
+   *  archived threads. */
+  list: (projectPath: string) => Promise<StoredThreadMeta[]>;
+  /** Hide a thread from the recent list (recoverable), or restore it. */
+  archive: (threadId: string, archived: boolean) => Promise<void>;
+  /** Permanently delete a thread and its transcript. Irreversible. */
+  remove: (threadId: string) => Promise<void>;
+};
+
 export type KoneAgentApi = {
   /** Probe which agent CLIs are installed + logged in on this machine. */
   discover: () => Promise<ProviderStatus[]>;
   models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;
+  /** Persisted conversation history (read-only). */
+  history: KoneAgentHistoryApi;
   /** Start a thread; resolves once the session is ready. */
   startSession: (input: SessionStartInput) => Promise<Session>;
   /** Send a turn; resolves when accepted — output flows through onEvent. */

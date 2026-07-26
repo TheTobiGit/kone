@@ -9,6 +9,8 @@ import type {
   SendTurnInput,
   Session,
   SessionStartInput,
+  StoredThread,
+  StoredThreadMeta,
   TurnStartResult,
 } from "./agent/index.js";
 import type { DirListing } from "./fs.js";
@@ -117,6 +119,21 @@ const api = {
       decision: ApprovalDecision,
     ): Promise<void> => ipcRenderer.invoke("agent:respond", threadId, requestId, decision),
     listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
+    // Persisted conversation history (read-only): rehydrate a project's last
+    // thread on open, or list past ones. Null when nothing is stored yet.
+    history: {
+      latest: (projectPath: string): Promise<StoredThread | null> =>
+        ipcRenderer.invoke("agent:history-latest", projectPath),
+      thread: (threadId: string): Promise<StoredThread | null> =>
+        ipcRenderer.invoke("agent:history-thread", threadId),
+      list: (projectPath: string): Promise<StoredThreadMeta[]> =>
+        ipcRenderer.invoke("agent:history-list", projectPath),
+      // Hide a thread from the recent list (recoverable), or destroy it outright.
+      archive: (threadId: string, archived: boolean): Promise<void> =>
+        ipcRenderer.invoke("agent:history-archive", threadId, archived),
+      remove: (threadId: string): Promise<void> =>
+        ipcRenderer.invoke("agent:history-delete", threadId),
+    },
     // The ONE runtime event stream. Subscribing registers this renderer in the
     // main process; the returned fn unsubscribes and detaches the listener.
     onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {

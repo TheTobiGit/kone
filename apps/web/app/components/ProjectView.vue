@@ -20,6 +20,7 @@ import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
+import { SESSION_BRAND } from "~/types/session";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -43,7 +44,35 @@ const providers = useAgentProviders();
 // Provider is chosen in onMounted (below) from what's installed + last used;
 // "codex" is just the pre-mount default the ref carries until then.
 const agent = useAgent({ provider: "codex", cwd: () => props.project.path });
-const { blocks, busy, model, mode, reasoning, serviceTier, now: agentNow, error: agentError } = agent;
+const {
+  blocks,
+  busy,
+  model,
+  mode,
+  reasoning,
+  serviceTier,
+  now: agentNow,
+  error: agentError,
+  title: threadTitle,
+} = agent;
+
+// The project's persisted agent threads, split into pinned + recent for the
+// "recent conversations" block on the working-tree home. Reads real history on
+const {
+  pinned: pinnedSessions,
+  recent: recentSessions,
+  loading: sessionsLoading,
+  togglePin: togglePinnedSession,
+  archive: archiveSession,
+  remove: removeSession,
+} = useRecentSessions(() => props.project.path);
+
+// Bring a picked recent conversation on-screen and continue it under its own
+// thread id. Best-effort on desktop; a no-op in browser dev (no live session).
+function openSession(threadId: string): void {
+  view.value = "chat";
+  void agent.openThread(threadId);
+}
 
 // The catalog for each installed provider — its flat model list grouped into
 // families with real efforts. The composer + picker drive everything off these;
@@ -58,6 +87,7 @@ const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent"]);
 const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic" };
 const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude" };
+const threadBrand = computed(() => SESSION_BRAND[agent.provider.value] ?? "generic");
 
 // Remember the last provider + model + permission mode per project across quits.
 const PROVIDER_KEY = `kone:provider:${props.project.path}`;
@@ -244,6 +274,16 @@ useEventListener(window, "blur", () => {
   if (cycling.value) cancelCycle();
 });
 
+// ⌘/Ctrl+Shift+D — play a scripted demo conversation so the whole thread UI
+// (thinking, tools with output, streaming text, a no-content thought, the settled
+// footer) can be reviewed on demand without driving a real agent turn.
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (e.key.toLowerCase() !== "d" || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return;
+  e.preventDefault();
+  view.value = "chat";
+  agent.demo();
+});
+
 // "All projects" backs out to the launcher — the same exit the folder's close
 // gives, so the switcher and the back control agree.
 function toLauncher() {
@@ -329,7 +369,12 @@ function onUpdateFastMode(on: boolean) {
   agent.setServiceTier(on ? fam?.fastTier?.id : undefined);
 }
 
-function onSend(text: string) {
+async function onSend(text: string) {
+  // Sending from the working-tree home (no thread in view) begins a fresh
+  // conversation rather than continuing the last-opened one — the session boots
+  // rehydrated with the project's latest thread, so without this a first send
+  // would silently append to that old transcript.
+  if (view.value === "work") await agent.newThread();
   view.value = "chat";
   void agent.send(text);
 }
@@ -494,6 +539,19 @@ function onDiscardFile(path: string) {
       </motion.button>
     </Magnet>
 
+    <!-- CHAT · sticky working title, centered under the top chrome. Lives
+         outside the scroll region so turns move under it. -->
+    <header
+      v-if="view === 'chat' && threadTitle"
+      class="chat-title"
+      :inert="Boolean(activeFile)"
+    >
+      <div class="chat-title__pill">
+        <ProviderLogo :brand="threadBrand" :size="18" />
+        <h1 class="chat-title__label">{{ threadTitle }}</h1>
+      </div>
+    </header>
+
     <!-- CHAT · the page itself never scrolls — only the thread does, fading into
          a soft smoke mask at the top and just above the docked composer, the
          same easing as the file-preview body. -->
@@ -554,6 +612,17 @@ function onDiscardFile(path: string) {
         @commit="onCommit"
         @discard-paths="onDiscardPaths"
         @open="onOpenFile"
+      />
+      <!-- Recent conversations — the project's pinned + recent agent threads,
+           each a vendor mark + title, meta line, and token tally. -->
+      <RecentSessions
+        :pinned="pinnedSessions"
+        :recent="recentSessions"
+        :loading="sessionsLoading"
+        @open="openSession"
+        @pin="togglePinnedSession"
+        @archive="archiveSession"
+        @delete="removeSession"
       />
     </div>
 
@@ -792,6 +861,45 @@ function onDiscardFile(path: string) {
   .project-folder-row {
     display: none;
   }
+}
+
+/* Sticky conversation title — top-centre, outside the scroll region so the
+   thread moves under it. Vendor mark + stronger sans label; ellipsis when the
+   name runs long. Side inset clears the back glyph so the two never collide. */
+.chat-title {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  padding: 1.85rem 5.5rem 0;
+  pointer-events: none;
+}
+.chat-title__pill {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(40rem, 100%);
+  min-width: 0;
+}
+.chat-title__pill :deep(.plogo) {
+  flex: none;
+}
+.chat-title__label {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--ink);
+  text-align: left;
 }
 
 /* The one scroll region in chat mode. Its content fades into a soft smoke mask
