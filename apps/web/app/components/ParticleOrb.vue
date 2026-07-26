@@ -1,11 +1,11 @@
 <script setup lang="ts">
-// The iris orb as a dot-globe: a lattice of small crisp points wrapped on a
+// The agent orb as a dot-globe: a lattice of small crisp points wrapped on a
 // slowly-turning, rippling sphere. Points are laid out in equal-area latitude
 // rings (count per ring ∝ cos(lat)) so the dots stay evenly spaced — a halftone
 // weave rather than clumping at the poles. The near side reads strong, the far
 // side sinks to a ghost, so the globe has real depth. There's no disc behind the
-// dots: they ARE the orb, coloured to sit on the page — luminous on a dark
-// ground, dark iris-ink (the canonical palette, by longitude) on a light one.
+// dots: they ARE the orb, coloured to sit on the page — luminous grey on a dark
+// ground, ink-grey on a light one. Monochrome throughout: no hue, only tone.
 // Canvas 2D, no WebGL. Honours prefers-reduced-motion by holding the field
 // still, and pauses its render loop whenever it's inactive or the tab is hidden.
 import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
@@ -34,37 +34,13 @@ const canvas = ref<HTMLCanvasElement | null>(null)
 // sphere's core edge without being clipped.
 const PAD = 14
 
-// The iris conic stops as raw oklab [L, a, b], in sweep order and looping. A
-// point's longitude picks a position along this ring so the globe carries a
-// faint echo of the indigo→blue→teal→cream→coral wheel the flat orb sweeps.
-const STOPS: [number, number, number][] = [
-  [65.3, 0.048, -0.161],
-  [65.5, -0.02, -0.155],
-  [79.6, -0.1, -0.046],
-  [89.9, 0.019, 0.087],
-  [79.3, 0.1, 0.069],
-  [65.3, 0.048, -0.161],
-]
-
-function irisAt(t: number): [number, number] {
-  // t in [0,1) → interpolated iris a/b chroma (we keep our own lightness so the
-  // dots stay luminous like the reference; only the hue tint comes from iris).
-  const f = (t % 1) * (STOPS.length - 1)
-  const i = Math.floor(f)
-  const k = f - i
-  const a = STOPS[i]!
-  const b = STOPS[i + 1]!
-  return [a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]
-}
-
 // A point is stored by its position on the sphere (lat/lon), not a frozen xyz,
 // so the surface can be warped fresh every frame — the dots ride a soft,
-// rippling membrane rather than a rigid cage. `t` is its longitude on the iris
-// wheel. The projection buffer (`proj`) holds each point's warped screen-space
-// position; it's reused across frames and re-sorted in place, so a full frame
-// allocates nothing.
-type P = { lat: number; lon: number; t: number }
-type Proj = { t: number; x: number; y: number; z: number }
+// rippling membrane rather than a rigid cage. The projection buffer (`proj`)
+// holds each point's warped screen-space position; it's reused across frames and
+// re-sorted in place, so a full frame allocates nothing.
+type P = { lat: number; lon: number }
+type Proj = { x: number; y: number; z: number }
 let pts: P[] = []
 let proj: Proj[] = []
 
@@ -82,11 +58,11 @@ function buildPoints() {
     const off = (i % 2) * 0.5
     for (let j = 0; j < n; j++) {
       const lon = ((j + off) / n) * Math.PI * 2
-      out.push({ lat, lon, t: (j + off) / n })
+      out.push({ lat, lon })
     }
   }
   pts = out
-  proj = out.map((p) => ({ t: p.t, x: 0, y: 0, z: 0 }))
+  proj = out.map(() => ({ x: 0, y: 0, z: 0 }))
 }
 
 let raf = 0
@@ -98,9 +74,9 @@ let ctx: CanvasRenderingContext2D | null = null
 const reduced = typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
-// The particles ARE the orb — there's no disc behind them, so they're coloured
-// to read against the page: luminous on a dark ground, dark iris-ink on a light
-// one. Track the theme live so the orb re-tints when the scheme flips.
+// The particles ARE the orb — there's no disc behind them, so they're toned to
+// read against the page: luminous grey on a dark ground, ink-grey on a light
+// one. Track the theme live so the orb re-tones when the scheme flips.
 const darkMedia = typeof window !== 'undefined'
   ? window.matchMedia('(prefers-color-scheme: dark)')
   : null
@@ -190,24 +166,21 @@ function draw(now: number) {
     const depth = (q.z + 1) / 2 // 0 far → 1 near
     const sx = cx + q.x * rad
     const sy = cy + q.y * rad
-    const [a, b] = irisAt(q.t)
     const dot = 0.5 + depth * 0.7 // px radius, near dots a touch fatter
     let L: number
-    let chroma: number
     let alpha: number
     if (isDark) {
-      // Facing side near-white and bright; far side a faint ghost. Faint tint.
+      // Facing side near-white and bright; far side a faint ghost.
       L = Math.min(99, 88 + depth * 10 + e * 2)
-      chroma = 0.35
       alpha = (0.06 + Math.pow(depth, 1.6) * 0.9) * (0.7 + e * 0.4)
     } else {
-      // Dark, saturated iris ink on the light page: near dots deep and solid,
-      // far dots lift toward the page so the sphere still has depth.
+      // Deep ink on the light page: near dots dark and solid, far dots lift
+      // toward the page so the sphere still has depth.
       L = 40 + (1 - depth) * 30 - e * 3
-      chroma = 1
       alpha = (0.18 + Math.pow(depth, 1.4) * 0.72) * (0.85 + e * 0.15)
     }
-    ctx.fillStyle = `oklab(${L}% ${a * chroma} ${b * chroma} / ${alpha})`
+    // Monochrome: neutral oklab (zero chroma), tone carried entirely by L/alpha.
+    ctx.fillStyle = `oklab(${L}% 0 0 / ${alpha})`
     ctx.beginPath()
     ctx.arc(sx, sy, dot, 0, Math.PI * 2)
     ctx.fill()

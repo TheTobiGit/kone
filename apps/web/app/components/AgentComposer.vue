@@ -14,8 +14,8 @@ import {
   type ModelOption,
 } from "~/utils/modelCatalog";
 
-// "Agent input — Iris states" board. One object walks four states:
-//   dormant  · a calm iris orb at rest, breathing
+// "Agent input — states" board. One object walks four states:
+//   dormant  · a calm orb at rest, breathing
 //   ready    · it EXPANDS into a pill; the sleeping face fades to the field
 //   typing   · the pill grows to fit the text (auto-height, never a scrollbar)
 //   composing· attach context and it widens into a card; chips ride the top
@@ -432,7 +432,7 @@ watch(text, () => nextTick(sync));
       </button>
     </div>
 
-    <!-- One surface, morphing. Closed it's the iris orb; open it's the field. -->
+    <!-- One surface, morphing. Closed it's the orb; open it's the field. -->
     <div
       ref="surface"
       class="surface"
@@ -442,7 +442,7 @@ watch(text, () => nextTick(sync));
       :aria-label="open ? undefined : 'Wake the agent'"
       @click="onSurfaceClick"
     >
-      <!-- Resting particle bead: the iris marble broken into a turning cloud of
+      <!-- Resting particle bead: the marble broken into a turning cloud of
            light. Fades out as the surface morphs into the field. -->
       <div class="orbfx" aria-hidden="true">
         <ParticleOrb :size="55" :energy="busy ? 1 : 0" :active="!open" />
@@ -567,10 +567,10 @@ watch(text, () => nextTick(sync));
 </template>
 
 <style scoped>
-/* The canonical iris — one conic sweep, plus a sheen the send seed layers on top
-   so it reads as a glossy marble. */
+/* The orb rim — one conic sweep through indigo → blue → teal → cream → coral,
+   plus a sheen the send seed layers on top so it reads as a glossy marble. */
 .dock {
-  --iris: conic-gradient(
+  --orb-rim: conic-gradient(
     in oklab from 205deg at 50% 50%,
     oklab(65.3% 0.048 -0.161) 0%,
     oklab(65.5% -0.02 -0.155) 20%,
@@ -640,7 +640,7 @@ watch(text, () => nextTick(sync));
 }
 
 /* ── The morphing surface ─────────────────────────────────────────────────── */
-/* At rest it's a 52px iris orb. Open, it becomes the gradient rim around a white
+/* At rest it's a 52px orb. Open, it becomes the gradient rim around a white
    field. Width, corner radius, rim padding and height all ease together, so the
    orb visibly expands and collapses. */
 .surface {
@@ -664,7 +664,7 @@ watch(text, () => nextTick(sync));
     border-radius 0.26s ease 0.18s;
 }
 /* At rest the surface carries no gradient — the particle orb IS the mark, and it
-   bleeds past the box (no circular clip). The iris returns only as the pill rim
+   bleeds past the box (no circular clip). The rim returns only as the pill edge
    once it opens. */
 .surface:not(.is-open) {
   overflow: visible;
@@ -674,7 +674,7 @@ watch(text, () => nextTick(sync));
   width: 360px; /* fallback; the pill's real width is driven inline to fit text */
   padding: 2.5px;
   border-radius: 32px;
-  background-image: var(--iris);
+  background-image: var(--orb-rim);
   cursor: default;
   /* Open + everyday sizing: width tracks the text and height follows. This is
      the typing curve — short and snappy with no overshoot, so per-keystroke
@@ -840,7 +840,7 @@ watch(text, () => nextTick(sync));
   padding: 0;
   border-radius: 50%;
   cursor: pointer;
-  background-image: var(--sheen), var(--iris);
+  background-image: var(--sheen), var(--orb-rim);
   box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset;
   transition: box-shadow 0.3s ease, transform 0.2s ease;
 }

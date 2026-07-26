@@ -3,10 +3,9 @@
 // read yet. It's the *orbits* variant from orbs.jakubantalik.com ("Working…"),
 // ported faithfully to Canvas 2D: a dozen randomly-oriented orbit rings, each
 // traced by a spray of faint "ghost" dots with a few brighter particles running
-// along it, the whole cloud yawing slowly. Where the reference is grayscale, we
-// re-tint the dots with kone's iris palette (indigo→blue→teal→cream→coral, by
-// orbit + depth) so it sits in the app's own visual language — luminous on a
-// dark ground, iris-ink on a light one, matching [[ParticleOrb]]. No WebGL.
+// along it, the whole cloud yawing slowly. Grayscale like the reference —
+// luminous grey on a dark ground, ink-grey on a light one, matching
+// [[ParticleOrb]]. No WebGL.
 // Honours prefers-reduced-motion (holds a still frame) and parks its render loop
 // whenever it's inactive or the tab is hidden.
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -23,27 +22,6 @@ const props = withDefaults(
 );
 
 const canvas = ref<HTMLCanvasElement | null>(null);
-
-// ── the iris wheel (shared with ParticleOrb) ────────────────────────────────
-// Conic stops as raw oklab [L, a, b], in sweep order and looping. A dot's hue
-// param picks a position along this ring; we keep our own lightness so the dots
-// stay luminous, only the a/b tint comes from iris.
-const STOPS: [number, number, number][] = [
-  [65.3, 0.048, -0.161],
-  [65.5, -0.02, -0.155],
-  [79.6, -0.1, -0.046],
-  [89.9, 0.019, 0.087],
-  [79.3, 0.1, 0.069],
-  [65.3, 0.048, -0.161],
-];
-function irisAt(t: number): [number, number] {
-  const f = (((t % 1) + 1) % 1) * (STOPS.length - 1);
-  const i = Math.floor(f);
-  const k = f - i;
-  const a = STOPS[i]!;
-  const b = STOPS[i + 1]!;
-  return [a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
-}
 
 // ── the orbits geometry (ported from the reference "working" drawer) ─────────
 // A cheap sin-hash stands in for per-orbit randomness (same one the reference
@@ -81,7 +59,7 @@ function projector(yaw: number, tilt: number, cx: number, cy: number) {
   };
 }
 
-type Dot = { x: number; y: number; z: number; r: number; depth: number; t: number; a: number; bright: boolean };
+type Dot = { x: number; y: number; z: number; r: number; depth: number; a: number; bright: boolean };
 
 let dots: Dot[] = [];
 
@@ -116,8 +94,6 @@ function build(time: number, S: number): Dot[] {
     const jy = nz * ex - nx * ez;
     const jz = nx * ey - ny * ex;
     const spin = (0.25 + 0.55 * h3) * (h3 > 0.5 ? 1 : -1);
-    // A coherent iris hue per ring (golden-ratio spread), drifting a touch.
-    const hue = g * 0.618 + h2 * 0.2;
 
     // Ghost dots — the static ring outline.
     for (let k = 0; k < GHOST_N; k++) {
@@ -133,7 +109,6 @@ function build(time: number, S: number): Dot[] {
         z: sz,
         r: GHOST_R * rScale,
         depth,
-        t: hue + depth * 0.06,
         a: GHOST_A * (0.4 + 0.6 * depth),
         bright: false,
       });
@@ -152,7 +127,6 @@ function build(time: number, S: number): Dot[] {
         z: sz,
         r: (PART_R + PART_R_DEPTH * depth) * rScale,
         depth,
-        t: hue + depth * 0.06,
         a: 1,
         bright: true,
       });
@@ -198,25 +172,22 @@ function draw(now: number) {
   dots = build(time, S);
   dots.sort((p, q) => p.z - q.z); // back to front
 
-  // On dark the dots glow (ADD their light); on light they're iris ink painted
-  // over the page (source-over) — same idiom as ParticleOrb.
+  // On dark the dots glow (ADD their light); on light they're ink painted over
+  // the page (source-over) — same idiom as ParticleOrb.
   ctx.globalCompositeOperation = isDark ? "lighter" : "source-over";
   for (const d of dots) {
-    const [a, b] = irisAt(d.t);
     let L: number;
-    let chroma: number;
     let alpha: number;
     if (isDark) {
       L = 82 + d.depth * 14 + (d.bright ? 4 : 0);
-      chroma = 0.42;
       alpha = d.a * (0.14 + Math.pow(d.depth, 1.5) * 0.86);
     } else {
       L = 44 + (1 - d.depth) * 26 - (d.bright ? 4 : 0);
-      chroma = 1;
       alpha = d.a * (0.2 + Math.pow(d.depth, 1.4) * 0.7);
     }
     if (alpha < 0.02) continue;
-    ctx.fillStyle = `oklab(${L}% ${a * chroma} ${b * chroma} / ${alpha})`;
+    // Monochrome: neutral oklab (zero chroma), tone carried by L/alpha.
+    ctx.fillStyle = `oklab(${L}% 0 0 / ${alpha})`;
     ctx.beginPath();
     ctx.arc(d.x, d.y, Math.max(R_MIN, d.r), 0, Math.PI * 2);
     ctx.fill();

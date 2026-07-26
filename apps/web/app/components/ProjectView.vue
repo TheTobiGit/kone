@@ -435,8 +435,8 @@ function onDiscardFile(path: string) {
     :class="view === 'chat' ? 'is-chat' : 'is-work'"
   >
     <!-- Back to the launcher — a bare return glyph in the corner, on the same
-         magnet-pull the app's other buttons ride, lighting up to the iris
-         accent on hover. It steps aside only for the file-detail overlay. -->
+         magnet-pull the app's other buttons ride, lighting up to the accent
+         on hover. It steps aside only for the file-detail overlay. -->
     <Magnet
       class="project-back-magnet"
       inner-class="w-fit"
