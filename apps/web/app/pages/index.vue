@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { usePreferredDark } from "@vueuse/core";
+import { motion } from "motion-v";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import { ClickSpark } from "~/components/ui/click-spark";
 
@@ -21,6 +22,7 @@ const pending = ref<"create" | "open" | "clone" | null>(null);
 const pickerOpen = ref(false); // open-a-project browser
 const cloneOpen = ref(false); // clone-from-github modal
 const createOpen = ref(false); // create-new-project modal
+const settingsOpen = ref(false); // settings / personalization drawer
 
 function onStart(key: "create" | "open" | "clone") {
   if (pending.value) return;
@@ -109,28 +111,82 @@ function onCreateCancel() {
 
 const isDark = usePreferredDark();
 const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
+
+// The launcher slides aside to reveal the settings panel pinned to the left
+// edge — the X account-drawer gesture. A straight translate, no scale: the page
+// keeps its full size and just shifts right by the reveal width.
+const stageSpring = {
+  type: "spring",
+  stiffness: 520,
+  damping: 26,
+  mass: 0.8,
+} as const;
+
+// ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the
+// same keystroke opens and closes it (Escape also closes, via the drawer). We
+// don't fight it while another overlay owns the screen.
+function onSettingsHotkey(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+    if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
+    e.preventDefault();
+    cue("press");
+    settingsOpen.value = !settingsOpen.value;
+  }
+}
+onMounted(() => window.addEventListener("keydown", onSettingsHotkey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
 </script>
 
 <template>
   <ClickSpark
-    class="h-full min-h-screen"
+    class="relative h-full min-h-screen overflow-hidden bg-sunken"
     :spark-color="sparkColor"
     :spark-count="10"
     :spark-radius="18"
     :duration="480"
   >
-    <ProjectView v-if="project" :key="project.path" :project="project" @close="project = null" />
-    <AppHomeRecent
-      v-else-if="showRecent"
-      :recents="recents"
-      :pending="pending"
-      @open="onOpenRecent"
-      @start="onStart"
-      @pin="onTogglePin"
-      @reveal="onRevealRecent"
-      @forget="forget"
-    />
-    <AppHomeEmpty v-else :pending="pending" @start="onStart" />
+    <!-- Settings panel, pinned to the left edge and revealed as the stage slides
+         aside. It sits behind the stage (z-0) and shows through the gap. -->
+    <SettingsDrawer :open="settingsOpen" @close="settingsOpen = false" />
+
+    <!-- The launcher "stage": everything the user normally sees. When settings
+         is open it slides straight right to uncover the panel — no scale, just a
+         shift, the X account-drawer motion. -->
+    <motion.div
+      class="stage relative z-10 h-full min-h-screen bg-ground"
+      :style="{ willChange: 'transform' }"
+      :animate="{
+        x: settingsOpen ? 320 : 0,
+        borderRadius: settingsOpen ? 26 : 0,
+      }"
+      :transition="stageSpring"
+    >
+      <div class="h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
+        <ProjectView v-if="project" :key="project.path" :project="project" @close="project = null" />
+        <AppHomeRecent
+          v-else-if="showRecent"
+          :recents="recents"
+          :pending="pending"
+          @open="onOpenRecent"
+          @start="onStart"
+          @pin="onTogglePin"
+          @reveal="onRevealRecent"
+          @forget="forget"
+          @settings="settingsOpen = true"
+        />
+        <AppHomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />
+      </div>
+
+      <!-- While open, tapping the shoved-aside stage closes the drawer (and
+           blocks the launcher underneath from being clicked). -->
+      <button
+        v-if="settingsOpen"
+        type="button"
+        class="absolute inset-0 z-50 cursor-pointer"
+        aria-label="Close settings"
+        @click="settingsOpen = false"
+      />
+    </motion.div>
 
     <FolderPickerModal
       v-if="pickerOpen"

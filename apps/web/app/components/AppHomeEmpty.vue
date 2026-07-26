@@ -14,7 +14,7 @@ const plasmaOpacity = computed(() => (isDark.value ? 0.5 : 1));
 // First-run screen: no projects, no sessions yet — just three ways to begin.
 // Key of the action currently in session (e.g. folder picker open), or null.
 defineProps<{ pending?: ActionKey | null }>();
-const emit = defineEmits<{ start: [key: ActionKey] }>();
+const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
 </script>
 
 <template>
@@ -23,9 +23,10 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
   >
     <h1 class="sr-only">Start a project</h1>
 
-    <!-- Wordmark anchored top-left, matching the page's px-16 / pt-[52px] inset. -->
-    <div class="relative z-10">
+    <!-- Wordmark top-left, settings top-right — both on the page's inset row. -->
+    <div class="relative z-10 flex items-center justify-between">
       <RotatingWordmark />
+      <SettingsButton @open="emit('settings')" />
     </div>
 
     <!-- Hero: the start options rest dead-center in the open space. -->

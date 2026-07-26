@@ -17,7 +17,7 @@ import { useStorage } from "@vueuse/core";
 export type Cue = "press" | "toggle" | "success" | "error";
 
 // Persisted mute preference (survives quit). Module scope so every caller and the
-// SoundToggle share one source of truth.
+// settings drawer's sound switch share one source of truth.
 const muted = useStorage("kone.sound.muted", false);
 
 type CuelumeModule = typeof import("cuelume");

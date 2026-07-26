@@ -25,6 +25,7 @@
   --color-accent: var(--accent);
   --color-orb-ring: var(--orb-ring);
   --color-hover: var(--hover);
+  --color-sunken: var(--sunken);
 }
 
 :root {
@@ -35,6 +36,10 @@
   --accent: #d97757;
   --orb-ring: #1c1c1f;
   --hover: rgb(39 39 42 / 0.04);
+  /* The surface *beneath* the launcher — revealed when a page slides aside to
+     uncover the settings drawer. Always a shade deeper than --ground so the page
+     reads as a card lifted above it. */
+  --sunken: #e9e8e5;
 
   /* Diffstat semantics — insertions/deletions. `--diff-*` is the crisp
      diffstat pair (numbers, dots, badges); `--diff-*-soft` is the warmer,
@@ -54,6 +59,7 @@
     --accent: #d97757;
     --orb-ring: #f4f4f5;
     --hover: rgb(244 244 245 / 0.06);
+    --sunken: #000000;
     --diff-add-soft: #7fb98a;
     --diff-del-soft: #dc8a6f;
   }

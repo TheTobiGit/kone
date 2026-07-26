@@ -22,6 +22,7 @@ const emit = defineEmits<{
   pin: [path: string];
   reveal: [path: string];
   forget: [path: string];
+  settings: [];
 }>();
 
 const { summaries, enrich } = useProjectSummaries();
@@ -106,7 +107,7 @@ function onFolderFocusOut(e: FocusEvent) {
 
       <template #trailing>
         <div class="flex items-center gap-3">
-          <SoundToggle />
+          <SettingsButton @open="emit('settings')" />
 
           <label
             class="flex h-9 items-center gap-2.5 rounded-[11px] bg-hover px-3 transition-colors focus-within:bg-hover"
