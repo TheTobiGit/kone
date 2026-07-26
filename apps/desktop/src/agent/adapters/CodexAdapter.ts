@@ -543,14 +543,47 @@ export class CodexAdapter implements ProviderAdapter {
     });
 
     rpc.onNotification("thread/tokenUsage/updated", (params) => {
-      const usage = asRecord(asRecord(params)?.usage) ?? asRecord(params) ?? {};
+      // Codex shape (confirmed in research): `{ tokenUsage: { last, total } }`
+      // where each side is a breakdown with `totalTokens` / `inputTokens` / …
+      // `total` is the running thread cumulative — ConversationStore keeps MAX
+      // of it. Looking for a flat `params.usage.totalTokens` silently drops
+      // every update.
+      const payload = asRecord(params);
+      const tokenUsage =
+        asRecord(payload?.tokenUsage) ??
+        asRecord(payload?.usage) ??
+        payload;
+      const totalBreakdown =
+        asRecord(tokenUsage?.total) ??
+        asRecord(tokenUsage?.total_token_usage);
+      const lastBreakdown =
+        asRecord(tokenUsage?.last) ??
+        asRecord(tokenUsage?.last_token_usage);
+      // Prefer the cumulative thread total; fall back to last-turn if Codex
+      // only sent `last` (or an older flat payload).
+      const breakdown = totalBreakdown ?? lastBreakdown ?? tokenUsage;
+      if (!breakdown) return;
+      const total =
+        numberOrUndefined(totalBreakdown?.totalTokens) ??
+        numberOrUndefined(totalBreakdown?.total_tokens) ??
+        numberOrUndefined(lastBreakdown?.totalTokens) ??
+        numberOrUndefined(lastBreakdown?.total_tokens) ??
+        numberOrUndefined(breakdown.totalTokens) ??
+        numberOrUndefined(breakdown.total_tokens) ??
+        numberOrUndefined(breakdown.total);
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
         usage: {
-          input: numberOrUndefined(usage?.inputTokens ?? usage?.input),
-          output: numberOrUndefined(usage?.outputTokens ?? usage?.output),
-          total: numberOrUndefined(usage?.totalTokens ?? usage?.total),
+          input:
+            numberOrUndefined(breakdown.inputTokens) ??
+            numberOrUndefined(breakdown.input_tokens) ??
+            numberOrUndefined(breakdown.input),
+          output:
+            numberOrUndefined(breakdown.outputTokens) ??
+            numberOrUndefined(breakdown.output_tokens) ??
+            numberOrUndefined(breakdown.output),
+          total,
         },
       });
     });
