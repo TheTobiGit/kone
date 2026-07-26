@@ -55,10 +55,17 @@ function brandOverride(lower: string): string | undefined {
   return BRAND_BY_EXT[ext];
 }
 
+/** Basename of a path, with an optional `:line` / `:line-end` suffix stripped so
+ *  icons resolve from the real filename (`useAgent.ts:167` → `useAgent.ts`). */
+export function fileBaseForIcon(path: string): string {
+  const base = path.split("/").filter(Boolean).pop() ?? path;
+  return base.replace(/:\d+(?:-\d+)?$/, "");
+}
+
 /** Iconify icon id (e.g. `vscode-icons:file-type-typescript`) for a path's file
  *  type — the real VS Code logo. Unknown types resolve to the generic file. */
 export function iconForFile(path: string): string {
-  const base = path.split("/").filter(Boolean).pop() ?? path;
+  const base = fileBaseForIcon(path);
   const override = brandOverride(base.toLowerCase());
   if (override) return `vscode-icons:${override}`;
   const raw = getIconForFile(base) ?? "default_file.svg";

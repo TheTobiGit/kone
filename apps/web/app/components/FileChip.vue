@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { PhFolder } from "@phosphor-icons/vue";
 import FileIcon from "~/components/FileIcon.vue";
+import { fileBaseForIcon } from "~/utils/fileIcon";
 
 // When an agent names a file in prose — `src/agent/useAgent.ts`, `package.json`
 // — we render it not as flat inline code but as a chip: the real VSCode file-
@@ -9,7 +11,9 @@ import FileIcon from "~/components/FileIcon.vue";
 
 // `path` is what the chip shows (icon + dir/name); `title` overrides the hover
 // tooltip when the display path is a shortened basename of a longer one.
-const props = defineProps<{ path: string; title?: string }>();
+const props = defineProps<{ path: string; title?: string; folder?: boolean }>();
+
+const iconPath = computed(() => fileBaseForIcon(props.path));
 
 // Split into a dimmed directory prefix and an emphasised basename.
 const parts = computed(() => {
@@ -23,7 +27,8 @@ const parts = computed(() => {
 
 <template>
   <span class="chip" :title="title ?? path">
-    <FileIcon class="chip__ico" :path="parts.name || path" :size="13" />
+    <PhFolder v-if="folder" class="chip__ico chip__ico--folder" :size="13" weight="duotone" aria-hidden="true" />
+    <FileIcon v-else class="chip__ico" :path="iconPath || path" :size="13" />
     <span class="chip__path">
       <span v-if="parts.dir" class="chip__dir">{{ parts.dir }}</span
       ><span class="chip__name">{{ parts.name }}</span>
@@ -52,6 +57,9 @@ const parts = computed(() => {
   position: relative;
   top: 2px;
   flex: none;
+}
+.chip__ico--folder {
+  color: #c4a44a;
 }
 .chip__path {
   min-width: 0;
