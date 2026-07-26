@@ -22,6 +22,17 @@ export async function unstage(dir: string, paths: string[]): Promise<void> {
   await git(root, ["reset", "-q", "--", ...paths]);
 }
 
+/** Switch the working tree to `branch` — a local branch name as reported by
+ *  `branches()`. Git refuses (and this throws GitError) when the checkout would
+ *  clobber conflicting local changes; the message is surfaced to the caller so
+ *  the UI can explain the failure. The open project's watcher pushes the new
+ *  status once the switch lands. */
+export async function checkout(dir: string, branch: string): Promise<void> {
+  const root = await repoRoot(dir);
+  if (!root || !branch.trim()) return;
+  await git(root, ["checkout", branch]);
+}
+
 /** Whether `relPath` exists in the current HEAD commit. */
 async function inHead(root: string, relPath: string): Promise<boolean> {
   try {

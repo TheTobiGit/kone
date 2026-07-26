@@ -7,6 +7,7 @@ import type {
   GitStatus,
 } from "~/types/desktop";
 import {
+  mockBranches,
   mockContent,
   mockDetect,
   mockDiff,
@@ -43,7 +44,10 @@ export function useGit() {
       return withLatency(mockContent(dir, path));
     },
     branches(dir: string): Promise<GitBranch[]> {
-      return git ? git.branches(dir) : Promise.resolve([]);
+      if (git) return git.branches(dir);
+      // Browser dev: resolve against the demo-world repos so the switcher is
+      // demoable (checkout below stays a no-op — nothing on disk to move).
+      return withLatency(mockBranches(dir)).then((b) => b ?? []);
     },
     log(dir: string, limit?: number): Promise<GitCommit[]> {
       return git ? git.log(dir, limit) : Promise.resolve([]);
@@ -63,6 +67,13 @@ export function useGit() {
     },
     discard(dir: string, paths: string[]): Promise<void> {
       return git ? git.discard(dir, paths) : Promise.resolve();
+    },
+    // Switch to a local branch. Browser dev has no real repo to move, but it
+    // still waits a git-like beat so the caller's switching state gets a frame
+    // (an instant resolve would snap the picker shut with no in-progress cue).
+    checkout(dir: string, branch: string): Promise<void> {
+      if (git) return git.checkout(dir, branch);
+      return withLatency(branch).then(() => undefined);
     },
   };
 }

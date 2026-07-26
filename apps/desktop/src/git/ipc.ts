@@ -4,7 +4,7 @@ import { clone, cancelClone } from "./clone.js";
 import { createProject } from "./create.js";
 import { content, diff } from "./diff.js";
 import { branches, log } from "./history.js";
-import { discard, stage, unstage } from "./mutations.js";
+import { checkout, discard, stage, unstage } from "./mutations.js";
 import { detect, status } from "./status.js";
 import { watchStatus } from "./watch.js";
 import type { CreateProjectOptions } from "./types.js";
@@ -70,6 +70,9 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle("git:discard", (_event, dir: string, paths: string[]) =>
     discard(dir, paths),
+  );
+  ipcMain.handle("git:checkout", (_event, dir: string, branch: string) =>
+    checkout(dir, branch),
   );
   ipcMain.handle("git:branches", (_event, dir: string) => branches(dir));
   ipcMain.handle("git:log", (_event, dir: string, limit?: number) =>

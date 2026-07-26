@@ -77,6 +77,11 @@ const api = {
       ipcRenderer.invoke("git:unstage", dir, paths),
     discard: (dir: string, paths: string[]): Promise<void> =>
       ipcRenderer.invoke("git:discard", dir, paths),
+    // Switch the working tree to a local branch. Rejects (with git's message)
+    // when the checkout is blocked; the open project's watcher pushes the new
+    // status on success.
+    checkout: (dir: string, branch: string): Promise<void> =>
+      ipcRenderer.invoke("git:checkout", dir, branch),
     // Subscribe to clone progress; returns an unsubscribe fn. Only meaningful
     // while a git.clone() invoke is in flight.
     onCloneProgress: (cb: (p: CloneProgress) => void): (() => void) => {

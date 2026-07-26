@@ -10,6 +10,7 @@
 
 import type {
   DirListing,
+  GitBranch,
   GitChange,
   GitDiffLine,
   GitFileContent,
@@ -124,6 +125,31 @@ const MOCK_CHANGES: Record<string, GitChange[]> = {
   ],
   "/Users/you/Developer/nxui": [],
 };
+
+// The local branches each mock repo offers the switcher — the first entry that
+// matches the repo's summary branch renders as the current one.
+const MOCK_BRANCHES: Record<string, string[]> = {
+  "/Users/you/Developer/kone": [
+    "calm-agent-ui-continuation",
+    "main",
+    "dev",
+    "premium-conversation-thread",
+  ],
+  "/Users/you/Developer/nxui": ["main", "next"],
+  "/Users/you/Developer/sandbox": ["spike/particles", "main"],
+};
+
+export function mockBranches(dir: string): GitBranch[] {
+  const summary = MOCK_SUMMARIES[dir];
+  if (!summary) return [];
+  const names =
+    MOCK_BRANCHES[dir] ?? (summary.branch ? [summary.branch] : []);
+  return names.map((name) => ({
+    name,
+    current: name === summary.branch,
+    remote: false,
+  }));
+}
 
 export function mockDetect(dir: string): GitRepo | null {
   const summary = MOCK_SUMMARIES[dir];

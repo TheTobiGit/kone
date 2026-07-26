@@ -3,11 +3,19 @@ import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowTurnBackwardIcon, AppleFinderIcon } from "@hugeicons/core-free-icons";
+import {
+  ArrowTurnBackwardIcon,
+  AppleFinderIcon,
+  GitBranchIcon,
+} from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
-import type { GitFileStatus, InteractionMode, ProviderKind } from "~/types/desktop";
+import type {
+  GitFileStatus,
+  InteractionMode,
+  ProviderKind,
+} from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
@@ -260,6 +268,25 @@ const { reveal } = useReveal();
 function onRevealProject() {
   void reveal(props.project.path);
 }
+
+// ── switch branch ─────────────────────────────────────────────────────────────
+// The corner folder's other action (git projects only): move the working tree to
+// another local branch. The trigger opens the branch picker in the same scrim +
+// elastic-card shell the folder/model pickers use; the picker checks the branch
+// out itself and awaits g.refresh() (passed below) before it leaves, so the new
+// branch's changes are already folded into the greeting, the changes header and
+// the folder by the time it reports `switched`.
+const branchPickerOpen = ref(false);
+
+function openBranchPicker() {
+  branchPickerOpen.value = true;
+}
+function onBranchSwitched() {
+  // The picker already awaited g.refresh() before it closed (so the new branch's
+  // changes are already on screen) — just chime and dismiss.
+  cue("toggle");
+  branchPickerOpen.value = false;
+}
 // The full picker and the composer's inline effort cycle both know the exact
 // tier they picked — set it directly rather than relying on the model watcher,
 // which only re-fires when the *modelId* changes and stays silent when cycling
@@ -410,6 +437,7 @@ onKeyStroke("Escape", () => {
     onCloseFile();
     return;
   }
+  // The branch picker owns its own Escape (it's a modal); nothing to do here.
   if (switcherOpen.value) switcherOpen.value = false;
 });
 function onStageFile(path: string) {
@@ -555,7 +583,20 @@ function onDiscardFile(path: string) {
         />
       </div>
 
-      <div class="folder-actions" :class="{ 'is-visible': folderHovered }">
+      <div class="folder-actions" :class="{ 'is-visible': folderHovered || branchPickerOpen }">
+        <button
+          v-if="g.repo.value"
+          type="button"
+          class="folder-action"
+          :class="{ 'is-active': branchPickerOpen }"
+          aria-label="Switch branch"
+          title="Switch branch"
+          @click="openBranchPicker"
+        >
+          <HugeiconsIcon :icon="GitBranchIcon" :size="15" :stroke-width="1.7" aria-hidden="true" />
+          <span>Switch branch</span>
+        </button>
+
         <button
           type="button"
           class="folder-action"
@@ -620,6 +661,15 @@ function onDiscardFile(path: string) {
       @select="onModelSelect"
       @apply="applyModelEffort"
       @cancel="modelPickerOpen = false"
+    />
+
+    <!-- Switch branch — the local-branch list in the same folder-picker shell. -->
+    <BranchPickerModal
+      v-if="branchPickerOpen"
+      :project-path="project.path"
+      :refresh="() => g.refresh()"
+      @switched="onBranchSwitched"
+      @cancel="branchPickerOpen = false"
     />
 
     <!-- Ctrl+Tab HUD — only up while Ctrl is held, gone the instant it's released. -->
@@ -702,11 +752,13 @@ function onDiscardFile(path: string) {
   transform: translateY(-3px);
 }
 
-/* Reveal button beside the folder: quiet, plain text + icon (no pill/fill),
-   surfaced only while the folder itself is hovered. */
+/* Actions beside the folder: quiet, plain text + icon (no pill/fill), stacked
+   and surfaced only while the folder is hovered (or a menu it owns is open). */
 .folder-actions {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -728,7 +780,8 @@ function onDiscardFile(path: string) {
   white-space: nowrap;
   transition: color 0.2s ease;
 }
-.folder-action:hover {
+.folder-action:hover,
+.folder-action.is-active {
   color: var(--ink);
 }
 

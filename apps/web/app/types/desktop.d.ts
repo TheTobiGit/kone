@@ -179,6 +179,8 @@ export type KoneGitApi = {
   unstage: (dir: string, paths: string[]) => Promise<void>;
   /** Discard the given paths' uncommitted changes — destructive. */
   discard: (dir: string, paths: string[]) => Promise<void>;
+  /** Switch the working tree to a local branch; rejects when git blocks it. */
+  checkout: (dir: string, branch: string) => Promise<void>;
 };
 
 export type KoneSystemApi = {
