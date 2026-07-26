@@ -83,6 +83,9 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
       label: "Claude Opus 5",
       reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "high",
+      // Fast mode is an Opus-lane capability (Sonnet/Haiku lack it) — a session
+      // Setting the adapter toggles live via the SDK's applyFlagSettings.
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
     },
     {
       id: "claude-sonnet-5",

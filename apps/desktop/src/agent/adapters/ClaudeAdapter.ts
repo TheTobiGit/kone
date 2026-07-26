@@ -54,16 +54,35 @@ import type {
 // Effort is a spawn-time SDK option (`Options.effort`), not a live control, so
 // the adapter advertises `sessionModelSwitch: "restart-session"`: changing the
 // model or effort restarts the session (ProjectView drives that). The cheap
-// live controls the SDK *does* expose — permission mode — are applied in-place.
+// live controls the SDK *does* expose — permission mode and fast mode — are
+// applied in-place.
+//
+// "Fast mode" is Claude's low-latency tier. Unlike effort it's a session
+// *Setting* (`Settings.fastMode`), so the SDK flips it live mid-session via
+// `query.applyFlagSettings({ fastMode })` — no restart. kone surfaces it through
+// the same generic "fast" service-tier the composer already renders for Codex:
+// a model that reports `supportsFastMode` advertises one synthetic `fast` tier
+// (FAST_SERVICE_TIER), and a turn carrying `serviceTier: "fast"` toggles the
+// Setting on for the session (see sendTurn). This mirrors shipped research, which
+// likewise drives fastMode through applyFlagSettings gated per-model.
 
 const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
+
+// The one speed tier Claude exposes, surfaced as a plain on/off toggle (the
+// composer renders any family whose descriptor carries a `fast` serviceTier).
+// Only models that report `supportsFastMode` advertise it.
+const FAST_SERVICE_TIER = { id: "fast", label: "Fast" };
 
 // Baked catalog used only when the SDK's live model list can't be read (e.g. no
 // login yet). The live list from initializationResult() is preferred — this is
 // just so the picker is never empty. Ids/efforts track the current Claude line.
+// Fast mode is an Opus-lane capability (matching research's static table): the
+// flagship models advertise the `fast` tier, Sonnet/Haiku don't. The live SDK
+// list (mapClaudeModels) is authoritative when a login is present — this only
+// shapes the picker before that first probe resolves.
 const BAKED_CLAUDE_MODELS: ModelDescriptor[] = [
-  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER] },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER] },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", reasoningEfforts: ["low", "medium", "high"] },
 ];
@@ -108,6 +127,10 @@ type ClaudeSession = {
   /** True between interruptTurn() and the result that lands from it, so the
    *  result is reported as `interrupted` rather than `failed`. */
   interrupting: boolean;
+  /** Whether Claude's low-latency "fast mode" Setting is currently on for this
+   *  session. Toggled live in sendTurn via applyFlagSettings when a turn's
+   *  requested `fast` service tier differs from this. */
+  fastMode: boolean;
 };
 
 // ── small JSON helpers (defensive, like CodexAdapter) ────────────────────────
@@ -429,6 +452,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       consumer: Promise.resolve(),
       disposed: false,
       interrupting: false,
+      fastMode: false,
     };
     session.consumer = this.consume(session);
 
@@ -462,6 +486,24 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (mode !== session.mode) {
       await session.query.setPermissionMode(toPermissionMode(mode));
       session.mode = mode;
+    }
+
+    // Fast mode is a live session Setting — flip it in place when the turn's
+    // requested `fast` service tier differs from the session's current state.
+    // This is the Claude analogue of CodexAdapter honoring `serviceTier`, but
+    // the SDK carries it as a persistent per-session Setting it toggles via
+    // applyFlagSettings rather than a per-turn flag. The composer only sends
+    // `fast` for models that advertise it, so no per-model gate is needed here.
+    const wantsFast = input.serviceTier === FAST_SERVICE_TIER.id;
+    if (wantsFast !== session.fastMode) {
+      try {
+        await session.query.applyFlagSettings({ fastMode: wantsFast ? true : null });
+        session.fastMode = wantsFast;
+      } catch {
+        // The Setting can be refused (model doesn't support fast mode, or it's
+        // on cooldown / disabled upstream) — leave state as-is; a later turn
+        // retries. The turn itself still runs, just at the standard tier.
+      }
     }
 
     const turnId = `turn_${++session.turnSeq}`;
@@ -798,6 +840,9 @@ function mapClaudeModels(models: ModelInfo[]): ModelDescriptor[] {
       id,
       label: model.displayName || id,
       ...(efforts ? { reasoningEfforts: efforts } : {}),
+      // The SDK's model list is authoritative for fast-mode support — surface it
+      // as the generic `fast` service tier the composer's toggle keys off.
+      ...(model.supportsFastMode ? { serviceTiers: [FAST_SERVICE_TIER] } : {}),
     });
   }
   return out;
