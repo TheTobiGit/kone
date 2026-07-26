@@ -130,15 +130,17 @@ const stageSpring = {
 } as const;
 
 // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the
-// same keystroke opens and closes it (Escape also closes, via the drawer). We
-// don't fight it while another overlay owns the screen.
+// same keystroke opens and closes it (Escape also closes, via the drawer). The
+// binding lives in the shortcuts registry (see useShortcuts), so a rebind in
+// settings takes effect here automatically. We don't fight it while another
+// overlay owns the screen.
+const { matchesShortcut: matchesSettingsHotkey } = useShortcuts();
 function onSettingsHotkey(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-    if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
-    e.preventDefault();
-    cue("press");
-    settingsOpen.value = !settingsOpen.value;
-  }
+  if (!matchesSettingsHotkey("toggle-settings", e)) return;
+  if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
+  e.preventDefault();
+  cue("press");
+  settingsOpen.value = !settingsOpen.value;
 }
 onMounted(() => window.addEventListener("keydown", onSettingsHotkey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));

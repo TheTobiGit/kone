@@ -286,20 +286,44 @@ function cancelCycle() {
   cycleEntries.value = [];
 }
 
+// The project cycler's bindings live in the shortcuts registry (see
+// useShortcuts), so a rebind in settings flows through here automatically. The
+// cycle is a hold-and-tap gesture like Alt+Tab, so we keep the bare-Tab +
+// bare-Control keyup tests below; only the *modifier+Tab* opener consults the
+// registry — Shift direction is read off the press itself.
+const { matchesShortcut: matchesCycle, bindingModsFor, isMacPlatform } =
+  useShortcuts();
+
+function cycleBindingMods() {
+  return bindingModsFor("cycle-projects");
+}
+
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (e.key === "Escape" && cycling.value) {
     e.preventDefault();
     cancelCycle();
     return;
   }
-  if (e.key !== "Tab" || !e.ctrlKey) return;
+  if (!matchesCycle("cycle-projects", e)) return;
   e.preventDefault();
   if (!cycling.value) startCycle(!e.shiftKey);
   else stepCycle(!e.shiftKey);
 });
 // Ctrl release commits — mirrors a held app-switcher, not a click-to-toggle menu.
 useEventListener(window, "keyup", (e: KeyboardEvent) => {
-  if (cycling.value && e.key === "Control") commitCycle();
+  if (!cycling.value) return;
+  // Commit when the modifier that opens the cycle is released. For a "mod"
+  // binding that's Meta on macOS / Control elsewhere; for an explicit "ctrl"
+  // binding it's Control. Releasing Shift alone (a cycle direction change, not
+  // the commit modifier) must not commit.
+  const bindingMods = cycleBindingMods();
+  const releaseKey =
+    bindingMods.includes("mod")
+      ? isMacPlatform() ? "Meta" : "Control"
+      : bindingMods.includes("ctrl")
+        ? "Control"
+        : null;
+  if (releaseKey && e.key === releaseKey) commitCycle();
 });
 // If the window loses focus mid-hold (e.g. an OS-level app switch), abandon the
 // cycle instead of leaving it stuck open with no keyup to close it.
@@ -307,11 +331,12 @@ useEventListener(window, "blur", () => {
   if (cycling.value) cancelCycle();
 });
 
-// ⌘/Ctrl+Shift+D — play a scripted demo conversation so the whole thread UI
-// (thinking, tools with output, streaming text, a no-content thought, the settled
-// footer) can be reviewed on demand without driving a real agent turn.
+// Play a scripted demo conversation so the whole thread UI (thinking, tools
+// with output, streaming text, a no-content thought, the settled footer) can be
+// reviewed on demand without driving a real agent turn. The binding lives in
+// the shortcuts registry so it can be rebound in settings.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (e.key.toLowerCase() !== "d" || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return;
+  if (!matchesShortcut("play-demo", e)) return;
   e.preventDefault();
   view.value = "chat";
   agent.demo();
