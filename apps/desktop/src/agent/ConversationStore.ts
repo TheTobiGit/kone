@@ -29,7 +29,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -139,7 +139,25 @@ function migrate(db: DatabaseSync): void {
     version = 4;
   }
 
-  // Future migrations append here: `if (version < 5) { …; version = 5; }`
+  if (version < 5) {
+    // v5 rebases the diffstat onto the conversation itself. Old rows recorded
+    // the whole working tree's uncommitted diff vs HEAD (the "general diff"),
+    // so every conversation showed the same repo-wide numbers instead of what
+    // *it* changed. There's no way to reconstruct a true baseline for those
+    // historical rows, so — like v2 — we clear all conversations (active and
+    // archived alike) and start the corrected, per-conversation history fresh.
+    // `base_tree` holds the working-tree snapshot taken when a thread starts;
+    // the settled diff is measured against it, not against HEAD.
+    db.exec(`
+      DELETE FROM items;
+      DELETE FROM blocks;
+      DELETE FROM threads;
+      ALTER TABLE threads ADD COLUMN base_tree TEXT;
+    `);
+    version = 5;
+  }
+
+  // Future migrations append here: `if (version < 6) { …; version = 6; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -380,6 +398,39 @@ export class ConversationStore {
     }
   }
 
+  /** The working-tree snapshot recorded when this thread began, or null if none
+   *  has been set yet. The settled diffstat is measured against this, so the
+   *  numbers reflect only what the conversation changed. */
+  getBaseline(threadId: string): string | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(`SELECT base_tree FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { base_tree: string | null } | undefined;
+      return row?.base_tree ?? null;
+    } catch (err) {
+      console.error("[conversation-store] getBaseline failed:", err);
+      return null;
+    }
+  }
+
+  /** Record the conversation's baseline snapshot. Written once, when the thread
+   *  starts — later calls are guarded by the caller so a resumed session never
+   *  rebases an in-flight conversation's diff onto a fresh baseline. */
+  setBaseline(threadId: string, baseTree: string): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET base_tree = ? WHERE thread_id = ?`).run(
+        baseTree,
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setBaseline failed:", err);
+    }
+  }
+
   /** Hide (or restore) a thread from the recent list without destroying it.
    *  `archived` is a timestamp so a future "archived" view can order by it. */
   setArchived(threadId: string, archived: boolean): void {
@@ -570,6 +621,7 @@ type ThreadRow = {
   tokens: number | null;
   archived: number | null;
   title: string | null;
+  base_tree: string | null;
 };
 
 type BlockRow = {

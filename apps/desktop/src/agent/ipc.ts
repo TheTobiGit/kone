@@ -2,7 +2,7 @@ import { ipcMain, type WebContents } from "electron";
 
 import { AgentService } from "./AgentService.js";
 import { getConversationStore } from "./ConversationStore.js";
-import { detect } from "../git/status.js";
+import { detect, diffStatBetween, snapshotWorkingTree } from "../git/status.js";
 import {
   buildPromptThreadTitleFallback,
   canReplaceThreadTitle,
@@ -123,19 +123,43 @@ export function registerAgentIpc(): void {
       });
   }
 
+  // Snapshot the working tree as the conversation's baseline the first time a
+  // thread starts, so the settled diffstat can be measured against where the
+  // repo stood before the conversation touched anything. Guarded on the stored
+  // baseline: a resumed/re-opened session (start-session re-runs, adopting the
+  // same thread id) must keep the original baseline, not rebase onto the
+  // mid-conversation state. Best-effort and off the hot path.
+  function captureBaseline(threadId: string, projectPath: string): void {
+    if (store.getBaseline(threadId)) return;
+    void snapshotWorkingTree(projectPath)
+      .then((tree) => {
+        if (tree && !store.getBaseline(threadId)) store.setBaseline(threadId, tree);
+      })
+      .catch(() => {});
+  }
+
   // Resolve the thread's project path, run git against it, and persist the
-  // snapshot. Swallows everything: history enrichment is a convenience.
+  // snapshot. The diffstat is scoped to this conversation: baseline snapshot →
+  // a fresh snapshot of the tree as the turn settles, so the +/− count only the
+  // lines the conversation moved, not the repo's whole uncommitted state.
+  // Swallows everything: history enrichment is a convenience.
   function captureRepoStats(threadId: string): void {
     const projectPath = store.threadProjectPath(threadId);
     if (!projectPath) return;
     void detect(projectPath)
-      .then((repo) => {
+      .then(async (repo) => {
         if (!repo) return;
+        const baseline = store.getBaseline(threadId);
+        const current = baseline ? await snapshotWorkingTree(projectPath) : null;
+        const stat =
+          baseline && current
+            ? await diffStatBetween(projectPath, baseline, current)
+            : { added: 0, removed: 0 };
         store.recordRepoStats({
           threadId,
           branch: repo.branch,
-          added: repo.added,
-          removed: repo.removed,
+          added: stat.added,
+          removed: stat.removed,
         });
       })
       .catch(() => {});
@@ -169,6 +193,10 @@ export function registerAgentIpc(): void {
       provider: input.provider,
       model: input.model,
     });
+    // Record where the repo stood as this conversation begins, so its settled
+    // diffstat measures only what the conversation changes (no-op if the thread
+    // already has a baseline — a resumed session keeps its original one).
+    captureBaseline(input.threadId, input.cwd);
     return session;
   });
   ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) => {

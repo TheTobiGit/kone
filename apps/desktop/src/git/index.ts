@@ -7,7 +7,7 @@
 
 export * from "./types.js";
 
-export { detect, status } from "./status.js";
+export { detect, diffStatBetween, snapshotWorkingTree, status } from "./status.js";
 export { content, diff } from "./diff.js";
 export { branches, log } from "./history.js";
 export { watchStatus } from "./watch.js";

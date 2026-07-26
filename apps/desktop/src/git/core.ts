@@ -28,12 +28,18 @@ export function lastStderrLine(stderr: string, fallback: string): string {
   return stderr.trim().split("\n").pop()?.trim() || fallback;
 }
 
-export async function git(cwd: string, args: string[]): Promise<string> {
+export async function git(
+  cwd: string,
+  args: string[],
+  /** Extra env for this invocation only — e.g. a scratch `GIT_INDEX_FILE` so a
+   *  command can stage into a throwaway index without touching the real one. */
+  extraEnv?: Record<string, string>,
+): Promise<string> {
   try {
     const { stdout } = await run("git", args, {
       cwd,
       // Deterministic, machine-readable output regardless of user config.
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", ...extraEnv },
       maxBuffer: 32 * 1024 * 1024,
       timeout: 15_000,
       windowsHide: true,

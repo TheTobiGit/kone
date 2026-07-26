@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { git, repoRoot } from "./core.js";
@@ -283,6 +284,53 @@ async function diffStat(
     } catch {
       return { added: 0, removed: 0 };
     }
+  }
+}
+
+// ── conversation-scoped snapshots ─────────────────────────────────────────────
+// The recent-conversations diffstat must show what *one conversation* changed,
+// not the repo's whole uncommitted state. We do that by snapshotting the working
+// tree into a git tree object when the thread starts, then diffing that baseline
+// against a fresh snapshot when each turn settles — so the +/− count only the
+// lines that moved between the conversation's start and its latest turn.
+
+/** Capture the current working tree (tracked + untracked, honouring .gitignore)
+ *  as a git tree object, without touching the repo's real index. Returns the
+ *  tree SHA, or null if the snapshot can't be taken. */
+export async function snapshotWorkingTree(dir: string): Promise<string | null> {
+  const root = await repoRoot(dir);
+  if (!root) return null;
+  let scratch: string | null = null;
+  try {
+    scratch = await mkdtemp(path.join(os.tmpdir(), "kone-git-idx-"));
+    // A throwaway index so `add`/`write-tree` never disturb the user's staging.
+    const env = { GIT_INDEX_FILE: path.join(scratch, "index") };
+    // An empty scratch index + `add -A` stages every non-ignored working-tree
+    // file, so the resulting tree mirrors the current content exactly (new files
+    // included, deletions absent) — the true "state right now".
+    await git(root, ["add", "-A"], env);
+    const tree = (await git(root, ["write-tree"], env)).trim();
+    return tree.length > 0 ? tree : null;
+  } catch {
+    return null;
+  } finally {
+    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Lines added/removed between two tree-ish snapshots (e.g. a conversation's
+ *  baseline tree → a fresh working-tree snapshot). Either end missing → 0/0. */
+export async function diffStatBetween(
+  dir: string,
+  from: string,
+  to: string,
+): Promise<{ added: number; removed: number }> {
+  const root = await repoRoot(dir);
+  if (!root) return { added: 0, removed: 0 };
+  try {
+    return parseShortStat(await git(root, ["diff", "--shortstat", from, to]));
+  } catch {
+    return { added: 0, removed: 0 };
   }
 }
 
