@@ -392,7 +392,7 @@ const body = computed<Seg[]>(() => {
   color: var(--ink);
 }
 
-/* Avatar chip — inverts with the ground, like the orb ring. */
+/* Avatar chip — ink on ground, inverted. */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -401,7 +401,7 @@ const body = computed<Seg[]>(() => {
   width: 30px;
   height: 30px;
   border-radius: 999px;
-  background-color: var(--orb-ring);
+  background-color: var(--ink);
   color: var(--ground);
   font-size: 14px;
   font-weight: 600;

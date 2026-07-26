@@ -2,7 +2,7 @@
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import type { Component } from "vue";
-import { AnimatePresence, motion } from "motion-v";
+import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, ArrowRight01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 // Tool-call glyphs are Phosphor duotone, each carrying a soft family hue so a run
@@ -23,7 +23,6 @@ import {
 } from "@phosphor-icons/vue";
 import type { RuntimeItem } from "~/types/desktop";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
-import WorkingOrb from "~/components/WorkingOrb.vue";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
 import SiteChip from "~/components/SiteChip.vue";
@@ -50,8 +49,6 @@ import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 //   · tool calls hang off a left rail as nodes — icon · plain phrase · status;
 //   · text renders as rich Markdown the whole way through — streaming or settled
 //     — so a reply reads as a proper preview as it grows, never a raw block;
-//   · the working orb holds any quiet gap — the opening wait, or a lull between
-//     one activity finishing and the next starting.
 //
 // Purely presentational — it reads the reduced blocks from useAgent and never
 // learns which CLI is underneath.
@@ -80,7 +77,7 @@ type ToolMeta = { icon: Component; label: string; hue: string };
 // rail, never colour alone.
 const HUE = {
   read: "#5b9dd9", // blues — read / list / inspect
-  write: "#8b7ff0", // violets — write / edit (kin to the iris rim)
+  write: "#8b7ff0", // violets — write / edit
   search: "#d99a4e", // ambers — grep / glob / search
   intel: "#48b0b8", // teal — code intelligence
   run: "#4fae86", // greens — shell / commands
@@ -168,7 +165,18 @@ function toolTargetRaw(t: RuntimeItem): string {
 }
 function toolTarget(t: RuntimeItem, max = 64): string {
   const d = toolTargetRaw(t);
-  return d.length <= max ? d : "…" + d.slice(-(max - 1));
+  if (d.length <= max) return d;
+  const name = (t.name ?? "").trim().toLowerCase();
+  const isCommand =
+    ["bash", "run_terminal_cmd", "execute_command", "run_command", "run", "command"].includes(name) ||
+    looksLikeCommand(d);
+  if (isCommand) {
+    return d.slice(0, max - 1) + "…";
+  }
+  if (looksLikeFilePath(d) || looksLikeDirectoryPath(d)) {
+    return "…" + d.slice(-(max - 1));
+  }
+  return d.slice(0, max - 1) + "…";
 }
 function toolDetailFull(t: RuntimeItem): string {
   return toolTargetRaw(t);
@@ -183,7 +191,7 @@ function looksLikeFilePath(s: string): boolean {
   return false;
 }
 function looksLikeCommand(s: string): boolean {
-  return /^(bun|npm|pnpm|yarn|git|cargo|make|python3?|node)\s/i.test(s);
+  return /^(bun|npm|pnpm|yarn|git|cargo|make|python3?|node|deno|npx|bunx|docker|go|pytest|vitest|sh|bash|zsh)\s/i.test(s);
 }
 // Natural-language row copy — reads like a brief status line, not "Verb: target".
 type ToolPhraseTarget =
@@ -554,15 +562,6 @@ function toggleTool(t: RuntimeItem): void {
 // settles we hand the whole segment to <MarkdownMessage>, which renders it as a
 // rich component tree (highlighted code, favicon links, file chips, tables…).
 
-// ── waiting ───────────────────────────────────────────────────────────────────
-// A live turn with nothing currently in flight — the opening gap, or a lull
-// between one activity settling and the next starting. The working orb fills it.
-function isWaiting(block: AssistantBlock): boolean {
-  if (block.state !== "running") return false;
-  const last = block.items[block.items.length - 1];
-  return !last || last.status !== "in-progress";
-}
-
 // ── timing / status ────────────────────────────────────────────────────────────
 function fmt(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -822,23 +821,6 @@ const hasBlocks = computed(() => props.blocks.length > 0);
               <MarkdownMessage class="answer" :source="segText(grp.seg)" />
             </template>
           </template>
-
-          <!-- Waiting orb temporarily disabled to test whether its pop in/out was
-               the source of the perceived "shifting" around the first steps. -->
-          <!--
-          <AnimatePresence>
-            <motion.div
-              v-if="isWaiting(block)"
-              class="waiting"
-              :initial="{ opacity: 0, scale: 0.86 }"
-              :animate="{ opacity: 1, scale: 1 }"
-              :exit="{ opacity: 0, scale: 0.86 }"
-              :transition="{ type: 'spring', stiffness: 300, damping: 26, mass: 0.7 }"
-            >
-              <WorkingOrb :size="42" />
-            </motion.div>
-          </AnimatePresence>
-          -->
 
           <!-- Failure note. -->
           <p v-if="block.state === 'failed' && block.error" class="body body--error">
@@ -1110,14 +1092,6 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   white-space: pre-wrap;
   overflow-x: auto;
   max-width: 100%;
-}
-
-/* ── Waiting orb ───────────────────────────────────────────────────────────── */
-.waiting {
-  display: flex;
-  align-items: center;
-  margin: -2px 0;
-  will-change: transform, opacity;
 }
 
 /* ── Turn footer (meta) — editorial dotted leader ──────────────────────────── */

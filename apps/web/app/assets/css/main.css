@@ -23,7 +23,6 @@
   --color-ink-soft: var(--ink-soft);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
-  --color-orb-ring: var(--orb-ring);
   --color-hover: var(--hover);
   --color-sunken: var(--sunken);
 }
@@ -34,7 +33,6 @@
   --ink-soft: #52525b;
   --muted: #9c9a94;
   --accent: #d97757;
-  --orb-ring: #1c1c1f;
   --hover: rgb(39 39 42 / 0.04);
   /* The surface *beneath* the launcher — revealed when a page slides aside to
      uncover the settings drawer. Always a shade deeper than --ground so the page
@@ -57,7 +55,6 @@
     --ink-soft: #f4f4f5;
     --muted: #8a8a90;
     --accent: #d97757;
-    --orb-ring: #f4f4f5;
     --hover: rgb(244 244 245 / 0.06);
     --sunken: #000000;
     --diff-add-soft: #7fb98a;

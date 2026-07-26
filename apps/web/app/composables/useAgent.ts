@@ -457,8 +457,8 @@ export function useAgent(options: UseAgentOptions) {
     let cancelled = false;
     mockCancel = () => (cancelled = true);
     sessionState.value = "running";
-    // The turn starts immediately (the orb wakes) but produces nothing yet — the
-    // thread shows the working orb while we simulate the model connecting.
+    // The turn starts immediately but produces nothing yet — we simulate the
+    // model connecting before the first item arrives.
     reduce({ ...base("turn.started"), type: "turn.started", turnId } as RuntimeEvent);
 
     const emit = (item: RuntimeItem, type: "item.started" | "item.updated" | "item.completed") =>
@@ -536,7 +536,7 @@ export function useAgent(options: UseAgentOptions) {
     const thinky = opts.demo || reasoning.value === "high" || reasoning.value === "thinking";
 
     void (async () => {
-      await wait(1400); // connecting beat → working orb
+      await wait(1400); // connecting beat
       if (cancelled) return;
       if (thinky) {
         await stream(
