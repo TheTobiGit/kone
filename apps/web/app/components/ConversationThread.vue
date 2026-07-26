@@ -1,26 +1,30 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
-import type { Component } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, ArrowRight01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
-// Tool-call glyphs are Phosphor duotone, each carrying a soft family hue so a run
-// of calls reads as a legible, lightly-coloured timeline rather than a wall of
+// Tool-call glyphs are Hugeicons stroke icons — same family as the rest of the
+// app's iconography (brain, chevron, copy) — each carrying a soft family hue so a
+// run of calls reads as a legible, lightly-coloured timeline rather than a wall of
 // grey — Read blues, Write violets, Search ambers, Run greens, Delete red.
 import {
-  PhFileText,
-  PhNotePencil,
-  PhListBullets,
-  PhTrash,
-  PhMagnifyingGlass,
-  PhCode,
-  PhTerminalWindow,
-  PhGlobe,
-  PhLinkSimple,
-  PhTreeStructure,
-  PhRocketLaunch,
-} from "@phosphor-icons/vue";
+  AiBrain01Icon,
+  ArrowRight01Icon,
+  Copy01Icon,
+  Tick02Icon,
+  File01Icon,
+  FileEditIcon,
+  ListViewIcon,
+  Delete02Icon,
+  Search01Icon,
+  SourceCodeIcon,
+  CommandLineIcon,
+  GlobalSearchIcon,
+  Link01Icon,
+  WorkflowSquare01Icon,
+  Rocket01Icon,
+  ToolsIcon,
+} from "@hugeicons/core-free-icons";
 import type { RuntimeItem } from "~/types/desktop";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
@@ -78,7 +82,10 @@ const { cue } = useSound();
 if (import.meta.client) void useMarkdown().parse("");
 
 // ── tool-call vocabulary → icon + label + family hue + running orb ──────────
-type ToolMeta = { icon: Component; label: string; hue: string; family: ToolOrbFamily };
+// Icons are Hugeicons SVG data objects (the `:icon` prop of <HugeiconsIcon>), not
+// Vue components — same shape as AiBrain01Icon et al.
+type HugeIcon = typeof AiBrain01Icon;
+type ToolMeta = { icon: HugeIcon; label: string; hue: string; family: ToolOrbFamily };
 // Family hues — mid-tone so they read on both the warm-light and near-black
 // grounds without a per-theme table. Double-encoded with the tool's icon glyph
 // and label text, never colour alone.
@@ -95,60 +102,60 @@ const HUE = {
 } as const;
 const TOOL_TABLE: Record<string, ToolMeta> = {
   // filesystem
-  read_file: { icon: PhFileText, label: "Read", hue: HUE.read, family: "read" },
-  view_file: { icon: PhFileText, label: "Read", hue: HUE.read, family: "read" },
-  read: { icon: PhFileText, label: "Read", hue: HUE.read, family: "read" },
-  write_to_file: { icon: PhNotePencil, label: "Write", hue: HUE.write, family: "write" },
-  create_file: { icon: PhNotePencil, label: "Write", hue: HUE.write, family: "write" },
-  write: { icon: PhNotePencil, label: "Write", hue: HUE.write, family: "write" },
-  edit_file: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
-  apply_patch: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
-  str_replace: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
-  replace_file_content: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
-  edit: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" },
-  multiedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" }, // Claude
-  notebookedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write, family: "write" }, // Claude
-  list_dir: { icon: PhListBullets, label: "List", hue: HUE.read, family: "read" },
-  ls: { icon: PhListBullets, label: "List", hue: HUE.read, family: "read" },
-  delete_file: { icon: PhTrash, label: "Delete", hue: HUE.del, family: "del" },
-  rm: { icon: PhTrash, label: "Delete", hue: HUE.del, family: "del" },
+  read_file: { icon: File01Icon, label: "Read", hue: HUE.read, family: "read" },
+  view_file: { icon: File01Icon, label: "Read", hue: HUE.read, family: "read" },
+  read: { icon: File01Icon, label: "Read", hue: HUE.read, family: "read" },
+  write_to_file: { icon: FileEditIcon, label: "Write", hue: HUE.write, family: "write" },
+  create_file: { icon: FileEditIcon, label: "Write", hue: HUE.write, family: "write" },
+  write: { icon: FileEditIcon, label: "Write", hue: HUE.write, family: "write" },
+  edit_file: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
+  apply_patch: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
+  str_replace: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
+  replace_file_content: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
+  edit: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
+  multiedit: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" }, // Claude
+  notebookedit: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" }, // Claude
+  list_dir: { icon: ListViewIcon, label: "List", hue: HUE.read, family: "read" },
+  ls: { icon: ListViewIcon, label: "List", hue: HUE.read, family: "read" },
+  delete_file: { icon: Delete02Icon, label: "Delete", hue: HUE.del, family: "del" },
+  rm: { icon: Delete02Icon, label: "Delete", hue: HUE.del, family: "del" },
   // search & navigation
-  grep_search: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search, family: "search" },
-  ripgrep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search, family: "search" },
-  glob_file_search: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search, family: "search" },
-  find_by_name: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search, family: "search" },
-  glob: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search, family: "search" }, // Claude
-  codebase_search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search, family: "search" },
-  grep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search, family: "search" },
-  search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search, family: "search" },
-  go_to_definition: { icon: PhCode, label: "Code intel", hue: HUE.intel, family: "intel" },
-  view_code_item: { icon: PhCode, label: "Code intel", hue: HUE.intel, family: "intel" },
-  lsp: { icon: PhCode, label: "Code intel", hue: HUE.intel, family: "intel" },
+  grep_search: { icon: Search01Icon, label: "Grep", hue: HUE.search, family: "search" },
+  ripgrep: { icon: Search01Icon, label: "Grep", hue: HUE.search, family: "search" },
+  glob_file_search: { icon: Search01Icon, label: "Glob", hue: HUE.search, family: "search" },
+  find_by_name: { icon: Search01Icon, label: "Glob", hue: HUE.search, family: "search" },
+  glob: { icon: Search01Icon, label: "Glob", hue: HUE.search, family: "search" }, // Claude
+  codebase_search: { icon: Search01Icon, label: "Search", hue: HUE.search, family: "search" },
+  grep: { icon: Search01Icon, label: "Grep", hue: HUE.search, family: "search" },
+  search: { icon: Search01Icon, label: "Search", hue: HUE.search, family: "search" },
+  go_to_definition: { icon: SourceCodeIcon, label: "Code intel", hue: HUE.intel, family: "intel" },
+  view_code_item: { icon: SourceCodeIcon, label: "Code intel", hue: HUE.intel, family: "intel" },
+  lsp: { icon: SourceCodeIcon, label: "Code intel", hue: HUE.intel, family: "intel" },
   // execution
-  bash: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
-  run_terminal_cmd: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
-  execute_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
-  run_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
-  run: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
-  command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run, family: "run" },
+  bash: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
+  run_terminal_cmd: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
+  execute_command: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
+  run_command: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
+  run: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
+  command: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
   // web
-  web_search: { icon: PhGlobe, label: "Web search", hue: HUE.web, family: "web" },
-  search_web: { icon: PhGlobe, label: "Web search", hue: HUE.web, family: "web" },
-  websearch: { icon: PhGlobe, label: "Web search", hue: HUE.web, family: "web" }, // Claude
-  web_fetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" },
-  read_url_content: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" },
-  view_web_document: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" },
-  webfetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web, family: "web" }, // Claude
+  web_search: { icon: GlobalSearchIcon, label: "Web search", hue: HUE.web, family: "web" },
+  search_web: { icon: GlobalSearchIcon, label: "Web search", hue: HUE.web, family: "web" },
+  websearch: { icon: GlobalSearchIcon, label: "Web search", hue: HUE.web, family: "web" }, // Claude
+  web_fetch: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
+  read_url_content: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
+  view_web_document: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
+  webfetch: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" }, // Claude
   // planning & orchestration
-  task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent, family: "agent" },
-  new_task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent, family: "agent" },
-  agent: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent, family: "agent" },
-  mcp: { icon: PhTreeStructure, label: "MCP tool", hue: HUE.agent, family: "agent" },
+  task: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
+  new_task: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
+  agent: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
+  mcp: { icon: WorkflowSquare01Icon, label: "MCP tool", hue: HUE.agent, family: "agent" },
   // context & specialized
-  deploy_web_app: { icon: PhRocketLaunch, label: "Deploy", hue: HUE.run, family: "run" },
+  deploy_web_app: { icon: Rocket01Icon, label: "Deploy", hue: HUE.run, family: "run" },
 };
 function toolMeta(name: string | undefined): ToolMeta {
-  if (!name) return { icon: PhTerminalWindow, label: "Tool", hue: HUE.neutral, family: "neutral" };
+  if (!name) return { icon: ToolsIcon, label: "Tool", hue: HUE.neutral, family: "neutral" };
   const key = name.trim().toLowerCase();
   if (TOOL_TABLE[key]) return TOOL_TABLE[key]!;
   // MCP tools arrive as `mcp__server__tool` — read the last segment as the label
@@ -156,10 +163,10 @@ function toolMeta(name: string | undefined): ToolMeta {
   if (key.startsWith("mcp__")) {
     const tail = key.split("__").filter(Boolean).pop() ?? key;
     const label = tail.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    return { icon: PhTreeStructure, label, hue: HUE.agent, family: "agent" };
+    return { icon: WorkflowSquare01Icon, label, hue: HUE.agent, family: "agent" };
   }
   const label = key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return { icon: PhTerminalWindow, label, hue: HUE.neutral, family: "neutral" };
+  return { icon: ToolsIcon, label, hue: HUE.neutral, family: "neutral" };
 }
 // The provider hands args as `read_file: src/foo.ts`; peel the name so we're left
 // with the target (path / command / query). Long tails keep their end — the full
@@ -790,7 +797,12 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                           :family="toolMeta(t.name).family"
                           :hue="toolMeta(t.name).hue"
                         />
-                        <component v-else :is="toolMeta(t.name).icon" :size="14" weight="duotone" />
+                        <HugeiconsIcon
+                          v-else
+                          :icon="toolMeta(t.name).icon"
+                          :size="14"
+                          :stroke-width="1.8"
+                        />
                       </span>
                       <span class="step__label">
                         <template v-for="(part, pi) in toolPhraseParts(t)" :key="pi">
