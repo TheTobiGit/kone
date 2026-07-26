@@ -91,6 +91,12 @@ export type SessionStartInput = {
    *  here — changing it means restarting the session (AdapterCapabilities
    *  `sessionModelSwitch: "restart-session"`). */
   effort?: string;
+  /** Provider-native conversation id to resume, when reopening a stored thread
+   *  (StoredThreadMeta.conversationId). Present means "continue this prior
+   *  conversation with its full context" — Codex resumes it via `thread/resume`,
+   *  Claude passes it as the SDK `resume` option. Absent starts a fresh session.
+   *  Only meaningful when the provider matches the one that produced the id. */
+  resume?: string;
 };
 
 export type Session = {

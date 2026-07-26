@@ -243,6 +243,9 @@ export type SessionStartInput = {
    *  (Claude — the SDK `effort` is a spawn-time option) read it here, so
    *  changing it restarts the session. */
   effort?: string;
+  /** Provider-native conversation id to resume when reopening a stored thread,
+   *  so it continues with its full prior context. Absent starts fresh. */
+  resume?: string;
 };
 
 export type RuntimeSessionState =

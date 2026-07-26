@@ -298,7 +298,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     sessionModelSwitch: "restart-session",
     streamsText: true,
     supportsToolEvents: true,
-    supportsResume: false,
+    supportsResume: true,
     supportsModelList: true,
   };
 
@@ -427,6 +427,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       abortController: abort,
       ...(input.model ? { model: input.model } : {}),
       ...(effort ? { effort } : {}),
+      // Resume a prior Claude Code conversation by its session id so the new
+      // query continues with its full transcript/context (the SDK's supported
+      // resume surface — mirrors research's ClaudeAdapter). The resumed
+      // run reports its own session id via system/init, which refreshes the
+      // stored conversationId on the next turn.completed.
+      ...(input.resume ? { resume: input.resume } : {}),
       permissionMode,
       ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
       canUseTool: this.autoApprove,

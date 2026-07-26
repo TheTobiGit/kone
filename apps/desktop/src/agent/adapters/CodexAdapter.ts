@@ -433,15 +433,39 @@ export class CodexAdapter implements ProviderAdapter {
       await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
       rpc.notify("initialized");
 
-      const response = await rpc.call<Record<string, unknown>>("thread/start", {
+      const overrides = {
         model: input.model ?? null,
         cwd: input.cwd,
         ...mapModeToThreadOverrides(mode),
-        experimentalRawEvents: false,
-      });
+      };
+
+      // Resume the prior Codex thread by id (via `thread/resume`) so the
+      // conversation continues with its full context — mirrors research's
+      // app-server resume path. If resume is refused (thread pruned/expired),
+      // fall back to a fresh `thread/start` rather than failing the open.
+      let response: Record<string, unknown> | undefined;
+      let openMethod: "thread/start" | "thread/resume" = "thread/start";
+      if (input.resume) {
+        try {
+          openMethod = "thread/resume";
+          response = await rpc.call<Record<string, unknown>>("thread/resume", {
+            ...overrides,
+            threadId: input.resume,
+          });
+        } catch {
+          openMethod = "thread/start";
+          response = undefined;
+        }
+      }
+      if (!response) {
+        response = await rpc.call<Record<string, unknown>>("thread/start", {
+          ...overrides,
+          experimentalRawEvents: false,
+        });
+      }
       const thread = asRecord(response)?.thread;
       const conversationId = readString(thread, "id") ?? readString(response, "threadId");
-      if (!conversationId) throw new Error("thread/start response did not include a thread id.");
+      if (!conversationId) throw new Error(`${openMethod} response did not include a thread id.`);
       session.conversationId = conversationId;
     } catch (error) {
       rpc.kill();

@@ -21,7 +21,12 @@ import type { EffortTier } from "~/utils/modelCatalog";
 //
 // One instance = one thread. Create it in the view that hosts the conversation.
 
-export type UserBlock = { id: string; role: "user"; text: string; at: number };
+/** Set on blocks bulk-loaded from storage (rehydrate/openThread) so the view
+ *  renders them settled — no entry springs, no per-word blur-in. Live turns
+ *  streamed in through the reducer never carry it, so they still animate. */
+type Historical = { historical?: boolean };
+
+export type UserBlock = { id: string; role: "user"; text: string; at: number } & Historical;
 
 export type AssistantBlock = {
   id: string;
@@ -34,7 +39,7 @@ export type AssistantBlock = {
   at: number;
   /** When the turn settled (completed/failed/interrupted) — drives "replied in Xs". */
   endedAt?: number;
-};
+} & Historical;
 
 export type ThreadBlock = UserBlock | AssistantBlock;
 
@@ -59,6 +64,12 @@ export type UseAgentOptions = {
    *  switch. Defaults to true; a restart() never rehydrates. */
   rehydrate?: boolean;
 };
+
+/** Tag every block from a stored thread as historical so the view mounts them
+ *  settled instead of replaying entry/word animations across the whole thread. */
+function markHistorical(blocks: ThreadBlock[]): ThreadBlock[] {
+  return blocks.map((b) => ({ ...b, historical: true }));
+}
 
 function uid(): string {
   return import.meta.client && "randomUUID" in crypto
@@ -222,6 +233,31 @@ export function useAgent(options: UseAgentOptions) {
   // switch) keeps the on-screen history but must not reload a stale thread over
   // the new session.
   let rehydratedOnce = false;
+  // The provider-native conversation id to resume on the next start(): set when
+  // a stored thread is brought on-screen (openThread, or rehydrate of the
+  // project's latest) so continued turns keep that thread's full context.
+  // Consumed and cleared in start() — a later fresh start never resumes it.
+  let pendingResumeId: string | undefined;
+
+  /** Adopt a stored thread's provider/model and stage its conversation id for
+   *  resume, so continuing it runs on the CLI + model that produced it and keeps
+   *  its full context. Resume ids are provider-native, so provider and model
+   *  must move together — otherwise we'd hand a Codex thread id to Claude (or a
+   *  Claude model id to Codex). */
+  function adoptStoredThread(stored: {
+    provider?: ProviderKind;
+    model?: string;
+    conversationId?: string;
+  }): void {
+    const providerChanged = Boolean(stored.provider) && stored.provider !== provider.value;
+    if (stored.provider) provider.value = stored.provider;
+    // Carry the thread's own model; if it predates model persistence, only drop
+    // the current one when the provider changed (a stale cross-provider model id
+    // is worse than the provider default).
+    if (stored.model !== undefined) model.value = stored.model;
+    else if (providerChanged) model.value = undefined;
+    pendingResumeId = stored.conversationId;
+  }
 
   /** Reload the project's last persisted thread into the timeline, adopting its
    *  id so continued turns append to the same stored thread. Best-effort: any
@@ -233,8 +269,9 @@ export function useAgent(options: UseAgentOptions) {
       const stored = await api.history.latest(resolveCwd());
       if (stored && stored.blocks.length > 0) {
         threadId.value = stored.threadId;
-        blocks.value = stored.blocks as ThreadBlock[];
+        blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
         title.value = stored.title?.trim() || title.value;
+        adoptStoredThread(stored);
       }
     } catch {
       // History is a convenience — never block starting a session over it.
@@ -256,6 +293,10 @@ export function useAgent(options: UseAgentOptions) {
     // reducer's threadId filter matches turns continued on it.
     await rehydrate(api);
     detach = api.onEvent(reduce);
+    // One-shot: read and clear now so neither a throw below nor a later fresh
+    // start re-resumes a stale conversation.
+    const resume = pendingResumeId;
+    pendingResumeId = undefined;
     try {
       session.value = await api.startSession({
         threadId: threadId.value,
@@ -267,6 +308,9 @@ export function useAgent(options: UseAgentOptions) {
         // read it here; flag-based ones (Codex) ignore it and take effort per
         // turn instead. Safe to always send — the adapter picks what it needs.
         effort: reasoning.value,
+        // Resume the stored thread's provider conversation so continued turns
+        // keep its full context (rehydrate/openThread set this).
+        ...(resume ? { resume } : {}),
       });
       sessionState.value = session.value.status;
     } catch (e) {
@@ -350,7 +394,9 @@ export function useAgent(options: UseAgentOptions) {
   async function dispose(): Promise<void> {
     stopMock();
     const api = bridge();
-    if (api) {
+    // Only stop a session we actually started — on the recent-open fast path
+    // dispose() runs before any spawn, so there's nothing to tear down.
+    if (api && session.value) {
       try {
         await api.stopSession(threadId.value);
       } catch {
@@ -402,20 +448,31 @@ export function useAgent(options: UseAgentOptions) {
    *  chosen thread rather than the project's latest. Best-effort; desktop only. */
   async function openThread(id: string): Promise<void> {
     const api = bridge();
-    if (!api) return;
+    // Browser dev has no history bridge — just bring a (mock) session up so the
+    // composer is live rather than leaving the view without a session.
+    if (!api) {
+      await start();
+      return;
+    }
     let stored;
     try {
       stored = await api.history.thread(id);
     } catch {
+      stored = null;
+    }
+    // Thread vanished (deleted/archived under us) — fall back to the project's
+    // latest rather than an empty, session-less view.
+    if (!stored) {
+      await start();
       return;
     }
-    if (!stored) return;
     await dispose();
     // start() would otherwise reload the project's *latest* thread over this one.
     rehydratedOnce = true;
     threadId.value = stored.threadId;
-    blocks.value = stored.blocks as ThreadBlock[];
+    blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
     title.value = stored.title?.trim() || "";
+    adoptStoredThread(stored);
     tokenUsage.value = null;
     error.value = null;
     sessionState.value = "starting";
