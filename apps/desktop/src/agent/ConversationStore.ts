@@ -29,7 +29,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -157,10 +157,132 @@ function migrate(db: DatabaseSync): void {
     version = 5;
   }
 
-  // Future migrations append here: `if (version < 6) { …; version = 6; }`
+  if (version < 6) {
+    // v6 recovers conversations broken by the block-id collision (see
+    // assistantBlockId). Assistant blocks were keyed on the bare turn id, which
+    // Claude reuses per thread ("turn_1", …) while block_id is globally UNIQUE,
+    // so every Claude thread after the first silently lost its assistant blocks
+    // — the reply *items* persisted (keyed per-thread) but had no block to hang
+    // on, so reopening a thread showed the prompts with no responses. Unlike v2
+    // and v5, the data is reconstructable (the items are still here, in arrival
+    // order), so we rebuild the affected threads in place rather than wiping.
+    backfillOrphanedTurns(db);
+    version = 6;
+  }
+
+  // Future migrations append here: `if (version < 7) { …; version = 7; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
+}
+
+/** Storage id for an assistant turn's block. `block_id` is globally UNIQUE, but
+ *  a turn id is only unique *within* a thread — Claude numbers turns per session
+ *  ("turn_1", "turn_2", …), so every thread's first turn shares the id "turn_1".
+ *  Keying the block on the bare turn id let the first thread claim it and every
+ *  later thread lose its assistant block to `ON CONFLICT DO NOTHING` (the reply
+ *  items, keyed per-thread, survived with no block to render). Namespacing by
+ *  thread restores global uniqueness. Codex's turn ids are already globally
+ *  unique, so this is a no-op collision-wise for it — just a stable rename. */
+function assistantBlockId(threadId: string, turnId: string): string {
+  return `${threadId}::${turnId}`;
+}
+
+/** One-time recovery for threads whose assistant blocks were dropped by the
+ *  block-id collision (see {@link assistantBlockId}). For every thread that has
+ *  reply items under a turn with no matching assistant block, rebuild the block
+ *  list — interleaving user prompts and assistant turns in arrival order — so
+ *  the recovered replies render in place. Runs inside the v6 migration; guarded
+ *  per-thread so one bad row can't abort the whole upgrade. */
+function backfillOrphanedTurns(db: DatabaseSync): void {
+  // Threads with at least one item-turn that has no assistant block to render it.
+  const affected = db
+    .prepare(
+      `SELECT DISTINCT i.thread_id AS thread_id
+         FROM items i
+         LEFT JOIN blocks b
+           ON b.thread_id = i.thread_id
+          AND b.turn_id   = i.turn_id
+          AND b.role      = 'assistant'
+        WHERE b.seq IS NULL`,
+    )
+    .all() as Array<{ thread_id: string }>;
+
+  for (const { thread_id: threadId } of affected) {
+    try {
+      // User prompts and any surviving assistant blocks, each in arrival order.
+      const users = db
+        .prepare(
+          `SELECT block_id, text, at FROM blocks
+            WHERE thread_id = ? AND role = 'user' ORDER BY seq`,
+        )
+        .all(threadId) as Array<{ block_id: string; text: string | null; at: number }>;
+      const survivingRows = db
+        .prepare(
+          `SELECT block_id, turn_id, state, error, at, ended_at FROM blocks
+            WHERE thread_id = ? AND role = 'assistant' ORDER BY seq`,
+        )
+        .all(threadId) as Array<{
+        block_id: string;
+        turn_id: string | null;
+        state: string | null;
+        error: string | null;
+        at: number;
+        ended_at: number | null;
+      }>;
+      const surviving = new Map(survivingRows.filter((r) => r.turn_id).map((r) => [r.turn_id as string, r]));
+
+      // Turns in the order their items first arrived — provider-agnostic (works
+      // whether the turn id is "turn_1" or a Codex uuid).
+      const turns = db
+        .prepare(
+          `SELECT turn_id, MIN(seq) AS ms FROM items
+            WHERE thread_id = ? GROUP BY turn_id ORDER BY ms`,
+        )
+        .all(threadId) as Array<{ turn_id: string; ms: number }>;
+
+      // Interleave user[i] then turn[i] — Claude alternates one turn per prompt,
+      // so index-pairing reproduces the real order; any surplus on either side
+      // is appended rather than dropped.
+      const rows: Array<{ user?: (typeof users)[number]; turn?: string }> = [];
+      for (let i = 0; i < Math.max(users.length, turns.length); i++) {
+        const user = users[i];
+        const turn = turns[i];
+        if (user) rows.push({ user });
+        if (turn) rows.push({ turn: turn.turn_id });
+      }
+
+      const insertUser = db.prepare(
+        `INSERT INTO blocks (block_id, thread_id, role, text, at) VALUES (?, ?, 'user', ?, ?)`,
+      );
+      const insertAssistant = db.prepare(
+        `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, error, at, ended_at)
+         VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)`,
+      );
+      // Rewrite the thread's blocks in the rebuilt order (fresh seq); items are
+      // untouched — they already key on (thread_id, turn_id).
+      db.prepare(`DELETE FROM blocks WHERE thread_id = ?`).run(threadId);
+      for (const row of rows) {
+        if (row.user) {
+          insertUser.run(row.user.block_id, threadId, row.user.text, row.user.at);
+        } else if (row.turn) {
+          const turnId = row.turn;
+          const prior = surviving.get(turnId);
+          insertAssistant.run(
+            prior?.block_id ?? assistantBlockId(threadId, turnId),
+            threadId,
+            turnId,
+            prior?.state ?? "completed",
+            prior?.error ?? null,
+            prior?.at ?? Date.now(),
+            prior?.ended_at ?? null,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(`[conversation-store] backfill failed for ${threadId}:`, err);
+    }
+  }
 }
 
 export class ConversationStore {
@@ -281,7 +403,7 @@ export class ConversationStore {
             `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, at)
              VALUES (?, ?, 'assistant', ?, 'running', ?)
              ON CONFLICT(block_id) DO NOTHING`,
-          ).run(event.turnId, event.threadId, event.turnId, event.at);
+          ).run(assistantBlockId(event.threadId, event.turnId), event.threadId, event.turnId, event.at);
           this.touch(db, event.threadId, event.at);
           break;
         }
@@ -315,7 +437,7 @@ export class ConversationStore {
           db.prepare(
             `UPDATE blocks SET state = 'completed', ended_at = ?
              WHERE block_id = ?`,
-          ).run(event.at, event.turnId);
+          ).run(event.at, assistantBlockId(event.threadId, event.turnId));
           if (event.conversationId) {
             db.prepare(
               `UPDATE threads SET conversation_id = ? WHERE thread_id = ?`,
@@ -329,7 +451,7 @@ export class ConversationStore {
           db.prepare(
             `UPDATE blocks SET state = ?, error = ?, ended_at = ?
              WHERE block_id = ?`,
-          ).run(state, event.message ?? null, event.at, event.turnId);
+          ).run(state, event.message ?? null, event.at, assistantBlockId(event.threadId, event.turnId));
           this.touch(db, event.threadId, event.at);
           break;
         }

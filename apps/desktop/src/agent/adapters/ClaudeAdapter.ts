@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import {
@@ -110,7 +111,6 @@ type ClaudeSession = {
   /** Claude-native session id (from system/init) — for display/resume. */
   sessionId?: string;
   activeTurnId?: string;
-  turnSeq: number;
   /** Bumped on each message_start so item ids stay unique across a turn. */
   msgOrdinal: number;
   /** The current message's live content blocks, keyed by block index. Cleared
@@ -451,7 +451,6 @@ export class ClaudeAdapter implements ProviderAdapter {
       query: q,
       prompt,
       abort,
-      turnSeq: 0,
       msgOrdinal: 0,
       blocks: new Map(),
       toolItems: new Map(),
@@ -512,7 +511,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
     }
 
-    const turnId = `turn_${++session.turnSeq}`;
+    // Globally-unique turn id (a UUID, matching Codex's app-server ids and both
+    // collides across threads in the shared store. See assistantBlockId.
+    const turnId = randomUUID();
     session.activeTurnId = turnId;
     session.msgOrdinal = 0;
     session.blocks.clear();
