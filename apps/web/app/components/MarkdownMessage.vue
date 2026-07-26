@@ -39,6 +39,16 @@ watch(
   { immediate: true },
 );
 
+// Every word gets its own stable key (its position in the whole reply), so a
+// streamed word mounts as a genuinely new element the instant it arrives —
+// the same "resolves from soft focus" reveal HomeGreeting uses for its state
+// line, but driven by real arrival time instead of an artificial stagger:
+// each word's blur-in fires exactly when it lands, one after another as the
+// reply grows. A fully-formed message (history) mounts all its words at once,
+// so it just settles as a single soft block instead of a per-word cascade.
+// Reset once per full tree render — see `Rendered` below.
+let wordSeq = 0;
+
 // ── token stream → node tree ────────────────────────────────────────────────
 // markdown-it hands a flat list with nesting encoded as open/close pairs. Fold
 // it into a tree; inline tokens carry their own child list, so recurse in.
@@ -145,10 +155,22 @@ function styleOf(node: MdNode): Record<string, string> | undefined {
   return node.attrs.style ? { textAlign: /right/.test(node.attrs.style) ? "right" : /center/.test(node.attrs.style) ? "center" : "left" } : undefined;
 }
 
+/** Split a text run into words wrapped in individually-keyed spans (so each
+ *  one mounts as its own DOM node and can carry the blur-in reveal), with
+ *  whitespace passed through untouched between them. */
+function renderWords(content: string, key: number): VNode {
+  const parts = content.split(/(\s+)/);
+  return h(
+    Fragment,
+    { key },
+    parts.map((part) => (/^\s*$/.test(part) ? part : h("span", { key: `w${wordSeq++}`, class: "stream-word" }, part))),
+  );
+}
+
 function renderNode(node: MdNode, key: number): VNode | string {
   switch (node.type) {
     case "text":
-      return node.content;
+      return renderWords(node.content, key);
     case "softbreak":
       return " ";
     case "hardbreak":
@@ -245,7 +267,10 @@ function renderListItem(node: MdNode, key: number): VNode {
 
 const Rendered = defineComponent({
   name: "MarkdownRendered",
-  render: () => nodes.value.map((n, i) => renderNode(n, i)),
+  render: () => {
+    wordSeq = 0;
+    return nodes.value.map((n, i) => renderNode(n, i));
+  },
 });
 </script>
 
@@ -266,6 +291,24 @@ const Rendered = defineComponent({
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Each word resolves from soft focus as it mounts — the same reveal
+   HomeGreeting uses for its state line. Streamed words each land at their own
+   real moment so this alone reads as one word settling after another; a
+   fully-formed message just mounts all its words in the same tick and settles
+   as a single soft block. */
+.md :deep(.stream-word) {
+  display: inline;
+  transition:
+    opacity 420ms ease,
+    filter 420ms ease;
+}
+@starting-style {
+  .md :deep(.stream-word) {
+    opacity: 0;
+    filter: blur(6px);
+  }
 }
 
 /* ── blocks ─────────────────────────────────────────────────────────────────── */
@@ -425,5 +468,9 @@ const Rendered = defineComponent({
   border: 0;
   height: 1px;
   background: var(--hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md :deep(.stream-word) { transition: none; }
 }
 </style>
