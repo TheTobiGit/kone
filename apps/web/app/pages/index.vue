@@ -60,6 +60,13 @@ function onOpenRecent(recent: RecentProject) {
   openProject({ path: recent.path, name: recent.name });
 }
 
+// Opening a conversation from the cross-project sessions list: switch to its
+// project and hand ProjectView the thread to resume once it mounts.
+function onOpenSession(target: { path: string; name: string; threadId: string }) {
+  cue("press");
+  openProject({ path: target.path, name: target.name }, target.threadId);
+}
+
 // Pin/unpin is the one launcher toggle worth a sound — a discrete state flip.
 function onTogglePin(path: string) {
   cue("toggle");
@@ -172,6 +179,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           @pin="onTogglePin"
           @reveal="onRevealRecent"
           @forget="forget"
+          @open-session="onOpenSession"
           @settings="settingsOpen = true"
         />
         <AppHomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />

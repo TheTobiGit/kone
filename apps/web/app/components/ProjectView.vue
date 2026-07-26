@@ -44,6 +44,8 @@ const providers = useAgentProviders();
 // Provider is chosen in onMounted (below) from what's installed + last used;
 // "codex" is just the pre-mount default the ref carries until then.
 const agent = useAgent({ provider: "codex", cwd: () => props.project.path });
+// A conversation the launcher asked us to resume on open (see onMounted).
+const pendingThread = usePendingThread();
 const {
   blocks,
   busy,
@@ -155,6 +157,17 @@ onMounted(async () => {
     }
   }
   await agent.start();
+
+  // If the launcher asked to resume a specific conversation (a click on the App
+  // Home "recent sessions" list), open it now — over the latest thread start()
+  // just rehydrated — and drop straight into the chat view. Consume the request
+  // so a later plain re-open of this project lands on its home as usual.
+  const resume = pendingThread.value;
+  if (resume) {
+    pendingThread.value = null;
+    view.value = "chat";
+    void agent.openThread(resume);
+  }
 });
 
 // Derive the effort tier for the current model id and ride it along on each

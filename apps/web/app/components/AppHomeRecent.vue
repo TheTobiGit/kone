@@ -23,9 +23,28 @@ const emit = defineEmits<{
   reveal: [path: string];
   forget: [path: string];
   settings: [];
+  openSession: [target: { path: string; name: string; threadId: string }];
 }>();
 
 const { summaries, enrich } = useProjectSummaries();
+
+// The cross-project "recent sessions" list below the grid — every recent
+// project's pinned + recent conversations pooled into one recency-ranked stream.
+// Pin/archive/delete act through the composable directly (they key on thread id);
+// opening one has to switch the active project first, so it routes to the page.
+const sessions = useAllRecentSessions();
+
+function onOpenSession(threadId: string): void {
+  const row =
+    sessions.pinned.value.find((s) => s.threadId === threadId) ??
+    sessions.recent.value.find((s) => s.threadId === threadId);
+  if (!row?.projectPath) return;
+  emit("openSession", {
+    path: row.projectPath,
+    name: row.projectName ?? row.projectPath,
+    threadId,
+  });
+}
 
 watch(
   () => props.recents.map((p) => p.path),
@@ -96,7 +115,7 @@ function onFolderFocusOut(e: FocusEvent) {
 
 <template>
   <main
-    class="relative flex h-full min-h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px] pb-16"
+    class="relative flex h-full min-h-screen flex-col overflow-x-hidden overflow-y-auto bg-ground px-16 pt-[52px] pb-16"
   >
     <h1 class="sr-only">Your projects</h1>
 
@@ -282,6 +301,25 @@ function onFolderFocusOut(e: FocusEvent) {
       >
         No projects match “{{ query }}”
       </p>
+    </section>
+
+    <!-- Recent sessions across every project — the same conversations block as
+         Project Home, but pooled from all your recents so the launcher shows
+         where you left off anywhere. Self-hides until a history read resolves
+         with something to show, so an empty launcher stays exactly as it was. -->
+    <section
+      v-if="sessions.hasAny.value"
+      class="relative z-10 mx-auto mt-24 mb-4 flex w-full max-w-[820px] flex-col"
+    >
+      <RecentSessions
+        :pinned="sessions.pinned.value"
+        :recent="sessions.recent.value"
+        :loading="sessions.loading.value"
+        @open="onOpenSession"
+        @pin="sessions.togglePin"
+        @archive="sessions.archive"
+        @delete="sessions.remove"
+      />
     </section>
   </main>
 </template>

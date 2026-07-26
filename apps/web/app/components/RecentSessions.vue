@@ -131,6 +131,13 @@ function hasDiff(s: SessionSummary): boolean {
             </div>
 
             <div class="rs__meta">
+              <span v-if="s.projectName" class="rs__project" :title="s.projectPath">
+                <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                  <path d="M3.5 7.5a2 2 0 0 1 2-2h3.2a2 2 0 0 1 1.4.6l1 1a2 2 0 0 0 1.4.6h5.6a2 2 0 0 1 2 2v6.2a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2Z" />
+                </svg>
+                {{ s.projectName }}
+              </span>
+
               <span v-if="s.branch" class="rs__branch">
                 <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
                   <line x1="6" y1="3" x2="6" y2="15" />
@@ -299,16 +306,16 @@ function hasDiff(s: SessionSummary): boolean {
   animation-delay: calc(90ms + min(var(--i, 0) * 48ms, 720ms));
 }
 /* Borderless, card-free affordance — the whole row is clickable; on hover the
-   title nudges toward the iris and the trailing actions fade in, no box drawn. */
+   title shifts color and the trailing actions fade in, no box drawn. */
 .rs__name {
   transition: color 140ms ease;
 }
 .rs__row:hover .rs__name,
 .rs__row:focus-visible .rs__name {
-  color: var(--iris, #6b5bd2);
+  color: #6b5bd2;
 }
 .rs__row:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--iris, #6b5bd2) 55%, transparent);
+  outline: 2px solid color-mix(in srgb, #6b5bd2 55%, transparent);
   outline-offset: 6px;
 }
 .rs__main {
@@ -356,6 +363,26 @@ function hasDiff(s: SessionSummary): boolean {
   flex-shrink: 0;
   stroke: var(--rs-muted, #a1a1aa);
   stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Project chip — only on the App Home aggregate, where a row can come from any
+   project. Reads a shade firmer than the branch/diff metadata beside it so the
+   "which project" answer leads the line. */
+.rs__project {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--rs-project, #6b6b70);
+  font-weight: 500;
+}
+.rs__project svg {
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -496,6 +523,7 @@ function hasDiff(s: SessionSummary): boolean {
     --rs-muted: #8a8a90;
     --rs-label: #6b6b70;
     --rs-count: #ededf0;
+    --rs-project: #b6b6bd;
     --pin-ink: #c99b45;
   }
 }
