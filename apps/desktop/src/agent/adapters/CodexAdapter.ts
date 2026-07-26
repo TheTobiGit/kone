@@ -172,15 +172,19 @@ function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultNa
   }
   if (type.includes("reasoning") || type.includes("thought")) return { kind: "reasoning_text" };
   if (type.includes("plan") || type.includes("todo")) return { kind: "plan_text" };
-  if (type.includes("command")) return { kind: "tool_call", defaultName: "Run" };
+  // `defaultName` is the tool *identity* (a canonical keyword the thread's
+  // tool-family table + phrasing understand), NOT the target — the command,
+  // path, or query goes into the item's `text`. Keep these keywords in sync
+  // with ConversationThread.vue's TOOL_TABLE / toolPhrase vocabulary.
+  if (type.includes("command")) return { kind: "tool_call", defaultName: "run" };
   if (type.includes("file change") || type.includes("patch") || type.includes("edit")) {
-    return { kind: "tool_call", defaultName: "File change" };
+    return { kind: "tool_call", defaultName: "edit_file" };
   }
-  if (type.includes("mcp")) return { kind: "tool_call", defaultName: "MCP tool call" };
-  if (type.includes("dynamic tool") || type.includes("collab")) return { kind: "tool_call", defaultName: "Tool call" };
-  if (type.includes("web search")) return { kind: "tool_call", defaultName: "Web search" };
+  if (type.includes("mcp")) return { kind: "tool_call", defaultName: "mcp" };
+  if (type.includes("dynamic tool") || type.includes("collab")) return { kind: "tool_call", defaultName: "tool" };
+  if (type.includes("web search")) return { kind: "tool_call", defaultName: "web_search" };
   if (type.includes("image")) {
-    return { kind: "tool_call", defaultName: type.includes("generat") ? "Generated image" : "Image" };
+    return { kind: "tool_call", defaultName: type.includes("generat") ? "generate_image" : "image" };
   }
   return null; // review_entered, context_compaction, error, unknown
 }
@@ -602,7 +606,9 @@ export class CodexAdapter implements ProviderAdapter {
       const buffer: CodexItemBuffer = {
         itemId,
         kind: mapped.kind,
-        name: isTextKind ? undefined : (itemDetail(raw) ?? mapped.defaultName),
+        // Identity keyword drives the icon/hue/phrasing; the target (command,
+        // path, query) rides along in `text`.
+        name: isTextKind ? undefined : mapped.defaultName,
         text: isTextKind ? "" : (itemDetail(raw) ?? ""),
         detail: "",
       };

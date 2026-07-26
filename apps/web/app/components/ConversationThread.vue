@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from "vue";
+import type { ComponentPublicInstance } from "vue";
 import type { Component } from "vue";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, ArrowDown01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
-// Tool-call glyphs are Phosphor duotone — a monochrome two-tone look, so the
-// rows read calm and tonal rather than a rainbow of family hues.
+import { AiBrain01Icon, ArrowRight01Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+// Tool-call glyphs are Phosphor duotone, each carrying a soft family hue so a run
+// of calls reads as a legible, lightly-coloured timeline rather than a wall of
+// grey — Read blues, Write violets, Search ambers, Run greens, Delete red.
 import {
   PhFileText,
   PhNotePencil,
@@ -23,6 +25,9 @@ import type { RuntimeItem } from "~/types/desktop";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import WorkingOrb from "~/components/WorkingOrb.vue";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
+import FileChip from "~/components/FileChip.vue";
+import SiteChip from "~/components/SiteChip.vue";
+import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 
 // The live conversation — where the agent's turns become a timeline.
 //
@@ -35,10 +40,16 @@ import MarkdownMessage from "~/components/MarkdownMessage.vue";
 // segments in place. This is what makes tools-at-the-start, a tool-after-text,
 // and interleaved thinking all read correctly.
 //
-//   · thinking streams live (dim aside), then collapses to a "Thought for Xs"
-//     disclosure once it settles;
-//   · tool calls are a vertical run of rows — icon · verb · target · status;
-//   · text is Markdown once settled, a plain growing stream while live;
+// The look is an editorial transcript: a calm warm-paper base with generous
+// rhythm, colour and motion held back for the *live* moments so the dynamism
+// feels earned. While a turn runs a quiet highlight travels the tool rail; the
+// moment it settles it collapses to quiet, dotted-leader meta.
+//
+//   · thinking streams live behind a plain muted "Thinking…" label, then
+//     collapses to a "Thought for Xs" disclosure once it settles;
+//   · tool calls hang off a left rail as nodes — icon · plain phrase · status;
+//   · text renders as rich Markdown the whole way through — streaming or settled
+//     — so a reply reads as a proper preview as it grows, never a raw block;
 //   · the working orb holds any quiet gap — the opening wait, or a lull between
 //     one activity finishing and the next starting.
 //
@@ -56,72 +67,322 @@ const props = defineProps<{
 
 const { cue } = useSound();
 
-// ── tool-call vocabulary → icon + label ──────────────────────────────────────
-type ToolMeta = { icon: Component; label: string };
+// Warm the Markdown parser on mount: markdown-it is code-split behind a dynamic
+// import, so the very first streamed reply would otherwise flash raw source for a
+// beat while it loads. Kicking the load off now means text renders formatted from
+// the first chunk.
+if (import.meta.client) void useMarkdown().parse("");
+
+// ── tool-call vocabulary → icon + label + family hue ──────────────────────────
+type ToolMeta = { icon: Component; label: string; hue: string };
+// Family hues — mid-tone so they read on both the warm-light and near-black
+// grounds without a per-theme table. Double-encoded with the node dot on the
+// rail, never colour alone.
+const HUE = {
+  read: "#5b9dd9", // blues — read / list / inspect
+  write: "#8b7ff0", // violets — write / edit (kin to the iris rim)
+  search: "#d99a4e", // ambers — grep / glob / search
+  intel: "#48b0b8", // teal — code intelligence
+  run: "#4fae86", // greens — shell / commands
+  web: "#3fa9c9", // cyan — the network
+  agent: "#d97aa8", // pink — sub-agents / orchestration
+  del: "var(--diff-del)", // red — destructive
+  neutral: "var(--muted)",
+} as const;
 const TOOL_TABLE: Record<string, ToolMeta> = {
   // filesystem
-  read_file: { icon: PhFileText, label: "Read" },
-  view_file: { icon: PhFileText, label: "Read" },
-  read: { icon: PhFileText, label: "Read" },
-  write_to_file: { icon: PhNotePencil, label: "Write" },
-  create_file: { icon: PhNotePencil, label: "Write" },
-  write: { icon: PhNotePencil, label: "Write" },
-  edit_file: { icon: PhNotePencil, label: "Edit" },
-  apply_patch: { icon: PhNotePencil, label: "Edit" },
-  str_replace: { icon: PhNotePencil, label: "Edit" },
-  replace_file_content: { icon: PhNotePencil, label: "Edit" },
-  edit: { icon: PhNotePencil, label: "Edit" },
-  list_dir: { icon: PhListBullets, label: "List" },
-  ls: { icon: PhListBullets, label: "List" },
-  delete_file: { icon: PhTrash, label: "Delete" },
-  rm: { icon: PhTrash, label: "Delete" },
+  read_file: { icon: PhFileText, label: "Read", hue: HUE.read },
+  view_file: { icon: PhFileText, label: "Read", hue: HUE.read },
+  read: { icon: PhFileText, label: "Read", hue: HUE.read },
+  write_to_file: { icon: PhNotePencil, label: "Write", hue: HUE.write },
+  create_file: { icon: PhNotePencil, label: "Write", hue: HUE.write },
+  write: { icon: PhNotePencil, label: "Write", hue: HUE.write },
+  edit_file: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
+  apply_patch: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
+  str_replace: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
+  replace_file_content: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
+  edit: { icon: PhNotePencil, label: "Edit", hue: HUE.write },
+  multiedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write }, // Claude
+  notebookedit: { icon: PhNotePencil, label: "Edit", hue: HUE.write }, // Claude
+  list_dir: { icon: PhListBullets, label: "List", hue: HUE.read },
+  ls: { icon: PhListBullets, label: "List", hue: HUE.read },
+  delete_file: { icon: PhTrash, label: "Delete", hue: HUE.del },
+  rm: { icon: PhTrash, label: "Delete", hue: HUE.del },
   // search & navigation
-  grep_search: { icon: PhMagnifyingGlass, label: "Grep" },
-  ripgrep: { icon: PhMagnifyingGlass, label: "Grep" },
-  glob_file_search: { icon: PhMagnifyingGlass, label: "Glob" },
-  find_by_name: { icon: PhMagnifyingGlass, label: "Glob" },
-  codebase_search: { icon: PhMagnifyingGlass, label: "Search" },
-  grep: { icon: PhMagnifyingGlass, label: "Grep" },
-  search: { icon: PhMagnifyingGlass, label: "Search" },
-  go_to_definition: { icon: PhCode, label: "Code intel" },
-  view_code_item: { icon: PhCode, label: "Code intel" },
-  lsp: { icon: PhCode, label: "Code intel" },
+  grep_search: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search },
+  ripgrep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search },
+  glob_file_search: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search },
+  find_by_name: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search },
+  glob: { icon: PhMagnifyingGlass, label: "Glob", hue: HUE.search }, // Claude
+  codebase_search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search },
+  grep: { icon: PhMagnifyingGlass, label: "Grep", hue: HUE.search },
+  search: { icon: PhMagnifyingGlass, label: "Search", hue: HUE.search },
+  go_to_definition: { icon: PhCode, label: "Code intel", hue: HUE.intel },
+  view_code_item: { icon: PhCode, label: "Code intel", hue: HUE.intel },
+  lsp: { icon: PhCode, label: "Code intel", hue: HUE.intel },
   // execution
-  bash: { icon: PhTerminalWindow, label: "Run" },
-  run_terminal_cmd: { icon: PhTerminalWindow, label: "Run" },
-  execute_command: { icon: PhTerminalWindow, label: "Run" },
-  run_command: { icon: PhTerminalWindow, label: "Run" },
-  run: { icon: PhTerminalWindow, label: "Run" },
-  command: { icon: PhTerminalWindow, label: "Run" },
+  bash: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
+  run_terminal_cmd: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
+  execute_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
+  run_command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
+  run: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
+  command: { icon: PhTerminalWindow, label: "Run", hue: HUE.run },
   // web
-  web_search: { icon: PhGlobe, label: "Web search" },
-  search_web: { icon: PhGlobe, label: "Web search" },
-  web_fetch: { icon: PhLinkSimple, label: "Web fetch" },
-  read_url_content: { icon: PhLinkSimple, label: "Web fetch" },
-  view_web_document: { icon: PhLinkSimple, label: "Web fetch" },
+  web_search: { icon: PhGlobe, label: "Web search", hue: HUE.web },
+  search_web: { icon: PhGlobe, label: "Web search", hue: HUE.web },
+  websearch: { icon: PhGlobe, label: "Web search", hue: HUE.web }, // Claude
+  web_fetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web },
+  read_url_content: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web },
+  view_web_document: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web },
+  webfetch: { icon: PhLinkSimple, label: "Web fetch", hue: HUE.web }, // Claude
   // planning & orchestration
-  task: { icon: PhTreeStructure, label: "Subagent" },
-  new_task: { icon: PhTreeStructure, label: "Subagent" },
-  agent: { icon: PhTreeStructure, label: "Subagent" },
+  task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent },
+  new_task: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent },
+  agent: { icon: PhTreeStructure, label: "Subagent", hue: HUE.agent },
+  mcp: { icon: PhTreeStructure, label: "MCP tool", hue: HUE.agent },
   // context & specialized
-  deploy_web_app: { icon: PhRocketLaunch, label: "Deploy" },
+  deploy_web_app: { icon: PhRocketLaunch, label: "Deploy", hue: HUE.run },
 };
 function toolMeta(name: string | undefined): ToolMeta {
-  if (!name) return { icon: PhTerminalWindow, label: "Tool" };
+  if (!name) return { icon: PhTerminalWindow, label: "Tool", hue: HUE.neutral };
   const key = name.trim().toLowerCase();
   if (TOOL_TABLE[key]) return TOOL_TABLE[key]!;
+  // MCP tools arrive as `mcp__server__tool` — read the last segment as the label
+  // and hue them as external/orchestration rather than a raw title-cased blob.
+  if (key.startsWith("mcp__")) {
+    const tail = key.split("__").filter(Boolean).pop() ?? key;
+    const label = tail.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    return { icon: PhTreeStructure, label, hue: HUE.agent };
+  }
   const label = key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return { icon: PhTerminalWindow, label };
+  return { icon: PhTerminalWindow, label, hue: HUE.neutral };
 }
 // The provider hands args as `read_file: src/foo.ts`; peel the name so we're left
-// with the target (path / command / query). Long tails keep their end.
-function toolDetail(t: RuntimeItem): string {
+// with the target (path / command / query). Long tails keep their end — the full
+// value stays reachable in the row's title attribute.
+function toolTargetRaw(t: RuntimeItem): string {
   const name = (t.name ?? "").trim();
   const raw = (t.text ?? "").trim();
   const prefix = `${name}:`;
-  const d = raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : raw === name ? "" : raw;
-  const MAX = 64;
-  return d.length <= MAX ? d : "…" + d.slice(-(MAX - 1));
+  return raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : raw === name ? "" : raw;
+}
+function toolTarget(t: RuntimeItem, max = 64): string {
+  const d = toolTargetRaw(t);
+  return d.length <= max ? d : "…" + d.slice(-(max - 1));
+}
+function toolDetailFull(t: RuntimeItem): string {
+  return toolTargetRaw(t);
+}
+function looksLikeFilePath(s: string): boolean {
+  if (!s) return false;
+  const base = s.split("/").filter(Boolean).pop() ?? s;
+  const stem = base.replace(/:\d+(?:-\d+)?$/, "");
+  if (/^[\w.-]+\.(vue|ts|tsx|js|jsx|css|md|json|py|go|rs|rb|php|html|yaml|yml|toml|svg|png|jpg|jpeg|webp|gif|log|sh|sql|toml|lock)$/i.test(stem))
+    return true;
+  if (/[\\/]/.test(s) && /\.[a-z0-9]{1,8}$/i.test(stem)) return true;
+  return false;
+}
+function looksLikeCommand(s: string): boolean {
+  return /^(bun|npm|pnpm|yarn|git|cargo|make|python3?|node)\s/i.test(s);
+}
+// Natural-language row copy — reads like a brief status line, not "Verb: target".
+type ToolPhraseTarget =
+  | { kind: "file"; path: string }
+  | { kind: "folder"; path: string }
+  | { kind: "site"; url: string }
+  | { kind: "mono"; text: string };
+type ToolPhrase = { before: string; target?: ToolPhraseTarget; after?: string };
+function targetPhrase(
+  lead: string,
+  text?: string,
+  tail = "",
+  force?: ToolPhraseTarget["kind"],
+): ToolPhrase {
+  if (!text) return { before: `${lead}${tail}` };
+  const kind =
+    force ??
+    (looksLikeSite(text)
+      ? "site"
+      : looksLikeCommand(text)
+        ? "mono"
+        : looksLikeFilePath(text)
+          ? "file"
+          : looksLikeDirectoryPath(text)
+            ? "folder"
+            : "mono");
+  if (kind === "file") return { before: lead, target: { kind: "file", path: text }, after: tail || undefined };
+  if (kind === "folder") return { before: lead, target: { kind: "folder", path: text }, after: tail || undefined };
+  if (kind === "site") return { before: lead, target: { kind: "site", url: text }, after: tail || undefined };
+  return { before: lead, target: { kind: "mono", text }, after: tail || undefined };
+}
+function plain(text: string): ToolPhrase {
+  return { before: text };
+}
+function toolPhrase(t: RuntimeItem): ToolPhrase {
+  const status = toolStatus(t);
+  const ing = status === "running";
+  const fail = status === "error";
+  const detail = toolTarget(t);
+  const full = toolTargetRaw(t);
+  const name = (t.name ?? "").trim().toLowerCase();
+
+  // grep-style "query · N matches"
+  const matchSplit = full.match(/^(.+?)\s*·\s*(\d+)\s+matches?$/i);
+  if (matchSplit) {
+    const [, query, count] = matchSplit;
+    if (ing) return plain(`Searching for ${query}`);
+    if (fail) return plain(`Couldn't search for ${query}`);
+    return plain(`Found ${count} matches for ${query}`);
+  }
+
+  // code-intel "symbol → file:line"
+  const defSplit = full.match(/^(.+?)\s*→\s*(.+)$/);
+  if (name === "go_to_definition" || name === "view_code_item" || name === "lsp") {
+    if (defSplit) {
+      const [, symbol, loc] = defSplit;
+      if (ing) return plain(`Looking up ${symbol}`);
+      if (fail) return plain(`Couldn't find ${symbol}`);
+      return targetPhrase(`Jumped to ${symbol} in `, loc, "", "file");
+    }
+    if (ing) return plain(full ? `Looking up ${full}` : "Looking up a symbol");
+    if (fail) return plain(full ? `Couldn't find ${full}` : "Lookup failed");
+    return looksLikeFilePath(full) ? targetPhrase("Jumped to ", full, "", "file") : plain(`Jumped to ${full}`);
+  }
+
+  // web fetch "url · label"
+  const fetchSplit = full.match(/^(.+?)\s*·\s*(.+)$/);
+  if (name === "web_fetch" || name === "read_url_content" || name === "view_web_document" || name === "webfetch") {
+    const url = fetchSplit?.[1]?.trim() ?? full;
+    if (ing) return targetPhrase("Fetching ", url, "", "site");
+    if (fail) return targetPhrase("Couldn't fetch ", url, "", "site");
+    return targetPhrase("Fetched ", url, "", "site");
+  }
+
+  switch (name) {
+    case "read_file":
+    case "view_file":
+    case "read":
+      if (!detail) return plain(ing ? "Reading a file" : fail ? "Couldn't read file" : "Read a file");
+      if (ing) return targetPhrase("Reading ", detail, "", "file");
+      if (fail) return targetPhrase("Couldn't read ", detail, "", "file");
+      return targetPhrase("Read ", detail, "", "file");
+    case "write_to_file":
+    case "create_file":
+    case "write":
+      if (!detail) return plain(ing ? "Writing a file" : fail ? "Couldn't write file" : "Wrote a file");
+      if (ing) return targetPhrase("Writing ", detail, "", "file");
+      if (fail) return targetPhrase("Couldn't write ", detail, "", "file");
+      return targetPhrase("Wrote ", detail, "", "file");
+    case "edit_file":
+    case "apply_patch":
+    case "str_replace":
+    case "replace_file_content":
+    case "edit":
+    case "multiedit":
+    case "notebookedit":
+      if (!detail) return plain(ing ? "Editing a file" : fail ? "Couldn't edit file" : "Edited a file");
+      if (ing) return targetPhrase("Editing ", detail, "", "file");
+      if (fail) return targetPhrase("Couldn't edit ", detail, "", "file");
+      return targetPhrase("Edited ", detail, "", "file");
+    case "list_dir":
+    case "ls":
+      if (!detail) return plain(ing ? "Listing a folder" : fail ? "Couldn't list folder" : "Listed a folder");
+      if (ing) return targetPhrase("Listing ", detail, "", "folder");
+      if (fail) return targetPhrase("Couldn't list ", detail, "", "folder");
+      return targetPhrase("Listed ", detail, "", "folder");
+    case "delete_file":
+    case "rm":
+      if (!detail) return plain(ing ? "Deleting a file" : fail ? "Couldn't delete file" : "Deleted a file");
+      if (ing) return targetPhrase("Deleting ", detail, "", "file");
+      if (fail) return targetPhrase("Couldn't delete ", detail, "", "file");
+      return targetPhrase("Deleted ", detail, "", "file");
+    case "grep_search":
+    case "ripgrep":
+    case "grep":
+      if (!detail) return plain(ing ? "Searching the codebase" : fail ? "Search failed" : "Searched the codebase");
+      if (ing) return plain(`Searching for ${detail}`);
+      if (fail) return plain(`Couldn't search for ${detail}`);
+      return plain(`Searched for ${detail}`);
+    case "glob_file_search":
+    case "find_by_name":
+    case "glob":
+      if (!detail) return plain(ing ? "Finding files" : fail ? "File search failed" : "Found matching files");
+      if (ing) return plain(`Finding files matching ${detail}`);
+      if (fail) return plain(`Couldn't find files matching ${detail}`);
+      return plain(`Found files matching ${detail}`);
+    case "codebase_search":
+    case "search":
+      if (!detail) return plain(ing ? "Searching the codebase" : fail ? "Search failed" : "Searched the codebase");
+      if (ing) return plain(`Searching the codebase for ${detail}`);
+      if (fail) return plain(`Couldn't find ${detail} in the codebase`);
+      return plain(`Searched the codebase for ${detail}`);
+    case "bash":
+    case "run_terminal_cmd":
+    case "execute_command":
+    case "run_command":
+    case "run":
+    case "command":
+      if (!detail) return plain(ing ? "Running a command" : fail ? "Command failed" : "Ran a command");
+      if (ing) return targetPhrase("Running ", detail, "", "mono");
+      if (fail) return targetPhrase("Couldn't run ", detail, "", "mono");
+      return targetPhrase("Ran ", detail, "", "mono");
+    case "web_search":
+    case "search_web":
+    case "websearch":
+      if (!detail) return plain(ing ? "Searching the web" : fail ? "Web search failed" : "Searched the web");
+      if (ing) return plain(`Searching the web for ${detail}`);
+      if (fail) return plain(`Couldn't search the web for ${detail}`);
+      return plain(`Searched the web for ${detail}`);
+    case "task":
+    case "new_task":
+    case "agent":
+      if (!detail) return plain(ing ? "Starting a sub-task" : fail ? "Sub-task failed" : "Finished a sub-task");
+      if (ing) return plain(`Running a sub-task — ${detail}`);
+      if (fail) return plain(`Sub-task failed — ${detail}`);
+      return plain(`Ran a sub-task — ${detail}`);
+    case "mcp":
+      if (!detail) return plain(ing ? "Running an MCP tool" : fail ? "MCP tool failed" : "Ran an MCP tool");
+      if (ing) return plain(`Running an MCP tool — ${detail}`);
+      if (fail) return plain(`MCP tool failed — ${detail}`);
+      return plain(`Ran an MCP tool — ${detail}`);
+    case "deploy_web_app":
+      if (!detail) return plain(ing ? "Deploying" : fail ? "Deploy failed" : "Deployed");
+      if (ing) return plain(`Deploying ${detail}`);
+      if (fail) return plain(`Couldn't deploy ${detail}`);
+      return plain(`Deployed ${detail}`);
+    default: {
+      const human = name.replace(/[_-]+/g, " ");
+      if (name.includes("screenshot") || name.includes("capture")) {
+        if (ing) return plain("Taking a screenshot");
+        if (fail) return plain("Couldn't capture screenshot");
+        return detail ? targetPhrase("Captured ", detail, "", "file") : plain("Captured a screenshot");
+      }
+      if (!detail) {
+        if (ing) return plain(`Running ${human}`);
+        if (fail) return plain(`${human} failed`);
+        return plain(`Ran ${human}`);
+      }
+      if (ing) return plain(`Running ${human} on ${detail}`);
+      if (fail) return plain(`Couldn't run ${human} on ${detail}`);
+      return plain(`Ran ${human} on ${detail}`);
+    }
+  }
+}
+type ToolPhrasePart =
+  | { kind: "text"; text: string }
+  | { kind: "file"; path: string }
+  | { kind: "folder"; path: string }
+  | { kind: "site"; url: string }
+  | { kind: "mono"; text: string };
+function toolPhraseParts(t: RuntimeItem): ToolPhrasePart[] {
+  const p = toolPhrase(t);
+  const out: ToolPhrasePart[] = [{ kind: "text", text: p.before }];
+  if (p.target?.kind === "file") out.push({ kind: "file", path: p.target.path });
+  else if (p.target?.kind === "folder") out.push({ kind: "folder", path: p.target.path });
+  else if (p.target?.kind === "site") out.push({ kind: "site", url: p.target.url });
+  else if (p.target?.kind === "mono") out.push({ kind: "mono", text: p.target.text });
+  if (p.after) out.push({ kind: "text", text: p.after });
+  return out;
 }
 
 // ── the ordered-parts model ───────────────────────────────────────────────────
@@ -154,6 +415,12 @@ function segText(seg: Segment): string {
     .join("\n\n")
     .trim();
 }
+// Some models never surface their reasoning — the turn carries a thinking marker
+// but no text. There's nothing to reveal, so such a segment renders as a bare
+// label with no disclosure (no chevron, no expand/collapse).
+function thinkHasContent(seg: Segment): boolean {
+  return segText(seg).length > 0;
+}
 function toolCalls(seg: Segment): RuntimeItem[] {
   return seg.items.filter((i) => i.kind === "tool_call");
 }
@@ -161,6 +428,68 @@ function toolStatus(t: RuntimeItem): "running" | "done" | "error" {
   if (t.status === "in-progress") return "running";
   if (t.status === "failed") return "error";
   return "done";
+}
+
+// Thinking and tool calls are both "steps" — rows in one continuous list with a
+// connecting line threading through their icons. Adjacent thinking/tools segments
+// join into a single group; a text segment breaks the line and starts fresh after.
+type RenderGroup = { kind: "steps"; key: string; segments: Segment[] } | { kind: "text"; seg: Segment };
+function renderGroups(block: AssistantBlock): RenderGroup[] {
+  const out: RenderGroup[] = [];
+  for (const seg of segmentsOf(block)) {
+    if (seg.kind === "text") {
+      out.push({ kind: "text", seg });
+      continue;
+    }
+    const last = out[out.length - 1];
+    if (last && last.kind === "steps") last.segments.push(seg);
+    else out.push({ kind: "steps", key: seg.key, segments: [seg] });
+  }
+  return out;
+}
+function stepRowCount(segments: Segment[]): number {
+  return segments.reduce((n, s) => n + (s.kind === "thinking" ? 1 : toolCalls(s).length), 0);
+}
+// Row index within the whole group (thinking + tool calls together), so the
+// entrance stagger runs continuously across a mixed group instead of resetting
+// at each segment boundary.
+function stepOffset(segments: Segment[], segIdx: number): number {
+  return stepRowCount(segments.slice(0, segIdx));
+}
+const STEP_SPRING = { type: "spring", stiffness: 480, damping: 17, mass: 0.7 } as const;
+function stepDelay(i: number): number {
+  return Math.min(i * 0.06, 0.36);
+}
+
+// Each step's connector line lives inside its animated row so the rail and icon
+// enter together — the old full-height rail jumped to the next row before the
+// icon's stagger finished.
+const stepLinkObservers = new WeakMap<HTMLElement, ResizeObserver>();
+function stepEntryEl(el: Element | ComponentPublicInstance | null): HTMLElement | null {
+  if (el instanceof HTMLElement) return el;
+  const root = (el as ComponentPublicInstance | null)?.$el;
+  return root instanceof HTMLElement ? root : null;
+}
+function layoutStepEntry(el: Element | ComponentPublicInstance | null): void {
+  const entry = stepEntryEl(el);
+  if (!entry) return;
+  const link = entry.querySelector(".step-entry__link");
+  if (!(link instanceof HTMLElement)) return;
+  const prev = entry.previousElementSibling;
+  if (!(prev instanceof HTMLElement)) return;
+  const sync = () => link.style.setProperty("--step-link-h", `${prev.offsetHeight}px`);
+  sync();
+  stepLinkObservers.get(entry)?.disconnect();
+  const ro = new ResizeObserver(sync);
+  ro.observe(prev);
+  ro.observe(entry);
+  stepLinkObservers.set(entry, ro);
+}
+function unlayoutStepEntry(el: Element | ComponentPublicInstance | null): void {
+  const entry = stepEntryEl(el);
+  if (!entry) return;
+  stepLinkObservers.get(entry)?.disconnect();
+  stepLinkObservers.delete(entry);
 }
 
 // ── per-item timing (for "Thought for Xs") ────────────────────────────────────
@@ -327,7 +656,11 @@ const hasBlocks = computed(() => props.blocks.length > 0);
 <template>
   <div ref="root" class="thread" :class="{ 'thread--empty': !hasBlocks }">
     <p v-if="sessionError" class="body body--error thread__error">{{ sessionError }}</p>
-    <p v-if="!hasBlocks" class="thread__empty">Nothing here yet — say something to begin.</p>
+
+    <div v-if="!hasBlocks" class="empty">
+      <span class="empty__bead" aria-hidden="true" />
+      <p class="empty__line">Nothing here yet — say something to begin.</p>
+    </div>
 
     <motion.div
       v-for="block in blocks"
@@ -350,72 +683,149 @@ const hasBlocks = computed(() => props.blocks.length > 0);
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
       <template v-else>
         <div class="stack selectable">
-          <template v-for="seg in segmentsOf(block)" :key="seg.key">
-            <!-- Thinking — a dim aside. Streams open; collapses to "Thought for
-                 Xs" once it settles. -->
-            <div v-if="seg.kind === 'thinking'" class="think" :class="{ 'think--open': thinkingExpanded(seg) }">
-              <button type="button" class="think__head" @click="toggleThinking(seg)">
-                <HugeiconsIcon :icon="AiBrain01Icon" :size="14" :stroke-width="1.8" class="think__brain" />
-                <span class="think__label">
-                  {{ segStreaming(seg) ? "Thinking…" : `Thought for ${thinkingDuration(seg) ?? 1}s` }}
-                </span>
-                <HugeiconsIcon
-                  :icon="ArrowDown01Icon"
-                  :size="14"
-                  :stroke-width="2"
-                  class="think__chev"
-                  :class="{ 'think__chev--open': thinkingExpanded(seg) }"
-                />
-              </button>
-              <div v-show="thinkingExpanded(seg)" class="think__body">
-                <p class="think__text">{{ segText(seg) }}</p>
-              </div>
-            </div>
-
-            <!-- Tool calls — a run of rows, icon · verb · target · status. A row
-                 with a `detail` body (output/diff/file list) expands on click. -->
-            <div v-else-if="seg.kind === 'tools'" class="tools" aria-label="Tools">
-              <div v-for="t in toolCalls(seg)" :key="t.itemId" class="tool-wrap">
+          <template v-for="grp in renderGroups(block)" :key="grp.kind === 'text' ? grp.seg.key : grp.key">
+            <!-- Steps — thinking and tool calls share one flat list, a single
+                 line threading through every icon in arrival order. Thinking
+                 rows are a disclosure when the model surfaced reasoning text
+                 (icon → label → chevron → collapsible body); with nothing to
+                 reveal, or for a tool with no detail, the row is just inert. -->
+            <div v-if="grp.kind === 'steps'" class="step-list" aria-label="Steps">
+              <template v-for="(seg, si) in grp.segments" :key="seg.key">
                 <motion.div
-                  class="tool"
-                  :class="[`tool--${toolStatus(t)}`, { 'tool--expandable': !!t.detail }]"
-                  :role="t.detail ? 'button' : undefined"
-                  :tabindex="t.detail ? 0 : undefined"
-                  :initial="{ opacity: 0, y: 6 }"
-                  :animate="{ opacity: 1, y: 0 }"
-                  :transition="{ type: 'spring', stiffness: 420, damping: 30 }"
-                  @click="toggleTool(t)"
-                  @keydown.enter="toggleTool(t)"
+                  v-if="seg.kind === 'thinking'"
+                  class="step-entry"
+                  :style="{ transformOrigin: '0% 50%' }"
+                  :initial="{ opacity: 0, y: 10, scale: 0.96 }"
+                  :animate="{ opacity: 1, y: 0, scale: 1 }"
+                  :transition="{ ...STEP_SPRING, delay: stepDelay(stepOffset(grp.segments, si)) }"
+                  @vue:mounted="layoutStepEntry"
+                  @vue:unmounted="unlayoutStepEntry"
                 >
-                  <span class="tool__icon">
-                    <component :is="toolMeta(t.name).icon" :size="16" weight="duotone" />
-                  </span>
-                  <span class="tool__verb">{{ toolMeta(t.name).label }}</span>
-                  <span v-if="toolDetail(t)" class="tool__target">{{ toolDetail(t) }}</span>
-                  <span class="tool__status" aria-hidden="true">
-                    <span v-if="toolStatus(t) === 'running'" class="tool__spinner" />
+                  <span
+                    v-if="stepOffset(grp.segments, si) > 0"
+                    class="step-entry__link"
+                    aria-hidden="true"
+                  />
+                  <component
+                    :is="thinkHasContent(seg) ? 'button' : 'div'"
+                    :type="thinkHasContent(seg) ? 'button' : undefined"
+                    class="step"
+                    :class="{ 'step--clickable': thinkHasContent(seg) }"
+                    @click="thinkHasContent(seg) && toggleThinking(seg)"
+                  >
+                    <span class="step__icon">
+                      <HugeiconsIcon :icon="AiBrain01Icon" :size="14" :stroke-width="1.8" />
+                    </span>
+                    <span class="step__label">
+                      {{ segStreaming(seg) ? "Thinking…" : `Thought for ${thinkingDuration(seg) ?? 1}s` }}
+                    </span>
                     <HugeiconsIcon
-                      v-else-if="toolStatus(t) === 'done'"
-                      :icon="Tick02Icon"
-                      :size="13"
-                      :stroke-width="2.4"
+                      v-if="thinkHasContent(seg)"
+                      :icon="ArrowRight01Icon"
+                      :size="14"
+                      :stroke-width="2"
+                      class="step__chev"
+                      :class="{ 'step__chev--open': thinkingExpanded(seg) }"
                     />
-                    <span v-else class="tool__err">failed</span>
-                  </span>
+                  </component>
+                  <div
+                    v-if="thinkHasContent(seg)"
+                    class="step__body"
+                    :class="{ 'step__body--open': thinkingExpanded(seg) }"
+                  >
+                    <div class="step__body-inner">
+                      <p class="think__text">{{ segText(seg) }}</p>
+                    </div>
+                  </div>
                 </motion.div>
-                <pre v-if="t.detail && toolExpanded(t)" class="output">{{ t.detail }}</pre>
-              </div>
+
+                <template v-if="seg.kind === 'tools'">
+                  <motion.div
+                    v-for="(t, i) in toolCalls(seg)"
+                    :key="t.itemId"
+                    class="step-entry"
+                    :style="{ transformOrigin: '0% 50%' }"
+                    :initial="{ opacity: 0, y: 10, scale: 0.96 }"
+                    :animate="{ opacity: 1, y: 0, scale: 1 }"
+                    :transition="{ ...STEP_SPRING, delay: stepDelay(stepOffset(grp.segments, si) + i) }"
+                    @vue:mounted="layoutStepEntry"
+                    @vue:unmounted="unlayoutStepEntry"
+                  >
+                    <span
+                      v-if="stepOffset(grp.segments, si) + i > 0"
+                      class="step-entry__link"
+                      aria-hidden="true"
+                    />
+                    <div
+                      class="step"
+                      :class="[`step--${toolStatus(t)}`, { 'step--clickable': !!t.detail }]"
+                      :style="{ '--hue': toolMeta(t.name).hue }"
+                      :role="t.detail ? 'button' : undefined"
+                      :tabindex="t.detail ? 0 : undefined"
+                      :title="toolDetailFull(t) || undefined"
+                      @click="toggleTool(t)"
+                      @keydown.enter="toggleTool(t)"
+                    >
+                      <span class="step__icon">
+                        <span v-if="toolStatus(t) === 'running'" class="step__spinner" />
+                        <component v-else :is="toolMeta(t.name).icon" :size="14" weight="duotone" />
+                      </span>
+                      <span class="step__label">
+                        <template v-for="(part, pi) in toolPhraseParts(t)" :key="pi">
+                          <FileChip
+                            v-if="part.kind === 'file'"
+                            class="step__chip"
+                            :path="part.path"
+                            :title="toolDetailFull(t) || part.path"
+                          />
+                          <FileChip
+                            v-else-if="part.kind === 'folder'"
+                            class="step__chip"
+                            folder
+                            :path="part.path"
+                            :title="toolDetailFull(t) || part.path"
+                          />
+                          <SiteChip
+                            v-else-if="part.kind === 'site'"
+                            class="step__chip"
+                            :url="part.url"
+                            :title="toolDetailFull(t) || part.url"
+                          />
+                          <span v-else-if="part.kind === 'mono'" class="step__target">{{ part.text }}</span>
+                          <template v-else>{{ part.text }}</template>
+                        </template>
+                      </span>
+                      <span v-if="toolStatus(t) === 'error'" class="step__err">failed</span>
+                      <HugeiconsIcon
+                        v-if="t.detail"
+                        :icon="ArrowRight01Icon"
+                        :size="14"
+                        :stroke-width="2"
+                        class="step__chev"
+                        :class="{ 'step__chev--open': toolExpanded(t) }"
+                      />
+                    </div>
+                    <div class="step__body" :class="{ 'step__body--open': t.detail && toolExpanded(t) }">
+                      <div class="step__body-inner">
+                        <pre v-if="t.detail" class="output">{{ t.detail }}</pre>
+                      </div>
+                    </div>
+                  </motion.div>
+                </template>
+              </template>
             </div>
 
-            <!-- Text — rich Markdown once settled, a plain growing stream while live. -->
+            <!-- Text — rendered as rich Markdown the whole way through, streaming
+                 or settled, so the reply reads as a proper preview as it grows
+                 (never a raw block that only formats once complete). -->
             <template v-else>
-              <MarkdownMessage v-if="!segStreaming(seg)" class="answer" :source="segText(seg)" />
-              <p v-else class="body body--stream">{{ segText(seg) }}</p>
+              <MarkdownMessage class="answer" :source="segText(grp.seg)" />
             </template>
           </template>
 
-          <!-- Waiting — the working orb holds any quiet gap while the turn is live
-               but nothing is in flight (opening wait, or a lull between parts). -->
+          <!-- Waiting orb temporarily disabled to test whether its pop in/out was
+               the source of the perceived "shifting" around the first steps. -->
+          <!--
           <AnimatePresence>
             <motion.div
               v-if="isWaiting(block)"
@@ -428,16 +838,19 @@ const hasBlocks = computed(() => props.blocks.length > 0);
               <WorkingOrb :size="42" />
             </motion.div>
           </AnimatePresence>
+          -->
 
           <!-- Failure note. -->
           <p v-if="block.state === 'failed' && block.error" class="body body--error">
             {{ block.error }}
           </p>
 
-          <!-- Turn meta — quiet until the turn settles / you hover it. -->
-          <div class="foot">
+          <!-- Turn footer — an editorial dotted-leader meta line, quiet until the
+               turn settles / you hover it. Hidden entirely while running (the live
+               header carries the status then). -->
+          <div v-if="block.state !== 'running'" class="foot">
             <span class="foot__time">{{ clock(block.at) }}</span>
-            <span class="foot__sep">·</span>
+            <span class="foot__lead" aria-hidden="true" />
             <span class="foot__status" :class="`foot__status--${statusOf(block).tone}`">{{
               statusOf(block).text
             }}</span>
@@ -460,11 +873,13 @@ const hasBlocks = computed(() => props.blocks.length > 0);
 
 <style scoped>
 .thread {
+  --rail: color-mix(in srgb, var(--ink) 12%, transparent);
+
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: 34px;
   width: 100%;
-  max-width: 760px;
+  max-width: 720px;
   margin: 0 auto;
 }
 .thread--empty {
@@ -472,10 +887,28 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   align-items: center;
   justify-content: center;
 }
-.thread__empty {
+
+/* ── Empty state ───────────────────────────────────────────────────────────── */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.empty__bead {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.6;
+  animation: bead-breathe 3.2s ease-in-out infinite;
+}
+.empty__line {
   margin: 0;
   font-size: 15px;
+  line-height: 1.5;
   color: var(--muted);
+  text-wrap: pretty;
 }
 
 .turn {
@@ -491,7 +924,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 15px;
   align-items: flex-start;
   width: 100%;
 }
@@ -500,182 +933,179 @@ const hasBlocks = computed(() => props.blocks.length > 0);
 .body {
   margin: 0;
   font-size: 16px;
-  line-height: 27px;
+  line-height: 1.68;
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* You — a warm, accent-tinted surface (not a flat grey chip); soft, no shadow. */
 .body--you {
   text-align: left;
-  max-width: 82%;
-  padding: 11px 16px;
-  border-radius: 16px 16px 5px 16px;
-  background: var(--hover);
+  max-width: 80%;
+  padding: 12px 17px;
+  border-radius: 18px 18px 6px 18px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--accent) 12%, var(--ground)) 0%,
+    color-mix(in oklab, var(--accent) 6%, var(--ground)) 100%
+  );
+  text-wrap: pretty;
 }
 .body--error {
   color: var(--diff-del);
   font-size: 14px;
-  line-height: 22px;
-}
-.body--stream {
-  white-space: pre-wrap;
+  line-height: 1.55;
 }
 .thread__error {
   align-self: stretch;
 }
 
-/* The settled rich answer spans the turn; its internals are styled inside
-   MarkdownMessage. It carries the same left alignment as the rest of the stack. */
+/* The settled rich answer — capped to a comfortable measure (~66ch) so long
+   replies stay readable; its internals live in MarkdownMessage. */
 .answer {
   width: 100%;
-  max-width: 100%;
+  max-width: 42rem;
 }
 
-/* ── Thinking — a dim, collapsible aside ───────────────────────────────────── */
-.think {
+/* ── Steps — a flat list shared by thinking and tool-call rows: icon, label,
+   trailing chevron. Rows with a body (reasoning text / tool output) slide it
+   open on click; rows with nothing to show are inert, no fake affordance. ── */
+.step-list {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
 }
-.think__head {
-  display: inline-flex;
+/* Per-step connector — lives inside the same animated row as its icon so the
+   line never races ahead of the glyph. Height is synced from the previous row
+   via ResizeObserver (--step-link-h); 24px covers a collapsed neighbour. */
+.step-entry {
+  position: relative;
+}
+.step-entry__link {
+  position: absolute;
+  left: 7px;
+  top: 12px;
+  width: 1.5px;
+  height: var(--step-link-h, 24px);
+  transform: translateY(-100%);
+  transform-origin: bottom center;
+  background: var(--rail);
+  z-index: 0;
+}
+.step {
+  position: relative;
+  z-index: 1;
+  display: flex;
   align-items: center;
-  gap: 7px;
-  align-self: flex-start;
-  padding: 3px 4px 3px 0;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
   border: 0;
   background: transparent;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  letter-spacing: -0.01em;
-  cursor: pointer;
-}
-.think__head:hover {
   color: var(--ink-soft);
+  font-size: 13px;
+  letter-spacing: -0.005em;
+  text-align: left;
+  cursor: default;
 }
-.think__brain {
-  flex: none;
-}
-.think__label {
-  white-space: nowrap;
-}
-.think__chev {
-  flex: none;
-  opacity: 0.7;
-  transition: transform 0.22s ease;
-}
-.think__chev--open {
-  transform: rotate(180deg);
-}
-.think__body {
-  margin-top: 4px;
-  padding-left: 21px;
-  border-left: 1.5px solid var(--hover);
-  margin-left: 6px;
-}
-.think__text {
-  margin: 0;
-  font-size: 14px;
-  line-height: 23px;
-  color: var(--muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* ── Tool calls — a run of quiet rows ──────────────────────────────────────── */
-.tools {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-}
-.tool-wrap {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-}
-.tool {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  color: var(--muted);
-}
-.tool--expandable {
+.step--clickable {
   cursor: pointer;
 }
-.tool__icon {
+.step--clickable:hover {
+  color: var(--ink);
+}
+/* Opaque so the rail reads as touching its tip, not showing through the glyph —
+   a beat of line between icons, not a line drawn across them. */
+.step__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 18px;
-  height: 18px;
-  color: var(--ink-soft);
+  width: 16px;
+  height: 16px;
+  background: var(--ground);
+  color: var(--hue, var(--muted));
 }
-.tool__verb {
-  flex: none;
-  font-size: 13px;
-  font-weight: 560;
-  letter-spacing: -0.005em;
-  color: var(--ink-soft);
-}
-.tool__target {
+.step__label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tool__status {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  margin-left: auto;
-  padding-left: 6px;
+.step__chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(100%, 16rem);
+}
+.step__target {
+  font-family: var(--font-mono);
   color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.tool--done .tool__status {
-  color: var(--accent);
-  opacity: 0.7;
-}
-.tool--running {
-  color: var(--ink-soft);
-}
-.tool--error .tool__verb {
+.step--error .step__label {
   color: var(--diff-del);
 }
-.tool__err {
+.step__err {
+  flex: none;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--diff-del);
 }
-.tool__spinner {
-  width: 11px;
-  height: 11px;
+.step__spinner {
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  border: 1.5px solid var(--hover);
-  border-top-color: var(--accent);
+  border: 1.5px solid var(--rail);
+  border-top-color: var(--ink-soft);
   animation: tool-spin 0.7s linear infinite;
 }
-@keyframes tool-spin {
-  to {
-    transform: rotate(360deg);
-  }
+.step__chev {
+  flex: none;
+  opacity: 0.45;
+  transition: transform 0.22s ease;
 }
-
-/* ── Command output ────────────────────────────────────────────────────────── */
+.step__chev--open {
+  transform: rotate(90deg);
+}
+/* Height-animated disclosure (grid 0fr → 1fr) so the body slides open/closed
+   instead of snapping. */
+.step__body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.step__body--open {
+  grid-template-rows: 1fr;
+}
+.step__body-inner {
+  overflow: hidden;
+  min-height: 0;
+  padding-left: 24px;
+}
+.think__text {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
 .output {
-  margin: 2px 0 0;
+  margin: 0 0 6px;
   padding: 12px 14px;
   border-radius: 12px;
   background: var(--hover);
   font-family: var(--font-mono);
   font-size: 12.5px;
-  line-height: 20px;
+  line-height: 1.6;
   color: var(--ink-soft);
   white-space: pre-wrap;
   overflow-x: auto;
@@ -690,14 +1120,17 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   will-change: transform, opacity;
 }
 
-/* ── Turn footer (meta) — quiet until settle / hover ───────────────────────── */
+/* ── Turn footer (meta) — editorial dotted leader ──────────────────────────── */
 .foot {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-top: 2px;
+  gap: 10px;
+  margin-top: 4px;
+  width: 100%;
+  max-width: 42rem;
   font-family: var(--font-mono);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
   opacity: 0;
   transform: translateY(-2px);
@@ -709,15 +1142,25 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   opacity: 1;
   transform: none;
 }
-.foot__sep { opacity: 0.6; }
-.foot__status--live { color: var(--accent); }
-.foot__status--error { color: var(--diff-del); }
+/* The dotted rule that carries the eye from the timestamp to the status, the
+   gaievskyi/publications idiom. */
+.foot__lead {
+  flex: 1 1 auto;
+  height: 0;
+  border-bottom: 1.5px dotted color-mix(in srgb, var(--muted) 55%, transparent);
+  transform: translateY(1px);
+}
+.foot__status--live {
+  color: var(--ink-soft);
+}
+.foot__status--error {
+  color: var(--diff-del);
+}
 .foot__copy {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-left: 6px;
-  padding: 3px 7px;
+  padding: 3px 8px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -727,10 +1170,38 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
-.foot__copy:hover { background: var(--hover); color: var(--ink); }
+.foot__copy:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
 
+/* ── Keyframes ─────────────────────────────────────────────────────────────── */
+@keyframes bead-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.14);
+  }
+}
+@keyframes tool-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .tool__spinner { animation: none; }
-  .think__chev { transition: none; }
+  .empty__bead {
+    animation: none;
+  }
+  .step__spinner {
+    animation: none;
+  }
+  .step__chev {
+    transition: none;
+  }
+  .step__body {
+    transition: none;
+  }
 }
 </style>
