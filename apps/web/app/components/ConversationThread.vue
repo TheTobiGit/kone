@@ -415,11 +415,12 @@ type Segment = { kind: SegKind; key: string; items: RuntimeItem[] };
 function segKindOf(item: RuntimeItem): SegKind {
   if (item.kind === "reasoning_text") return "thinking";
   if (item.kind === "tool_call") return "tools";
-  return "text"; // assistant_text | plan_text
+  return "text"; // assistant_text — plan_text renders in the dock, not the thread
 }
 function segmentsOf(block: AssistantBlock): Segment[] {
   const out: Segment[] = [];
   for (const it of block.items) {
+    if (it.kind === "plan_text") continue;
     const kind = segKindOf(it);
     const cur = out[out.length - 1];
     if (cur && cur.kind === kind) cur.items.push(it);
@@ -451,9 +452,9 @@ function toolStatus(t: RuntimeItem): "running" | "done" | "error" {
   return "done";
 }
 
-// Thinking and tool calls are both "steps" — rows in one continuous list with a
-// connecting line threading through their icons. Adjacent thinking/tools segments
-// join into a single group; a text segment breaks the line and starts fresh after.
+// Thinking and tool calls are "steps" — rows in one continuous list with a
+// connecting line. The agent's task plan lives in the bottom-right dock, not
+// here. Text breaks the rail and starts fresh.
 type RenderGroup = { kind: "steps"; key: string; segments: Segment[] } | { kind: "text"; seg: Segment };
 function renderGroups(block: AssistantBlock): RenderGroup[] {
   const out: RenderGroup[] = [];
@@ -852,9 +853,12 @@ const hasBlocks = computed(() => props.blocks.length > 0);
             <!-- Text — rendered as rich Markdown the whole way through, streaming
                  or settled, so the reply reads as a proper preview as it grows
                  (never a raw block that only formats once complete). -->
-            <template v-else>
-              <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
-            </template>
+            <MarkdownMessage
+              v-else
+              class="answer"
+              :source="segText(grp.seg)"
+              :historical="block.historical"
+            />
           </template>
 
           <!-- Working orb — visible while the turn is alive but nothing is

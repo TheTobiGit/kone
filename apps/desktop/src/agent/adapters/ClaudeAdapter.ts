@@ -209,8 +209,9 @@ function formatTodos(rawInput: string): string | undefined {
         const content = readString(t, "content") ?? readString(t, "activeForm");
         if (!content) return undefined;
         const status = readString(t, "status");
-        const marker = status === "completed" ? "✓" : status === "in_progress" ? "→" : "○";
-        return `${marker} ${content}`;
+        const marker =
+          status === "completed" ? "[x]" : status === "in_progress" ? "[/]" : "[ ]";
+        return `- ${marker} ${content}`;
       })
       .filter((v): v is string => Boolean(v));
     return lines.length > 0 ? lines.join("\n") : undefined;
