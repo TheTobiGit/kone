@@ -51,9 +51,17 @@ export function useRecentProjects() {
     [...store.value].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt),
   );
 
-  // Record (or bump) a project as just-opened. Dedupes on path.
+  // Record (or bump) a project as just-opened. Dedupes on path. Carries the
+  // existing entry's pinned flag forward — `project` is a bare Project with no
+  // `pinned` field, so spreading it alone would silently drop a pin every time
+  // the project is reopened (including on restart).
   function remember(project: Project): void {
-    const entry: RecentProject = { ...project, lastOpenedAt: Date.now() };
+    const existing = store.value.find((p) => p.path === project.path);
+    const entry: RecentProject = {
+      ...project,
+      lastOpenedAt: Date.now(),
+      pinned: existing?.pinned,
+    };
     const rest = store.value.filter((p) => p.path !== project.path);
     store.value = [entry, ...rest].slice(0, MAX);
   }
