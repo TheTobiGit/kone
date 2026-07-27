@@ -18,9 +18,10 @@ import type {
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import { buildModelCatalog, effortForTier, familyForId } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId, EFFORT_META } from "~/utils/modelCatalog";
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import { SESSION_BRAND } from "~/types/session";
+import { deriveActivePlan } from "~/utils/planTasks";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -53,10 +54,13 @@ const {
   mode,
   reasoning,
   serviceTier,
+  contextWindow,
   now: agentNow,
   error: agentError,
   title: threadTitle,
 } = agent;
+
+const activePlan = computed(() => deriveActivePlan(blocks.value));
 
 // The project's persisted agent threads, split into pinned + recent for the
 // "recent conversations" block on the working-tree home. Reads real history on
@@ -65,9 +69,23 @@ const {
   recent: recentSessions,
   loading: sessionsLoading,
   togglePin: togglePinnedSession,
-  archive: archiveSession,
-  remove: removeSession,
+  archive: archiveSessionRow,
+  remove: removeSessionRow,
 } = useRecentSessions(() => props.project.path);
+
+// Archiving/deleting a recent conversation drops it from the on-screen list and
+// the store, but a thread that ran (or is running) this session also lives in
+// the in-memory agent registry — where it keeps feeding the away-from-thread
+// pill stack and stays clickable. Forget it there too so the pill can't outlive
+// the row it came from.
+function archiveSession(threadId: string): void {
+  archiveSessionRow(threadId);
+  void agent.forgetThread(threadId);
+}
+function removeSession(threadId: string): void {
+  removeSessionRow(threadId);
+  void agent.forgetThread(threadId);
+}
 
 // Open a stored thread and reveal the chat the instant its transcript lands —
 // openThread sets the blocks before the session subprocess finishes spawning, so
@@ -110,9 +128,12 @@ const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeA
 const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude" };
 const threadBrand = computed(() => SESSION_BRAND[agent.provider.value] ?? "generic");
 
-// Remember the last provider + model + permission mode per project across quits.
-const PROVIDER_KEY = `kone:provider:${props.project.path}`;
-const MODEL_KEY = `kone:model:${props.project.path}`;
+// The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
+// "last used" choice that every project opens with (not per-project). The
+// permission mode stays per-project (it's a per-repo trust decision).
+const PROVIDER_KEY = "kone:provider";
+const MODEL_KEY = "kone:model";
+const REASONING_KEY = "kone:reasoning";
 const MODE_KEY = `kone:mode:${props.project.path}`;
 const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
 
@@ -168,6 +189,18 @@ onMounted(async () => {
       if (eff) agent.setModel(eff.modelId);
     }
   }
+  // Restore the app-wide last-used reasoning effort, clamped to what the active
+  // model's family actually offers (effortForTier falls back to the family
+  // default otherwise). The model watcher re-derives effort from reasoning.value,
+  // so seeding it here makes the restored tier stick.
+  if (import.meta.client) {
+    const savedReasoning = localStorage.getItem(REASONING_KEY);
+    if (savedReasoning && savedReasoning in EFFORT_META) {
+      const fam = familyForId(modelOptions.value, model.value);
+      const eff = effortForTier(fam, savedReasoning as EffortTier);
+      if (eff) agent.setReasoning(eff.tier);
+    }
+  }
   // Restore the last permission mode for this project.
   if (import.meta.client) {
     const savedMode = localStorage.getItem(MODE_KEY);
@@ -196,8 +229,20 @@ onMounted(async () => {
 watch(
   model,
   (id) => {
-    const eff = effortForTier(familyForId(modelOptions.value, id), reasoning.value);
+    const fam = familyForId(modelOptions.value, id);
+    const eff = effortForTier(fam, reasoning.value);
     if (eff) agent.setReasoning(eff.tier);
+    // Seed the context window so the applied auto-compact budget matches what the
+    // composer shows: keep the current choice if the new family still offers it,
+    // else fall back to that family's default (Claude models default to 200k);
+    // clear it for a single-window model (Haiku).
+    const windows = fam?.contextWindows;
+    const keep = windows?.find((w) => w.id === contextWindow.value);
+    agent.setContextWindow(
+      windows?.length
+        ? keep?.id ?? windows.find((w) => w.isDefault)?.id ?? windows[0]!.id
+        : undefined,
+    );
     if (import.meta.client && id) localStorage.setItem(MODEL_KEY, id);
   },
   { immediate: true },
@@ -206,6 +251,11 @@ watch(
 // Persist the permission mode per project.
 watch(mode, (m) => {
   if (import.meta.client) localStorage.setItem(MODE_KEY, m);
+});
+
+// Persist the reasoning effort globally (app-wide last-used), like the model id.
+watch(reasoning, (tier) => {
+  if (import.meta.client) localStorage.setItem(REASONING_KEY, tier);
 });
 
 // The full providers→models→effort picker (opened from the composer's model
@@ -395,7 +445,7 @@ function onBranchSwitched() {
 // the new engine. A same-provider model change on a spawn-fixed provider (Claude)
 // also needs a restart — its model/effort are baked when the SDK process spawns.
 // Codex changes ride the next turn in-session, no restart.
-type ModelPick = { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean };
+type ModelPick = { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean; contextWindow?: string };
 async function applyModelEffort(picked: ModelPick) {
   const providerChanged = picked.provider !== agent.provider.value;
   const modelChanged = picked.modelId !== model.value;
@@ -404,10 +454,21 @@ async function applyModelEffort(picked: ModelPick) {
   agent.setReasoning(picked.tier);
   const fam = familyForId(catalogs.value[picked.provider] ?? [], picked.modelId);
   agent.setServiceTier(picked.fastMode ? fam?.fastTier?.id : undefined);
+  // Honor the picker's context-window choice when the family offers one (it's
+  // the auto-compact window, applied per turn — no restart). setModel above may
+  // have re-seeded it via the model watcher; this pins the user's explicit pick.
+  if (fam?.contextWindows?.length) {
+    agent.setContextWindow(
+      picked.contextWindow ?? fam.contextWindows.find((w) => w.isDefault)?.id ?? fam.contextWindows[0]!.id,
+    );
+  }
+
+  // Persist the (global) provider whenever it changes — model + reasoning ride
+  // along via their own watchers.
+  if (import.meta.client && providerChanged) localStorage.setItem(PROVIDER_KEY, picked.provider);
 
   const needsRestart = providerChanged || (RESTART_ON_MODEL_CHANGE.has(picked.provider) && modelChanged);
   if (needsRestart) {
-    if (import.meta.client && providerChanged) localStorage.setItem(PROVIDER_KEY, picked.provider);
     // A turn in flight is torn down by the restart — stop it cleanly first.
     if (busy.value) await agent.interrupt();
     await agent.restart();
@@ -484,6 +545,71 @@ watch(activeFile, (f) => {
   lockPage(Boolean(f));
 });
 onBeforeUnmount(() => lockPage(false));
+
+// ── away-from-thread status pills ────────────────────────────────────────────────
+// A project can have several threads live at once. Any thread whose live (or
+// just-settled) turn is off-screen rides a dynamic-island pill in the corner —
+// stacked, one per thread. A running thread always shows while you're away; a
+// finished reply waits there until you open it, at which point it's "seen" and
+// steps aside. The thread you're actually viewing in chat never pills.
+
+// The turn you've last seen for each thread (recorded while it's on-screen in
+// chat) — a settled reply you've already read won't re-pill after you leave.
+const seenTurns = ref<Record<string, string>>({});
+watch(
+  [view, () => agent.threads.value],
+  () => {
+    if (view.value !== "chat") return;
+    const onScreen = agent.threads.value.find((t) => t.isActive);
+    // Only mark a turn seen once it's settled. Marking it seen the instant its
+    // running block appears means a reply that finishes *after* the user steps
+    // away never re-pills (its turnId never changes), so the completion goes
+    // unannounced. Waiting for the settled state keeps the on-screen case honest
+    // (it settles under the user's eyes) while still pilling an away-completion.
+    if (onScreen?.block && onScreen.block.state !== "running") {
+      seenTurns.value = { ...seenTurns.value, [onScreen.threadId]: onScreen.block.turnId };
+    }
+  },
+  { deep: true },
+);
+
+// The pill stack: off-screen threads with a live-or-unseen turn, oldest first so
+// the newest sits closest to the corner. Behind the file-detail overlay they all
+// step aside, returning the moment it closes.
+const pillThreads = computed(() => {
+  if (activeFile.value) return [];
+  return agent.threads.value
+    .filter((t) => {
+      if (!t.everRan || !t.block) return false;
+      if (t.isActive && view.value === "chat") return false; // it's the one on screen
+      const running = t.block.state === "running";
+      const unseen = seenTurns.value[t.threadId] !== t.block.turnId;
+      return running || unseen;
+    })
+    .map((t) => ({
+      key: t.key,
+      threadId: t.threadId,
+      title: t.title,
+      brand: SESSION_BRAND[t.provider] ?? "generic",
+      block: t.block,
+    }))
+    .sort((a, b) => (a.block?.at ?? 0) - (b.block?.at ?? 0));
+});
+
+function onOpenThread(threadId: string) {
+  cue("press");
+  agent.setActiveThread(threadId);
+  // Mark its current turn seen so it won't linger as a pill once we step away —
+  // but only if it's already settled. Marking a still-running turn seen would
+  // suppress its completion pill if the user opens the pill and leaves before it
+  // finishes (the settled-only watcher can't undo a premature seen). While it's
+  // running and on screen the watcher marks it seen the moment it settles.
+  const t = agent.threads.value.find((x) => x.threadId === threadId);
+  if (t?.block && t.block.state !== "running") {
+    seenTurns.value = { ...seenTurns.value, [threadId]: t.block.turnId };
+  }
+  view.value = "chat";
+}
 
 // Preload the highlighter grammars for the file types in this project's changes
 // (plus the engine + themes) the moment they're known — so the first file the
@@ -764,13 +890,43 @@ function onDiscardFile(path: string) {
         :reasoning="reasoning"
         :mode="mode"
         :fast-mode="fastActive"
+        :context-window="contextWindow"
         @send="onSend"
         @interrupt="onInterrupt"
         @update:model-id="agent.setModel"
         @update:reasoning="agent.setReasoning"
         @update:mode="agent.setMode"
         @update:fast-mode="onUpdateFastMode"
+        @update:context-window="agent.setContextWindow"
         @open-models="modelPickerOpen = true"
+      />
+    </div>
+
+    <!-- Agent task plan — TodoWrite output the model made for itself, in the
+         folder-picker shell, docked bottom-right while the turn is live. -->
+    <AnimatePresence :initial="false">
+      <PlanTaskList
+        v-if="activePlan && view === 'chat' && !activeFile"
+        key="agent-plan-dock"
+        :source="activePlan.source"
+        :streaming="activePlan.streaming"
+        :stacked="pillThreads.length > 0"
+      />
+    </AnimatePresence>
+
+    <!-- Away-from-thread status pill — the dynamic island. Perches bottom-right
+         whenever a turn is still running after you've left its conversation;
+         carries the turn's live orb + status ("Reading example.vue", "Thinking",
+         "Searching for …") and drops you back into the thread on click. -->
+    <div v-if="pillThreads.length" class="pill-stack">
+      <TurnStatusPill
+        v-for="t in pillThreads"
+        :key="t.key"
+        :block="t.block"
+        :thread-title="t.title"
+        :brand="t.brand"
+        :now="agentNow"
+        @open="onOpenThread(t.threadId)"
       />
     </div>
 
@@ -797,6 +953,7 @@ function onDiscardFile(path: string) {
       :model-id="model"
       :reasoning="reasoning"
       :fast-mode="fastActive"
+      :context-window="contextWindow"
       @select="onModelSelect"
       @apply="applyModelEffort"
       @cancel="modelPickerOpen = false"
@@ -823,6 +980,23 @@ function onDiscardFile(path: string) {
 </template>
 
 <style scoped>
+/* ── Away-from-thread pill stack ──────────────────────────────────────────── */
+/* Fixed to the bottom-right corner; each running/settled off-screen thread gets
+   its own dynamic-island pill, newest nearest the corner, older ones stacking
+   upward. The container ignores pointer events so the gaps between pills never
+   swallow clicks — only the pills themselves are interactive. */
+.pill-stack {
+  position: fixed;
+  right: 2rem;
+  bottom: 2rem;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
 /* ── Back to launcher ─────────────────────────────────────────────────────── */
 /* A quiet return glyph in the top-left corner — mirrors the folder's own perch
    in the bottom-left. Bare, no chrome; it rides the same magnet pull as the

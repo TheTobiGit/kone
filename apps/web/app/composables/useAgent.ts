@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type {
   InteractionMode,
+  KoneAgentApi,
   ProviderKind,
   RuntimeEvent,
   RuntimeItem,
@@ -11,15 +12,23 @@ import type {
 } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
 import type { EffortTier } from "~/utils/modelCatalog";
+import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
 
-// The brain behind one agent conversation thread. It starts a provider session
+// The brain behind a project's agent conversations. It starts provider sessions
 // in the Electron main process, sends turns, and folds the single normalized
 // `agent:event` stream into a reactive timeline the calm UI renders — so the UI
 // never learns which CLI is underneath. In `nuxt dev` (no bridge) it falls back
-// to a faithful mock that streams a canned reply, keeping the thread demoable in
+// to a faithful mock that streams a canned reply, keeping threads demoable in
 // the browser (mirrors how useGitClone mocks the clone).
 //
-// One instance = one thread. Create it in the view that hosts the conversation.
+// A project owns MANY threads at once. Each thread is one `ThreadSession` (its
+// own timeline, session process, provider/model, busy state); the manager keeps
+// them in a registry keyed by a stable id, routes the event stream to the right
+// one by `threadId`, and projects whichever is *active* as the public API the
+// conversation view reads. Non-active threads stay live in the background — a
+// turn you stepped away from keeps streaming — which is what lets the away-from-
+// thread status pill surface every running/just-settled thread as a stack.
+// (Pattern borrowed from research's by-id store + research's per-thread atoms.)
 
 /** Set on blocks bulk-loaded from storage (rehydrate/openThread) so the view
  *  renders them settled — no entry springs, no per-word blur-in. Live turns
@@ -52,17 +61,37 @@ export type ReasoningTier = EffortTier;
 export type UseAgentOptions = {
   provider: ProviderKind;
   /** Absolute path of the project the agent works in — or a getter, resolved
-   *  when the session starts so it always reflects the active project. */
+   *  when a session starts so it always reflects the active project. */
   cwd: string | (() => string);
   model?: string;
   mode?: InteractionMode;
   reasoning?: ReasoningTier;
   /** A model's chosen service tier id (e.g. Codex's "fast" tier). */
   serviceTier?: string;
-  /** On the first start, reload the project's last persisted thread into the
-   *  timeline (desktop only) so a conversation survives reload / quit / project
-   *  switch. Defaults to true; a restart() never rehydrates. */
+  /** A model's chosen context-window id (Claude's "200k"/"1m" auto-compact
+   *  window). Rides each turn; the adapter maps it to a live Setting. */
+  contextWindow?: string;
+  /** On the first thread's first start, reload the project's last persisted
+   *  thread into the timeline (desktop only) so a conversation survives reload /
+   *  quit / project switch. Defaults to true. */
   rehydrate?: boolean;
+};
+
+/** A background-facing snapshot of one thread — what the away-from-thread pill
+ *  stack reads. `block` is the thread's latest assistant turn (or null). */
+export type ThreadSummary = {
+  /** Stable registry id (survives provider threadId changes). */
+  key: string;
+  /** The provider-native thread id (used to reopen / route). */
+  threadId: string;
+  title: string;
+  provider: ProviderKind;
+  block: AssistantBlock | null;
+  busy: boolean;
+  /** True once a live turn has actually started here — rehydrated history alone
+   *  doesn't count, so a freshly reloaded thread never pills. */
+  everRan: boolean;
+  isActive: boolean;
 };
 
 /** Tag every block from a stored thread as historical so the view mounts them
@@ -75,6 +104,15 @@ function uid(): string {
   return import.meta.client && "randomUUID" in crypto
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+}
+
+/** The latest assistant turn in a timeline, or null. */
+function latestAssistant(blocks: ThreadBlock[]): AssistantBlock | null {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b && b.role === "assistant") return b;
+  }
+  return null;
 }
 
 /** First-turn word-cap fallback — mirrors desktop `buildPromptThreadTitleFallback`
@@ -91,7 +129,28 @@ function titleFromPrompt(message: string): string {
   return joined.length > 60 ? `${joined.slice(0, 60)}...` : joined;
 }
 
-export function useAgent(options: UseAgentOptions) {
+/** Everything a ThreadSession needs from its owning manager: options, the
+ *  desktop bridge accessor, and the (lazily resolved) working directory. */
+type SessionCtx = {
+  options: UseAgentOptions;
+  bridge: () => KoneAgentApi | undefined;
+  resolveCwd: () => string;
+};
+
+export type ThreadSession = ReturnType<typeof createThreadSession>;
+
+// ── one thread ────────────────────────────────────────────────────────────────
+
+/** One conversation thread: its own timeline, provider session, model/config,
+ *  and the reducer that folds its slice of the event stream. Self-contained —
+ *  the manager owns the single event listener and calls `reduce` for events
+ *  bearing this thread's id. */
+function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}) {
+  const { options } = ctx;
+  // Stable registry identity — never changes, even when the provider threadId
+  // is overwritten on rehydrate/openThread or minted anew on restart.
+  const key = uid();
+
   const threadId = ref(uid());
   const blocks = ref<ThreadBlock[]>([]);
   /** Agent-named (or first-turn word-fallback) working title. Empty until the
@@ -110,10 +169,7 @@ export function useAgent(options: UseAgentOptions) {
   const mode = ref<InteractionMode>(options.mode ?? "accept-edits");
   const reasoning = ref<ReasoningTier>(options.reasoning ?? "medium");
   const serviceTier = ref<string | undefined>(options.serviceTier);
-  // Absolute working directory for this session — read at start() time so the
-  // session always boots in whatever project is active now (not a stale path
-  // captured earlier). May be a getter so a switched project is picked up.
-  const resolveCwd = () => (typeof options.cwd === "function" ? options.cwd() : options.cwd);
+  const contextWindow = ref<string | undefined>(options.contextWindow);
 
   // Busy while a turn is in flight — the composer disables send + shows stop.
   const busy = computed(
@@ -121,22 +177,12 @@ export function useAgent(options: UseAgentOptions) {
       sessionState.value === "running" ||
       blocks.value.some((b) => b.role === "assistant" && b.state === "running"),
   );
+  // Flips true the first time a live turn starts here (turn.started). Rehydrated
+  // history never trips it, so a reloaded thread stays out of the pill stack
+  // until it actually runs something.
+  const everRan = ref(false);
 
-  // A slow tick so "working · Xs" counts up live while a turn runs (and the
-  // final "replied in Xs" is read from at/endedAt). Only runs while busy.
-  const now = ref(Date.now());
-  let clock: ReturnType<typeof setInterval> | null = null;
-  watch(busy, (on) => {
-    if (on && clock === null) {
-      now.value = Date.now();
-      clock = setInterval(() => (now.value = Date.now()), 1000);
-    } else if (!on && clock !== null) {
-      clearInterval(clock);
-      clock = null;
-    }
-  });
-
-  const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+  const bridge = ctx.bridge;
 
   // ── event reduction (the one place the stream becomes UI state) ─────────────
 
@@ -156,6 +202,8 @@ export function useAgent(options: UseAgentOptions) {
     block.items = [...block.items];
   }
 
+  /** Fold one event into this thread's state. The manager only calls this for
+   *  events whose `threadId` matches ours; the guard is belt-and-braces. */
   function reduce(event: RuntimeEvent): void {
     if (event.threadId !== threadId.value) return;
     switch (event.type) {
@@ -182,6 +230,7 @@ export function useAgent(options: UseAgentOptions) {
         title.value = event.title;
         break;
       case "turn.started":
+        everRan.value = true;
         blocks.value = [
           ...blocks.value,
           {
@@ -228,15 +277,18 @@ export function useAgent(options: UseAgentOptions) {
     }
   }
 
-  let detach: (() => void) | null = null;
-  // Rehydration runs once, on the first start — a restart() (provider/model
-  // switch) keeps the on-screen history but must not reload a stale thread over
-  // the new session.
-  let rehydratedOnce = false;
+  // Rehydration runs once. A restart() (provider/model switch) keeps the
+  // on-screen history but must not reload a stale thread over the new session;
+  // a session created for a specific thread (openThread) latches it closed.
+  let rehydratedOnce = init.rehydrate === false;
+  // Latched by dispose(): once torn down, an in-flight openStored() must not go
+  // on to adopt an id, start a provider process, or reveal a thread — the case
+  // where a stored thread is opened and immediately archived/deleted while its
+  // history load is still awaiting. start() and openStored() both check it.
+  let forgotten = false;
   // The provider-native conversation id to resume on the next start(): set when
-  // a stored thread is brought on-screen (openThread, or rehydrate of the
-  // project's latest) so continued turns keep that thread's full context.
-  // Consumed and cleared in start() — a later fresh start never resumes it.
+  // a stored thread is brought on-screen so continued turns keep its full
+  // context. Consumed and cleared in start() — a later fresh start never resumes.
   let pendingResumeId: string | undefined;
 
   /** Adopt a stored thread's provider/model and stage its conversation id for
@@ -259,14 +311,14 @@ export function useAgent(options: UseAgentOptions) {
     pendingResumeId = stored.conversationId;
   }
 
-  /** Reload the project's last persisted thread into the timeline, adopting its
+  /** Reload the project's last persisted thread into this timeline, adopting its
    *  id so continued turns append to the same stored thread. Best-effort: any
    *  failure just leaves a fresh, empty thread. Desktop only. */
   async function rehydrate(api: NonNullable<ReturnType<typeof bridge>>): Promise<void> {
     if (rehydratedOnce || options.rehydrate === false) return;
     rehydratedOnce = true;
     try {
-      const stored = await api.history.latest(resolveCwd());
+      const stored = await api.history.latest(ctx.resolveCwd());
       if (stored && stored.blocks.length > 0) {
         threadId.value = stored.threadId;
         blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
@@ -280,8 +332,13 @@ export function useAgent(options: UseAgentOptions) {
 
   // ── actions ───────────────────────────────────────────────────────────────
 
-  /** Start the session. Attaches the event listener (desktop) and marks ready. */
+  /** Start this thread's session. The manager owns the event listener, so this
+   *  only spawns the provider process (after an optional rehydrate). */
   async function start(): Promise<void> {
+    // Forgotten mid-load (opened then archived/deleted) — never spawn a process
+    // for a thread the user just removed (startSession → ensureThread would
+    // recreate a deleted row).
+    if (forgotten) return;
     const api = bridge();
     error.value = null;
     if (!api) {
@@ -289,10 +346,7 @@ export function useAgent(options: UseAgentOptions) {
       sessionState.value = "ready";
       return;
     }
-    // Adopt the last thread (id + transcript) before wiring events, so the
-    // reducer's threadId filter matches turns continued on it.
     await rehydrate(api);
-    detach = api.onEvent(reduce);
     // One-shot: read and clear now so neither a throw below nor a later fresh
     // start re-resumes a stale conversation.
     const resume = pendingResumeId;
@@ -301,7 +355,7 @@ export function useAgent(options: UseAgentOptions) {
       session.value = await api.startSession({
         threadId: threadId.value,
         provider: provider.value,
-        cwd: resolveCwd(),
+        cwd: ctx.resolveCwd(),
         model: model.value,
         mode: mode.value,
         // Providers that fix effort when the session process spawns (Claude)
@@ -309,7 +363,7 @@ export function useAgent(options: UseAgentOptions) {
         // turn instead. Safe to always send — the adapter picks what it needs.
         effort: reasoning.value,
         // Resume the stored thread's provider conversation so continued turns
-        // keep its full context (rehydrate/openThread set this).
+        // keep its full context (rehydrate/openStored set this).
         ...(resume ? { resume } : {}),
       });
       sessionState.value = session.value.status;
@@ -319,14 +373,50 @@ export function useAgent(options: UseAgentOptions) {
     }
   }
 
+  /** Bring a specific stored thread on-screen and continue it: adopt the
+   *  thread's id + transcript and start a session bound to it so new turns
+   *  append to it. Best-effort; desktop only. */
+  async function openStored(id: string): Promise<void> {
+    const api = bridge();
+    // Browser dev has no history bridge — just bring a (mock) session up so the
+    // composer is live rather than leaving the view without a session.
+    if (!api) {
+      await start();
+      return;
+    }
+    let stored;
+    try {
+      stored = await api.history.thread(id);
+    } catch {
+      stored = null;
+    }
+    // Forgotten while the history load was in flight (opened then immediately
+    // archived/deleted) — bail before adopting the id or starting, so the
+    // removed thread is never revealed or recreated.
+    if (forgotten) return;
+    // Thread vanished (deleted/archived under us) — fall back to a fresh session
+    // rather than an empty, session-less view.
+    if (!stored) {
+      await start();
+      return;
+    }
+    // start() must not reload the project's *latest* thread over this one.
+    rehydratedOnce = true;
+    threadId.value = stored.threadId;
+    blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
+    title.value = stored.title?.trim() || "";
+    adoptStoredThread(stored);
+    tokenUsage.value = null;
+    error.value = null;
+    sessionState.value = "starting";
+    await start();
+  }
+
   /** Send a user turn. Pushes the user block immediately; the reply streams in. */
   async function send(text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed || busy.value) return;
-    blocks.value = [
-      ...blocks.value,
-      { id: uid(), role: "user", text: trimmed, at: Date.now() },
-    ];
+    blocks.value = [...blocks.value, { id: uid(), role: "user", text: trimmed, at: Date.now() }];
     // Instant label for a brand-new thread; desktop may refine it via
     // thread.title.updated once the agent rename lands.
     if (!title.value) title.value = titleFromPrompt(trimmed);
@@ -344,6 +434,7 @@ export function useAgent(options: UseAgentOptions) {
         mode: mode.value,
         effort: reasoning.value,
         serviceTier: serviceTier.value,
+        contextWindow: contextWindow.value,
       });
     } catch (e) {
       error.value = peelIpcError(e, "Could not send to the agent");
@@ -389,13 +480,20 @@ export function useAgent(options: UseAgentOptions) {
   function setServiceTier(id: string | undefined): void {
     serviceTier.value = id;
   }
+  function setContextWindow(id: string | undefined): void {
+    contextWindow.value = id;
+  }
 
-  /** Tear down: stop the session + detach the listener. */
+  /** Tear down: stop the session process + halt any mock. The manager owns the
+   *  shared event listener, so there's nothing to detach here. */
   async function dispose(): Promise<void> {
+    // Latch first — a still-awaiting openStored() reads this the moment its
+    // history load resolves and bails before adopting the id or starting.
+    forgotten = true;
     stopMock();
     const api = bridge();
     // Only stop a session we actually started — on the recent-open fast path
-    // dispose() runs before any spawn, so there's nothing to tear down.
+    // dispose() may run before any spawn, so there's nothing to tear down.
     if (api && session.value) {
       try {
         await api.stopSession(threadId.value);
@@ -403,86 +501,26 @@ export function useAgent(options: UseAgentOptions) {
         // best-effort
       }
     }
-    detach?.();
-    detach = null;
+    session.value = null;
   }
 
   /** Tear the live session down and start a fresh one under a new thread id.
    *  Used when a change can't be applied to a running session — switching
    *  provider (a different CLI entirely), or changing a Claude model, whose
-   *  effort/model are baked when the SDK subprocess spawns (the adapter reports
-   *  `sessionModelSwitch: "restart-session"`). The prior turns stay on screen as
-   *  history; new turns stream in under the new session. */
+   *  effort/model are baked when the SDK subprocess spawns. Prior turns stay on
+   *  screen as history; new turns stream in under the new session. */
   async function restart(): Promise<void> {
     await dispose();
-    threadId.value = uid();
-    tokenUsage.value = null;
-    error.value = null;
-    sessionState.value = "starting";
-    await start();
-  }
-
-  /** Begin a brand-new, empty thread: tear the live session down, mint a fresh
-   *  thread id, clear the on-screen transcript, and start a new session bound to
-   *  it. Unlike restart() (which keeps prior turns on screen for a provider/model
-   *  switch), this wipes the timeline — it's the "start a new conversation" path.
-   *  Rehydration is suppressed so start() can't reload the project's latest thread
-   *  over the fresh, empty one. */
-  async function newThread(): Promise<void> {
-    await dispose();
-    // start() would otherwise reload the project's latest thread into the empty
-    // timeline — this is deliberately a clean slate.
+    // A restart is a deliberate re-birth of this session (provider/model switch),
+    // not a teardown — clear the dispose() latch so start() below runs.
+    forgotten = false;
     rehydratedOnce = true;
     threadId.value = uid();
-    blocks.value = [];
-    title.value = "";
     tokenUsage.value = null;
     error.value = null;
     sessionState.value = "starting";
     await start();
   }
-
-  /** Bring a specific stored thread on-screen and continue it: tear down the
-   *  live session, adopt the thread's id + transcript, and start a fresh session
-   *  bound to that id so new turns append to it. Mirrors rehydrate() but for a
-   *  chosen thread rather than the project's latest. Best-effort; desktop only. */
-  async function openThread(id: string): Promise<void> {
-    const api = bridge();
-    // Browser dev has no history bridge — just bring a (mock) session up so the
-    // composer is live rather than leaving the view without a session.
-    if (!api) {
-      await start();
-      return;
-    }
-    let stored;
-    try {
-      stored = await api.history.thread(id);
-    } catch {
-      stored = null;
-    }
-    // Thread vanished (deleted/archived under us) — fall back to the project's
-    // latest rather than an empty, session-less view.
-    if (!stored) {
-      await start();
-      return;
-    }
-    await dispose();
-    // start() would otherwise reload the project's *latest* thread over this one.
-    rehydratedOnce = true;
-    threadId.value = stored.threadId;
-    blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
-    title.value = stored.title?.trim() || "";
-    adoptStoredThread(stored);
-    tokenUsage.value = null;
-    error.value = null;
-    sessionState.value = "starting";
-    await start();
-  }
-
-  onBeforeUnmount(() => {
-    if (clock !== null) clearInterval(clock);
-    void dispose();
-  });
 
   // ── browser dev mock ────────────────────────────────────────────────────────
 
@@ -587,6 +625,38 @@ export function useAgent(options: UseAgentOptions) {
       item.status = "completed";
       emit(item, "item.completed");
     };
+    // A TodoWrite-style plan — one item that can be updated in place as tasks
+    // move pending → in-progress → completed, then settles at the end.
+    let planItem: RuntimeItem | null = null;
+    const setPlan = async (tasks: readonly PlanTask[], hold = 0): Promise<void> => {
+      if (hold) await wait(hold);
+      if (cancelled) return;
+      const text = formatPlanTasks(tasks);
+      if (!planItem) {
+        planItem = { itemId: uid(), kind: "plan_text", status: "in-progress", text };
+        emit(planItem, "item.started");
+      } else {
+        planItem.text = text;
+        emit(planItem, "item.updated");
+      }
+    };
+    const finishPlan = async (): Promise<void> => {
+      if (!planItem || cancelled) return;
+      planItem.status = "completed";
+      emit(planItem, "item.completed");
+    };
+
+    const demoPlan: PlanTask[] = [
+      { content: "Tour every tool family in the thread", status: "pending" },
+      { content: "Show task plans updating mid-turn", status: "pending" },
+      { content: "Stream the final markdown answer", status: "pending" },
+      { content: "Verify failed-tool and empty-thought states", status: "pending" },
+    ];
+    const demoPlanAt = (updates: Partial<Record<number, PlanTask["status"]>>): PlanTask[] =>
+      demoPlan.map((task, i) => ({
+        ...task,
+        status: updates[i] ?? task.status,
+      }));
 
     // The demo forces the full spread regardless of the picked reasoning tier;
     // a normal turn only shows thinking when the model is actually reasoning.
@@ -602,22 +672,62 @@ export function useAgent(options: UseAgentOptions) {
         );
         if (cancelled) return;
       }
+      if (opts.demo) {
+        await setPlan(demoPlan, 360);
+        if (cancelled) return;
+      }
       // Tool calls at the start of the turn (before any answer text).
       await tool("read_file", "AgentComposer.vue");
       if (cancelled) return;
+      if (opts.demo) {
+        await setPlan(demoPlanAt({ 0: "in_progress" }), 420);
+        if (cancelled) return;
+      }
       await tool(
         "grep_search",
         "useAgent · 6 matches",
         "AgentComposer.vue:42:  emit(\"send\", trimmed);\nAgentComposer.vue:58:  emit(\"interrupt\");\nuseAgent.ts:205:  async function send(text: string)\nuseAgent.ts:233:  async function interrupt()\nuseAgent.ts:256:  function setModel(id)\nuseAgent.ts:262:  function setReasoning(next)",
       );
       if (cancelled) return;
+      // A longer, unhurried middle for the normal (non-demo) mock — enough steps,
+      // with generous pauses between them, that you can step back out to the
+      // working tree and watch the away-from-thread status pill work through its
+      // states (Reading → Thinking → Editing → Working) before the reply lands.
+      if (!opts.demo) {
+        await tool("read_file", "app/components/example.vue", undefined, 1500);
+        if (cancelled) return;
+        await tool("list_dir", "app/components", undefined, 1100);
+        if (cancelled) return;
+        await stream(
+          "reasoning_text",
+          "I can see how the pieces connect now — the composer hands each turn to the session and the reducer folds the events back into this timeline. Let me line up the edits before I touch anything.",
+        );
+        if (cancelled) return;
+        await tool("grep_search", "describeTurnActivity · 3 matches", undefined, 1200);
+        if (cancelled) return;
+        await tool("edit_file", "app/components/example.vue", undefined, 1600);
+        if (cancelled) return;
+        await tool("write_to_file", "docs/example.md", undefined, 1400);
+        if (cancelled) return;
+        await tool(
+          "bash",
+          "bun run check-types",
+          " ✓ no type errors\nDone in 3.1s",
+          1800,
+        );
+        if (cancelled) return;
+      }
       // The demo tours every tool family the real providers can produce — list,
       // code-intel, run, web, sub-agent, delete — plus a failed call, so every
       // visual state is on screen to review, not just the read/write/search trio.
       if (opts.demo) {
+        await setPlan(demoPlanAt({ 0: "completed", 1: "in_progress" }), 380);
+        if (cancelled) return;
         await tool("list_dir", "apps/web/app/components", undefined, 420);
         if (cancelled) return;
         await tool("go_to_definition", "segKindOf → useAgent.ts:167", undefined, 380);
+        if (cancelled) return;
+        await setPlan(demoPlanAt({ 0: "completed", 1: "completed", 2: "in_progress" }), 360);
         if (cancelled) return;
       }
       // A line of narration…
@@ -636,6 +746,13 @@ export function useAgent(options: UseAgentOptions) {
           : undefined,
       );
       if (cancelled) return;
+      if (opts.demo) {
+        await setPlan(
+          demoPlanAt({ 0: "completed", 1: "completed", 2: "completed", 3: "in_progress" }),
+          360,
+        );
+        if (cancelled) return;
+      }
       if (opts.demo) {
         await tool(
           "write_to_file",
@@ -692,6 +809,13 @@ export function useAgent(options: UseAgentOptions) {
       // The demo shows the no-content thinking case; a normal thinky turn shows a
       // second thought that DOES carry text.
       if (opts.demo) {
+        await setPlan(
+          demoPlan.map((task) => ({ ...task, status: "completed" as const })),
+          360,
+        );
+        if (cancelled) return;
+        await finishPlan();
+        if (cancelled) return;
         await emptyThought();
         if (cancelled) return;
       } else if (thinky) {
@@ -704,7 +828,7 @@ export function useAgent(options: UseAgentOptions) {
       await stream(
         "assistant_text",
         opts.demo
-          ? `Done — for "${prompt}", here's the full tour.\n\n### What ran\n\n- Every part above — thinking, tool calls, narration — renders in the true order it arrived\n- Tool calls span every family: read, write, list, code intel, shell, web, sub-agent, and delete\n- One \`bash\` call above **failed on purpose** — the red state is real, not a screenshot\n\n| Family | Tool | Hue |\n| --- | --- | --- |\n| Read | \`read_file\` | blue |\n| Write | \`edit_file\` | violet |\n| Search | \`grep_search\` | amber |\n| Run | \`bash\` | green |\n\n\`\`\`ts\nfunction segKindOf(item: RuntimeItem): SegKind {\n  if (item.kind === "reasoning_text") return "thinking";\n  if (item.kind === "tool_call") return "tools";\n  return "text";\n}\n\`\`\`\n\n> [!NOTE]\n> This whole reply is a mocked stream — no agent ran in the browser — but every event passed through the same [ConversationThread.vue](file:///apps/web/app/components/ConversationThread.vue) timeline the real providers feed.`
+          ? `Done — for "${prompt}", here's the full tour.\n\n### What ran\n\n- Every part above — thinking, tool calls, narration — renders in the true order it arrived\n- The agent's task plan docks bottom-right (folder-picker shell) while it works the list\n- Tool calls span every family: read, write, list, code intel, shell, web, sub-agent, and delete\n- One \`bash\` call above **failed on purpose** — the red state is real, not a screenshot\n\n| Family | Tool | Hue |\n| --- | --- | --- |\n| Read | \`read_file\` | blue |\n| Write | \`edit_file\` | violet |\n| Search | \`grep_search\` | amber |\n| Run | \`bash\` | green |\n\n\`\`\`ts\nfunction segKindOf(item: RuntimeItem): SegKind {\n  if (item.kind === "reasoning_text") return "thinking";\n  if (item.kind === "tool_call") return "tools";\n  if (item.kind === "plan_text") return "plan";\n  return "text";\n}\n\`\`\`\n\n> [!NOTE]\n> This whole reply is a mocked stream — no agent ran in the browser — but every event passed through the same [ConversationThread.vue](file:///apps/web/app/components/ConversationThread.vue) timeline the real providers feed. Press **⇧⌘D** any time to replay it.`
           : `Done — for "${prompt}", the parts now render in the true order they arrived: thinking, tool calls, and text interleaved, exactly like a real ${provider.value} session. This is a mocked reply (no agent ran in the browser), but every event flowed through the same stream.`,
       );
       if (cancelled) return;
@@ -715,9 +839,10 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   /** Play a scripted demo conversation — a user turn plus a full assistant reply
-   *  (thinking with text, tool calls with output, narration, a no-content thought,
-   *  and the final answer). Runs the in-browser mock directly so it works even in
-   *  the desktop shell, for reviewing the conversation UI without a live agent. */
+   *  (thinking with text, a live task plan, tool calls with output, narration, a
+   *  no-content thought, and the final answer). Runs the in-browser mock directly
+   *  so it works even in the desktop shell, for reviewing the conversation UI
+   *  without a live agent. Bound to ⇧⌘D via the shortcuts registry. */
   function demo(): void {
     if (busy.value) return;
     const prompt = "Show me a full conversation";
@@ -736,11 +861,320 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   return {
+    key,
     // identity
     threadId,
     provider,
     title,
     // state
+    blocks,
+    session,
+    sessionState,
+    busy,
+    everRan,
+    error,
+    tokenUsage,
+    model,
+    mode,
+    reasoning,
+    serviceTier,
+    contextWindow,
+    // reduction (manager calls this for our events)
+    reduce,
+    // actions
+    start,
+    openStored,
+    restart,
+    send,
+    demo,
+    interrupt,
+    setProvider,
+    setModel,
+    setMode,
+    setReasoning,
+    setServiceTier,
+    setContextWindow,
+    dispose,
+  };
+}
+
+// ── the project's thread manager ────────────────────────────────────────────────
+
+/** How many idle, settled background threads to keep resident. Busy threads are
+ *  never evicted; this only bounds the settled backlog so the registry (and the
+ *  pill stack) can't grow without end. */
+const MAX_RESIDENT_THREADS = 6;
+
+export function useAgent(options: UseAgentOptions) {
+  const ctx: SessionCtx = {
+    options,
+    bridge: () => (import.meta.client ? window.koneDesktop?.agent : undefined),
+    resolveCwd: () => (typeof options.cwd === "function" ? options.cwd() : options.cwd),
+  };
+
+  // The registry: every thread this project has open, live or backgrounded.
+  // shallowRef so Vue doesn't deep-reactive-wrap the session objects (which
+  // would unwrap their inner refs) — we swap the array on add/remove instead.
+  const sessions = shallowRef<ThreadSession[]>([]);
+  const activeKey = ref("");
+  // In-flight openThread() calls, keyed by thread id — guards the double-open
+  // race (a second open before the first has adopted the id). Carries the
+  // loading session's key so a repeat open can re-activate it (the session's
+  // threadId isn't adopted until openStored resolves, so it can't be found by
+  // id yet).
+  const opening = new Map<string, { key: string; promise: Promise<void> }>();
+
+  function spawn(init: { rehydrate?: boolean } = {}): ThreadSession {
+    const s = createThreadSession(ctx, init);
+    sessions.value = [...sessions.value, s];
+    return s;
+  }
+
+  async function evict(s: ThreadSession): Promise<void> {
+    sessions.value = sessions.value.filter((x) => x !== s);
+    await s.dispose();
+  }
+
+  /** Copy the user's picked settings from one session onto another before it
+   *  starts, so spawning a replacement thread (new conversation, or a fresh
+   *  thread after forgetting the active one) keeps the provider/model/reasoning/
+   *  mode/serviceTier/contextWindow the composer is showing rather than snapping
+   *  back to the registry's boot defaults. start() bakes provider+model into the
+   *  session spawn, so this must run before start(). */
+  function inheritSettings(from: ThreadSession, to: ThreadSession): void {
+    to.setProvider(from.provider.value);
+    to.setModel(from.model.value);
+    to.setMode(from.mode.value);
+    to.setReasoning(from.reasoning.value);
+    to.setServiceTier(from.serviceTier.value);
+    to.setContextWindow(from.contextWindow.value);
+  }
+
+  /** Trim settled, idle background threads down to the resident cap — oldest
+   *  first, never the active one and never anything still busy. */
+  function pruneResident(): void {
+    const idle = sessions.value.filter(
+      (s) => s.key !== activeKey.value && !s.busy.value,
+    );
+    const overflow = sessions.value.length - MAX_RESIDENT_THREADS;
+    for (let i = 0; i < overflow && i < idle.length; i++) {
+      const s = idle[i];
+      if (s) void evict(s);
+    }
+  }
+
+  // The first thread — rehydrates the project's latest on its first start.
+  const first = spawn({ rehydrate: options.rehydrate });
+  activeKey.value = first.key;
+
+  /** The thread the conversation view currently shows. Falls back to the first
+   *  resident one so the projection is never undefined. */
+  const active = computed<ThreadSession>(
+    () => sessions.value.find((s) => s.key === activeKey.value) ?? sessions.value[0]!,
+  );
+
+  // ── one event ingress, fanned out by threadId ───────────────────────────────
+  // Replaces the old per-session "drop if not my thread" filter: a single
+  // listener routes each event to the session that owns its threadId, so a
+  // backgrounded thread keeps folding its turns while another is on screen.
+  let detach: (() => void) | null = null;
+  if (import.meta.client) {
+    const api = ctx.bridge();
+    if (api) {
+      detach = api.onEvent((event: RuntimeEvent) => {
+        const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+        s?.reduce(event);
+      });
+    }
+  }
+
+  // A slow tick so "working · Xs" counts up live while ANY thread runs (the
+  // final "replied in Xs" is read from at/endedAt). Only runs while something is
+  // busy — shared across the active thread and every backgrounded pill.
+  const anyBusy = computed(() => sessions.value.some((s) => s.busy.value));
+  const now = ref(Date.now());
+  let clock: ReturnType<typeof setInterval> | null = null;
+  watch(anyBusy, (on) => {
+    if (on && clock === null) {
+      now.value = Date.now();
+      clock = setInterval(() => (now.value = Date.now()), 1000);
+    } else if (!on && clock !== null) {
+      clearInterval(clock);
+      clock = null;
+    }
+  });
+
+  // ── active-thread projection (the public state the view binds) ───────────────
+  const threadId = computed(() => active.value.threadId.value);
+  const provider = computed(() => active.value.provider.value);
+  const title = computed(() => active.value.title.value);
+  const blocks = computed(() => active.value.blocks.value);
+  const session = computed(() => active.value.session.value);
+  const sessionState = computed(() => active.value.sessionState.value);
+  const busy = computed(() => active.value.busy.value);
+  const error = computed(() => active.value.error.value);
+  const tokenUsage = computed(() => active.value.tokenUsage.value);
+  const model = computed(() => active.value.model.value);
+  const mode = computed(() => active.value.mode.value);
+  const reasoning = computed(() => active.value.reasoning.value);
+  const serviceTier = computed(() => active.value.serviceTier.value);
+  const contextWindow = computed(() => active.value.contextWindow.value);
+
+  /** Every thread's background snapshot — what the away-from-thread pill stack
+   *  reads to decide which threads to surface. */
+  const threads = computed<ThreadSummary[]>(() =>
+    sessions.value.map((s) => ({
+      key: s.key,
+      threadId: s.threadId.value,
+      title: s.title.value,
+      provider: s.provider.value,
+      block: latestAssistant(s.blocks.value),
+      busy: s.busy.value,
+      everRan: s.everRan.value,
+      isActive: s.key === activeKey.value,
+    })),
+  );
+
+  // ── active-thread actions (delegate to whichever thread is on screen) ────────
+  const start = () => active.value.start();
+  const send = (text: string) => active.value.send(text);
+  const interrupt = () => active.value.interrupt();
+  const demo = () => active.value.demo();
+  const restart = () => active.value.restart();
+  const setProvider = (next: ProviderKind) => active.value.setProvider(next);
+  const setModel = (id: string | undefined) => active.value.setModel(id);
+  const setMode = (next: InteractionMode) => active.value.setMode(next);
+  const setReasoning = (next: ReasoningTier) => active.value.setReasoning(next);
+  const setServiceTier = (id: string | undefined) => active.value.setServiceTier(id);
+  const setContextWindow = (id: string | undefined) => active.value.setContextWindow(id);
+
+  // ── thread lifecycle (registry-level: switch, never tear the others down) ────
+
+  /** Make a resident thread the active one — no teardown, the others keep
+   *  running in the background. */
+  function setActiveThread(id: string): void {
+    const s = sessions.value.find((x) => x.threadId.value === id);
+    if (s) activeKey.value = s.key;
+  }
+
+  /** Begin a brand-new, empty thread and make it active. The previously-active
+   *  thread stays resident (it may still be running — the pill will surface it),
+   *  unless it was a never-used throwaway, which we prune. */
+  async function newThread(): Promise<void> {
+    const prev = active.value;
+    const fresh = spawn({ rehydrate: false });
+    // Carry the active thread's picked settings onto the new one (see
+    // inheritSettings) so starting a conversation from Project Home keeps the
+    // composer's provider/model/reasoning/mode rather than the boot defaults.
+    if (prev && prev !== fresh) inheritSettings(prev, fresh);
+    activeKey.value = fresh.key;
+    await fresh.start();
+    // Drop the prior thread if it's idle and never ran a live turn this session —
+    // whether a blank slate or the project's rehydrated latest the user stepped
+    // past to start something new. Its transcript is on disk, so reopening it
+    // from recent sessions just resumes it. A thread that ran (or is running)
+    // stays resident so it keeps streaming and pilling.
+    if (prev && prev !== fresh && !prev.busy.value && !prev.everRan.value) {
+      await evict(prev);
+    }
+    pruneResident();
+  }
+
+  /** Bring a specific stored thread on-screen. If it's already resident (still
+   *  running in the background, say), just activate it — no reload, no teardown.
+   *  Otherwise spin up a session for it, load its transcript, and continue it. */
+  async function openThread(id: string): Promise<void> {
+    const existing = sessions.value.find((x) => x.threadId.value === id);
+    if (existing) {
+      activeKey.value = existing.key;
+      return;
+    }
+    // Dedupe concurrent opens of the same thread. openStored only adopts the
+    // thread id after an `await`, so a second rapid call would miss the
+    // `existing` check above and spin up a duplicate session bound to the same
+    // thread. While an open is in flight, fold later calls into it — but still
+    // re-activate the loading session, since a repeat open is the user's latest
+    // intent (open A, B, then A again must end on A, not B).
+    const inFlight = opening.get(id);
+    if (inFlight) {
+      activeKey.value = inFlight.key;
+      return inFlight.promise;
+    }
+    // If the active thread is idle and never ran a live turn this session (a
+    // blank slate or a rehydrated latest the user stepped past), drop it rather
+    // than stacking it behind the opened thread — its transcript is on disk.
+    const prev = active.value;
+    const s = spawn({ rehydrate: false });
+    activeKey.value = s.key;
+    const promise = (async () => {
+      await s.openStored(id);
+      // Never evict the thread that's now active (under interleaved opens `prev`
+      // may have been re-activated by a later request) nor one whose own open is
+      // still in flight (evicting would dispose it mid-load).
+      const prevOpening = prev && [...opening.values()].some((e) => e.key === prev.key);
+      if (
+        prev &&
+        prev !== s &&
+        prev.key !== activeKey.value &&
+        !prevOpening &&
+        !prev.busy.value &&
+        !prev.everRan.value
+      ) {
+        await evict(prev);
+      }
+      pruneResident();
+    })();
+    opening.set(id, { key: s.key, promise });
+    try {
+      await promise;
+    } finally {
+      opening.delete(id);
+    }
+  }
+
+  /** Drop a thread from the registry entirely — for when it's archived or
+   *  deleted from the recent-sessions list. Tears the session down so its pill
+   *  can't linger and stay clickable. If the forgotten thread was on screen,
+   *  fall back to a fresh empty thread so the view never points at a disposed
+   *  session (and `active` never falls back to a stale one). */
+  async function forgetThread(id: string): Promise<void> {
+    // A thread whose open is still in flight hasn't adopted `id` yet, so it
+    // can't be found by threadId — fall back to the loading session the open
+    // registered under this id. Evicting it latches it forgotten (see
+    // dispose()), so its pending openStored bails before revealing or (on
+    // delete) recreating the removed thread.
+    const pending = opening.get(id);
+    const s =
+      sessions.value.find((x) => x.threadId.value === id) ??
+      (pending ? sessions.value.find((x) => x.key === pending.key) : undefined);
+    if (!s) return;
+    const wasActive = s.key === activeKey.value;
+    // Stand up the replacement BEFORE evicting, so `active` never falls back to
+    // an undefined session mid-teardown (evict removes `s` before its dispose()
+    // resolves). Inherit the forgotten thread's settings so the replacement
+    // keeps the composer's provider/model/reasoning/mode, not the boot defaults.
+    if (wasActive) {
+      const fresh = spawn({ rehydrate: false });
+      inheritSettings(s, fresh);
+      activeKey.value = fresh.key;
+      await fresh.start();
+    }
+    await evict(s);
+  }
+
+  onBeforeUnmount(() => {
+    if (clock !== null) clearInterval(clock);
+    detach?.();
+    detach = null;
+    for (const s of sessions.value) void s.dispose();
+  });
+
+  return {
+    // identity (active-thread projection)
+    threadId,
+    provider,
+    title,
+    // state (active-thread projection)
     blocks,
     session,
     sessionState,
@@ -751,7 +1185,13 @@ export function useAgent(options: UseAgentOptions) {
     mode,
     reasoning,
     serviceTier,
+    contextWindow,
     now,
+    // the whole registry — for the away-from-thread pill stack
+    threads,
+    activeThreadId: threadId,
+    setActiveThread,
+    forgetThread,
     // actions
     start,
     restart,
@@ -765,6 +1205,6 @@ export function useAgent(options: UseAgentOptions) {
     setMode,
     setReasoning,
     setServiceTier,
-    dispose,
+    setContextWindow,
   };
 }
