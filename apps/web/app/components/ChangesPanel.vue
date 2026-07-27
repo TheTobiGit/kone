@@ -45,13 +45,63 @@ const laneRows = computed(() =>
 );
 
 // One dot per file, coloured by what changed (not by staging). Matches the
+// stretch the header (and the page) sideways — sample proportionally when
+// there are more files than slots.
 type DotTone = "add" | "del" | "idle";
-const dots = computed<DotTone[]>(() =>
-  props.changes.map((c) => {
-    if (c.deleted || c.removed > c.added) return "del";
-    if (c.added > 0) return "add";
-    return "idle";
-  }),
+const MAX_DOTS = 24;
+
+function toneFor(c: ChangeItem): DotTone {
+  if (c.deleted || c.removed > c.added) return "del";
+  if (c.added > 0) return "add";
+  return "idle";
+}
+
+function sampleDots(all: DotTone[], max: number): DotTone[] {
+  if (all.length <= max) return all;
+
+  const counts = { add: 0, del: 0, idle: 0 };
+  for (const d of all) counts[d]++;
+
+  let add = Math.round((max * counts.add) / all.length);
+  let del = Math.round((max * counts.del) / all.length);
+  let idle = max - add - del;
+
+  if (counts.add > 0 && add === 0) {
+    add = 1;
+    idle = Math.max(0, idle - 1);
+  }
+  if (counts.del > 0 && del === 0) {
+    del = 1;
+    idle = Math.max(0, idle - 1);
+  }
+  if (counts.idle > 0 && idle === 0) {
+    idle = 1;
+    if (add > del && add > 1) add--;
+    else if (del > 1) del--;
+  }
+
+  while (add + del + idle > max) {
+    if (add >= del && add >= idle && add > 0) add--;
+    else if (del >= idle && del > 0) del--;
+    else if (idle > 0) idle--;
+  }
+  while (add + del + idle < max) {
+    if (counts.add >= counts.del && counts.add >= counts.idle) add++;
+    else if (counts.del >= counts.idle) del++;
+    else idle++;
+  }
+
+  return [
+    ...Array(add).fill("add"),
+    ...Array(del).fill("del"),
+    ...Array(idle).fill("idle"),
+  ] as DotTone[];
+}
+
+const allDots = computed<DotTone[]>(() => props.changes.map(toneFor));
+const dots = computed(() => sampleDots(allDots.value, MAX_DOTS));
+const dotsOverflow = computed(() =>
+  Math.max(0, allDots.value.length - dots.value.length),
 );
 
 // Changed-lane Discard — every unstaged change, staged work untouched.
@@ -134,8 +184,9 @@ function discardUnstaged() {
           <span v-if="added > 0" class="ch__add">+<CountUp :to="added" :duration="1.1" /></span>
           <span v-if="removed > 0" class="ch__del">−<CountUp :to="removed" :duration="1.1" /></span>
         </span>
-        <span class="ch__dots">
+        <span class="ch__dots" :title="`${allDots.length} changed files`">
           <i v-for="(d, i) in dots" :key="i" class="ch__dot" :class="`ch__dot--${d}`" :style="{ '--i': i }" />
+          <span v-if="dotsOverflow > 0" class="ch__dots-more">+{{ dotsOverflow }}</span>
         </span>
       </span>
     </header>
@@ -170,6 +221,8 @@ function discardUnstaged() {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
+  max-width: 100%;
 }
 .lanes {
   display: flex;
@@ -189,27 +242,49 @@ function discardUnstaged() {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 .ch__meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 14px;
+  min-width: 0;
+  max-width: 100%;
 }
 .ch__diff {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 8px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.ch__add { color: #059669; }
-.ch__del { color: #e11d48; }
+.ch__add { color: var(--diff-add); }
+.ch__del { color: var(--diff-del); }
 .ch__dots {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+}
+.ch__dots-more {
+  flex-shrink: 0;
+  margin-left: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--muted);
 }
 @keyframes ch-dot-pop {
   from { opacity: 0; transform: scale(0.2); }
@@ -222,8 +297,8 @@ function discardUnstaged() {
   animation: ch-dot-pop 340ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
   animation-delay: calc(240ms + min(var(--i, 0) * 46ms, 620ms));
 }
-.ch__dot--add { background-color: #059669; }
-.ch__dot--del { background-color: #e11d48; }
+.ch__dot--add { background-color: var(--diff-add); }
+.ch__dot--del { background-color: var(--diff-del); }
 .ch__dot--idle { background-color: #d4d4d8; }
 
 .ch__btn {
