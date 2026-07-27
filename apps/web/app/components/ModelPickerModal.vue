@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useStorage } from "@vueuse/core";
 import { motion } from "motion-v";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -297,9 +298,20 @@ function fastModeOn(m: MModel): boolean {
 }
 
 // The set of favourited model keys. Only ready (real) models are ever added, so
-// the Favorites shelf stays fully applicable. Seeded on open with the current /
-// first Codex model so the shelf isn't empty on first sight.
-const favoritedKeys = ref<Set<string>>(new Set());
+// the Favorites shelf stays fully applicable. Persisted to localStorage so the
+// shelf survives the modal closing (it unmounts) and an app restart — Set has no
+// native JSON form, so we serialise it as a plain array of keys.
+const favoritedKeys = useStorage<Set<string>>(
+  "kone:favorite-models",
+  new Set<string>(),
+  undefined,
+  {
+    serializer: {
+      read: (raw) => new Set<string>(raw ? (JSON.parse(raw) as string[]) : []),
+      write: (set) => JSON.stringify([...set]),
+    },
+  },
+);
 const activeSettingsModelKey = ref<string | null>(null);
 
 function isFavorited(key: string): boolean {
@@ -454,12 +466,8 @@ let opener: HTMLElement | null = null;
 onMounted(() => {
   opener = document.activeElement as HTMLElement | null;
   seedPending();
-  // Seed the shelf with the current model (or the first real one) so Favorites
-  // reads as a live place from the start rather than an empty tab.
-  const seed = pending.value?.provider.ready
-    ? pending.value.model.key
-    : realProviders.value[0]?.models[0]?.key;
-  if (seed) favoritedKeys.value = new Set([seed]);
+  // Favourites hydrate from localStorage (see `favoritedKeys`); don't re-seed
+  // here — doing so used to wipe the user's stars on every open.
   window.addEventListener("resize", syncHeight);
   void nextTick(() => {
     syncHeight();
