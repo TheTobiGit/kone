@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from "vue";
-import type { ComponentPublicInstance } from "vue";
+import type { VNode } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 // Tool-call glyphs are Hugeicons stroke icons — same family as the rest of the
@@ -30,10 +30,9 @@ import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
 import SiteChip from "~/components/SiteChip.vue";
-import ToolStepOrb from "~/components/ToolStepOrb.vue";
-import ThinkStepOrb from "~/components/ThinkStepOrb.vue";
-import WorkingOrb from "~/components/WorkingOrb.vue";
+import TurnOrb from "~/components/TurnOrb.vue";
 import type { ToolOrbFamily } from "~/utils/toolOrbDraw";
+import { stateForToolFamily } from "~/utils/thinkingOrb";
 import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
 import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 
@@ -487,13 +486,13 @@ function stepDelay(i: number): number {
 // enter together — the old full-height rail jumped to the next row before the
 // icon's stagger finished.
 const stepLinkObservers = new WeakMap<HTMLElement, ResizeObserver>();
-function stepEntryEl(el: Element | ComponentPublicInstance | null): HTMLElement | null {
-  if (el instanceof HTMLElement) return el;
-  const root = (el as ComponentPublicInstance | null)?.$el;
-  return root instanceof HTMLElement ? root : null;
+// `@vue:mounted` / `@vue:unmounted` hand us the VNode, so the row element is
+// `vnode.el` — on a component vnode that's its rendered root.
+function stepEntryEl(vnode: VNode): HTMLElement | null {
+  return vnode.el instanceof HTMLElement ? vnode.el : null;
 }
-function layoutStepEntry(el: Element | ComponentPublicInstance | null): void {
-  const entry = stepEntryEl(el);
+function layoutStepEntry(vnode: VNode): void {
+  const entry = stepEntryEl(vnode);
   if (!entry) return;
   const link = entry.querySelector(".step-entry__link");
   if (!(link instanceof HTMLElement)) return;
@@ -507,8 +506,8 @@ function layoutStepEntry(el: Element | ComponentPublicInstance | null): void {
   ro.observe(entry);
   stepLinkObservers.set(entry, ro);
 }
-function unlayoutStepEntry(el: Element | ComponentPublicInstance | null): void {
-  const entry = stepEntryEl(el);
+function unlayoutStepEntry(vnode: VNode): void {
+  const entry = stepEntryEl(vnode);
   if (!entry) return;
   stepLinkObservers.get(entry)?.disconnect();
   stepLinkObservers.delete(entry);
@@ -738,7 +737,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                     @click="thinkHasContent(seg) && toggleThinking(seg)"
                   >
                     <span class="step__icon">
-                      <ThinkStepOrb v-if="segStreaming(seg)" />
+                      <TurnOrb v-if="segStreaming(seg)" state="thinking" :size="14" aria-label="Thinking" />
                       <HugeiconsIcon v-else :icon="AiBrain01Icon" :size="14" :stroke-width="1.8" />
                     </span>
                     <span class="step__label">
@@ -792,10 +791,11 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                       @keydown.enter="toggleTool(t)"
                     >
                       <span class="step__icon">
-                        <ToolStepOrb
+                        <TurnOrb
                           v-if="toolStatus(t) === 'running'"
-                          :family="toolMeta(t.name).family"
-                          :hue="toolMeta(t.name).hue"
+                          :state="stateForToolFamily(toolMeta(t.name).family)"
+                          :size="14"
+                          :aria-label="`${toolMeta(t.name).label} running`"
                         />
                         <HugeiconsIcon
                           v-else
@@ -868,7 +868,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
               :exit="{ opacity: 0, scale: 0.86 }"
               :transition="{ type: 'spring', stiffness: 300, damping: 26, mass: 0.7 }"
             >
-              <WorkingOrb />
+              <TurnOrb state="working" :size="20" aria-label="Working" />
             </motion.div>
           </AnimatePresence>
 
