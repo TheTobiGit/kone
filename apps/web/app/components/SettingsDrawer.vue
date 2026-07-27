@@ -103,6 +103,7 @@ function onCaptureKeydown(e: KeyboardEvent) {
   // a second leaves the drawer).
   e.preventDefault();
   e.stopPropagation();
+  e.stopImmediatePropagation();
 
   const res = captureFromEvent(e);
   if (!res.ok) {
@@ -152,20 +153,6 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => window.addEventListener("keydown", onKeydown));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
-// Toggle-settings is listed in the Shortcuts pane (it's a personalizable,
-// rebind-worthy gesture), so it needs a working handler even while the drawer
-// is open — index.vue's launcher handler only fires on the launcher views. The
-// pane's own "Press keys…" capture still owns the next keydown when listening.
-const { matchesShortcut } = useShortcuts();
-function onSettingsHotkey(e: KeyboardEvent) {
-  if (!props.open) return;
-  if (capturingId.value) return;
-  if (!matchesShortcut("toggle-settings", e)) return;
-  e.preventDefault();
-  emit("close");
-}
-onMounted(() => window.addEventListener("keydown", onSettingsHotkey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
 
 // When the drawer closes, abandon capture and land back on the root pane so it
 // always reopens at the top level.
