@@ -246,6 +246,7 @@ const body = computed<Seg[]>(() => {
   /* The whole greeting settles up into place on mount — one soft, unhurried
      motion under the per-segment reveal. */
   animation: greet-rise 640ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: var(--proj-enter-greet, 0ms);
 }
 
 @keyframes greet-rise {
@@ -266,7 +267,7 @@ const body = computed<Seg[]>(() => {
   transition:
     opacity 520ms ease,
     filter 520ms ease;
-  transition-delay: calc(var(--i, 0) * 42ms);
+  transition-delay: calc(var(--proj-enter-greet, 0ms) + var(--i, 0) * 42ms);
 }
 .seg-enter-from {
   opacity: 0;

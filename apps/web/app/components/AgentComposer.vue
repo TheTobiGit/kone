@@ -641,6 +641,18 @@ watch(text, () => nextTick(sync));
   flex-direction: row;
   align-items: center;
   width: max-content;
+  animation: dock-rise 680ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: var(--proj-enter-composer, 0ms);
+}
+@keyframes dock-rise {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 /* When the pill grows tall, the side controls drop to the bottom with the send
    seed (the padding lines them up with the seed's inset). */
@@ -1158,6 +1170,7 @@ watch(text, () => nextTick(sync));
 
 @media (prefers-reduced-motion: reduce) {
   .surface, .panel, .face, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
+  .dock { animation: none; }
   .face { animation: none; }
   .seed--busy { animation: none; }
   .side { transition-duration: 0.01s; transition-delay: 0s; }

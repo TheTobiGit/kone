@@ -710,7 +710,7 @@ function onDiscardFile(path: string) {
         :aria-label="view === 'chat' ? 'Back to project' : 'Back to projects'"
         :initial="{ opacity: 0, x: -6 }"
         :animate="{ opacity: 1, x: 0 }"
-        :transition="{ duration: 0.4, delay: 0.2 }"
+        :transition="{ duration: 0.4, delay: 0.05 }"
         @click="onBack"
       >
         <HugeiconsIcon
@@ -823,15 +823,16 @@ function onDiscardFile(path: string) {
     </div>
 
     <!-- The folder settles into the corner last — rising into place with a soft
-         spring, the physical grace note after the greeting + changes land.
-         (Home only — it steps aside once the conversation takes over.) -->
+         spring, the physical grace note after the greeting, changes, sessions,
+         and composer have landed. (Home only — it steps aside once the
+         conversation takes over.) -->
     <motion.div
       v-if="view !== 'chat'"
       class="project-folder-row absolute bottom-10 left-10 flex items-center gap-4"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
-      :transition="{ type: 'spring', stiffness: 210, damping: 22, mass: 0.9, delay: 0.55 }"
+      :transition="{ type: 'spring', stiffness: 210, damping: 22, mass: 0.9, delay: 0.92 }"
       @mouseenter="folderHovered = true"
       @mouseleave="folderHovered = false"
     >
@@ -908,7 +909,7 @@ function onDiscardFile(path: string) {
       <PlanTaskList
         v-if="activePlan && view === 'chat' && !activeFile"
         key="agent-plan-dock"
-        :source="activePlan.source"
+        :tasks="activePlan.tasks"
         :streaming="activePlan.streaming"
         :stacked="pillThreads.length > 0"
       />
@@ -1041,6 +1042,15 @@ function onDiscardFile(path: string) {
      full-page-scroll value (14rem) — now that only the listing scrolls, that
      much reserved space stranded the fade cutoff high above the composer. */
   padding: 6rem 4rem 8rem;
+  /* Project-home entrance cascade — read top → bottom, corner accents last.
+     Child blocks (greeting, changes, sessions, composer) inherit these via
+     --proj-enter-* and layer their own internal stagger on top. */
+  --proj-enter-back: 50ms;
+  --proj-enter-greet: 120ms;
+  --proj-enter-changes: 340ms;
+  --proj-enter-sessions: 580ms;
+  --proj-enter-composer: 760ms;
+  --proj-enter-folder: 920ms;
 }
 
 /* The one scroll region on the working-tree home. Its bottom edge fades into a

@@ -224,12 +224,13 @@ const bundleCards: BundleCard[] = [
 }
 .lane__head {
   animation: lane-head-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 140ms + var(--lane-i, 0) * 100ms);
 }
 .grid > :deep(.card),
 .bundle,
 .fold {
   animation: ch-tile-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(90ms + var(--i, 0) * 48ms);
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 230ms + var(--lane-i, 0) * 100ms + var(--i, 0) * 48ms);
 }
 @media (prefers-reduced-motion: reduce) {
   .lane__head,

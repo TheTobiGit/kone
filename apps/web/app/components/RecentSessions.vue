@@ -279,7 +279,7 @@ function hasDiff(s: SessionSummary): boolean {
   );
   animation: rs-head-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   /* Lead the group's first row by the same 90ms the lane head leads its tiles. */
-  animation-delay: calc(min(var(--i, 0) * 48ms, 720ms));
+  animation-delay: calc(var(--proj-enter-sessions, 0ms) + min(var(--i, 0) * 48ms, 720ms));
 }
 .rs__pin {
   flex-shrink: 0;
@@ -319,7 +319,7 @@ function hasDiff(s: SessionSummary): boolean {
   border-radius: 10px;
   outline: none;
   animation: rs-row-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(90ms + min(var(--i, 0) * 48ms, 720ms));
+  animation-delay: calc(var(--proj-enter-sessions, 0ms) + 90ms + min(var(--i, 0) * 48ms, 720ms));
 }
 /* Borderless row — the whole row opens the thread; on hover the title lights
    up (ink-soft → ink, same as lane / file-detail actions) and the trailing

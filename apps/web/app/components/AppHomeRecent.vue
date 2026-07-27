@@ -111,6 +111,18 @@ function onFolderFocusOut(e: FocusEvent) {
   const wrap = e.currentTarget as HTMLElement;
   if (!wrap.contains(e.relatedTarget as Node | null)) focusedPath.value = null;
 }
+
+// Side actions are mouse-first; clear lift state when one fires so a clicked
+// button doesn't keep focus (and the actions visible) after the pointer leaves,
+// and so a pin reorder that moves the folder in the grid can't strand hover.
+function onSideAction(
+  path: string,
+  action: "pin" | "reveal" | "forget",
+): void {
+  hoveredPath.value = null;
+  focusedPath.value = null;
+  emit(action, path);
+}
 </script>
 
 <template>
@@ -233,7 +245,8 @@ function onFolderFocusOut(e: FocusEvent) {
               :title="project.pinned ? 'Unpin' : 'Pin to top'"
               class="side-act flex size-6 cursor-pointer items-center justify-center transition-colors hover:text-ink"
               :class="project.pinned ? 'text-ink' : 'text-muted'"
-              @click.stop="emit('pin', project.path)"
+              @mousedown.prevent
+              @click.stop="onSideAction(project.path, 'pin')"
             >
               <HugeiconsIcon
                 :icon="PinIcon"
@@ -249,7 +262,8 @@ function onFolderFocusOut(e: FocusEvent) {
               aria-label="Reveal in Finder"
               title="Reveal in Finder"
               class="side-act flex size-6 cursor-pointer items-center justify-center text-muted transition-colors hover:text-ink"
-              @click.stop="emit('reveal', project.path)"
+              @mousedown.prevent
+              @click.stop="onSideAction(project.path, 'reveal')"
             >
               <HugeiconsIcon
                 :icon="AppleFinderIcon"
@@ -265,7 +279,8 @@ function onFolderFocusOut(e: FocusEvent) {
               aria-label="Remove from recents"
               title="Remove"
               class="side-act flex size-6 cursor-pointer items-center justify-center text-muted transition-colors hover:text-ink"
-              @click.stop="emit('forget', project.path)"
+              @mousedown.prevent
+              @click.stop="onSideAction(project.path, 'forget')"
             >
               <HugeiconsIcon
                 :icon="Cancel01Icon"
