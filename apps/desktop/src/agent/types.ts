@@ -57,6 +57,15 @@ export type ModelDescriptor = {
    *  list). Absent for a model with no speed-tier axis at all — most models
    *  don't have one; where it exists it's almost always just a "fast" tier. */
   serviceTiers?: { id: string; label: string; description?: string }[];
+  /** The context-window sizes this model can run in, when it has a choice.
+   *  For Claude this is the *auto-compact window* — the token budget Claude
+   *  Code compacts the conversation at — not a raw model-capacity switch:
+   *  current Claude models are natively 1M, so the real per-thread choice is
+   *  whether to compact early at a safer 200k or run out to the full 1M
+   *  (mirrors research's Claude `autoCompactWindowOptions`). Absent for a model
+   *  with a single fixed window (e.g. Haiku, 200k only). `tokens` is the raw
+   *  budget the adapter applies; `id`/`label` drive the picker. */
+  contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
 };
 
 // ── Session / turn IO ────────────────────────────────────────────────────────
@@ -125,6 +134,11 @@ export type SendTurnInput = {
   /** A model's chosen service tier (e.g. Codex's "fast" tier id) for this
    *  turn. Absent means the provider's default tier. */
   serviceTier?: string;
+  /** A model's chosen context-window id (ModelDescriptor.contextWindows[].id,
+   *  e.g. "200k"/"1m"). Like `serviceTier` this rides each turn: Claude maps it
+   *  to a live `autoCompactWindow` Setting toggled without restarting the
+   *  session. Absent means the model's default window. */
+  contextWindow?: string;
 };
 
 export type TurnStartResult = {

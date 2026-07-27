@@ -50,6 +50,10 @@ const props = defineProps<{
   /** Is the model's real "fast" service tier (Codex's `serviceTiers`) active
    *  for this turn? Only meaningful when the current model has one. */
   fastMode?: boolean;
+  /** The chosen context-window id (Claude's "200k"/"1m" auto-compact window).
+   *  Only meaningful when the current model exposes more than one window;
+   *  undefined falls back to that model's default window. */
+  contextWindow?: string;
 }>();
 
 const emit = defineEmits<{
@@ -59,6 +63,7 @@ const emit = defineEmits<{
   "update:reasoning": [tier: EffortTier];
   "update:mode": [mode: InteractionMode];
   "update:fastMode": [on: boolean];
+  "update:contextWindow": [id: string];
   /** Ask the host to open the full providers→models→effort picker. */
   "open-models": [];
 }>();
@@ -75,6 +80,19 @@ const showEffort = computed(() => hasEffortChoice(currentFamily.value));
 // Fast mode — a plain on/off toggle for the current family's real "fast"
 // service tier (Codex's `serviceTiers`), when it has one. Most models don't.
 const fastTier = computed(() => currentFamily.value?.fastTier);
+// Context window — a small cycle over the family's windows (Claude's 200k/1m
+// auto-compact window), when it has a choice. The current one is the prop, else
+// the family's own default, else the first.
+const contextWindows = computed(() => currentFamily.value?.contextWindows);
+const currentWindow = computed(() => {
+  const windows = contextWindows.value;
+  if (!windows?.length) return undefined;
+  return (
+    windows.find((w) => w.id === props.contextWindow) ??
+    windows.find((w) => w.isDefault) ??
+    windows[0]
+  );
+});
 
 const modelName = computed(
   () => currentFamily.value?.label ?? props.modelId ?? "Default model",
@@ -114,6 +132,17 @@ function brainStack(n: number): number[] {
 function toggleFastMode() {
   if (!fastTier.value) return;
   emit("update:fastMode", !props.fastMode);
+  cue("toggle");
+}
+// Cycle the context window: step to the next one for this family and wrap. Two
+// windows (200k/1m) makes this a toggle; the label carries the state.
+function cycleContextWindow() {
+  const windows = contextWindows.value;
+  if (!windows || windows.length < 2 || !currentWindow.value) return;
+  const idx = windows.findIndex((w) => w.id === currentWindow.value!.id);
+  const next = windows[(idx + 1) % windows.length];
+  if (!next) return;
+  emit("update:contextWindow", next.id);
   cue("toggle");
 }
 
@@ -562,6 +591,20 @@ watch(text, () => nextTick(sync));
       >
         <HugeiconsIcon :icon="FlashIcon" :size="15" :stroke-width="2" />
       </button>
+
+      <!-- Context window — a small cycle over the model's windows (Claude's
+           200k/1m auto-compact window). The label carries the state; clicking
+           steps to the next window and wraps. -->
+      <button
+        v-if="currentWindow"
+        type="button"
+        class="ctxwin"
+        :aria-label="`Context window: ${currentWindow.label}. Click to change.`"
+        :title="`Context window · ${currentWindow.label}`"
+        @click.stop="cycleContextWindow"
+      >
+        {{ currentWindow.label }}
+      </button>
     </div>
   </div>
 </template>
@@ -1008,6 +1051,25 @@ watch(text, () => nextTick(sync));
   opacity: 1;
   filter: drop-shadow(0 0 4px rgba(245, 179, 0, 0.5));
 }
+/* ── Context-window cycle ─────────────────────────────────────────────────── */
+.ctxwin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  min-width: 34px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--chip-ink);
+  font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
+}
+.ctxwin:hover { opacity: 1; transform: translateY(-1px); }
+.ctxwin:active { transform: translateY(0) scale(0.96); }
 @keyframes effort-pop {
   0% { transform: scale(0.82); }
   60% { transform: scale(1.12); }

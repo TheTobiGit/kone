@@ -121,6 +121,10 @@ export type ModelOption = {
    *  `additionalSpeedTiers`), when it has one — most models don't. A boolean
    *  toggle in the UI; the `id` is what actually goes on the turn. */
   fastTier?: { id: string; label: string };
+  /** This family's context-window choices (Claude's 200k/1m auto-compact
+   *  window), when it has more than a single fixed window. A small cycle in the
+   *  UI; the chosen `id` rides each turn as `contextWindow`. */
+  contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
 };
 
 function brandOf(core: string): { brand: BrandKey; vendor: string } {
@@ -149,7 +153,13 @@ function toEffort(id: string, modelId: string, tier: EffortTier): Effort {
 export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
   const byCore = new Map<
     string,
-    { label: string; efforts: Effort[]; defaultReasoningEffort?: string; serviceTiers?: ModelDescriptor["serviceTiers"] }
+    {
+      label: string;
+      efforts: Effort[];
+      defaultReasoningEffort?: string;
+      serviceTiers?: ModelDescriptor["serviceTiers"];
+      contextWindows?: ModelDescriptor["contextWindows"];
+    }
   >();
   const order: string[] = [];
 
@@ -163,6 +173,7 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
         efforts: [],
         defaultReasoningEffort: m.defaultReasoningEffort,
         serviceTiers: m.serviceTiers,
+        contextWindows: m.contextWindows,
       });
       order.push(core);
     }
@@ -183,7 +194,7 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
   }
 
   return order.map((core) => {
-    const { label, efforts: bucketEfforts, defaultReasoningEffort, serviceTiers } = byCore.get(core)!;
+    const { label, efforts: bucketEfforts, defaultReasoningEffort, serviceTiers, contextWindows } = byCore.get(core)!;
     const efforts = bucketEfforts.sort((a, b) => EFFORT_ORDER.indexOf(a.tier) - EFFORT_ORDER.indexOf(b.tier));
     // Prefer the provider's own default, else medium, else the middle rung.
     const providerDefaultIdx = defaultReasoningEffort
@@ -197,7 +208,16 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
     // surface it as a plain on/off toggle rather than a full tier picker.
     const fastEntry = serviceTiers?.find((t) => t.id.toLowerCase() === "fast");
     const fastTier = fastEntry ? { id: fastEntry.id, label: fastEntry.label } : undefined;
-    return { key: core, label, brand, vendor, efforts, defaultEffortIndex, ...(fastTier ? { fastTier } : {}) };
+    return {
+      key: core,
+      label,
+      brand,
+      vendor,
+      efforts,
+      defaultEffortIndex,
+      ...(fastTier ? { fastTier } : {}),
+      ...(contextWindows && contextWindows.length > 1 ? { contextWindows } : {}),
+    };
   });
 }
 

@@ -37,16 +37,28 @@ const props = defineProps<{
   reasoning?: EffortTier;
   /** Is the active model's real "fast" service tier on for this session? */
   fastMode?: boolean;
+  /** The active context-window id (Claude's 200k/1m auto-compact window), when
+   *  the model exposes a choice; undefined falls back to the model's default. */
+  contextWindow?: string;
 }>();
 
+type ModelPick = {
+  provider: ProviderKind;
+  modelId: string;
+  tier: EffortTier;
+  fastMode: boolean;
+  contextWindow?: string;
+};
+
 const emit = defineEmits<{
-  /** Commit a provider + model + effort + fast-mode, and close the picker. */
-  select: [picked: { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean }];
-  /** Live-apply a tweak (reasoning effort/fast mode) without closing — rides
-   *  straight to the composer input so the setting takes effect and sticks as
-   *  you adjust. Only fired for the active provider (a cross-provider tweak is
-   *  staged until you select, since it can't apply to the running session). */
-  apply: [picked: { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean }];
+  /** Commit a provider + model + effort + fast-mode + context-window, and close. */
+  select: [picked: ModelPick];
+  /** Live-apply a tweak (reasoning effort/fast mode/context window) without
+   *  closing — rides straight to the composer input so the setting takes effect
+   *  and sticks as you adjust. Only fired for the active provider (a
+   *  cross-provider tweak is staged until you select, since it can't apply to
+   *  the running session). */
+  apply: [picked: ModelPick];
   cancel: [];
 }>();
 
@@ -65,6 +77,9 @@ type MModel = {
   defaultEffortIndex: number;
   /** This model's real "fast" service tier, when it has one. */
   fastTier?: { id: string; label: string };
+  /** This model's context-window choices (Claude's 200k/1m auto-compact
+   *  window), when it exposes more than one. */
+  contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
   /** The provider this model runs on — carried through so a select/apply can
    *  tell the host which engine to run (and, under Favorites, which origin a
    *  starred row belongs to). */
@@ -105,6 +120,7 @@ const realProviders = computed<MProvider[]>(() =>
       defaultEffortIndex: o.defaultEffortIndex,
       providerId: p.id,
       ...(o.fastTier ? { fastTier: o.fastTier } : {}),
+      ...(o.contextWindows ? { contextWindows: o.contextWindows } : {}),
     })),
   })),
 );
@@ -147,7 +163,15 @@ const provider = ref<MProvider | null>(null);
 // never applied. (No provider is non-ready today; kept so a future provider
 // can be browsed before it's wired up.) Seeded from the current session model
 // on open.
-const pending = ref<{ provider: MProvider; model: MModel; effort: MEffort; fastMode: boolean } | null>(null);
+const pending = ref<{
+  provider: MProvider;
+  model: MModel;
+  effort: MEffort;
+  fastMode: boolean;
+  /** The context-window id staged for this model — undefined for a
+   *  single-window model (nothing to choose). */
+  contextWindow?: string;
+} | null>(null);
 
 // The effort a model currently resolves to: the exact (modelId, tier) match if
 // there is one, else any effort sharing this modelId (a synthetic ladder's
@@ -170,6 +194,20 @@ function matchFastMode(m: MModel): boolean {
   return isCurrentModel(m) ? (props.fastMode ?? false) : false;
 }
 
+// The context window a model resolves to: the session value for the active model
+// (when the family still offers it), else the family's default. Any other model
+// starts from its own default — same as effort/fast fall back rather than
+// carrying a stale value. Undefined for a single-window model (no choice).
+function matchContextWindow(m: MModel): string | undefined {
+  const windows = m.contextWindows;
+  if (!windows?.length) return undefined;
+  if (isCurrentModel(m)) {
+    const keep = windows.find((w) => w.id === props.contextWindow);
+    if (keep) return keep.id;
+  }
+  return (windows.find((w) => w.isDefault) ?? windows[0])?.id;
+}
+
 function seedPending() {
   // Walk the REAL providers so the active model resolves to its true home, not
   // its (duplicated) Favorites row. Check the active provider first so the seed
@@ -181,7 +219,13 @@ function seedPending() {
     for (const m of p.models) {
       const e = m.efforts.find((x) => x.modelId === props.modelId && x.tier === props.reasoning);
       if (e) {
-        pending.value = { provider: p, model: m, effort: e, fastMode: props.fastMode ?? false };
+        pending.value = {
+          provider: p,
+          model: m,
+          effort: e,
+          fastMode: props.fastMode ?? false,
+          contextWindow: matchContextWindow(m),
+        };
         provider.value = p;
         return;
       }
@@ -194,9 +238,14 @@ function seedPending() {
 function openProvider(p: MProvider) {
   provider.value = p;
 }
-function focus(m: MModel, e: MEffort, fastMode = matchFastMode(m)) {
+function focus(
+  m: MModel,
+  e: MEffort,
+  fastMode = matchFastMode(m),
+  contextWindow = matchContextWindow(m),
+) {
   if (!provider.value) return;
-  pending.value = { provider: provider.value, model: m, effort: e, fastMode };
+  pending.value = { provider: provider.value, model: m, effort: e, fastMode, contextWindow };
 }
 // Readiness is per-row under Favorites (each favourite carries its origin),
 // otherwise it's the current provider's.
@@ -212,8 +261,9 @@ function selectModel(m: MModel) {
   const isPendingModel = pending.value?.model.key === m.key;
   const e = isPendingModel ? pending.value!.effort : matchEffort(m);
   const fastMode = isPendingModel ? pending.value!.fastMode : matchFastMode(m);
+  const contextWindow = isPendingModel ? pending.value!.contextWindow : matchContextWindow(m);
   if (!provider.value || !e) return;
-  close(() => emit("select", { provider: m.providerId, modelId: e.modelId, tier: e.tier, fastMode }));
+  close(() => emit("select", { provider: m.providerId, modelId: e.modelId, tier: e.tier, fastMode, contextWindow }));
 }
 
 // Whether this model row is the one active in the session — it must both run on
@@ -286,11 +336,17 @@ function toggleSettings(m: MModel) {
 // live session to apply to, so it stays staged in `pending` until the user
 // selects (which switches engines). This gate keeps `apply` a pure in-session
 // nudge, never a silent provider switch.
-function applyLive(fastMode: boolean) {
+function applyLive(fastMode: boolean, contextWindow = pending.value?.contextWindow) {
   const p = pending.value;
   if (!p || !modelReady(p.model)) return;
   if (p.model.providerId !== props.activeProvider) return;
-  emit("apply", { provider: p.model.providerId, modelId: p.effort.modelId, tier: p.effort.tier, fastMode });
+  emit("apply", {
+    provider: p.model.providerId,
+    modelId: p.effort.modelId,
+    tier: p.effort.tier,
+    fastMode,
+    contextWindow,
+  });
 }
 
 // Reasoning effort — cycle through a family's real efforts. For an active-
@@ -315,15 +371,46 @@ function toggleFastMode() {
   applyLive(pending.value.fastMode);
 }
 
+// Context window — cycle the model's windows (Claude's 200k/1m auto-compact
+// window). Two windows makes this a toggle; the label carries the state. Applies
+// live exactly like cycleEffort/toggleFastMode.
+function cycleContextWindow() {
+  const p = pending.value;
+  const windows = p?.model.contextWindows;
+  if (!p || !windows || windows.length <= 1) return;
+  const idx = windows.findIndex((w) => w.id === p.contextWindow);
+  const next = windows[(idx + 1) % windows.length]!;
+  p.contextWindow = next.id;
+  applyLive(p.fastMode, next.id);
+}
+
+// The context-window label to show on a row: the pending choice if this row is
+// the one being tuned, else its resting (session/default) window. Null when the
+// model has no window choice — mirrors reasoningMeta/fastModeOn.
+function contextWindowMeta(m: MModel): string | null {
+  const windows = m.contextWindows;
+  if (!windows?.length) return null;
+  const id = pending.value?.model.key === m.key ? pending.value.contextWindow : matchContextWindow(m);
+  return windows.find((w) => w.id === id)?.label ?? null;
+}
+
+// The label of the window currently staged for the tuned model — drives the
+// settings-bar cycle button.
+const pendingWindowLabel = computed(() => {
+  const p = pending.value;
+  if (!p?.model.contextWindows?.length) return null;
+  return p.model.contextWindows.find((w) => w.id === p.contextWindow)?.label ?? null;
+});
+
 function brainStack(count?: number): number[] {
   return Array.from({ length: Math.max(1, count ?? 1) }, (_, i) => i);
 }
 
 // Is there anything to configure? Drives whether the gear button shows, so it
-// never opens an empty bar. A model with only one effort and no fast tier has
-// no settings — context window is a fact, not a switch, so it never counts.
+// never opens an empty bar. A model has settings when it offers more than one
+// reasoning effort, a fast tier, or a context-window choice.
 function hasSettings(m: MModel): boolean {
-  return m.efforts.length > 1 || Boolean(m.fastTier);
+  return m.efforts.length > 1 || Boolean(m.fastTier) || (m.contextWindows?.length ?? 0) > 1;
 }
 
 // ── confirm / cancel with the card's exit ─────────────────────────────────────
@@ -486,6 +573,13 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
                         class="mp-meta-fast"
                         title="Fast mode is on"
                       />
+                      <span
+                        v-if="contextWindowMeta(m)"
+                        class="mp-meta-ctx"
+                        :title="`Context window · ${contextWindowMeta(m)}`"
+                      >
+                        {{ contextWindowMeta(m) }}
+                      </span>
                     </span>
                   </span>
                   <!-- Actions: Favorite & Settings — real models only. The current
@@ -563,6 +657,23 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
             >
               <HugeiconsIcon :icon="FlashIcon" :size="14" :stroke-width="1.8" />
               <span class="mp-fast-toggle-text">{{ pending.model.fastTier.label }}</span>
+            </button>
+          </div>
+
+          <!-- Context window: cycle the model's windows (Claude's 200k/1m
+               auto-compact window). The label carries the state. -->
+          <div
+            v-if="pending.model.contextWindows && pending.model.contextWindows.length > 1"
+            class="mp-footer-group"
+          >
+            <button
+              type="button"
+              class="mp-ctx-toggle"
+              :aria-label="`Context window: ${pendingWindowLabel}. Click to change.`"
+              :title="`Context window · ${pendingWindowLabel}`"
+              @click.stop="cycleContextWindow"
+            >
+              <span class="mp-ctx-toggle-text">{{ pendingWindowLabel }}</span>
             </button>
           </div>
         </div>
@@ -731,6 +842,19 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   filter: drop-shadow(0 0 3px rgba(245, 179, 0, 0.5));
 }
 
+/* The context-window indicator: a compact monospace token count (200K / 1M),
+   dim by default and lifting on row hover like the reasoning brains. */
+.mp-meta-ctx {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.14s ease;
+}
+.mp-row:hover .mp-meta-ctx { opacity: 1; }
+
 .mp-icon {
   display: inline-flex;
   align-items: center;
@@ -864,6 +988,32 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   color: #f5b300;
   opacity: 1;
   filter: drop-shadow(0 0 4px rgba(245, 179, 0, 0.4));
+}
+
+/* Context-window cycle — a plain label pill matching the composer's ctxwin. */
+.mp-ctx-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 15px;
+  font-weight: 500;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  opacity: 0.72;
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mp-ctx-toggle:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+.mp-ctx-toggle:active {
+  transform: translateY(0) scale(0.95);
+}
+.mp-ctx-toggle-text {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Provider swap ────────────────────────────────────────────────────────── */

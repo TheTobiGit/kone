@@ -222,6 +222,11 @@ export type ModelDescriptor = {
    *  list). Absent for a model with no speed-tier axis at all — most models
    *  don't have one; where it exists it's almost always just a "fast" tier. */
   serviceTiers?: { id: string; label: string; description?: string }[];
+  /** The context-window sizes this model can run in, when it has a choice. For
+   *  Claude this is the auto-compact window (compact early at 200k vs run to the
+   *  full native 1M), not a raw capacity switch. Absent for a single-window
+   *  model (Haiku). `tokens` is the raw budget the adapter applies. */
+  contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
 };
 
 /** The approval-policy ladder — how much the agent may do without asking,
@@ -278,6 +283,10 @@ export type SendTurnInput = {
   /** A model's chosen service tier (e.g. Codex's "fast" tier id) for this
    *  turn. Absent means the provider's default tier. */
   serviceTier?: string;
+  /** A model's chosen context-window id (ModelDescriptor.contextWindows[].id,
+   *  e.g. "200k"/"1m"). Claude maps it to a live auto-compact-window Setting.
+   *  Absent means the model's default window. */
+  contextWindow?: string;
 };
 
 export type TurnStartResult = { threadId: string; turnId: string };

@@ -66,6 +66,14 @@ import type {
 // (FAST_SERVICE_TIER), and a turn carrying `serviceTier: "fast"` toggles the
 // Setting on for the session (see sendTurn). This mirrors shipped research, which
 // likewise drives fastMode through applyFlagSettings gated per-model.
+//
+// Context window is a second live Setting in the same shape. Current Claude
+// models are natively 1M (not the legacy `context-1m` beta, which was Sonnet
+// 4/4.5-only), so the real per-thread choice is the *auto-compact window* — the
+// token budget Claude Code compacts the transcript at. kone offers 200k (a safer
+// default) vs the full 1M on every non-Haiku model, carried per-turn as
+// `contextWindow` and applied live via applyFlagSettings({ autoCompactWindow })
+// — again mirroring research's Claude adapter, no session restart.
 
 const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
 
@@ -73,6 +81,34 @@ const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "m
 // composer renders any family whose descriptor carries a `fast` serviceTier).
 // Only models that report `supportsFastMode` advertise it.
 const FAST_SERVICE_TIER = { id: "fast", label: "Fast" };
+
+// The context-window choice kone offers on 1M-capable Claude models. This is the
+// *auto-compact window* — the token budget Claude Code compacts the transcript
+// at — NOT the raw model capacity, and NOT the legacy `context-1m-2025-08-07`
+// beta (that flag was Sonnet-4/4.5-only; every current Claude model is natively
+// 1M). Mirrors research's Claude autoCompactWindowOptions: default to a safer 200k
+// budget and let a thread opt into the full 1M. `tokens` is the value handed to
+// the SDK's `autoCompactWindow` Setting (see sendTurn). Single-window models
+// (Haiku, 200k) get no `contextWindows` and so no picker.
+const CLAUDE_CONTEXT_WINDOWS = [
+  { id: "200k", label: "200K", tokens: 200_000, isDefault: true as const },
+  { id: "1m", label: "1M", tokens: 1_000_000 },
+];
+
+/** Token budget for a chosen context-window id, or undefined for an unknown id
+ *  (which the caller treats as "leave the window at its current setting"). */
+function contextWindowTokens(id: string | undefined): number | undefined {
+  return CLAUDE_CONTEXT_WINDOWS.find((w) => w.id === id)?.tokens;
+}
+
+/** Which context-window options a Claude model exposes. Current Claude models
+ *  are natively 1M except the Haiku line (200k), so every non-Haiku Claude model
+ *  gets the 200k/1M auto-compact choice; a single-window model gets none. The
+ *  SDK's live ModelInfo carries no context-window field, so — like research's
+ *  static capability table — this is derived from the id. */
+function contextWindowsForModel(id: string): typeof CLAUDE_CONTEXT_WINDOWS | undefined {
+  return /haiku/i.test(id) ? undefined : CLAUDE_CONTEXT_WINDOWS;
+}
 
 // Baked catalog used only when the SDK's live model list can't be read (e.g. no
 // login yet). The live list from initializationResult() is preferred — this is
@@ -82,9 +118,9 @@ const FAST_SERVICE_TIER = { id: "fast", label: "Fast" };
 // list (mapClaudeModels) is authoritative when a login is present — this only
 // shapes the picker before that first probe resolves.
 const BAKED_CLAUDE_MODELS: ModelDescriptor[] = [
-  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER] },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER] },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], contextWindows: CLAUDE_CONTEXT_WINDOWS },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", reasoningEfforts: ["low", "medium", "high"] },
 ];
 
@@ -131,6 +167,11 @@ type ClaudeSession = {
    *  session. Toggled live in sendTurn via applyFlagSettings when a turn's
    *  requested `fast` service tier differs from this. */
   fastMode: boolean;
+  /** The auto-compact window (in tokens) currently applied to this session, or
+   *  undefined while it's still at the CLI's default. Toggled live in sendTurn
+   *  via applyFlagSettings when a turn's requested context window differs — the
+   *  Claude analogue of a per-thread context-window size, no restart needed. */
+  autoCompactWindow?: number;
 };
 
 // ── small JSON helpers (defensive, like CodexAdapter) ────────────────────────
@@ -512,6 +553,23 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
     }
 
+    // Context window is the other live session Setting: the auto-compact budget
+    // Claude Code compacts the transcript at. Like fast mode it's carried as a
+    // persistent per-session Setting toggled via applyFlagSettings (research's
+    // Claude adapter drives it exactly this way). The composer only sends a
+    // contextWindow for models that advertise the choice, and an unknown id
+    // resolves to undefined here — meaning "leave the window where it is".
+    const wantWindow = contextWindowTokens(input.contextWindow);
+    if (wantWindow !== undefined && wantWindow !== session.autoCompactWindow) {
+      try {
+        await session.query.applyFlagSettings({ autoCompactWindow: wantWindow });
+        session.autoCompactWindow = wantWindow;
+      } catch {
+        // Refused (window unsupported, or auto-compact disabled upstream) —
+        // leave state as-is; the turn still runs at the current window.
+      }
+    }
+
     // Globally-unique turn id (a UUID, matching Codex's app-server ids and both
     // collides across threads in the shared store. See assistantBlockId.
     const turnId = randomUUID();
@@ -851,6 +909,9 @@ function mapClaudeModels(models: ModelInfo[]): ModelDescriptor[] {
       // The SDK's model list is authoritative for fast-mode support — surface it
       // as the generic `fast` service tier the composer's toggle keys off.
       ...(model.supportsFastMode ? { serviceTiers: [FAST_SERVICE_TIER] } : {}),
+      // ModelInfo carries no context-window field, so the 200k/1m auto-compact
+      // choice is derived from the id (every current non-Haiku Claude is 1M).
+      ...(contextWindowsForModel(id) ? { contextWindows: contextWindowsForModel(id) } : {}),
     });
   }
   return out;
