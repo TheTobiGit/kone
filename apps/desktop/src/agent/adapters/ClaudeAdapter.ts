@@ -787,15 +787,30 @@ export class ClaudeAdapter implements ProviderAdapter {
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
     const usage = asRecord((message as Record<string, unknown>).usage);
     if (usage) {
-      const input = readNumber(usage, "input_tokens");
+      // The Anthropic usage object splits prompt tokens across three fields:
+      // `input_tokens` is ONLY the fresh, uncached bytes; the bulk of an
+      // agentic turn's prompt is re-read from the cache and lands in
+      // `cache_read_input_tokens` (plus `cache_creation_input_tokens` when a
+      // new prefix is written). Reading `input_tokens` alone dropped the
+      // cached reads — which dominate — so Claude threads reported a tiny
+      // fraction of their real spend. Fold all three in, matching Codex (whose
+      // total already counts re-sent context) and research's canonical formula.
+      const freshInput = readNumber(usage, "input_tokens");
+      const cacheRead = readNumber(usage, "cache_read_input_tokens");
+      const cacheCreation = readNumber(usage, "cache_creation_input_tokens");
       const output = readNumber(usage, "output_tokens");
+      const hasInput =
+        freshInput !== undefined || cacheRead !== undefined || cacheCreation !== undefined;
+      const input = hasInput
+        ? (freshInput ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0)
+        : undefined;
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
         usage: {
           input,
           output,
-          total: input !== undefined || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined,
+          total: hasInput || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined,
         },
       });
     }
