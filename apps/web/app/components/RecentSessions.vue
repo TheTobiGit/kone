@@ -1,4 +1,13 @@
 <script setup lang="ts">
+import { HugeiconsIcon } from "@hugeicons/vue";
+import {
+  Archive02Icon,
+  Delete02Icon,
+  Folder01Icon,
+  GitBranchIcon,
+  PinIcon,
+  PinOffIcon,
+} from "@hugeicons/core-free-icons";
 import { computed } from "vue";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
@@ -99,16 +108,14 @@ function hasDiff(s: SessionSummary): boolean {
   <section v-if="!loading && hasContent" class="rs">
     <div v-for="section in sections" :key="section.kind" class="rs__group">
       <div class="rs__head" :style="{ '--i': section.start }">
-        <svg
+        <HugeiconsIcon
           v-if="section.kind === 'pinned'"
           class="rs__pin"
-          viewBox="0 0 24 24"
-          width="11"
-          height="11"
+          :icon="PinIcon"
+          :size="11"
+          :stroke-width="1.8"
           aria-hidden="true"
-        >
-          <path d="M9 4h6M10 4l-.6 6.2-2.9 1.9v1.1h11v-1.1l-2.9-1.9L14 4M12 15.2V20" />
-        </svg>
+        />
         <span class="rs__label">{{ section.label }}</span>
       </div>
 
@@ -132,19 +139,12 @@ function hasDiff(s: SessionSummary): boolean {
 
             <div class="rs__meta">
               <span v-if="s.projectName" class="rs__project" :title="s.projectPath">
-                <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                  <path d="M3.5 7.5a2 2 0 0 1 2-2h3.2a2 2 0 0 1 1.4.6l1 1a2 2 0 0 0 1.4.6h5.6a2 2 0 0 1 2 2v6.2a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2Z" />
-                </svg>
+                <HugeiconsIcon :icon="Folder01Icon" :size="12" :stroke-width="1.7" aria-hidden="true" />
                 {{ s.projectName }}
               </span>
 
               <span v-if="s.branch" class="rs__branch">
-                <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                  <line x1="6" y1="3" x2="6" y2="15" />
-                  <circle cx="18" cy="6" r="3" fill="none" />
-                  <circle cx="6" cy="18" r="3" fill="none" />
-                  <path d="M18 9a9 9 0 0 1-9 9" fill="none" />
-                </svg>
+                <HugeiconsIcon :icon="GitBranchIcon" :size="12" :stroke-width="2" aria-hidden="true" />
                 {{ s.branch }}
               </span>
 
@@ -180,9 +180,12 @@ function hasDiff(s: SessionSummary): boolean {
                   :aria-label="s.pinned ? 'Unpin conversation' : 'Pin conversation'"
                   @click="emit('pin', s.threadId)"
                 >
-                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                    <path d="M9 4h6M10 4l-.6 6.2-2.9 1.9v1.1h11v-1.1l-2.9-1.9L14 4M12 15.2V20" />
-                  </svg>
+                  <HugeiconsIcon
+                    :icon="s.pinned ? PinOffIcon : PinIcon"
+                    :size="12"
+                    :stroke-width="1.7"
+                    aria-hidden="true"
+                  />
                   {{ s.pinned ? "Unpin" : "Pin" }}
                 </button>
               </Magnet>
@@ -198,9 +201,7 @@ function hasDiff(s: SessionSummary): boolean {
                   aria-label="Archive conversation"
                   @click="emit('archive', s.threadId)"
                 >
-                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                    <path d="M4 7h16M5 7v11.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7M4 7l1.4-2.5A1 1 0 0 1 6.3 4h11.4a1 1 0 0 1 .9.5L20 7M9.5 12h5" />
-                  </svg>
+                  <HugeiconsIcon :icon="Archive02Icon" :size="12" :stroke-width="1.7" aria-hidden="true" />
                   Archive
                 </button>
               </Magnet>
@@ -216,9 +217,7 @@ function hasDiff(s: SessionSummary): boolean {
                   aria-label="Hold to delete conversation"
                   @confirm="emit('delete', s.threadId)"
                 >
-                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                    <path d="M4 7h16M9 7V4.8a.8.8 0 0 1 .8-.8h4.4a.8.8 0 0 1 .8.8V7M6.5 7l.8 12.1a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9L18.5 7M10 11v6M14 11v6" />
-                  </svg>
+                  <HugeiconsIcon :icon="Delete02Icon" :size="12" :stroke-width="1.7" aria-hidden="true" />
                   Delete
                 </HoldToConfirm>
               </Magnet>
@@ -305,7 +304,7 @@ function hasDiff(s: SessionSummary): boolean {
 .rs__list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -318,8 +317,22 @@ function hasDiff(s: SessionSummary): boolean {
   cursor: pointer;
   border-radius: 10px;
   outline: none;
+  /* Grows from its left edge on hover so the list stays anchored — paired with
+     the entrance rise below. Transform is shared, so the hover scale settles in
+     once the row-in keyframes finish. Promoted to its own compositor layer so
+     the scale composites instead of re-rasterizing the row's text each frame —
+     that repaint is what read as rigid. */
+  transform-origin: left center;
+  will-change: transform;
+  backface-visibility: hidden;
   animation: rs-row-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: calc(var(--proj-enter-sessions, 0ms) + 90ms + min(var(--i, 0) * 48ms, 720ms));
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs__row:hover,
+.rs__row:focus-visible,
+.rs__row:focus-within {
+  transform: scale(1.009);
 }
 /* Borderless row — the whole row opens the thread; on hover the title lights
    up (ink-soft → ink, same as lane / file-detail actions) and the trailing
@@ -416,7 +429,10 @@ function hasDiff(s: SessionSummary): boolean {
   flex-direction: column;
   align-items: flex-end;
   flex-shrink: 0;
-  transition: opacity 0.18s ease;
+  will-change: opacity;
+  /* Matches the actions' reveal curve/duration so the token→actions crossfade
+     reads as one exchange rather than two overlapping fades. */
+  transition: opacity 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .rs__count {
   font-family: var(--font-mono);
@@ -459,11 +475,13 @@ function hasDiff(s: SessionSummary): boolean {
   opacity: 0;
   transform: translateX(6px);
   pointer-events: none;
-  /* Same reveal as ChangeLane's lane actions — opacity fade, plus a soft
-     ease-out slide so they settle in rather than pop. */
+  will-change: opacity, transform;
+  /* Same reveal as ChangeLane's lane actions — opacity fade plus a soft slide.
+     Shares the row's easing and rides its full duration so the reveal and the
+     row's scale move on one clock rather than finishing at different times. */
   transition:
-    opacity 0.18s ease,
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .rs__row:hover .rs__actions,
 .rs__row:focus-within .rs__actions {
@@ -528,6 +546,13 @@ function hasDiff(s: SessionSummary): boolean {
 @media (prefers-reduced-motion: reduce) {
   .rs__head,
   .rs__row { animation: none; }
+  .rs__row,
+  .rs__row:hover,
+  .rs__row:focus-visible,
+  .rs__row:focus-within {
+    transform: none;
+    transition: none;
+  }
   .rs__actions {
     transition: opacity 0.18s ease;
     transform: none;
