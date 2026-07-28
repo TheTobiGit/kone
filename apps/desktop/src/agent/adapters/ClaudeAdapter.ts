@@ -118,18 +118,37 @@ function contextWindowsForModel(id: string): typeof CLAUDE_CONTEXT_WINDOWS | und
   return /haiku/i.test(id) ? undefined : CLAUDE_CONTEXT_WINDOWS;
 }
 
-// Baked catalog used only when the SDK's live model list can't be read (e.g. no
-// login yet). The live list from initializationResult() is preferred — this is
-// just so the picker is never empty. Ids/efforts track the current Claude line.
-// Fast mode is an Opus-lane capability (matching research's static table): the
-// flagship models advertise the `fast` tier, Sonnet/Haiku don't. The live SDK
-// list (mapClaudeModels) is authoritative when a login is present — this only
-// shapes the picker before that first probe resolves.
-const BAKED_CLAUDE_MODELS: ModelDescriptor[] = [
-  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", reasoningEfforts: ["low", "medium", "high"] },
+// The effort ladders the current Claude line exposes (API-effort levels only —
+// ultrathink/ultracode are separate prompt/provider modes kone doesn't surface).
+// `full` = the Claude 5 xhigh/max ladder; `extended` = the pre-xhigh generation
+// (4.6); `basic` = Opus 4.5's short ladder. Haiku carries no effort axis at all.
+const CLAUDE_FULL_EFFORTS: string[] = ["low", "medium", "high", "xhigh", "max"];
+const CLAUDE_EXTENDED_EFFORTS: string[] = ["low", "medium", "high", "max"];
+const CLAUDE_BASIC_EFFORTS: string[] = ["low", "medium", "high"];
+
+// kone's curated Claude catalog — the hand-maintained ground truth, ported from
+// research's static MODEL_OPTIONS_BY_PROVIDER.claudeAgent table (packages/contracts
+// model.ts). This is the *base* of the picker: listModels() merges whatever the
+// live SDK reports on top of it (see mergeClaudeModels), so older versions the
+// SDK no longer advertises still appear, and a brand-new release the SDK knows
+// about surfaces even before it's baked here. Each entry mirrors research's
+// verified per-model capabilities exactly:
+//   • fast mode — only the Opus fast-mode lane (5 / 4.8 / 4.7 / 4.6) advertises
+//     the `fast` tier; Fable, Sonnet and Haiku don't.
+//   • context window — the 200k/1M auto-compact switch is present on every
+//     natively-1M model; Opus 4.5 and Haiku 4.5 are 200k-only, so they get no
+//     `contextWindows` and therefore no switch.
+//   • reasoning effort — each model's real ladder, defaulting to `high`.
+const CURATED_CLAUDE_MODELS: ModelDescriptor[] = [
+  { id: "claude-fable-5", label: "Claude Fable 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6", reasoningEfforts: CLAUDE_EXTENDED_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-opus-4-5", label: "Claude Opus 4.5", reasoningEfforts: CLAUDE_BASIC_EFFORTS, defaultReasoningEffort: "high" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", reasoningEfforts: CLAUDE_EXTENDED_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
 ];
 
 type ClaudeItemBuffer = {
@@ -452,8 +471,8 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   async listModels(): Promise<ModelDescriptor[]> {
     const init = await this.probeInit();
-    const mapped = init ? mapClaudeModels(init.models) : [];
-    return mapped.length > 0 ? mapped : BAKED_CLAUDE_MODELS;
+    const discovered = init ? mapClaudeModels(init.models) : [];
+    return mergeClaudeModels(CURATED_CLAUDE_MODELS, discovered);
   }
 
   /** Best-effort installed-CLI version, for the status row only. */
@@ -1106,4 +1125,22 @@ function mapClaudeModels(models: ModelInfo[]): ModelDescriptor[] {
     });
   }
   return out;
+}
+
+/** Merge kone's curated Claude catalog with whatever the live SDK reports.
+ *  Mirrors research's mergeDynamicModelOptions (static table + dynamic discovery):
+ *  the curated list is authoritative for capability *shape* — the fast-mode lane
+ *  and, crucially, the 200k-only vs 200k/1M auto-compact switch, which the SDK's
+ *  ModelInfo simply can't express — so a model the curated list already knows
+ *  keeps its verified toggles rather than the id-derived guesses mapClaudeModels
+ *  would make. The SDK only contributes genuinely *new* ids (a release we haven't
+ *  baked yet), surfaced at the top so the latest model is reachable immediately.
+ *  Curated entries always show, so older versions the SDK dropped don't vanish. */
+function mergeClaudeModels(
+  curated: ModelDescriptor[],
+  discovered: ModelDescriptor[],
+): ModelDescriptor[] {
+  const curatedIds = new Set(curated.map((m) => m.id));
+  const fresh = discovered.filter((m) => !curatedIds.has(m.id));
+  return [...fresh, ...curated];
 }
