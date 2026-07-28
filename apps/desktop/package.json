@@ -8,7 +8,8 @@
     "dev": "bun run scripts/dev.ts",
     "build": "bun run scripts/build.ts",
     "package": "bun run scripts/package.ts",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220"

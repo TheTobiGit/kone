@@ -9,6 +9,7 @@
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "check-types": "nuxi typecheck",
+    "test": "bun test",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
