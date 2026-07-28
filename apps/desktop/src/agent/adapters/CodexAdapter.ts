@@ -10,6 +10,7 @@ import type {
   EmitEvent,
   InteractionMode,
   ModelDescriptor,
+  PlanTask,
   ProviderAdapter,
   ProviderStatus,
   RuntimeItem,
@@ -20,6 +21,7 @@ import type {
   SessionStartInput,
   TurnStartResult,
 } from "../types.js";
+import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks } from "../planTasks.js";
 
 // Codex adapter — drives `codex app-server` as a persistent JSON-RPC-over-stdio
 // child process per thread (transport: jsonRpc.ts). One session = one live
@@ -75,6 +77,7 @@ type CodexItemBuffer = {
   name?: string;
   text: string;
   detail: string;
+  tasks?: PlanTask[];
 };
 
 type CodexSession = {
@@ -171,7 +174,6 @@ function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultNa
     return { kind: "assistant_text" };
   }
   if (type.includes("reasoning") || type.includes("thought")) return { kind: "reasoning_text" };
-  if (type.includes("plan") || type.includes("todo")) return { kind: "plan_text" };
   // `defaultName` is the tool *identity* (a canonical keyword the thread's
   // tool-family table + phrasing understand), NOT the target — the command,
   // path, or query goes into the item's `text`. Keep these keywords in sync
@@ -546,10 +548,46 @@ export class CodexAdapter implements ProviderAdapter {
       this.emit({ ...this.base(session), type: "turn.started", turnId });
     });
 
+    rpc.onNotification("turn/plan/updated", (params) => {
+      // Honor the turn the notification names, not `activeTurnId`. Codex forwards
+      // child/collaboration-turn plans while the parent turn is still active, so
+      // keying off `activeTurnId` would let a child plan clobber the parent's and
+      // emit under the wrong turn. Fall back to `activeTurnId` only when the
+      // notification carries no turn id of its own.
+      const turnId =
+        readString(params, "turn", "id") ??
+        readString(params, "turnId") ??
+        readString(params, "msg", "turn_id") ??
+        readString(params, "msg", "turnId") ??
+        session.activeTurnId;
+      if (!turnId) return;
+      const snapshot = parseCodexPlanSnapshot(params);
+      if (!snapshot) return;
+      const itemId = `${turnId}:plan`;
+      const existing = session.items.get(itemId);
+      const tasks = reconcilePlanTasks(existing?.tasks ?? [], snapshot);
+      const buffer: CodexItemBuffer = {
+        itemId,
+        kind: "plan_text",
+        text: formatPlanTasks(tasks),
+        detail: "",
+        tasks,
+      };
+      session.items.set(itemId, buffer);
+      this.emitItem(
+        session,
+        existing ? "item.updated" : "item.started",
+        buffer,
+        "in-progress",
+        turnId,
+      );
+    });
+
     rpc.onNotification("turn/completed", (params) => {
       const turn = asRecord(params)?.turn;
       const turnId = readString(turn, "id") ?? readString(params, "turnId") ?? session.activeTurnId;
       const status = readString(turn, "status") ?? "completed";
+      if (turnId) this.completePlanItem(session, turnId);
       session.activeTurnId = undefined;
       if (!turnId) return;
       if (status === "completed") {
@@ -711,13 +749,21 @@ export class CodexAdapter implements ProviderAdapter {
     this.emitItem(session, "item.updated", buffer, "in-progress");
   }
 
+  private completePlanItem(session: CodexSession, turnId: string): void {
+    const itemId = `${turnId}:plan`;
+    const buffer = session.items.get(itemId);
+    if (!buffer) return;
+    this.emitItem(session, "item.completed", buffer, "completed", turnId);
+    session.items.delete(itemId);
+  }
+
   private emitItem(
     session: CodexSession,
     type: "item.started" | "item.updated" | "item.completed",
     buffer: CodexItemBuffer,
     status: RuntimeItemStatus,
+    turnId: string | undefined = session.activeTurnId,
   ): void {
-    const turnId = session.activeTurnId;
     if (!turnId) return;
     const item: RuntimeItem = {
       itemId: buffer.itemId,
@@ -725,6 +771,7 @@ export class CodexAdapter implements ProviderAdapter {
       status,
       text: buffer.text,
       name: buffer.name,
+      ...(buffer.tasks?.length ? { tasks: buffer.tasks } : {}),
       ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
     };
     this.emit({ ...this.base(session), type, turnId, item });

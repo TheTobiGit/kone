@@ -301,6 +301,20 @@ export type RuntimeItemKind = "assistant_text" | "reasoning_text" | "plan_text" 
 
 export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
 
+/** One entry in the agent's working checklist. Matches the shared vocabulary of
+ *  Claude's TodoWrite and Codex's TurnPlanStep — the only two producers. */
+export type PlanTaskStatus = "pending" | "in-progress" | "completed";
+
+export type PlanTask = {
+  /** kone-minted and held stable across snapshots. Providers send no ids. */
+  id: string;
+  /** Imperative form: TodoWrite `content`, Codex `step`. */
+  content: string;
+  /** Present-continuous form for the in-progress row. TodoWrite only. */
+  activeForm?: string;
+  status: PlanTaskStatus;
+};
+
 export type RuntimeItem = {
   itemId: string;
   kind: RuntimeItemKind;
@@ -308,6 +322,8 @@ export type RuntimeItem = {
   /** Streamed narrative for text kinds, or a short inline target/summary for
    *  a tool_call. */
   text: string;
+  /** For `plan_text` items: the agent's checklist as data. */
+  tasks?: PlanTask[];
   name?: string;
   /** A tool_call's full result body (command output, a diff, a changed-file
    *  list) — shown on demand. Undefined when there's nothing to expand. */

@@ -4,13 +4,11 @@ import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/TurnOrb.vue";
-import { parsePlanTasks, planTaskCounts } from "~/utils/planTasks";
+import { planTaskCounts, type PlanTask } from "~/utils/planTasks";
 
 const props = defineProps<{
-  source: string;
+  tasks: PlanTask[];
   streaming?: boolean;
-  /** Lift when away-from-thread pills are stacked underneath. */
-  stacked?: boolean;
 }>();
 
 const { cue } = useSound();
@@ -20,8 +18,11 @@ const shellEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
 
-const tasks = computed(() => parsePlanTasks(props.source));
-const counts = computed(() => planTaskCounts(tasks.value));
+const counts = computed(() => planTaskCounts(props.tasks));
+
+function taskLabel(task: PlanTask): string {
+  return task.status === "in-progress" && task.activeForm ? task.activeForm : task.content;
+}
 
 const meta = computed(() => {
   const { total, completed } = counts.value;
@@ -29,7 +30,7 @@ const meta = computed(() => {
   return `${completed}/${total}`;
 });
 
-const liveTask = computed(() => tasks.value.find((t) => t.status === "in_progress"));
+const liveTask = computed(() => props.tasks.find((t) => t.status === "in-progress"));
 
 function syncHeight(): void {
   const el = shellEl.value;
@@ -61,7 +62,7 @@ watch(
   },
 );
 
-watch([expanded, tasks, () => props.source], () => {
+watch([expanded, () => props.tasks], () => {
   void nextTick(syncHeight);
 });
 
@@ -94,12 +95,7 @@ function rowDelay(index: number): number {
     class="plan-dock"
     :style="{ transformOrigin: '100% 100%' }"
     :initial="{ opacity: 0, y: 16, scale: 0.94 }"
-    :animate="{
-      opacity: 1,
-      y: 0,
-      scale: 1,
-      bottom: stacked ? '5.25rem' : '2rem',
-    }"
+    :animate="{ opacity: 1, y: 0, scale: 1 }"
     :exit="{ opacity: 0, y: 12, scale: 0.95 }"
     :transition="cardSpring"
     aria-label="Agent task plan"
@@ -125,15 +121,15 @@ function rowDelay(index: number): number {
             <AnimatePresence mode="wait">
               <motion.span
                 v-if="!expanded && liveTask"
-                :key="liveTask.content"
+                :key="liveTask.id"
                 class="plan-peek"
-                :title="liveTask.content"
+                :title="taskLabel(liveTask)"
                 :initial="{ opacity: 0, x: 8, filter: 'blur(4px)' }"
                 :animate="{ opacity: 1, x: 0, filter: 'blur(0px)' }"
                 :exit="{ opacity: 0, x: -6, filter: 'blur(3px)' }"
                 :transition="{ duration: 0.22, ease: fadeEase }"
               >
-                {{ liveTask.content }}
+                {{ taskLabel(liveTask) }}
               </motion.span>
             </AnimatePresence>
             <span class="plan-meta-wrap">
@@ -167,7 +163,7 @@ function rowDelay(index: number): number {
             <div class="picker-scroll plan-scroll">
               <AnimatePresence mode="wait">
                 <motion.p
-                  v-if="!tasks.length"
+                  v-if="!props.tasks.length"
                   key="empty"
                   class="plan-empty"
                   :initial="{ opacity: 0, y: 6 }"
@@ -181,12 +177,12 @@ function rowDelay(index: number): number {
 
               <AnimatePresence :initial="false">
                 <motion.div
-                  v-for="(task, index) in tasks"
-                  :key="task.content"
+                  v-for="(task, index) in props.tasks"
+                  :key="task.id"
                   class="plan-row"
                   :class="{
                     'plan-row--done': task.status === 'completed',
-                    'plan-row--live': task.status === 'in_progress',
+                    'plan-row--live': task.status === 'in-progress',
                   }"
                   layout
                   :initial="{ opacity: 0, y: 8, scale: 0.98 }"
@@ -198,7 +194,7 @@ function rowDelay(index: number): number {
                     class="plan-check"
                     :class="{
                       'plan-check--pending': task.status === 'pending',
-                      'plan-check--live': task.status === 'in_progress',
+                      'plan-check--live': task.status === 'in-progress',
                       'plan-check--done': task.status === 'completed',
                     }"
                     aria-hidden="true"
@@ -207,8 +203,8 @@ function rowDelay(index: number): number {
                       <motion.span
                         class="plan-check-orb"
                         :animate="{
-                          opacity: task.status === 'in_progress' ? 1 : 0,
-                          scale: task.status === 'in_progress' ? 1 : 0.9,
+                          opacity: task.status === 'in-progress' ? 1 : 0,
+                          scale: task.status === 'in-progress' ? 1 : 0.9,
                         }"
                         :transition="checkFade"
                       >
@@ -233,11 +229,11 @@ function rowDelay(index: number): number {
                   </span>
                   <motion.span
                     class="plan-label"
-                    :title="task.content"
+                    :title="taskLabel(task)"
                     layout
                     :transition="{ type: 'spring', stiffness: 380, damping: 32, mass: 0.7 }"
                   >
-                    {{ task.content }}
+                    {{ taskLabel(task) }}
                   </motion.span>
                 </motion.div>
               </AnimatePresence>
@@ -251,13 +247,9 @@ function rowDelay(index: number): number {
 
 <style scoped>
 .plan-dock {
-  position: fixed;
-  right: 2rem;
-  bottom: 2rem;
-  z-index: 40;
   width: min(17rem, calc(100vw - 2.5rem));
   pointer-events: auto;
-  will-change: transform, opacity, bottom;
+  will-change: transform, opacity;
 }
 
 .plan-card {
@@ -397,7 +389,8 @@ function rowDelay(index: number): number {
 }
 
 .plan-scroll {
-  max-height: 11.5rem;
+  /* Grow to fit the task list; only scroll once it would run off-screen. */
+  max-height: min(28rem, calc(100vh - 8rem));
 }
 
 .picker-scroll {

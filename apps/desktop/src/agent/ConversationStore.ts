@@ -29,7 +29,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -170,7 +170,12 @@ function migrate(db: DatabaseSync): void {
     version = 6;
   }
 
-  // Future migrations append here: `if (version < 7) { …; version = 7; }`
+  if (version < 7) {
+    db.exec(`ALTER TABLE items ADD COLUMN tasks_json TEXT;`);
+    version = 7;
+  }
+
+  // Future migrations append here: `if (version < 8) { …; version = 8; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -412,14 +417,15 @@ export class ConversationStore {
         case "item.completed": {
           const it = event.item;
           db.prepare(
-            `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail, tasks_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
-               kind   = excluded.kind,
-               status = excluded.status,
-               text   = excluded.text,
-               name   = excluded.name,
-               detail = excluded.detail`,
+               kind        = excluded.kind,
+               status      = excluded.status,
+               text        = excluded.text,
+               name        = excluded.name,
+               detail      = excluded.detail,
+               tasks_json  = excluded.tasks_json`,
           ).run(
             it.itemId,
             event.threadId,
@@ -429,6 +435,7 @@ export class ConversationStore {
             it.text,
             it.name ?? null,
             it.detail ?? null,
+            it.tasks?.length ? JSON.stringify(it.tasks) : null,
           );
           this.touch(db, event.threadId, event.at);
           break;
@@ -766,6 +773,7 @@ type ItemRow = {
   text: string;
   name: string | null;
   detail: string | null;
+  tasks_json: string | null;
 };
 
 function rowToMeta(row: ThreadRow): StoredThreadMeta {
@@ -786,6 +794,15 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
 }
 
 function rowToItem(row: ItemRow): RuntimeItem {
+  let tasks: RuntimeItem["tasks"];
+  if (row.tasks_json) {
+    try {
+      const parsed = JSON.parse(row.tasks_json) as unknown;
+      if (Array.isArray(parsed)) tasks = parsed as RuntimeItem["tasks"];
+    } catch {
+      tasks = undefined;
+    }
+  }
   return {
     itemId: row.item_id,
     kind: row.kind as RuntimeItem["kind"],
@@ -793,6 +810,7 @@ function rowToItem(row: ItemRow): RuntimeItem {
     text: row.text,
     name: row.name ?? undefined,
     detail: row.detail ?? undefined,
+    ...(tasks?.length ? { tasks } : {}),
   };
 }
 

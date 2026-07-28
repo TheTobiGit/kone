@@ -632,11 +632,19 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (hold) await wait(hold);
       if (cancelled) return;
       const text = formatPlanTasks(tasks);
+      const structured = tasks.map((t) => ({ ...t }));
       if (!planItem) {
-        planItem = { itemId: uid(), kind: "plan_text", status: "in-progress", text };
+        planItem = {
+          itemId: uid(),
+          kind: "plan_text",
+          status: "in-progress",
+          text,
+          tasks: structured,
+        };
         emit(planItem, "item.started");
       } else {
         planItem.text = text;
+        planItem.tasks = structured;
         emit(planItem, "item.updated");
       }
     };
@@ -647,10 +655,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     };
 
     const demoPlan: PlanTask[] = [
-      { content: "Tour every tool family in the thread", status: "pending" },
-      { content: "Show task plans updating mid-turn", status: "pending" },
-      { content: "Stream the final markdown answer", status: "pending" },
-      { content: "Verify failed-tool and empty-thought states", status: "pending" },
+      { id: uid(), content: "Tour every tool family in the thread", status: "pending" },
+      { id: uid(), content: "Show task plans updating mid-turn", status: "pending" },
+      { id: uid(), content: "Stream the final markdown answer", status: "pending" },
+      {
+        id: uid(),
+        content: "Verify failed-tool and empty-thought states",
+        status: "pending",
+      },
     ];
     const demoPlanAt = (updates: Partial<Record<number, PlanTask["status"]>>): PlanTask[] =>
       demoPlan.map((task, i) => ({
@@ -680,7 +692,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       await tool("read_file", "AgentComposer.vue");
       if (cancelled) return;
       if (opts.demo) {
-        await setPlan(demoPlanAt({ 0: "in_progress" }), 420);
+        await setPlan(demoPlanAt({ 0: "in-progress" }), 420);
         if (cancelled) return;
       }
       await tool(
@@ -721,13 +733,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // code-intel, run, web, sub-agent, delete — plus a failed call, so every
       // visual state is on screen to review, not just the read/write/search trio.
       if (opts.demo) {
-        await setPlan(demoPlanAt({ 0: "completed", 1: "in_progress" }), 380);
+        await setPlan(demoPlanAt({ 0: "completed", 1: "in-progress" }), 380);
         if (cancelled) return;
         await tool("list_dir", "apps/web/app/components", undefined, 420);
         if (cancelled) return;
         await tool("go_to_definition", "segKindOf → useAgent.ts:167", undefined, 380);
         if (cancelled) return;
-        await setPlan(demoPlanAt({ 0: "completed", 1: "completed", 2: "in_progress" }), 360);
+        await setPlan(demoPlanAt({ 0: "completed", 1: "completed", 2: "in-progress" }), 360);
         if (cancelled) return;
       }
       // A line of narration…
@@ -748,7 +760,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (cancelled) return;
       if (opts.demo) {
         await setPlan(
-          demoPlanAt({ 0: "completed", 1: "completed", 2: "completed", 3: "in_progress" }),
+          demoPlanAt({ 0: "completed", 1: "completed", 2: "completed", 3: "in-progress" }),
           360,
         );
         if (cancelled) return;

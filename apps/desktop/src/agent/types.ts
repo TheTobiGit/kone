@@ -221,6 +221,24 @@ export type RuntimeItemKind = "assistant_text" | "reasoning_text" | "plan_text" 
 
 export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
 
+/** One entry in the agent's working checklist. Matches the shared vocabulary of
+ *  Claude's TodoWrite and Codex's TurnPlanStep — the only two producers. */
+export type PlanTaskStatus = "pending" | "in-progress" | "completed";
+
+export type PlanTask = {
+  /** kone-minted and held stable across snapshots. Providers send no ids (see
+   *  agent-plan-tasks-plan.md §0), and the renderer needs a stable key:
+   *  content is not one, because a checklist may legitimately repeat a label.
+   *  Render identity only — nothing addresses a task by it. */
+  id: string;
+  /** Imperative form: TodoWrite `content`, Codex `step`. */
+  content: string;
+  /** Present-continuous form for the in-progress row. TodoWrite only; Codex
+   *  sends no equivalent. */
+  activeForm?: string;
+  status: PlanTaskStatus;
+};
+
 /** One rendered item within a turn (text block or tool call). */
 export type RuntimeItem = {
   itemId: string;
@@ -230,6 +248,10 @@ export type RuntimeItem = {
    *  kinds, or a short inline target/summary (path, command, query) for a
    *  tool_call. */
   text: string;
+  /** For `plan_text` items: the agent's checklist as data. `text` keeps the
+   *  markdown rendering for the transcript and for threads stored before this
+   *  landed; this is what the dock reads. */
+  tasks?: PlanTask[];
   /** Tool/command name, for tool_call items. */
   name?: string;
   /** A tool_call's full result body — command stdout/stderr, a diff, a

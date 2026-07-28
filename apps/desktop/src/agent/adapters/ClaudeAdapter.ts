@@ -23,6 +23,7 @@ import type {
   EmitEvent,
   InteractionMode,
   ModelDescriptor,
+  PlanTask,
   ProviderAdapter,
   ProviderStatus,
   RuntimeItem,
@@ -33,6 +34,13 @@ import type {
   SessionStartInput,
   TurnStartResult,
 } from "../types.js";
+import type { ClaudeTrackedTask } from "../claudeTaskTracker.js";
+import {
+  applyClaudeTaskToolResult,
+  isClaudeTaskTool,
+  planTasksFromClaudeTracked,
+} from "../claudeTaskTracker.js";
+import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
 
 // Claude adapter — drives Claude Code through `@anthropic-ai/claude-agent-sdk`'s
 // `query()`. One kone thread = one live `query()` session: prompts are pushed
@@ -130,6 +138,9 @@ type ClaudeItemBuffer = {
   name?: string;
   text: string;
   detail: string;
+  tasks?: PlanTask[];
+  /** Raw streamed tool input JSON — kept for TaskCreate/TaskUpdate handling. */
+  toolInputRaw?: string;
   /** Set for tool_use blocks — the raw tool name, used to shape the summary and
    *  to know the block is still executing after its input finishes streaming. */
   toolName?: string;
@@ -172,6 +183,10 @@ type ClaudeSession = {
    *  via applyFlagSettings when a turn's requested context window differs — the
    *  Claude analogue of a per-thread context-window size, no restart needed. */
   autoCompactWindow?: number;
+  /** Claude Code TaskCreate/TaskUpdate checklist for the active turn. */
+  trackedTasks: Map<string, ClaudeTrackedTask>;
+  /** Whether a synthesized `${turnId}:plan` item has been started this turn. */
+  taskPlanStarted: boolean;
 };
 
 // ── small JSON helpers (defensive, like CodexAdapter) ────────────────────────
@@ -238,27 +253,64 @@ function summarizeToolInput(toolName: string | undefined, rawInput: string): { t
   return { text: target?.trim() ?? toolName ?? "", detail };
 }
 
-/** Render a TodoWrite tool call's streamed input as a plan_text body. */
-function formatTodos(rawInput: string): string | undefined {
-  try {
-    const parsed = asRecord(JSON.parse(rawInput));
-    const todos = Array.isArray(parsed?.todos) ? parsed.todos : undefined;
-    if (!todos) return undefined;
-    const lines = todos
-      .map((entry) => {
-        const t = asRecord(entry);
-        const content = readString(t, "content") ?? readString(t, "activeForm");
-        if (!content) return undefined;
-        const status = readString(t, "status");
-        const marker =
-          status === "completed" ? "[x]" : status === "in_progress" ? "[/]" : "[ ]";
-        return `- ${marker} ${content}`;
-      })
-      .filter((v): v is string => Boolean(v));
-    return lines.length > 0 ? lines.join("\n") : undefined;
-  } catch {
-    return undefined;
+// The empty placeholder a streaming tool_use carries before its input_json_delta
+// chunks arrive — an empty object (or empty string). Seeding a buffer with it
+// then appending deltas would produce unparseable JSON, so we skip it.
+function isEmptyToolInput(input: unknown): boolean {
+  if (typeof input === "string") return input.trim().length === 0;
+  if (typeof input === "object" && input !== null && !Array.isArray(input)) {
+    return Object.keys(input).length === 0;
   }
+  return false;
+}
+
+// Claude's file-mutating tools — the ones whose `tool_use_result` carries a
+// structured diff we can surface. Kept lowercase for name-agnostic matching.
+const FILE_EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit"]);
+
+function isClaudeFileEditTool(toolName: string | undefined): boolean {
+  return !!toolName && FILE_EDIT_TOOLS.has(toolName.trim().toLowerCase());
+}
+
+/** Rebuild a unified-diff body from a file tool's structured `tool_use_result`.
+ *  Edit/Write/MultiEdit return a `structuredPatch` (hunks of `+`/`-`/context
+ *  lines); joining every hunk's lines gives the thread — and the Changes dock's
+ *  +/− counts — a real diff, matching what CodexAdapter already emits as `diff`.
+ *  Returns undefined when there's no patch (falls back to the result text). */
+function fileEditDiffBody(structuredResult: unknown): string | undefined {
+  const record = asRecord(structuredResult);
+  if (!record) return undefined;
+
+  const patch = record.structuredPatch;
+  if (Array.isArray(patch) && patch.length > 0) {
+    const lines: string[] = [];
+    for (const hunk of patch) {
+      const hunkLines = asRecord(hunk)?.lines;
+      if (!Array.isArray(hunkLines)) continue;
+      for (const line of hunkLines) if (typeof line === "string") lines.push(line);
+    }
+    if (lines.length > 0) return lines.join("\n");
+  }
+
+  // A brand-new file write has no prior version to diff against, so there's no
+  // patch — treat the whole written content as additions so the dock shows +N.
+  if (record.originalFile == null && typeof record.content === "string" && record.content.length > 0) {
+    return record.content
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line) => `+${line}`)
+      .join("\n");
+  }
+  return undefined;
+}
+
+/** Apply a TodoWrite snapshot to a plan_text buffer when JSON parsing succeeds. */
+function applyPlanSnapshot(buffer: ClaudeItemBuffer, rawJson: string): boolean {
+  const snapshot = parseTodoWriteInput(rawJson);
+  if (!snapshot) return false;
+  buffer.tasks = reconcilePlanTasks(buffer.tasks ?? [], snapshot);
+  buffer.text = formatPlanTasks(buffer.tasks);
+  return true;
 }
 
 /** Pull display text out of a tool_result's `content` (string, or an array of
@@ -500,6 +552,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       disposed: false,
       interrupting: false,
       fastMode: false,
+      trackedTasks: new Map(),
+      taskPlanStarted: false,
     };
     session.consumer = this.consume(session);
 
@@ -577,6 +631,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.msgOrdinal = 0;
     session.blocks.clear();
     session.toolItems.clear();
+    session.trackedTasks.clear();
+    session.taskPlanStarted = false;
     this.emit({ ...this.base(session), type: "turn.started", turnId });
 
     const userMessage: SDKUserMessage = {
@@ -704,7 +760,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       } else if (blockType === "tool_use") {
         const toolName = readString(block, "name");
         const toolUseId = readString(block, "id");
-        const isPlan = toolName === "TodoWrite";
+        const isPlan = toolName?.toLowerCase() === "todowrite";
         const buffer: ClaudeItemBuffer = {
           itemId,
           kind: isPlan ? "plan_text" : "tool_call",
@@ -713,6 +769,18 @@ export class ClaudeAdapter implements ProviderAdapter {
           detail: "",
           toolName,
         };
+        // A streaming tool_use opens with an empty `{}` (or "") placeholder and
+        // fills its input in via input_json_delta; seeding detail with that
+        // placeholder would corrupt the concatenated JSON ("{}" + "{...}" =
+        // unparseable), leaving the tool with no target. Only seed when the
+        // start block already carries real input (the non-streaming case).
+        const blockInput = block?.input;
+        if (blockInput !== undefined && blockInput !== null && !isEmptyToolInput(blockInput)) {
+          const raw =
+            typeof blockInput === "string" ? blockInput : JSON.stringify(blockInput);
+          buffer.detail = raw;
+          buffer.toolInputRaw = raw;
+        }
         session.blocks.set(index, buffer);
         if (toolUseId) session.toolItems.set(toolUseId, buffer);
         this.emitItem(session, "item.started", buffer, "in-progress");
@@ -729,8 +797,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       const deltaType = readString(delta, "type");
       if (deltaType === "text_delta") buffer.text += readString(delta, "text") ?? "";
       else if (deltaType === "thinking_delta") buffer.text += readString(delta, "thinking") ?? "";
-      else if (deltaType === "input_json_delta") buffer.detail += readString(delta, "partial_json") ?? "";
-      else return;
+      else if (deltaType === "input_json_delta") {
+        buffer.detail += readString(delta, "partial_json") ?? "";
+        if (buffer.kind === "plan_text") applyPlanSnapshot(buffer, buffer.detail);
+      } else return;
       this.emitItem(session, "item.updated", buffer, "in-progress");
       return;
     }
@@ -743,12 +813,13 @@ export class ClaudeAdapter implements ProviderAdapter {
       session.blocks.delete(index);
 
       if (buffer.kind === "plan_text") {
-        buffer.text = formatTodos(buffer.detail) ?? buffer.text;
+        applyPlanSnapshot(buffer, buffer.detail);
         buffer.detail = "";
         this.emitItem(session, "item.completed", buffer, "completed");
       } else if (buffer.kind === "tool_call") {
         // Input finished streaming — summarize it, but the tool is now running:
         // stays in-progress until its tool_result lands in a later user message.
+        buffer.toolInputRaw = buffer.detail;
         const { text, detail } = summarizeToolInput(buffer.toolName, buffer.detail);
         buffer.text = text;
         buffer.detail = detail;
@@ -767,21 +838,88 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   /** Complete tool_call items when their result arrives in a `user` message. */
   private handleToolResults(session: ClaudeSession, message: Extract<SDKMessage, { type: "user" }>): void {
+    const structuredResult = (message as { tool_use_result?: unknown }).tool_use_result;
     const content = asRecord(message.message)?.content;
-    if (!Array.isArray(content)) return;
-    for (const rawBlock of content) {
+    const blocks = Array.isArray(content) ? content : [];
+    let handledTaskTool = false;
+
+    for (const rawBlock of blocks) {
       const block = asRecord(rawBlock);
       if (readString(block, "type") !== "tool_result") continue;
       const toolUseId = readString(block, "tool_use_id");
       if (!toolUseId) continue;
       const buffer = session.toolItems.get(toolUseId);
       if (!buffer) continue;
+      const failed = block?.is_error === true;
+
+      if (
+        this.applyTaskToolResult(session, buffer, block ?? {}, structuredResult, failed)
+      ) {
+        handledTaskTool = true;
+      }
+
       session.toolItems.delete(toolUseId);
       const resultText = extractToolResultText(block?.content).trim();
-      if (resultText.length > 0) buffer.detail = resultText;
-      const failed = block?.is_error === true;
+      // Prefer the structured diff for file edits so the thread and the Changes
+      // dock see real +/− lines; fall back to the plain result text otherwise.
+      const diffBody = isClaudeFileEditTool(buffer.toolName)
+        ? fileEditDiffBody(structuredResult)
+        : undefined;
+      if (diffBody) buffer.detail = diffBody;
+      else if (resultText.length > 0) buffer.detail = resultText;
       this.emitItem(session, "item.completed", buffer, failed ? "failed" : "completed");
     }
+
+    // Some SDK user messages carry structured output on the envelope instead of
+    // (or in addition to) parseable tool_result text — TaskCreate's `{ task }`
+    // object lives here.
+    if (!handledTaskTool && structuredResult !== undefined && message.parent_tool_use_id) {
+      const buffer = session.toolItems.get(message.parent_tool_use_id);
+      if (buffer && isClaudeTaskTool(buffer.toolName)) {
+        if (
+          this.applyTaskToolResult(session, buffer, {}, structuredResult, false)
+        ) {
+          session.toolItems.delete(message.parent_tool_use_id);
+          this.emitItem(session, "item.completed", buffer, "completed");
+        }
+      }
+    }
+  }
+
+  private applyTaskToolResult(
+    session: ClaudeSession,
+    buffer: ClaudeItemBuffer,
+    resultBlock: Record<string, unknown>,
+    structuredResult: unknown,
+    isError: boolean,
+  ): boolean {
+    if (!isClaudeTaskTool(buffer.toolName)) return false;
+
+    const toolInput = this.parseToolInputRaw(buffer.toolInputRaw ?? buffer.detail);
+    if (
+      applyClaudeTaskToolResult(
+        session.trackedTasks,
+        { toolName: buffer.toolName!, input: toolInput },
+        resultBlock,
+        structuredResult,
+        isError,
+      )
+    ) {
+      this.emitTaskPlan(session);
+      return true;
+    }
+    return false;
+  }
+
+  private parseToolInputRaw(raw: string): Record<string, unknown> {
+    if (!raw.trim()) return {};
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (typeof parsed === "object" && parsed !== null) return parsed as Record<string, unknown>;
+    } catch {
+      /* malformed */
+    }
+    return {};
   }
 
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
@@ -816,6 +954,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     const turnId = session.activeTurnId;
+    if (turnId) this.completeTaskPlan(session, turnId);
     session.activeTurnId = undefined;
     if (!turnId) return;
 
@@ -846,6 +985,42 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   // ── shared helpers ───────────────────────────────────────────────────────
 
+  private emitTaskPlan(session: ClaudeSession): void {
+    const turnId = session.activeTurnId;
+    if (!turnId || session.trackedTasks.size === 0) return;
+
+    const tasks = planTasksFromClaudeTracked(session.trackedTasks);
+    const buffer: ClaudeItemBuffer = {
+      itemId: `${turnId}:plan`,
+      kind: "plan_text",
+      text: formatPlanTasks(tasks),
+      detail: "",
+      tasks,
+    };
+    const type = session.taskPlanStarted ? "item.updated" : "item.started";
+    session.taskPlanStarted = true;
+    this.emitItem(session, type, buffer, "in-progress");
+  }
+
+  private completeTaskPlan(session: ClaudeSession, turnId: string): void {
+    if (!session.taskPlanStarted || session.trackedTasks.size === 0) {
+      session.taskPlanStarted = false;
+      session.trackedTasks.clear();
+      return;
+    }
+    const tasks = planTasksFromClaudeTracked(session.trackedTasks);
+    const buffer: ClaudeItemBuffer = {
+      itemId: `${turnId}:plan`,
+      kind: "plan_text",
+      text: formatPlanTasks(tasks),
+      detail: "",
+      tasks,
+    };
+    this.emitItem(session, "item.completed", buffer, "completed");
+    session.taskPlanStarted = false;
+    session.trackedTasks.clear();
+  }
+
   private emitItem(
     session: ClaudeSession,
     type: "item.started" | "item.updated" | "item.completed",
@@ -859,6 +1034,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       kind: buffer.kind,
       status,
       text: buffer.text,
+      ...(buffer.tasks?.length ? { tasks: buffer.tasks } : {}),
       ...(buffer.name ? { name: buffer.name } : {}),
       ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
     };

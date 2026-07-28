@@ -22,6 +22,7 @@ import { buildModelCatalog, effortForTier, familyForId, EFFORT_META } from "~/ut
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import { SESSION_BRAND } from "~/types/session";
 import { deriveActivePlan } from "~/utils/planTasks";
+import { deriveChangedFiles } from "~/utils/changedFiles";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -61,6 +62,9 @@ const {
 } = agent;
 
 const activePlan = computed(() => deriveActivePlan(blocks.value));
+// The files the agent has created/edited/removed this thread — the corner
+// Changes dock's list, a sibling of the Tasks dock in the same shell.
+const activeChanges = computed(() => deriveChangedFiles(blocks.value));
 
 // The project's persisted agent threads, split into pinned + recent for the
 // "recent conversations" block on the working-tree home. Reads real history on
@@ -903,17 +907,34 @@ function onDiscardFile(path: string) {
       />
     </div>
 
-    <!-- Agent task plan — TodoWrite output the model made for itself, in the
-         folder-picker shell, docked bottom-right while the turn is live. -->
-    <AnimatePresence :initial="false">
-      <PlanTaskList
-        v-if="activePlan && view === 'chat' && !activeFile"
-        key="agent-plan-dock"
-        :tasks="activePlan.tasks"
-        :streaming="activePlan.streaming"
-        :stacked="pillThreads.length > 0"
-      />
-    </AnimatePresence>
+    <!-- Corner dock stack — the agent's live side-panels in the folder-picker
+         shell, bottom-right while a turn runs. Changes (files touched this
+         thread) rides above Tasks (the model's TodoWrite checklist); the column
+         lifts clear of the away-from-thread pill when one is perched below. -->
+    <div
+      v-if="view === 'chat' && !activeFile"
+      class="dock-stack"
+      :class="{ 'dock-stack--lifted': pillThreads.length > 0 }"
+    >
+      <AnimatePresence :initial="false">
+        <ChangedFilesList
+          v-if="activeChanges.files.length"
+          key="agent-changes-dock"
+          :files="activeChanges.files"
+          :total-added="activeChanges.totalAdded"
+          :total-removed="activeChanges.totalRemoved"
+          :streaming="activeChanges.streaming"
+        />
+      </AnimatePresence>
+      <AnimatePresence :initial="false">
+        <PlanTaskList
+          v-if="activePlan"
+          key="agent-plan-dock"
+          :tasks="activePlan.tasks"
+          :streaming="activePlan.streaming"
+        />
+      </AnimatePresence>
+    </div>
 
     <!-- Away-from-thread status pill — the dynamic island. Perches bottom-right
          whenever a turn is still running after you've left its conversation;
@@ -981,6 +1002,28 @@ function onDiscardFile(path: string) {
 </template>
 
 <style scoped>
+/* ── Corner dock stack ────────────────────────────────────────────────────── */
+/* Fixed to the bottom-right corner, holding the agent's live side-panels
+   (Changes above Tasks) as a single column so the two folder-picker cards stack
+   cleanly instead of fighting for the corner. The container ignores pointer
+   events; each card re-enables them for itself. Lifts to clear the pill when an
+   away-from-thread pill is perched below. */
+.dock-stack {
+  position: fixed;
+  right: 2rem;
+  bottom: 2rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: none;
+  transition: bottom 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.dock-stack--lifted {
+  bottom: 5.25rem;
+}
+
 /* ── Away-from-thread pill stack ──────────────────────────────────────────── */
 /* Fixed to the bottom-right corner; each running/settled off-screen thread gets
    its own dynamic-island pill, newest nearest the corner, older ones stacking
