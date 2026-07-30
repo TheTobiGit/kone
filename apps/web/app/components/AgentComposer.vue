@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, FlashIcon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, Attachment01Icon, FlashIcon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import ParticleOrb from "~/components/ParticleOrb.vue";
-import type { InteractionMode } from "~/types/desktop";
+import type { AttachmentKind, InteractionMode } from "~/types/desktop";
 import {
   effortForTier,
   familyForId,
@@ -57,7 +57,9 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  send: [text: string];
+  /** The draft, plus any picked files. The parent uploads the files (scoped to
+   *  the final thread) and hands the resulting metadata to the agent turn. */
+  send: [text: string, files?: File[]];
   interrupt: [];
   "update:modelId": [id: string];
   "update:reasoning": [tier: EffortTier];
@@ -212,13 +214,149 @@ const springy = ref(false);
 const SPRING_MIN = 64;
 let lastCard = false;
 
-type Chip = { id: number; name: string; kind: "pdf" | "ts" | "folder"; count?: number };
-const chips = ref<Chip[]>([]);
+// ── attachments ────────────────────────────────────────────────────────────
+// The composer holds the picked File objects locally (with an object-URL
+// preview for images) and emits them on send; the parent uploads them to disk
+// so they're scoped to the final thread. Limits mirror the main-process store
+// (see MAX_ATTACHMENTS_PER_TURN / *_BYTES in the agent contract) so an oversize
+// or over-count pick is caught here before it ever reaches an IPC round-trip.
+const MAX_ATTACHMENTS = 8;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
-const hasChips = computed(() => chips.value.length > 0);
+type PendingAttachment = {
+  id: number;
+  file: File;
+  name: string;
+  kind: AttachmentKind;
+  sizeBytes: number;
+  /** A short uppercase badge for non-image files, e.g. "PDF", "MD". */
+  ext: string;
+  /** An object URL for image previews; revoked on remove / unmount. */
+  previewUrl?: string;
+};
+let attachSeq = 0;
+const attachments = ref<PendingAttachment[]>([]);
+// A brief, self-clearing note when a pick is rejected (too big / too many).
+const notice = ref("");
+let noticeTimer: number | undefined;
+function flash(msg: string) {
+  notice.value = msg;
+  window.clearTimeout(noticeTimer);
+  noticeTimer = window.setTimeout(() => (notice.value = ""), 3200);
+}
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const dragging = ref(false);
+let dragDepth = 0;
+
+function extFor(file: File): string {
+  const dot = file.name.lastIndexOf(".");
+  const raw = dot > 0 ? file.name.slice(dot + 1) : "";
+  return (raw || "FILE").slice(0, 4).toUpperCase();
+}
+
+// Take a FileList (picker, drop, or paste) into pending attachments, enforcing
+// the count + per-kind size caps. Rejected files are skipped with a note.
+function addFiles(list: FileList | File[] | null | undefined) {
+  if (!list) return;
+  const incoming = Array.from(list);
+  if (incoming.length === 0) return;
+  let added = 0;
+  for (const file of incoming) {
+    if (attachments.value.length >= MAX_ATTACHMENTS) {
+      flash(`Up to ${MAX_ATTACHMENTS} attachments per message.`);
+      break;
+    }
+    const kind: AttachmentKind = file.type.startsWith("image/") ? "image" : "file";
+    const cap = kind === "image" ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+    if (file.size > cap) {
+      flash(`"${file.name}" is too large (max ${Math.round(cap / (1024 * 1024))} MB).`);
+      continue;
+    }
+    attachments.value.push({
+      id: ++attachSeq,
+      file,
+      name: file.name,
+      kind,
+      sizeBytes: file.size,
+      ext: extFor(file),
+      previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined,
+    });
+    added++;
+  }
+  if (added > 0) {
+    cue("toggle");
+    if (!open.value) void wake();
+    syncSoon();
+  }
+}
+
+function openFilePicker() {
+  fileInput.value?.click();
+}
+function onFilePicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  addFiles(input.files);
+  // Clear so re-picking the same file fires `change` again.
+  input.value = "";
+}
+
+function removeAttachment(id: number) {
+  const at = attachments.value.find((a) => a.id === id);
+  if (at?.previewUrl) URL.revokeObjectURL(at.previewUrl);
+  attachments.value = attachments.value.filter((a) => a.id !== id);
+  cue("toggle");
+  syncSoon();
+}
+function clearAttachments() {
+  for (const at of attachments.value) {
+    if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
+  }
+  attachments.value = [];
+}
+
+// ── drag & drop (over the whole dock) ────────────────────────────────────────
+function hasFiles(e: DragEvent): boolean {
+  return Array.from(e.dataTransfer?.types ?? []).includes("Files");
+}
+function onDragEnter(e: DragEvent) {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  dragging.value = true;
+}
+function onDragOver(e: DragEvent) {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+}
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging.value = false;
+}
+function onDrop(e: DragEvent) {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  dragging.value = false;
+  addFiles(e.dataTransfer?.files);
+}
+
+// Paste — grab any files off the clipboard (a screenshot, a copied file) and
+// keep the plain-text paste working when there aren't any.
+function onPaste(e: ClipboardEvent) {
+  const files = e.clipboardData?.files;
+  if (files && files.length > 0) {
+    e.preventDefault();
+    addFiles(files);
+  }
+}
+
+const hasAttachments = computed(() => attachments.value.length > 0);
 const hasText = computed(() => text.value.trim().length > 0);
-const armed = computed(() => hasText.value || hasChips.value);
-const card = computed(() => hasChips.value);
+const armed = computed(() => hasText.value || hasAttachments.value);
+const card = computed(() => hasAttachments.value);
 
 // The card keeps a fixed comfortable width (chips define it); the pill sizes to
 // its text. `undefined` lets CSS own the width (52 at rest, clamp for the card).
@@ -381,12 +519,6 @@ async function onGlobalKey(e: KeyboardEvent) {
 }
 useEventListener(window, "keydown", onGlobalKey);
 
-function removeChip(id: number) {
-  chips.value = chips.value.filter((c) => c.id !== id);
-  cue("toggle");
-  syncSoon();
-}
-
 function send() {
   // While a turn runs the seed is a stop button.
   if (props.busy) {
@@ -399,11 +531,13 @@ function send() {
     return;
   }
   const draft = text.value.trim();
-  if (!draft) return;
-  emit("send", draft);
+  // A turn is valid with text, attachments, or both — an attachment-only send
+  // (a screenshot with no words) is allowed.
+  const files = attachments.value.map((a) => a.file);
+  emit("send", draft, files.length ? files : undefined);
   cue("success");
   text.value = "";
-  chips.value = [];
+  clearAttachments();
   syncSoon();
 }
 
@@ -414,17 +548,45 @@ function onEnter() {
 }
 
 onMounted(sync);
+onUnmounted(() => {
+  window.clearTimeout(noticeTimer);
+  for (const at of attachments.value) {
+    if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
+  }
+});
 // Typing (and pasting) changes height at a settled width — sync() freezes the
 // width transition while it measures, so a single immediate measure is right
 // even when the paste jumps the pill's width open.
 watch(text, () => nextTick(sync));
+
+defineExpose({ wake });
 </script>
 
 <template>
-  <div ref="dock" class="dock" :class="{ 'dock--tall': isTall }">
+  <div
+    ref="dock"
+    class="dock"
+    :class="{ 'dock--tall': isTall, 'dock--drag': dragging }"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
     <!-- Hidden twin of the text, unwrapped — its width is how wide the pill
          wants to be. Kept in the same type as the textarea. -->
     <div ref="mirror" class="mirror" aria-hidden="true">{{ (text || "Ask anything…") + " " }}</div>
+
+    <!-- Off-screen file picker, opened by the attach control. Accepts anything;
+         images become vision blocks, everything else an on-disk path block. -->
+    <input
+      ref="fileInput"
+      type="file"
+      multiple
+      class="file-input"
+      aria-hidden="true"
+      tabindex="-1"
+      @change="onFilePicked"
+    />
 
     <!-- Controls sit beside the input, not in it. They fade in as it opens and
          ride outward on the surface's growing edge. -->
@@ -459,6 +621,18 @@ watch(text, () => nextTick(sync));
         </svg>
         <span class="mode__label">{{ currentMode.label }}</span>
       </button>
+
+      <!-- Attach — opens the file picker. Drag-drop and paste feed the same
+           pending list. Borderless like the other side controls. -->
+      <button
+        type="button"
+        class="attach"
+        aria-label="Attach files"
+        title="Attach files, documents, or images"
+        @click.stop="openFilePicker"
+      >
+        <HugeiconsIcon :icon="Attachment01Icon" :size="18" :stroke-width="2" />
+      </button>
     </div>
 
     <!-- One surface, morphing. Closed it's the orb; open it's the field. -->
@@ -477,27 +651,33 @@ watch(text, () => nextTick(sync));
         <ParticleOrb :size="55" :energy="busy ? 1 : 0" :active="!open" />
       </div>
 
-      <!-- Context chips ride the gradient at the top of the card -->
+      <!-- Attachment chips ride the gradient rim at the top of the card.
+           Images show a thumbnail; other files show an uppercase extension
+           badge. Clicking a chip removes it. -->
       <Transition name="fade">
-        <div v-if="hasChips" class="chips">
+        <div v-if="hasAttachments || notice" class="chips">
           <button
-            v-for="chip in chips"
-            :key="chip.id"
+            v-for="at in attachments"
+            :key="at.id"
             type="button"
             class="chip"
-            @click.stop="removeChip(chip.id)"
+            :class="{ 'chip--image': at.kind === 'image' }"
+            :title="`Remove ${at.name}`"
+            @click.stop="removeAttachment(at.id)"
           >
-            <span v-if="chip.kind === 'pdf'" class="chip__badge chip__badge--pdf">PDF</span>
-            <span v-else-if="chip.kind === 'ts'" class="chip__badge chip__badge--ts">TS</span>
-            <svg v-else class="chip__folder" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M2 4.5C2 3.7 2.7 3 3.5 3H6L7.5 4.5H12.5C13.3 4.5 14 5.2 14 6V11C14 11.8 13.3 12.5 12.5 12.5H3.5C2.7 12.5 2 11.8 2 11V4.5Z" fill="#F0B54A" />
-            </svg>
-            <span class="chip__name">{{ chip.name }}</span>
-            <span v-if="chip.count != null" class="chip__count">{{ chip.count }}</span>
+            <img
+              v-if="at.kind === 'image' && at.previewUrl"
+              class="chip__thumb"
+              :src="at.previewUrl"
+              :alt="at.name"
+            />
+            <span v-else class="chip__badge">{{ at.ext }}</span>
+            <span class="chip__name">{{ at.name }}</span>
             <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
             </svg>
           </button>
+          <span v-if="notice" class="chips__notice">{{ notice }}</span>
         </div>
       </Transition>
 
@@ -524,6 +704,7 @@ watch(text, () => nextTick(sync));
             placeholder="Ask anything…"
             :tabindex="open ? 0 : -1"
             @keydown.enter.exact.prevent="onEnter"
+            @paste="onPaste"
           />
           <button
             type="button"
@@ -659,6 +840,12 @@ watch(text, () => nextTick(sync));
 .dock--tall { align-items: flex-end; }
 .dock--tall .side { padding-bottom: 12px; }
 
+/* Dragging files over the dock: a soft indigo ring on the surface invites the
+   drop. No border/heavy shadow — a low, calm glow in kone's idiom. */
+.dock--drag .surface {
+  box-shadow: rgb(139 124 240 / 0.30) 0 0 0 3px;
+}
+
 /* ── Side controls ────────────────────────────────────────────────────────── */
 /* Equal-width slots flank the surface so it stays screen-centred; the controls
    hug the pill and fade/slide in as it opens. */
@@ -731,6 +918,8 @@ watch(text, () => nextTick(sync));
   border-radius: 32px;
   background-image: var(--pill-rim);
   cursor: default;
+  display: flex;
+  flex-direction: column;
   /* Open + everyday sizing: width tracks the text and height follows. This is
      the typing curve — short and snappy with no overshoot, so per-keystroke
      nudges keep up with the cursor instead of wobbling behind it. */
@@ -775,8 +964,13 @@ watch(text, () => nextTick(sync));
   transition: background-color 0.28s ease, border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .surface.is-open .panel {
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border-radius: 29.5px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 .surface.is-card .panel { border-radius: 23.5px; }
 
@@ -840,7 +1034,17 @@ watch(text, () => nextTick(sync));
   opacity: 0;
   transition: opacity 0.18s ease;
 }
-.surface.is-open .field { opacity: 1; transition: opacity 0.2s ease 0.08s; }
+/* In card mode the panel is a flex column, so the field should fill the
+   remaining space after the chips row instead of stretching to 100 % of the
+   panel (which would overflow past chips). */
+.surface.is-open .field {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  opacity: 1;
+  transition: opacity 0.2s ease 0.08s;
+}
+.surface:not(.is-open) .field { flex: none; }
 /* Single line: text and seed sit centred. Once it wraps, the seed drops to the
    bottom while the text fills upward. */
 .field--tall { align-items: flex-end; }
@@ -915,7 +1119,7 @@ watch(text, () => nextTick(sync));
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 13px 14px 11px;
+  padding: 8px 12px 8px;
 }
 .chip {
   display: flex;
@@ -929,25 +1133,51 @@ watch(text, () => nextTick(sync));
   color: var(--chip-x);
   cursor: pointer;
 }
+.chip--image { padding-left: 4px; }
+/* Extension badge for non-image files — a soft neutral tile, no loud colour
+   (kone stays calm and borderless). */
 .chip__badge {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  color: #fff;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--btn-border);
+  color: var(--chip-ink);
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 7.5px;
+  font-size: 8.5px;
+  letter-spacing: 0.02em;
   line-height: 1;
 }
-.chip__badge--pdf { background: #f04438; }
-.chip__badge--ts { background: #3178c6; font-size: 8px; }
-.chip__folder { width: 16px; height: 16px; flex-shrink: 0; }
-.chip__name { color: var(--chip-ink); font-size: 13px; font-weight: 500; line-height: 16px; }
-.chip__count { color: var(--chip-x); font-family: var(--font-mono); font-size: 11px; line-height: 14px; }
+/* Image preview thumbnail. */
+.chip__thumb {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+}
+.chip__name {
+  color: var(--chip-ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chip__x { width: 12px; height: 12px; flex-shrink: 0; }
+.chips__notice {
+  align-self: center;
+  color: var(--chip-x);
+  font-size: 12px;
+  line-height: 16px;
+}
 
 /* ── Side control buttons (bare on the ground, beside the pill) ───────────── */
 /* No pill, no border, no shadow — just the mark, in kone's borderless idiom.
@@ -1022,6 +1252,38 @@ watch(text, () => nextTick(sync));
   white-space: nowrap;
 }
 .mode--bump .mode__icon { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+
+/* ── Attach control ───────────────────────────────────────────────────────── */
+/* Borderless, matching the model/effort/mode idiom: just the mark, ink lifts on
+   hover, no container. */
+.attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--btn-ink);
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
+}
+.attach:hover { opacity: 1; transform: translateY(-1px); }
+.attach:active { transform: translateY(0) scale(0.96); }
+/* The real <input type=file> is off-screen; the attach button drives it. */
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ── Effort control (brain-stack) ─────────────────────────────────────────── */
 .effort {
