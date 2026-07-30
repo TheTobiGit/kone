@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { PlanTask } from "~/types/desktop";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import {
+  activePlanTask,
   deriveActivePlan,
   formatPlanTasks,
   parsePlanTasks,
@@ -209,5 +210,52 @@ describe("deriveActivePlan", () => {
     const plan = deriveActivePlan(blocks);
     expect(plan).not.toBeNull();
     expect(plan?.streaming).toBe(false);
+  });
+});
+
+describe("activePlanTask", () => {
+  function planBlock(tasks: PlanTask[]): ThreadBlock {
+    return {
+      id: "b1",
+      role: "assistant",
+      turnId: "t1",
+      items: [{ itemId: "p1", kind: "plan_text", status: "in-progress", text: "", tasks }],
+      state: "running",
+      at: 1,
+    };
+  }
+
+  test("names the in-progress task and its position", () => {
+    const blocks = [
+      planBlock([
+        task("First", "completed"),
+        task("Second", "in-progress"),
+        task("Third", "pending"),
+      ]),
+    ];
+    expect(activePlanTask(blocks)).toEqual({ label: "Second", index: 2, total: 3 });
+  });
+
+  test("prefers the task's activeForm while it runs", () => {
+    const live: PlanTask = {
+      id: "x",
+      content: "Wire the pill",
+      activeForm: "Wiring the pill",
+      status: "in-progress",
+    };
+    expect(activePlanTask([planBlock([live])])?.label).toBe("Wiring the pill");
+  });
+
+  test("falls back to the first outstanding task when none is flipped yet", () => {
+    const blocks = [planBlock([task("First", "completed"), task("Second", "pending")])];
+    expect(activePlanTask(blocks)).toEqual({ label: "Second", index: 2, total: 2 });
+  });
+
+  test("is null once every task is done", () => {
+    expect(activePlanTask([planBlock([task("Only", "completed")])])).toBeNull();
+  });
+
+  test("is null with no plan at all", () => {
+    expect(activePlanTask([])).toBeNull();
   });
 });

@@ -125,6 +125,29 @@ export function planTaskCounts(tasks: readonly PlanTask[]): {
   return { total: tasks.length, completed, inProgress };
 }
 
+/** The one task a thread is on right now, in the compact shape the away-from-
+ *  thread pill needs: the task's own present-tense label plus where it sits in
+ *  the checklist ("3 of 5"). */
+export type ActivePlanTask = {
+  label: string;
+  index: number;
+  total: number;
+};
+
+/** The task the agent is currently working — the in-progress row of the thread's
+ *  latest plan, or (when the model hasn't flipped one yet) the first row still
+ *  outstanding. Null when there's no plan, or when every task is done. */
+export function activePlanTask(blocks: ThreadBlock[]): ActivePlanTask | null {
+  const plan = deriveActivePlan(blocks);
+  if (!plan || !plan.tasks.length) return null;
+  let i = plan.tasks.findIndex((t) => t.status === "in-progress");
+  if (i === -1) i = plan.tasks.findIndex((t) => t.status === "pending");
+  if (i === -1) return null; // every task completed — the plan has nothing live left
+  const task = plan.tasks[i];
+  if (!task) return null;
+  return { label: labelForTask(task), index: i + 1, total: plan.tasks.length };
+}
+
 /** The agent's task plan for the floating dock — the latest `plan_text` item in
  *  the thread. Stays visible after the turn settles (even when every task is
  *  done) until a later turn replaces it with a new plan snapshot. */
