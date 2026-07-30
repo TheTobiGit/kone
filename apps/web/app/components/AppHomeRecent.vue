@@ -121,7 +121,9 @@ function onSideAction(
 ): void {
   hoveredPath.value = null;
   focusedPath.value = null;
-  emit(action, path);
+  if (action === "pin") emit("pin", path);
+  else if (action === "reveal") emit("reveal", path);
+  else if (action === "forget") emit("forget", path);
 }
 </script>
 
