@@ -78,6 +78,94 @@ const ACTIONS: ShortcutAction[] = [
     default: "mod+shift+d",
     rebindable: true,
   },
+  {
+    id: "new-thread",
+    label: "New thread",
+    hint: "Start a fresh, empty conversation in the active project.",
+    description: "Start a fresh, empty conversation in the active project.",
+    group: "Conversation",
+    default: "mod+n",
+    rebindable: true,
+    personalize: true,
+  },
+
+  // ── the thread strip ──────────────────────────────────────────────────────
+  // A project's live threads tile as columns on one horizontally scrollable
+  // strip (a scrollable-tiling window manager, niri-style). These step focus
+  // along it and rearrange it, mirroring niri's own focus-column-left/right and
+  // move-column-left/right. Arrow keys rather than letters on purpose: on macOS
+  // Alt+letter composes a different character (⌥R → "®"), which no longer
+  // matches the binding — Alt+Arrow is layout-safe.
+  {
+    id: "focus-thread-left",
+    label: "Focus thread left",
+    hint: "Move focus one column left along the project's thread strip.",
+    description: "Step to the thread column on the left.",
+    group: "Threads",
+    default: "mod+alt+left",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "focus-thread-right",
+    label: "Focus thread right",
+    hint: "Move focus one column right along the project's thread strip.",
+    description: "Step to the thread column on the right.",
+    group: "Threads",
+    default: "mod+alt+right",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "move-thread-left",
+    label: "Move thread left",
+    hint: "Carry the focused thread one place left along the strip.",
+    description: "Rearrange the strip — the focused thread keeps focus.",
+    group: "Threads",
+    default: "mod+alt+shift+left",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "move-thread-right",
+    label: "Move thread right",
+    hint: "Carry the focused thread one place right along the strip.",
+    description: "Rearrange the strip — the focused thread keeps focus.",
+    group: "Threads",
+    default: "mod+alt+shift+right",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "cycle-thread-width",
+    label: "Cycle thread width",
+    hint: "Step the focused thread column through its fixed width presets (840px … 1240px).",
+    description: "Trade peripheral threads for reading room.",
+    group: "Threads",
+    default: "mod+shift+r",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "grow-thread-width",
+    label: "Widen thread",
+    hint: "Grow the focused thread column one width step (toward 1240px).",
+    description: "Give the focused thread more reading room.",
+    group: "Threads",
+    default: "mod+alt+up",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "shrink-thread-width",
+    label: "Narrow thread",
+    hint: "Shrink the focused thread column one width step (toward 840px).",
+    description: "Pull the focused thread narrower so more neighbours peek in.",
+    group: "Threads",
+    default: "mod+alt+down",
+    rebindable: true,
+    personalize: true,
+  },
 
   // ── fixed (always available, not rebindable) ─────────────────────────────
   {
@@ -174,6 +262,17 @@ function modsFromBinding(binding: string): ModToken[] {
   return out;
 }
 
+// KeyboardEvent.key reports "ArrowLeft"/"ArrowUp"/… but bindings are stored as
+// the short names ("left", "up", …) the default ACTIONS use. Fold them here so a
+// captured press tokenizes to the same string a binding does — otherwise capture,
+// conflict detection, and default-equality all miss on arrow keys.
+const ARROW_KEYS: Record<string, string> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
+
 // Normalize the "key" segment: lowercase letters, map a few Display-name quirks
 // ("Esc" → "escape", "Spacebar" ⟶ "space") so presses and bindings comparable.
 function keyToken(e: KeyboardEvent): string {
@@ -182,7 +281,9 @@ function keyToken(e: KeyboardEvent): string {
     return "";
   }
   if (k === " ") return "space";
-  return k.length === 1 ? k.toLowerCase() : k.toLowerCase();
+  const arrow = ARROW_KEYS[k];
+  if (arrow) return arrow;
+  return k.toLowerCase();
 }
 
 function bindingFromEvent(e: KeyboardEvent): string {
@@ -209,6 +310,20 @@ function normalizeStored(binding: string): string {
   return [...mods, key].join("+");
 }
 
+// Arrow bindings are stored as short names ("left", "up", …) but KeyboardEvent.key
+// reports "ArrowLeft", "ArrowUp", … — treat them as equivalent when matching.
+const KEY_ALIASES: Record<string, readonly string[]> = {
+  left: ["arrowleft"],
+  right: ["arrowright"],
+  up: ["arrowup"],
+  down: ["arrowdown"],
+};
+
+function keysMatch(bindingKey: string, eventKey: string): boolean {
+  if (bindingKey === eventKey) return true;
+  return KEY_ALIASES[bindingKey]?.includes(eventKey) ?? false;
+}
+
 // ── matching ──────────────────────────────────────────────────────────────────
 function sameMods(a: ModToken[], b: ModToken[]): boolean {
   if (a.length !== b.length) return false;
@@ -223,7 +338,7 @@ export function matchesBinding(e: KeyboardEvent, binding: string): boolean {
   const bindMods = modsFromBinding(binding);
   const key = binding.split("+").pop()!;
   if (!sameMods(eventMods, bindMods)) return false;
-  if (keyToken(e) !== key) return false;
+  if (!keysMatch(key, keyToken(e))) return false;
   return true;
 }
 
@@ -264,6 +379,10 @@ function keyLabel(key: string): string {
     escape: "Esc",
     tab: "Tab",
     space: "Space",
+    up: "↑",
+    down: "↓",
+    left: "←",
+    right: "→",
     arrowup: "↑",
     arrowdown: "↓",
     arrowleft: "←",

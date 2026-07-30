@@ -12,9 +12,11 @@ import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
 import type {
+  ChatAttachment,
   GitFileStatus,
   InteractionMode,
   ProviderKind,
+  UserInputAnswers,
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
@@ -56,9 +58,10 @@ const {
   reasoning,
   serviceTier,
   contextWindow,
+  pendingUserInput,
   now: agentNow,
-  error: agentError,
-  title: threadTitle,
+  // The active thread's title / error aren't projected here any more: each strip
+  // column renders its own from its own session.
 } = agent;
 
 const activePlan = computed(() => deriveActivePlan(blocks.value));
@@ -130,7 +133,6 @@ const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent"]);
 const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic" };
 const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude" };
-const threadBrand = computed(() => SESSION_BRAND[agent.provider.value] ?? "generic");
 
 // The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
 // "last used" choice that every project opens with (not per-project). The
@@ -345,8 +347,12 @@ function cancelCycle() {
 // cycle is a hold-and-tap gesture like Alt+Tab, so we keep the bare-Tab +
 // bare-Control keyup tests below; only the *modifier+Tab* opener consults the
 // registry — Shift direction is read off the press itself.
-const { matchesShortcut: matchesCycle, bindingModsFor, isMacPlatform } =
-  useShortcuts();
+const {
+  matchesShortcut,
+  matchesShortcut: matchesCycle,
+  bindingModsFor,
+  isMacPlatform,
+} = useShortcuts();
 
 function cycleBindingMods() {
   return bindingModsFor("cycle-projects");
@@ -383,6 +389,17 @@ useEventListener(window, "keyup", (e: KeyboardEvent) => {
 // cycle instead of leaving it stuck open with no keyup to close it.
 useEventListener(window, "blur", () => {
   if (cycling.value) cancelCycle();
+});
+
+// Ctrl+N (mod+n) starts a fresh, empty thread — mirroring the composer's own
+// "send from the working-tree home" path. It flips the view straight to chat so
+// the user lands in the blank thread, and prunes the idle previous thread when
+// it never ran a live turn.
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (!matchesShortcut("new-thread", e)) return;
+  e.preventDefault();
+  void agent.newThread();
+  view.value = "chat";
 });
 
 // Play a scripted demo conversation so the whole thread UI (thinking, tools
@@ -492,17 +509,36 @@ function onUpdateFastMode(on: boolean) {
   agent.setServiceTier(on ? fam?.fastTier?.id : undefined);
 }
 
-async function onSend(text: string) {
+async function onSend(text: string, files?: File[]) {
   // Sending from the working-tree home (no thread in view) begins a fresh
   // conversation rather than continuing the last-opened one — the session boots
   // rehydrated with the project's latest thread, so without this a first send
   // would silently append to that old transcript.
   if (view.value === "work") await agent.newThread();
   view.value = "chat";
-  void agent.send(text);
+  // Persist any picked files first — now that the thread is settled, uploads are
+  // scoped to the right one. Each resolves to bytes-free metadata the turn
+  // carries; a failed upload is dropped rather than sinking the whole send.
+  let attachments: ChatAttachment[] | undefined;
+  if (files?.length) {
+    const results = await Promise.allSettled(files.map((f) => agent.uploadAttachment(f)));
+    const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    if (ok.length) attachments = ok;
+  }
+  void agent.send(text, attachments);
 }
 function onInterrupt() {
   void agent.interrupt();
+}
+
+// Answer the agent's live question — hands the picked/typed answers back to the
+// adapter, which resolves the parked tool call and lets the turn continue.
+function onAnswerUserInput(requestId: string, answers: UserInputAnswers) {
+  void agent.respondUserInput(requestId, answers);
+}
+// Dismiss the question — an empty answer, which the adapter treats as declined.
+function onCancelUserInput(requestId: string) {
+  void agent.respondUserInput(requestId, {});
 }
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it
@@ -550,6 +586,41 @@ watch(activeFile, (f) => {
 });
 onBeforeUnmount(() => lockPage(false));
 
+// Wake the composer when a blank thread becomes active in chat — new thread,
+// seam insert, or closing the last column all land here. Watching activeKey (not
+// a bare empty-blocks check) so closing the orb on an empty thread stays closed.
+const composerRef = ref<{ wake: () => Promise<void> } | null>(null);
+watch(
+  [view, () => agent.activeKey.value, blocks, busy],
+  () => {
+    if (view.value !== "chat" || activeFile.value) return;
+    if (blocks.value.length === 0 && !busy.value) {
+      void composerRef.value?.wake();
+    }
+  },
+);
+
+// ── thread strip ──────────────────────────────────────────────────────────────
+// The strip's geometry is its own business; these are the registry operations it
+// can't do for itself. Focus and focus-stepping go straight to the composable
+// (bound inline in the template) — these three need a little more.
+
+/** Carry the focused column along the strip. */
+function onMoveColumn(delta: number) {
+  agent.moveThread(agent.activeKey.value, delta);
+}
+
+/** Close a column. Tears the session down; the registry hands focus to a
+ *  neighbour, or leaves a fresh blank column when it was the last one. */
+function onCloseColumn(key: string) {
+  void agent.closeThread(key);
+}
+
+/** Insert a thread to the right of the seam after column `seamIndex`. */
+function onInsertThread(seamIndex: number) {
+  void agent.newThreadAt(seamIndex + 2);
+}
+
 // ── away-from-thread status pills ────────────────────────────────────────────────
 // A project can have several threads live at once. Any thread whose live (or
 // just-settled) turn is off-screen rides a dynamic-island pill in the corner —
@@ -564,28 +635,54 @@ watch(
   [view, () => agent.threads.value],
   () => {
     if (view.value !== "chat") return;
-    const onScreen = agent.threads.value.find((t) => t.isActive);
+    // The strip puts EVERY live thread on screen, not just one, so every thread
+    // is "seen" while it's up — otherwise stepping back to the working-tree home
+    // would raise a pill for each column you'd been watching all along.
+    //
     // Only mark a turn seen once it's settled. Marking it seen the instant its
     // running block appears means a reply that finishes *after* the user steps
     // away never re-pills (its turnId never changes), so the completion goes
     // unannounced. Waiting for the settled state keeps the on-screen case honest
     // (it settles under the user's eyes) while still pilling an away-completion.
-    if (onScreen?.block && onScreen.block.state !== "running") {
-      seenTurns.value = { ...seenTurns.value, [onScreen.threadId]: onScreen.block.turnId };
+    const seen = { ...seenTurns.value };
+    let touched = false;
+    for (const t of agent.threads.value) {
+      if (t.block && t.block.state !== "running" && seen[t.threadId] !== t.block.turnId) {
+        seen[t.threadId] = t.block.turnId;
+        touched = true;
+      }
     }
+    if (touched) seenTurns.value = seen;
   },
   { deep: true },
 );
+
+// Pills the user has waved away, per thread → the turn they dismissed. Unlike
+// `seenTurns` this also silences a *running* turn: you've said you don't want to
+// be told about this one. The thread's next turn mints a new id, so a dismissal
+// never permanently mutes a conversation.
+const dismissedTurns = ref<Record<string, string>>({});
+
+function onDismissThread(threadId: string, turnId: string) {
+  cue("press");
+  dismissedTurns.value = { ...dismissedTurns.value, [threadId]: turnId };
+  seenTurns.value = { ...seenTurns.value, [threadId]: turnId };
+}
 
 // The pill stack: off-screen threads with a live-or-unseen turn, oldest first so
 // the newest sits closest to the corner. Behind the file-detail overlay they all
 // step aside, returning the moment it closes.
 const pillThreads = computed(() => {
   if (activeFile.value) return [];
+  // On the strip every live thread is already a column you can see, so a pill
+  // would only duplicate it — a thread working off the edge of the viewport
+  // announces itself by pulsing its dash in the strip's column indicator
+  // instead. Pills are for the working-tree home, where no thread is on screen.
+  if (view.value === "chat") return [];
   return agent.threads.value
     .filter((t) => {
       if (!t.everRan || !t.block) return false;
-      if (t.isActive && view.value === "chat") return false; // it's the one on screen
+      if (dismissedTurns.value[t.threadId] === t.block.turnId) return false;
       const running = t.block.state === "running";
       const unseen = seenTurns.value[t.threadId] !== t.block.turnId;
       return running || unseen;
@@ -596,6 +693,8 @@ const pillThreads = computed(() => {
       title: t.title,
       brand: SESSION_BRAND[t.provider] ?? "generic",
       block: t.block,
+      turnId: t.block?.turnId ?? "",
+      task: t.task,
     }))
     .sort((a, b) => (a.block?.at ?? 0) - (b.block?.at ?? 0));
 });
@@ -727,35 +826,24 @@ function onDiscardFile(path: string) {
       </motion.button>
     </Magnet>
 
-    <!-- CHAT · sticky working title, centered under the top chrome. Lives
-         outside the scroll region so turns move under it. -->
-    <header
-      v-if="view === 'chat' && threadTitle"
-      class="chat-title"
-      :inert="Boolean(activeFile)"
-    >
-      <div class="chat-title__pill">
-        <ProviderLogo :brand="threadBrand" :size="18" />
-        <h1 class="chat-title__label">{{ threadTitle }}</h1>
-      </div>
-    </header>
-
-    <!-- CHAT · the page itself never scrolls — only the thread does, fading into
-         a soft smoke mask below the sticky title (just above the first prompt)
-         and just above the docked composer, the same easing as the file-preview
-         body. -->
+    <!-- CHAT · the thread strip. Every live thread in this project is a column on
+         one horizontally scrollable rail (niri-style scrollable tiling), the
+         focused one held at centre with its neighbours peeking in. The page
+         itself never scrolls — each column scrolls its own turns, and each
+         carries its own title bar, so there's no single sticky title any more. -->
     <Transition name="chat-open" appear>
-      <div
+      <ThreadStrip
         v-if="view === 'chat'"
-        class="chat-scroll selectable"
+        :sessions="agent.sessions.value"
+        :active-key="agent.activeKey.value"
+        :now="agentNow"
         :inert="Boolean(activeFile)"
-      >
-        <ConversationThread
-          :blocks="blocks"
-          :now="agentNow"
-          :session-error="agentError"
-        />
-      </div>
+        @focus="agent.focusThread"
+        @shift="agent.focusByOffset"
+        @move="onMoveColumn"
+        @close="onCloseColumn"
+        @insert-thread="onInsertThread"
+      />
     </Transition>
 
     <!-- WORK · the working-tree home. The page holds the viewport — greeting +
@@ -884,10 +972,12 @@ function onDiscardFile(path: string) {
          wake it, then it stretches into the input. It stays docked to the
          viewport while the page behind scrolls. -->
     <div
+      v-if="!pendingUserInput"
       class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
       :inert="Boolean(activeFile)"
     >
       <AgentComposer
+        ref="composerRef"
         :busy="busy"
         :picking="modelPickerOpen"
         :models="modelOptions"
@@ -906,6 +996,17 @@ function onDiscardFile(path: string) {
         @open-models="modelPickerOpen = true"
       />
     </div>
+
+    <!-- Mid-turn question: while the agent is asking, the composer's orb/input
+         gives way to this modal in the same spot, in the picker-family shell.
+         Answering resolves the parked tool call and the turn continues. -->
+    <UserInputModal
+      v-if="pendingUserInput"
+      :request-id="pendingUserInput.requestId"
+      :questions="pendingUserInput.questions"
+      @answer="onAnswerUserInput"
+      @cancel="onCancelUserInput"
+    />
 
     <!-- Corner dock stack — the agent's live side-panels in the folder-picker
          shell, bottom-right while a turn runs. Changes (files touched this
@@ -938,8 +1039,9 @@ function onDiscardFile(path: string) {
 
     <!-- Away-from-thread status pill — the dynamic island. Perches bottom-right
          whenever a turn is still running after you've left its conversation;
-         carries the turn's live orb + status ("Reading example.vue", "Thinking",
-         "Searching for …") and drops you back into the thread on click. -->
+         names the conversation and what it's on — the current plan task when the
+         thread has a checklist ("Wiring the pill stack", 2/5), else the live tool
+         status ("Reading example.vue") — and reopens the thread on click. -->
     <div v-if="pillThreads.length" class="pill-stack">
       <TurnStatusPill
         v-for="t in pillThreads"
@@ -947,8 +1049,10 @@ function onDiscardFile(path: string) {
         :block="t.block"
         :thread-title="t.title"
         :brand="t.brand"
+        :task="t.task"
         :now="agentNow"
         @open="onOpenThread(t.threadId)"
+        @dismiss="onDismissThread(t.threadId, t.turnId)"
       />
     </div>
 
@@ -1185,78 +1289,6 @@ function onDiscardFile(path: string) {
   .project-folder-row {
     display: none;
   }
-}
-
-/* Sticky conversation title — top-centre, outside the scroll region so the
-   thread moves under it. Vendor mark + stronger sans label; ellipsis when the
-   name runs long. Side inset clears the back glyph so the two never collide. */
-.chat-title {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 30;
-  display: flex;
-  justify-content: center;
-  padding: 1.85rem 5.5rem 0;
-  pointer-events: none;
-}
-.chat-title__pill {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  max-width: min(40rem, 100%);
-  min-width: 0;
-}
-.chat-title__pill :deep(.plogo) {
-  flex: none;
-}
-.chat-title__label {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-sans);
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  color: var(--ink);
-  text-align: left;
-}
-
-/* The one scroll region in chat mode. Its content fades into a soft smoke mask
-   below the sticky title — the band sits just above where the first prompt
-   rests — and just above the docked composer, so turns scroll into and out of
-   view rather than clipping at a hard edge. */
-.chat-scroll {
-  --chat-fade-top: 52px; /* below the fixed title pill */
-  --chat-fade-end: 92px; /* aligns with padding-top / first prompt rest line */
-
-  width: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--chat-fade-end) 2rem 208px;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent var(--chat-fade-top),
-    #000 var(--chat-fade-end),
-    #000 calc(100% - 176px),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent var(--chat-fade-top),
-    #000 var(--chat-fade-end),
-    #000 calc(100% - 176px),
-    transparent 100%
-  );
-  scrollbar-width: none;
-}
-.chat-scroll::-webkit-scrollbar {
-  width: 0;
-  height: 0;
 }
 
 /* The detail grows out of the clicked card and settles — a small overshoot reads
