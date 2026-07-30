@@ -35,6 +35,7 @@ import type { ToolOrbFamily } from "~/utils/toolOrbDraw";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
 import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
 import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
+import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
 // The live conversation — where the agent's turns become a timeline.
 //
@@ -680,9 +681,11 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   <div ref="root" class="thread" :class="{ 'thread--empty': !hasBlocks }">
     <p v-if="sessionError" class="body body--error thread__error">{{ sessionError }}</p>
 
-    <div v-if="!hasBlocks" class="empty">
-      <span class="empty__bead" aria-hidden="true" />
-      <p class="empty__line">Nothing here yet — say something to begin.</p>
+    <!-- Background generative art in the empty state -->
+    <CodeGolfArt v-if="!hasBlocks" class="thread__art" />
+
+    <div v-if="!hasBlocks" class="empty relative z-10 sr-only">
+      <p>Nothing here yet — say something to begin.</p>
     </div>
 
     <motion.div
@@ -700,7 +703,18 @@ const hasBlocks = computed(() => props.blocks.length > 0);
     >
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
       <template v-if="block.role === 'user'">
-        <p class="body body--you selectable">{{ block.text }}</p>
+        <p v-if="block.text" class="body body--you selectable">{{ block.text }}</p>
+        <!-- What was attached to this turn — the same file chips the agent uses
+             in prose. Metadata only (bytes live on disk), so images show their
+             file-type glyph rather than a thumbnail. -->
+        <div v-if="block.attachments?.length" class="you-attachments selectable">
+          <FileChip
+            v-for="att in block.attachments"
+            :key="att.id"
+            :path="att.name"
+            :title="`${att.name} · ${att.mimeType}`"
+          />
+        </div>
       </template>
 
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
@@ -919,9 +933,23 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   margin: 0 auto;
 }
 .thread--empty {
-  min-height: 40vh;
+  position: relative;
+  flex: 1;
+  width: 100%;
+  min-height: 100%;
   align-items: center;
   justify-content: center;
+}
+.thread__art {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 0;
+  width: 100%;
+  height: min(72vh, 580px);
+  pointer-events: none;
+  opacity: 0.4;
+  transform: translate(-50%, -50%);
 }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */
@@ -986,6 +1014,15 @@ const hasBlocks = computed(() => props.blocks.length > 0);
     color-mix(in oklab, var(--accent) 6%, var(--ground)) 100%
   );
   text-wrap: pretty;
+}
+/* Attachments that rode this turn — a right-aligned wrap of file chips under
+   the message (or standing alone on an attachment-only turn). */
+.you-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 80%;
 }
 .body--error {
   color: var(--diff-del);

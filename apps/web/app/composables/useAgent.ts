@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type {
+  ChatAttachment,
   InteractionMode,
   KoneAgentApi,
   ProviderKind,
@@ -9,10 +10,17 @@ import type {
   RuntimeSessionState,
   Session,
   TokenUsage,
+  UserInputAnswers,
+  UserInputQuestion,
 } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
 import type { EffortTier } from "~/utils/modelCatalog";
-import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
+import {
+  activePlanTask,
+  formatPlanTasks,
+  type ActivePlanTask,
+  type PlanTask,
+} from "~/utils/planTasks";
 
 // The brain behind a project's agent conversations. It starts provider sessions
 // in the Electron main process, sends turns, and folds the single normalized
@@ -35,7 +43,14 @@ import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
  *  streamed in through the reducer never carry it, so they still animate. */
 type Historical = { historical?: boolean };
 
-export type UserBlock = { id: string; role: "user"; text: string; at: number } & Historical;
+export type UserBlock = {
+  id: string;
+  role: "user";
+  text: string;
+  at: number;
+  /** Files/images the user attached to this prompt (metadata only). */
+  attachments?: ChatAttachment[];
+} & Historical;
 
 export type AssistantBlock = {
   id: string;
@@ -51,6 +66,13 @@ export type AssistantBlock = {
 } & Historical;
 
 export type ThreadBlock = UserBlock | AssistantBlock;
+
+/** A live question the agent is asking mid-turn — the composer swaps its
+ *  orb/input for the answer modal while this is set. */
+export type PendingUserInput = {
+  requestId: string;
+  questions: UserInputQuestion[];
+};
 
 /** The composer's reasoning-effort tier. Codex exposes this as a flag-based
  *  turn param (not baked into the model id), so we ride the tier along on each
@@ -87,6 +109,9 @@ export type ThreadSummary = {
   title: string;
   provider: ProviderKind;
   block: AssistantBlock | null;
+  /** The checklist row the thread is on right now (null when it has no plan) —
+   *  what the pill names while you're away from the conversation. */
+  task: ActivePlanTask | null;
   busy: boolean;
   /** True once a live turn has actually started here — rehydrated history alone
    *  doesn't count, so a freshly reloaded thread never pills. */
@@ -104,6 +129,23 @@ function uid(): string {
   return import.meta.client && "randomUUID" in crypto
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
+}
+
+/** Read a File's bytes as base64 (no `data:` prefix) for upload over IPC.
+ *  Uses FileReader.readAsDataURL — safe for multi-MB files, unlike btoa on a
+ *  giant char string — then strips the data-URL header. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = reader.result;
+      if (typeof res !== "string") return reject(new Error("Unexpected file read result"));
+      const comma = res.indexOf(",");
+      resolve(comma >= 0 ? res.slice(comma + 1) : res);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
 }
 
 /** The latest assistant turn in a timeline, or null. */
@@ -160,6 +202,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const sessionState = ref<RuntimeSessionState>("starting");
   const error = ref<string | null>(null);
   const tokenUsage = ref<TokenUsage | null>(null);
+  // A live question the agent is asking (AskUserQuestion / Codex requestUserInput).
+  // Non-null while the modal is up; cleared once answered or resolved/aborted.
+  const pendingUserInput = ref<PendingUserInput | null>(null);
 
   // The provider is mutable so a thread can switch engines (Codex ↔ Claude).
   // Because the two are separate CLIs with no shared conversation, a switch is a
@@ -269,9 +314,21 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           block.error = event.message;
           block.endedAt = event.at;
         }
+        // An aborted turn can never have its question answered — drop the modal.
+        pendingUserInput.value = null;
         blocks.value = [...blocks.value];
         break;
       }
+      case "user-input.requested":
+        pendingUserInput.value = { requestId: event.requestId, questions: event.questions };
+        break;
+      case "user-input.resolved":
+        // The backend settled this round-trip (our answer, or a drain on
+        // interrupt/stop). Clear the modal if it's the one we're showing.
+        if (pendingUserInput.value?.requestId === event.requestId) {
+          pendingUserInput.value = null;
+        }
+        break;
       default:
         break;
     }
@@ -412,24 +469,38 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     await start();
   }
 
-  /** Send a user turn. Pushes the user block immediately; the reply streams in. */
-  async function send(text: string): Promise<void> {
+  /** Send a user turn. Pushes the user block immediately; the reply streams in.
+   *  `attachments` (already uploaded to disk via the bridge, so bytes-free) ride
+   *  the turn — a turn is valid with text, attachments, or both. */
+  async function send(text: string, attachments?: ChatAttachment[]): Promise<void> {
     const trimmed = text.trim();
-    if (!trimmed || busy.value) return;
-    blocks.value = [...blocks.value, { id: uid(), role: "user", text: trimmed, at: Date.now() }];
+    const files = attachments ?? [];
+    if ((!trimmed && files.length === 0) || busy.value) return;
+    blocks.value = [
+      ...blocks.value,
+      {
+        id: uid(),
+        role: "user",
+        text: trimmed,
+        at: Date.now(),
+        ...(files.length ? { attachments: files } : {}),
+      },
+    ];
     // Instant label for a brand-new thread; desktop may refine it via
-    // thread.title.updated once the agent rename lands.
-    if (!title.value) title.value = titleFromPrompt(trimmed);
+    // thread.title.updated once the agent rename lands. An attachment-only turn
+    // seeds the label from the first file name.
+    if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
 
     const api = bridge();
     if (!api) {
-      mockTurn(trimmed);
+      mockTurn(trimmed || files[0]?.name || "Attachment");
       return;
     }
     try {
       await api.sendTurn({
         threadId: threadId.value,
         input: trimmed,
+        ...(files.length ? { attachments: files } : {}),
         model: model.value,
         mode: mode.value,
         effort: reasoning.value,
@@ -439,6 +510,27 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     } catch (e) {
       error.value = peelIpcError(e, "Could not send to the agent");
     }
+  }
+
+  /** Upload one picked/dropped/pasted file's bytes to disk (scoped to this
+   *  thread) and resolve to the bytes-free ChatAttachment the composer holds and
+   *  later sends. In browser dev (no bridge) we synthesize metadata so the
+   *  composer UI still works — nothing is persisted. */
+  async function uploadAttachment(file: File): Promise<ChatAttachment> {
+    const name = file.name || "attachment";
+    const mimeType = file.type || "application/octet-stream";
+    const api = bridge();
+    if (!api) {
+      return {
+        type: mimeType.toLowerCase().startsWith("image/") ? "image" : "file",
+        id: `mock_${uid()}`,
+        name,
+        mimeType,
+        sizeBytes: file.size,
+      };
+    }
+    const data = await fileToBase64(file);
+    return api.uploadAttachment({ threadId: threadId.value, name, mimeType, data });
   }
 
   /** Interrupt the running turn. */
@@ -462,6 +554,22 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       await api.interrupt(threadId.value);
     } catch {
       // The turn.aborted event (or its absence) is the source of truth.
+    }
+  }
+
+  /** Answer the agent's live question. Clears the modal optimistically, then
+   *  hands the answers to the adapter — which resolves the parked tool call and
+   *  emits `user-input.resolved` (a belt-and-braces re-clear). */
+  async function respondUserInput(requestId: string, answers: UserInputAnswers): Promise<void> {
+    if (pendingUserInput.value?.requestId === requestId) {
+      pendingUserInput.value = null;
+    }
+    const api = bridge();
+    if (!api) return;
+    try {
+      await api.respondUserInput(threadId.value, requestId, answers);
+    } catch {
+      // If the send fails the turn will abort and clear state via turn.aborted.
     }
   }
 
@@ -886,6 +994,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     everRan,
     error,
     tokenUsage,
+    pendingUserInput,
     model,
     mode,
     reasoning,
@@ -898,8 +1007,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     openStored,
     restart,
     send,
+    uploadAttachment,
     demo,
     interrupt,
+    respondUserInput,
     setProvider,
     setModel,
     setMode,
@@ -911,6 +1022,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 }
 
 // ── the project's thread manager ────────────────────────────────────────────────
+
+/** A thread with no transcript yet — still on the blank slate. */
+function isThreadEmpty(s: ThreadSession): boolean {
+  return s.blocks.value.length === 0 && !s.busy.value;
+}
 
 /** How many idle, settled background threads to keep resident. Busy threads are
  *  never evicted; this only bounds the settled backlog so the registry (and the
@@ -1026,6 +1142,7 @@ export function useAgent(options: UseAgentOptions) {
   const busy = computed(() => active.value.busy.value);
   const error = computed(() => active.value.error.value);
   const tokenUsage = computed(() => active.value.tokenUsage.value);
+  const pendingUserInput = computed(() => active.value.pendingUserInput.value);
   const model = computed(() => active.value.model.value);
   const mode = computed(() => active.value.mode.value);
   const reasoning = computed(() => active.value.reasoning.value);
@@ -1041,6 +1158,7 @@ export function useAgent(options: UseAgentOptions) {
       title: s.title.value,
       provider: s.provider.value,
       block: latestAssistant(s.blocks.value),
+      task: activePlanTask(s.blocks.value),
       busy: s.busy.value,
       everRan: s.everRan.value,
       isActive: s.key === activeKey.value,
@@ -1049,8 +1167,12 @@ export function useAgent(options: UseAgentOptions) {
 
   // ── active-thread actions (delegate to whichever thread is on screen) ────────
   const start = () => active.value.start();
-  const send = (text: string) => active.value.send(text);
+  const send = (text: string, attachments?: ChatAttachment[]) =>
+    active.value.send(text, attachments);
+  const uploadAttachment = (file: File) => active.value.uploadAttachment(file);
   const interrupt = () => active.value.interrupt();
+  const respondUserInput = (requestId: string, answers: UserInputAnswers) =>
+    active.value.respondUserInput(requestId, answers);
   const demo = () => active.value.demo();
   const restart = () => active.value.restart();
   const setProvider = (next: ProviderKind) => active.value.setProvider(next);
@@ -1071,9 +1193,11 @@ export function useAgent(options: UseAgentOptions) {
 
   /** Begin a brand-new, empty thread and make it active. The previously-active
    *  thread stays resident (it may still be running — the pill will surface it),
-   *  unless it was a never-used throwaway, which we prune. */
+   *  unless it was a never-used throwaway, which we prune. No-ops when the
+   *  active thread is already empty — don't stack blank slates. */
   async function newThread(): Promise<void> {
     const prev = active.value;
+    if (prev && isThreadEmpty(prev)) return;
     const fresh = spawn({ rehydrate: false });
     // Carry the active thread's picked settings onto the new one (see
     // inheritSettings) so starting a conversation from Project Home keeps the
@@ -1089,6 +1213,24 @@ export function useAgent(options: UseAgentOptions) {
     if (prev && prev !== fresh && !prev.busy.value && !prev.everRan.value) {
       await evict(prev);
     }
+    pruneResident();
+  }
+
+  /** Open a blank thread at a specific strip index (0 = left edge). Used by the
+   *  seam action bar to insert left or right of a column boundary. */
+  async function newThreadAt(index: number): Promise<void> {
+    const fresh = spawn({ rehydrate: false });
+    const list = [...sessions.value];
+    list.pop();
+    const insertAt = Math.min(Math.max(0, index), list.length);
+    list.splice(insertAt, 0, fresh);
+    sessions.value = list;
+
+    const neighbor = list[insertAt - 1] ?? list[insertAt + 1];
+    if (neighbor) inheritSettings(neighbor, fresh);
+
+    activeKey.value = fresh.key;
+    await fresh.start();
     pruneResident();
   }
 
@@ -1174,6 +1316,67 @@ export function useAgent(options: UseAgentOptions) {
     await evict(s);
   }
 
+  // ── the strip (niri-style scrollable tiling over the registry) ───────────────
+  // The registry's array order IS the left-to-right column order of the thread
+  // strip, and `activeKey` is the focused column. These four are what the strip
+  // navigates with; they all work in terms of the stable registry key rather than
+  // the provider threadId, because a brand-new column has no threadId yet.
+
+  /** Focus a column by its stable registry key. */
+  function focusThread(key: string): void {
+    if (sessions.value.some((s) => s.key === key)) activeKey.value = key;
+  }
+
+  /** Step focus `delta` columns along the strip. Clamped at both ends — niri's
+   *  focus-column-left/right stop at the edge rather than wrapping, and wrapping
+   *  would make the strip feel like a carousel instead of a place. */
+  function focusByOffset(delta: number): void {
+    const list = sessions.value;
+    const i = list.findIndex((s) => s.key === activeKey.value);
+    if (i === -1) return;
+    const next = list[Math.min(list.length - 1, Math.max(0, i + delta))];
+    if (next) activeKey.value = next.key;
+  }
+
+  /** Carry a column along the strip, focus and all (niri's move-column-left/
+   *  right). Reordering the registry reorders the strip, since the strip renders
+   *  `sessions` in order. */
+  function moveThread(key: string, delta: number): void {
+    const list = [...sessions.value];
+    const i = list.findIndex((s) => s.key === key);
+    if (i === -1) return;
+    const j = Math.min(list.length - 1, Math.max(0, i + delta));
+    if (i === j) return;
+    const [s] = list.splice(i, 1);
+    if (!s) return;
+    list.splice(j, 0, s);
+    sessions.value = list;
+  }
+
+  /** Close one column and hand focus to a neighbour (right first, then left —
+   *  the strip collapses toward where you were heading). The strip is never
+   *  empty: closing the last column leaves a fresh blank one behind it, so
+   *  `active` always has a session to project. Stands the replacement up BEFORE
+   *  evicting, for the same reason forgetThread does. */
+  async function closeThread(key: string): Promise<void> {
+    const list = sessions.value;
+    const i = list.findIndex((s) => s.key === key);
+    const s = list[i];
+    if (!s) return;
+    if (s.key === activeKey.value) {
+      const neighbour = list[i + 1] ?? list[i - 1];
+      if (neighbour) {
+        activeKey.value = neighbour.key;
+      } else {
+        const fresh = spawn({ rehydrate: false });
+        inheritSettings(s, fresh);
+        activeKey.value = fresh.key;
+        await fresh.start();
+      }
+    }
+    await evict(s);
+  }
+
   onBeforeUnmount(() => {
     if (clock !== null) clearInterval(clock);
     detach?.();
@@ -1193,6 +1396,7 @@ export function useAgent(options: UseAgentOptions) {
     busy,
     error,
     tokenUsage,
+    pendingUserInput,
     model,
     mode,
     reasoning,
@@ -1204,14 +1408,27 @@ export function useAgent(options: UseAgentOptions) {
     activeThreadId: threadId,
     setActiveThread,
     forgetThread,
+    // the strip: live sessions in column order + the focused column. The strip
+    // takes the sessions themselves (not the `threads` projection) on purpose —
+    // each column reads its own `blocks` ref, so one thread streaming a token
+    // re-renders only its own column instead of every column on screen.
+    sessions,
+    activeKey,
+    focusThread,
+    focusByOffset,
+    moveThread,
+    closeThread,
     // actions
     start,
     restart,
     newThread,
+    newThreadAt,
     openThread,
     send,
+    uploadAttachment,
     demo,
     interrupt,
+    respondUserInput,
     setProvider,
     setModel,
     setMode,
