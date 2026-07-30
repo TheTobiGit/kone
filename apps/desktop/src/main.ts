@@ -7,6 +7,7 @@ import { registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
+import { registerTerminalIpc, shutdownTerminals } from "./terminal/index.js";
 import { getInitialWindowState, manageWindowState } from "./windowState.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,6 +67,9 @@ function registerIpc() {
   // Agent layer: discover the user's installed agent CLIs and drive them
   // (Codex first). Streams runtime events on the "agent:event" channel.
   registerAgentIpc();
+
+  // Integrated terminal: node-pty shells, streamed on "terminal:event".
+  registerTerminalIpc();
 }
 
 async function createWindow() {
@@ -135,10 +139,12 @@ app.on("window-all-closed", () => {
 });
 
 // Don't leave a `git clone` running (and a half-written folder behind) if the
-// app quits mid-clone, and don't orphan any agent CLI subprocesses.
+// app quits mid-clone, and don't orphan any agent CLI subprocesses or terminal
+// PTY shells.
 app.on("before-quit", () => {
   cancelClone();
   void shutdownAgents();
+  void shutdownTerminals();
 });
 
 console.log(

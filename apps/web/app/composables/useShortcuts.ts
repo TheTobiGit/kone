@@ -88,6 +88,16 @@ const ACTIONS: ShortcutAction[] = [
     rebindable: true,
     personalize: true,
   },
+  {
+    id: "new-terminal",
+    label: "New terminal",
+    hint: "Open a terminal column in the active project's strip.",
+    description: "Open a shell as a new column on the thread strip.",
+    group: "Conversation",
+    default: "mod+shift+t",
+    rebindable: true,
+    personalize: true,
+  },
 
   // ── the thread strip ──────────────────────────────────────────────────────
   // A project's live threads tile as columns on one horizontally scrollable

@@ -39,7 +39,7 @@ const actions = [
     kind: "terminal" as const,
     label: "Terminal",
     icon: ComputerTerminal01Icon,
-    disabled: true,
+    disabled: false,
   },
 ];
 

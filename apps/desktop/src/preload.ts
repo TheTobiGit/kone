@@ -16,6 +16,14 @@ import type {
   UploadAttachmentInput,
   UserInputAnswers,
 } from "./agent/index.js";
+import type {
+  TerminalCloseInput,
+  TerminalEvent,
+  TerminalOpenInput,
+  TerminalResizeInput,
+  TerminalSessionSnapshot,
+  TerminalWriteInput,
+} from "./terminal/index.js";
 import type { DirListing } from "./fs.js";
 import type {
   CloneProgress,
@@ -156,6 +164,27 @@ const api = {
       return () => {
         ipcRenderer.removeListener("agent:event", listener);
         void ipcRenderer.invoke("agent:unsubscribe");
+      };
+    },
+  },
+  terminal: {
+    open: (input: TerminalOpenInput): Promise<TerminalSessionSnapshot> =>
+      ipcRenderer.invoke("terminal:open", input),
+    write: (input: TerminalWriteInput): Promise<void> =>
+      ipcRenderer.invoke("terminal:write", input),
+    resize: (input: TerminalResizeInput): Promise<void> =>
+      ipcRenderer.invoke("terminal:resize", input),
+    clear: (terminalId: string): Promise<void> =>
+      ipcRenderer.invoke("terminal:clear", terminalId),
+    close: (input: TerminalCloseInput): Promise<void> =>
+      ipcRenderer.invoke("terminal:close", input),
+    onEvent: (cb: (event: TerminalEvent) => void): (() => void) => {
+      const listener = (_event: unknown, ev: TerminalEvent) => cb(ev);
+      ipcRenderer.on("terminal:event", listener);
+      void ipcRenderer.invoke("terminal:subscribe");
+      return () => {
+        ipcRenderer.removeListener("terminal:event", listener);
+        void ipcRenderer.invoke("terminal:unsubscribe");
       };
     },
   },

@@ -26,13 +26,15 @@ import {
   useResizeObserver,
 } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, ComputerTerminal01Icon } from "@hugeicons/core-free-icons";
 import type { ThreadSession } from "~/composables/useAgent";
+import type { TerminalSession } from "~/composables/useTerminal";
+import type { StripColumn } from "./ProjectView.vue";
 import { SESSION_BRAND } from "~/types/session";
 
 const props = defineProps<{
-  /** Live sessions in strip order (left to right) — the registry's own array. */
-  sessions: ThreadSession[];
+  /** Live columns in strip order (left to right). */
+  columns: StripColumn[];
   /** The focused column's stable registry key. */
   activeKey: string;
   /** Ticking clock from useAgent, so every column's "working · Xs" counts up. */
@@ -49,7 +51,11 @@ const emit = defineEmits<{
   /** Close this column. */
   close: [key: string];
   /** Insert a blank thread to the right of seam `seamIndex`. */
-  "insert-thread": [seamIndex: number];
+  "insert-column": [seamIndex: number, kind: "thread" | "terminal"];
+  /** Write terminal input data */
+  "terminal-write": [key: string, data: string];
+  /** Resize terminal PTY */
+  "terminal-resize": [key: string, cols: number, rows: number];
 }>();
 
 const { cue } = useSound();
@@ -138,13 +144,13 @@ function shrinkWidth(key: string): void {
   void nextTick(() => scrollToColumn(key));
 }
 
-const isSolo = computed(() => props.sessions.length === 1);
+const isSolo = computed(() => props.columns.length === 1);
 
 /** Leading pad centres the lone thread; trailing pad lets the last column scroll
  *  to centre when there are two or more. */
 const soloPadStart = computed(() => {
   if (!isSolo.value || !railWidth.value) return 0;
-  const s = props.sessions[0];
+  const s = props.columns[0];
   if (!s) return 0;
   const colW = Math.min(presetFor(s.key).px, railWidth.value);
   return Math.max(0, (railWidth.value - colW) / 2);
@@ -213,7 +219,7 @@ onBeforeUnmount(() => {
 /** Which column owns the viewport at a scroll position — seam-first, like niri. */
 function nearestKey(scrollLeft?: number): string | null {
   const r = rail.value;
-  if (!r || !props.sessions.length) return null;
+  if (!r || !props.columns.length) return null;
   const mid = (scrollLeft ?? r.scrollLeft) + r.clientWidth / 2;
   const dir = scrollLeft === undefined ? 0 : Math.sign(scrollLeft - lastScrollLeft);
 
@@ -221,7 +227,7 @@ function nearestKey(scrollLeft?: number): string | null {
   let centreDist = Infinity;
   let seamOwner: string | null = null;
   let seamDist = Infinity;
-  for (const s of props.sessions) {
+  for (const s of props.columns) {
     const el = colEls.get(s.key);
     if (!el) continue;
     const centre = el.offsetLeft + el.offsetWidth / 2;
@@ -265,7 +271,7 @@ watch(
   },
 );
 watch(
-  () => props.sessions.length,
+  () => props.columns.length,
   () => {
     if (props.activeKey) void nextTick(() => scrollToColumn(props.activeKey));
   },
@@ -286,9 +292,9 @@ function onClose(key: string): void {
   emit("close", key);
 }
 
-function onInsertThread(seamIndex: number): void {
+function onInsertColumn(seamIndex: number, kind: "thread" | "terminal"): void {
   cue("press");
-  emit("insert-thread", seamIndex);
+  emit("insert-column", seamIndex, kind);
 }
 
 // ── seam insert flyout ────────────────────────────────────────────────────────
@@ -317,8 +323,8 @@ function toggleJoint(i: number, target: EventTarget | null): void {
 }
 
 function onInsertPick(kind: "thread" | "terminal"): void {
-  if (kind !== "thread" || openSeam.value === null) return;
-  onInsertThread(openSeam.value);
+  if (openSeam.value === null) return;
+  onInsertColumn(openSeam.value, kind);
   closeJoint();
 }
 
@@ -380,19 +386,21 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   }
 });
 
-function brandOf(s: ThreadSession) {
-  return SESSION_BRAND[s.provider.value] ?? "generic";
+function brandOf(c: StripColumn) {
+  if (c.type === "terminal") return "generic"; // Fallback, we don't have a terminal brand icon
+  return SESSION_BRAND[c.session.provider.value] ?? "generic";
 }
 
 /** Blank slate — no transcript yet and not working. */
-function isThreadEmpty(s: ThreadSession): boolean {
-  return s.blocks.value.length === 0 && !s.busy.value;
+function isColumnEmpty(c: StripColumn): boolean {
+  if (c.type === "terminal") return false; // Terminals are never "empty" in the sense of needing pruning
+  return c.session.blocks.value.length === 0 && !c.session.busy.value;
 }
 
 /** A lone blank slate has nothing to dismiss — closing it would just spawn another. */
-function canClose(s: ThreadSession): boolean {
+function canClose(c: StripColumn): boolean {
   if (!isSolo.value) return true;
-  return !isThreadEmpty(s);
+  return !isColumnEmpty(c);
 }
 
 /** Seam insert control trailing column `i` (or between `i` and `i+1` when not
@@ -400,13 +408,13 @@ function canClose(s: ThreadSession): boolean {
  *  The last column gets a trailing joint too — so a 2nd active thread can open
  *  a 3rd without needing an existing seam to the right. */
 const jointAfter = computed(() => {
-  const list = props.sessions;
+  const list = props.columns;
   return list.map((left, i) => {
-    const leftOk = left.blocks.value.length > 0 || left.busy.value;
+    const leftOk = left.type === "terminal" || left.session.blocks.value.length > 0 || left.session.busy.value;
     if (list.length === 1) return leftOk;
     if (i >= list.length - 1) return leftOk;
     const right = list[i + 1];
-    const rightOk = right && (right.blocks.value.length > 0 || right.busy.value);
+    const rightOk = right && (right.type === "terminal" || right.session.blocks.value.length > 0 || right.session.busy.value);
     return leftOk || rightOk;
   });
 });
@@ -418,19 +426,19 @@ watch(jointAfter, (flags) => {
 
 <template>
   <div class="strip" :class="{ 'is-resizing': isResizing }">
-    <nav v-if="sessions.length > 1" class="index" aria-label="Threads">
+    <nav v-if="columns.length > 1" class="index" aria-label="Columns">
       <button
-        v-for="(s, i) in sessions"
-        :key="s.key"
+        v-for="(c, i) in columns"
+        :key="c.key"
         type="button"
         class="index__dash"
         :class="{
-          'is-focused': s.key === activeKey,
-          'is-live': s.busy.value && s.key !== activeKey,
+          'is-focused': c.key === activeKey,
+          'is-live': c.type === 'thread' && c.session.busy.value && c.key !== activeKey,
         }"
-        :aria-label="`Thread ${i + 1}: ${s.title.value || 'New thread'}`"
-        :aria-current="s.key === activeKey"
-        @click="onColumnClick(s.key)"
+        :aria-label="`Column ${i + 1}: ${c.type === 'thread' ? c.session.title.value || 'New thread' : 'Terminal'}`"
+        :aria-current="c.key === activeKey"
+        @click="onColumnClick(c.key)"
       />
     </nav>
 
@@ -445,48 +453,59 @@ watch(jointAfter, (flags) => {
     >
       <div class="rail__pad rail__pad--start" aria-hidden="true" />
 
-      <template v-for="(s, i) in sessions" :key="s.key">
+      <template v-for="(c, i) in columns" :key="c.key">
         <section
-          :ref="(el) => setCol(s.key, el)"
+          :ref="(el) => setCol(c.key, el)"
           class="col"
           :class="{
-            'is-focused': s.key === activeKey,
-            'is-width-anim': widthAnim[s.key],
+            'is-focused': c.key === activeKey,
+            'is-width-anim': widthAnim[c.key],
           }"
-          :style="{ '--col-w': presetFor(s.key).width }"
-          @click="onColumnClick(s.key)"
+          :style="{ '--col-w': presetFor(c.key).width }"
+          @click="onColumnClick(c.key)"
         >
           <header class="col__head">
             <div class="col__title-wrap">
-              <ProviderLogo :brand="brandOf(s)" :size="15" />
-              <h2 class="col__title">{{ s.title.value || "New thread" }}</h2>
-              <span v-if="s.busy.value" class="col__live" aria-label="Working" />
+              <template v-if="c.type === 'thread'">
+                <ProviderLogo :brand="brandOf(c)" :size="15" />
+                <h2 class="col__title">{{ c.session.title.value || "New thread" }}</h2>
+                <span v-if="c.session.busy.value" class="col__live" aria-label="Working" />
+              </template>
+              <template v-else>
+                <HugeiconsIcon :icon="ComputerTerminal01Icon" :size="15" :stroke-width="2" class="text-muted" />
+                <h2 class="col__title">Terminal</h2>
+              </template>
             </div>
             <div class="col__tools">
               <button
                 type="button"
                 class="col__tool col__tool--width"
-                :aria-label="`Cycle width (currently ${presetFor(s.key).px}px)`"
-                :title="`Width: ${presetFor(s.key).px}px`"
-                @click.stop="cycleWidth(s.key)"
+                :aria-label="`Cycle width (currently ${presetFor(c.key).px}px)`"
+                :title="`Width: ${presetFor(c.key).px}px`"
+                @click.stop="cycleWidth(c.key)"
               >
-                {{ presetFor(s.key).label }}
+                {{ presetFor(c.key).label }}
               </button>
               <button
-                v-if="canClose(s)"
+                v-if="canClose(c)"
                 type="button"
                 class="col__tool"
-                aria-label="Close thread"
-                title="Close thread"
-                @click.stop="onClose(s.key)"
+                aria-label="Close column"
+                title="Close column"
+                @click.stop="onClose(c.key)"
               >
                 <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
               </button>
             </div>
           </header>
 
-          <div class="col__body selectable">
-            <ConversationThread :blocks="s.blocks.value" :now="now" :session-error="s.error.value" />
+          <div class="col__body selectable" :class="{ 'col__body--terminal': c.type === 'terminal' }">
+            <template v-if="c.type === 'thread'">
+              <ConversationThread :blocks="c.session.blocks.value" :now="now" :session-error="c.session.error.value" />
+            </template>
+            <template v-else>
+              <TerminalPane :session="c.session" @write="data => emit('terminal-write', c.key, data)" @resize="(cols, rows) => emit('terminal-resize', c.key, cols, rows)" />
+            </template>
           </div>
         </section>
 
@@ -785,6 +804,18 @@ watch(jointAfter, (flags) => {
 .col__body::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/* A terminal column is a PTY, not a chat log: it must NOT inherit the thread
+ * body's tall top/bottom padding, its top/bottom mask fade, or its own scroll
+ * container — all of which fade out, mis-size and clip xterm (which manages its
+ * own viewport + scrollback). Give it a clean full-height box so FitAddon can
+ * measure the real height. */
+.col__body--terminal {
+  padding: 0.5rem 0.65rem 0.65rem;
+  overflow: hidden;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

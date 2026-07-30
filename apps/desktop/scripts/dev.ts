@@ -55,6 +55,7 @@ console.log("Compiling Electron main/preload...");
 // Keep the Claude Agent SDK external — it resolves its own native `claude` CLI
 // binary relative to its real node_modules location, so bundling it (which moves
 // the import.meta.url anchor) breaks that resolution at runtime. See build.ts.
+// node-pty is also kept external because it loads native .node extensions at runtime.
 const compileMain = spawnSync(
   "bun",
   [
@@ -68,6 +69,8 @@ const compileMain = spawnSync(
     "electron",
     "--external",
     "@anthropic-ai/claude-agent-sdk",
+    "--external",
+    "node-pty",
   ],
   { cwd: desktopDir, stdio: "inherit" },
 );

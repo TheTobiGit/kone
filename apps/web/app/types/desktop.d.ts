@@ -514,6 +514,69 @@ export type KoneAgentApi = {
   onEvent: (cb: (event: RuntimeEvent) => void) => () => void;
 };
 
+// ── Terminal layer ─────────────────────────────────────────────────────────
+
+export type TerminalId = string;
+
+export type TerminalStatus =
+  | "starting"
+  | "ready"
+  | "exited"
+  | "closed"
+  | "error";
+
+export type TerminalOpenInput = {
+  terminalId: TerminalId;
+  cwd: string;
+  cols?: number;
+  rows?: number;
+  env?: Record<string, string>;
+};
+
+export type TerminalWriteInput = {
+  terminalId: TerminalId;
+  data: string;
+};
+
+export type TerminalResizeInput = {
+  terminalId: TerminalId;
+  cols: number;
+  rows: number;
+};
+
+export type TerminalCloseInput = {
+  terminalId: TerminalId;
+  deleteHistory?: boolean;
+};
+
+export type TerminalSessionSnapshot = {
+  terminalId: TerminalId;
+  pid: number;
+  cols: number;
+  rows: number;
+  cwd: string;
+  status: TerminalStatus;
+  history: string;
+};
+
+export type TerminalEvent =
+  | { terminalId: TerminalId; type: "started"; snapshot: TerminalSessionSnapshot }
+  | { terminalId: TerminalId; type: "output"; data: string }
+  | { terminalId: TerminalId; type: "exited"; exitCode: number | null; signal?: number }
+  | { terminalId: TerminalId; type: "error"; message: string }
+  | { terminalId: TerminalId; type: "cleared" }
+  | { terminalId: TerminalId; type: "restarted"; snapshot: TerminalSessionSnapshot }
+  | { terminalId: TerminalId; type: "closed" };
+
+export type KoneTerminalApi = {
+  open: (input: TerminalOpenInput) => Promise<TerminalSessionSnapshot>;
+  write: (input: TerminalWriteInput) => Promise<void>;
+  resize: (input: TerminalResizeInput) => Promise<void>;
+  clear: (terminalId: TerminalId) => Promise<void>;
+  close: (input: TerminalCloseInput) => Promise<void>;
+  onEvent: (cb: (event: TerminalEvent) => void) => () => void;
+};
+
 export type KoneDesktopApi = {
   isDesktop: true;
   platform: string;
@@ -522,6 +585,7 @@ export type KoneDesktopApi = {
   git: KoneGitApi;
   system: KoneSystemApi;
   agent: KoneAgentApi;
+  terminal: KoneTerminalApi;
 };
 
 declare global {

@@ -25,6 +25,7 @@ import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/
 import { SESSION_BRAND } from "~/types/session";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
+import { useTerminal } from "~/composables/useTerminal";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -63,6 +64,158 @@ const {
   // The active thread's title / error aren't projected here any more: each strip
   // column renders its own from its own session.
 } = agent;
+
+const terminal = useTerminal({ cwd: () => props.project.path });
+
+// ── Unified strip columns ────────────────────────────────────────────────────
+// The thread strip can hold both agent threads and terminal sessions. We merge
+// them into a single ordered list based on a local registry of column keys.
+const columnKeys = ref<string[]>([]);
+
+// Seed the initial column array with the agent's first thread.
+watch(
+  () => agent.sessions.value.map(s => s.key),
+  (agentKeys) => {
+    // Sync new agent threads into our unified list
+    for (const k of agentKeys) {
+      if (!columnKeys.value.includes(k)) {
+        columnKeys.value.push(k);
+      }
+    }
+  },
+  { immediate: true, deep: true }
+);
+
+watch(
+  () => terminal.sessions.value.map(s => s.key),
+  (termKeys) => {
+    // Sync new terminal sessions into our unified list
+    for (const k of termKeys) {
+      if (!columnKeys.value.includes(k)) {
+        columnKeys.value.push(k);
+      }
+    }
+  },
+  { deep: true }
+);
+
+export type StripColumn = 
+  | { type: "thread"; key: string; session: ReturnType<typeof useAgent>["sessions"]["value"][number] }
+  | { type: "terminal"; key: string; session: ReturnType<typeof useTerminal>["sessions"]["value"][number] };
+
+const columns = computed<StripColumn[]>(() => {
+  return columnKeys.value.map(key => {
+    const thread = agent.sessions.value.find(s => s.key === key);
+    if (thread) return { type: "thread", key, session: thread } as const;
+    const term = terminal.sessions.value.find(s => s.key === key);
+    if (term) return { type: "terminal", key, session: term } as const;
+    return null;
+  }).filter((x): x is StripColumn => x !== null);
+});
+
+// The globally focused column key. If it drops out, we fall back.
+const activeColumnKey = ref<string>("");
+
+watch(
+  () => agent.activeKey.value,
+  (k) => { if (k) activeColumnKey.value = k; },
+  { immediate: true }
+);
+
+function focusColumn(key: string) {
+  if (columns.value.some(c => c.key === key)) {
+    activeColumnKey.value = key;
+    // Sync down to agent so its active projection is correct
+    if (agent.sessions.value.some(s => s.key === key)) {
+      agent.focusThread(key);
+    }
+  }
+}
+
+function shiftColumnFocus(delta: number) {
+  const i = columns.value.findIndex(c => c.key === activeColumnKey.value);
+  if (i === -1) return;
+  const next = columns.value[Math.min(columns.value.length - 1, Math.max(0, i + delta))];
+  if (next) focusColumn(next.key);
+}
+
+function moveColumn(delta: number) {
+  const list = [...columnKeys.value];
+  const i = list.findIndex(k => k === activeColumnKey.value);
+  if (i === -1) return;
+  const j = Math.min(list.length - 1, Math.max(0, i + delta));
+  if (i === j) return;
+  const [k] = list.splice(i, 1);
+  if (!k) return;
+  list.splice(j, 0, k);
+  columnKeys.value = list;
+}
+
+async function closeColumn(key: string) {
+  const i = columns.value.findIndex(c => c.key === key);
+  const col = columns.value[i];
+  if (!col) return;
+  
+  if (key === activeColumnKey.value) {
+    const neighbour = columns.value[i + 1] ?? columns.value[i - 1];
+    if (neighbour) {
+      focusColumn(neighbour.key);
+    } else {
+      // If we close the last column, spawn a new thread to replace it
+      await agent.newThread();
+      const nextKey = agent.activeKey.value;
+      if (!columnKeys.value.includes(nextKey)) columnKeys.value.push(nextKey);
+      focusColumn(nextKey);
+    }
+  }
+  
+  columnKeys.value = columnKeys.value.filter(k => k !== key);
+  
+  if (col.type === "thread") {
+    await agent.closeThread(key);
+  } else {
+    await terminal.close(key);
+  }
+}
+
+async function insertColumn(seamIndex: number, kind: "thread" | "terminal") {
+  if (kind === "thread") {
+    // Spawn the thread in the agent registry
+    await agent.newThreadAt(seamIndex + 1); // +1 because we insert to the right of the seam
+    const freshKey = agent.activeKey.value;
+    
+    // Position it in our unified list
+    const list = [...columnKeys.value];
+    // Remove it from the end where the watch() placed it
+    const cleanList = list.filter(k => k !== freshKey);
+    cleanList.splice(seamIndex + 1, 0, freshKey);
+    columnKeys.value = cleanList;
+    focusColumn(freshKey);
+  } else {
+    const freshKey = await terminal.spawn();
+    const list = [...columnKeys.value];
+    // Remove it from the end where the watch() placed it
+    const cleanList = list.filter(k => k !== freshKey);
+    cleanList.splice(seamIndex + 1, 0, freshKey);
+    columnKeys.value = cleanList;
+    focusColumn(freshKey);
+  }
+}
+
+/** Open a terminal column just to the right of the focused column (or at the
+ *  end) and focus it — the keyboard-shortcut entry point, sibling of the seam
+ *  insert menu's terminal pick. */
+async function newTerminalColumn() {
+  const activeIndex = columnKeys.value.findIndex(k => k === activeColumnKey.value);
+  const freshKey = await terminal.spawn();
+  // The terminal.sessions watch appends the fresh key at the end; pull it out
+  // and drop it beside the active column instead.
+  const list = columnKeys.value.filter(k => k !== freshKey);
+  const insertAt = activeIndex >= 0 ? activeIndex + 1 : list.length;
+  list.splice(insertAt, 0, freshKey);
+  columnKeys.value = list;
+  focusColumn(freshKey);
+}
 
 const activePlan = computed(() => deriveActivePlan(blocks.value));
 // The files the agent has created/edited/removed this thread — the corner
@@ -402,6 +555,15 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   view.value = "chat";
 });
 
+// mod+shift+t opens a terminal column on the strip and focuses it, flipping to
+// the chat view (where the strip lives) so the new shell is on screen.
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (!matchesShortcut("new-terminal", e)) return;
+  e.preventDefault();
+  view.value = "chat";
+  void newTerminalColumn();
+});
+
 // Play a scripted demo conversation so the whole thread UI (thinking, tools
 // with output, streaming text, a no-content thought, the settled footer) can be
 // reviewed on demand without driving a real agent turn. The binding lives in
@@ -599,27 +761,6 @@ watch(
     }
   },
 );
-
-// ── thread strip ──────────────────────────────────────────────────────────────
-// The strip's geometry is its own business; these are the registry operations it
-// can't do for itself. Focus and focus-stepping go straight to the composable
-// (bound inline in the template) — these three need a little more.
-
-/** Carry the focused column along the strip. */
-function onMoveColumn(delta: number) {
-  agent.moveThread(agent.activeKey.value, delta);
-}
-
-/** Close a column. Tears the session down; the registry hands focus to a
- *  neighbour, or leaves a fresh blank column when it was the last one. */
-function onCloseColumn(key: string) {
-  void agent.closeThread(key);
-}
-
-/** Insert a thread to the right of the seam after column `seamIndex`. */
-function onInsertThread(seamIndex: number) {
-  void agent.newThreadAt(seamIndex + 2);
-}
 
 // ── away-from-thread status pills ────────────────────────────────────────────────
 // A project can have several threads live at once. Any thread whose live (or
@@ -834,15 +975,17 @@ function onDiscardFile(path: string) {
     <Transition name="chat-open" appear>
       <ThreadStrip
         v-if="view === 'chat'"
-        :sessions="agent.sessions.value"
-        :active-key="agent.activeKey.value"
+        :columns="columns"
+        :active-key="activeColumnKey"
         :now="agentNow"
         :inert="Boolean(activeFile)"
-        @focus="agent.focusThread"
-        @shift="agent.focusByOffset"
-        @move="onMoveColumn"
-        @close="onCloseColumn"
-        @insert-thread="onInsertThread"
+        @focus="focusColumn"
+        @shift="shiftColumnFocus"
+        @move="moveColumn"
+        @close="closeColumn"
+        @insert-column="insertColumn"
+        @terminal-write="terminal.write"
+        @terminal-resize="terminal.resize"
       />
     </Transition>
 

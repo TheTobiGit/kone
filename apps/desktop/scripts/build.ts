@@ -31,7 +31,9 @@ console.log("Bundling Electron main/preload...");
 // from its real node_modules location. Bundling it into dist/main.js moves that
 // anchor and the sibling native-binary package (@anthropic-ai/claude-agent-sdk-*)
 // becomes unresolvable at runtime ("Native CLI binary not found").
-await $`bun build src/main.ts --outfile dist/main.js --target node --external electron --external @anthropic-ai/claude-agent-sdk`.cwd(
+// node-pty must also stay external because it loads native .node extensions at
+// runtime using relative paths inside node_modules.
+await $`bun build src/main.ts --outfile dist/main.js --target node --external electron --external @anthropic-ai/claude-agent-sdk --external node-pty`.cwd(
   desktopDir,
 );
 // Sandboxed preloads must be CommonJS; emit .cjs so it's unambiguous under
