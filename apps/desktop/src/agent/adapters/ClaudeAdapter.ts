@@ -9,6 +9,7 @@ import {
   type ModelInfo,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
+  type PermissionResult,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
@@ -33,6 +34,9 @@ import type {
   SendTurnInput,
   SessionStartInput,
   TurnStartResult,
+  UserInputAnswers,
+  UserInputQuestion,
+  UserInputQuestionOption,
 } from "../types.js";
 import type { ClaudeTrackedTask } from "../claudeTaskTracker.js";
 import {
@@ -41,6 +45,11 @@ import {
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
+import {
+  buildClaudeAttachmentContent,
+  composePromptText,
+  type ClaudeImageBlock,
+} from "../promptAttachments.js";
 
 // Claude adapter — drives Claude Code through `@anthropic-ai/claude-agent-sdk`'s
 // `query()`. One kone thread = one live `query()` session: prompts are pushed
@@ -206,6 +215,17 @@ type ClaudeSession = {
   trackedTasks: Map<string, ClaudeTrackedTask>;
   /** Whether a synthesized `${turnId}:plan` item has been started this turn. */
   taskPlanStarted: boolean;
+  /** In-flight AskUserQuestion round-trips, keyed by our requestId. Each holds
+   *  the resolver the parked `canUseTool` promise is awaiting — settled by
+   *  respondToUserInput (the user answered) or drained on interrupt/stop. */
+  pendingUserInputs: Map<string, PendingUserInput>;
+};
+
+/** A parked AskUserQuestion: the questions we emitted and the resolver that
+ *  unblocks canUseTool once the renderer answers (or we drain on teardown). */
+type PendingUserInput = {
+  questions: UserInputQuestion[];
+  resolve: (answers: UserInputAnswers) => void;
 };
 
 // ── small JSON helpers (defensive, like CodexAdapter) ────────────────────────
@@ -224,6 +244,48 @@ function readNumber(value: unknown, ...path: string[]): number | undefined {
   let cursor: unknown = value;
   for (const key of path) cursor = asRecord(cursor)?.[key];
   return typeof cursor === "number" ? cursor : undefined;
+}
+
+/** Normalize the SDK's `AskUserQuestion` tool input into kone's neutral
+ *  UserInputQuestion[]. Claude's shape is `{ questions: [{ question, header,
+ *  multiSelect?, options: [{ label, description? }] }] }`; options may also
+ *  arrive as bare strings. The id is set to the question TEXT because the SDK
+ *  keys answers by text when mapping the tool result. */
+function parseAskUserQuestions(input: unknown): UserInputQuestion[] {
+  const rawQuestions = asRecord(input)?.questions;
+  if (!Array.isArray(rawQuestions)) return [];
+
+  const out: UserInputQuestion[] = [];
+  for (const raw of rawQuestions) {
+    const record = asRecord(raw);
+    const question = readString(record, "question")?.trim();
+    if (!question) continue;
+    const header = readString(record, "header")?.trim() || "Question";
+
+    const options: UserInputQuestionOption[] = [];
+    const rawOptions = Array.isArray(record?.options) ? record!.options : [];
+    for (const rawOption of rawOptions) {
+      if (typeof rawOption === "string") {
+        const label = rawOption.trim();
+        if (label) options.push({ label });
+        continue;
+      }
+      const optionRecord = asRecord(rawOption);
+      const label = readString(optionRecord, "label")?.trim();
+      if (!label) continue;
+      const description = readString(optionRecord, "description")?.trim();
+      options.push(description ? { label, description } : { label });
+    }
+
+    out.push({
+      id: question,
+      header,
+      question,
+      options,
+      multiSelect: record?.multiSelect === true,
+    });
+  }
+  return out;
 }
 
 function normalizeEffort(value: string | undefined): EffortLevel | undefined {
@@ -548,7 +610,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(input.resume ? { resume: input.resume } : {}),
       permissionMode,
       ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
-      canUseTool: this.autoApprove,
+      // Session-bound so the callback knows which thread asked — a shared arrow
+      // can't tell sessions apart. Only `AskUserQuestion` parks for a real
+      // answer; every other tool auto-allows (see canUseTool below).
+      canUseTool: (toolName, toolInput, opts) => this.canUseTool(session, toolName, toolInput, opts),
       systemPrompt: { type: "preset", preset: "claude_code" },
       settingSources: ["user", "project", "local"],
       includePartialMessages: true,
@@ -573,6 +638,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       fastMode: false,
       trackedTasks: new Map(),
       taskPlanStarted: false,
+      pendingUserInputs: new Map(),
     };
     session.consumer = this.consume(session);
 
@@ -589,16 +655,103 @@ export class ClaudeAdapter implements ProviderAdapter {
     return this.toSession(session);
   }
 
-  /** No approval UI in kone v1 — allow every tool call the instant it's asked
-   *  (see the file header). Under `bypassPermissions` the SDK never even calls
-   *  this; under default/acceptEdits it does, and we allow unchanged. */
-  private readonly autoApprove: CanUseTool = async (_toolName, input) => ({ behavior: "allow", updatedInput: input });
+  /** kone's permission callback. Every tool but `AskUserQuestion` auto-allows
+   *  unchanged (there's no approval UI in v1 — see the file header). The
+   *  `AskUserQuestion` built-in is special: it's how Claude asks the user a
+   *  multiple-choice / free-text question mid-turn, so we park it for a real
+   *  answer from the renderer instead of allowing it to resolve empty. Under
+   *  `bypassPermissions` the SDK never calls this at all. */
+  private canUseTool(
+    session: ClaudeSession,
+    toolName: string,
+    input: Parameters<CanUseTool>[1],
+    options: Parameters<CanUseTool>[2],
+  ): Promise<PermissionResult> {
+    if (toolName === "AskUserQuestion") {
+      return this.askUserQuestion(session, input, options);
+    }
+    return Promise.resolve({ behavior: "allow", updatedInput: input });
+  }
+
+  /** Park an AskUserQuestion round-trip: parse the questions, emit
+   *  `user-input.requested`, and await the renderer's answer. The SDK keys
+   *  answers by the question TEXT, so our UserInputQuestion.id === the question
+   *  text and the resolved answers map passes straight back as `updatedInput`.
+   *  If the turn is interrupted (abort signal) or torn down, the parked promise
+   *  resolves empty and we deny so the SDK stops waiting. */
+  private async askUserQuestion(
+    session: ClaudeSession,
+    input: Parameters<CanUseTool>[1],
+    options: Parameters<CanUseTool>[2],
+  ): Promise<PermissionResult> {
+    const questions = parseAskUserQuestions(input);
+    if (questions.length === 0) {
+      // Nothing coherent to ask — let the SDK proceed unchanged.
+      return { behavior: "allow", updatedInput: input };
+    }
+
+    const requestId = randomUUID();
+    const answers = await new Promise<UserInputAnswers>((resolve) => {
+      session.pendingUserInputs.set(requestId, { questions, resolve });
+      this.emit({
+        ...this.base(session),
+        type: "user-input.requested",
+        requestId,
+        turnId: session.activeTurnId,
+        questions,
+      });
+      // Unblock if the turn aborts mid-question so the query can settle.
+      const signal = options?.signal;
+      if (signal) {
+        if (signal.aborted) this.resolveUserInput(session, requestId, {});
+        else signal.addEventListener("abort", () => this.resolveUserInput(session, requestId, {}), { once: true });
+      }
+    });
+
+    this.emit({ ...this.base(session), type: "user-input.resolved", requestId, answers });
+
+    const answered = Object.values(answers).some((value) =>
+      Array.isArray(value) ? value.length > 0 : typeof value === "string" && value.length > 0,
+    );
+    if (!answered) {
+      return { behavior: "deny", message: "The user dismissed the question without answering." };
+    }
+    return { behavior: "allow", updatedInput: { ...(input as Record<string, unknown>), answers } };
+  }
+
+  /** Settle one parked AskUserQuestion (idempotent — a no-op once drained). */
+  private resolveUserInput(session: ClaudeSession, requestId: string, answers: UserInputAnswers): void {
+    const pending = session.pendingUserInputs.get(requestId);
+    if (!pending) return;
+    session.pendingUserInputs.delete(requestId);
+    pending.resolve(answers);
+  }
+
+  /** Resolve every parked question empty — on interrupt/stop so no canUseTool
+   *  promise leaks and the renderer's pending prompt clears. */
+  private drainUserInputs(session: ClaudeSession): void {
+    for (const [requestId] of [...session.pendingUserInputs]) {
+      this.resolveUserInput(session, requestId, {});
+    }
+  }
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const session = this.requireSession(input.threadId);
 
     const text = input.input.trim();
-    if (text.length === 0) throw new Error("Turn input must include text.");
+
+    // Build the user message's content up front (reads any attachment bytes off
+    // disk): the prompt text — with non-image / unsupported-image files folded
+    // in as an <attached_files> path block — plus native image blocks for
+    // gif/jpeg/png/webp. An attachment-only turn is valid; we just skip text.
+    const { imageBlocks, fileBlock } = await buildClaudeAttachmentContent(input.attachments);
+    const promptText = composePromptText(text, fileBlock);
+    const content: Array<{ type: "text"; text: string } | ClaudeImageBlock> = [];
+    if (promptText.length > 0) content.push({ type: "text", text: promptText });
+    content.push(...imageBlocks);
+    if (content.length === 0) {
+      throw new Error("Turn input must include text or an attachment.");
+    }
 
     // Permission mode is the one selection the SDK lets us change live; model
     // and effort are spawn-fixed and change via a session restart instead.
@@ -657,7 +810,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const userMessage: SDKUserMessage = {
       type: "user",
       parent_tool_use_id: null,
-      message: { role: "user", content: [{ type: "text", text: input.input }] },
+      message: { role: "user", content },
     };
     session.prompt.push(userMessage);
 
@@ -668,6 +821,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session?.activeTurnId) return;
     session.interrupting = true;
+    // Unblock any parked AskUserQuestion so the interrupt can land cleanly.
+    this.drainUserInputs(session);
     try {
       await session.query.interrupt();
     } catch {
@@ -679,6 +834,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session) return;
     session.disposed = true;
+    this.drainUserInputs(session);
     session.prompt.close();
     session.abort.abort();
     this.sessions.delete(threadId);
@@ -687,6 +843,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   async stopAll(): Promise<void> {
     for (const session of this.sessions.values()) {
       session.disposed = true;
+      this.drainUserInputs(session);
       session.prompt.close();
       session.abort.abort();
     }
@@ -694,8 +851,14 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
-    // No-op — autoApprove resolves every tool call inline; nothing is left
-    // pending for the UI to answer (matches CodexAdapter).
+    // No-op — non-question tools auto-allow inline; nothing is left pending for
+    // the UI to approve (matches CodexAdapter). Questions use respondToUserInput.
+  }
+
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.resolveUserInput(session, requestId, answers);
   }
 
   async listSessions(): Promise<Session[]> {

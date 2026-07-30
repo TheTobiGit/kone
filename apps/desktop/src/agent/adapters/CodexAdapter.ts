@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import { readCodexAuth, isCodexCliVersionSupported, MIN_CODEX_CLI_VERSION, parseCodexCliVersion } from "../codexHome.js";
@@ -20,8 +21,16 @@ import type {
   SendTurnInput,
   SessionStartInput,
   TurnStartResult,
+  UserInputAnswers,
+  UserInputQuestion,
+  UserInputQuestionOption,
 } from "../types.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks } from "../planTasks.js";
+import {
+  buildCodexAttachmentInput,
+  composePromptText,
+  type CodexImageItem,
+} from "../promptAttachments.js";
 
 // Codex adapter — drives `codex app-server` as a persistent JSON-RPC-over-stdio
 // child process per thread (transport: jsonRpc.ts). One session = one live
@@ -89,6 +98,17 @@ type CodexSession = {
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, CodexItemBuffer>;
+  /** In-flight `item/tool/requestUserInput` round-trips, keyed by our requestId.
+   *  The JSON-RPC handler awaits `promise`; respondToUserInput resolves it (or
+   *  we drain empty on interrupt/stop) — its answers become the RPC reply. */
+  pendingUserInputs: Map<string, PendingUserInput>;
+};
+
+/** A parked Codex user-input request: the questions we emitted and the resolver
+ *  the awaited RPC handler is blocked on. */
+type PendingUserInput = {
+  questions: UserInputQuestion[];
+  resolve: (answers: UserInputAnswers) => void;
 };
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
@@ -110,6 +130,45 @@ function numberOrUndefined(value: unknown): number | undefined {
 function isNonFatalCodexError(message: string): boolean {
   const lower = message.trim().toLowerCase();
   return NON_FATAL_CODEX_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
+}
+
+/** Coerce a resolved answer value (string | string[] | null) into the flat
+ *  string[] Codex expects per question. */
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  if (typeof value === "string" && value.length > 0) return [value];
+  return [];
+}
+
+/** Normalize a Codex `item/tool/requestUserInput` payload into kone's neutral
+ *  UserInputQuestion[]. Codex questions carry their own `id` (echoed back in the
+ *  answer map) and options are `{ label, description }`; Codex has no per-question
+ *  multi-select flag, so it's always single-select. */
+function parseCodexUserInputQuestions(params: unknown): UserInputQuestion[] {
+  const rawQuestions = asRecord(params)?.questions;
+  if (!Array.isArray(rawQuestions)) return [];
+
+  const out: UserInputQuestion[] = [];
+  for (const raw of rawQuestions) {
+    const record = asRecord(raw);
+    const question = readString(record, "question")?.trim();
+    const id = readString(record, "id")?.trim();
+    if (!question || !id) continue;
+    const header = readString(record, "header")?.trim() || "Question";
+
+    const options: UserInputQuestionOption[] = [];
+    const rawOptions = Array.isArray(record?.options) ? record!.options : [];
+    for (const rawOption of rawOptions) {
+      const optionRecord = asRecord(rawOption);
+      const label = readString(optionRecord, "label")?.trim();
+      if (!label) continue;
+      const description = readString(optionRecord, "description")?.trim();
+      options.push(description ? { label, description } : { label });
+    }
+
+    out.push({ id, header, question, options, multiSelect: false });
+  }
+  return out;
 }
 
 // ── mode → Codex approval/sandbox mapping ───────────────────────────────────
@@ -423,6 +482,7 @@ export class CodexAdapter implements ProviderAdapter {
       mode,
       rpc,
       items: new Map(),
+      pendingUserInputs: new Map(),
     };
     this.wireNotifications(session);
     this.wireRequests(session);
@@ -486,11 +546,24 @@ export class CodexAdapter implements ProviderAdapter {
     if (input.model) session.model = input.model;
 
     const text = input.input.trim();
-    if (text.length === 0) throw new Error("Turn input must include text.");
+
+    // Compose the turn's input items: the prompt text (with any non-image files
+    // folded in as an <attached_files> path block) followed by native image
+    // items. An attachment-only turn is valid — we just skip the text item.
+    const { imageItems, fileBlock } = await buildCodexAttachmentInput(input.attachments);
+    const promptText = composePromptText(text, fileBlock);
+    const inputItems: Array<
+      { type: "text"; text: string; text_elements: [] } | CodexImageItem
+    > = [];
+    if (promptText.length > 0) inputItems.push({ type: "text", text: promptText, text_elements: [] });
+    inputItems.push(...imageItems);
+    if (inputItems.length === 0) {
+      throw new Error("Turn input must include text or an attachment.");
+    }
 
     const response = await session.rpc.call<Record<string, unknown>>("turn/start", {
       threadId: session.conversationId,
-      input: [{ type: "text", text: input.input, text_elements: [] }],
+      input: inputItems,
       ...mapModeToTurnOverrides(mode),
       ...(session.model ? { model: session.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
@@ -505,6 +578,8 @@ export class CodexAdapter implements ProviderAdapter {
   async interruptTurn(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session?.activeTurnId || !session.conversationId) return;
+    // Unblock any parked user-input request so the interrupt lands cleanly.
+    this.drainUserInputs(session);
     await session.rpc.call("turn/interrupt", {
       threadId: session.conversationId,
       turnId: session.activeTurnId,
@@ -514,18 +589,29 @@ export class CodexAdapter implements ProviderAdapter {
   async stopSession(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session) return;
+    this.drainUserInputs(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
   }
 
   async stopAll(): Promise<void> {
-    for (const session of this.sessions.values()) session.rpc.kill();
+    for (const session of this.sessions.values()) {
+      this.drainUserInputs(session);
+      session.rpc.kill();
+    }
     this.sessions.clear();
   }
 
   async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
     // No-op — see wireRequests(): every Codex approval prompt is auto-resolved
     // the instant it arrives, so nothing is ever left pending to respond to.
+    // User-input questions use respondToUserInput instead.
+  }
+
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.resolveUserInput(session, requestId, answers);
   }
 
   async listSessions(): Promise<Session[]> {
@@ -682,7 +768,60 @@ export class CodexAdapter implements ProviderAdapter {
     rpc.onRequest("item/fileChange/requestApproval", autoApprove);
     rpc.onRequest("item/fileRead/requestApproval", autoApprove);
     rpc.onRequest("item/permissions/requestApproval", autoApprove);
-    rpc.onRequest("item/tool/requestUserInput", async () => ({ answers: {} }));
+    // Unlike the approval prompts above, a user-input request is a real
+    // question for the human — park it for a renderer answer. The handler is
+    // async and jsonRpc.ts awaits its promise, so blocking here is the reply.
+    rpc.onRequest("item/tool/requestUserInput", (params) => this.requestUserInput(session, params));
+  }
+
+  /** Handle a Codex `item/tool/requestUserInput`: parse its questions, emit
+   *  `user-input.requested`, and block on the parked resolver until the renderer
+   *  answers (or we drain on interrupt/stop). The resolved answers become the
+   *  RPC reply, shaped as `{ answers: { [questionId]: { answers: string[] } } }`. */
+  private async requestUserInput(
+    session: CodexSession,
+    params: unknown,
+  ): Promise<{ answers: Record<string, { answers: string[] }> }> {
+    const questions = parseCodexUserInputQuestions(params);
+    if (questions.length === 0) return { answers: {} };
+
+    const requestId = randomUUID();
+    const turnId = readString(params, "turnId") ?? session.activeTurnId;
+    const answers = await new Promise<UserInputAnswers>((resolve) => {
+      session.pendingUserInputs.set(requestId, { questions, resolve });
+      this.emit({
+        ...this.base(session),
+        type: "user-input.requested",
+        requestId,
+        turnId,
+        questions,
+      });
+    });
+
+    this.emit({ ...this.base(session), type: "user-input.resolved", requestId, answers });
+
+    // Codex keys answers by question id, each a { answers: string[] }.
+    const reply: Record<string, { answers: string[] }> = {};
+    for (const question of questions) {
+      reply[question.id] = { answers: toStringArray(answers[question.id]) };
+    }
+    return { answers: reply };
+  }
+
+  /** Settle one parked user-input request (idempotent — a no-op once drained). */
+  private resolveUserInput(session: CodexSession, requestId: string, answers: UserInputAnswers): void {
+    const pending = session.pendingUserInputs.get(requestId);
+    if (!pending) return;
+    session.pendingUserInputs.delete(requestId);
+    pending.resolve(answers);
+  }
+
+  /** Resolve every parked question empty — on interrupt/stop so no RPC handler
+   *  hangs and the renderer's pending prompt clears. */
+  private drainUserInputs(session: CodexSession): void {
+    for (const [requestId] of [...session.pendingUserInputs]) {
+      this.resolveUserInput(session, requestId, {});
+    }
   }
 
   private handleItemLifecycle(session: CodexSession, params: unknown, lifecycle: "started" | "completed"): void {

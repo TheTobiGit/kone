@@ -272,9 +272,33 @@ export type Session = {
   mode: InteractionMode;
 };
 
+// ── Attachments (mirror apps/desktop/src/agent/types.ts) ─────────────────────
+/** How an attachment is fed to the agent. `image` → native vision block;
+ *  `file` → an on-disk path the agent reads with its own tools. */
+export type AttachmentKind = "image" | "file";
+
+/** Bytes-free attachment metadata that rides a turn. */
+export type ChatAttachment = {
+  type: AttachmentKind;
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+};
+
+/** Upload payload — raw bytes (base64, no data: prefix) sent once over IPC. */
+export type UploadAttachmentInput = {
+  threadId: string;
+  name: string;
+  mimeType: string;
+  data: string;
+};
+
 export type SendTurnInput = {
   threadId: string;
   input: string;
+  /** Files/images attached to this turn (metadata only; bytes live on disk). */
+  attachments?: ChatAttachment[];
   model?: string;
   mode?: InteractionMode;
   /** Reasoning effort tier. Providers that bake effort into the model id
@@ -292,6 +316,27 @@ export type SendTurnInput = {
 export type TurnStartResult = { threadId: string; turnId: string };
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
+
+// ── mid-turn user-input questions (mirror apps/desktop/src/agent/types.ts) ────
+/** One choice offered for a question; `description` is a short gloss. */
+export type UserInputQuestionOption = {
+  label: string;
+  description?: string;
+};
+
+/** One question the agent asks the user mid-turn. No `options` → free text. */
+export type UserInputQuestion = {
+  /** Stable key the answer is filed under (for Claude, equals the question text). */
+  id: string;
+  header: string;
+  question: string;
+  options: UserInputQuestionOption[];
+  multiSelect?: boolean;
+};
+
+/** Answers keyed by question id → free text / single label, an array of labels
+ *  (multi-select), or null when skipped. */
+export type UserInputAnswers = Record<string, string | string[] | null>;
 
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
 
@@ -374,7 +419,14 @@ export type RuntimeEvent =
     })
   | (AgentBaseEvent & { type: "item.started"; turnId: string; item: RuntimeItem })
   | (AgentBaseEvent & { type: "item.updated"; turnId: string; item: RuntimeItem })
-  | (AgentBaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem });
+  | (AgentBaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem })
+  | (AgentBaseEvent & {
+      type: "user-input.requested";
+      requestId: string;
+      turnId?: string;
+      questions: UserInputQuestion[];
+    })
+  | (AgentBaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers });
 
 // ── persisted conversation history ───────────────────────────────────────────
 // What the main-process ConversationStore reads back off disk. Kept in the same
@@ -402,7 +454,7 @@ export type StoredThreadMeta = {
 };
 
 export type StoredBlock =
-  | { id: string; role: "user"; text: string; at: number }
+  | { id: string; role: "user"; text: string; at: number; attachments?: ChatAttachment[] }
   | {
       id: string;
       role: "assistant";
@@ -438,6 +490,9 @@ export type KoneAgentApi = {
   history: KoneAgentHistoryApi;
   /** Start a thread; resolves once the session is ready. */
   startSession: (input: SessionStartInput) => Promise<Session>;
+  /** Persist an attachment's bytes to disk; resolves to the bytes-free
+   *  ChatAttachment the composer then carries on its next turn. */
+  uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;
   /** Send a turn; resolves when accepted — output flows through onEvent. */
   sendTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
   interrupt: (threadId: string) => Promise<void>;
@@ -446,6 +501,13 @@ export type KoneAgentApi = {
     threadId: string,
     requestId: string,
     decision: ApprovalDecision,
+  ) => Promise<void>;
+  /** Answer a pending mid-turn question (AskUserQuestion / requestUserInput),
+   *  unblocking the parked turn. */
+  respondUserInput: (
+    threadId: string,
+    requestId: string,
+    answers: UserInputAnswers,
   ) => Promise<void>;
   listSessions: () => Promise<Session[]>;
   /** Subscribe to the runtime event stream; returns an unsubscribe fn. */

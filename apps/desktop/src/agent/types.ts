@@ -121,10 +121,66 @@ export type Session = {
   mode: InteractionMode;
 };
 
+// ── Attachments ────────────────────────────────────────────────────────────
+// Files/images the user attaches to a prompt. The data model is borrowed
+// wholesale from research: a turn carries only lightweight *metadata*
+// (id + name + mime + size) — never bytes. The bytes are uploaded once over
+// IPC (agent:upload-attachment), written to a per-user attachments dir, and
+// read back off disk by each adapter at dispatch, where they're re-encoded
+// into whatever that CLI wants (Codex data-URL image item / Claude base64
+// image block / an on-disk-path text block for non-image files). Mirror any
+// change in apps/web/app/types/desktop.d.ts.
+
+/** How an attachment is fed to the agent. `image` → a native vision block for
+ *  providers that support it; `file` (PDFs, docs, code, anything non-image, and
+ *  images a provider can't render) → an on-disk path the agent reads with its
+ *  own file tools. */
+export type AttachmentKind = "image" | "file";
+
+/** The bytes-free attachment metadata that rides a turn and is persisted with
+ *  the user block. `id` doubles as the on-disk addressing key. */
+export type ChatAttachment = {
+  type: AttachmentKind;
+  /** kone-minted id (also the stored file's name stem). */
+  id: string;
+  /** Original file name — shown in the chip and named in the path block. */
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+};
+
+/** Upload payload: the renderer ships the raw bytes (base64, no data: prefix)
+ *  exactly once; the main process persists them and returns the ChatAttachment
+ *  the composer then carries on the turn. */
+export type UploadAttachmentInput = {
+  threadId: string;
+  name: string;
+  mimeType: string;
+  /** Base64-encoded file bytes (no `data:…;base64,` prefix). */
+  data: string;
+};
+
+/** Max attachments per turn — matches research's PROVIDER_SEND_TURN cap. */
+export const MAX_ATTACHMENTS_PER_TURN = 8;
+export const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Max bytes for a non-image file attachment (25 MB, as in research). */
+export const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+/** Image mime types Claude renders natively; anything else falls back to the
+ *  on-disk path block (research's SUPPORTED_CLAUDE_IMAGE_MIME_TYPES). */
+export const CLAUDE_NATIVE_IMAGE_MIME_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
 export type SendTurnInput = {
   threadId: string;
-  /** The user's prompt text for this turn. */
+  /** The user's prompt text for this turn. Can be empty when `attachments`
+   *  carries at least one file — an attachment-only turn is valid. */
   input: string;
+  /** Files/images attached to this turn (metadata only; bytes live on disk). */
+  attachments?: ChatAttachment[];
   /** Override the session model for this turn. */
   model?: string;
   mode?: InteractionMode;
@@ -148,6 +204,45 @@ export type TurnStartResult = {
 };
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
+
+// ── mid-turn user-input questions ────────────────────────────────────────────
+// When the agent needs to ask the user something mid-turn — Claude's built-in
+// `AskUserQuestion` tool, Codex's `item/tool/requestUserInput` app-server
+// request — both are normalized into this one provider-neutral shape (ported
+// wholesale from research's UserInputQuestion / ProviderUserInputAnswers).
+// The adapter parks the provider callback on a promise, emits a
+// `user-input.requested` event, and resolves the promise when the renderer calls
+// respondToUserInput — which returns the answers to the provider so the turn
+// continues. Mirror any change in apps/web/app/types/desktop.d.ts.
+
+/** One choice offered for a question. `description` is a short gloss under the
+ *  label (Claude's AskUserQuestion always provides one; Codex may not). */
+export type UserInputQuestionOption = {
+  label: string;
+  description?: string;
+};
+
+/** One question the agent asks the user mid-turn. A question with no `options`
+ *  is a free-text prompt. */
+export type UserInputQuestion = {
+  /** Stable key the answer is filed under. For Claude this MUST equal the full
+   *  question text — the SDK looks answers up by text, not by a synthetic id
+   *  (see ClaudeAdapter.handleAskUserQuestion). */
+  id: string;
+  /** Short category/label shown as the question's chip. */
+  header: string;
+  /** The full question prompt shown to the user. */
+  question: string;
+  /** The choices offered; empty means a free-text answer. */
+  options: UserInputQuestionOption[];
+  /** Whether more than one option may be picked. Defaults to single-select. */
+  multiSelect?: boolean;
+};
+
+/** The user's answers, keyed by question id → a single value (free text, or a
+ *  single choice's label) or an array of labels (multi-select). `null` means the
+ *  question was skipped — e.g. the whole request was cancelled/interrupted. */
+export type UserInputAnswers = Record<string, string | string[] | null>;
 
 /** A point-in-time view of a thread (for hydration/rehydration). */
 export type ThreadSnapshot = {
@@ -186,7 +281,7 @@ export type StoredThreadMeta = {
 
 /** One reconstructed block — the persisted form of a renderer timeline block. */
 export type StoredBlock =
-  | { id: string; role: "user"; text: string; at: number }
+  | { id: string; role: "user"; text: string; at: number; attachments?: ChatAttachment[] }
   | {
       id: string;
       role: "assistant";
@@ -307,7 +402,18 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: RuntimeTurnState; message?: string })
   | (BaseEvent & { type: "item.started"; turnId: string; item: RuntimeItem })
   | (BaseEvent & { type: "item.updated"; turnId: string; item: RuntimeItem })
-  | (BaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem });
+  | (BaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem })
+  // The agent is asking the user one or more questions mid-turn and the turn is
+  // parked until they answer (respondToUserInput). `turnId` is the turn that
+  // raised it, when known.
+  | (BaseEvent & {
+      type: "user-input.requested";
+      requestId: string;
+      turnId?: string;
+      questions: UserInputQuestion[];
+    })
+  // The parked question has been answered (or cancelled) — clear the prompt.
+  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers });
 
 /** The sink an adapter pushes every event into. AgentService owns it and fans
  *  events out to the renderer over IPC. */
@@ -350,6 +456,11 @@ export interface ProviderAdapter {
 
   // interactivity (no-ops on providers that don't prompt inline)
   respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
+
+  /** Answer a pending mid-turn question (Claude's AskUserQuestion / Codex's
+   *  requestUserInput), unblocking the parked provider callback so the turn
+   *  continues. No-op when nothing is pending for that requestId. */
+  respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void>;
 
   // introspection
   listSessions(): Promise<Session[]>;

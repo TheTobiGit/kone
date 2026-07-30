@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 import type {
   ApprovalDecision,
+  ChatAttachment,
   ModelDescriptor,
   ProviderKind,
   ProviderStatus,
@@ -12,6 +13,8 @@ import type {
   StoredThread,
   StoredThreadMeta,
   TurnStartResult,
+  UploadAttachmentInput,
+  UserInputAnswers,
 } from "./agent/index.js";
 import type { DirListing } from "./fs.js";
 import type {
@@ -107,6 +110,10 @@ const api = {
     // output arrives on the agent:event stream (subscribe via onEvent).
     startSession: (input: SessionStartInput): Promise<Session> =>
       ipcRenderer.invoke("agent:start-session", input),
+    // Persist an attachment's bytes to disk; resolves to the bytes-free
+    // ChatAttachment the composer then carries on its next turn.
+    uploadAttachment: (input: UploadAttachmentInput): Promise<ChatAttachment> =>
+      ipcRenderer.invoke("agent:upload-attachment", input),
     sendTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:send-turn", input),
     interrupt: (threadId: string): Promise<void> =>
@@ -118,6 +125,12 @@ const api = {
       requestId: string,
       decision: ApprovalDecision,
     ): Promise<void> => ipcRenderer.invoke("agent:respond", threadId, requestId, decision),
+    respondUserInput: (
+      threadId: string,
+      requestId: string,
+      answers: UserInputAnswers,
+    ): Promise<void> =>
+      ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers),
     listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
     // Persisted conversation history (read-only): rehydrate a project's last
     // thread on open, or list past ones. Null when nothing is stored yet.

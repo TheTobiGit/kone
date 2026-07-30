@@ -1,6 +1,7 @@
 import { ipcMain, type WebContents } from "electron";
 
 import { AgentService } from "./AgentService.js";
+import { getAttachmentStore } from "./AttachmentStore.js";
 import { getConversationStore } from "./ConversationStore.js";
 import { detect, diffStatBetween, snapshotWorkingTree } from "../git/status.js";
 import {
@@ -14,6 +15,8 @@ import type {
   RuntimeEvent,
   SendTurnInput,
   SessionStartInput,
+  UploadAttachmentInput,
+  UserInputAnswers,
 } from "./types.js";
 
 // IPC wiring for the agent layer — the direct analogue of git/ipc.ts. Request/
@@ -37,6 +40,7 @@ const subscribers = new Set<WebContents>();
 export function registerAgentIpc(): void {
   const svc = getAgentService();
   const store = getConversationStore();
+  const attachments = getAttachmentStore();
 
   /** Push one runtime event to every subscribed renderer (and optionally
    *  journal it). Title updates skip the store's applyEvent — they're written
@@ -52,7 +56,10 @@ export function registerAgentIpc(): void {
   // it to the conversation store on the way through (best-effort — the store
   // guards itself, so persistence can never disrupt the live stream).
   svc.onEvent((event) => {
-    broadcast(event);
+    // User-input questions are an ephemeral live round-trip (like title updates)
+    // — stream them to renderers but don't journal them into the transcript.
+    const journal = event.type !== "user-input.requested" && event.type !== "user-input.resolved";
+    broadcast(event, journal);
     // When a turn settles, snapshot the repo state it left behind (branch +
     // working-tree diffstat) onto the thread, so the Project Home "recent
     // conversations" block reads real numbers. Off the hot path and best-effort
@@ -199,12 +206,20 @@ export function registerAgentIpc(): void {
     captureBaseline(input.threadId, input.cwd);
     return session;
   });
+  // Persist an attachment's bytes to disk and hand back the bytes-free metadata
+  // the composer carries on its next turn. Runs before send-turn — the composer
+  // uploads on pick/drop/paste, then sends the turn with the returned ids.
+  ipcMain.handle("agent:upload-attachment", (_event, input: UploadAttachmentInput) =>
+    attachments.save(input),
+  );
+
   ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) => {
-    // Persist the user prompt before dispatching, so it precedes the turn in
-    // arrival order (the turn.started event lands after this row).
+    // Persist the user prompt (with any attachment metadata) before dispatching,
+    // so it precedes the turn in arrival order (turn.started lands after this).
     const userTurnCount = store.recordUserBlock({
       threadId: input.threadId,
       text: input.input,
+      attachments: input.attachments,
     });
     // First user turn → name the thread (fallback now, generated rename async).
     if (userTurnCount === 1) {
@@ -213,7 +228,9 @@ export function registerAgentIpc(): void {
         maybeNameThread({
           threadId: input.threadId,
           provider,
-          message: input.input,
+          // An attachment-only first turn has no prompt text — name the thread
+          // after the first attached file instead of leaving it blank.
+          message: input.input.trim() || input.attachments?.[0]?.name || "",
         });
       }
     }
@@ -229,6 +246,11 @@ export function registerAgentIpc(): void {
     "agent:respond",
     (_event, threadId: string, requestId: string, decision: ApprovalDecision) =>
       svc.respondToRequest(threadId, requestId, decision),
+  );
+  ipcMain.handle(
+    "agent:respond-user-input",
+    (_event, threadId: string, requestId: string, answers: UserInputAnswers) =>
+      svc.respondToUserInput(threadId, requestId, answers),
   );
   ipcMain.handle("agent:list-sessions", () => svc.listSessions());
 
@@ -248,9 +270,12 @@ export function registerAgentIpc(): void {
     "agent:history-archive",
     (_event, threadId: string, archived: boolean) => store.setArchived(threadId, archived),
   );
-  ipcMain.handle("agent:history-delete", (_event, threadId: string) =>
-    store.deleteThread(threadId),
-  );
+  ipcMain.handle("agent:history-delete", async (_event, threadId: string) => {
+    // Unlink the thread's attachment files first (best-effort), then drop every
+    // row — otherwise the bytes on disk would outlive the conversation.
+    await attachments.deleteThreadFiles(threadId);
+    store.deleteThread(threadId);
+  });
 }
 
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */

@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { app } from "electron";
 
 import type {
+  ChatAttachment,
   ProviderKind,
   RuntimeEvent,
   RuntimeItem,
@@ -29,7 +30,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -175,7 +176,32 @@ function migrate(db: DatabaseSync): void {
     version = 7;
   }
 
-  // Future migrations append here: `if (version < 8) { …; version = 8; }`
+  if (version < 8) {
+    // v8 adds prompt attachments. Bytes live on disk under the attachments dir
+    // (AttachmentStore); this registry keeps the id → on-disk-path mapping the
+    // adapters resolve at dispatch, plus enough metadata for GC of orphaned
+    // files. The attachment *metadata* is also denormalized onto the owning
+    // user block (`attachments_json`) so a reloaded thread rebuilds its chips
+    // without a per-block join. Mirrors research's managed_attachment_blobs table
+    // (simplified: no staging state machine — kone uploads straight to disk).
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS attachments (
+        attachment_id TEXT PRIMARY KEY,
+        thread_id     TEXT NOT NULL,
+        type          TEXT NOT NULL,   -- 'image' | 'file'
+        name          TEXT NOT NULL,
+        mime_type     TEXT NOT NULL,
+        size_bytes    INTEGER NOT NULL,
+        rel_path      TEXT NOT NULL,   -- relative to the attachments dir
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_attachments_thread ON attachments (thread_id);
+      ALTER TABLE blocks ADD COLUMN attachments_json TEXT;
+    `);
+    version = 8;
+  }
+
+  // Future migrations append here: `if (version < 9) { …; version = 9; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -305,10 +331,37 @@ export class ConversationStore {
       db.exec("PRAGMA busy_timeout = 2000");
       migrate(db);
       this.db = db;
+      // Recovery: this is the first DB open of a fresh process, so no session is
+      // live — any assistant block still 'running' belongs to a turn whose
+      // provider process died (quit/crash) without a session.exited seal. That
+      // includes a turn parked waiting on an unanswered AskUserQuestion /
+      // requestUserInput: the parked promise is in-memory only (as in
+      // research) and cannot survive a restart. Seal them here, once, so the
+      // rehydrated thread reads settled — otherwise a stale 'running' block keeps
+      // the renderer's `busy` true forever and the composer stays disabled. This
+      // mirrors the reference stores reconciling orphaned pending state at the
+      // recovery point; kone's simpler read model makes it a single UPDATE.
+      this.sealOrphanedTurns(db);
       return db;
     } catch (err) {
       console.error("[conversation-store] could not open database:", err);
       return null;
+    }
+  }
+
+  /** Seal every assistant turn left 'running' from a previous process as
+   *  'interrupted'. Safe to run only at first DB open (no live session yet):
+   *  after startup a 'running' block is a genuinely live turn, so this must never
+   *  be called on a per-thread read. Best-effort — a failure just leaves the
+   *  stale state, which is what we already had. */
+  private sealOrphanedTurns(db: DatabaseSync): void {
+    try {
+      db.prepare(
+        `UPDATE blocks SET state = 'interrupted', ended_at = ?
+         WHERE role = 'assistant' AND state = 'running'`,
+      ).run(Date.now());
+    } catch (err) {
+      console.error("[conversation-store] could not seal orphaned turns:", err);
     }
   }
 
@@ -343,15 +396,26 @@ export class ConversationStore {
    *  turn.started event, so it precedes the assistant turn in arrival order.
    *  Returns the 1-based user-turn count after the insert (so IPC can detect
    *  the first turn and kick off title naming). `0` on failure. */
-  recordUserBlock(input: { threadId: string; text: string; at?: number }): number {
+  recordUserBlock(input: {
+    threadId: string;
+    text: string;
+    at?: number;
+    attachments?: ChatAttachment[];
+  }): number {
     const db = this.handle();
     if (!db) return 0;
     try {
       const at = input.at ?? Date.now();
       db.prepare(
-        `INSERT INTO blocks (block_id, thread_id, role, text, at)
-         VALUES (?, ?, 'user', ?, ?)`,
-      ).run(randomUUID(), input.threadId, input.text, at);
+        `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json)
+         VALUES (?, ?, 'user', ?, ?, ?)`,
+      ).run(
+        randomUUID(),
+        input.threadId,
+        input.text,
+        at,
+        input.attachments?.length ? JSON.stringify(input.attachments) : null,
+      );
       this.touch(db, input.threadId, at);
       const row = db
         .prepare(
@@ -362,6 +426,72 @@ export class ConversationStore {
     } catch (err) {
       console.error("[conversation-store] recordUserBlock failed:", err);
       return 0;
+    }
+  }
+
+  /** Register an uploaded attachment's bytes-free metadata + on-disk path, so
+   *  adapters can resolve `id → file` at dispatch (even after a reload) and a
+   *  future GC pass can find orphaned files. Called by AttachmentStore right
+   *  after the bytes are written. */
+  registerAttachment(row: StoredAttachment): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `INSERT INTO attachments
+           (attachment_id, thread_id, type, name, mime_type, size_bytes, rel_path, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(attachment_id) DO UPDATE SET
+           thread_id  = excluded.thread_id,
+           type       = excluded.type,
+           name       = excluded.name,
+           mime_type  = excluded.mime_type,
+           size_bytes = excluded.size_bytes,
+           rel_path   = excluded.rel_path`,
+      ).run(
+        row.id,
+        row.threadId,
+        row.type,
+        row.name,
+        row.mimeType,
+        row.sizeBytes,
+        row.relPath,
+        row.createdAt ?? Date.now(),
+      );
+    } catch (err) {
+      console.error("[conversation-store] registerAttachment failed:", err);
+    }
+  }
+
+  /** Every attachment registered under a thread — used to unlink the on-disk
+   *  files when the thread is destroyed. */
+  listThreadAttachments(threadId: string): StoredAttachment[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(`SELECT * FROM attachments WHERE thread_id = ?`)
+        .all(threadId) as AttachmentRow[];
+      return rows.map(rowToAttachment);
+    } catch (err) {
+      console.error("[conversation-store] listThreadAttachments failed:", err);
+      return [];
+    }
+  }
+
+  /** Resolve an attachment id back to its metadata + on-disk relative path.
+   *  Null when unknown (never uploaded, or GC'd). */
+  getAttachment(id: string): StoredAttachment | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(`SELECT * FROM attachments WHERE attachment_id = ?`)
+        .get(id) as AttachmentRow | undefined;
+      return row ? rowToAttachment(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] getAttachment failed:", err);
+      return null;
     }
   }
 
@@ -582,9 +712,10 @@ export class ConversationStore {
     if (!db) return;
     try {
       db.exec("BEGIN");
-      db.prepare(`DELETE FROM items  WHERE thread_id = ?`).run(threadId);
-      db.prepare(`DELETE FROM blocks WHERE thread_id = ?`).run(threadId);
-      db.prepare(`DELETE FROM threads WHERE thread_id = ?`).run(threadId);
+      db.prepare(`DELETE FROM items       WHERE thread_id = ?`).run(threadId);
+      db.prepare(`DELETE FROM blocks      WHERE thread_id = ?`).run(threadId);
+      db.prepare(`DELETE FROM attachments WHERE thread_id = ?`).run(threadId);
+      db.prepare(`DELETE FROM threads     WHERE thread_id = ?`).run(threadId);
       db.exec("COMMIT");
     } catch (err) {
       try {
@@ -685,7 +816,15 @@ export class ConversationStore {
 
       const blocks: StoredBlock[] = blockRows.map((b) =>
         b.role === "user"
-          ? { id: b.block_id, role: "user", text: b.text ?? "", at: b.at }
+          ? {
+              id: b.block_id,
+              role: "user",
+              text: b.text ?? "",
+              at: b.at,
+              ...(parseAttachments(b.attachments_json)?.length
+                ? { attachments: parseAttachments(b.attachments_json) }
+                : {}),
+            }
           : {
               id: b.block_id,
               role: "assistant",
@@ -763,7 +902,52 @@ type BlockRow = {
   error: string | null;
   at: number;
   ended_at: number | null;
+  attachments_json: string | null;
 };
+
+/** An attachment's registry row — its metadata plus where the bytes live. */
+export type StoredAttachment = ChatAttachment & {
+  threadId: string;
+  /** Path to the file relative to the attachments dir. */
+  relPath: string;
+  createdAt?: number;
+};
+
+type AttachmentRow = {
+  attachment_id: string;
+  thread_id: string;
+  type: string;
+  name: string;
+  mime_type: string;
+  size_bytes: number;
+  rel_path: string;
+  created_at: number;
+};
+
+function rowToAttachment(row: AttachmentRow): StoredAttachment {
+  return {
+    id: row.attachment_id,
+    threadId: row.thread_id,
+    type: row.type === "image" ? "image" : "file",
+    name: row.name,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    relPath: row.rel_path,
+    createdAt: row.created_at,
+  };
+}
+
+/** Parse a user block's denormalized attachment metadata, tolerating bad JSON
+ *  (an older/corrupt row just renders without chips). */
+function parseAttachments(json: string | null): ChatAttachment[] | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed as ChatAttachment[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type ItemRow = {
   item_id: string;

@@ -12,6 +12,7 @@ import type {
   SendTurnInput,
   SessionStartInput,
   TurnStartResult,
+  UserInputAnswers,
 } from "./types.js";
 
 // The cross-provider facade that lives in the Electron main process (the agent
@@ -99,6 +100,14 @@ export class AgentService {
     decision: ApprovalDecision,
   ): Promise<void> {
     return this.adapterForThread(threadId).respondToRequest(threadId, requestId, decision);
+  }
+
+  async respondToUserInput(
+    threadId: string,
+    requestId: string,
+    answers: UserInputAnswers,
+  ): Promise<void> {
+    return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
   }
 
   async listSessions(): Promise<Session[]> {
