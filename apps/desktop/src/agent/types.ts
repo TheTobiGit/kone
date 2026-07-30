@@ -160,8 +160,6 @@ export type UploadAttachmentInput = {
   data: string;
 };
 
-/** Max attachments per turn — matches research's PROVIDER_SEND_TURN cap. */
-export const MAX_ATTACHMENTS_PER_TURN = 8;
 export const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 /** Max bytes for a non-image file attachment (25 MB, as in research). */
 export const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -243,14 +241,6 @@ export type UserInputQuestion = {
  *  single choice's label) or an array of labels (multi-select). `null` means the
  *  question was skipped — e.g. the whole request was cancelled/interrupted. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
-
-/** A point-in-time view of a thread (for hydration/rehydration). */
-export type ThreadSnapshot = {
-  threadId: string;
-  provider: ProviderKind;
-  conversationId?: string;
-  items: RuntimeItem[];
-};
 
 // ── persisted conversation history ───────────────────────────────────────────
 // What the ConversationStore reads back off disk. Kept in the renderer's own

@@ -217,12 +217,6 @@ function drawDelete(c: OrbDrawCtx) {
 export function drawThinkingOrb(c: OrbDrawCtx): void { drawThinking(c); }
 export function drawWorkingOrb(c: OrbDrawCtx): void { drawWorking(c); }
 export const THINKING_ORB_HUE = "#8b5cf6";
-export const THINKING_ORB_LABEL = "Thinking…";
-export const WORKING_ORB_HUE = "#71717a";
-export const WORKING_ORB_LABEL = "Working…";
-export const TOOL_ORB_LABELS: Record<ToolOrbFamily, string> = {
-  read: "Reading…", write: "Writing…", search: "Searching…", intel: "Analysing…", run: "Running…", web: "Fetching…", agent: "Delegating…", del: "Deleting…", neutral: "Working…",
-};
 export function drawToolOrb(family: ToolOrbFamily, c: OrbDrawCtx): void {
   ({ read: drawRead, write: drawWrite, search: drawSearch, intel: drawIntel, run: drawRun, web: drawWeb, agent: drawAgent, del: drawDelete, neutral: drawNeutral }[family] ?? drawNeutral)(c);
 }
