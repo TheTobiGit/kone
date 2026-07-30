@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
-import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
+import { onClickOutside, onKeyStroke, refDebounced, useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -26,6 +26,7 @@ import { SESSION_BRAND } from "~/types/session";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
 import { useTerminal } from "~/composables/useTerminal";
+import { useScratchpad } from "~/composables/useScratchpad";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -66,161 +67,112 @@ const {
 } = agent;
 
 const terminal = useTerminal({ cwd: () => props.project.path });
+const scratchpad = useScratchpad({ projectPath: () => props.project.path });
+// ── the project board ──────────────────────────────────────────────────────
+// The strip is a board of panes (threads, terminals, the scratchpad) on one
+// substrate. useBoard owns the layout — pane order + focus — and wraps the
+// three composables through thin adapters; the strip renders `panes` and every
+// layout gesture below is a single board.* call. Sessions attach on open
+// (dormancy lands later); adoption folds in the boot thread and any thread a
+// pill later opens. `focusedId` is the single focus truth (no more mirroring
+// agent.activeKey — focus pushes DOWN to the agent instead).
+// The composer, ref'd here (ahead of its template mount) so board.dispatch can
+// pre-fill it for the draft-thread intent. Its wake watcher lives further down.
+const composerRef = ref<{ wake: () => Promise<void>; setDraft: (text: string) => Promise<void> } | null>(null);
 
-// ── Unified strip columns ────────────────────────────────────────────────────
-// The thread strip can hold both agent threads and terminal sessions. We merge
-// them into a single ordered list based on a local registry of column keys.
-const columnKeys = ref<string[]>([]);
+// A pad pane briefly pulses its index dash after a thread → pad append.
+const pulseScratchpadKey = ref<string | null>(null);
 
-// Seed the initial column array with the agent's first thread.
-watch(
-  () => agent.sessions.value.map(s => s.key),
-  (agentKeys) => {
-    // Sync new agent threads into our unified list
-    for (const k of agentKeys) {
-      if (!columnKeys.value.includes(k)) {
-        columnKeys.value.push(k);
-      }
-    }
+const board = useBoard({
+  agent,
+  terminal,
+  scratchpad,
+  // The two UI-only tails of a cross-pane action: flash the pad's index dash
+  // after a capture, and pre-fill the composer for a draft thread.
+  hooks: {
+    pulsePad: (id) => pulsePadPane(id),
+    setDraft: (text) => composerRef.value?.setDraft(text),
   },
-  { immediate: true, deep: true }
-);
+});
+const { panes, focusedId, focusedPane } = board;
 
-watch(
-  () => terminal.sessions.value.map(s => s.key),
-  (termKeys) => {
-    // Sync new terminal sessions into our unified list
-    for (const k of termKeys) {
-      if (!columnKeys.value.includes(k)) {
-        columnKeys.value.push(k);
-      }
-    }
-  },
-  { deep: true }
-);
+// ── board persistence ──────────────────────────────────────────────────────
+// The layout (pane order, kinds, backend ids, widths, focus) is written to the
+// store (or localStorage in nuxt dev) whenever its persisted shape changes —
+// off `board.saveSignature`, a cheap string that never ticks on a streamed
+// token. Saving only starts once `restore()`/`start()` has settled, so the boot
+// adopt can't clobber a saved layout before we've read it. `restore()` itself
+// runs in onMounted, before agent.start().
+const boardStore = useBoardPersistence(() => props.project.path);
+const boardReady = ref(false);
+const persistBoard = useDebounceFn(() => {
+  if (boardReady.value) boardStore.save(board.serialize());
+}, 400);
+watch(board.saveSignature, () => {
+  void persistBoard();
+});
+function setPaneWidth(id: string, width: number): void {
+  board.setWidth(id, width);
+}
 
-export type StripColumn = 
-  | { type: "thread"; key: string; session: ReturnType<typeof useAgent>["sessions"]["value"][number] }
-  | { type: "terminal"; key: string; session: ReturnType<typeof useTerminal>["sessions"]["value"][number] };
-
-const columns = computed<StripColumn[]>(() => {
-  return columnKeys.value.map(key => {
-    const thread = agent.sessions.value.find(s => s.key === key);
-    if (thread) return { type: "thread", key, session: thread } as const;
-    const term = terminal.sessions.value.find(s => s.key === key);
-    if (term) return { type: "terminal", key, session: term } as const;
-    return null;
-  }).filter((x): x is StripColumn => x !== null);
+// The composer only docks under a thread pane; a terminal/scratchpad focus
+// hides it. No focused pane yet (the boot moment before the first adopt) counts
+// as a thread so the composer is ready the instant the thread lands.
+const activePaneIsThread = computed(() => {
+  const p = focusedPane.value;
+  return !p || p.kind === "thread";
 });
 
-// The globally focused column key. If it drops out, we fall back.
-const activeColumnKey = ref<string>("");
-
-watch(
-  () => agent.activeKey.value,
-  (k) => { if (k) activeColumnKey.value = k; },
-  { immediate: true }
-);
-
-function focusColumn(key: string) {
-  if (columns.value.some(c => c.key === key)) {
-    activeColumnKey.value = key;
-    // Sync down to agent so its active projection is correct
-    if (agent.sessions.value.some(s => s.key === key)) {
-      agent.focusThread(key);
-    }
-  }
+function focusPane(id: string): void {
+  board.focus(id);
+}
+function shiftPaneFocus(delta: number): void {
+  board.focusByOffset(delta);
+}
+function movePane(delta: number): void {
+  if (focusedId.value) board.move(focusedId.value, delta);
+}
+function closePane(id: string): void {
+  void board.close(id);
+}
+function insertPane(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
+  // Seam `i` sits after pane `i`; a pick inserts to its right.
+  void board.open(kind, { at: seamIndex + 1 });
 }
 
-function shiftColumnFocus(delta: number) {
-  const i = columns.value.findIndex(c => c.key === activeColumnKey.value);
-  if (i === -1) return;
-  const next = columns.value[Math.min(columns.value.length - 1, Math.max(0, i + delta))];
-  if (next) focusColumn(next.key);
+// mod+shift+t / mod+shift+n open a terminal / the scratchpad beside the focused
+// pane and focus it — the keyboard siblings of the seam insert picks.
+function newTerminalPane(): void {
+  void board.open("terminal");
+}
+function newScratchpadPane(): void {
+  void board.open("scratchpad");
 }
 
-function moveColumn(delta: number) {
-  const list = [...columnKeys.value];
-  const i = list.findIndex(k => k === activeColumnKey.value);
-  if (i === -1) return;
-  const j = Math.min(list.length - 1, Math.max(0, i + delta));
-  if (i === j) return;
-  const [k] = list.splice(i, 1);
-  if (!k) return;
-  list.splice(j, 0, k);
-  columnKeys.value = list;
+function pulsePadPane(id: string): void {
+  pulseScratchpadKey.value = id;
+  window.setTimeout(() => {
+    if (pulseScratchpadKey.value === id) pulseScratchpadKey.value = null;
+  }, 800);
 }
 
-async function closeColumn(key: string) {
-  const i = columns.value.findIndex(c => c.key === key);
-  const col = columns.value[i];
-  if (!col) return;
-  
-  if (key === activeColumnKey.value) {
-    const neighbour = columns.value[i + 1] ?? columns.value[i - 1];
-    if (neighbour) {
-      focusColumn(neighbour.key);
-    } else {
-      // If we close the last column, spawn a new thread to replace it
-      await agent.newThread();
-      const nextKey = agent.activeKey.value;
-      if (!columnKeys.value.includes(nextKey)) columnKeys.value.push(nextKey);
-      focusColumn(nextKey);
-    }
-  }
-  
-  columnKeys.value = columnKeys.value.filter(k => k !== key);
-  
-  if (col.type === "thread") {
-    await agent.closeThread(key);
-  } else {
-    await terminal.close(key);
-  }
+// A per-response "add to scratchpad" (the thread's own capture affordance) is
+// the capture-text intent, same path the selection bubble takes.
+function captureToScratchpad(text: string, sourceKey: string): void {
+  void board.dispatch({ type: "capture-text", text, from: sourceKey });
 }
 
-async function insertColumn(seamIndex: number, kind: "thread" | "terminal") {
-  if (kind === "thread") {
-    // Spawn the thread in the agent registry
-    await agent.newThreadAt(seamIndex + 1); // +1 because we insert to the right of the seam
-    const freshKey = agent.activeKey.value;
-    
-    // Position it in our unified list
-    const list = [...columnKeys.value];
-    // Remove it from the end where the watch() placed it
-    const cleanList = list.filter(k => k !== freshKey);
-    cleanList.splice(seamIndex + 1, 0, freshKey);
-    columnKeys.value = cleanList;
-    focusColumn(freshKey);
-  } else {
-    const freshKey = await terminal.spawn();
-    const list = [...columnKeys.value];
-    // Remove it from the end where the watch() placed it
-    const cleanList = list.filter(k => k !== freshKey);
-    cleanList.splice(seamIndex + 1, 0, freshKey);
-    columnKeys.value = cleanList;
-    focusColumn(freshKey);
-  }
-}
-
-/** Open a terminal column just to the right of the focused column (or at the
- *  end) and focus it — the keyboard-shortcut entry point, sibling of the seam
- *  insert menu's terminal pick. */
-async function newTerminalColumn() {
-  const activeIndex = columnKeys.value.findIndex(k => k === activeColumnKey.value);
-  const freshKey = await terminal.spawn();
-  // The terminal.sessions watch appends the fresh key at the end; pull it out
-  // and drop it beside the active column instead.
-  const list = columnKeys.value.filter(k => k !== freshKey);
-  const insertAt = activeIndex >= 0 ? activeIndex + 1 : list.length;
-  list.splice(insertAt, 0, freshKey);
-  columnKeys.value = list;
-  focusColumn(freshKey);
-}
-
-const activePlan = computed(() => deriveActivePlan(blocks.value));
+// The two corner docks (Tasks + Changes) derive from the whole block list, so
+// they'd otherwise re-run deriveActivePlan / deriveChangedFiles on every streamed
+// token of a live turn. Neither drives anything time-critical — a ~100ms lag on
+// the dock is imperceptible — so debounce the derived value: the raw computeds
+// stay reactive, but the docks read a ref that settles at most ~10×/s. (E2)
+const activePlanRaw = computed(() => deriveActivePlan(blocks.value));
+const activePlan = refDebounced(activePlanRaw, 100);
 // The files the agent has created/edited/removed this thread — the corner
 // Changes dock's list, a sibling of the Tasks dock in the same shell.
-const activeChanges = computed(() => deriveChangedFiles(blocks.value));
+const activeChangesRaw = computed(() => deriveChangedFiles(blocks.value));
+const activeChanges = refDebounced(activeChangesRaw, 100);
 
 // The project's persisted agent threads, split into pinned + recent for the
 // "recent conversations" block on the working-tree home. Reads real history on
@@ -249,13 +201,13 @@ function removeSession(threadId: string): void {
 
 // Open a stored thread and reveal the chat the instant its transcript lands —
 // openThread sets the blocks before the session subprocess finishes spawning, so
-// gating the view flip on that grows a populated thread (no flash of the empty
+// gating the surface flip on that grows a populated thread (no flash of the empty
 // state, no lingering on the working-tree home) with the chat-open entrance.
 // Falls through to showing chat even on an empty/failed load.
 async function revealThread(threadId: string): Promise<void> {
   const stop = watch(blocks, (b) => {
     if (b.length) {
-      view.value = "chat";
+      surface.value = "board";
       stop();
     }
   });
@@ -263,7 +215,7 @@ async function revealThread(threadId: string): Promise<void> {
     await agent.openThread(threadId);
   } finally {
     stop();
-    view.value = "chat";
+    surface.value = "board";
   }
 }
 
@@ -311,7 +263,7 @@ const pickerProviders = computed<PickerProvider[]>(() =>
 // Two views over the same page: the working tree ("work") and the conversation
 // ("chat"). Sending the first turn flips to chat. (A way back to the working
 // tree will land later — the thread never clears, so it's safe to leave for now.)
-const view = ref<"work" | "chat">("work");
+const surface = ref<"overview" | "board">("overview");
 
 onMounted(async () => {
   // Providers + models are warmed at app open (agent-warmup plugin); this awaits
@@ -374,12 +326,35 @@ onMounted(async () => {
   // session for it; the plain-open path still lands on the project home.
   // Consume the request so a later re-open of this project behaves normally.
   const resume = pendingThread.value;
+  await scratchpad.hydrate();
+  // Restore the persisted board BEFORE agent.start() so the boot session is
+  // repurposed into a restored thread pane rather than adopted as a duplicate.
+  // A missing / empty / threadless layout returns false → today's single boot.
+  // BOTH paths restore: a launcher resume must still bring back the rest of the
+  // board (its terminals, its scratchpad, its other threads), not replace it with
+  // a lone conversation (C).
+  const savedBoard = await boardStore.load();
+  const handled = await board.restore(savedBoard);
+  if (!handled) await agent.start();
   if (resume) {
+    // Launcher asked to resume a specific conversation. It's often already on the
+    // restored board (as a live or dormant thread pane) — focus it there, which
+    // attaches a dormant one on the way in. If the board doesn't know it at all,
+    // open a fresh pane bound to its id. Either way we land on the board.
     pendingThread.value = null;
-    await revealThread(resume);
-  } else {
-    await agent.start();
+    const onBoard = panes.value.some(
+      (p) =>
+        p.kind === "thread" &&
+        (p.session?.threadId.value === resume ||
+          (p.entry.anchor.kind === "thread" && p.entry.anchor.threadId === resume)),
+    );
+    if (onBoard) board.focusThreadById(resume);
+    else await board.open("thread", { threadId: resume });
+    surface.value = "board";
   }
+  // Only now let layout changes persist — past this point the board reflects the
+  // user's real arrangement, not the boot adopt.
+  boardReady.value = true;
 });
 
 // Derive the effort tier for the current model id and ride it along on each
@@ -545,23 +520,42 @@ useEventListener(window, "blur", () => {
 });
 
 // Ctrl+N (mod+n) starts a fresh, empty thread — mirroring the composer's own
-// "send from the working-tree home" path. It flips the view straight to chat so
+// "send from the working-tree home" path. It flips to the board surface so
 // the user lands in the blank thread, and prunes the idle previous thread when
 // it never ran a live turn.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!matchesShortcut("new-thread", e)) return;
   e.preventDefault();
-  void agent.newThread();
-  view.value = "chat";
+  void board.open("thread", { reuseBlank: true });
+  surface.value = "board";
 });
 
 // mod+shift+t opens a terminal column on the strip and focuses it, flipping to
-// the chat view (where the strip lives) so the new shell is on screen.
+// the board surface (where the strip lives) so the new shell is on screen.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!matchesShortcut("new-terminal", e)) return;
   e.preventDefault();
-  view.value = "chat";
-  void newTerminalColumn();
+  surface.value = "board";
+  void newTerminalPane();
+});
+
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (!matchesShortcut("new-scratchpad", e)) return;
+  e.preventDefault();
+  surface.value = "board";
+  void newScratchpadPane();
+});
+
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (!matchesShortcut("send-selection-to-scratchpad", e)) return;
+  e.preventDefault();
+  const sel = window.getSelection();
+  const text = sel?.toString().trim() ?? "";
+  if (!text || text.length <= 2) return;
+  const sourceKey = focusedId.value;
+  if (!sourceKey) return;
+  if (!panes.value.some((p) => p.id === sourceKey && p.kind === "thread")) return;
+  void board.dispatch({ type: "capture-text", text, from: sourceKey });
 });
 
 // Play a scripted demo conversation so the whole thread UI (thinking, tools
@@ -571,7 +565,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!matchesShortcut("play-demo", e)) return;
   e.preventDefault();
-  view.value = "chat";
+  surface.value = "board";
   agent.demo();
 });
 
@@ -586,8 +580,8 @@ function toLauncher() {
 // returns to the project's working tree (the thread stays put); from there it
 // leaves for the launcher.
 function onBack() {
-  if (view.value === "chat") {
-    view.value = "work";
+  if (surface.value === "board") {
+    surface.value = "overview";
     return;
   }
   toLauncher();
@@ -672,12 +666,12 @@ function onUpdateFastMode(on: boolean) {
 }
 
 async function onSend(text: string, files?: File[]) {
-  // Sending from the working-tree home (no thread in view) begins a fresh
+  // Sending from the overview (no thread focused) begins a fresh
   // conversation rather than continuing the last-opened one — the session boots
   // rehydrated with the project's latest thread, so without this a first send
   // would silently append to that old transcript.
-  if (view.value === "work") await agent.newThread();
-  view.value = "chat";
+  if (surface.value === "overview") await board.open("thread", { reuseBlank: true });
+  surface.value = "board";
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
   // carries; a failed upload is dropped rather than sinking the whole send.
@@ -746,16 +740,38 @@ watch(activeFile, (f) => {
   if (activePath.value && !f) activePath.value = null;
   lockPage(Boolean(f));
 });
-onBeforeUnmount(() => lockPage(false));
+onBeforeUnmount(() => {
+  lockPage(false);
+  // Flush the layout past the debounce — a project switch or window close must
+  // not drop the last few gestures.
+  if (boardReady.value) boardStore.save(board.serialize());
+});
+// A hard window close (quit) skips onBeforeUnmount, so persist on beforeunload too.
+useEventListener(window, "beforeunload", () => {
+  if (boardReady.value) boardStore.save(board.serialize());
+});
+// beforeunload is unreliable on macOS app-hide / Space switches and never fires
+// when the OS suspends the renderer. So also flush — synchronously, past the
+// 400ms debounce — the moment the window loses focus or the tab is hidden. Both
+// are cheap idempotent writes of the same serialized layout, so firing them
+// often (and alongside beforeunload) is harmless; missing the last gesture isn't.
+function flushBoard(): void {
+  if (boardReady.value) boardStore.save(board.serialize());
+}
+useEventListener(window, "blur", flushBoard);
+useEventListener(document, "visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushBoard();
+});
 
 // Wake the composer when a blank thread becomes active in chat — new thread,
 // seam insert, or closing the last column all land here. Watching activeKey (not
 // a bare empty-blocks check) so closing the orb on an empty thread stays closed.
-const composerRef = ref<{ wake: () => Promise<void> } | null>(null);
+// (composerRef itself is declared up by the board so board.dispatch can pre-fill
+// the composer for the draft-thread intent.)
 watch(
-  [view, () => agent.activeKey.value, blocks, busy],
+  [surface, focusedId, blocks, busy, activePaneIsThread],
   () => {
-    if (view.value !== "chat" || activeFile.value) return;
+    if (surface.value !== "board" || activeFile.value || !activePaneIsThread.value) return;
     if (blocks.value.length === 0 && !busy.value) {
       void composerRef.value?.wake();
     }
@@ -773,9 +789,13 @@ watch(
 // chat) — a settled reply you've already read won't re-pill after you leave.
 const seenTurns = ref<Record<string, string>>({});
 watch(
-  [view, () => agent.threads.value],
+  // A cheap per-thread signature — id + current turn id + state — not a deep
+  // walk of every thread's whole block tree. This watcher only cares whether a
+  // turn changed identity or settled, and that's all this string tracks; a deep
+  // watch re-ran it on every streamed token for no gain. (E1)
+  [surface, () => agent.threads.value.map((t) => `${t.threadId}:${t.block?.turnId ?? ""}:${t.block?.state ?? ""}`).join("|")],
   () => {
-    if (view.value !== "chat") return;
+    if (surface.value !== "board") return;
     // The strip puts EVERY live thread on screen, not just one, so every thread
     // is "seen" while it's up — otherwise stepping back to the working-tree home
     // would raise a pill for each column you'd been watching all along.
@@ -795,7 +815,6 @@ watch(
     }
     if (touched) seenTurns.value = seen;
   },
-  { deep: true },
 );
 
 // Pills the user has waved away, per thread → the turn they dismissed. Unlike
@@ -819,7 +838,7 @@ const pillThreads = computed(() => {
   // would only duplicate it — a thread working off the edge of the viewport
   // announces itself by pulsing its dash in the strip's column indicator
   // instead. Pills are for the working-tree home, where no thread is on screen.
-  if (view.value === "chat") return [];
+  if (surface.value === "board") return [];
   return agent.threads.value
     .filter((t) => {
       if (!t.everRan || !t.block) return false;
@@ -842,7 +861,14 @@ const pillThreads = computed(() => {
 
 function onOpenThread(threadId: string) {
   cue("press");
-  agent.setActiveThread(threadId);
+  // The pill's thread is usually already a pane (adopted while it ran); focus it.
+  // If it was evicted since, open a fresh pane bound to its id — board.open's
+  // thread adapter reloads its transcript through agent.openThread.
+  const existing = panes.value.find(
+    (p) => p.kind === "thread" && p.session?.threadId.value === threadId,
+  );
+  if (existing) board.focus(existing.id);
+  else void board.open("thread", { threadId });
   // Mark its current turn seen so it won't linger as a pill once we step away —
   // but only if it's already settled. Marking a still-running turn seen would
   // suppress its completion pill if the user opens the pill and leaves before it
@@ -852,7 +878,7 @@ function onOpenThread(threadId: string) {
   if (t?.block && t.block.state !== "running") {
     seenTurns.value = { ...seenTurns.value, [threadId]: t.block.turnId };
   }
-  view.value = "chat";
+  surface.value = "board";
 }
 
 // Preload the highlighter grammars for the file types in this project's changes
@@ -904,7 +930,7 @@ function onOpenFile(item: ChangeItem, rect: DOMRect) {
 function onCloseFile() {
   activePath.value = null;
 }
-// Esc backs out of whatever's frontmost: the detail view, then an open switcher.
+// Esc backs out of whatever is frontmost: the detail view, then an open switcher.
 onKeyStroke("Escape", () => {
   if (activePath.value) {
     onCloseFile();
@@ -931,10 +957,7 @@ function onDiscardFile(path: string) {
 </script>
 
 <template>
-  <main
-    class="relative flex justify-center bg-ground"
-    :class="view === 'chat' ? 'is-chat' : 'is-work'"
-  >
+  <main class="project-main relative bg-ground">
     <!-- Back to the launcher — a bare return glyph in the corner, on the same
          magnet-pull the app's other buttons ride, lighting up to the accent
          on hover. It steps aside only for the file-detail overlay. -->
@@ -951,7 +974,7 @@ function onDiscardFile(path: string) {
         type="button"
         class="project-back"
         :inert="Boolean(activeFile)"
-        :aria-label="view === 'chat' ? 'Back to project' : 'Back to projects'"
+        :aria-label="surface === 'board' ? 'Back to project' : 'Back to projects'"
         :initial="{ opacity: 0, x: -6 }"
         :animate="{ opacity: 1, x: 0 }"
         :transition="{ duration: 0.4, delay: 0.05 }"
@@ -967,33 +990,58 @@ function onDiscardFile(path: string) {
       </motion.button>
     </Magnet>
 
-    <!-- CHAT · the thread strip. Every live thread in this project is a column on
-         one horizontally scrollable rail (niri-style scrollable tiling), the
+    <!-- BOARD · the thread strip. Every live thread in this project is a column
+         on one horizontally scrollable rail (niri-style scrollable tiling), the
          focused one held at centre with its neighbours peeking in. The page
          itself never scrolls — each column scrolls its own turns, and each
-         carries its own title bar, so there's no single sticky title any more. -->
-    <Transition name="chat-open" appear>
+         carries its own title bar, so there's no single sticky title any more.
+         The layer stays mounted for the project's lifetime (its panes and their
+         sessions/scroll positions survive a step back to the overview); it's
+         hidden with `visibility`, not `v-if`, so xterm's fit() and the rail's
+         width measurements never see a zero-width box. -->
+    <div
+      class="surface-layer surface-layer--board"
+      :class="{ 'surface-layer--hidden': surface !== 'board' }"
+      :inert="surface !== 'board' || Boolean(activeFile)"
+      :aria-hidden="surface !== 'board' ? 'true' : undefined"
+    >
       <ThreadStrip
-        v-if="view === 'chat'"
-        :columns="columns"
-        :active-key="activeColumnKey"
+        :panes="panes"
+        :focused-id="focusedId ?? ''"
         :now="agentNow"
+        :pulse-key="pulseScratchpadKey"
         :inert="Boolean(activeFile)"
-        @focus="focusColumn"
-        @shift="shiftColumnFocus"
-        @move="moveColumn"
-        @close="closeColumn"
-        @insert-column="insertColumn"
+        :visible="surface === 'board'"
+        @focus="focusPane"
+        @shift="shiftPaneFocus"
+        @move="movePane"
+        @close="closePane"
+        @insert-column="insertPane"
         @terminal-write="terminal.write"
         @terminal-resize="terminal.resize"
+        @to-scratchpad="captureToScratchpad"
+        @scratchpad-flush="() => scratchpad.flush()"
+        @width="setPaneWidth"
       />
-    </Transition>
+    </div>
+    <SelectionActions
+      v-if="surface === 'board' && !activeFile"
+      :focused-pane-id="focusedId ?? ''"
+      @dispatch="board.dispatch"
+    />
 
-    <!-- WORK · the working-tree home. The page holds the viewport — greeting +
-         changes stay fixed and only the conversation listing scrolls.
-         While the detail overlay is open the page behind is inert — no tab
-         stops, no screen-reader reach; the overlay owns focus. -->
-    <div v-if="view === 'work'" class="flex h-full min-h-0 w-full max-w-4xl flex-col gap-11" :inert="Boolean(activeFile)">
+    <!-- OVERVIEW · the working-tree home. The page holds the viewport — greeting
+         + changes stay fixed and only the conversation listing scrolls. Also a
+         permanently-mounted layer (hidden with `visibility`); while the detail
+         overlay is open the page behind is inert — no tab stops, no
+         screen-reader reach; the overlay owns focus. -->
+    <div
+      class="surface-layer surface-layer--overview"
+      :class="{ 'surface-layer--hidden': surface !== 'overview' }"
+      :inert="surface !== 'overview' || Boolean(activeFile)"
+      :aria-hidden="surface !== 'overview' ? 'true' : undefined"
+    >
+      <div class="flex h-full min-h-0 w-full max-w-4xl flex-col gap-11">
       <!-- Greeting + changes stay put at the top; only the conversation listing
            below scrolls, so the page itself never moves. -->
       <div class="flex shrink-0 flex-col gap-11">
@@ -1055,6 +1103,7 @@ function onDiscardFile(path: string) {
           @delete="removeSession"
         />
       </div>
+      </div>
     </div>
 
     <!-- The folder settles into the corner last — rising into place with a soft
@@ -1062,7 +1111,7 @@ function onDiscardFile(path: string) {
          and composer have landed. (Home only — it steps aside once the
          conversation takes over.) -->
     <motion.div
-      v-if="view !== 'chat'"
+      v-if="surface !== 'board'"
       class="project-folder-row absolute bottom-10 left-10 flex items-center gap-4"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
@@ -1115,7 +1164,7 @@ function onDiscardFile(path: string) {
          wake it, then it stretches into the input. It stays docked to the
          viewport while the page behind scrolls. -->
     <div
-      v-if="!pendingUserInput"
+      v-if="!pendingUserInput && activePaneIsThread"
       class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
       :inert="Boolean(activeFile)"
     >
@@ -1156,7 +1205,7 @@ function onDiscardFile(path: string) {
          thread) rides above Tasks (the model's TodoWrite checklist); the column
          lifts clear of the away-from-thread pill when one is perched below. -->
     <div
-      v-if="view === 'chat' && !activeFile"
+      v-if="surface === 'board' && !activeFile"
       class="dock-stack"
       :class="{ 'dock-stack--lifted': pillThreads.length > 0 }"
     >
@@ -1320,27 +1369,74 @@ function onDiscardFile(path: string) {
   transform: rotate(180deg) scaleX(-1);
 }
 
-/* ── Page modes ───────────────────────────────────────────────────────────── */
-/* Both modes hold the viewport and scroll a region inside themselves — the
-   conversation scrolls the thread; the working-tree home keeps the greeting +
-   changes fixed and scrolls only the conversation listing beneath them. */
-.is-work {
+/* ── Surfaces ─────────────────────────────────────────────────────────────── */
+/* The two surfaces (overview + board) are layers, not pages: both stay mounted
+   for the project's lifetime and only one is visible at a time. Hiding is
+   `visibility` (never display:none / v-if) so every layout box — and thus
+   xterm's fit() and the rail's clientWidth — stays valid while hidden. */
+.project-main {
   height: 100vh;
-  align-items: flex-start;
   overflow: hidden;
-  /* Bottom inset clears the docked composer orb. Trimmed from the old
-     full-page-scroll value (14rem) — now that only the listing scrolls, that
-     much reserved space stranded the fade cutoff high above the composer. */
-  padding: 6rem 4rem 8rem;
   /* Project-home entrance cascade — read top → bottom, corner accents last.
      Child blocks (greeting, changes, sessions, composer) inherit these via
-     --proj-enter-* and layer their own internal stagger on top. */
+     --proj-enter-* and layer their own internal stagger on top. Defined on the
+     mount root (not a per-surface class) so the docked composer keeps its delay
+     regardless of which surface owns the viewport. */
   --proj-enter-back: 50ms;
   --proj-enter-greet: 120ms;
   --proj-enter-changes: 340ms;
   --proj-enter-sessions: 580ms;
   --proj-enter-composer: 760ms;
   --proj-enter-folder: 920ms;
+}
+
+/* Each layer holds the viewport and centres its content, exactly as the old
+   is-work / is-chat `<main>` did — that shaping now lives on the layer so the
+   hidden one never disturbs the visible one. */
+.surface-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+}
+.surface-layer--board {
+  align-items: stretch;
+}
+.surface-layer--overview {
+  align-items: flex-start;
+  /* Bottom inset clears the docked composer orb. Trimmed from the old
+     full-page-scroll value (14rem) — now that only the listing scrolls, that
+     much reserved space stranded the fade cutoff high above the composer. */
+  padding: 6rem 4rem 8rem;
+}
+.surface-layer--hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+/* Arriving at the board — the whole strip eases up into place with kone's house
+   easing (the same the change cards use), ported verbatim from the old
+   `.chat-open` Transition. Only the arrival animates: the hidden state carries
+   no transition, so leaving snaps (matching the old chat-open-leave display:none
+   that avoided a flash of the overview over the still-present board). */
+.surface-layer--board:not(.surface-layer--hidden) {
+  transition:
+    opacity 0.42s ease,
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: 50% 22%;
+  will-change: opacity, transform;
+}
+.surface-layer--board.surface-layer--hidden {
+  transform: translateY(10px) scale(0.985);
+}
+@media (prefers-reduced-motion: reduce) {
+  .surface-layer--board:not(.surface-layer--hidden) {
+    transition-duration: 0.01s;
+  }
+  .surface-layer--board.surface-layer--hidden {
+    transform: none;
+  }
 }
 
 /* The one scroll region on the working-tree home. Its bottom edge fades into a
@@ -1364,12 +1460,6 @@ function onDiscardFile(path: string) {
   width: 0;
   height: 0;
 }
-.is-chat {
-  height: 100vh;
-  align-items: stretch;
-  overflow: hidden;
-}
-
 /* The greeting's switcher drops just beneath the name trigger. */
 .greet-switcher {
   position: absolute;
@@ -1457,34 +1547,4 @@ function onDiscardFile(path: string) {
   }
 }
 
-/* Arriving at a conversation — the whole thread eases up into place with kone's
-   house entrance easing (the same the change cards use), so opening a thread
-   (from recents, the launcher, or a fresh send) reads as a smooth page-open even
-   though the settled transcript inside carries no motion of its own. Leaving is
-   instant — the working-tree home takes its place with no cross-fade. */
-.chat-open-enter-active {
-  transition:
-    opacity 0.42s ease,
-    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
-  transform-origin: 50% 22%;
-  will-change: opacity, transform;
-}
-.chat-open-enter-from {
-  opacity: 0;
-  transform: translateY(10px) scale(0.985);
-}
-/* Only the arrival animates. On the way out the chat vanishes at once rather than
-   lingering in the DOM beside the incoming working-tree view — that overlap was a
-   flash of the left-aligned home content over the still-present full-width chat. */
-.chat-open-leave-active {
-  display: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-open-enter-active {
-    transition-duration: 0.01s;
-  }
-  .chat-open-enter-from {
-    transform: none;
-  }
-}
 </style>

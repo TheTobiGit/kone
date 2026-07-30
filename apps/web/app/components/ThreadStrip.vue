@@ -26,19 +26,25 @@ import {
   useResizeObserver,
 } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Cancel01Icon, ComputerTerminal01Icon } from "@hugeicons/core-free-icons";
-import type { ThreadSession } from "~/composables/useAgent";
-import type { TerminalSession } from "~/composables/useTerminal";
-import type { StripColumn } from "./ProjectView.vue";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import type { Pane, PaneKind } from "~/types/board";
+import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
 import { SESSION_BRAND } from "~/types/session";
 
 const props = defineProps<{
-  /** Live columns in strip order (left to right). */
-  columns: StripColumn[];
-  /** The focused column's stable registry key. */
-  activeKey: string;
+  /** Live panes in strip order (left to right). A pane's session may be null
+   *  (dormant) — every read here is null-safe. */
+  panes: Pane[];
+  /** The focused pane's stable id. */
+  focusedId: string;
   /** Ticking clock from useAgent, so every column's "working · Xs" counts up. */
   now: number;
+  /** Briefly pulse a pad column's index dash after a thread → pad append. */
+  pulseKey?: string | null;
+  /** Whether the board surface is the visible one. The strip stays mounted while
+   *  hidden (so panes and scroll positions survive), but a hidden rail measures
+   *  zero width — so re-centre once it's revealed, not while it's hidden. */
+  visible?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -51,11 +57,16 @@ const emit = defineEmits<{
   /** Close this column. */
   close: [key: string];
   /** Insert a blank thread to the right of seam `seamIndex`. */
-  "insert-column": [seamIndex: number, kind: "thread" | "terminal"];
+  "insert-column": [seamIndex: number, kind: "thread" | "terminal" | "scratchpad"];
   /** Write terminal input data */
   "terminal-write": [key: string, data: string];
   /** Resize terminal PTY */
   "terminal-resize": [key: string, cols: number, rows: number];
+  /** Append assistant reply markdown to a scratchpad. */
+  "to-scratchpad": [text: string, sourceKey: string];
+  "scratchpad-flush": [key: string];
+  /** A column's width preset index changed — persist it onto the pane entry. */
+  width: [key: string, index: number];
 }>();
 
 const { cue } = useSound();
@@ -98,16 +109,27 @@ function scrollBehavior(): ScrollBehavior {
   return reducedMotionOn() ? "auto" : "smooth";
 }
 
+/** The width preset a column shows: a local override from cycling it this
+ *  session, else the value persisted on its pane entry (a restored board), else
+ *  the default rung. */
 function presetIndexFor(key: string): number {
-  return presetByKey.value[key] ?? DEFAULT_PRESET;
+  const local = presetByKey.value[key];
+  if (local !== undefined) return local;
+  const fromEntry = props.panes.find((c) => c.id === key)?.entry.width;
+  return typeof fromEntry === "number" ? clampPreset(fromEntry) : DEFAULT_PRESET;
+}
+function clampPreset(index: number): number {
+  return Math.min(PRESETS.length - 1, Math.max(0, index));
 }
 function presetFor(key: string): Preset {
   return PRESETS[presetIndexFor(key)] ?? PRESETS[DEFAULT_PRESET]!;
 }
 function setPreset(key: string, index: number): void {
-  const next = Math.min(PRESETS.length - 1, Math.max(0, index));
+  const next = clampPreset(index);
   if (next === presetIndexFor(key)) return;
   presetByKey.value = { ...presetByKey.value, [key]: next };
+  // Mirror the choice onto the pane entry so it persists across restart.
+  emit("width", key, next);
   if (reducedMotionOn()) return;
   widthAnim.value = { ...widthAnim.value, [key]: true };
   const prev = animTimers.get(key);
@@ -144,15 +166,15 @@ function shrinkWidth(key: string): void {
   void nextTick(() => scrollToColumn(key));
 }
 
-const isSolo = computed(() => props.columns.length === 1);
+const isSolo = computed(() => props.panes.length === 1);
 
 /** Leading pad centres the lone thread; trailing pad lets the last column scroll
  *  to centre when there are two or more. */
 const soloPadStart = computed(() => {
   if (!isSolo.value || !railWidth.value) return 0;
-  const s = props.columns[0];
+  const s = props.panes[0];
   if (!s) return 0;
-  const colW = Math.min(presetFor(s.key).px, railWidth.value);
+  const colW = Math.min(presetFor(s.id).px, railWidth.value);
   return Math.max(0, (railWidth.value - colW) / 2);
 });
 const railPads = computed(() => ({
@@ -181,6 +203,9 @@ function scrollTargetFor(key: string): number | null {
 function scrollToColumn(key: string, behavior: ScrollBehavior = scrollBehavior()): void {
   const r = rail.value;
   if (!r) return;
+  // A hidden layer measures zero width; scrolling against it would clamp the
+  // rail to 0 and lose the real position. The re-centre on reveal restores it.
+  if (r.clientWidth === 0) return;
   if (isSolo.value) {
     r.scrollLeft = 0;
     return;
@@ -197,12 +222,16 @@ const isResizing = ref(false);
 let resizeEndTimer: ReturnType<typeof setTimeout> | null = null;
 let resizeRaf = 0;
 function onRailResize(): void {
-  railWidth.value = rail.value?.clientWidth ?? 0;
+  const width = rail.value?.clientWidth ?? 0;
+  // Ignore the zero-width tick a hidden layer reports — keep the last real
+  // width so the rail's padding/centre maths stay intact until it's shown again.
+  if (width === 0) return;
+  railWidth.value = width;
   isResizing.value = true;
   if (resizeEndTimer) clearTimeout(resizeEndTimer);
   cancelAnimationFrame(resizeRaf);
   resizeRaf = requestAnimationFrame(() => {
-    if (props.activeKey) scrollToColumn(props.activeKey, "auto");
+    if (props.focusedId) scrollToColumn(props.focusedId, "auto");
   });
   resizeEndTimer = setTimeout(() => {
     isResizing.value = false;
@@ -219,7 +248,7 @@ onBeforeUnmount(() => {
 /** Which column owns the viewport at a scroll position — seam-first, like niri. */
 function nearestKey(scrollLeft?: number): string | null {
   const r = rail.value;
-  if (!r || !props.columns.length) return null;
+  if (!r || !props.panes.length) return null;
   const mid = (scrollLeft ?? r.scrollLeft) + r.clientWidth / 2;
   const dir = scrollLeft === undefined ? 0 : Math.sign(scrollLeft - lastScrollLeft);
 
@@ -227,20 +256,20 @@ function nearestKey(scrollLeft?: number): string | null {
   let centreDist = Infinity;
   let seamOwner: string | null = null;
   let seamDist = Infinity;
-  for (const s of props.columns) {
-    const el = colEls.get(s.key);
+  for (const s of props.panes) {
+    const el = colEls.get(s.id);
     if (!el) continue;
     const centre = el.offsetLeft + el.offsetWidth / 2;
     const dist = Math.abs(centre - mid);
     if (dist < centreDist || (dist === centreDist && dir && Math.sign(centre - mid) === dir)) {
       centreDist = dist;
-      byCentre = s.key;
+      byCentre = s.id;
     }
     const seam = el.offsetLeft + el.offsetWidth;
     const sd = seam - mid;
     if (sd >= 0 && sd < seamDist) {
       seamDist = sd;
-      seamOwner = s.key;
+      seamOwner = s.id;
     }
   }
   return seamOwner ?? byCentre;
@@ -259,30 +288,44 @@ function onScroll(): void {
     const key = nearestKey(left);
     lastScrollLeft = left;
     if (!key) return;
-    if (key !== props.activeKey) emit("focus", key);
+    if (key !== props.focusedId) emit("focus", key);
     else scrollToColumn(key);
   }, 170);
 }
 
 watch(
-  () => props.activeKey,
+  () => props.focusedId,
   (key) => {
     if (key) void nextTick(() => scrollToColumn(key));
   },
 );
 watch(
-  () => props.columns.length,
+  () => props.panes.length,
   () => {
-    if (props.activeKey) void nextTick(() => scrollToColumn(props.activeKey));
+    if (props.focusedId) void nextTick(() => scrollToColumn(props.focusedId));
+  },
+);
+// Re-centre on reveal. While hidden the rail measured zero and skipped every
+// scroll; once the board surface is shown again, re-read the width and snap the
+// focused column back to centre (no animation — it was already there before the
+// surface flip; this just restores what the zero-width guard held back).
+watch(
+  () => props.visible,
+  (visible) => {
+    if (!visible) return;
+    void nextTick(() => {
+      railWidth.value = rail.value?.clientWidth ?? railWidth.value;
+      if (props.focusedId) scrollToColumn(props.focusedId, "auto");
+    });
   },
 );
 onMounted(() => {
   railWidth.value = rail.value?.clientWidth ?? 0;
-  if (props.activeKey) void nextTick(() => scrollToColumn(props.activeKey, "auto"));
+  if (props.focusedId) void nextTick(() => scrollToColumn(props.focusedId, "auto"));
 });
 
 function onColumnClick(key: string): void {
-  if (key === props.activeKey) return;
+  if (key === props.focusedId) return;
   cue("press");
   emit("focus", key);
 }
@@ -292,7 +335,7 @@ function onClose(key: string): void {
   emit("close", key);
 }
 
-function onInsertColumn(seamIndex: number, kind: "thread" | "terminal"): void {
+function onInsertColumn(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   cue("press");
   emit("insert-column", seamIndex, kind);
 }
@@ -322,7 +365,7 @@ function toggleJoint(i: number, target: EventTarget | null): void {
   cue("toggle");
 }
 
-function onInsertPick(kind: "thread" | "terminal"): void {
+function onInsertPick(kind: "thread" | "terminal" | "scratchpad"): void {
   if (openSeam.value === null) return;
   onInsertColumn(openSeam.value, kind);
   closeJoint();
@@ -361,17 +404,17 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   }
   if (matchesShortcut("cycle-thread-width", e)) {
     e.preventDefault();
-    if (props.activeKey) cycleWidth(props.activeKey);
+    if (props.focusedId) cycleWidth(props.focusedId);
     return;
   }
   if (matchesShortcut("grow-thread-width", e)) {
     e.preventDefault();
-    if (props.activeKey) growWidth(props.activeKey);
+    if (props.focusedId) growWidth(props.focusedId);
     return;
   }
   if (matchesShortcut("shrink-thread-width", e)) {
     e.preventDefault();
-    if (props.activeKey) shrinkWidth(props.activeKey);
+    if (props.focusedId) shrinkWidth(props.focusedId);
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || isTyping()) return;
@@ -386,19 +429,41 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   }
 });
 
-function brandOf(c: StripColumn) {
-  if (c.type === "terminal") return "generic"; // Fallback, we don't have a terminal brand icon
+function brandOf(c: Pane) {
+  if (c.kind !== "thread" || !c.session) return "generic";
   return SESSION_BRAND[c.session.provider.value] ?? "generic";
 }
 
-/** Blank slate — no transcript yet and not working. */
-function isColumnEmpty(c: StripColumn): boolean {
-  if (c.type === "terminal") return false; // Terminals are never "empty" in the sense of needing pruning
-  return c.session.blocks.value.length === 0 && !c.session.busy.value;
+/** Is a pane of this kind already on the strip? Drives the seam menu's greying
+ *  of singleton kinds (the scratchpad, today). */
+function hasKind(kind: PaneKind): boolean {
+  return props.panes.some((c) => c.kind === kind);
+}
+/** The project's single scratchpad is on the strip — the seam menu greys its row. */
+const hasScratchpad = computed(() => {
+  const singleton = PANE_KINDS.find((m) => m.singleton);
+  return singleton ? hasKind(singleton.kind) : false;
+});
+
+function columnLabel(c: Pane): string {
+  if (c.kind === "thread") return c.session?.title.value || "New thread";
+  return paneKindMeta(c.kind).label;
+}
+
+/** Blank slate — no transcript yet and not working. A dormant thread (no
+ *  session) reads as empty too. */
+function isColumnEmpty(c: Pane): boolean {
+  switch (c.kind) {
+    case "terminal":
+    case "scratchpad":
+      return false;
+    case "thread":
+      return !c.session || (c.session.blocks.value.length === 0 && !c.session.busy.value);
+  }
 }
 
 /** A lone blank slate has nothing to dismiss — closing it would just spawn another. */
-function canClose(c: StripColumn): boolean {
+function canClose(c: Pane): boolean {
   if (!isSolo.value) return true;
   return !isColumnEmpty(c);
 }
@@ -408,13 +473,22 @@ function canClose(c: StripColumn): boolean {
  *  The last column gets a trailing joint too — so a 2nd active thread can open
  *  a 3rd without needing an existing seam to the right. */
 const jointAfter = computed(() => {
-  const list = props.columns;
+  const list = props.panes;
   return list.map((left, i) => {
-    const leftOk = left.type === "terminal" || left.session.blocks.value.length > 0 || left.session.busy.value;
+    const leftOk =
+      left.kind !== "thread" ||
+      !left.session ||
+      left.session.blocks.value.length > 0 ||
+      left.session.busy.value;
     if (list.length === 1) return leftOk;
     if (i >= list.length - 1) return leftOk;
     const right = list[i + 1];
-    const rightOk = right && (right.type === "terminal" || right.session.blocks.value.length > 0 || right.session.busy.value);
+    const rightOk =
+      right &&
+      (right.kind !== "thread" ||
+        !right.session ||
+        right.session.blocks.value.length > 0 ||
+        right.session.busy.value);
     return leftOk || rightOk;
   });
 });
@@ -426,19 +500,24 @@ watch(jointAfter, (flags) => {
 
 <template>
   <div class="strip" :class="{ 'is-resizing': isResizing }">
-    <nav v-if="columns.length > 1" class="index" aria-label="Columns">
+    <nav v-if="panes.length > 1" class="index" aria-label="Columns">
       <button
-        v-for="(c, i) in columns"
-        :key="c.key"
+        v-for="(c, i) in panes"
+        :key="c.id"
         type="button"
         class="index__dash"
-        :class="{
-          'is-focused': c.key === activeKey,
-          'is-live': c.type === 'thread' && c.session.busy.value && c.key !== activeKey,
-        }"
-        :aria-label="`Column ${i + 1}: ${c.type === 'thread' ? c.session.title.value || 'New thread' : 'Terminal'}`"
-        :aria-current="c.key === activeKey"
-        @click="onColumnClick(c.key)"
+        :class="[
+          paneKindMeta(c.kind).dashClass,
+          {
+            'is-focused': c.id === focusedId,
+            'is-dormant': !c.session && c.id !== focusedId,
+            'is-live': c.kind === 'thread' && !!c.session && c.session.busy.value && c.id !== focusedId,
+            'is-pulse': c.id === props.pulseKey,
+          },
+        ]"
+        :aria-label="`Column ${i + 1}: ${columnLabel(c)}`"
+        :aria-current="c.id === focusedId"
+        @click="onColumnClick(c.id)"
       />
     </nav>
 
@@ -453,38 +532,39 @@ watch(jointAfter, (flags) => {
     >
       <div class="rail__pad rail__pad--start" aria-hidden="true" />
 
-      <template v-for="(c, i) in columns" :key="c.key">
+      <template v-for="(c, i) in panes" :key="c.id">
         <section
-          :ref="(el) => setCol(c.key, el)"
+          :ref="(el) => setCol(c.id, el)"
           class="col"
+          :data-column-key="c.id"
           :class="{
-            'is-focused': c.key === activeKey,
-            'is-width-anim': widthAnim[c.key],
+            'is-focused': c.id === focusedId,
+            'is-width-anim': widthAnim[c.id],
           }"
-          :style="{ '--col-w': presetFor(c.key).width }"
-          @click="onColumnClick(c.key)"
+          :style="{ '--col-w': presetFor(c.id).width }"
+          @click="onColumnClick(c.id)"
         >
           <header class="col__head">
             <div class="col__title-wrap">
-              <template v-if="c.type === 'thread'">
+              <template v-if="c.kind === 'thread' && c.session">
                 <ProviderLogo :brand="brandOf(c)" :size="15" />
                 <h2 class="col__title">{{ c.session.title.value || "New thread" }}</h2>
                 <span v-if="c.session.busy.value" class="col__live" aria-label="Working" />
               </template>
               <template v-else>
-                <HugeiconsIcon :icon="ComputerTerminal01Icon" :size="15" :stroke-width="2" class="text-muted" />
-                <h2 class="col__title">Terminal</h2>
+                <HugeiconsIcon :icon="paneKindMeta(c.kind).icon" :size="15" :stroke-width="2" class="text-muted" />
+                <h2 class="col__title">{{ columnLabel(c) }}</h2>
               </template>
             </div>
             <div class="col__tools">
               <button
                 type="button"
                 class="col__tool col__tool--width"
-                :aria-label="`Cycle width (currently ${presetFor(c.key).px}px)`"
-                :title="`Width: ${presetFor(c.key).px}px`"
-                @click.stop="cycleWidth(c.key)"
+                :aria-label="`Cycle width (currently ${presetFor(c.id).px}px)`"
+                :title="`Width: ${presetFor(c.id).px}px`"
+                @click.stop="cycleWidth(c.id)"
               >
-                {{ presetFor(c.key).label }}
+                {{ presetFor(c.id).label }}
               </button>
               <button
                 v-if="canClose(c)"
@@ -492,19 +572,51 @@ watch(jointAfter, (flags) => {
                 class="col__tool"
                 aria-label="Close column"
                 title="Close column"
-                @click.stop="onClose(c.key)"
+                @click.stop="onClose(c.id)"
               >
                 <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
               </button>
             </div>
           </header>
 
-          <div class="col__body selectable" :class="{ 'col__body--terminal': c.type === 'terminal' }">
-            <template v-if="c.type === 'thread'">
-              <ConversationThread :blocks="c.session.blocks.value" :now="now" :session-error="c.session.error.value" />
+          <div
+            class="col__body selectable"
+            :class="paneKindMeta(c.kind).bodyClass"
+            :data-column-type="c.kind"
+          >
+            <template v-if="c.kind === 'thread' && c.session">
+              <ConversationThread
+                :blocks="c.session.blocks.value"
+                :now="now"
+                :session-error="c.session.error.value"
+                :source-key="c.id"
+                @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
+              />
             </template>
-            <template v-else>
-              <TerminalPane :session="c.session" @write="data => emit('terminal-write', c.key, data)" @resize="(cols, rows) => emit('terminal-resize', c.key, cols, rows)" />
+            <template v-else-if="c.kind === 'terminal' && c.session">
+              <TerminalPane
+                :session="c.session"
+                @write="(data) => emit('terminal-write', c.id, data)"
+                @resize="(cols, rows) => emit('terminal-resize', c.id, cols, rows)"
+              />
+            </template>
+            <template v-else-if="c.kind === 'scratchpad' && c.session">
+              <ScratchpadPane
+                :session="c.session"
+                @flush="emit('scratchpad-flush', c.id)"
+              />
+            </template>
+            <!-- Dormant: the pane is restored but nothing has attached yet. It
+                 attaches on focus, so this is what an unfocused restored pane
+                 shows — a single muted line, no card / border / button / spinner.
+                 A dormant scratchpad shows nothing (its empty-state idiom is an
+                 empty page); a thread's "Opening…" is transient (focus attaches
+                 immediately); a terminal invites the click that starts its PTY. -->
+            <template v-else-if="c.kind === 'terminal'">
+              <p class="col__dormant">Click to start a shell.</p>
+            </template>
+            <template v-else-if="c.kind === 'thread'">
+              <p class="col__dormant">Opening…</p>
             </template>
           </div>
         </section>
@@ -529,6 +641,7 @@ watch(jointAfter, (flags) => {
       :open="openSeam !== null"
       :x="menuAnchor.x"
       :y="menuAnchor.y"
+      :scratchpad-open="hasScratchpad"
       @close="closeJoint"
       @pick="onInsertPick"
     />
@@ -573,6 +686,31 @@ watch(jointAfter, (flags) => {
 .index__dash.is-focused {
   width: 24px;
   background: var(--ink);
+}
+.index__dash.is-pad {
+  width: 10px;
+  height: 2px;
+}
+/* A dormant pane (restored, not yet attached) reads even quieter than a resting
+   dash — present, but clearly "asleep". */
+.index__dash.is-dormant {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.index__dash.is-dormant:hover {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+.index__dash.is-pulse {
+  animation: dash-pulse 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes dash-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--ink) 16%, transparent);
+  }
+  40% {
+    background: var(--accent);
+    width: 18px;
+  }
 }
 .index__dash.is-live {
   background: var(--accent);
@@ -732,6 +870,18 @@ watch(jointAfter, (flags) => {
   animation: dash-breathe 1.9s ease-in-out infinite;
 }
 
+/* Dormant body — a single muted line, centred, no chrome. */
+.col__dormant {
+  margin: 0;
+  padding: 2.5rem 0.4rem 0;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  letter-spacing: -0.01em;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
 .col__tools {
   grid-column: 2;
   grid-row: 1;
@@ -818,6 +968,28 @@ watch(jointAfter, (flags) => {
   mask-image: none;
 }
 
+/* Scratchpad columns are prose editors, not chat logs: drop the thread body's
+ * tall bottom padding and bottom mask fade, but keep a small top fade so text
+ * scrolling under the header stays soft. */
+.col__body--scratchpad {
+  padding: 0.65rem 0.4rem 1.25rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 100%
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .index__dash,
   .col,
@@ -827,6 +999,7 @@ watch(jointAfter, (flags) => {
     transition: none;
   }
   .index__dash.is-live,
+  .index__dash.is-pulse,
   .col__live {
     animation: none;
   }

@@ -32,7 +32,7 @@ const emit = defineEmits<{ close: [] }>();
 
 const { muted, toggleMuted, cue } = useSound();
 const {
-  personalizable,
+  personalizableGroups,
   hasOverrides,
   isCustomized,
   conflictFor,
@@ -242,9 +242,8 @@ defineExpose({ cancelCapture });
       </motion.section>
 
       <!-- Shortcuts pane: rebinds the app's custom gestures. Lists only actions
-           marked `personalize` in the registry — today, just Switch project.
-           The pane reads as one continuous list: the title stands in for the
-           section label, and the rows hang directly beneath it. -->
+           marked `personalize` in the registry, grouped by their `group` label
+           (Navigation, Conversation, Threads, …). -->
       <motion.section
         v-else-if="pane === 'shortcuts'"
         key="shortcuts"
@@ -291,78 +290,93 @@ defineExpose({ cancelCapture });
           </button>
         </div>
 
-        <ul v-if="personalizable.length" class="flex flex-col">
-          <li v-for="a in personalizable" :key="a.id">
-            <div class="flex items-center justify-between gap-3 px-3 py-2.5">
-              <div class="flex min-w-0 flex-col">
-                <span class="truncate text-[13px] leading-tight text-ink">
-                  {{ a.label }}
-                </span>
-                <span
-                  v-if="a.description ?? a.hint"
-                  class="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted"
-                >
-                  {{ a.description ?? a.hint }}
-                </span>
-              </div>
-
-              <div class="flex shrink-0 items-center gap-1">
-                <button
-                  ref="captureRef"
-                  type="button"
-                  class="flex min-w-[64px] cursor-pointer items-center justify-end gap-1 rounded-[8px] px-1.5 py-1 transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
-                  :class="capturingId === a.id ? 'bg-hover' : ''"
-                  :tabindex="open ? 0 : -1"
-                  :aria-label="
-                    capturingId === a.id
-                      ? `Press a new key combination for ${a.label}; Escape cancels`
-                      : `Rebind ${a.label}`
-                  "
-                  @click="startCapture(a)"
-                >
-                  <template v-if="capturingId === a.id">
-                    <span class="text-[11px] font-medium text-ink-soft">
-                      Press keys…
-                    </span>
-                  </template>
-                  <template v-else>
-                    <kbd
-                      v-for="(tok, i) in prettyBinding(a)"
-                      :key="i"
-                      class="rounded-[5px] border border-muted/25 bg-hover px-1.5 py-0.5 font-mono text-[11px] leading-none text-ink-soft"
-                    >
-                      {{ tok }}
-                    </kbd>
-                  </template>
-                </button>
-
-                <button
-                  v-if="isCustomized(a.id)"
-                  type="button"
-                  :tabindex="open ? 0 : -1"
-                  class="flex size-6 items-center justify-center rounded-[7px] text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
-                  :aria-label="`Reset ${a.label} to its default`"
-                  title="Reset shortcut"
-                  @click="reset(a.id)"
-                >
-                  <HugeiconsIcon
-                    :icon="RefreshIcon"
-                    :size="13"
-                    :stroke-width="2"
-                    aria-hidden="true"
-                  />
-                </button>
-              </div>
-            </div>
-
-            <p
-              v-if="capturingId === a.id && captureMsg"
-              class="px-3 pb-2 text-[11px] leading-snug text-red-500"
-            >
-              {{ captureMsg }}
+        <div
+          v-if="personalizableGroups.length"
+          class="flex flex-col gap-6"
+        >
+          <section
+            v-for="g in personalizableGroups"
+            :key="g.group"
+            class="flex flex-col gap-1.5"
+            :aria-label="g.group"
+          >
+            <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+              {{ g.group }}
             </p>
-          </li>
-        </ul>
+            <ul class="flex flex-col">
+              <li v-for="a in g.items" :key="a.id">
+                <div class="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div class="flex min-w-0 flex-col">
+                    <span class="truncate text-[13px] leading-tight text-ink">
+                      {{ a.label }}
+                    </span>
+                    <span
+                      v-if="a.description ?? a.hint"
+                      class="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted"
+                    >
+                      {{ a.description ?? a.hint }}
+                    </span>
+                  </div>
+
+                  <div class="flex shrink-0 items-center gap-1">
+                    <button
+                      ref="captureRef"
+                      type="button"
+                      class="flex min-w-[64px] cursor-pointer items-center justify-end gap-1 rounded-[8px] px-1.5 py-1 transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+                      :class="capturingId === a.id ? 'bg-hover' : ''"
+                      :tabindex="open ? 0 : -1"
+                      :aria-label="
+                        capturingId === a.id
+                          ? `Press a new key combination for ${a.label}; Escape cancels`
+                          : `Rebind ${a.label}`
+                      "
+                      @click="startCapture(a)"
+                    >
+                      <template v-if="capturingId === a.id">
+                        <span class="text-[11px] font-medium text-ink-soft">
+                          Press keys…
+                        </span>
+                      </template>
+                      <template v-else>
+                        <kbd
+                          v-for="(tok, i) in prettyBinding(a)"
+                          :key="i"
+                          class="rounded-[5px] border border-muted/25 bg-hover px-1.5 py-0.5 font-mono text-[11px] leading-none text-ink-soft"
+                        >
+                          {{ tok }}
+                        </kbd>
+                      </template>
+                    </button>
+
+                    <button
+                      v-if="isCustomized(a.id)"
+                      type="button"
+                      :tabindex="open ? 0 : -1"
+                      class="flex size-6 items-center justify-center rounded-[7px] text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
+                      :aria-label="`Reset ${a.label} to its default`"
+                      title="Reset shortcut"
+                      @click="reset(a.id)"
+                    >
+                      <HugeiconsIcon
+                        :icon="RefreshIcon"
+                        :size="13"
+                        :stroke-width="2"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                <p
+                  v-if="capturingId === a.id && captureMsg"
+                  class="px-3 pb-2 text-[11px] leading-snug text-red-500"
+                >
+                  {{ captureMsg }}
+                </p>
+              </li>
+            </ul>
+          </section>
+        </div>
 
         <p v-else class="px-3 text-[11px] leading-snug text-muted">
           No customizable shortcuts yet.

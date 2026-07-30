@@ -1,6 +1,17 @@
 {
   // https://nuxt.com/docs/guide/concepts/typescript
   "files": [],
+  // Mirror Nuxt's `~` alias here so `bun test` (which reads tsconfig paths from
+  // this file, not the generated .nuxt configs) can resolve runtime imports like
+  // `~/utils/paneKinds` from unit tests. Nuxt/vue-tsc drive their own resolution
+  // off the referenced .nuxt/* configs, so this is inert for the build.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "~": ["./app"],
+      "~/*": ["./app/*"]
+    }
+  },
   "references": [
     {
       "path": "./.nuxt/tsconfig.app.json"

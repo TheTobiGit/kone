@@ -559,7 +559,15 @@ onUnmounted(() => {
 // even when the paste jumps the pill's width open.
 watch(text, () => nextTick(sync));
 
-defineExpose({ wake });
+async function setDraft(draft: string) {
+  text.value = draft;
+  await wake();
+  await nextTick();
+  const ta = field.value;
+  if (ta) ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+
+defineExpose({ wake, setDraft });
 </script>
 
 <template>

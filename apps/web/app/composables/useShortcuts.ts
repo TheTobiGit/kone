@@ -98,6 +98,26 @@ const ACTIONS: ShortcutAction[] = [
     rebindable: true,
     personalize: true,
   },
+  {
+    id: "new-scratchpad",
+    label: "New scratchpad column",
+    hint: "Open a scratchpad column in the active project's strip.",
+    description: "Open a notes column on the thread strip.",
+    group: "Conversation",
+    default: "mod+shift+n",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "send-selection-to-scratchpad",
+    label: "Send selection to scratchpad",
+    hint: "Append the current text selection to a scratchpad.",
+    description: "Send highlighted thread text to the scratchpad.",
+    group: "Conversation",
+    default: "mod+shift+s",
+    rebindable: true,
+    personalize: true,
+  },
 
   // ── the thread strip ──────────────────────────────────────────────────────
   // A project's live threads tile as columns on one horizontally scrollable
@@ -473,6 +493,21 @@ export function useShortcuts() {
     resolved.value.filter((a) => a.personalize),
   );
 
+  // Personalizable actions grouped for the Shortcuts pane — same order as `groups`,
+  // but only rows the user can rebind.
+  const personalizableGroups = computed(() => {
+    const order: string[] = [];
+    const byGroup = new Map<string, ResolvedAction[]>();
+    for (const a of personalizable.value) {
+      if (!byGroup.has(a.group)) {
+        byGroup.set(a.group, []);
+        order.push(a.group);
+      }
+      byGroup.get(a.group)!.push(a);
+    }
+    return order.map((g) => ({ group: g, items: byGroup.get(g)! }));
+  });
+
   const hasOverrides = computed(
     () => Object.keys(overrides.value as Record<string, string>).length > 0,
   );
@@ -533,6 +568,7 @@ export function useShortcuts() {
     resolved,
     groups,
     personalizable,
+    personalizableGroups,
     hasOverrides,
     isCustomized,
     conflictFor,

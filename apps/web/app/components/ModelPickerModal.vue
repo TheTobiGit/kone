@@ -496,7 +496,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
     />
 
     <motion.div
-      class="mp-card relative z-20 w-full overflow-hidden"
+      class="mp-card relative z-20 w-full max-w-sm overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
       :initial="{ opacity: 0, y: 12, scale: 0.96 }"
       :animate="{ opacity: shown ? 1 : 0, y: shown ? 0 : 12, scale: shown ? 1 : 0.96 }"
@@ -695,7 +695,6 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }
 .mp-card {
-  max-width: 500px;
   background: color-mix(in srgb, var(--ink) 7%, var(--surface, var(--ground)));
   border-radius: 22px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);

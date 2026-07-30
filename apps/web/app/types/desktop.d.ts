@@ -2,6 +2,8 @@
 // Mirrors apps/desktop/src/git.ts and apps/desktop/src/types/global.d.ts.
 export {};
 
+import type { BoardLayout } from "~/types/board";
+
 export type DirEntry = {
   name: string;
   path: string;
@@ -577,6 +579,51 @@ export type KoneTerminalApi = {
   onEvent: (cb: (event: TerminalEvent) => void) => () => void;
 };
 
+export type ScratchpadRecord = {
+  id: string;
+  projectPath: string;
+  title: string;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  sortIndex: number;
+};
+
+export type ScratchpadListInput = {
+  projectPath: string;
+};
+
+export type ScratchpadSaveInput = {
+  padId: string;
+  projectPath: string;
+  title: string;
+  body: string;
+};
+
+export type ScratchpadDeleteInput = {
+  padId: string;
+};
+
+export type KoneScratchpadApi = {
+  list: (input: ScratchpadListInput) => Promise<ScratchpadRecord[]>;
+  save: (input: ScratchpadSaveInput) => Promise<{ savedAt: number } | null>;
+  delete: (input: ScratchpadDeleteInput) => Promise<void>;
+};
+
+export type BoardLoadInput = {
+  projectPath: string;
+};
+
+export type BoardSaveInput = {
+  projectPath: string;
+  layout: BoardLayout;
+};
+
+export type KoneBoardApi = {
+  load: (input: BoardLoadInput) => Promise<BoardLayout | null>;
+  save: (input: BoardSaveInput) => Promise<{ savedAt: number } | null>;
+};
+
 export type KoneDesktopApi = {
   isDesktop: true;
   platform: string;
@@ -586,6 +633,8 @@ export type KoneDesktopApi = {
   system: KoneSystemApi;
   agent: KoneAgentApi;
   terminal: KoneTerminalApi;
+  scratchpad: KoneScratchpadApi;
+  board: KoneBoardApi;
 };
 
 declare global {

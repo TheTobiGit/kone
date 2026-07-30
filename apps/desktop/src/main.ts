@@ -7,6 +7,8 @@ import { registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
+import { registerBoardIpc } from "./board/index.js";
+import { registerScratchpadIpc } from "./scratchpad/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./terminal/index.js";
 import { getInitialWindowState, manageWindowState } from "./windowState.js";
 
@@ -70,6 +72,12 @@ function registerIpc() {
 
   // Integrated terminal: node-pty shells, streamed on "terminal:event".
   registerTerminalIpc();
+
+  // Per-project scratchpad documents (markdown notes).
+  registerScratchpadIpc();
+
+  // Per-project board layout (pane order, kinds, widths, focus).
+  registerBoardIpc();
 }
 
 async function createWindow() {

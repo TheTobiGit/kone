@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+import type { ScratchpadRecord, StoredBoardLayout } from "./agent/ConversationStore.js";
+import type { BoardLoadInput, BoardSaveInput } from "./board/index.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -24,6 +26,11 @@ import type {
   TerminalSessionSnapshot,
   TerminalWriteInput,
 } from "./terminal/index.js";
+import type {
+  ScratchpadDeleteInput,
+  ScratchpadListInput,
+  ScratchpadSaveInput,
+} from "./scratchpad/index.js";
 import type { DirListing } from "./fs.js";
 import type {
   CloneProgress,
@@ -187,6 +194,20 @@ const api = {
         void ipcRenderer.invoke("terminal:unsubscribe");
       };
     },
+  },
+  scratchpad: {
+    list: (input: ScratchpadListInput): Promise<ScratchpadRecord[]> =>
+      ipcRenderer.invoke("scratchpad:list", input),
+    save: (input: ScratchpadSaveInput): Promise<{ savedAt: number } | null> =>
+      ipcRenderer.invoke("scratchpad:save", input),
+    delete: (input: ScratchpadDeleteInput): Promise<void> =>
+      ipcRenderer.invoke("scratchpad:delete", input),
+  },
+  board: {
+    load: (input: BoardLoadInput): Promise<StoredBoardLayout | null> =>
+      ipcRenderer.invoke("board:load", input),
+    save: (input: BoardSaveInput): Promise<{ savedAt: number } | null> =>
+      ipcRenderer.invoke("board:save", input),
   },
 };
 

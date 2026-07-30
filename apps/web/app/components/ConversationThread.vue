@@ -12,6 +12,7 @@ import {
   ArrowRight01Icon,
   Copy01Icon,
   Tick02Icon,
+  Note01Icon,
   File01Icon,
   FileEditIcon,
   ListViewIcon,
@@ -71,6 +72,12 @@ const props = defineProps<{
   /** A session-level error (start failure, crashed process) — shown as a
    *  single banner above the thread when set. */
   sessionError?: string | null;
+  /** Strip column key — forwarded with scratchpad captures. */
+  sourceKey?: string;
+}>();
+
+const emit = defineEmits<{
+  "to-scratchpad": [text: string];
 }>();
 
 const { cue } = useSound();
@@ -648,6 +655,13 @@ async function copy(block: AssistantBlock) {
   }
 }
 
+function addToScratchpad(block: AssistantBlock) {
+  const text = assistantText(block);
+  if (!text.trim()) return;
+  emit("to-scratchpad", text);
+  cue("press");
+}
+
 // ── auto-scroll ────────────────────────────────────────────────────────────────
 const root = ref<HTMLElement | null>(null);
 function tailSignature(): string {
@@ -867,12 +881,17 @@ const hasBlocks = computed(() => props.blocks.length > 0);
             <!-- Text — rendered as rich Markdown the whole way through, streaming
                  or settled, so the reply reads as a proper preview as it grows
                  (never a raw block that only formats once complete). -->
-            <MarkdownMessage
+            <div
               v-else
-              class="answer"
-              :source="segText(grp.seg)"
-              :historical="block.historical"
-            />
+              class="answer-wrap"
+              :data-markdown-source="segText(grp.seg)"
+            >
+              <MarkdownMessage
+                class="answer"
+                :source="segText(grp.seg)"
+                :historical="block.historical"
+              />
+            </div>
           </template>
 
           <!-- Working orb — visible while the turn is alive but nothing is
@@ -913,6 +932,16 @@ const hasBlocks = computed(() => props.blocks.length > 0);
             >
               <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
               <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+            </button>
+            <button
+              v-if="block.state === 'completed' && assistantText(block)"
+              type="button"
+              class="foot__copy"
+              aria-label="Add to scratchpad"
+              @click="addToScratchpad(block)"
+            >
+              <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
+              <span>Scratchpad</span>
             </button>
           </div>
         </div>

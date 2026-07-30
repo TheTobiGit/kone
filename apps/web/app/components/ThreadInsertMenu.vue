@@ -1,23 +1,24 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { onKeyStroke } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import {
-  ArrowRight01Icon,
-  BubbleChatAddIcon,
-  ComputerTerminal01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { PANE_KINDS } from "~/utils/paneKinds";
+import type { PaneKind } from "~/types/board";
 
 const props = defineProps<{
   open: boolean;
   /** Viewport anchor — left edge of the seam trigger, vertically centred. */
   x: number;
   y: number;
+  /** The project's one scratchpad is already on the strip — can't insert a 2nd. */
+  scratchpadOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
   close: [];
-  pick: [kind: "thread" | "terminal"];
+  pick: [kind: PaneKind];
 }>();
 
 onKeyStroke("Escape", (e) => {
@@ -28,22 +29,23 @@ onKeyStroke("Escape", (e) => {
 
 const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
-const actions = [
-  {
-    kind: "thread" as const,
-    label: "New thread",
-    icon: BubbleChatAddIcon,
-    disabled: false,
-  },
-  {
-    kind: "terminal" as const,
-    label: "Terminal",
-    icon: ComputerTerminal01Icon,
-    disabled: false,
-  },
-];
+// The rows are the pane-kind registry, in registry order. A singleton kind
+// already on the strip greys out (only the scratchpad today) — the strip tells
+// us via `scratchpadOpen`, mapped to the singleton row.
+const actions = computed(() =>
+  PANE_KINDS.map((meta) => {
+    const disabled = meta.singleton && props.scratchpadOpen === true;
+    return {
+      kind: meta.kind,
+      label: meta.insertLabel,
+      icon: meta.icon,
+      disabled,
+      disabledHint: disabled ? `${meta.insertLabel} (already open)` : "",
+    };
+  }),
+);
 
-function onPick(kind: "thread" | "terminal", disabled: boolean): void {
+function onPick(kind: PaneKind, disabled: boolean): void {
   if (disabled) return;
   emit("pick", kind);
 }
@@ -92,9 +94,7 @@ function onPick(kind: "thread" | "terminal", disabled: boolean): void {
                     class="insert-row"
                     :class="{ 'insert-row--disabled': action.disabled }"
                     :disabled="action.disabled"
-                    :title="
-                      action.disabled ? `${action.label} (coming soon)` : action.label
-                    "
+                    :title="action.disabled ? action.disabledHint : action.label"
                     @click="onPick(action.kind, action.disabled)"
                   >
                     <span class="insert-row__lead">

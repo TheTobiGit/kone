@@ -30,7 +30,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 10;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -201,7 +201,41 @@ function migrate(db: DatabaseSync): void {
     version = 8;
   }
 
-  // Future migrations append here: `if (version < 9) { …; version = 9; }`
+  if (version < 9) {
+    // v9 — per-project scratchpad documents (markdown source, one row per pad).
+    // Mirrors research's projection_threads.notes column but as first-class rows
+    // so a project can hold several open pads with stable ids across reloads.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS scratchpads (
+        id          TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        title       TEXT,
+        body        TEXT NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        sort_index  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_scratchpads_project
+        ON scratchpads (project_path, sort_index);
+    `);
+    version = 9;
+  }
+
+  if (version < 10) {
+    // v10 — the project board layout, one JSON blob per project. The board is
+    // always read and written whole (§6.1), so a normalised panes table would
+    // only cost a migration each time a pane field is added — the blob doesn't.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS project_boards (
+        project_path TEXT PRIMARY KEY,
+        layout       TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+    `);
+    version = 10;
+  }
+
+  // Future migrations append here: `if (version < 11) { …; version = 11; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -869,6 +903,172 @@ export class ConversationStore {
       return [];
     }
   }
+
+  // ── scratchpads ───────────────────────────────────────────────────────────
+
+  listScratchpads(projectPath: string): ScratchpadRecord[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(
+          `SELECT id, project_path, title, body, created_at, updated_at, sort_index
+             FROM scratchpads
+            WHERE project_path = ?
+            ORDER BY sort_index ASC, created_at ASC`,
+        )
+        .all(projectPath) as ScratchpadRow[];
+      return rows.map(rowToScratchpad);
+    } catch (err) {
+      console.error("[conversation-store] listScratchpads failed:", err);
+      return [];
+    }
+  }
+
+  saveScratchpad(input: {
+    padId: string;
+    projectPath: string;
+    title: string;
+    body: string;
+  }): { savedAt: number } | null {
+    const db = this.handle();
+    if (!db) return null;
+    const savedAt = Date.now();
+    try {
+      const existing = db
+        .prepare(`SELECT created_at, sort_index FROM scratchpads WHERE id = ?`)
+        .get(input.padId) as { created_at: number; sort_index: number } | undefined;
+      const sortIndex =
+        existing?.sort_index ??
+        ((db
+          .prepare(
+            `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next
+               FROM scratchpads WHERE project_path = ?`,
+          )
+          .get(input.projectPath) as { next: number }).next ?? 0);
+      db.prepare(
+        `INSERT INTO scratchpads (id, project_path, title, body, created_at, updated_at, sort_index)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           body = excluded.body,
+           updated_at = excluded.updated_at`,
+      ).run(
+        input.padId,
+        input.projectPath,
+        input.title,
+        input.body,
+        existing?.created_at ?? savedAt,
+        savedAt,
+        sortIndex,
+      );
+      return { savedAt };
+    } catch (err) {
+      console.error("[conversation-store] saveScratchpad failed:", err);
+      return null;
+    }
+  }
+
+  deleteScratchpad(padId: string): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(`DELETE FROM scratchpads WHERE id = ?`).run(padId);
+    } catch (err) {
+      console.error("[conversation-store] deleteScratchpad failed:", err);
+    }
+  }
+
+  // ── project board layout ────────────────────────────────────────────────────
+
+  /** Read a project's persisted board layout. Never throws: a corrupt JSON blob
+   *  or an unrecognised shape returns `null` so the project still opens (the
+   *  renderer falls back to today's single-thread board). Hard structural
+   *  validation of the panes themselves is the renderer's job (§6.4). */
+  loadBoard(projectPath: string): StoredBoardLayout | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(`SELECT layout FROM project_boards WHERE project_path = ?`)
+        .get(projectPath) as { layout: string } | undefined;
+      if (!row?.layout) return null;
+      const parsed = JSON.parse(row.layout) as unknown;
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        (parsed as { version?: unknown }).version !== 1 ||
+        !Array.isArray((parsed as { panes?: unknown }).panes)
+      ) {
+        return null;
+      }
+      return parsed as StoredBoardLayout;
+    } catch (err) {
+      console.error("[conversation-store] loadBoard failed:", err);
+      return null;
+    }
+  }
+
+  saveBoard(projectPath: string, layout: StoredBoardLayout): { savedAt: number } | null {
+    const db = this.handle();
+    if (!db) return null;
+    const savedAt = Date.now();
+    try {
+      db.prepare(
+        `INSERT INTO project_boards (project_path, layout, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(project_path) DO UPDATE SET
+           layout = excluded.layout,
+           updated_at = excluded.updated_at`,
+      ).run(projectPath, JSON.stringify(layout), savedAt);
+      return { savedAt };
+    } catch (err) {
+      console.error("[conversation-store] saveBoard failed:", err);
+      return null;
+    }
+  }
+}
+
+/** The board document as it lives in the store — a serialisable layout blob.
+ *  Kept structural (not imported from the renderer's `~/types/board`) so the
+ *  desktop package stays free of a web-package dependency; the renderer owns the
+ *  canonical `BoardLayout` type and the hard pane validation. */
+export type StoredBoardLayout = {
+  version: 1;
+  panes: unknown[];
+  focusedId: string | null;
+};
+
+export type ScratchpadRecord = {
+  id: string;
+  projectPath: string;
+  title: string;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  sortIndex: number;
+};
+
+type ScratchpadRow = {
+  id: string;
+  project_path: string;
+  title: string | null;
+  body: string;
+  created_at: number;
+  updated_at: number;
+  sort_index: number;
+};
+
+function rowToScratchpad(row: ScratchpadRow): ScratchpadRecord {
+  return {
+    id: row.id,
+    projectPath: row.project_path,
+    title: row.title ?? "",
+    body: row.body,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    sortIndex: row.sort_index,
+  };
 }
 
 // ── row → domain mapping ──────────────────────────────────────────────────────
