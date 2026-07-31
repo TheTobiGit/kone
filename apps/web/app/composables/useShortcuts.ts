@@ -53,6 +53,16 @@ const ACTIONS: ShortcutAction[] = [
     personalize: true,
   },
   {
+    id: "open-board",
+    label: "Open project board",
+    hint: "Leave the working-tree home and reveal the thread strip.",
+    description: "Open the project's board — threads, terminals, and scratchpads on the strip.",
+    group: "Navigation",
+    default: "mod+b",
+    rebindable: true,
+    personalize: true,
+  },
+  {
     id: "toggle-settings",
     label: "Open settings drawer",
     hint: "Open or close the personalization drawer.",

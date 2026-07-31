@@ -519,6 +519,18 @@ useEventListener(window, "blur", () => {
   if (cycling.value) cancelCycle();
 });
 
+// mod+b opens the board surface from the working-tree home — the strip is always
+// mounted but hidden on overview, so this is a pure surface flip with no new
+// panes. Only fires while overview is showing so mod+b in a scratchpad still
+// bolds; once you're on the board the chord is a no-op.
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (!matchesShortcut("open-board", e)) return;
+  if (surface.value !== "overview" || activeFile.value) return;
+  e.preventDefault();
+  cue("press");
+  surface.value = "board";
+});
+
 // Ctrl+N (mod+n) starts a fresh, empty thread — mirroring the composer's own
 // "send from the working-tree home" path. It flips to the board surface so
 // the user lands in the blank thread, and prunes the idle previous thread when
