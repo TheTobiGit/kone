@@ -9,15 +9,49 @@ import { detect, status } from "./status.js";
 import { watchStatus } from "./watch.js";
 import type { CreateProjectOptions } from "./types.js";
 
-// One live watcher per renderer (webContents). Starting a new watch replaces the
-// previous one; the sender's teardown stops it so a closed window leaks nothing.
-const activeWatchers = new Map<number, () => void>();
+// Live watchers, one fs watch per (renderer, dir). A renderer can watch many
+// repos at once — the open project *and* every folder on the launcher grid — so
+// this is a map of dir → watcher per webContents, not a single slot. Multiple
+// subscribers to the same repo (e.g. the open project and its launcher tile)
+// share one fs watch via a refcount; the fs watch stops only when the last one
+// unwatches. The sender's teardown stops all of its watchers so a closed window
+// leaks nothing.
+interface WatchEntry {
+  stop: () => void;
+  refs: number;
+}
+const activeWatchers = new Map<number, Map<string, WatchEntry>>();
 // Senders we've already hooked "destroyed" on, so re-watching doesn't pile up
 // listeners on the same webContents.
 const watchTeardownHooked = new Set<number>();
 
-function stopWatcher(id: number): void {
-  activeWatchers.get(id)?.();
+function watchersFor(id: number): Map<string, WatchEntry> {
+  let map = activeWatchers.get(id);
+  if (!map) {
+    map = new Map();
+    activeWatchers.set(id, map);
+  }
+  return map;
+}
+
+/** Drop one reference to a (renderer, dir) watch; stop the fs watch when the
+ *  last subscriber releases it. */
+function releaseWatcher(id: number, dir: string): void {
+  const map = activeWatchers.get(id);
+  const entry = map?.get(dir);
+  if (!map || !entry) return;
+  entry.refs -= 1;
+  if (entry.refs > 0) return;
+  map.delete(dir);
+  entry.stop();
+  if (map.size === 0) activeWatchers.delete(id);
+}
+
+/** Stop every watcher a renderer holds (window closed). */
+function stopAllWatchers(id: number): void {
+  const map = activeWatchers.get(id);
+  if (!map) return;
+  for (const entry of map.values()) entry.stop();
   activeWatchers.delete(id);
 }
 
@@ -33,35 +67,54 @@ export function registerGitIpc(): void {
   ipcMain.handle("git:content", (_event, dir: string, path: string) =>
     content(dir, path),
   );
-  // Start (or restart) live status watching for the calling renderer; fresh
-  // status is pushed on the "git:status-changed" channel until git:unwatch.
+  // Start live status watching of `dir` for the calling renderer; fresh status
+  // is pushed on the "git:status-changed" channel — tagged with `dir` so the
+  // renderer can route it to the right subscriber — until git:unwatch(dir). A
+  // repeat watch of the same dir just adds a reference (one fs watch, many
+  // subscribers); the fs watch is torn down when the last one unwatches.
   ipcMain.handle("git:watch", async (event, dir: string) => {
     const id = event.sender.id;
-    stopWatcher(id);
+    const map = watchersFor(id);
+
+    // Already watching this dir for this renderer — just take a reference.
+    const existing = map.get(dir);
+    if (existing) {
+      existing.refs += 1;
+      return;
+    }
+
+    // Reserve the slot before the async repo-root resolve so a concurrent watch
+    // of the same dir refcounts onto this one instead of starting a rival fs
+    // watch. `stop` is filled in once watchStatus resolves.
+    const entry: WatchEntry = { stop: () => {}, refs: 1 };
+    map.set(dir, entry);
+
     const stop = await watchStatus(dir, (status) => {
       if (!event.sender.isDestroyed()) {
-        event.sender.send("git:status-changed", status);
+        event.sender.send("git:status-changed", dir, status);
       }
     });
-    // The renderer may have navigated away (or unwatched) while we resolved the
-    // repo root — don't install a now-orphaned watcher.
-    if (event.sender.isDestroyed()) {
+
+    // The renderer may have navigated away, or every subscriber may have
+    // unwatched, while we resolved the repo root — don't install a now-orphaned
+    // watcher. (unwatch/destroy during the await removes or replaces our slot.)
+    if (event.sender.isDestroyed() || map.get(dir) !== entry) {
       stop();
       return;
     }
-    // A concurrent git:watch may have installed a watcher during the await; stop
-    // it so its handle can't leak past this overwrite.
-    stopWatcher(id);
-    activeWatchers.set(id, stop);
+    entry.stop = stop;
+
     if (!watchTeardownHooked.has(id)) {
       watchTeardownHooked.add(id);
       event.sender.once("destroyed", () => {
-        stopWatcher(id);
+        stopAllWatchers(id);
         watchTeardownHooked.delete(id);
       });
     }
   });
-  ipcMain.handle("git:unwatch", (event) => stopWatcher(event.sender.id));
+  ipcMain.handle("git:unwatch", (event, dir: string) =>
+    releaseWatcher(event.sender.id, dir),
+  );
   ipcMain.handle("git:stage", (_event, dir: string, paths: string[]) =>
     stage(dir, paths),
   );

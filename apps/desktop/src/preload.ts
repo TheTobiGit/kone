@@ -81,12 +81,17 @@ const api = {
     // on disk (edit, terminal `git add`, commit, branch switch). Returns an
     // unsubscribe fn that also stops the watcher in the main process.
     watchStatus: (dir: string, cb: (status: GitStatus) => void): (() => void) => {
-      const listener = (_event: unknown, status: GitStatus) => cb(status);
+      // Pushes are tagged with the dir they belong to, so several watchers can
+      // share the one channel — the open project and every launcher folder —
+      // each firing its callback only for its own repo.
+      const listener = (_event: unknown, pushedDir: string, status: GitStatus) => {
+        if (pushedDir === dir) cb(status);
+      };
       ipcRenderer.on("git:status-changed", listener);
       void ipcRenderer.invoke("git:watch", dir);
       return () => {
         ipcRenderer.removeListener("git:status-changed", listener);
-        void ipcRenderer.invoke("git:unwatch");
+        void ipcRenderer.invoke("git:unwatch", dir);
       };
     },
     // Working-tree mutations. They resolve once git has run; the open project's
