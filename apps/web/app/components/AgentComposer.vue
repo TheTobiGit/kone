@@ -469,7 +469,15 @@ async function wake() {
   await nextTick();
   surfaceW.value = measureWidth();
   field.value?.focus();
-  window.setTimeout(sync, 300);
+  if (card.value) {
+    // Attachments are already pending → we open as a card, not a pill. Measure
+    // and apply the full card height NOW so the orb expands straight into its
+    // final shape (width + height together), instead of opening single-line and
+    // then growing tall a beat later to reveal the chips.
+    sync();
+  } else {
+    window.setTimeout(sync, 300);
+  }
   window.setTimeout(() => (opening.value = false), 340);
 }
 
@@ -663,15 +671,13 @@ defineExpose({ wake, setDraft });
            Images show a thumbnail; other files show an uppercase extension
            badge. Clicking a chip removes it. -->
       <Transition name="fade">
-        <div v-if="hasAttachments || notice" class="chips">
-          <button
+        <div v-if="open && (hasAttachments || notice)" class="chips">
+          <div
             v-for="at in attachments"
             :key="at.id"
-            type="button"
             class="chip"
             :class="{ 'chip--image': at.kind === 'image' }"
-            :title="`Remove ${at.name}`"
-            @click.stop="removeAttachment(at.id)"
+            :title="at.name"
           >
             <img
               v-if="at.kind === 'image' && at.previewUrl"
@@ -681,10 +687,20 @@ defineExpose({ wake, setDraft });
             />
             <span v-else class="chip__badge">{{ at.ext }}</span>
             <span class="chip__name">{{ at.name }}</span>
-            <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
-              <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
-          </button>
+            <!-- The ✕ is the only remove target — the thumbnail and name are
+                 inert, so clicking a chip's body never drops the attachment. -->
+            <button
+              type="button"
+              class="chip__remove"
+              :aria-label="`Remove ${at.name}`"
+              :title="`Remove ${at.name}`"
+              @click.stop="removeAttachment(at.id)"
+            >
+              <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
           <span v-if="notice" class="chips__notice">{{ notice }}</span>
         </div>
       </Transition>
@@ -956,7 +972,13 @@ defineExpose({ wake, setDraft });
     width 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
     height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s;
 }
-.surface.is-card {
+/* Card geometry only holds while open — attachments persist in the draft, so
+   `is-card` stays on through a collapse. Gating on `.is-open` lets the surface
+   shed the card's width/radius the instant it closes and ease back to the bead,
+   exactly like the no-attachment pill (whose width comes from the inline style
+   that clears on close). Without this the closed surface stays a wide rounded
+   box and the next open expands from that, not from the orb. */
+.surface.is-open.is-card {
   width: clamp(400px, 56vw, 720px);
   border-radius: 26px;
 }
@@ -980,7 +1002,7 @@ defineExpose({ wake, setDraft });
   min-height: 0;
   height: auto;
 }
-.surface.is-card .panel { border-radius: 23.5px; }
+.surface.is-open.is-card .panel { border-radius: 23.5px; }
 
 /* ── Resting particle bead ────────────────────────────────────────────────── */
 /* The turning cloud sits centred over the surface at rest. It fades and scales
@@ -1134,12 +1156,11 @@ defineExpose({ wake, setDraft });
   align-items: center;
   gap: 8px;
   height: 32px;
-  padding: 0 9px 0 8px;
+  padding: 0 5px 0 8px;
   border: 1px solid var(--btn-border);
   border-radius: 9px;
   background: var(--chip);
   color: var(--chip-x);
-  cursor: pointer;
 }
 .chip--image { padding-left: 4px; }
 /* Extension badge for non-image files — a soft neutral tile, no loud colour
@@ -1174,11 +1195,30 @@ defineExpose({ wake, setDraft });
   font-size: 13px;
   font-weight: 500;
   line-height: 16px;
-  max-width: 168px;
+  max-width: 104px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The remove target — a padded button around the ✕ so it's easy to hit and
+   only it drops the attachment. Ink lifts and a soft tile appears on hover. */
+.chip__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chip-x);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.chip__remove:hover { background: var(--btn-border); color: var(--chip-ink); }
+.chip__remove:active { transform: scale(0.9); }
 .chip__x { width: 12px; height: 12px; flex-shrink: 0; }
 .chips__notice {
   align-self: center;
