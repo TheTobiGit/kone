@@ -5,14 +5,17 @@ import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowTurnBackwardIcon,
+  DistributeHorizontalCenterIcon,
   KeyboardIcon,
   RefreshIcon,
+  Tick02Icon,
   UndoIcon,
   VolumeHighIcon,
   VolumeMute01Icon,
 } from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
 import type { ShortcutAction } from "~/composables/useShortcuts";
+import type { CenterMode } from "~/composables/useStripPrefs";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
 // It doesn't float over the launcher — it sits pinned to the left edge, and the
@@ -21,11 +24,16 @@ import type { ShortcutAction } from "~/composables/useShortcuts";
 //
 // The panel is a small navigable drawer: a root list of section groups (General,
 // Personalization) that pushes into detail panes within the same 320px aside.
-// Today the only detail pane is Shortcuts, which rebinds the app's custom,
-// genuinely rebind-worthy gestures (currently just Switch project). OS-convention
-// keys (⌘, / ⌘K) and fixed keys (Esc / Enter / type-to-compose) stay in the
-// shortcut registry — handlers still consult them — but are deliberately hidden
-// from the UI; there's no meaning in rebinding those.
+// Two detail panes today: Shortcuts, which rebinds the app's custom,
+// genuinely rebind-worthy gestures (currently just Switch project); and Strip
+// motion, which holds the board's scroll-feel settings. OS-convention keys
+// (⌘, / ⌘K) and fixed keys (Esc / Enter / type-to-compose) stay in the shortcut
+// registry — handlers still consult them — but are deliberately hidden from the
+// UI; there's no meaning in rebinding those.
+//
+// Thread strip earns its own pane rather than sitting inline: today it's a single
+// center-focused-column choice, but it's the shelf the rest of the strip's
+// knobs will land on (gaps, snap feel, width steps), so it wants room to grow.
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
@@ -43,6 +51,68 @@ const {
   displayTokens,
 } = useShortcuts();
 
+// ── thread strip (niri's center-focused-column) ─────────────────────────────────
+// The same module-scope ref ThreadStrip.vue reads, so setting it here steers the
+// board's scroll behaviour live — no reload, no prop threaded across. In the pane
+// the three choices sit as a vertical radio list, each with a line on what it does.
+const { centerMode } = useStripPrefs();
+const centerOptions: { value: CenterMode; label: string; description: string }[] = [
+  {
+    value: "never",
+    label: "Never",
+    description: "Keep the strip anchored — nudge the focused column just into view.",
+  },
+  {
+    value: "on-overflow",
+    label: "When needed",
+    description: "Center the focused column only when the strip has to scroll.",
+  },
+  {
+    value: "always",
+    label: "Always",
+    description: "Recenter the strip on every focus change.",
+  },
+];
+
+// The active option, shown trailing the root row so the current choice reads
+// without opening the pane.
+const currentCenterOption = computed(() =>
+  centerOptions.find((o) => o.value === centerMode.value),
+);
+
+// Keep the button elements so arrow-key navigation can move focus with the
+// selection, the way a native radiogroup does (roving focus, not roving tabindex
+// alone). Order tracks the v-for, so index maps straight onto centerOptions.
+const centerRadioEls = ref<HTMLElement[]>([]);
+function setCenterRadioEl(el: unknown, i: number) {
+  if (el instanceof HTMLElement) centerRadioEls.value[i] = el;
+}
+
+function setCenterMode(mode: CenterMode) {
+  if (centerMode.value === mode) return;
+  centerMode.value = mode;
+  cue("toggle");
+}
+
+function onCenterKeydown(e: KeyboardEvent, i: number) {
+  // Only a bare arrow navigates the group. A modified arrow (⌘⌥← / → is the
+  // board's focus-thread shortcut) or an arrow while the pane isn't showing must
+  // pass straight through — a radio button that still holds focus after the
+  // drawer shuts mustn't swallow the app's chords.
+  if (!props.open || pane.value !== "motion") return;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const forward = e.key === "ArrowDown" || e.key === "ArrowRight";
+  const back = e.key === "ArrowUp" || e.key === "ArrowLeft";
+  if (!forward && !back) return;
+  // Arrows own the group's focus; don't let them also scroll the drawer.
+  e.preventDefault();
+  const next = (i + (forward ? 1 : -1) + centerOptions.length) % centerOptions.length;
+  const option = centerOptions[next];
+  if (!option) return;
+  setCenterMode(option.value);
+  centerRadioEls.value[next]?.focus();
+}
+
 function onSoundToggle() {
   toggleMuted();
   // If we just switched sound back on, confirm it with a soft cue (a no-op the
@@ -51,15 +121,20 @@ function onSoundToggle() {
 }
 
 // ── pane navigation ──────────────────────────────────────────────────────────
-// Root lists the section groups; the one detail pane today is "shortcuts",
-// reached by tapping the Shortcuts row. The drawer always reopens at root so the
-// user lands somewhere predictable, and leaving the shortcuts pane abandons any
-// in-flight rebind capture.
-type Pane = "root" | "shortcuts";
+// Root lists the section groups; each detail pane ("shortcuts", "motion") is
+// reached by tapping its row. The drawer always reopens at root so the user lands
+// somewhere predictable, and leaving the shortcuts pane abandons any in-flight
+// rebind capture.
+type Pane = "root" | "shortcuts" | "motion";
 const pane = ref<Pane>("root");
 
 function openShortcuts() {
   pane.value = "shortcuts";
+  cue("press");
+}
+
+function openMotion() {
+  pane.value = "motion";
   cue("press");
 }
 
@@ -144,7 +219,7 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
   if (capturingId.value) return; // capture owns this Esc
   e.preventDefault();
-  if (pane.value === "shortcuts") {
+  if (pane.value !== "root") {
     backToRoot();
     return;
   }
@@ -235,6 +310,41 @@ defineExpose({ cancelCapture });
               />
               <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
                 Keyboard shortcuts
+              </span>
+            </button>
+          </Magnet>
+
+          <!-- Thread strip — pushes into its own pane (the shelf the board's other
+               strip knobs will land on). Same borderless magnet row as Shortcuts;
+               the current choice trails the label in --muted so the row reads as
+               "Thread strip · When needed" at a glance without opening it. -->
+          <Magnet
+            class="block"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <button
+              type="button"
+              class="group flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              :tabindex="open ? 0 : -1"
+              aria-label="Open thread strip settings"
+              @click="openMotion"
+            >
+              <HugeiconsIcon
+                :icon="DistributeHorizontalCenterIcon"
+                :size="17"
+                :stroke-width="1.7"
+                class="shrink-0 text-muted transition-colors group-hover:text-ink"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+                Thread strip
+              </span>
+              <span class="shrink-0 text-[12px] leading-tight text-muted">
+                {{ currentCenterOption?.label }}
               </span>
             </button>
           </Magnet>
@@ -382,6 +492,87 @@ defineExpose({ cancelCapture });
           No customizable shortcuts yet.
         </p>
       </motion.section>
+
+      <!-- Motion pane: the board's scroll-feel settings. Today just the
+           center-focused-column choice, laid out as a vertical radio list — each
+           option is a borderless row carrying its own one-line explanation, the
+           selected one marked in --ink with a tick (Geist is 400-only, so colour +
+           glyph carry the state weight can't). Room here for gaps / snap / width
+           knobs later. -->
+      <motion.section
+        v-else-if="pane === 'motion'"
+        key="motion"
+        class="col-start-1 row-start-1 flex flex-col"
+        aria-label="Thread strip"
+        :initial="{ opacity: 0, x: paneOffset }"
+        :animate="{ opacity: 1, x: 0 }"
+        :transition="paneSpring"
+      >
+        <div class="mb-4 flex items-center gap-2 pr-3">
+          <button
+            type="button"
+            class="back-glyph flex size-6 items-center justify-center text-muted transition-colors hover:text-ink focus-visible:text-ink focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Back to settings"
+            @click="backToRoot"
+          >
+            <HugeiconsIcon
+              :icon="ArrowTurnBackwardIcon"
+              :size="16"
+              :stroke-width="2"
+              aria-hidden="true"
+            />
+          </button>
+          <h2 class="px-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+            Thread strip
+          </h2>
+        </div>
+
+        <section class="flex flex-col gap-1.5" aria-label="Center focused column">
+          <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+            Center focused column
+          </p>
+          <div
+            class="flex flex-col"
+            role="radiogroup"
+            aria-label="Center focused column"
+          >
+            <button
+              v-for="(opt, i) in centerOptions"
+              :key="opt.value"
+              :ref="(el) => setCenterRadioEl(el, i)"
+              type="button"
+              role="radio"
+              :aria-checked="centerMode === opt.value"
+              :aria-label="opt.label"
+              :tabindex="open ? (centerMode === opt.value ? 0 : -1) : -1"
+              class="center-opt flex cursor-pointer items-start gap-3 rounded-[10px] px-3 py-2.5 text-left focus-visible:outline-none hover:bg-hover focus-visible:bg-hover"
+              @click="setCenterMode(opt.value)"
+              @keydown="onCenterKeydown($event, i)"
+            >
+              <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span
+                  class="text-[14px] leading-tight"
+                  :class="centerMode === opt.value ? 'text-ink' : 'text-ink-soft'"
+                >
+                  {{ opt.label }}
+                </span>
+                <span class="text-[11px] leading-snug text-muted">
+                  {{ opt.description }}
+                </span>
+              </span>
+              <HugeiconsIcon
+                v-if="centerMode === opt.value"
+                :icon="Tick02Icon"
+                :size="15"
+                :stroke-width="2"
+                class="mt-0.5 shrink-0 text-ink"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </section>
+      </motion.section>
     </div>
 
     <!-- Controls sit at the foot of the panel. Sound is the first. Only the
@@ -443,6 +634,15 @@ defineExpose({ cancelCapture });
 }
 .settings-scroll:hover::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
+/* The thread-strip options fade colour and hover-wash at the same soft pace the
+   rest of the drawer's rows use — colour carries the active state (no weight to
+   lean on), so the transition is on colour and background only. */
+.center-opt {
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease;
 }
 
 /* The knob rides the sunken surface; a hairline keeps it legible in both themes

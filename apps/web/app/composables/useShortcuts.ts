@@ -206,6 +206,29 @@ const ACTIONS: ShortcutAction[] = [
     rebindable: true,
     personalize: true,
   },
+  {
+    id: "maximize-thread",
+    label: "Maximize thread",
+    hint: "Expand the focused column to fill the strip; press again to restore it.",
+    description: "Give the focused thread the whole board — everything else steps aside.",
+    group: "Threads",
+    // Enter tokenizes to `enter` (keyToken lowercases KeyboardEvent.key), not
+    // `return`, and there's no alias between them — so the binding must say `enter`.
+    default: "mod+alt+enter",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "toggle-overview",
+    label: "Toggle overview",
+    hint: "Zoom the whole strip out to a bird's-eye of every column; click one to fly back in.",
+    description: "Pull back to see every column at once, then click to dive into one.",
+    group: "Threads",
+    // niri uses Mod+O for Overview, but ⌘O is Open on macOS — so shift it.
+    default: "mod+shift+o",
+    rebindable: true,
+    personalize: true,
+  },
 
   // ── fixed (always available, not rebindable) ─────────────────────────────
   {

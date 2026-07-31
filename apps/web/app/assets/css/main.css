@@ -115,6 +115,19 @@ textarea,
   user-select: text;
 }
 
+/* The board overview's inverse zoom factor (1/k), published on the scaled plane in
+   ThreadStrip and consumed by every piece of card chrome as `calc(<px> * var(--inv-k))`
+   so radii, rings, shadows and captions hold a constant *screen* size at any zoom.
+   It's registered here — not in the component — because an unregistered custom property
+   is a token, not a number: it can only jump between values. Typed as `<number>` it
+   interpolates, which is what lets the chrome counter-scale *during* the zoom instead of
+   snapping to its final size on the first frame while the plane is still gliding. */
+@property --inv-k {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
 /* Selection carries the warm accent as a subtle brand cue; ink text keeps
    full legibility on the tinted highlight. */
 ::selection {
