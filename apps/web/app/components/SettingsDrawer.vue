@@ -185,7 +185,7 @@ defineExpose({ cancelCapture });
 
 <template>
   <aside
-    class="fixed inset-y-0 left-0 z-0 flex w-[320px] max-w-[80vw] flex-col overflow-y-auto bg-sunken px-5 pt-16 pb-7"
+    class="settings-scroll fixed inset-y-0 left-0 z-0 flex w-[320px] max-w-[80vw] flex-col overflow-y-auto bg-sunken px-5 pt-16 pb-7"
     :aria-hidden="!open"
     role="dialog"
     aria-label="Settings and personalization"
@@ -424,6 +424,27 @@ defineExpose({ cancelCapture });
 </template>
 
 <style scoped>
+/* A slim scrollbar for the drawer — thin and quiet, lifting a touch on hover.
+   Matches the app's picker-scroll idiom but narrower. */
+.settings-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 16%, transparent) transparent;
+}
+.settings-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.settings-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.settings-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 999px;
+}
+.settings-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+
 /* The knob rides the sunken surface; a hairline keeps it legible in both themes
    without a heavy shadow. */
 .switch .knob {
