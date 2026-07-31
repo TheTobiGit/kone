@@ -1023,10 +1023,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
 // ── the project's thread manager ────────────────────────────────────────────────
 
-/** A thread with no transcript yet — still on the blank slate. */
-function isThreadEmpty(s: ThreadSession): boolean {
-  return s.blocks.value.length === 0 && !s.busy.value;
-}
+import { isThreadSessionBlank } from "~/utils/panes";
 
 /** How many idle, settled background threads to keep resident. Busy threads are
  *  never evicted; this only bounds the settled backlog so the registry (and the
@@ -1216,7 +1213,7 @@ export function useAgent(options: UseAgentOptions) {
    *  active thread is already empty — don't stack blank slates. */
   async function newThread(): Promise<void> {
     const prev = active.value;
-    if (prev && isThreadEmpty(prev)) return;
+    if (prev && isThreadSessionBlank(prev)) return;
     const fresh = spawn({ rehydrate: false });
     // Carry the active thread's picked settings onto the new one (see
     // inheritSettings) so starting a conversation from Project Home keeps the

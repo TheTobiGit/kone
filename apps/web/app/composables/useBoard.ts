@@ -32,6 +32,7 @@ import type {
   PaneKind,
 } from "~/types/board";
 import { paneKindMeta } from "~/utils/paneKinds";
+import { isBlankThread } from "~/utils/panes";
 import type { ThreadSession, useAgent } from "~/composables/useAgent";
 import type { TerminalSession, useTerminal } from "~/composables/useTerminal";
 import type { ScratchpadSession, useScratchpad } from "~/composables/useScratchpad";
@@ -65,10 +66,6 @@ export interface OpenOptions {
   at?: number;
   /** Focus the pane once it's open. Default true. */
   focus?: boolean;
-  /** Threads only: reuse the focused blank thread instead of stacking a new one
-   *  — mirrors useAgent.newThread()'s "don't stack blank slates" guard, for the
-   *  ⌘N / composer-from-home paths. Ignored by the seam insert (always fresh). */
-  reuseBlank?: boolean;
   /** Restore/continue a specific stored thread rather than spawning a blank one. */
   threadId?: string;
 }
@@ -78,6 +75,9 @@ export interface UseBoardReturn {
   panes: ComputedRef<Pane[]>;
   focusedId: Ref<PaneId | null>;
   focusedPane: ComputedRef<Pane | null>;
+  /** The board's single blank thread column, if any — a runtime singleton like the
+   *  scratchpad, but keyed off session state rather than kind. */
+  blankThreadPane: ComputedRef<Pane | null>;
   open: (kind: PaneKind, o?: OpenOptions) => Promise<PaneId>;
   close: (id: PaneId) => Promise<void>;
   focus: (id: PaneId) => void;
@@ -100,9 +100,9 @@ export interface UseBoardReturn {
    *  kind, backend id, width, focus) — never on a streamed token. Feed the save
    *  debounce off this, not a deep watch of `entries`. */
   saveSignature: ComputedRef<string>;
-  /** Apply a persisted layout before `agent.start()`. Returns true when it took
-   *  over the board (caller must then SKIP `agent.start()`); false for an empty /
-   *  absent / threadless layout, where the caller falls back to today's boot. */
+  /** Apply a persisted layout on mount. Returns true when a layout was applied
+   *  (including an intentionally empty desktop); false when every stored pane
+   *  failed sanitising and nothing could be restored. */
   restore: (
     layout: BoardLayout | null,
     knownThreadIds?: ReadonlySet<string>,
@@ -139,7 +139,6 @@ function sessionMatchesKind(
       return "padId" in session;
   }
 }
-let warnedMismatch = false;
 
 /** The threadId worth *persisting* for a thread session. Every ThreadSession
  *  mints a client id at construction (useAgent), so even a blank slate that was
@@ -165,6 +164,7 @@ function anchorFor(kind: PaneKind): PaneAnchor {
 
 export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   const { agent, terminal, scratchpad } = opts;
+  let warnedMismatch = false;
 
   const entries = ref<PaneEntry[]>([]);
   const focusedId = ref<PaneId | null>(null);
@@ -228,12 +228,18 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     () => panes.value.find((p) => p.id === focusedId.value) ?? null,
   );
 
+  // The blank thread is a board-level singleton, like the scratchpad — it just isn't
+  // declared in the kind registry because "blank" is a runtime state, not a kind.
+  // Anywhere on the strip, focused or not, one empty slot is enough: a second would
+  // be indistinguishable from the first and would tempt us into minting a second
+  // throwaway identity. Opening a *stored* thread (o.threadId) is never suppressed
+  // — that's a real conversation and gets its own column.
+  const blankThreadPane = computed<Pane | null>(
+    () => panes.value.find((p) => isBlankThread(p)) ?? null,
+  );
+
   function sessionKeyOf(id: PaneId): string | undefined {
     return sessionKeyById.value[id];
-  }
-  function isBlankThreadPane(pane: Pane | null): boolean {
-    if (!pane || pane.kind !== "thread" || !pane.session) return false;
-    return pane.session.blocks.value.length === 0 && !pane.session.busy.value;
   }
 
   // ── anchor sync ───────────────────────────────────────────────────────────
@@ -289,19 +295,33 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     const claimed = new Set(Object.values(mapping));
     let changed = false;
 
-    // ADOPT — one appended entry per unclaimed live session.
-    const adopt = (kind: PaneKind, key: string, anchor: PaneAnchor): void => {
-      const id = mintPaneId();
-      next.push({ id, kind, anchor, width: 0 });
-      mapping[id] = key;
-      changed = true;
+    // ADOPT — unclaimed live sessions land to the right of the focused column,
+    // same rule as open(). Several may arrive in one reconcile pass (pill opens,
+    // resume); insert them in order after the focus point so they don't stack at
+    // the same index and reverse.
+    const toAdopt: Array<{ kind: PaneKind; key: string; anchor: PaneAnchor }> = [];
+    const queueAdopt = (kind: PaneKind, key: string, anchor: PaneAnchor): void => {
+      toAdopt.push({ kind, key, anchor });
     };
     for (const s of agent.sessions.value)
-      if (!claimed.has(s.key)) adopt("thread", s.key, { kind: "thread", threadId: persistableThreadId(s) });
+      if (!claimed.has(s.key))
+        queueAdopt("thread", s.key, { kind: "thread", threadId: persistableThreadId(s) });
     for (const s of terminal.sessions.value)
-      if (!claimed.has(s.key)) adopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
+      if (!claimed.has(s.key))
+        queueAdopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
     for (const s of scratchpad.sessions.value)
-      if (!claimed.has(s.key)) adopt("scratchpad", s.key, { kind: "scratchpad", padId: s.padId });
+      if (!claimed.has(s.key))
+        queueAdopt("scratchpad", s.key, { kind: "scratchpad", padId: s.padId });
+    if (toAdopt.length) {
+      let insertAt = insertIndexFor({}, next);
+      for (const item of toAdopt) {
+        const id = mintPaneId();
+        next.splice(insertAt, 0, { id, kind: item.kind, anchor: item.anchor, width: 0 });
+        mapping[id] = item.key;
+        insertAt += 1;
+        changed = true;
+      }
+    }
 
     // DORMANT / DROP — entries whose mapped session no longer exists.
     for (let i = next.length - 1; i >= 0; i--) {
@@ -349,12 +369,24 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   // (restore's eager pass + a user click, say) must share ONE spawn, or the pane
   // ends up with two backend sessions and the loser leaks. The in-flight promise
   // is the lock; every caller awaits the same one.
+  //
+  // It also has to run *inside* `mutate`, and that is not decoration. Every backend
+  // spawn pushes its session into the registry before its own await resolves, so the
+  // reconcile watcher fires while doAttach is still mid-flight and `record()` hasn't
+  // happened yet. To reconcile, that live session belongs to no pane — so it adopts
+  // it, and you get a second column for the session the first column was in the
+  // middle of claiming. `open()` never showed this because it already wrapped attach;
+  // `focus()` on a dormant pane (click a restored terminal, or the neighbour focus
+  // that `close()` hands out) did not, which is why closing one terminal and clicking
+  // another conjured a third. mutate's depth counter is re-entrant, so wrapping here
+  // is safe under open() too, and the trailing reconcile still runs once the mapping
+  // exists.
   const inFlight = new Map<PaneId, Promise<void>>();
   function attach(id: PaneId): Promise<void> {
     if (sessionKeyOf(id)) return Promise.resolve(); // already attached
     const pending = inFlight.get(id);
     if (pending) return pending;
-    const p = doAttach(id).finally(() => inFlight.delete(id));
+    const p = mutate(() => doAttach(id)).finally(() => inFlight.delete(id));
     inFlight.set(id, p);
     return p;
   }
@@ -430,9 +462,9 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       }
     }
 
-    // ⌘N / composer-from-home: reuse the focused blank thread rather than stack.
-    if (kind === "thread" && o.reuseBlank && !o.threadId && isBlankThreadPane(focusedPane.value)) {
-      const id = focusedPane.value!.id;
+    // Blank-thread suppression is a board invariant (L3), not a caller opt-in.
+    if (kind === "thread" && !o.threadId && blankThreadPane.value) {
+      const id = blankThreadPane.value.id;
       if (doFocus) focus(id);
       return id;
     }
@@ -444,13 +476,8 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
 
     await mutate(async () => {
       const list = [...entries.value];
-      const insertAt =
-        typeof o.at === "number"
-          ? Math.min(Math.max(0, o.at), list.length)
-          : o.near
-            ? indexOf(o.near) + 1
-            : focusedIndex() + 1;
-      list.splice(Math.min(Math.max(0, insertAt), list.length), 0, entry);
+      const insertAt = insertIndexFor(o, list);
+      list.splice(insertAt, 0, entry);
       entries.value = list;
       await attach(id);
     });
@@ -613,9 +640,12 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
             : (p.entry.anchor as { threadId: string | null }).threadId ?? null,
         };
       case "terminal":
+        // A terminal anchor is a slot marker only — the live terminalId lets a
+        // dormant pane re-attach within this session, but persisting it would
+        // point at a PTY that no longer exists after relaunch (L6/W6).
         return {
           kind: "terminal",
-          terminalId: p.session?.terminalId ?? (p.entry.anchor as { terminalId: string | null }).terminalId ?? null,
+          terminalId: null,
         };
       case "scratchpad":
         return {
@@ -656,10 +686,11 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   );
 
   /** Trim a persisted layout to what can be safely restored: known kinds only; a
-   *  thread must remember its id; one singleton max; leftmost MAX_RESTORED_PANES.
-   *  Pane ids are *carried through* (validated + de-duped) rather than re-minted,
-   *  so focus and any id-keyed UI state survive a relaunch (G1) — an invalid or
-   *  duplicate id falls back to a fresh mint. */
+   *  thread must remember its id (or be the one preserved blank slot); one
+   *  singleton max; leftmost MAX_RESTORED_PANES. Pane ids are *carried through*
+   *  (validated + de-duped) rather than re-minted, so focus and any id-keyed UI
+   *  state survive a relaunch (G1) — an invalid or duplicate id falls back to a
+   *  fresh mint. */
   function sanitizeLayout(
     layout: BoardLayout | null,
     knownThreadIds?: ReadonlySet<string>,
@@ -667,6 +698,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     if (!layout || layout.version !== 1 || !Array.isArray(layout.panes)) return [];
     const seenSingleton = new Set<PaneKind>();
     const seenIds = new Set<string>();
+    let keptBlankThread = false;
     const kept: PaneEntry[] = [];
     for (const raw of layout.panes) {
       if (!raw || typeof raw !== "object") continue;
@@ -674,8 +706,14 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       if (kind !== "thread" && kind !== "terminal" && kind !== "scratchpad") continue;
       const anchor = (raw as PaneEntry).anchor;
       if (!anchor || anchor.kind !== kind) continue;
-      // A thread with no remembered id has nothing to restore.
-      if (anchor.kind === "thread" && !anchor.threadId) continue;
+      // A blank thread slot (no remembered id) is preserved at most once — it
+      // restores as an empty column with a composer, not a phantom conversation.
+      // Positioned after the phantom filter so an unknown id is dropped, not
+      // laundered into a blank slot.
+      if (anchor.kind === "thread" && !anchor.threadId) {
+        if (keptBlankThread) continue;
+        keptBlankThread = true;
+      }
       // …and a remembered id that no longer maps to a stored conversation is a
       // phantom (a blank thread persisted before this guard existed, or a thread
       // since deleted). Drop it so it can't come back as an empty column. Only
@@ -704,20 +742,10 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     return kept;
   }
 
-  // Returns whether a persisted layout TOOK OVER the board. The caller uses that
-  // to decide about agent.start():
-  //   · true  → the layout was applied; skip start(). That covers a threadless
-  //             board too (only terminals / a scratchpad were stored) — the boot
-  //             session is disposed below rather than adopted, so "just a
-  //             terminal" comes back as just a terminal.
-  //   · false → nothing restorable; the caller runs start() and reconcile adopts
-  //             the boot thread as the board's single pane.
-  //
-  // An intentionally EMPTY desktop counts as true: closing every window is a
-  // layout the user chose, so a saved `panes: []` comes back as a bare board
-  // (the chooser), not a resurrected thread. That's distinct from a layout whose
-  // panes all failed sanitising (every stored thread a phantom), which has
-  // nothing to show and falls back to the boot thread.
+  // Returns whether a persisted layout was applied. An intentionally EMPTY desktop
+  // counts as true: closing every window is a layout the user chose. A layout
+  // whose panes all failed sanitising (every stored thread a phantom) returns
+  // false — the board keeps whatever reconcile already adopted.
   async function restore(
     layout: BoardLayout | null,
     knownThreadIds?: ReadonlySet<string>,
@@ -752,14 +780,12 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       if (firstThread && focusedEntry?.kind !== "thread") toAttach.add(firstThread.id);
       for (const id of toAttach) await attach(id);
 
-      // G6 — claim the boot session explicitly. useAgent spawns one thread at
-      // construction; if we attached a stored thread, openThread should have
-      // evicted that idle boot, but no primitive lets us *reuse* it. Dispose any
-      // leftover idle blank thread rather than let reconcile adopt it as a
-      // surprise pane. Runs even for a threadless layout — that's exactly the
-      // "I only had a terminal open" case, where the boot thread is the empty
-      // column that kept coming back. Only ever a blank, idle, unclaimed session
-      // — never one we just bound or that carries a turn.
+      // G6 — dispose stray idle blank threads. useAgent still spawns one session at
+      // construction; if restore attached a stored thread, openThread should have
+      // evicted that idle boot, but no primitive lets us *reuse* it. Also catches
+      // sessions that appear from outside the board (launcher resume, away-pill open)
+      // when they weren't claimed by a pane. Only ever a blank, idle, unclaimed
+      // session — never one we just bound or that carries a turn.
       const claimed = new Set(Object.values(sessionKeyById.value));
       for (const s of agent.sessions.value) {
         if (claimed.has(s.key)) continue;
@@ -773,11 +799,27 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   function indexOf(id: PaneId): number {
     return entries.value.findIndex((e) => e.id === id);
   }
-  function focusedIndex(): number {
+  function focusedIndexIn(list: PaneEntry[] = entries.value): number {
     // A stale focusedId (points at a pane that's since gone) resolves to the
     // right edge, same as no focus — so an insert lands at the end, never at 0.
-    const i = focusedId.value ? indexOf(focusedId.value) : -1;
-    return i === -1 ? entries.value.length - 1 : i;
+    const i = focusedId.value ? list.findIndex((e) => e.id === focusedId.value) : -1;
+    return i === -1 ? list.length - 1 : i;
+  }
+  function focusedIndex(): number {
+    return focusedIndexIn();
+  }
+  /** Where a new pane lands: explicit `at`, else right of `near`, else right of
+   *  the focused column (append when the board is bare or focus is stale). */
+  function insertIndexFor(
+    o: { at?: number; near?: PaneId },
+    list: PaneEntry[],
+  ): number {
+    if (typeof o.at === "number") return Math.min(Math.max(0, o.at), list.length);
+    if (o.near) {
+      const i = list.findIndex((e) => e.id === o.near);
+      return i === -1 ? list.length : i + 1;
+    }
+    return focusedIndexIn(list) + 1;
   }
 
   return {
@@ -785,6 +827,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     panes,
     focusedId,
     focusedPane,
+    blankThreadPane,
     open,
     close,
     focus,

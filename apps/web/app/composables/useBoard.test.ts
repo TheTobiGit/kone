@@ -33,14 +33,20 @@ function harness() {
   // shallowRef: like the real composables' session lists, so the nested `.value`
   // refs on a session (threadId, busy, …) aren't auto-unwrapped by deep reactivity.
   const agentSessions = shallowRef<FakeThread[]>([]);
-  const termSessions = shallowRef<unknown[]>([]);
+  const termSessions = shallowRef<Array<{ key: string; terminalId: string }>>([]);
   const padSessions = shallowRef<unknown[]>([]);
+  const closedTerminalKeys: string[] = [];
 
   const agent = {
     sessions: agentSessions,
     activeKey: ref<string | null>(null),
     openThread: async () => {},
-    newThreadAt: async () => {},
+    newThreadAt: async (index: number) => {
+      const t = makeThread(`thread-${agentSessions.value.length + 1}`);
+      const list = [...agentSessions.value];
+      list.splice(Math.min(index, list.length), 0, t);
+      agentSessions.value = list;
+    },
     closeThread: async (k: string) => {
       agentSessions.value = agentSessions.value.filter((s) => s.key !== k);
     },
@@ -53,22 +59,32 @@ function harness() {
       termSeq += 1;
       const key = `term-${termSeq}`;
       termSessions.value = [...termSessions.value, { key, terminalId: key }];
+      // The real spawn awaits the PTY bridge *after* pushing its session, so the
+      // reconcile watcher gets a chance to run while the caller is still mid-attach
+      // and hasn't recorded the mapping yet. Yield here so the fake has that same
+      // window — it's what the "attach never conjures a second column" test needs.
+      await nextTick();
       return key;
     },
     close: async (k: string) => {
-      termSessions.value = termSessions.value.filter((s) => (s as { key: string }).key !== k);
+      closedTerminalKeys.push(k);
+      termSessions.value = termSessions.value.filter((s) => s.key !== k);
     },
   };
   const scratchpad = {
     sessions: padSessions,
-    open: async () => "",
+    open: async () => {
+      const key = "pad-1";
+      padSessions.value = [{ key, padId: key }];
+      return key;
+    },
     close: async () => {},
     append: async () => {},
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const board = useBoard({ agent, terminal, scratchpad } as any);
-  return { board, agentSessions, termSessions };
+  return { board, agentSessions, termSessions, padSessions, closedTerminalKeys };
 }
 
 async function settle() {
@@ -264,14 +280,14 @@ describe("useBoard — a threadless board stays threadless", () => {
     expect(agentSessions.value.length).toBe(0);
   });
 
-  test("a layout whose panes are all phantoms falls back to the boot thread", async () => {
+  test("a layout whose panes are all phantoms is not applied", async () => {
     const { board, agentSessions } = harness();
 
     agentSessions.value = [makeThread("boot")];
     await settle();
 
     // Stored a thread that no longer has a conversation behind it — nothing to
-    // show, so the caller (ProjectView) must still run agent.start().
+    // show, so restore declines to take over the board.
     const handled = await board.restore(
       {
         version: 1 as const,
@@ -286,5 +302,242 @@ describe("useBoard — a threadless board stays threadless", () => {
     expect(handled).toBe(false);
     // The boot thread is untouched — the board never took over.
     expect(agentSessions.value.length).toBe(1);
+  });
+});
+
+describe("useBoard — blank thread slot restore (W7 / L6)", () => {
+  test("one blank thread slot survives restore at its index; a second is dropped", async () => {
+    const { board } = harness();
+
+    const layout = {
+      version: 1 as const,
+      panes: [
+        { id: "p-blank", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: null }, width: 0 },
+        { id: "p-term", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 1 },
+        { id: "p-blank2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: null }, width: 0 },
+      ],
+      focusedId: "p-term",
+    };
+
+    await board.restore(layout);
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual(["p-blank", "p-term"]);
+    expect(board.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: null });
+    expect(board.focusedId.value).toBe("p-term");
+  });
+
+  test("a layout of only blank thread slots is a legitimate restore", async () => {
+    const { board, agentSessions } = harness();
+
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+
+    const handled = await board.restore({
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: null }, width: 0 },
+      ],
+      focusedId: "p1",
+    });
+    await settle();
+
+    expect(handled).toBe(true);
+    expect(board.entries.value.length).toBe(1);
+    expect(board.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: null });
+  });
+});
+
+describe("useBoard — board laws", () => {
+  test("L3: open(thread) twice with a blank thread present reuses the blank column", async () => {
+    const { board } = harness();
+
+    await board.open("thread");
+    await settle();
+    const firstId = board.entries.value[0]!.id;
+
+    await board.open("thread");
+    await settle();
+
+    expect(board.entries.value.length).toBe(1);
+    expect(board.focusedId.value).toBe(firstId);
+  });
+
+  test("L3: open(thread, { threadId }) always creates a second column", async () => {
+    const { board } = harness();
+
+    await board.open("thread");
+    await settle();
+    await board.open("thread", { threadId: "real-1" });
+    await settle();
+
+    expect(board.entries.value.length).toBe(2);
+    expect(board.entries.value[1]!.anchor).toEqual({ kind: "thread", threadId: "real-1" });
+  });
+
+  test("L4: open(terminal) lands immediately right of the focused column", async () => {
+    const { board } = harness();
+
+    await board.open("thread");
+    await settle();
+    await board.open("terminal");
+    await settle();
+    await board.open("scratchpad");
+    await settle();
+
+    const terminalId = board.entries.value[1]!.id;
+    board.focus(terminalId);
+    await board.open("terminal");
+    await settle();
+
+    expect(board.entries.value.map((e) => e.kind)).toEqual([
+      "thread",
+      "terminal",
+      "terminal",
+      "scratchpad",
+    ]);
+  });
+
+  test("L4: adopted sessions land right of focus, not at the strip end", async () => {
+    const { board, agentSessions } = harness();
+
+    const boot = makeThread("boot");
+    agentSessions.value = [boot];
+    await settle();
+    await board.open("terminal");
+    await settle();
+    await board.open("scratchpad");
+    await settle();
+
+    const terminalId = board.entries.value[1]!.id;
+    board.focus(terminalId);
+
+    const adopted = makeThread("adopted", "real-1");
+    adopted.blocks.value = [{ role: "user" }];
+    agentSessions.value = [...agentSessions.value, adopted];
+    await settle();
+
+    expect(board.entries.value.map((e) => e.kind)).toEqual([
+      "thread",
+      "terminal",
+      "thread",
+      "scratchpad",
+    ]);
+    const adoptedPane = board.panes.value[2];
+    expect(adoptedPane?.kind).toBe("thread");
+    if (adoptedPane?.kind === "thread") {
+      expect(adoptedPane.session).toMatchObject({ key: "adopted" });
+      expect(adoptedPane.session?.threadId.value).toBe("real-1");
+    }
+  });
+
+  test("L5: closing a terminal tears down its session and leaves other panes", async () => {
+    const { board, termSessions, closedTerminalKeys } = harness();
+
+    await board.open("terminal");
+    await settle();
+    await board.open("terminal");
+    await settle();
+    const middleId = board.entries.value[0]!.id;
+    const middleKey = termSessions.value[0]!.key;
+
+    await board.close(middleId);
+    await settle();
+
+    expect(board.entries.value.length).toBe(1);
+    expect(closedTerminalKeys).toEqual([middleKey]);
+    expect(termSessions.value.length).toBe(1);
+  });
+
+  test("W6: serialize writes terminalId null for terminal panes", async () => {
+    const { board } = harness();
+
+    await board.open("terminal");
+    await settle();
+
+    const layout = board.serialize();
+    expect(layout.panes[0]!.anchor).toEqual({ kind: "terminal", terminalId: null });
+  });
+
+  test("L6: restore round-trip preserves order, widths, and focus", async () => {
+    const { board } = harness();
+
+    await board.restore({
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-1" }, width: 1 },
+        { id: "p2", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
+        { id: "p3", kind: "scratchpad" as const, anchor: { kind: "scratchpad" as const, padId: null }, width: 2 },
+      ],
+      focusedId: "p2",
+    });
+    await settle();
+
+    const roundTrip = board.serialize();
+    expect(roundTrip.panes.map((p) => p.kind)).toEqual(["thread", "terminal", "scratchpad"]);
+    expect(roundTrip.panes.map((p) => p.width)).toEqual([1, 0, 2]);
+    expect(roundTrip.focusedId).toBe("p2");
+  });
+});
+
+describe("useBoard — attach never conjures a second column", () => {
+  // The bug: every backend spawn pushes its session into the registry *before* its
+  // own await resolves, so the reconcile watcher fires mid-attach, sees a live
+  // session no pane has claimed yet, and adopts it into a brand-new pane. Focusing
+  // one restored terminal therefore produced two columns — and closing a terminal
+  // focuses a neighbour, which is why "close one, click another" kept conjuring a
+  // third. attach() runs inside mutate() so reconcile can't observe the half-state.
+  test("focusing a dormant terminal attaches it in place, no extra pane", async () => {
+    const { board, termSessions } = harness();
+
+    await board.restore({
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
+        { id: "p2", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
+      ],
+      focusedId: "p1",
+    });
+    await settle();
+
+    // p1 attached on restore (it's focused); p2 is dormant until it's focused.
+    expect(board.entries.value.length).toBe(2);
+    expect(termSessions.value.length).toBe(1);
+
+    board.focus("p2");
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual(["p1", "p2"]);
+    expect(termSessions.value.length).toBe(2);
+    expect(board.panes.value.every((p) => p.session !== null)).toBe(true);
+  });
+
+  test("closing a terminal and focusing the survivor spawns nothing new", async () => {
+    const { board, termSessions, closedTerminalKeys } = harness();
+
+    await board.restore({
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
+        { id: "p2", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
+      ],
+      focusedId: "p1",
+    });
+    await settle();
+    board.focus("p2");
+    await settle();
+    expect(termSessions.value.length).toBe(2);
+
+    // Close the focused one: focus hands off to the neighbour, whose session is
+    // already live, so nothing may spawn and the PTY that left must be torn down.
+    const closing = board.panes.value.find((p) => p.id === "p2")!;
+    const closingKey = closing.session ? (closing.session as { key: string }).key : "";
+    await board.close("p2");
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual(["p1"]);
+    expect(closedTerminalKeys).toEqual([closingKey]);
+    expect(termSessions.value.length).toBe(1);
+    expect(board.focusedId.value).toBe("p1");
   });
 });

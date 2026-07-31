@@ -60,7 +60,6 @@ const {
   reasoning,
   serviceTier,
   contextWindow,
-  pendingUserInput,
   now: agentNow,
   // The active thread's title / error aren't projected here any more: each strip
   // column renders its own from its own session.
@@ -83,6 +82,12 @@ const composerRef = ref<{ wake: () => Promise<void>; setDraft: (text: string) =>
 // A pad pane briefly pulses its index dash after a thread → pad append.
 const pulseScratchpadKey = ref<string | null>(null);
 
+// The strip's overview (Exposé) mode, mirrored up as a single boolean so the fixed
+// composer can step aside — a composer floating over the zoomed-out plane reads as a
+// bug. This is the only thing outside the strip that needs to know; the mode itself
+// lives entirely inside ThreadStrip.
+const stripOverview = ref(false);
+
 const board = useBoard({
   agent,
   terminal,
@@ -102,7 +107,9 @@ const { panes, focusedId, focusedPane } = board;
 // off `board.saveSignature`, a cheap string that never ticks on a streamed
 // token. Saving only starts once `restore()`/`start()` has settled, so the boot
 // adopt can't clobber a saved layout before we've read it. `restore()` itself
-// runs in onMounted, before agent.start().
+// runs in onMounted. A missing saved layout normalises to an empty desktop so
+// restore() can evict useAgent's construction spawn instead of leaving a boot
+// thread adopted on the strip.
 const boardStore = useBoardPersistence(() => props.project.path);
 const boardReady = ref(false);
 
@@ -132,13 +139,17 @@ function setPaneWidth(id: string, width: number): void {
   board.setWidth(id, width);
 }
 
-// The composer only docks under a thread pane; a terminal/scratchpad focus
-// hides it. No focused pane yet (the boot moment before the first adopt) counts
-// as a thread so the composer is ready the instant the thread lands.
-const activePaneIsThread = computed(() => {
-  const p = focusedPane.value;
-  return !p || p.kind === "thread";
-});
+// The composer only docks under a focused thread pane. agent.activeKey deliberately
+// keeps pointing at the last thread while you work in a terminal (background turns
+// keep streaming) — chrome derives from the focused pane's session, not the
+// projection. showChooser suppresses the composer on a bare desktop.
+const focusedThread = computed(() =>
+  focusedPane.value?.kind === "thread" ? focusedPane.value.session : null,
+);
+const focusedPendingUserInput = computed(
+  () => focusedThread.value?.pendingUserInput.value ?? null,
+);
+const activePaneIsThread = computed(() => focusedThread.value !== null);
 
 // ── bare-board chooser ───────────────────────────────────────────────────────
 // The board is a desktop and its panes are windows: closing the last one leaves
@@ -217,11 +228,13 @@ function captureToScratchpad(text: string, sourceKey: string): void {
 // token of a live turn. Neither drives anything time-critical — a ~100ms lag on
 // the dock is imperceptible — so debounce the derived value: the raw computeds
 // stay reactive, but the docks read a ref that settles at most ~10×/s. (E2)
-const activePlanRaw = computed(() => deriveActivePlan(blocks.value));
+const activePlanRaw = computed(() =>
+  deriveActivePlan(focusedThread.value?.blocks.value ?? []),
+);
 const activePlan = refDebounced(activePlanRaw, 100);
-// The files the agent has created/edited/removed this thread — the corner
-// Changes dock's list, a sibling of the Tasks dock in the same shell.
-const activeChangesRaw = computed(() => deriveChangedFiles(blocks.value));
+const activeChangesRaw = computed(() =>
+  deriveChangedFiles(focusedThread.value?.blocks.value ?? []),
+);
 const activeChanges = refDebounced(activeChangesRaw, 100);
 
 // The project's persisted agent threads, split into pinned + recent for the
@@ -377,20 +390,16 @@ onMounted(async () => {
   // Consume the request so a later re-open of this project behaves normally.
   const resume = pendingThread.value;
   await scratchpad.hydrate();
-  // Restore the persisted board BEFORE agent.start() so the boot session is
-  // repurposed into a restored thread pane rather than adopted as a duplicate.
-  // A missing / empty / threadless layout returns false → today's single boot.
-  // BOTH paths restore: a launcher resume must still bring back the rest of the
-  // board (its terminals, its scratchpad, its other threads), not replace it with
-  // a lone conversation (C).
+  // Restore the persisted board on mount. A missing layout normalises to an empty
+  // desktop so useAgent's construction spawn is evicted rather than adopted.
   const savedBoard = await boardStore.load();
+  const layout = savedBoard ?? { version: 1 as const, panes: [], focusedId: null };
   // The set of thread ids that actually have a stored conversation. restore()
   // uses it to drop phantom thread panes — blank slates that were persisted with
   // their client-minted id and would otherwise return as empty columns. No
   // bridge (nuxt dev) → undefined, and restore keeps ids unfiltered.
   const knownThreadIds = await loadKnownThreadIds(props.project.path);
-  const handled = await board.restore(savedBoard, knownThreadIds);
-  if (!handled) await agent.start();
+  await board.restore(layout, knownThreadIds);
   if (resume) {
     // Launcher asked to resume a specific conversation. It's often already on the
     // restored board (as a live or dormant thread pane) — focus it there, which
@@ -450,6 +459,14 @@ watch(reasoning, (tier) => {
 // The full providers→models→effort picker (opened from the composer's model
 // name). It applies a raw model id, exactly like the composer's inline paths.
 const modelPickerOpen = ref(false);
+// Clear transient thread chrome when focus leaves — model picker today, any future
+// overlay someone adds should land here too so it can't strand over a terminal.
+watch(
+  () => board.focusedId,
+  () => {
+    modelPickerOpen.value = false;
+  },
+);
 
 // ── project switching ─────────────────────────────────────────────────────────
 // The switcher opens from the greeting: click the folder+name to reveal the
@@ -593,7 +610,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!matchesShortcut("new-thread", e)) return;
   e.preventDefault();
-  void board.open("thread", { reuseBlank: true });
+  void board.open("thread");
   surface.value = "board";
 });
 
@@ -737,7 +754,7 @@ async function onSend(text: string, files?: File[]) {
   // conversation rather than continuing the last-opened one — the session boots
   // rehydrated with the project's latest thread, so without this a first send
   // would silently append to that old transcript.
-  if (surface.value === "overview") await board.open("thread", { reuseBlank: true });
+  if (surface.value === "overview") await board.open("thread");
   surface.value = "board";
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
@@ -757,11 +774,11 @@ function onInterrupt() {
 // Answer the agent's live question — hands the picked/typed answers back to the
 // adapter, which resolves the parked tool call and lets the turn continue.
 function onAnswerUserInput(requestId: string, answers: UserInputAnswers) {
-  void agent.respondUserInput(requestId, answers);
+  void focusedThread.value?.respondUserInput(requestId, answers);
 }
 // Dismiss the question — an empty answer, which the adapter treats as declined.
 function onCancelUserInput(requestId: string) {
-  void agent.respondUserInput(requestId, {});
+  void focusedThread.value?.respondUserInput(requestId, {});
 }
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it
@@ -1091,10 +1108,11 @@ function onDiscardFile(path: string) {
         @to-scratchpad="captureToScratchpad"
         @scratchpad-flush="() => scratchpad.flush()"
         @width="setPaneWidth"
+        @update:overview="stripOverview = $event"
       />
     </div>
     <SelectionActions
-      v-if="surface === 'board' && !activeFile"
+      v-if="surface === 'board' && !activeFile && focusedThread"
       :focused-pane-id="focusedId ?? ''"
       @dispatch="board.dispatch"
     />
@@ -1231,40 +1249,49 @@ function onDiscardFile(path: string) {
 
     <!-- The agent composer floats dead-centre at the bottom — dormant until you
          wake it, then it stretches into the input. It stays docked to the
-         viewport while the page behind scrolls. -->
-    <div
-      v-if="!pendingUserInput && activePaneIsThread && !showChooser"
-      class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
-      :inert="Boolean(activeFile)"
+         viewport while the page behind scrolls. Entering the strip's overview takes
+         it away; fade rather than cut, so it doesn't blink out from under the cursor
+         while the board behind it is still gliding back. -->
+    <Transition
+      enter-active-class="transition-opacity duration-200 ease-out"
+      enter-from-class="opacity-0"
+      leave-active-class="transition-opacity duration-150 ease-in"
+      leave-to-class="opacity-0"
     >
-      <AgentComposer
-        ref="composerRef"
-        :busy="busy"
-        :picking="modelPickerOpen"
-        :models="modelOptions"
-        :model-id="model"
-        :reasoning="reasoning"
-        :mode="mode"
-        :fast-mode="fastActive"
-        :context-window="contextWindow"
-        @send="onSend"
-        @interrupt="onInterrupt"
-        @update:model-id="agent.setModel"
-        @update:reasoning="agent.setReasoning"
-        @update:mode="agent.setMode"
-        @update:fast-mode="onUpdateFastMode"
-        @update:context-window="agent.setContextWindow"
-        @open-models="modelPickerOpen = true"
-      />
-    </div>
+      <div
+        v-if="!focusedPendingUserInput && activePaneIsThread && !showChooser && !stripOverview"
+        class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
+        :inert="Boolean(activeFile)"
+      >
+        <AgentComposer
+          ref="composerRef"
+          :busy="busy"
+          :picking="modelPickerOpen"
+          :models="modelOptions"
+          :model-id="model"
+          :reasoning="reasoning"
+          :mode="mode"
+          :fast-mode="fastActive"
+          :context-window="contextWindow"
+          @send="onSend"
+          @interrupt="onInterrupt"
+          @update:model-id="agent.setModel"
+          @update:reasoning="agent.setReasoning"
+          @update:mode="agent.setMode"
+          @update:fast-mode="onUpdateFastMode"
+          @update:context-window="agent.setContextWindow"
+          @open-models="modelPickerOpen = true"
+        />
+      </div>
+    </Transition>
 
     <!-- Mid-turn question: while the agent is asking, the composer's orb/input
          gives way to this modal in the same spot, in the picker-family shell.
          Answering resolves the parked tool call and the turn continues. -->
     <UserInputModal
-      v-if="pendingUserInput"
-      :request-id="pendingUserInput.requestId"
-      :questions="pendingUserInput.questions"
+      v-if="focusedPendingUserInput"
+      :request-id="focusedPendingUserInput.requestId"
+      :questions="focusedPendingUserInput.questions"
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
     />
@@ -1274,7 +1301,7 @@ function onDiscardFile(path: string) {
          thread) rides above Tasks (the model's TodoWrite checklist); the column
          lifts clear of the away-from-thread pill when one is perched below. -->
     <div
-      v-if="surface === 'board' && !activeFile"
+      v-if="surface === 'board' && !activeFile && focusedThread"
       class="dock-stack"
       :class="{ 'dock-stack--lifted': pillThreads.length > 0 }"
     >
