@@ -26,7 +26,7 @@ const emit = defineEmits<{
   openSession: [target: { path: string; name: string; threadId: string }];
 }>();
 
-const { summaries, enrich } = useProjectSummaries();
+const { summaries, watchVisible } = useProjectSummaries();
 
 // The cross-project "recent sessions" list below the grid — every recent
 // project's pinned + recent conversations pooled into one recency-ranked stream.
@@ -46,13 +46,10 @@ function onOpenSession(threadId: string): void {
   });
 }
 
-watch(
-  () => props.recents.map((p) => p.path),
-  (paths) => {
-    for (const path of paths) void enrich(path);
-  },
-  { immediate: true },
-);
+// Live git for the folders on the grid — each tile watches its repo (so branch
+// and ± refresh in realtime, in lockstep with the open project) but only while
+// it's on screen, so a long list holds a handful of watchers, not one per repo.
+const vGitWatch = watchVisible();
 
 const query = ref("");
 type Sort = "recent" | "name";
@@ -190,6 +187,7 @@ function onSideAction(
         <motion.div
           v-for="(project, i) in shown"
           :key="project.path"
+          v-git-watch="project.path"
           class="relative w-fit pr-9"
           :initial="{ opacity: 0, y: 12, scale: 0.97 }"
           :animate="{ opacity: 1, y: 0, scale: 1 }"

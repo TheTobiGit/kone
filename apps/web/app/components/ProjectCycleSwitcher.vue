@@ -19,14 +19,8 @@ const props = defineProps<{
 
 // Real git detail for each folder in the dock — same cache the launcher grid
 // and in-project switcher already warm, so this is a cache hit, not more git.
-const { summaries, enrich } = useProjectSummaries();
-watch(
-  () => props.entries.map((e) => e.path),
-  (paths) => {
-    for (const path of paths) void enrich(path);
-  },
-  { immediate: true },
-);
+const { summaries, subscribe } = useProjectSummaries();
+subscribe(() => props.entries.map((e) => e.path));
 
 // Springy pop for the whole dock's entrance (mirrors the clone/create card).
 const dockSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;

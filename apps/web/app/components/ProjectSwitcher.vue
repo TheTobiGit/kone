@@ -29,14 +29,8 @@ const overflow = computed(() => Math.max(0, props.projects.length - CAP));
 
 // Real git for each folder — same summaries the launcher grid draws, so the
 // peeking papers, branch and ± are live, not placeholders.
-const { summaries, enrich } = useProjectSummaries();
-watch(
-  () => shown.value.map((p) => p.path),
-  (paths) => {
-    for (const path of paths) void enrich(path);
-  },
-  { immediate: true },
-);
+const { summaries, subscribe } = useProjectSummaries();
+subscribe(() => shown.value.map((p) => p.path));
 </script>
 
 <template>
