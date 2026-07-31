@@ -46,7 +46,19 @@ function harness() {
     },
     focusThread: () => {},
   };
-  const terminal = { sessions: termSessions, spawn: async () => "", close: async () => {} };
+  let termSeq = 0;
+  const terminal = {
+    sessions: termSessions,
+    spawn: async () => {
+      termSeq += 1;
+      const key = `term-${termSeq}`;
+      termSessions.value = [...termSessions.value, { key, terminalId: key }];
+      return key;
+    },
+    close: async (k: string) => {
+      termSessions.value = termSessions.value.filter((s) => (s as { key: string }).key !== k);
+    },
+  };
   const scratchpad = {
     sessions: padSessions,
     open: async () => "",
@@ -56,7 +68,7 @@ function harness() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const board = useBoard({ agent, terminal, scratchpad } as any);
-  return { board, agentSessions };
+  return { board, agentSessions, termSessions };
 }
 
 async function settle() {
@@ -74,8 +86,11 @@ describe("useBoard — eviction goes dormant, not deleted (B)", () => {
     await settle();
     expect(board.entries.value.length).toBe(1);
 
-    // Its first turn mints a real thread id; syncAnchors writes it onto the entry.
+    // Its first turn mints a real thread id AND lands a transcript block;
+    // syncAnchors writes the id onto the entry (a real conversation, not a blank
+    // slate that merely carries a client-minted id).
     t.threadId.value = "thread-real-id";
+    t.blocks.value = [{ role: "user" }];
     await settle();
 
     // useAgent evicts the idle background session (past MAX_RESIDENT).
@@ -104,5 +119,172 @@ describe("useBoard — eviction goes dormant, not deleted (B)", () => {
 
     // Nothing to re-attach to → the entry is gone, not left as a dead pane.
     expect(board.entries.value.length).toBe(0);
+  });
+
+  test("a blank thread carrying a client id is not persisted as a real one", async () => {
+    const { board, agentSessions } = harness();
+
+    // A session that already has its client-minted id (as every ThreadSession
+    // does from construction) but no transcript — the blank slate the composer
+    // shows before you send. It must NOT persist that id, or it comes back as an
+    // empty column on relaunch.
+    const t = makeThread("t3", "client-uid");
+    agentSessions.value = [t];
+    await settle();
+
+    const layout = board.serialize();
+    expect(layout.panes.length).toBe(1);
+    expect(layout.panes[0]!.anchor.kind === "thread" && layout.panes[0]!.anchor.threadId).toBe(
+      null,
+    );
+
+    // Once it actually runs a turn (transcript lands), its id becomes worth keeping.
+    t.blocks.value = [{ role: "user" }];
+    await settle();
+    const after = board.serialize();
+    expect(after.panes[0]!.anchor.kind === "thread" && after.panes[0]!.anchor.threadId).toBe(
+      "client-uid",
+    );
+  });
+});
+
+describe("useBoard — restore drops phantom thread panes", () => {
+  test("a stored thread id with no live conversation behind it is dropped", async () => {
+    const { board } = harness();
+
+    const layout = {
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-1" }, width: 0 },
+        { id: "p2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "phantom-2" }, width: 0 },
+      ],
+      focusedId: "p1",
+    };
+
+    // Only "real-1" is a persisted conversation; "phantom-2" is a blank thread
+    // that was saved before the guard existed.
+    await board.restore(layout, new Set(["real-1"]));
+
+    expect(board.entries.value.length).toBe(1);
+    const entry = board.entries.value[0]!;
+    expect(entry.anchor.kind === "thread" && entry.anchor.threadId).toBe("real-1");
+  });
+
+  test("without a known-id set (no bridge) every stored thread is kept", async () => {
+    const { board } = harness();
+
+    const layout = {
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "a" }, width: 0 },
+        { id: "p2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "b" }, width: 0 },
+      ],
+      focusedId: "p1",
+    };
+
+    await board.restore(layout);
+    expect(board.entries.value.length).toBe(2);
+  });
+});
+
+describe("useBoard — a threadless board stays threadless", () => {
+  test("restoring a terminal-only layout disposes the boot thread and claims the board", async () => {
+    const { board, agentSessions, termSessions } = harness();
+
+    // useAgent spawns one blank thread at construction; the board adopts it.
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+    expect(board.entries.value.length).toBe(1);
+
+    const handled = await board.restore({
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: "t-1" }, width: 0 },
+      ],
+      focusedId: "p1",
+    });
+    await settle();
+
+    // handled → the caller must skip agent.start(); the blank boot session is
+    // gone, so reconcile has nothing to adopt as a surprise empty column.
+    expect(handled).toBe(true);
+    expect(agentSessions.value.length).toBe(0);
+    expect(board.entries.value.map((e) => e.kind)).toEqual(["terminal"]);
+    expect(termSessions.value.length).toBe(1);
+  });
+
+  test("closing the last thread beside a terminal does not re-add an empty thread", async () => {
+    const { board, agentSessions } = harness();
+
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+    const threadPane = board.entries.value[0]!.id;
+
+    await board.open("terminal");
+    await settle();
+    expect(board.entries.value.length).toBe(2);
+
+    await board.close(threadPane);
+    await settle();
+
+    // Just the terminal. The old useAgent "strip is never empty" respawn is what
+    // used to put a blank thread column straight back.
+    expect(agentSessions.value.length).toBe(0);
+    expect(board.entries.value.map((e) => e.kind)).toEqual(["terminal"]);
+  });
+
+  test("closing every window leaves a bare desktop", async () => {
+    const { board, agentSessions } = harness();
+
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+    await board.open("terminal");
+    await settle();
+
+    for (const id of board.entries.value.map((e) => e.id)) await board.close(id);
+    await settle();
+
+    // Zero panes, and nothing respawns to fill the gap.
+    expect(board.entries.value.length).toBe(0);
+    expect(board.focusedId.value).toBeNull();
+    expect(agentSessions.value.length).toBe(0);
+  });
+
+  test("a saved empty desktop restores empty rather than booting a thread", async () => {
+    const { board, agentSessions } = harness();
+
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+
+    const handled = await board.restore({ version: 1 as const, panes: [], focusedId: null });
+    await settle();
+
+    expect(handled).toBe(true);
+    expect(board.entries.value.length).toBe(0);
+    expect(agentSessions.value.length).toBe(0);
+  });
+
+  test("a layout whose panes are all phantoms falls back to the boot thread", async () => {
+    const { board, agentSessions } = harness();
+
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+
+    // Stored a thread that no longer has a conversation behind it — nothing to
+    // show, so the caller (ProjectView) must still run agent.start().
+    const handled = await board.restore(
+      {
+        version: 1 as const,
+        panes: [
+          { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "gone" }, width: 0 },
+        ],
+        focusedId: "p1",
+      },
+      new Set<string>(),
+    );
+
+    expect(handled).toBe(false);
+    // The boot thread is untouched — the board never took over.
+    expect(agentSessions.value.length).toBe(1);
   });
 });

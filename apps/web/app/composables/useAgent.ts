@@ -1096,9 +1096,13 @@ export function useAgent(options: UseAgentOptions) {
   activeKey.value = first.key;
 
   /** The thread the conversation view currently shows. Falls back to the first
-   *  resident one so the projection is never undefined. */
-  const active = computed<ThreadSession>(
-    () => sessions.value.find((s) => s.key === activeKey.value) ?? sessions.value[0]!,
+   *  resident one — and to null when the registry is empty, which is a legitimate
+   *  board state now: the board may hold only a terminal / scratchpad, with no
+   *  thread column at all. Every projection below is null-safe for that case
+   *  (the composer is hidden when the focused pane isn't a thread, so nothing
+   *  renders the fallbacks; they exist so a stray read can't throw). */
+  const active = computed<ThreadSession | null>(
+    () => sessions.value.find((s) => s.key === activeKey.value) ?? sessions.value[0] ?? null,
   );
 
   // ── one event ingress, fanned out by threadId ───────────────────────────────
@@ -1133,21 +1137,28 @@ export function useAgent(options: UseAgentOptions) {
   });
 
   // ── active-thread projection (the public state the view binds) ───────────────
-  const threadId = computed(() => active.value.threadId.value);
-  const provider = computed(() => active.value.provider.value);
-  const title = computed(() => active.value.title.value);
-  const blocks = computed(() => active.value.blocks.value);
-  const session = computed(() => active.value.session.value);
-  const sessionState = computed(() => active.value.sessionState.value);
-  const busy = computed(() => active.value.busy.value);
-  const error = computed(() => active.value.error.value);
-  const tokenUsage = computed(() => active.value.tokenUsage.value);
-  const pendingUserInput = computed(() => active.value.pendingUserInput.value);
-  const model = computed(() => active.value.model.value);
-  const mode = computed(() => active.value.mode.value);
-  const reasoning = computed(() => active.value.reasoning.value);
-  const serviceTier = computed(() => active.value.serviceTier.value);
-  const contextWindow = computed(() => active.value.contextWindow.value);
+  const NO_BLOCKS: ThreadBlock[] = [];
+  const threadId = computed(() => active.value?.threadId.value ?? "");
+  const provider = computed(() => active.value?.provider.value ?? options.provider);
+  const title = computed(() => active.value?.title.value ?? "");
+  const blocks = computed(() => active.value?.blocks.value ?? NO_BLOCKS);
+  const session = computed(() => active.value?.session.value ?? null);
+  const sessionState = computed<RuntimeSessionState>(
+    () => active.value?.sessionState.value ?? "stopped",
+  );
+  const busy = computed(() => active.value?.busy.value ?? false);
+  const error = computed(() => active.value?.error.value ?? null);
+  const tokenUsage = computed(() => active.value?.tokenUsage.value ?? null);
+  const pendingUserInput = computed(() => active.value?.pendingUserInput.value ?? null);
+  const model = computed(() => active.value?.model.value ?? options.model);
+  const mode = computed<InteractionMode>(
+    () => active.value?.mode.value ?? options.mode ?? "accept-edits",
+  );
+  const reasoning = computed<ReasoningTier>(
+    () => active.value?.reasoning.value ?? options.reasoning ?? "medium",
+  );
+  const serviceTier = computed(() => active.value?.serviceTier.value ?? options.serviceTier);
+  const contextWindow = computed(() => active.value?.contextWindow.value ?? options.contextWindow);
 
   /** Every thread's background snapshot — what the away-from-thread pill stack
    *  reads to decide which threads to surface. */
@@ -1166,21 +1177,29 @@ export function useAgent(options: UseAgentOptions) {
   );
 
   // ── active-thread actions (delegate to whichever thread is on screen) ────────
-  const start = () => active.value.start();
-  const send = (text: string, attachments?: ChatAttachment[]) =>
-    active.value.send(text, attachments);
-  const uploadAttachment = (file: File) => active.value.uploadAttachment(file);
-  const interrupt = () => active.value.interrupt();
-  const respondUserInput = (requestId: string, answers: UserInputAnswers) =>
-    active.value.respondUserInput(requestId, answers);
-  const demo = () => active.value.demo();
-  const restart = () => active.value.restart();
-  const setProvider = (next: ProviderKind) => active.value.setProvider(next);
-  const setModel = (id: string | undefined) => active.value.setModel(id);
-  const setMode = (next: InteractionMode) => active.value.setMode(next);
-  const setReasoning = (next: ReasoningTier) => active.value.setReasoning(next);
-  const setServiceTier = (id: string | undefined) => active.value.setServiceTier(id);
-  const setContextWindow = (id: string | undefined) => active.value.setContextWindow(id);
+  // Each delegates to the focused thread — and no-ops when the board has no
+  // thread column at all (see `active`).
+  const start = async () => { await active.value?.start(); };
+  const send = async (text: string, attachments?: ChatAttachment[]) => {
+    await active.value?.send(text, attachments);
+  };
+  const uploadAttachment = (file: File): Promise<ChatAttachment> => {
+    const s = active.value;
+    if (!s) return Promise.reject(new Error("No thread column is open."));
+    return s.uploadAttachment(file);
+  };
+  const interrupt = async () => { await active.value?.interrupt(); };
+  const respondUserInput = async (requestId: string, answers: UserInputAnswers) => {
+    await active.value?.respondUserInput(requestId, answers);
+  };
+  const demo = () => active.value?.demo();
+  const restart = async () => { await active.value?.restart(); };
+  const setProvider = (next: ProviderKind) => active.value?.setProvider(next);
+  const setModel = (id: string | undefined) => active.value?.setModel(id);
+  const setMode = (next: InteractionMode) => active.value?.setMode(next);
+  const setReasoning = (next: ReasoningTier) => active.value?.setReasoning(next);
+  const setServiceTier = (id: string | undefined) => active.value?.setServiceTier(id);
+  const setContextWindow = (id: string | undefined) => active.value?.setContextWindow(id);
 
   // ── thread lifecycle (registry-level: switch, never tear the others down) ────
 
@@ -1354,10 +1373,14 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   /** Close one column and hand focus to a neighbour (right first, then left —
-   *  the strip collapses toward where you were heading). The strip is never
-   *  empty: closing the last column leaves a fresh blank one behind it, so
-   *  `active` always has a session to project. Stands the replacement up BEFORE
-   *  evicting, for the same reason forgetThread does. */
+   *  the strip collapses toward where you were heading).
+   *
+   *  Closing the LAST thread leaves the registry empty rather than respawning a
+   *  blank one. The board owns the strip now, and a board of only a terminal (or
+   *  only the scratchpad) is a legitimate layout — the old "never empty" respawn
+   *  is what made an empty thread column reappear every time you closed the last
+   *  one. `active` projects null in that state; the board re-opens a thread if
+   *  the whole board would otherwise be empty. */
   async function closeThread(key: string): Promise<void> {
     const list = sessions.value;
     const i = list.findIndex((s) => s.key === key);
@@ -1365,14 +1388,7 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return;
     if (s.key === activeKey.value) {
       const neighbour = list[i + 1] ?? list[i - 1];
-      if (neighbour) {
-        activeKey.value = neighbour.key;
-      } else {
-        const fresh = spawn({ rehydrate: false });
-        inheritSettings(s, fresh);
-        activeKey.value = fresh.key;
-        await fresh.start();
-      }
+      activeKey.value = neighbour ? neighbour.key : "";
     }
     await evict(s);
   }

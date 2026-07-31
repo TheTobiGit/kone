@@ -45,6 +45,12 @@ const props = defineProps<{
    *  hidden (so panes and scroll positions survive), but a hidden rail measures
    *  zero width — so re-centre once it's revealed, not while it's hidden. */
   visible?: boolean;
+  /** The desktop is bare — zero panes — so there's no column to hang an insert
+   *  affordance off. Show the centered "new column" chooser over the rail.
+   *  Picking a kind emits `choose`; ProjectView acts on it. A lone *blank thread*
+   *  is deliberately NOT this case: that column shows plainly, with its trailing
+   *  seam pill offering terminal / scratchpad. */
+  chooser?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -67,6 +73,9 @@ const emit = defineEmits<{
   "scratchpad-flush": [key: string];
   /** A column's width preset index changed — persist it onto the pane entry. */
   width: [key: string, index: number];
+  /** The empty-board chooser picked a kind — start the board with that pane
+   *  (or, for a thread, just reveal the waiting blank column). */
+  choose: [kind: "thread" | "terminal" | "scratchpad"];
 }>();
 
 const { cue } = useSound();
@@ -372,7 +381,7 @@ function onInsertPick(kind: "thread" | "terminal" | "scratchpad"): void {
 }
 
 // ── keyboard ──────────────────────────────────────────────────────────────────
-const { matchesShortcut } = useShortcuts();
+const { matchesShortcut, bindingFor, displayTokens } = useShortcuts();
 
 function isTyping(): boolean {
   const el = document.activeElement as HTMLElement | null;
@@ -450,23 +459,45 @@ function columnLabel(c: Pane): string {
   return paneKindMeta(c.kind).label;
 }
 
-/** Blank slate — no transcript yet and not working. A dormant thread (no
- *  session) reads as empty too. */
-function isColumnEmpty(c: Pane): boolean {
-  switch (c.kind) {
-    case "terminal":
-    case "scratchpad":
-      return false;
-    case "thread":
-      return !c.session || (c.session.blocks.value.length === 0 && !c.session.busy.value);
-  }
+// ── bare-board chooser ──────────────────────────────────────────────────────
+// The same pane-kind registry the seam menu offers, laid out as a centered pick
+// for a desktop with no windows at all. No singleton greying here: the chooser
+// only shows on a zero-pane board, so nothing is ever already open.
+const chooserActions = computed(() =>
+  PANE_KINDS.map((meta) => ({
+    kind: meta.kind,
+    label: meta.insertLabel,
+    icon: meta.icon,
+    // The kind's own shortcut, resolved through any user rebind and split into
+    // display chips (⌘-glyphs on mac, words elsewhere) — so the empty state
+    // teaches the gesture that opens each column.
+    keys: displayTokens(bindingFor(meta.shortcutId)),
+  })),
+);
+function onChoose(kind: PaneKind): void {
+  cue("press");
+  emit("choose", kind);
 }
 
-/** A lone blank slate has nothing to dismiss — closing it would just spawn another. */
-function canClose(c: Pane): boolean {
-  if (!isSolo.value) return true;
-  return !isColumnEmpty(c);
+/** Every column is closeable: the board is a desktop, so closing the last window
+ *  leaves it bare and the chooser takes over. Nothing is respawned behind it. */
+function canClose(): boolean {
+  return true;
 }
+
+/** Is this pane a thread that has never been used — no turns, not running? */
+function isBlankThread(p: Pane | undefined): boolean {
+  if (!p || p.kind !== "thread" || !p.session) return false;
+  return p.session.blocks.value.length === 0 && !p.session.busy.value;
+}
+
+/** The whole board is one untouched thread — the fresh-project boot state. The
+ *  seam pill still shows beside it (that's the only way to reach a terminal or a
+ *  scratchpad from here), but its menu greys "New thread": this blank column
+ *  already is one. */
+const loneBlankThread = computed(
+  () => props.panes.length === 1 && isBlankThread(props.panes[0]),
+);
 
 /** Seam insert control trailing column `i` (or between `i` and `i+1` when not
  *  last). Hidden on empty columns except when the right neighbour has content.
@@ -480,7 +511,9 @@ const jointAfter = computed(() => {
       !left.session ||
       left.session.blocks.value.length > 0 ||
       left.session.busy.value;
-    if (list.length === 1) return leftOk;
+    // A lone column always gets its pill, blank or not: with nothing else on the
+    // strip it's the only route to a second pane.
+    if (list.length === 1) return true;
     if (i >= list.length - 1) return leftOk;
     const right = list[i + 1];
     const rightOk =
@@ -500,7 +533,7 @@ watch(jointAfter, (flags) => {
 
 <template>
   <div class="strip" :class="{ 'is-resizing': isResizing }">
-    <nav v-if="panes.length > 1" class="index" aria-label="Columns">
+    <nav v-if="panes.length > 1 && !chooser" class="index" aria-label="Columns">
       <button
         v-for="(c, i) in panes"
         :key="c.id"
@@ -567,7 +600,7 @@ watch(jointAfter, (flags) => {
                 {{ presetFor(c.id).label }}
               </button>
               <button
-                v-if="canClose(c)"
+                v-if="canClose()"
                 type="button"
                 class="col__tool"
                 aria-label="Close column"
@@ -637,11 +670,37 @@ watch(jointAfter, (flags) => {
       <div class="rail__pad rail__pad--end" aria-hidden="true" />
     </div>
 
+    <!-- Bare desktop — every window closed, zero panes. Offer the same pick the
+         seam menu gives (thread / terminal / scratchpad), centered. The rail
+         stays mounted behind this so it keeps measuring. -->
+    <div v-if="chooser" class="chooser" role="dialog" aria-label="Start a column">
+      <div class="chooser__panel">
+        <div class="chooser__actions">
+          <button
+            v-for="action in chooserActions"
+            :key="action.kind"
+            type="button"
+            class="chooser__row"
+            @click="onChoose(action.kind)"
+          >
+            <span class="chooser__row-lead">
+              <HugeiconsIcon :icon="action.icon" :size="16" :stroke-width="1.9" aria-hidden="true" />
+            </span>
+            <span class="chooser__row-label">{{ action.label }}</span>
+            <span v-if="action.keys.length" class="chooser__keys" aria-hidden="true">
+              <kbd v-for="(k, ki) in action.keys" :key="ki" class="chooser__key">{{ k }}</kbd>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <ThreadInsertMenu
       :open="openSeam !== null"
       :x="menuAnchor.x"
       :y="menuAnchor.y"
       :scratchpad-open="hasScratchpad"
+      :blank-thread-open="loneBlankThread"
       @close="closeJoint"
       @pick="onInsertPick"
     />
@@ -724,6 +783,93 @@ watch(jointAfter, (flags) => {
   50% {
     opacity: 1;
   }
+}
+
+/* Empty-board chooser — an opaque layer over the rail, its pick stack centred.
+   Borderless and soft, in keeping with the rest of the board (no card, no
+   divider, no heavy shadow). */
+.chooser {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  background: var(--ground);
+  padding: 3.5rem 1rem 1rem;
+}
+.chooser__panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: min(16rem, 100%);
+}
+.chooser__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chooser__row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink-soft);
+  background: transparent;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+.chooser__row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.chooser__row-lead {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+.chooser__row:hover .chooser__row-lead {
+  color: var(--ink-soft);
+}
+.chooser__row-label {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.chooser__keys {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  opacity: 0.7;
+  transition: opacity 0.18s ease;
+}
+.chooser__row:hover .chooser__keys {
+  opacity: 1;
+}
+.chooser__key {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
 }
 
 .rail {

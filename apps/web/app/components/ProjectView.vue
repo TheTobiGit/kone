@@ -105,6 +105,23 @@ const { panes, focusedId, focusedPane } = board;
 // runs in onMounted, before agent.start().
 const boardStore = useBoardPersistence(() => props.project.path);
 const boardReady = ref(false);
+
+// The project's persisted thread ids (metadata only) — restore() checks stored
+// panes against these so a blank thread that was saved with its client id, but
+// never became a real conversation, doesn't come back as an empty column. Undefined
+// when there's no desktop bridge (nuxt dev), which tells restore to skip the filter.
+async function loadKnownThreadIds(
+  projectPath: string,
+): Promise<ReadonlySet<string> | undefined> {
+  const api = import.meta.client ? window.koneDesktop?.agent?.history : undefined;
+  if (!api) return undefined;
+  try {
+    const metas = await api.list(projectPath);
+    return new Set(metas.map((m) => m.threadId));
+  } catch {
+    return undefined;
+  }
+}
 const persistBoard = useDebounceFn(() => {
   if (boardReady.value) boardStore.save(board.serialize());
 }, 400);
@@ -122,6 +139,39 @@ const activePaneIsThread = computed(() => {
   const p = focusedPane.value;
   return !p || p.kind === "thread";
 });
+
+// ── bare-board chooser ───────────────────────────────────────────────────────
+// The board is a desktop and its panes are windows: closing the last one leaves
+// a bare desktop (zero panes), and nothing is respawned to fill it. That — and
+// only that — gets the centered chooser (the same thread / terminal /
+// scratchpad pick the seam menu offers), because there is no column to hang an
+// affordance off.
+//
+// A lone *blank thread* is not that case. It's the fresh-project boot state, and
+// it already is a usable column: the empty thread with its composer. So we show
+// it plainly and let the strip's trailing seam pill add a terminal or a
+// scratchpad beside it — with "New thread" greyed there, since the blank column
+// standing right next to the pill IS the new thread.
+//
+// `chooserDismissed` only covers the async gap between a pick and its pane
+// landing, so the chooser doesn't flash back mid-open.
+const chooserDismissed = ref(false);
+const boardIsBare = computed(() => panes.value.length === 0);
+const showChooser = computed(
+  () => surface.value === "board" && boardIsBare.value && !chooserDismissed.value && !activeFile.value,
+);
+// Every time the desktop goes bare again, re-arm the chooser.
+watch(boardIsBare, (bare) => {
+  if (bare) chooserDismissed.value = false;
+});
+
+async function onChoosePane(kind: "thread" | "terminal" | "scratchpad"): Promise<void> {
+  // Only ever reached from a bare desktop, so nothing is waiting to be revealed
+  // — every kind opens a fresh pane.
+  chooserDismissed.value = true;
+  await board.open(kind);
+  if (kind === "thread") void composerRef.value?.wake();
+}
 
 function focusPane(id: string): void {
   board.focus(id);
@@ -334,7 +384,12 @@ onMounted(async () => {
   // board (its terminals, its scratchpad, its other threads), not replace it with
   // a lone conversation (C).
   const savedBoard = await boardStore.load();
-  const handled = await board.restore(savedBoard);
+  // The set of thread ids that actually have a stored conversation. restore()
+  // uses it to drop phantom thread panes — blank slates that were persisted with
+  // their client-minted id and would otherwise return as empty columns. No
+  // bridge (nuxt dev) → undefined, and restore keeps ids unfiltered.
+  const knownThreadIds = await loadKnownThreadIds(props.project.path);
+  const handled = await board.restore(savedBoard, knownThreadIds);
   if (!handled) await agent.start();
   if (resume) {
     // Launcher asked to resume a specific conversation. It's often already on the
@@ -1024,6 +1079,8 @@ function onDiscardFile(path: string) {
         :pulse-key="pulseScratchpadKey"
         :inert="Boolean(activeFile)"
         :visible="surface === 'board'"
+        :chooser="showChooser"
+        @choose="onChoosePane"
         @focus="focusPane"
         @shift="shiftPaneFocus"
         @move="movePane"
@@ -1176,7 +1233,7 @@ function onDiscardFile(path: string) {
          wake it, then it stretches into the input. It stays docked to the
          viewport while the page behind scrolls. -->
     <div
-      v-if="!pendingUserInput && activePaneIsThread"
+      v-if="!pendingUserInput && activePaneIsThread && !showChooser"
       class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
       :inert="Boolean(activeFile)"
     >

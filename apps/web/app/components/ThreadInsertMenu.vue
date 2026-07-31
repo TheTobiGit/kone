@@ -14,6 +14,9 @@ const props = defineProps<{
   y: number;
   /** The project's one scratchpad is already on the strip — can't insert a 2nd. */
   scratchpadOpen?: boolean;
+  /** The strip is a single untouched thread — inserting another would just stack
+   *  a second blank slate, so the thread row greys out. */
+  blankThreadOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -29,18 +32,25 @@ onKeyStroke("Escape", (e) => {
 
 const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
-// The rows are the pane-kind registry, in registry order. A singleton kind
-// already on the strip greys out (only the scratchpad today) — the strip tells
-// us via `scratchpadOpen`, mapped to the singleton row.
+// The rows are the pane-kind registry, in registry order. Two rows can grey out:
+// a singleton kind already on the strip (only the scratchpad today, via
+// `scratchpadOpen`), and the thread row when the strip is one untouched blank
+// thread (`blankThreadOpen`) — the empty column beside the pill already is the
+// new thread.
 const actions = computed(() =>
   PANE_KINDS.map((meta) => {
-    const disabled = meta.singleton && props.scratchpadOpen === true;
+    const singletonTaken = meta.singleton && props.scratchpadOpen === true;
+    const blankTaken = meta.kind === "thread" && props.blankThreadOpen === true;
     return {
       kind: meta.kind,
       label: meta.insertLabel,
       icon: meta.icon,
-      disabled,
-      disabledHint: disabled ? `${meta.insertLabel} (already open)` : "",
+      disabled: singletonTaken || blankTaken,
+      disabledHint: blankTaken
+        ? `${meta.insertLabel} (this one is still empty)`
+        : singletonTaken
+          ? `${meta.insertLabel} (already open)`
+          : "",
     };
   }),
 );
