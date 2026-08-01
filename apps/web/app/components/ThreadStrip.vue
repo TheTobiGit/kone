@@ -22,11 +22,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   useEventListener,
+  usePreferredDark,
   usePreferredReducedMotion,
   useResizeObserver,
 } from "@vueuse/core";
+import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowExpand01Icon, ArrowShrink01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { ClosingPlasma } from "~/components/ui/closing-plasma";
+import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
 import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
@@ -1064,6 +1068,13 @@ function columnLabel(c: Pane): string {
 // The same pane-kind registry the seam menu offers, laid out as a centered pick
 // for a desktop with no windows at all. No singleton greying here: the chooser
 // only shows on a zero-pane board, so nothing is ever already open.
+//
+// On white, the plasma's ridge veins read as a soft cloud; on near-black the
+// same veins glow as high-contrast filaments — the same tuning as the
+// projects-list empty state, so the bare board shares its ambient floor.
+const isDark = usePreferredDark();
+const plasmaOpacity = computed(() => (isDark.value ? 0.5 : 1));
+
 const chooserActions = computed(() =>
   PANE_KINDS.map((meta) => ({
     kind: meta.kind,
@@ -1287,23 +1298,61 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
          seam menu gives (thread / terminal / scratchpad), centered. The rail
          stays mounted behind this so it keeps measuring. -->
     <div v-if="chooser" class="chooser" role="dialog" aria-label="Start a column">
+      <!-- Ambient close: the warm plasma glow from the projects-list empty
+           state rises off the bare board's floor and dissolves into the ground,
+           giving the empty desktop depth without a hard edge. Purely
+           decorative — never intercepts pointer events, sits behind the pick. -->
+      <motion.div
+        class="chooser__plasma pointer-events-none"
+        :initial="{ opacity: 0 }"
+        :animate="{ opacity: 1 }"
+        :transition="{ duration: 1.4, delay: 0.2, ease: 'easeOut' }"
+      >
+        <ClosingPlasma
+          class="size-full"
+          :interactive="false"
+          :speed="0.55"
+          :turbulence="0.85"
+          :grain="0.4"
+          :sparkle="0.35"
+          :opacity="plasmaOpacity"
+          light-color-a="#f6f5f3"
+          light-color-b="#efe4dc"
+          light-color-c="#e4c1af"
+          dark-color-a="#070708"
+          dark-color-b="#120d0a"
+          dark-color-c="#43251a"
+        />
+      </motion.div>
       <div class="chooser__panel">
         <div class="chooser__actions">
-          <button
+          <!-- Each row leans gently toward the cursor as it approaches, then
+               eases back — the same magnet pull the app's other action rows
+               ride (start actions, lane actions, folder rows). -->
+          <Magnet
             v-for="action in chooserActions"
             :key="action.kind"
-            type="button"
-            class="chooser__row"
-            @click="onChoose(action.kind)"
+            class="block w-full"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
           >
-            <span class="chooser__row-lead">
-              <HugeiconsIcon :icon="action.icon" :size="16" :stroke-width="1.9" aria-hidden="true" />
-            </span>
-            <span class="chooser__row-label">{{ action.label }}</span>
-            <span v-if="action.keys.length" class="chooser__keys" aria-hidden="true">
-              <kbd v-for="(k, ki) in action.keys" :key="ki" class="chooser__key">{{ k }}</kbd>
-            </span>
-          </button>
+            <button
+              type="button"
+              class="chooser__row"
+              @click="onChoose(action.kind)"
+            >
+              <span class="chooser__row-lead">
+                <HugeiconsIcon :icon="action.icon" :size="16" :stroke-width="1.9" aria-hidden="true" />
+              </span>
+              <span class="chooser__row-label">{{ action.label }}</span>
+              <span v-if="action.keys.length" class="chooser__keys" aria-hidden="true">
+                <kbd v-for="(k, ki) in action.keys" :key="ki" class="chooser__key">{{ k }}</kbd>
+              </span>
+            </button>
+          </Magnet>
         </div>
       </div>
     </div>
@@ -1414,7 +1463,23 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
   background: var(--ground);
   padding: 3.5rem 1rem 1rem;
 }
+/* The ambient plasma — same floor glow as the projects-list empty state:
+   anchored to the chooser's bottom edge, masked so it dissolves into the
+   ground. Sits behind the pick stack, never takes pointer events. */
+.chooser__plasma {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 0;
+  height: 42vh;
+  max-height: 380px;
+  min-height: 220px;
+  mask-image: linear-gradient(to bottom, transparent, black 55%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 55%);
+}
 .chooser__panel {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -1812,25 +1877,14 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
 }
 
 /* Scratchpad columns are prose editors, not chat logs: drop the thread body's
- * tall bottom padding and bottom mask fade, but keep a small top fade so text
- * scrolling under the header stays soft. */
+ * tall bottom padding and its col-level mask — the pane's own scroll box owns
+ * the top/bottom smoke now (ScratchpadPane `.pad__body`), where the mask can
+ * anchor to the true scroll viewport instead of this padding-only frame. */
 .col__body--scratchpad {
   padding: 0.65rem 0.4rem 1.25rem;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 10px,
-    #000 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 10px,
-    #000 100%
-  );
 }
 
 /* ── overview (Exposé) ─────────────────────────────────────────────────────────

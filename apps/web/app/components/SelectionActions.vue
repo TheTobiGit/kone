@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon, BubbleChatAddIcon, Copy01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import type { BoardIntent } from "~/types/board";
 
 const props = defineProps<{
@@ -11,8 +11,7 @@ const props = defineProps<{
   focusedPaneId: string;
 }>();
 
-// One event: every button hands the board a fully-formed intent. Quoting for the
-// draft-thread route lives here (the call site), not in the dispatcher.
+// One event: every button hands the board a fully-formed intent.
 const emit = defineEmits<{
   dispatch: [intent: BoardIntent];
 }>();
@@ -138,18 +137,6 @@ function onScratchpad(): void {
   hide();
 }
 
-// New thread from the selection — quote it here (the call site owns the `> `
-// prefix) so the dispatcher stays formatting-agnostic.
-function onNewThread(): void {
-  const trimmed = capturedText.value.trim();
-  if (trimmed) {
-    const quoted = `> ${trimmed.split("\n").join("\n> ")}\n\n`;
-    emit("dispatch", { type: "draft-thread", draft: quoted, from: sourceKey.value });
-    cue("press");
-  }
-  hide();
-}
-
 const style = computed(() => ({
   top: `${coords.value.top}px`,
   left: `${coords.value.left}px`,
@@ -179,10 +166,6 @@ const style = computed(() => ({
         <button type="button" class="selection-actions__btn" @click="onScratchpad">
           <HugeiconsIcon :icon="Add01Icon" :size="12" :stroke-width="2" />
           <span>Scratchpad</span>
-        </button>
-        <button type="button" class="selection-actions__btn" @click="onNewThread">
-          <HugeiconsIcon :icon="BubbleChatAddIcon" :size="12" :stroke-width="2" />
-          <span>New thread</span>
         </button>
       </motion.div>
     </AnimatePresence>
