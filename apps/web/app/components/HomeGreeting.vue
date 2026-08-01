@@ -245,7 +245,7 @@ const body = computed<Seg[]>(() => {
   font-family: var(--font-sans);
   /* The whole greeting settles up into place on mount — one soft, unhurried
      motion under the per-segment reveal. */
-  animation: greet-rise 640ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: greet-rise 400ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-greet, 0ms);
 }
 
@@ -265,9 +265,9 @@ const body = computed<Seg[]>(() => {
    inline-safe, so the prose still wraps as one continuous paragraph. */
 .seg {
   transition:
-    opacity 520ms ease,
-    filter 520ms ease;
-  transition-delay: calc(var(--proj-enter-greet, 0ms) + var(--i, 0) * 42ms);
+    opacity 360ms ease,
+    filter 360ms ease;
+  transition-delay: calc(var(--proj-enter-greet, 0ms) + var(--i, 0) * 22ms);
 }
 .seg-enter-from {
   opacity: 0;

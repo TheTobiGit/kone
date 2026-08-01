@@ -223,14 +223,14 @@ const bundleCards: BundleCard[] = [
   to { opacity: 1; transform: none; }
 }
 .lane__head {
-  animation: lane-head-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 140ms + var(--lane-i, 0) * 100ms);
+  animation: lane-head-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 80ms + var(--lane-i, 0) * 60ms);
 }
 .grid > :deep(.card),
 .bundle,
 .fold {
-  animation: ch-tile-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 230ms + var(--lane-i, 0) * 100ms + var(--i, 0) * 48ms);
+  animation: ch-tile-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 130ms + var(--lane-i, 0) * 60ms + var(--i, 0) * 30ms);
 }
 @media (prefers-reduced-motion: reduce) {
   .lane__head,

@@ -1161,7 +1161,7 @@ defineExpose({ wake, setDraft });
   align-items: center;
   position: relative;
   width: max-content;
-  animation: dock-rise 680ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: dock-rise 440ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-composer, 0ms);
 }
 

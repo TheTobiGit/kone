@@ -276,9 +276,9 @@ function hasDiff(s: SessionSummary): boolean {
     var(--ground) calc(100% - 12px),
     transparent 100%
   );
-  animation: rs-head-in 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  /* Lead the group's first row by the same 90ms the lane head leads its tiles. */
-  animation-delay: calc(var(--proj-enter-sessions, 0ms) + min(var(--i, 0) * 48ms, 720ms));
+  animation: rs-head-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  /* Lead the group's first row by the same 50ms the lane head leads its tiles. */
+  animation-delay: calc(var(--proj-enter-sessions, 0ms) + min(var(--i, 0) * 30ms, 360ms));
 }
 .rs__pin {
   flex-shrink: 0;
@@ -325,8 +325,8 @@ function hasDiff(s: SessionSummary): boolean {
   transform-origin: left center;
   will-change: transform;
   backface-visibility: hidden;
-  animation: rs-row-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(var(--proj-enter-sessions, 0ms) + 90ms + min(var(--i, 0) * 48ms, 720ms));
+  animation: rs-row-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--proj-enter-sessions, 0ms) + 50ms + min(var(--i, 0) * 30ms, 360ms));
   transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .rs__row:hover,

@@ -105,10 +105,10 @@ const marks = computed<Mark[]>(() => {
         <span v-if="empty" class="card__empty">empty</span>
         <span v-else class="card__diff">
           <span v-if="added > 0" class="card__add"
-            >+<CountUp :to="added" :duration="1.1"
+            >+<CountUp :to="added" :duration="0.7"
           /></span>
           <span v-if="removed > 0" class="card__del"
-            >−<CountUp :to="removed" :duration="1.1"
+            >−<CountUp :to="removed" :duration="0.7"
           /></span>
         </span>
         <span v-if="isNew && !empty" class="card__new">new</span>

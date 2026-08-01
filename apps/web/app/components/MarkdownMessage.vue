@@ -42,15 +42,20 @@ watch(
   { immediate: true },
 );
 
-// Every word gets its own stable key (its position in the whole reply), so a
-// streamed word mounts as a genuinely new element the instant it arrives —
-// the same "resolves from soft focus" reveal HomeGreeting uses for its state
-// line, but driven by real arrival time instead of an artificial stagger:
-// each word's blur-in fires exactly when it lands, one after another as the
-// reply grows. A fully-formed message (history) mounts all its words at once,
-// so it just settles as a single soft block instead of a per-word cascade.
-// Reset once per full tree render — see `Rendered` below.
-let wordSeq = 0;
+// Every word gets its own stable key, so a streamed word mounts as a genuinely
+// new element the instant it arrives — the same "resolves from soft focus"
+// reveal HomeGreeting uses for its state line, but driven by real arrival time
+// instead of an artificial stagger: each word's blur-in fires exactly when it
+// lands, one after another as the reply grows. A fully-formed message (history)
+// mounts all its words at once, so it just settles as a single soft block
+// instead of a per-word cascade.
+//
+// The key is the word's PATH in the tree (`0.2.1w4`), not its ordinal in a
+// running counter. Live Markdown is reparsed from scratch on every chunk, and a
+// counter makes every key downstream of a structural change shift by one — so
+// the moment `**bo` closed into `**bold**`, or a `|` row snapped into a table,
+// the whole rest of the reply was torn down, remounted, and re-blurred. Words
+// keyed by path only churn inside the subtree that actually changed.
 
 // ── token stream → node tree ────────────────────────────────────────────────
 // markdown-it hands a flat list with nesting encoded as open/close pairs. Fold
@@ -145,8 +150,8 @@ function asCallout(quote: MdNode): { kind: string; body: MdNode[] } | null {
 }
 
 // ── render ──────────────────────────────────────────────────────────────────
-function renderChildren(node: MdNode): (VNode | string)[] {
-  return node.children.map((c, i) => renderNode(c, i));
+function renderChildren(node: MdNode, path: string): (VNode | string)[] {
+  return node.children.map((c, i) => renderNode(c, i, `${path}.${i}`));
 }
 /** The plain-text run inside an inline subtree (for a link's visible label). */
 function textOf(node: MdNode): string {
@@ -161,31 +166,31 @@ function styleOf(node: MdNode): Record<string, string> | undefined {
 /** Split a text run into words wrapped in individually-keyed spans (so each
  *  one mounts as its own DOM node and can carry the blur-in reveal), with
  *  whitespace passed through untouched between them. */
-function renderWords(content: string, key: number): VNode | string {
+function renderWords(content: string, key: number, path: string): VNode | string {
   // History: render the run as plain text — no per-word spans, no blur-in.
   if (props.historical) return content;
   const parts = content.split(/(\s+)/);
   return h(
     Fragment,
     { key },
-    parts.map((part) => (/^\s*$/.test(part) ? part : h("span", { key: `w${wordSeq++}`, class: "stream-word" }, part))),
+    parts.map((part, i) =>
+      /^\s*$/.test(part) ? part : h("span", { key: `${path}w${i}`, class: "stream-word" }, part),
+    ),
   );
 }
 
-/** Inline atoms that aren't text — a file chip, an inline-code run — carry no
- *  `.stream-word` words of their own, so without this they'd mount at full
- *  opacity while the words around them are still blurring in, reading as if the
- *  tag arrived *before* its own sentence. Wrap them in the same reveal so a chip
- *  settles in step with the run it sits in. History mounts settled, untouched. */
-function reveal(vnode: VNode, key: number): VNode {
+/** Keep inline atoms separate from the per-word reveal. Markdown is reparsed on
+ *  every streamed update, so an atom can be replaced while its surrounding text
+ *  grows; replaying `@starting-style` here makes file tags visibly blink. */
+function wrapAtom(vnode: VNode, key: number): VNode {
   if (props.historical) return vnode;
-  return h("span", { key, class: "stream-word stream-atom" }, [vnode]);
+  return h("span", { key, class: "stream-atom" }, [vnode]);
 }
 
-function renderNode(node: MdNode, key: number): VNode | string {
+function renderNode(node: MdNode, key: number, path: string): VNode | string {
   switch (node.type) {
     case "text":
-      return renderWords(node.content, key);
+      return renderWords(node.content, key, path);
     case "softbreak":
       return " ";
     case "hardbreak":
@@ -194,7 +199,7 @@ function renderNode(node: MdNode, key: number): VNode | string {
     case "code_block":
       return h(CodeBlock, { key, code: node.content, info: node.info });
     case "code_inline":
-      return reveal(
+      return wrapAtom(
         looksLikePath(node.content)
           ? h(FileChip, { key, path: node.content.trim() })
           : h("code", { key }, node.content),
@@ -210,60 +215,66 @@ function renderNode(node: MdNode, key: number): VNode | string {
       if (/^file:\/\//i.test(href)) {
         const full = decodeURIComponent(href.replace(/^file:\/\/(localhost)?/i, ""));
         const label = textOf(node).trim();
-        return reveal(h(FileChip, { key, path: label || full.split("/").pop() || full, title: full }), key);
+        return wrapAtom(h(FileChip, { key, path: label || full.split("/").pop() || full, title: full }), key);
       }
-      return h(MarkdownLink, { key, href }, { default: () => renderChildren(node) });
+      return h(MarkdownLink, { key, href }, { default: () => renderChildren(node, path) });
     }
     case "heading":
-      return h(node.tag, { key }, renderChildren(node));
+      return h(node.tag, { key }, renderChildren(node, path));
     case "paragraph":
-      return h("p", { key }, renderChildren(node));
+      return h("p", { key }, renderChildren(node, path));
     case "blockquote":
-      return renderQuote(node, key);
+      return renderQuote(node, key, path);
     case "bullet_list":
-      return h("ul", { key }, renderChildren(node));
+      return h("ul", { key }, renderChildren(node, path));
     case "ordered_list":
-      return h("ol", { key, start: node.attrs.start }, renderChildren(node));
+      return h("ol", { key, start: node.attrs.start }, renderChildren(node, path));
     case "list_item":
-      return renderListItem(node, key);
+      return renderListItem(node, key, path);
     case "table":
-      return h("div", { key, class: "md-table" }, [h("table", null, renderChildren(node))]);
+      return h("div", { key, class: "md-table" }, [h("table", null, renderChildren(node, path))]);
     case "th":
-      return h("th", { key, style: styleOf(node) }, renderChildren(node));
+      return h("th", { key, style: styleOf(node) }, renderChildren(node, path));
     case "td":
-      return h("td", { key, style: styleOf(node) }, renderChildren(node));
+      return h("td", { key, style: styleOf(node) }, renderChildren(node, path));
     case "hr":
       return h("hr", { key });
     case "strong":
-      return h("strong", { key }, renderChildren(node));
+      return h("strong", { key }, renderChildren(node, path));
     case "em":
-      return h("em", { key }, renderChildren(node));
+      return h("em", { key }, renderChildren(node, path));
     case "s":
-      return h("s", { key }, renderChildren(node));
+      return h("s", { key }, renderChildren(node, path));
     case "html_block":
     case "html_inline":
       return node.content; // html:false — arrives already escaped as text
     default:
-      return node.tag ? h(node.tag, { key }, renderChildren(node)) : h(Fragment, { key }, renderChildren(node));
+      return node.tag
+        ? h(node.tag, { key }, renderChildren(node, path))
+        : h(Fragment, { key }, renderChildren(node, path));
   }
 }
 
-function renderQuote(node: MdNode, key: number): VNode {
+function renderQuote(node: MdNode, key: number, path: string): VNode {
   const callout = asCallout(node);
-  if (!callout) return h("blockquote", { key }, renderChildren(node));
+  if (!callout) return h("blockquote", { key }, renderChildren(node, path));
   const meta = CALLOUTS[callout.kind]!;
   return h("div", { key, class: ["callout", `callout--${callout.kind}`] }, [
     h("div", { class: "callout__head" }, [
       h(HugeiconsIcon, { icon: meta.icon, size: 15, strokeWidth: 2, class: "callout__icon" }),
       h("span", { class: "callout__label" }, meta.label),
     ]),
-    h("div", { class: "callout__body" }, callout.body.map((c, i) => renderNode(c, i))),
+    h(
+      "div",
+      { class: "callout__body" },
+      callout.body.map((c, i) => renderNode(c, i, `${path}.q${i}`)),
+    ),
   ]);
 }
 
 // Task-list items: a leading `[ ]` / `[x]` in the first paragraph becomes a
 // checkbox, and a checked item dims + strikes through.
-function renderListItem(node: MdNode, key: number): VNode {
+function renderListItem(node: MdNode, key: number, path: string): VNode {
   const para = node.children[0];
   const lead = para?.type === "paragraph" ? para.children[0] : undefined;
   const m = lead?.type === "text" ? /^\[( |x|X)\]\s+/.exec(lead.content) : null;
@@ -275,20 +286,21 @@ function renderListItem(node: MdNode, key: number): VNode {
     return h("li", { key, class: ["md-task", checked && "md-task--done"] }, [
       h("span", { class: ["md-check", checked && "md-check--on"], "aria-hidden": "true" }, checked ? "✓" : ""),
       h("div", { class: "md-task__body" }, [
-        h("p", null, inlines.map((c, i) => renderNode(c, i))),
-        ...rest.map((c, i) => renderNode(c, i + 100)),
+        h(
+          "p",
+          null,
+          inlines.map((c, i) => renderNode(c, i, `${path}.t${i}`)),
+        ),
+        ...rest.map((c, i) => renderNode(c, i + 100, `${path}.r${i}`)),
       ]),
     ]);
   }
-  return h("li", { key }, renderChildren(node));
+  return h("li", { key }, renderChildren(node, path));
 }
 
 const Rendered = defineComponent({
   name: "MarkdownRendered",
-  render: () => {
-    wordSeq = 0;
-    return nodes.value.map((n, i) => renderNode(n, i));
-  },
+  render: () => nodes.value.map((n, i) => renderNode(n, i, String(i))),
 });
 </script>
 
@@ -322,8 +334,10 @@ const Rendered = defineComponent({
     opacity 420ms ease,
     filter 420ms ease;
 }
-/* An atom (file chip / inline code) reveals as one unit, hugging its child so
-   the wrapper never disturbs baseline alignment or wrapping. */
+/* An atom (file chip / inline code) hugs its child so the wrapper never
+   disturbs baseline alignment or wrapping. Atoms intentionally do not carry
+   `.stream-word`: reparsing a live Markdown message must not replay their
+   entrance animation. */
 .md :deep(.stream-atom) {
   display: inline-flex;
   vertical-align: baseline;

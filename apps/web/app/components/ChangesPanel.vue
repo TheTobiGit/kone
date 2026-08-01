@@ -238,7 +238,7 @@ function discardUnstaged() {
   to { opacity: 1; transform: none; }
 }
 .ch {
-  animation: ch-header-in 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: ch-header-in 340ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-changes, 0ms);
   display: flex;
   align-items: center;
@@ -297,8 +297,8 @@ function discardUnstaged() {
   width: 7px;
   height: 7px;
   border-radius: 2px;
-  animation: ch-dot-pop 340ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 240ms + min(var(--i, 0) * 46ms, 620ms));
+  animation: ch-dot-pop 240ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 130ms + min(var(--i, 0) * 28ms, 360ms));
 }
 .ch__dot--add { background-color: var(--diff-add); }
 .ch__dot--del { background-color: var(--diff-del); }
@@ -353,7 +353,7 @@ function discardUnstaged() {
   justify-content: space-between;
   width: 100%;
   opacity: 0.9;
-  animation: ch-header-in 520ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: ch-header-in 340ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-changes, 0ms);
 }
 .empty__clean {
@@ -410,19 +410,19 @@ function discardUnstaged() {
   box-shadow: #1e1b180a 0 4px 12px;
   transform-origin: top left;
   transform: rotate(var(--r));
-  animation: empty-sheet-in 560ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: empty-sheet-in 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .empty__sheet--l {
   --r: -9deg;
   left: 26px;
   top: 22px;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 60ms);
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 40ms);
 }
 .empty__sheet--r {
   --r: 9deg;
   left: 78px;
   top: 22px;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 120ms);
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 80ms);
 }
 .empty__sheet--front {
   left: 52px;
@@ -433,7 +433,7 @@ function discardUnstaged() {
   border-color: var(--sheet-front-bd, #e4e3df);
   background-color: var(--sheet-front-bg, #fff);
   box-shadow: #1e1b1812 0 6px 16px;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 180ms);
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 120ms);
 }
 .empty__dot {
   width: 15px;
@@ -461,8 +461,8 @@ function discardUnstaged() {
   border-radius: 16px;
   background-color: #059669;
   border: 3px solid var(--ground);
-  animation: empty-check-in 420ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
-  animation-delay: calc(var(--proj-enter-changes, 0ms) + 320ms);
+  animation: empty-check-in 300ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
+  animation-delay: calc(var(--proj-enter-changes, 0ms) + 200ms);
 }
 .empty__label {
   font-family: var(--font-sans);
