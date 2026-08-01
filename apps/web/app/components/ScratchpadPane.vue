@@ -4,10 +4,10 @@ import { useDebounceFn, useEventListener, usePreferredReducedMotion } from "@vue
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Copy01Icon, Download04Icon } from "@hugeicons/core-free-icons";
 import type { ScratchpadSession } from "~/composables/useScratchpad";
-import { usePadEditor, type PadMarkKind } from "~/composables/usePadEditor";
+import { usePadEditor, type PadBlockKind, type PadMarkKind } from "~/composables/usePadEditor";
 import { normalizeTaskLists, padHtmlToMarkdown, padHtmlToText } from "~/utils/padMarkdown";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
-import PadFormatBar from "~/components/PadFormatBar.vue";
+import PadFormatBar, { type PadBarAnchor } from "~/components/PadFormatBar.vue";
 
 const props = defineProps<{
   session: ScratchpadSession;
@@ -23,9 +23,8 @@ const reducedMotion = usePreferredReducedMotion();
 
 const host = ref<HTMLElement | null>(null);
 const flashing = ref(false);
-const savedWhisper = ref(false);
-let savedTimer = 0;
 let flashTimer = 0;
+let positionFrame = 0;
 
 const editor = usePadEditor({
   host,
@@ -44,11 +43,11 @@ const wordCount = computed(() => {
 
 const savedLabel = computed(() => {
   if (props.session.status === "saving") return "Saving…";
-  if (!props.session.savedAt) return "";
-  return new Date(props.session.savedAt).toLocaleTimeString([], {
+  if (!props.session.savedAt) return "Not saved";
+  return `Saved ${new Date(props.session.savedAt).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
-  });
+  })}`;
 });
 
 onMounted(() => {
@@ -62,28 +61,13 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.clearTimeout(savedTimer);
   window.clearTimeout(flashTimer);
+  window.cancelAnimationFrame(positionFrame);
 });
 
 // An outside write — a snippet captured from a thread, Clear, a reopened pad —
 // replaces the document; our own keystrokes never come back through here.
 watch(() => props.session.doc.value, () => editor.syncFromDoc());
-
-function showSavedWhisper(): void {
-  savedWhisper.value = true;
-  window.clearTimeout(savedTimer);
-  savedTimer = window.setTimeout(() => {
-    savedWhisper.value = false;
-  }, 2200);
-}
-
-watch(
-  () => props.session.status,
-  (status, prev) => {
-    if (prev === "saving" && status === "ready") showSavedWhisper();
-  },
-);
 
 watch(
   () => props.session.flashAt.value,
@@ -103,8 +87,8 @@ watch(
 
 // ── the floating format bar ──────────────────────────────────────────────────
 const barVisible = ref(false);
-const barCoords = ref({ top: 0, left: 0 });
-const barPlacement = ref<"above" | "below">("above");
+const selecting = ref(false);
+const barAnchor = ref<PadBarAnchor>({ x: 0, top: 0, bottom: 0 });
 const marks = ref<Record<PadMarkKind, boolean>>({
   bold: false,
   italic: false,
@@ -112,29 +96,36 @@ const marks = ref<Record<PadMarkKind, boolean>>({
   code: false,
   highlight: false,
 });
+const block = ref<PadBlockKind>("p");
 
-const BAR_WIDTH = 232;
-
+/**
+ * Hand the bar where the selection is; it decides above-or-below and the clamp
+ * from its own measured box.
+ *
+ * A selection over several lines has a rect per line, and the two edges that
+ * matter are different ones: the top of the first line and the bottom of the
+ * last. Measuring one and placing against the other is what used to leave the bar
+ * sitting on the words it was meant to act on.
+ */
 function positionBar(range: Range): void {
-  // A selection over several lines has a rect per line. The bar goes above the
-  // first of them or below the last — measuring one line and placing against the
-  // other is what made it sit on top of the words it was meant to act on.
   const rects = Array.from(range.getClientRects()).filter((r) => r.width || r.height);
   const first = rects[0] ?? range.getBoundingClientRect();
   const last = rects[rects.length - 1] ?? first;
-  const margin = 10;
-  const anchor = first.left + first.width / 2 - BAR_WIDTH / 2;
-  const left = Math.min(window.innerWidth - BAR_WIDTH - margin, Math.max(margin, anchor));
-  if (first.top - margin > 96) {
-    barPlacement.value = "above";
-    barCoords.value = { top: first.top - margin, left };
-  } else {
-    barPlacement.value = "below";
-    barCoords.value = { top: last.bottom + margin, left };
-  }
+  barAnchor.value = {
+    x: first.left + first.width / 2,
+    top: first.top,
+    bottom: last.bottom,
+  };
+}
+
+function repositionBar(): void {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount || !host.value?.contains(sel.anchorNode)) return;
+  positionBar(sel.getRangeAt(0));
 }
 
 const evaluateSelection = useDebounceFn(() => {
+  if (selecting.value) return;
   const sel = window.getSelection();
   const anchor = sel?.anchorNode ?? null;
   if (!sel || sel.isCollapsed || !anchor || !host.value?.contains(anchor)) {
@@ -146,28 +137,52 @@ const evaluateSelection = useDebounceFn(() => {
     return;
   }
   positionBar(sel.getRangeAt(0));
-  marks.value = editor.activeMarks();
+  refreshMarks();
   barVisible.value = true;
 }, 90);
 
 useEventListener(document, "selectionchange", evaluateSelection);
-useEventListener(document, "mouseup", evaluateSelection);
+useEventListener(host, "mousedown", () => {
+  selecting.value = true;
+  barVisible.value = false;
+});
+useEventListener(document, "mouseup", () => {
+  if (!selecting.value) return;
+  selecting.value = false;
+  evaluateSelection();
+});
+useEventListener(window, "scroll", () => {
+  if (!barVisible.value) return;
+  window.cancelAnimationFrame(positionFrame);
+  positionFrame = window.requestAnimationFrame(repositionBar);
+}, { passive: true, capture: true });
+useEventListener(window, "resize", () => {
+  if (!barVisible.value) return;
+  window.cancelAnimationFrame(positionFrame);
+  positionFrame = window.requestAnimationFrame(repositionBar);
+}, { passive: true });
 useEventListener(document, "keyup", (e: KeyboardEvent) => {
   if (e.shiftKey || e.key.startsWith("Arrow")) evaluateSelection();
-});
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (e.key === "Escape" && barVisible.value) barVisible.value = false;
 });
 
 /** Re-read the marks after the bar acts, so its lit state stays honest. */
 function refreshMarks(): void {
   marks.value = editor.activeMarks();
+  block.value = editor.activeBlock();
 }
 
 function onBarMark(kind: PadMarkKind): void {
   editor.applyMark(kind);
   cue("press");
   refreshMarks();
+}
+
+function onBarBlock(kind: PadBlockKind): void {
+  editor.applyBlock(kind);
+  cue("press");
+  refreshMarks();
+  // Turning a line into a heading or a list moves it, so the bar has to follow.
+  requestAnimationFrame(repositionBar);
 }
 
 function onBarHighlight(id: string): void {
@@ -259,9 +274,9 @@ function onKeydown(e: KeyboardEvent): void {
       <span class="pad__meta">{{ wordCount }} words</span>
       <span
         class="pad__meta pad__saved"
-        :class="{ 'is-visible': savedWhisper || session.status === 'saving' }"
+        :class="{ 'is-saving': session.status === 'saving' }"
       >
-        {{ session.status === "saving" ? "Saving…" : savedWhisper ? "Saved" : savedLabel }}
+        {{ savedLabel }}
       </span>
       <div class="pad__tools">
         <button type="button" class="pad__tool" title="Copy as Markdown" @click="copyAll">
@@ -283,15 +298,16 @@ function onKeydown(e: KeyboardEvent): void {
 
     <PadFormatBar
       :visible="barVisible"
-      :top="barCoords.top"
-      :left="barCoords.left"
-      :placement="barPlacement"
+      :anchor="barAnchor"
       :marks="marks"
+      :block="block"
       :marker="session.marker.value"
       @mark="onBarMark"
+      @block="onBarBlock"
       @highlight="onBarHighlight"
       @text-color="onBarTextColor"
       @clear="onBarClear"
+      @dismiss="barVisible = false"
     />
   </div>
 </template>
@@ -308,6 +324,15 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 .pad__body {
+  /* The conversation thread's smoke, applied to the pad's own scroll box: text
+     dissolves at both edges instead of clipping. Same shape as the thread
+     column (`--fade-top` 10px hidden, fully visible by 40px); the bottom is a
+     mirror of the top — there's no composer to reserve, the footer sits outside
+     this box. The doc pads itself out (`.pad__doc` padding) so the first and
+     last lines never rest inside the fade. */
+  --pad-fade-top: 10px;
+  --pad-fade-end: 40px;
+
   position: relative;
   display: flex;
   flex-direction: column;
@@ -315,6 +340,20 @@ function onKeydown(e: KeyboardEvent): void {
   min-height: 0;
   overflow-y: auto;
   border-radius: 4px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent var(--pad-fade-top),
+    #000 var(--pad-fade-end),
+    #000 calc(100% - var(--pad-fade-end)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent var(--pad-fade-top),
+    #000 var(--pad-fade-end),
+    #000 calc(100% - var(--pad-fade-end)),
+    transparent 100%
+  );
   transition: background-color 0.7s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pad__body::-webkit-scrollbar {
@@ -326,8 +365,10 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 .pad__empty {
+  /* Sits where the first typed line will — below the top fade, so the hint
+     reads at full strength instead of dissolving into the smoke. */
   position: absolute;
-  top: 0;
+  top: var(--pad-fade-end);
   left: 0;
   margin: 0;
   font-size: 16px;
@@ -345,6 +386,10 @@ function onKeydown(e: KeyboardEvent): void {
 .pad__doc {
   flex: 1;
   min-height: 12rem;
+  /* Padding equals the fades: the page's first and last lines rest clear of
+     the smoke at rest (same trick as the thread's tall padding), and only
+     scroll through it on the way past. */
+  padding: var(--pad-fade-end) 0;
   outline: none;
   font-size: 16px;
   line-height: 1.68;
@@ -356,8 +401,8 @@ function onKeydown(e: KeyboardEvent): void {
 .pad__foot {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.65rem 0.1rem 0.15rem;
+  gap: 0.9rem;
+  padding: 0.75rem 0.1rem 0.2rem;
   opacity: 0.45;
   transition: opacity 0.2s ease;
 }
@@ -373,17 +418,19 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 .pad__saved {
-  opacity: 0;
-  transition: opacity 0.35s ease;
+  min-width: 4.8rem;
+  opacity: 0.82;
+  transition: color 0.2s ease, opacity 0.2s ease;
 }
-.pad__saved.is-visible {
+.pad__saved.is-saving {
+  color: var(--accent);
   opacity: 1;
 }
 
 .pad__tools {
   display: flex;
   align-items: center;
-  gap: 0.15rem;
+  gap: 0.35rem;
   margin-left: auto;
 }
 

@@ -21,6 +21,9 @@ import { isHighlightId, isTextColorId } from "~/utils/padColors";
 
 export type PadMarkKind = "bold" | "italic" | "strike" | "code" | "highlight";
 
+/** The block kinds the format bar can set a line to. */
+export type PadBlockKind = "p" | "h1" | "h2" | "h3" | "ul" | "ol" | "task" | "quote";
+
 export type UsePadEditorOptions = {
   host: Ref<HTMLElement | null>;
   /** The pad document (HTML). Written on every edit, read on outside changes. */
@@ -410,6 +413,104 @@ export function usePadEditor(options: UsePadEditorOptions) {
     emit();
   }
 
+  /** Take the checkbox off a task line, and the task styling off its list once
+   *  the last one is gone. */
+  function unmarkTask(li: HTMLElement): void {
+    delete li.dataset.checked;
+    const ul = li.closest("ul");
+    if (ul && !ul.querySelector("li[data-checked]")) ul.classList.remove("pad-tasks");
+  }
+
+  /** Turn the caret's line into a task, making a list for it if there isn't one. */
+  function makeTask(): void {
+    const li = listItem();
+    if (li) {
+      if (li.dataset.checked === undefined) markAsTask(li);
+      return;
+    }
+    exec("insertUnorderedList");
+    const fresh = listItem();
+    if (fresh) markAsTask(fresh);
+  }
+
+  // ── block kinds ────────────────────────────────────────────────────────────
+
+  /**
+   * What kind of block the caret is in, as the format bar names it.
+   *
+   * Headings past h3 report as h3: the bar offers three, and a pasted h4 should
+   * still read as "heading" rather than falling back to body text.
+   */
+  function activeBlock(): PadBlockKind {
+    if (!import.meta.client) return "p";
+    const block = currentBlock();
+    if (!block || block === host.value) return "p";
+    const li = listItem();
+    if (li) {
+      if (li.dataset.checked !== undefined) return "task";
+      return li.closest("ol") ? "ol" : "ul";
+    }
+    if (block.closest("blockquote")) return "quote";
+    const tag = block.tagName.toLowerCase();
+    if (tag === "h1" || tag === "h2" || tag === "h3") return tag;
+    if (/^h[4-6]$/.test(tag)) return "h3";
+    return "p";
+  }
+
+  /** Step out of however many lists the line is nested in. */
+  function leaveList(): void {
+    let guard = 0;
+    while (listItem() && guard++ < 6) exec("outdent");
+  }
+
+  /** Drop the line back to body text, whatever it is now. */
+  function toParagraph(): void {
+    const li = listItem();
+    if (li) unmarkTask(li);
+    leaveList();
+    exec("formatBlock", "p");
+    // formatBlock leaves the quote wrapper standing; outdent is what removes it.
+    if (currentBlock()?.closest("blockquote")) exec("outdent");
+  }
+
+  /**
+   * Set the caret's block kind from the format bar.
+   *
+   * Choosing the kind the line already is undoes it — the same press-again-to-undo
+   * the mark buttons have, so no one has to hunt for "body text" to get out of a
+   * heading.
+   */
+  function applyBlock(kind: PadBlockKind): void {
+    host.value?.focus();
+    const current = activeBlock();
+    const target = current === kind ? "p" : kind;
+    if (target === "p") {
+      toParagraph();
+      emit();
+      return;
+    }
+    // A list line has to stop being one before it can be a heading or a quote.
+    if (target === "h1" || target === "h2" || target === "h3" || target === "quote") {
+      const li = listItem();
+      if (li) unmarkTask(li);
+      leaveList();
+      exec("formatBlock", target === "quote" ? "blockquote" : target);
+      emit();
+      return;
+    }
+    if (target === "task") {
+      makeTask();
+      emit();
+      return;
+    }
+    // ul / ol. Chromium converts one list kind into the other in place, so the
+    // only thing to undo by hand is a task line's checkbox.
+    const li = listItem();
+    if (li && li.dataset.checked !== undefined) unmarkTask(li);
+    exec(target === "ol" ? "insertOrderedList" : "insertUnorderedList");
+    emit();
+  }
+
   /** A click in a task item's box column ticks it — the box is CSS, not an input,
    *  so the caret never lands inside a widget. */
   function onClick(e: MouseEvent): void {
@@ -704,5 +805,7 @@ export function usePadEditor(options: UsePadEditorOptions) {
     clearFormat,
     toggleTask,
     activeMarks,
+    activeBlock,
+    applyBlock,
   };
 }
