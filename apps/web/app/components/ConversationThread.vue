@@ -9,7 +9,9 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 // grey — Read blues, Write violets, Search ambers, Run greens, Delete red.
 import {
   AiBrain01Icon,
+  ArrowDown01Icon,
   ArrowRight01Icon,
+  ArrowUp01Icon,
   Copy01Icon,
   Tick02Icon,
   Note01Icon,
@@ -153,6 +155,9 @@ const TOOL_TABLE: Record<string, ToolMeta> = {
   read_url_content: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
   view_web_document: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
   webfetch: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" }, // Claude
+  list: { icon: ListViewIcon, label: "List", hue: HUE.read, family: "read" },
+  todowrite: { icon: WorkflowSquare01Icon, label: "Plan", hue: HUE.agent, family: "agent" },
+  patch: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
   // planning & orchestration
   task: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
   new_task: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
@@ -640,6 +645,37 @@ watch(
 
 // ── copy ──────────────────────────────────────────────────────────────────────
 const copied = ref<string | null>(null);
+const USER_REQUEST_LIMIT = 900;
+const expandedUserRequests = reactive<Record<string, boolean>>({});
+function isLongUserRequest(block: Extract<ThreadBlock, { role: "user" }>): boolean {
+  return block.text.length > USER_REQUEST_LIMIT;
+}
+function userRequestText(block: Extract<ThreadBlock, { role: "user" }>): string {
+  if (!isLongUserRequest(block) || expandedUserRequests[block.id]) return block.text;
+  return `${block.text.slice(0, USER_REQUEST_LIMIT).trimEnd()}…`;
+}
+function toggleUserRequest(block: Extract<ThreadBlock, { role: "user" }>): void {
+  expandedUserRequests[block.id] = !expandedUserRequests[block.id];
+  cue("toggle");
+}
+async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
+  if (!block.text || !import.meta.client) return;
+  try {
+    await navigator.clipboard.writeText(block.text);
+    cue("toggle");
+    copied.value = block.id;
+    window.setTimeout(() => {
+      if (copied.value === block.id) copied.value = null;
+    }, 1600);
+  } catch {
+    // Clipboard blocked — nothing to do.
+  }
+}
+function addUserRequestToScratchpad(block: Extract<ThreadBlock, { role: "user" }>) {
+  if (!block.text?.trim()) return;
+  emit("to-scratchpad", block.text);
+  cue("press");
+}
 async function copy(block: AssistantBlock) {
   const text = assistantText(block);
   if (!text || !import.meta.client) return;
@@ -717,7 +753,23 @@ const hasBlocks = computed(() => props.blocks.length > 0);
     >
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
       <template v-if="block.role === 'user'">
-        <p v-if="block.text" class="body body--you selectable">{{ block.text }}</p>
+         <div v-if="block.text" class="body body--you selectable" :class="{ 'body--you-expanded': expandedUserRequests[block.id] }">
+           <p class="you-text">{{ userRequestText(block) }}</p>
+           <button
+             v-if="isLongUserRequest(block)"
+             type="button"
+             class="you-expand"
+             :aria-expanded="expandedUserRequests[block.id] ? 'true' : 'false'"
+             :aria-label="expandedUserRequests[block.id] ? 'Collapse request' : 'Show full request'"
+             @click="toggleUserRequest(block)"
+           >
+             <HugeiconsIcon
+               :icon="expandedUserRequests[block.id] ? ArrowUp01Icon : ArrowDown01Icon"
+               :size="14"
+               :stroke-width="2"
+             />
+           </button>
+         </div>
         <!-- What was attached to this turn — the same file chips the agent uses
              in prose. Metadata only (bytes live on disk), so images show their
              file-type glyph rather than a thumbnail. -->
@@ -728,6 +780,26 @@ const hasBlocks = computed(() => props.blocks.length > 0);
             :path="att.name"
             :title="`${att.name} · ${att.mimeType}`"
           />
+        </div>
+        <div v-if="block.text" class="you-foot">
+          <button
+            type="button"
+            class="foot__copy"
+            :aria-label="copied === block.id ? 'Copied' : 'Copy request'"
+            @click="copyUserRequest(block)"
+          >
+            <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
+            <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+          </button>
+          <button
+            type="button"
+            class="foot__copy"
+            aria-label="Add request to scratchpad"
+            @click="addUserRequestToScratchpad(block)"
+          >
+            <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
+            <span>Scratchpad</span>
+          </button>
         </div>
       </template>
 
@@ -919,7 +991,6 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                header carries the status then). -->
           <div v-if="block.state !== 'running'" class="foot">
             <span class="foot__time">{{ clock(block.at) }}</span>
-            <span class="foot__lead" aria-hidden="true" />
             <span class="foot__status" :class="`foot__status--${statusOf(block).tone}`">{{
               statusOf(block).text
             }}</span>
@@ -1044,6 +1115,34 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   );
   text-wrap: pretty;
 }
+.you-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.you-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  margin: 5px -4px -5px auto;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.you-expand:hover,
+.you-expand:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
+}
+.you-expand:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 1px;
+}
 /* Attachments that rode this turn — a right-aligned wrap of file chips under
    the message (or standing alone on an attachment-only turn). */
 .you-attachments {
@@ -1052,6 +1151,26 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   justify-content: flex-end;
   gap: 6px;
   max-width: 80%;
+}
+.you-foot {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: 80%;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.45s ease, transform 0.3s ease;
+}
+.turn--you:hover .you-foot,
+.turn--you:focus-within .you-foot {
+  opacity: 1;
+  transform: none;
+}
+@media (hover: none) {
+  .you-foot {
+    opacity: 1;
+    transform: none;
+  }
 }
 .body--error {
   color: var(--diff-del);
@@ -1237,14 +1356,8 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   opacity: 1;
   transform: none;
 }
-/* The dotted rule that carries the eye from the timestamp to the status, the
-   gaievskyi/publications idiom. */
-.foot__lead {
-  flex: 1 1 auto;
-  height: 0;
-  border-bottom: 1.5px dotted color-mix(in srgb, var(--muted) 55%, transparent);
-  transform: translateY(1px);
-}
+/* The dotted rule that carried the eye from the timestamp to the status is
+   gone — the meta row now reads as a row of quiet items, no leader line. */
 .foot__status--live {
   color: var(--ink-soft);
 }
