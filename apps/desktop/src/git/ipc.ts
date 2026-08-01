@@ -3,6 +3,7 @@ import { ipcMain } from "electron";
 import { clone, cancelClone } from "./clone.js";
 import { createProject } from "./create.js";
 import { content, diff } from "./diff.js";
+import { files } from "./files.js";
 import { branches, log } from "./history.js";
 import { checkout, discard, stage, unstage } from "./mutations.js";
 import { detect, status } from "./status.js";
@@ -66,6 +67,9 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle("git:content", (_event, dir: string, path: string) =>
     content(dir, path),
+  );
+  ipcMain.handle("git:files", (_event, dir: string, query?: string) =>
+    files(dir, query),
   );
   // Start live status watching of `dir` for the calling renderer; fresh status
   // is pushed on the "git:status-changed" channel — tagged with `dir` so the

@@ -1,11 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, h, nextTick, onMounted, onUnmounted, ref, render, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, Attachment01Icon, FlashIcon } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import ParticleOrb from "~/components/ParticleOrb.vue";
-import type { AttachmentKind, InteractionMode } from "~/types/desktop";
+import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
+import MentionChip from "~/components/MentionChip.vue";
+import type { AttachmentKind, GitProjectFile, InteractionMode } from "~/types/desktop";
+import { useProjectFiles } from "~/composables/useProjectFiles";
+import {
+  detectFileMentionTrigger,
+  formatFileMention,
+  splitComposerMentionSegments,
+  type FileMentionTrigger,
+} from "~/utils/composerMentions";
 import {
   effortForTier,
   familyForId,
@@ -31,6 +40,8 @@ import {
 // the parent stays oblivious to whether a provider bakes it into ids or a flag.
 
 const props = defineProps<{
+  /** Absolute project root used by the @ file picker. */
+  projectPath: string;
   /** A turn is running — the send seed becomes a stop, Enter is inert. */
   busy?: boolean;
   /** The full model picker is open (hosted by the parent, outside our dock).
@@ -179,11 +190,276 @@ function cycleMode() {
 }
 
 const open = ref(false);
+// `text` is the serialized value the composer sends: plain prose with each
+// completed mention written back as its full @path token. The editable field is
+// a contenteditable surface (below) whose DOM holds text nodes + atomic chip
+// spans; `text` is derived from it, never bound to it.
 const text = ref("");
-const field = ref<HTMLTextAreaElement | null>(null);
+const field = ref<HTMLElement | null>(null);
 const surface = ref<HTMLElement | null>(null);
 const dock = ref<HTMLElement | null>(null);
 const mirror = ref<HTMLElement | null>(null);
+
+// ── project file mentions ────────────────────────────────────────────────────
+// @ opens a small project-scoped picker over the field. The field itself is a
+// contenteditable surface: prose lives in plain text nodes, and a chosen file
+// becomes an atomic <MentionChip> span (a type logo + the bare filename) that
+// the browser deletes as one unit. On every edit we serialize the DOM back into
+// `text` — chips write out as their full @path — so what the provider receives
+// is unchanged even though the field shows only names.
+const mentionTrigger = ref<FileMentionTrigger | null>(null);
+const mentionActiveIndex = ref(0);
+// The live DOM position of the active trigger (which text node, and the char
+// range of the "@query" inside it) so a pick can splice a chip in exactly there.
+type DomTrigger = { node: Text; start: number; end: number };
+let domTrigger: DomTrigger | null = null;
+const mentionQuery = computed(() => mentionTrigger.value?.query ?? "");
+const mentionOpen = computed(() => open.value && mentionTrigger.value !== null && !props.busy);
+const projectFiles = useProjectFiles(
+  () => props.projectPath,
+  () => mentionQuery.value,
+);
+const mentionFiles = computed(() => projectFiles.entries.value);
+const mentionPending = computed(() => projectFiles.pending.value);
+const mentionError = computed(() => projectFiles.error.value);
+
+// Placeholder shows only when the field is truly empty (no prose, no chips).
+const isEmpty = computed(() => text.value.trim().length === 0);
+// The hidden mirror mirrors the field's rendered content — chips at their real
+// (name-sized) width — so the pill sizes to what's shown, not to the @paths.
+const mirrorSegments = computed(() => splitComposerMentionSegments(text.value));
+
+// Mint a chip element by mounting a live MentionChip into a detached host and
+// handing back its root node. It's mounted live (not cloned) because the file
+// icon (@iconify/vue) fills its SVG in a tick after mount — a synchronous clone
+// would freeze an empty placeholder. Each chip's host is tracked so its Vue
+// scope can be torn down when the field is cleared or the composer unmounts.
+const chipHosts = new Set<HTMLElement>();
+function makeChipEl(path: string): HTMLElement {
+  const host = document.createElement("div");
+  render(h(MentionChip, { path }), host);
+  const chip = host.firstElementChild as HTMLElement | null;
+  if (!chip) {
+    render(null, host);
+    const span = document.createElement("span");
+    span.textContent = path;
+    span.setAttribute("contenteditable", "false");
+    span.dataset.mentionPath = path;
+    return span;
+  }
+  chip.setAttribute("contenteditable", "false");
+  chip.dataset.mentionPath = path;
+  chipHosts.add(host);
+  return chip;
+}
+// Unmount every live chip's Vue scope (the DOM nodes are already gone once the
+// field is wiped). Called on clear/send and unmount so nothing lingers.
+function disposeChips(): void {
+  for (const host of chipHosts) render(null, host);
+  chipHosts.clear();
+}
+
+// Walk the field's DOM into the serialized draft: text nodes verbatim, chips as
+// their full @path token, and line breaks (a native <br> / block split from
+// Shift+Enter) as "\n".
+function serializeNode(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const el = node as HTMLElement;
+  if (el.dataset.mentionPath !== undefined) return formatFileMention(el.dataset.mentionPath);
+  if (el.tagName === "BR") return "\n";
+  let inner = "";
+  for (const child of Array.from(el.childNodes)) inner += serializeNode(child);
+  return /^(DIV|P)$/.test(el.tagName) ? `\n${inner}` : inner;
+}
+function serializeEditor(): string {
+  const el = field.value;
+  if (!el) return "";
+  let out = "";
+  for (const child of Array.from(el.childNodes)) out += serializeNode(child);
+  // A lone bogus <br> the browser keeps in an "empty" field serializes to "\n";
+  // treat a value that is only whitespace as empty so the placeholder returns.
+  return out.replace(/^\n/, "");
+}
+
+// Read `text` back off the DOM after any edit, refresh the mention trigger from
+// the live caret, and re-measure the surface.
+function onEditorChanged(): void {
+  text.value = serializeEditor();
+  refreshTrigger();
+  void nextTick(sync);
+}
+
+// Find an active @token at the collapsed caret, scoped to the caret's own text
+// node. Reuses the shared detector so the "@ only after whitespace" rule holds.
+function readDomTrigger(): { trigger: FileMentionTrigger; dom: DomTrigger } | null {
+  const root = field.value;
+  const sel = typeof window !== "undefined" ? window.getSelection() : null;
+  if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  const node = range.startContainer;
+  if (node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return null;
+  const textNode = node as Text;
+  const trigger = detectFileMentionTrigger(textNode.data, range.startOffset);
+  if (!trigger) return null;
+  return { trigger, dom: { node: textNode, start: trigger.rangeStart, end: range.startOffset } };
+}
+
+function refreshTrigger(): void {
+  const found = readDomTrigger();
+  domTrigger = found?.dom ?? null;
+  mentionTrigger.value = found?.trigger ?? null;
+}
+
+function placeCaret(node: Node, offset: number): void {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  range.setStart(node, offset);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function selectMention(file: GitProjectFile): void {
+  const trig = domTrigger;
+  const root = field.value;
+  if (!trig || !root) return;
+
+  // Split the trigger's text node into [before][query][after], drop the query
+  // text, and drop a chip where it was. A trailing space keeps the next word off
+  // the chip — reusing one already sitting after the caret so we never double it.
+  const after = trig.node.splitText(trig.end);
+  trig.node.splitText(trig.start);
+  const parent = trig.node.parentNode;
+  const queryNode = trig.node.nextSibling;
+  if (!parent || !queryNode) return;
+  parent.removeChild(queryNode);
+
+  const chip = makeChipEl(file.path);
+  parent.insertBefore(chip, after);
+
+  let caretNode: Node;
+  let caretOffset: number;
+  if (after.nodeType === Node.TEXT_NODE && (after as Text).data.startsWith(" ")) {
+    caretNode = after;
+    caretOffset = 1;
+  } else {
+    const space = document.createTextNode(" ");
+    parent.insertBefore(space, after);
+    caretNode = space;
+    caretOffset = 1;
+  }
+
+  root.focus();
+  placeCaret(caretNode, caretOffset);
+  mentionActiveIndex.value = 0;
+  onEditorChanged();
+}
+
+function onFieldInput(): void {
+  onEditorChanged();
+}
+function onFieldClick(): void {
+  refreshTrigger();
+}
+function onFieldKeyup(): void {
+  refreshTrigger();
+}
+
+function onFieldKeydown(e: KeyboardEvent): void {
+  if (mentionOpen.value) {
+    const count = projectFiles.entries.value.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (count) mentionActiveIndex.value = (mentionActiveIndex.value + 1) % count;
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (count) mentionActiveIndex.value = (mentionActiveIndex.value - 1 + count) % count;
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      const file = projectFiles.entries.value[mentionActiveIndex.value];
+      if (file) {
+        e.preventDefault();
+        selectMention(file);
+        return;
+      }
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      mentionTrigger.value = null;
+      domTrigger = null;
+      return;
+    }
+  }
+  // Plain Enter sends. Shift+Enter falls through to the browser's native
+  // line-break (it manages the caret correctly), which serializes back as "\n".
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    if (!props.busy) send();
+  }
+}
+
+// Rebuild the field's DOM from a serialized draft, parsing completed @paths back
+// into chips. Used to restore a draft and to clear on send.
+function setEditorFromText(value: string): void {
+  const el = field.value;
+  if (!el) return;
+  el.replaceChildren();
+  disposeChips();
+  for (const segment of splitComposerMentionSegments(value)) {
+    if (segment.type === "mention") el.appendChild(makeChipEl(segment.path));
+    else if (segment.text) el.appendChild(document.createTextNode(segment.text));
+  }
+  text.value = serializeEditor();
+}
+
+function clearEditor(): void {
+  field.value?.replaceChildren();
+  disposeChips();
+  text.value = "";
+  mentionTrigger.value = null;
+  domTrigger = null;
+}
+
+function focusEditorEnd(): void {
+  const el = field.value;
+  if (!el) return;
+  el.focus();
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// Insert plain text at the caret (used by paste + type-anywhere-to-focus),
+// falling back to the field's end when there's no live selection inside it.
+function insertTextAtCaret(value: string): void {
+  const el = field.value;
+  if (!el) return;
+  const sel = window.getSelection();
+  let range: Range;
+  if (sel && sel.rangeCount && el.contains(sel.anchorNode)) {
+    range = sel.getRangeAt(0);
+    range.deleteContents();
+  } else {
+    range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+  }
+  const node = document.createTextNode(value);
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
 
 // The surface is sized imperatively so it can animate (CSS can't transition to
 // `auto`). It grows WIDE first — the pill widens to hold the text up to MAX_W —
@@ -350,6 +626,15 @@ function onPaste(e: ClipboardEvent) {
   if (files && files.length > 0) {
     e.preventDefault();
     addFiles(files);
+    return;
+  }
+  // Force a plain-text paste — the field is contenteditable, so the default
+  // would drop styled markup into it. Insert the text ourselves, then re-read.
+  const plain = e.clipboardData?.getData("text/plain");
+  if (plain) {
+    e.preventDefault();
+    insertTextAtCaret(plain);
+    onEditorChanged();
   }
 }
 
@@ -391,7 +676,7 @@ function measure(): number {
 // grow the textarea and measure the height it needs.
 function sync() {
   const el = surface.value;
-  const ta = field.value;
+  const ed = field.value;
   // Width first: the pill widens to fit the text, up to the cap.
   const cap = maxW();
   // Freeze the width transition around the measurement below. scrollHeight
@@ -417,18 +702,14 @@ function sync() {
     surfaceW.value = Math.max(MIN_W, Math.min(cap, Math.round(desired)));
     if (el) el.style.width = `${surfaceW.value}px`;
   }
-  // Wrap (and grow tall) only once the card is up or the pill has hit its cap —
-  // so a letter never flashes onto the next row while there's still width to
-  // grow into. Set imperatively so the height measure below reads it correctly.
-  const wrap = card.value || (open.value && desired > cap);
+  // Wrap (and grow tall) once the card is up, the pill has hit its cap, or the
+  // editor has already flowed onto a second line (e.g. a Shift+Enter break) —
+  // then the send seed drops to the bottom instead of centring on one line.
+  const multiline = open.value && !!ed && ed.scrollHeight > 30;
+  const wrap = card.value || (open.value && desired > cap) || multiline;
   isTall.value = wrap;
-  if (ta) {
-    ta.style.whiteSpace = wrap ? "pre-wrap" : "nowrap";
-    ta.style.height = "0px";
-    ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`;
-  }
-  // The surface's auto height derives from the textarea's now-correct explicit
-  // height, so this reads the settled height even while the width is frozen.
+  // The contenteditable owns its own height (it grows with its content), so we
+  // just read the surface's resulting natural height — no explicit sizing here.
   surfaceH.value = open.value ? measure() : REST;
 
   // Spring only for the big moves: a large width/height jump (paste, drop) or a
@@ -520,10 +801,10 @@ async function onGlobalKey(e: KeyboardEvent) {
   // A file detail is open → the composer is inert; leave the keystroke alone.
   if (dock.value?.closest("[inert]")) return;
   e.preventDefault();
-  text.value += e.key;
   await wake();
-  const ta = field.value;
-  if (ta) ta.setSelectionRange(ta.value.length, ta.value.length);
+  focusEditorEnd();
+  insertTextAtCaret(e.key);
+  onEditorChanged();
 }
 useEventListener(window, "keydown", onGlobalKey);
 
@@ -544,35 +825,35 @@ function send() {
   const files = attachments.value.map((a) => a.file);
   emit("send", draft, files.length ? files : undefined);
   cue("success");
-  text.value = "";
+  clearEditor();
   clearAttachments();
   syncSoon();
-}
-
-// Enter submits — but never while a turn is running (that would read as a stop).
-function onEnter() {
-  if (props.busy) return;
-  send();
 }
 
 onMounted(sync);
 onUnmounted(() => {
   window.clearTimeout(noticeTimer);
+  disposeChips();
   for (const at of attachments.value) {
     if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
   }
 });
-// Typing (and pasting) changes height at a settled width — sync() freezes the
-// width transition while it measures, so a single immediate measure is right
-// even when the paste jumps the pill's width open.
-watch(text, () => nextTick(sync));
+watch(
+  [mentionQuery, () => projectFiles.entries.value.length],
+  () => {
+    mentionActiveIndex.value = Math.min(
+      mentionActiveIndex.value,
+      Math.max(0, projectFiles.entries.value.length - 1),
+    );
+  },
+);
 
 async function setDraft(draft: string) {
-  text.value = draft;
   await wake();
   await nextTick();
-  const ta = field.value;
-  if (ta) ta.setSelectionRange(ta.value.length, ta.value.length);
+  setEditorFromText(draft);
+  focusEditorEnd();
+  syncSoon();
 }
 
 defineExpose({ wake, setDraft });
@@ -588,9 +869,18 @@ defineExpose({ wake, setDraft });
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <!-- Hidden twin of the text, unwrapped — its width is how wide the pill
-         wants to be. Kept in the same type as the textarea. -->
-    <div ref="mirror" class="mirror" aria-hidden="true">{{ (text || "Ask anything…") + " " }}</div>
+    <!-- Hidden twin of the field's content, unwrapped — its width is how wide
+         the pill wants to be. It renders the SAME chips (via MentionChip) so the
+         pill sizes to the shown names, not to the underlying @paths. -->
+    <div ref="mirror" class="mirror" aria-hidden="true"><template
+        v-if="text"
+      ><template
+          v-for="(segment, index) in mirrorSegments"
+          :key="`${segment.type}-${index}`"
+        ><MentionChip
+            v-if="segment.type === 'mention'"
+            :path="segment.path"
+          /><template v-else>{{ segment.text }}</template></template><span> </span></template><template v-else>Ask anything…&nbsp;</template></div>
 
     <!-- Off-screen file picker, opened by the attach control. Accepts anything;
          images become vision blocks, everything else an on-disk path block. -->
@@ -603,6 +893,18 @@ defineExpose({ wake, setDraft });
       tabindex="-1"
       @change="onFilePicked"
     />
+
+    <div v-if="mentionOpen" class="mention-picker" @mousedown.stop>
+      <ProjectFileMentionMenu
+        :files="mentionFiles"
+        :query="mentionQuery"
+        :active-index="mentionActiveIndex"
+        :pending="mentionPending"
+        :error="mentionError"
+        @highlight="mentionActiveIndex = $event"
+        @select="selectMention"
+      />
+    </div>
 
     <!-- Controls sit beside the input, not in it. They fade in as it opens and
          ride outward on the surface's growing edge. -->
@@ -720,14 +1022,26 @@ defineExpose({ wake, setDraft });
         <!-- Field · just the text and the send seed; the +/image/model controls
              live beside the surface, not inside it. -->
         <div class="field" :class="{ 'field--tall': isTall }">
-          <textarea
+          <!-- The field is a contenteditable surface: prose lives in text nodes
+               and each completed @mention is an atomic MentionChip span (a type
+               logo + the bare filename) the browser deletes as one unit. What we
+               send is serialized off this DOM — chips written back as full @paths
+               — so display and value can differ without any twin/overlay. -->
+          <div
             ref="field"
-            v-model="text"
             class="field__input"
-            rows="1"
-            placeholder="Ask anything…"
+            :class="{ 'field__input--empty': isEmpty }"
+            contenteditable="true"
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Ask anything"
+            data-placeholder="Ask anything…"
             :tabindex="open ? 0 : -1"
-            @keydown.enter.exact.prevent="onEnter"
+            @keydown="onFieldKeydown"
+            @input="onFieldInput"
+            @click="onFieldClick"
+            @keyup="onFieldKeyup"
+            @focus="onFieldClick"
             @paste="onPaste"
           />
           <button
@@ -845,9 +1159,20 @@ defineExpose({ wake, setDraft });
   display: flex;
   flex-direction: row;
   align-items: center;
+  position: relative;
   width: max-content;
   animation: dock-rise 680ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-composer, 0ms);
+}
+
+/* The picker is anchored to the field rather than the viewport so it follows
+   the composer's morph on both the overview and board surfaces. */
+.mention-picker {
+  position: absolute;
+  z-index: 30;
+  left: 200px;
+  bottom: calc(100% + 12px);
+  pointer-events: auto;
 }
 @keyframes dock-rise {
   from {
@@ -1056,6 +1381,7 @@ defineExpose({ wake, setDraft });
 /* ── Field ────────────────────────────────────────────────────────────────── */
 /* Fades in a beat after the expand begins so text never appears mid-squeeze. */
 .field {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1084,27 +1410,41 @@ defineExpose({ wake, setDraft });
   gap: 14px;
   padding: 14px 14px 14px 20px;
 }
+/* The contenteditable field. It flows text nodes + atomic chip spans on one
+   line until it hits the pill's cap (or a Shift+Enter break), then wraps and
+   grows its own height — no textarea, no overlay. The type ramp here must stay
+   in step with .mirror below so the measured width matches what's painted. */
 .field__input {
   flex: 1 1 0;
   width: 100%;
   min-width: 0;
+  min-height: 20px;
   border: 0;
   outline: 0;
-  resize: none;
   background: transparent;
   color: var(--field-ink);
   font-family: var(--font-sans);
   font-size: 16px;
   line-height: 20px;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   max-height: 240px;
-  overflow: hidden;
+  overflow-y: auto;
   cursor: text;
 }
-.surface.is-card .field__input { flex: 0 0 auto; line-height: 25px; white-space: pre-wrap; }
-.field__input::placeholder { color: var(--placeholder); }
+.field__input:focus { outline: 0; }
+.surface.is-card .field__input { flex: 0 0 auto; line-height: 25px; }
+/* Placeholder — shown only while the field is empty. */
+.field__input--empty::before {
+  content: attr(data-placeholder);
+  color: var(--placeholder);
+  pointer-events: none;
+}
 
-/* Off-screen twin of the text at the textarea's type — measured to size the
-   pill's width. Kept in sync with .field__input's font/size/line-height. */
+/* Off-screen twin of the field's content (same chips, same type) — measured to
+   size the pill's width. Kept in sync with .field__input's font/size/line. */
 .mirror {
   position: absolute;
   left: -9999px;

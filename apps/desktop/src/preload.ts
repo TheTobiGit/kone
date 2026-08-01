@@ -41,6 +41,7 @@ import type {
   GitCommit,
   GitFileContent,
   GitFileDiff,
+  GitProjectFile,
   GitRepo,
   GitStatus,
 } from "./git/index.js";
@@ -67,6 +68,8 @@ const api = {
       ipcRenderer.invoke("git:diff", dir, path, staged),
     content: (dir: string, path: string): Promise<GitFileContent | null> =>
       ipcRenderer.invoke("git:content", dir, path),
+    files: (dir: string, query?: string): Promise<GitProjectFile[]> =>
+      ipcRenderer.invoke("git:files", dir, query),
     branches: (dir: string): Promise<GitBranch[]> =>
       ipcRenderer.invoke("git:branches", dir),
     log: (dir: string, limit?: number): Promise<GitCommit[]> =>

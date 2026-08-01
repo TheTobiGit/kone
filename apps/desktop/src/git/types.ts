@@ -71,6 +71,14 @@ export type GitFileContent = {
   truncated: boolean;
 };
 
+/** One project file offered by the composer @-mention picker. Paths are
+ * relative to the requested project directory and always use `/`. */
+export type GitProjectFile = {
+  path: string;
+  name: string;
+  parent: string;
+};
+
 export type GitBranch = {
   /** Short name, e.g. "main" or "origin/main". */
   name: string;

@@ -298,9 +298,9 @@ const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 // A model change on a provider that bakes model/effort at spawn (Claude) can't
 // apply to a running session — it needs a fresh one. Codex takes model/effort
 // per turn, so it changes in place. Mirrors each adapter's `sessionModelSwitch`.
-const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent"]);
-const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic" };
-const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude" };
+const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent", "opencode"]);
+const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", opencode: "OpenCode" };
+const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", opencode: "opencode" };
 
 // The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
 // "last used" choice that every project opens with (not per-project). The
@@ -348,7 +348,9 @@ onMounted(async () => {
     Boolean(p) && readyProviders.some((s) => s.provider === p);
   const chosen: ProviderKind | undefined = isReady(saved)
     ? saved
-    : readyProviders.find((s) => s.provider === "codex")?.provider ?? readyProviders[0]?.provider;
+    : readyProviders.find((s) => s.provider === "codex")?.provider
+      ?? readyProviders.find((s) => s.provider === "opencode")?.provider
+      ?? readyProviders[0]?.provider;
   if (chosen) agent.setProvider(chosen);
 
   // Pick a default model within the chosen provider (restoring the saved one when
@@ -1265,6 +1267,7 @@ function onDiscardFile(path: string) {
       >
         <AgentComposer
           ref="composerRef"
+          :project-path="project.path"
           :busy="busy"
           :picking="modelPickerOpen"
           :models="modelOptions"

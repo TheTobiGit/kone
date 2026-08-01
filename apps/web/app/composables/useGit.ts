@@ -3,6 +3,7 @@ import type {
   GitCommit,
   GitFileContent,
   GitFileDiff,
+  GitProjectFile,
   GitRepo,
   GitStatus,
 } from "~/types/desktop";
@@ -11,6 +12,7 @@ import {
   mockContent,
   mockDetect,
   mockDiff,
+  mockFiles,
   mockStatus,
 } from "~/lib/devMocks";
 
@@ -42,6 +44,10 @@ export function useGit() {
     content(dir: string, path: string): Promise<GitFileContent | null> {
       if (git) return git.content(dir, path);
       return withLatency(mockContent(dir, path));
+    },
+    files(dir: string, query?: string): Promise<GitProjectFile[]> {
+      if (git) return git.files(dir, query);
+      return withLatency(mockFiles(dir, query)).then((files) => files ?? []);
     },
     branches(dir: string): Promise<GitBranch[]> {
       if (git) return git.branches(dir);

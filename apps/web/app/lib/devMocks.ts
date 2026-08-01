@@ -15,6 +15,7 @@ import type {
   GitDiffLine,
   GitFileContent,
   GitFileDiff,
+  GitProjectFile,
   GitRepo,
   GitStatus,
 } from "~/types/desktop";
@@ -363,4 +364,35 @@ export function mockContent(dir: string, relPath: string): GitFileContent | null
   const lines: string[] = [];
   for (let i = 0; i < len; i++) lines.push(pool[i % pool.length]!);
   return { text: lines.join("\n"), binary: false, truncated: false };
+}
+
+const MOCK_PROJECT_FILES: Record<string, string[]> = {
+  "/Users/you/Developer/kone": [
+    "README.md",
+    "package.json",
+    "apps/desktop/src/main.ts",
+    "apps/web/app/pages/index.vue",
+    "apps/web/app/components/AgentComposer.vue",
+    "apps/web/app/components/ConversationThread.vue",
+    "apps/web/app/composables/useAgent.ts",
+    "apps/web/app/composables/useGit.ts",
+    "apps/web/app/assets/css/main.css",
+  ],
+};
+
+export function mockFiles(dir: string, query = ""): GitProjectFile[] {
+  const paths = MOCK_PROJECT_FILES[dir] ?? MOCK_CHANGES[dir]?.map((change) => change.path) ?? [];
+  const needle = query.trim().toLowerCase();
+  return paths
+    .filter((filePath) => !needle || filePath.toLowerCase().includes(needle))
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }))
+    .slice(0, 80)
+    .map((filePath) => {
+      const separator = filePath.lastIndexOf("/");
+      return {
+        path: filePath,
+        name: separator === -1 ? filePath : filePath.slice(separator + 1),
+        parent: separator === -1 ? "" : filePath.slice(0, separator),
+      };
+    });
 }

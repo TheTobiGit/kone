@@ -74,6 +74,12 @@ export type GitFileContent = {
   truncated: boolean;
 };
 
+export type GitProjectFile = {
+  path: string;
+  name: string;
+  parent: string;
+};
+
 export type GitBranch = {
   name: string;
   current: boolean;
@@ -163,6 +169,7 @@ export type KoneGitApi = {
   ) => Promise<GitFileDiff | null>;
   /** One file's current working-tree text (for a plain content preview). */
   content: (dir: string, path: string) => Promise<GitFileContent | null>;
+  files: (dir: string, query?: string) => Promise<GitProjectFile[]>;
   branches: (dir: string) => Promise<GitBranch[]>;
   log: (dir: string, limit?: number) => Promise<GitCommit[]>;
   clone: (url: string, dest: string) => Promise<CloneResult>;
@@ -195,7 +202,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "codex" | "claudeAgent";
+export type ProviderKind = "codex" | "claudeAgent" | "opencode";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
 
@@ -390,6 +397,9 @@ export type RuntimeEventSource =
   | "claude.sdk.message"
   | "claude.sdk.stderr"
   | "claude.sdk.lifecycle"
+  | "opencode.sse.message"
+  | "opencode.sse.stderr"
+  | "opencode.sse.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
