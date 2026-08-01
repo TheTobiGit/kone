@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { buildClaudeEnv } from "./claudeHome.js";
+import { buildOpenCodeEnv } from "./opencodeHome.js";
 import { buildAgentEnv } from "./processEnv.js";
 import type { ProviderKind } from "./types.js";
 
@@ -29,6 +30,7 @@ const MAX_THREAD_TITLE_LENGTH = 60;
 /** Small/fast models for the side-channel rename — same defaults the
 const CODEX_TITLE_MODEL = "gpt-5.4-mini";
 const CLAUDE_TITLE_MODEL = "claude-haiku-4-5";
+const OPENCODE_TITLE_MODEL = "opencode-go/deepseek-v4-flash";
 const TITLE_GENERATION_TIMEOUT_MS = 45_000;
 
 const TITLE_SCHEMA = {
@@ -115,7 +117,10 @@ function extractTitle(raw: string): string | null {
   const text = raw.trim();
   if (!text) return null;
   try {
-    const parsed = JSON.parse(text) as { title?: unknown; structured_output?: unknown };
+    const parsed = JSON.parse(text) as { title?: unknown; structured_output?: unknown; part?: { type?: unknown; text?: unknown } };
+    if (parsed.part?.type === "text" && typeof parsed.part.text === "string") {
+      return extractTitle(parsed.part.text);
+    }
     // Claude `-p --output-format json` wraps the schema result in
     // `{ structured_output: … }` (research's ClaudeTextGeneration envelope).
     const payload =
@@ -145,7 +150,9 @@ export async function generateThreadTitle(input: {
     const raw =
       input.provider === "claudeAgent"
         ? await generateWithClaude({ cwd: input.cwd, prompt })
-        : await generateWithCodex({ cwd: input.cwd, prompt });
+        : input.provider === "opencode"
+          ? await generateWithOpenCode({ cwd: input.cwd, prompt })
+          : await generateWithCodex({ cwd: input.cwd, prompt });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;
@@ -227,6 +234,21 @@ async function generateWithClaude(input: {
     env,
     stdin: input.prompt,
     timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+  });
+}
+
+async function generateWithOpenCode(input: { cwd: string; prompt: string }): Promise<string | null> {
+  const env = await buildOpenCodeEnv();
+  return runCli({
+    command: "opencode",
+    args: ["run", "--format", "json", "-m", OPENCODE_TITLE_MODEL, "--dir", input.cwd, input.prompt],
+    cwd: input.cwd,
+    env,
+    stdin: "",
+    timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+  }).then((raw) => {
+    if (!raw) return null;
+    return raw.split(/\r?\n/).map(extractTitle).find((value): value is string => Boolean(value)) ?? raw;
   });
 }
 

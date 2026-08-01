@@ -25,7 +25,20 @@
 
 import type { ModelDescriptor, ProviderKind } from "~/types/desktop";
 
-export type BrandKey = "gemini" | "claude" | "gpt" | "codex" | "generic";
+export type BrandKey =
+  | "gemini"
+  | "claude"
+  | "gpt"
+  | "codex"
+  | "opencode"
+  | "deepseek"
+  | "qwen"
+  | "kimi"
+  | "minimax"
+  | "xiaomi"
+  | "nvidia"
+  | "zai"
+  | "generic";
 
 /** The reasoning-effort tiers we know how to style, whether baked into an id
  *  suffix or reported live by a provider's real `supportedReasoningEfforts`.
@@ -127,12 +140,58 @@ export type ModelOption = {
   contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
 };
 
+/** Which vendor actually *made* a model, keyed off its bare id. Ordered: the
+ *  first match wins, so put anchored families ahead of loose tokens. A vendor
+ *  we can name but have no logomark for still gets its name (brand `generic`
+ *  renders the calm dot) — better an honest dot than the wrong mark. */
+const MODEL_VENDORS: [RegExp, BrandKey, string][] = [
+  [/^claude/, "claude", "Anthropic"],
+  [/^(gemini|gemma)/, "gemini", "Google"],
+  [/^(gpt|o3|o4)/, "gpt", "OpenAI"],
+  [/deepseek/, "deepseek", "DeepSeek"],
+  [/qwen/, "qwen", "Alibaba"],
+  [/kimi/, "kimi", "Moonshot AI"],
+  [/glm/, "zai", "Z.ai"],
+  [/minimax/, "minimax", "MiniMax"],
+  [/mimo/, "xiaomi", "Xiaomi"],
+  [/nemotron/, "nvidia", "NVIDIA"],
+  [/grok/, "generic", "xAI"],
+];
+
+/** Fallback for a model id that names no vendor we know — the gateway it came
+ *  through is the next best signal. */
+const GATEWAY_VENDORS: [RegExp, BrandKey, string][] = [
+  [/^anthropic/, "claude", "Anthropic"],
+  [/^(google|vertex)/, "gemini", "Google"],
+  [/^(openai|azure)/, "gpt", "OpenAI"],
+  [/^deepseek/, "deepseek", "DeepSeek"],
+  [/^(alibaba|qwen|dashscope)/, "qwen", "Alibaba"],
+  [/^moonshot/, "kimi", "Moonshot AI"],
+  [/^(zai|zhipu)/, "zai", "Z.ai"],
+  [/^minimax/, "minimax", "MiniMax"],
+  [/^cerebras/, "generic", "Cerebras"],
+  [/^(xai|grok)/, "generic", "xAI"],
+  // Last: OpenCode's own gateways. Only reached when neither the model id nor a
+  // named upstream matched, i.e. it really is an OpenCode-native model.
+  [/^opencode/, "opencode", "OpenCode"],
+];
+
+/** The logomark and vendor name for a catalog entry.
+ *
+ *  Codex and Claude are single-vendor, so their bare ids (`gpt-5.6-terra`,
+ *  `claude-sonnet-4-5`) answer this directly. OpenCode is different: it's a
+ *  *house of providers*, and its ids are `gateway/model` — `opencode-go/deepseek-v4-flash`
+ *  is DeepSeek's model merely served through OpenCode. Branding the whole
+ *  catalog "OpenCode" would erase every real vendor, so the model id is asked
+ *  first and the gateway is only a fallback. The OpenCode mark itself is for
+ *  the provider (the rail, the picker's provider row) and for models OpenCode
+ *  actually originates. */
 function brandOf(core: string): { brand: BrandKey; vendor: string } {
-  if (core.startsWith("gemini")) return { brand: "gemini", vendor: "Google" };
-  if (core.startsWith("claude")) return { brand: "claude", vendor: "Anthropic" };
-  if (core.startsWith("gpt") || core.startsWith("o3") || core.startsWith("o4")) {
-    return { brand: "gpt", vendor: "OpenAI" };
-  }
+  const slash = core.indexOf("/");
+  const gateway = slash > 0 ? core.slice(0, slash).toLowerCase() : "";
+  const model = (slash > 0 ? core.slice(slash + 1) : core).toLowerCase();
+  for (const [re, brand, vendor] of MODEL_VENDORS) if (re.test(model)) return { brand, vendor };
+  for (const [re, brand, vendor] of GATEWAY_VENDORS) if (re.test(gateway)) return { brand, vendor };
   return { brand: "generic", vendor: "" };
 }
 

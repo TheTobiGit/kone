@@ -1,5 +1,6 @@
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
+import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
 import type {
   ApprovalDecision,
   EmitEvent,
@@ -36,6 +37,7 @@ export class AgentService {
     };
     this.register(new CodexAdapter(emit));
     this.register(new ClaudeAdapter(emit));
+    this.register(new OpenCodeAdapter(emit));
   }
 
   private register(adapter: ProviderAdapter): void {

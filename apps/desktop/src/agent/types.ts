@@ -12,7 +12,7 @@
 /** A supported agent provider. `claudeAgent` drives Claude Code through the
  *  `@anthropic-ai/claude-agent-sdk` (which runs the user's own Claude login);
  *  `codex` drives `codex app-server`. Grows as adapters land. */
-export type ProviderKind = "codex" | "claudeAgent";
+export type ProviderKind = "codex" | "claudeAgent" | "opencode";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -369,6 +369,9 @@ export type RuntimeEventSource =
   | "claude.sdk.message"
   | "claude.sdk.stderr"
   | "claude.sdk.lifecycle"
+  | "opencode.sse.message"
+  | "opencode.sse.stderr"
+  | "opencode.sse.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 

@@ -629,10 +629,8 @@ export class ConversationStore {
         case "thread.token-usage.updated": {
           const total = event.usage.total;
           if (typeof total === "number" && Number.isFinite(total)) {
-            // Providers report tokens two ways: Codex sends a running thread
-            // total (keep the max — it only climbs), Claude sends this turn's
-            // spend (sum it into the thread). Provider off the event, so the
-            // store stays adapter-agnostic.
+            // Codex reports a running thread total (keep the max); Claude and
+            // OpenCode report per-turn spend (accumulate).
             const sql =
               event.provider === "codex"
                 ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`

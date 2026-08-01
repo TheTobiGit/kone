@@ -1,4 +1,5 @@
 import { getAttachmentStore } from "./AttachmentStore.js";
+import { pathToFileURL } from "node:url";
 import { CLAUDE_NATIVE_IMAGE_MIME_TYPES, type ChatAttachment } from "./types.js";
 
 // Turns the bytes-free ChatAttachment metadata that rides a turn into the
@@ -21,6 +22,13 @@ type ClaudeImageMediaType = "image/gif" | "image/jpeg" | "image/png" | "image/we
 export type ClaudeImageBlock = {
   type: "image";
   source: { type: "base64"; media_type: ClaudeImageMediaType; data: string };
+};
+
+export type OpenCodeFilePart = {
+  type: "file";
+  mime: string;
+  filename: string;
+  url: string;
 };
 
 type FileEntry = { name: string; mimeType: string; sizeBytes: number; absPath: string };
@@ -107,6 +115,20 @@ export async function buildClaudeAttachmentContent(
   }
 
   return { imageBlocks, fileBlock: fileBlock(files) };
+}
+
+/** OpenCode accepts attachments as file parts addressed by file:// URLs. */
+export async function buildOpenCodeAttachmentParts(
+  attachments: ChatAttachment[] | undefined,
+): Promise<OpenCodeFilePart[]> {
+  const store = getAttachmentStore();
+  const parts: OpenCodeFilePart[] = [];
+  for (const att of attachments ?? []) {
+    const absPath = store.resolveAbsPath(att.id);
+    if (!absPath) continue;
+    parts.push({ type: "file", mime: att.mimeType, filename: att.name, url: pathToFileURL(absPath).href });
+  }
+  return parts;
 }
 
 /** Join the prompt text with an `<attached_files>` block (either may be empty). */

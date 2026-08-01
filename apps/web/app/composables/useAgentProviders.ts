@@ -41,6 +41,15 @@ const MOCK_STATUSES: ProviderStatus[] = [
     version: "2.1.0",
     authLabel: "Claude Max",
   },
+  {
+    provider: "opencode",
+    label: "OpenCode",
+    available: true,
+    authStatus: "authenticated",
+    readiness: "ready",
+    version: "1.18.10",
+    authLabel: "Connected providers",
+  },
 ];
 
 // Real ids + display names + reasoning efforts, captured live from
@@ -97,6 +106,49 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
       id: "claude-haiku-4-5",
       label: "Claude Haiku 4.5",
       reasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+    },
+  ],
+  // OpenCode is a house of providers: one gateway, many upstream vendors. These
+  // are real slugs/names/variants from `opencode models --verbose`, spread across
+  // vendors on purpose so the picker's per-model logomarks are exercised in
+  // browser-dev (see brandOf in utils/modelCatalog.ts). `mimo-v2.5` and
+  // `big-pickle` genuinely report no variants — that's not an omission.
+  opencode: [
+    {
+      id: "opencode-go/gpt-5.6-luna",
+      label: "GPT-5.6 Luna (2x usage)",
+      reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "opencode-go/deepseek-v4-flash",
+      label: "DeepSeek V4 Flash (New)",
+      reasoningEfforts: ["high", "max"],
+      defaultReasoningEffort: "high",
+    },
+    { id: "opencode-go/glm-5.2", label: "GLM-5.2", reasoningEfforts: ["high", "max"], defaultReasoningEffort: "high" },
+    { id: "opencode-go/kimi-k3", label: "Kimi K3", reasoningEfforts: ["max"], defaultReasoningEffort: "max" },
+    {
+      id: "opencode-go/qwen3.7-plus",
+      label: "Qwen3.7 Plus",
+      reasoningEfforts: ["high", "max"],
+      defaultReasoningEffort: "high",
+    },
+    { id: "opencode-go/minimax-m3", label: "MiniMax-M3", reasoningEfforts: ["none", "thinking"] },
+    { id: "opencode-go/mimo-v2.5", label: "MiMo V2.5" },
+    {
+      id: "opencode-go/grok-4.5",
+      label: "Grok 4.5",
+      reasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+    },
+    { id: "opencode/nemotron-3-ultra-free", label: "Nemotron 3 Ultra Free" },
+    { id: "opencode/big-pickle", label: "Big Pickle" },
+    {
+      id: "cerebras/gemma-4-31b",
+      label: "Gemma 4 31B IT",
+      reasoningEfforts: ["none", "low", "medium", "high"],
       defaultReasoningEffort: "medium",
     },
   ],
