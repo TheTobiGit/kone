@@ -40,6 +40,12 @@ export type BrandKey =
   | "zai"
   | "generic";
 
+/** Provider kinds that are *harnesses* — a house of upstream providers, so one
+ *  provider's catalog spans many real vendors (opencode → deepseek, openai,
+ *  qwen, …). For these, a model row shows the harness's own mark with the
+ *  model's true vendor badge on its corner, instead of the vendor mark alone. */
+export const HARNESS_PROVIDERS: ReadonlySet<ProviderKind> = new Set(["opencode"]);
+
 /** The reasoning-effort tiers we know how to style, whether baked into an id
  *  suffix or reported live by a provider's real `supportedReasoningEfforts`.
  *  Ordered from lightest to heaviest so a family's efforts sort naturally.

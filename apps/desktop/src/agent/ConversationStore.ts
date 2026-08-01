@@ -30,7 +30,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -235,7 +235,20 @@ function migrate(db: DatabaseSync): void {
     version = 10;
   }
 
-  // Future migrations append here: `if (version < 11) { …; version = 11; }`
+  if (version < 11) {
+    // v11 persists the last context-window snapshot per thread so a reopened
+    // conversation restores its meter fill straight away, rather than showing an
+    // empty ring until the next turn re-reports usage. Unlike `tokens` (a spend
+    // tally), these are a live snapshot — overwritten each token-usage event.
+    db.exec(`
+      ALTER TABLE threads ADD COLUMN context_used   INTEGER;
+      ALTER TABLE threads ADD COLUMN context_window INTEGER;
+      ALTER TABLE threads ADD COLUMN compacts_auto  INTEGER;
+    `);
+    version = 11;
+  }
+
+  // Future migrations append here: `if (version < 12) { …; version = 12; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -629,13 +642,32 @@ export class ConversationStore {
         case "thread.token-usage.updated": {
           const total = event.usage.total;
           if (typeof total === "number" && Number.isFinite(total)) {
-            // Codex reports a running thread total (keep the max); Claude and
-            // OpenCode report per-turn spend (accumulate).
-            const sql =
-              event.provider === "codex"
+            // Codex and OpenCode report running thread totals (keep the max);
+            // Claude reports per-turn spend (accumulate).
+            const isRunningTotal = event.provider === "codex" || event.provider === "opencode";
+            const sql = isRunningTotal
                 ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`
                 : `UPDATE threads SET tokens = COALESCE(tokens, 0) + ? WHERE thread_id = ?`;
             db.prepare(sql).run(Math.round(total), event.threadId);
+          }
+          // Snapshot the live context-window fill (overwrite, not accumulate) so
+          // a reopened thread restores its meter without waiting for a turn.
+          const { contextUsed, contextWindow, compactsAutomatically } = event.usage;
+          if (typeof contextWindow === "number" && Number.isFinite(contextWindow)) {
+            db.prepare(
+              `UPDATE threads
+                 SET context_used   = ?,
+                     context_window = ?,
+                     compacts_auto  = ?
+               WHERE thread_id = ?`,
+            ).run(
+              typeof contextUsed === "number" && Number.isFinite(contextUsed)
+                ? Math.round(contextUsed)
+                : null,
+              Math.round(contextWindow),
+              compactsAutomatically ? 1 : 0,
+              event.threadId,
+            );
           }
           break;
         }
@@ -1085,6 +1117,9 @@ type ThreadRow = {
   added: number | null;
   removed: number | null;
   tokens: number | null;
+  context_used: number | null;
+  context_window: number | null;
+  compacts_auto: number | null;
   archived: number | null;
   title: string | null;
   base_tree: string | null;
@@ -1171,6 +1206,9 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
     added: row.added ?? undefined,
     removed: row.removed ?? undefined,
     tokens: row.tokens ?? undefined,
+    contextUsed: row.context_used ?? undefined,
+    contextWindow: row.context_window ?? undefined,
+    compactsAutomatically: row.compacts_auto ? true : undefined,
     title: row.title ?? undefined,
   };
 }

@@ -118,6 +118,10 @@ function contextWindowTokens(id: string | undefined): number | undefined {
   return CLAUDE_CONTEXT_WINDOWS.find((w) => w.id === id)?.tokens;
 }
 
+/** Claude's default auto-compact budget is the safer 200k window. The live
+ * setting is only populated when a turn explicitly changes it. */
+const DEFAULT_CLAUDE_CONTEXT_WINDOW = contextWindowTokens("200k");
+
 /** Which context-window options a Claude model exposes. Current Claude models
  *  are natively 1M except the Haiku line (200k), so every non-Haiku Claude model
  *  gets the 200k/1M auto-compact choice; a single-window model gets none. The
@@ -1124,13 +1128,21 @@ export class ClaudeAdapter implements ProviderAdapter {
       const input = hasInput
         ? (freshInput ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0)
         : undefined;
+      const total = hasInput || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined;
+      const contextWindow = session.autoCompactWindow ?? DEFAULT_CLAUDE_CONTEXT_WINDOW;
+      const contextUsed =
+        total !== undefined && contextWindow !== undefined
+          ? Math.min(total, contextWindow)
+          : total;
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
         usage: {
           input,
           output,
-          total: hasInput || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined,
+          total,
+          ...(contextUsed !== undefined ? { contextUsed } : {}),
+          ...(contextWindow !== undefined ? { contextWindow, compactsAutomatically: true } : {}),
         },
       });
     }

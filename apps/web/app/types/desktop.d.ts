@@ -220,6 +220,8 @@ export type ProviderStatus = {
 export type ModelDescriptor = {
   id: string;
   label: string;
+  /** Provider-reported native context capacity, when available. */
+  contextWindowTokens?: number;
   /** Real reasoning-effort ids this model supports (Codex's `model/list`
    *  `supportedReasoningEfforts`), in the order the API returned them. Absent
    *  for a model with no reasoning-effort axis at all. */
@@ -384,7 +386,17 @@ export type RuntimeItem = {
   detail?: string;
 };
 
-export type TokenUsage = { input?: number; output?: number; total?: number };
+export type TokenUsage = {
+  input?: number;
+  output?: number;
+  total?: number;
+  /** Tokens currently occupying the provider's context window. */
+  contextUsed?: number;
+  /** The active model context/auto-compact budget, when reported. */
+  contextWindow?: number;
+  /** Whether the provider automatically compacts this context when needed. */
+  compactsAutomatically?: boolean;
+};
 
 export type ProviderRefs = { conversationId?: string; providerTurnId?: string };
 
@@ -461,6 +473,12 @@ export type StoredThreadMeta = {
   /** Tokens spent on the thread — cumulative for providers that report a running
    *  total (Codex), summed across turns for per-turn reporters (Claude). */
   tokens?: number;
+  /** Last context-window snapshot the thread reported, so a reopened thread can
+   *  restore its meter fill immediately instead of showing empty until the next
+   *  turn. Overwritten (not accumulated) at each token-usage event. */
+  contextUsed?: number;
+  contextWindow?: number;
+  compactsAutomatically?: boolean;
   /** Agent-generated (or first-turn word-fallback) working title. */
   title?: string;
 };

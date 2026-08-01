@@ -35,6 +35,7 @@ import type { Pane, PaneId, PaneKind } from "~/types/board";
 import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 import { SESSION_BRAND } from "~/types/session";
+import ContextWindowMeter from "~/components/ContextWindowMeter.vue";
 
 const props = defineProps<{
   /** Live panes in strip order (left to right). A pane's session may be null
@@ -103,9 +104,9 @@ const reducedMotion = usePreferredReducedMotion();
 
 // ── column widths ─────────────────────────────────────────────────────────────
 // Fixed pixel rungs — unlike niri (output size is the monitor), our strip lives
-// in a resizable app window, so vw presets would drift every time you drag the
-// window edge. Each rung is an absolute width that holds until you step it;
-// `min(px, 100%)` only kicks in when the window is narrower than the preset.
+// in a resizable app window, so the ladder itself does not drift every time you
+// drag the window edge. Each rung is an absolute width that holds until you step
+// it; the viewport cap only kicks in when the window is narrower than the preset.
 const LADDER_PX = [840, 960, 1120, 1240] as const;
 const LAST_STEPPED = LADDER_PX.length - 2;
 const DEFAULT_PRESET = 0; // 840px — default and narrowest rung
@@ -120,7 +121,10 @@ const PRESETS: Preset[] = LADDER_PX.map((px) => ({
   id: `w${px}`,
   label: String(px),
   px,
-  width: `min(${px}px, 100%)`,
+  // A percentage flex-basis is cyclic here: the plane is content-sized, so an
+  // empty column can make `100%` resolve to its own small intrinsic width. The
+  // viewport is definite and still gives us the intended narrow-window cap.
+  width: `min(${px}px, 100vw)`,
 }));
 
 const widthAnim = ref<Record<string, boolean>>({});
@@ -314,7 +318,7 @@ function planeTransform(scale: number, shiftX: number): string {
 // exactly what the rail sized before this wrapper existed — not only when overview is
 // off, but also during the one frame between flipping overview on and sampling
 // naturalWidth. That matters: pinning the plane to `width: 0px` while naturalWidth is
-// still 0 would collapse every column's `min(px, 100%)` preset to 0 and the measure
+// still 0 would collapse every column's `min(px, 100vw)` preset to 0 and the measure
 // would come out tiny. So only constrain the width once we actually have naturalWidth
 // — until then `max-content` sizes the scaler exactly as the resting layout does.
 const scalerStyle = computed(() =>
@@ -345,7 +349,7 @@ const planeStyle = computed(() =>
 
 /** Re-read the plane's true unscaled width while overview is *already* on. Needed
  *  because `naturalWidth` is only sampled on entry, and both a pane arriving (⌘N and
- *  friends still fire from here) and a window resize (a column's `min(px, 100%)` rung
+ *  friends still fire from here) and a window resize (a column's `min(px, 100vw)` rung
  *  collapses to the rail width on a narrow window) change the plane underneath us. Left
  *  stale, the scaler stays sized for the old plane: the new card falls outside the
  *  scroll extent and can't be reached, and `k` no longer fits what's actually there.
@@ -700,7 +704,7 @@ function onRailResize(): void {
   if (resizeEndTimer) clearTimeout(resizeEndTimer);
   cancelAnimationFrame(resizeRaf);
   resizeRaf = requestAnimationFrame(() => {
-    // A narrower window shrinks every `min(px, 100%)` rung, so the plane the scaler is
+    // A narrower window shrinks every `min(px, 100vw)` rung, so the plane the scaler is
     // sized to changed too — not just the viewport `k` is measured against.
     void remeasurePlane();
     if (props.focusedId) scrollToColumn(props.focusedId, "auto");
@@ -1174,7 +1178,10 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                   <template v-if="c.kind === 'thread' && c.session">
                     <ProviderLogo :brand="brandOf(c)" :size="15" />
                     <h2 class="col__title">{{ c.session.title.value || "New thread" }}</h2>
-                    <span v-if="c.session.busy.value" class="col__live" aria-label="Working" />
+                    <ContextWindowMeter
+                      v-if="c.session.tokenUsage.value"
+                      :usage="c.session.tokenUsage.value"
+                    />
                   </template>
                   <template v-else>
                     <HugeiconsIcon :icon="paneKindMeta(c.kind).icon" :size="15" :stroke-width="2" class="text-muted" />
@@ -1760,14 +1767,6 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
 .col.is-focused .col__title {
   color: var(--ink);
 }
-.col__live {
-  flex: none;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--accent);
-  animation: dash-breathe 1.9s ease-in-out infinite;
-}
 
 /* Dormant body — a single muted line, centred, no chrome. */
 .col__dormant {
@@ -2038,8 +2037,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
   }
   .index__dash.is-live,
   .index__dash.is-pulse,
-  .col__map-label,
-  .col__live {
+  .col__map-label {
     animation: none;
   }
 }

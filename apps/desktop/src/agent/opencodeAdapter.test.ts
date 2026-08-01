@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import {
   accumulateOpenCodeTokens,
   appendOpenCodeTextDelta,
+  buildOpenCodeTokenUsageKey,
   isOpenCodeNotFound,
   isOpenCodeTurnEnd,
+  normalizeOpenCodeTokenUsage,
   parseOpenCodeModels,
   reconcileOpenCodeText,
   selectOpenCodeTurnId,
@@ -25,6 +27,14 @@ describe("OpenCode pure translation helpers", () => {
       { id: "opencode-go/deepseek-v4-flash", label: "DeepSeek V4 Flash", reasoningEfforts: ["high", "max"], defaultReasoningEffort: "high" },
       { id: "opencode/no-variants", label: "No Variants" },
     ]);
+  });
+
+  test("keeps each model's advertised context capacity", () => {
+    const output = [
+      "openai/model-with-limit",
+      JSON.stringify({ providerID: "openai", id: "model-with-limit", name: "Limited", limit: { context: 128000 } }, null, 2),
+    ].join("\n");
+    expect(parseOpenCodeModels(output)[0]?.contextWindowTokens).toBe(128000);
   });
 
   test("reconciles snapshot-then-delta and delta-then-snapshot without duplication", () => {
@@ -66,14 +76,62 @@ describe("OpenCode pure translation helpers", () => {
     expect(isOpenCodeNotFound(deep)).toBe(false);
   });
 
-  test("accumulates input and output plus reasoning, excluding cache", () => {
+  test("accumulates per-step input and output plus reasoning, excluding cache", () => {
     let usage = { input: 0, output: 0 };
     for (const tokens of [
-      { input: 8555, output: 46, reasoning: 26, cache: { read: 0 } },
-      { input: 107, output: 88, reasoning: 0, cache: { read: 8576 } },
-      { input: 156, output: 8, reasoning: 0, cache: { read: 8704 } },
+      { input: 8555, output: 46, reasoning: 26, cache: { read: 0, write: 0 } },
+      { input: 107, output: 88, reasoning: 0, cache: { read: 8576, write: 0 } },
+      { input: 156, output: 8, reasoning: 0, cache: { read: 8704, write: 0 } },
     ]) usage = accumulateOpenCodeTokens(usage, tokens);
     expect(usage).toEqual({ input: 8818, output: 168 });
+  });
+
+  test("normalizes assistant token snapshots into thread usage", () => {
+    expect(
+      normalizeOpenCodeTokenUsage(
+        {
+          input: 120,
+          output: 80,
+          reasoning: 30,
+          cache: { read: 10, write: 5 },
+        },
+        200_000,
+      ),
+    ).toEqual({
+      input: 120,
+      output: 110,
+      total: 245,
+      contextUsed: 245,
+      contextWindow: 200_000,
+    });
+    expect(
+      normalizeOpenCodeTokenUsage({
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeOpenCodeTokenUsage({
+        input: 1,
+        output: 1,
+        reasoning: 1,
+      }),
+    ).toBeUndefined();
+  });
+
+  test("deduplicates assistant usage by message id and token fields", () => {
+    const tokens = {
+      input: 120,
+      output: 80,
+      reasoning: 30,
+      cache: { read: 10, write: 5 },
+    };
+    const key = buildOpenCodeTokenUsageKey({ messageId: "msg_1", tokens, contextWindow: 200_000 });
+    expect(key).toBe("msg_1:120:10:5:80:30:200000");
+    expect(buildOpenCodeTokenUsageKey({ messageId: "msg_1", tokens })).toBe("msg_1:120:10:5:80:30:");
+    expect(buildOpenCodeTokenUsageKey({ messageId: "msg_1", tokens: { input: 1 } })).toBeUndefined();
   });
 
   test("steering reuses the active turn id", () => {

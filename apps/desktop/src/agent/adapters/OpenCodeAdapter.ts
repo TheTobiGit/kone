@@ -6,16 +6,17 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../pla
 import { probe } from "../spawn.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
-import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
 
 type RecordLike = Record<string, any>;
 type OpenCodeEvent = { type: string; properties?: RecordLike };
 type OpenCodeClient = { request(method: string, route: string, body?: unknown, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
 type OpenCodeSession = {
-  threadId: string; cwd: string; model?: string; variant?: string; mode: InteractionMode; baseUrl: string;
+  threadId: string; cwd: string; model?: string; variant?: string; contextWindow?: number; mode: InteractionMode; baseUrl: string;
   client: OpenCodeClient; server: OpenCodeServer; openCodeSessionId: string; activeTurnId?: string;
   eventsAbort: AbortController; messageRoleById: Map<string, string>; partById: Map<string, RecordLike>;
-  emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>; turnTokens: { input: number; output: number };
+  emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
+  lastEmittedTokenUsageKey?: string;
   pendingPermissions: Map<string, string>; pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
   disposed: boolean; interrupting: boolean; planTasks: PlanTask[]; exitNotified: boolean;
 };
@@ -45,7 +46,9 @@ export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
        const id = providerId && modelId ? `${providerId}/${modelId}` : slug;
        const variants = record(model.variants);
        const efforts = variants ? Object.keys(variants) : [];
-       models.push({ id, label: name, ...(efforts.length ? { reasoningEfforts: efforts } : {}), ...(efforts.includes("medium") ? { defaultReasoningEffort: "medium" } : efforts.includes("high") ? { defaultReasoningEffort: "high" } : {}) });
+        const limit = record(model.limit);
+        const contextWindowTokens = typeof limit?.context === "number" && Number.isFinite(limit.context) && limit.context > 0 ? limit.context : undefined;
+        models.push({ id, label: name, ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}), ...(efforts.length ? { reasoningEfforts: efforts } : {}), ...(efforts.includes("medium") ? { defaultReasoningEffort: "medium" } : efforts.includes("high") ? { defaultReasoningEffort: "high" } : {}) });
     } catch { /* skip one malformed block */ }
   };
   for (const line of stdout.split(/\r?\n/)) {
@@ -83,6 +86,81 @@ export function isOpenCodeNotFound(value: unknown): boolean {
 export function accumulateOpenCodeTokens(current: { input: number; output: number }, tokens: unknown): { input: number; output: number } {
   const t = record(tokens); if (!t) return current;
   return { input: current.input + (typeof t.input === "number" ? t.input : 0), output: current.output + (typeof t.output === "number" ? t.output : 0) + (typeof t.reasoning === "number" ? t.reasoning : 0) };
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && Number.isInteger(value) ? value : undefined;
+}
+
+/** OpenCode reports cumulative session totals on assistant messages and step ends. */
+export function normalizeOpenCodeTokenUsage(tokens: unknown, contextWindow?: number): TokenUsage | undefined {
+  const tokenRecord = record(tokens);
+  if (!tokenRecord) return undefined;
+  const inputTokens = nonNegativeInteger(tokenRecord.input);
+  const outputTokens = nonNegativeInteger(tokenRecord.output);
+  const reasoningOutputTokens = nonNegativeInteger(tokenRecord.reasoning);
+  const cache = record(tokenRecord.cache);
+  const cacheReadTokens = nonNegativeInteger(cache?.read);
+  const cacheWriteTokens = nonNegativeInteger(cache?.write);
+  if (
+    inputTokens === undefined
+    || outputTokens === undefined
+    || reasoningOutputTokens === undefined
+    || cacheReadTokens === undefined
+    || cacheWriteTokens === undefined
+  ) {
+    return undefined;
+  }
+  const cachedInputTokens = cacheReadTokens + cacheWriteTokens;
+  const total = inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens;
+  if (total <= 0) return undefined;
+  const normalizedContextWindow = typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+    ? contextWindow
+    : undefined;
+  const contextUsed = normalizedContextWindow !== undefined ? Math.min(total, normalizedContextWindow) : total;
+  return {
+    input: inputTokens,
+    output: outputTokens + reasoningOutputTokens,
+    total,
+    contextUsed,
+    ...(normalizedContextWindow !== undefined ? { contextWindow: normalizedContextWindow } : {}),
+  };
+}
+
+export function buildOpenCodeTokenUsageKey(input: {
+  messageId: string;
+  tokens: unknown;
+  contextWindow?: number;
+}): string | undefined {
+  const tokenRecord = record(input.tokens);
+  if (!tokenRecord) return undefined;
+  const inputTokens = nonNegativeInteger(tokenRecord.input);
+  const outputTokens = nonNegativeInteger(tokenRecord.output);
+  const reasoningOutputTokens = nonNegativeInteger(tokenRecord.reasoning);
+  const cache = record(tokenRecord.cache);
+  const cacheReadTokens = nonNegativeInteger(cache?.read);
+  const cacheWriteTokens = nonNegativeInteger(cache?.write);
+  if (
+    inputTokens === undefined
+    || outputTokens === undefined
+    || reasoningOutputTokens === undefined
+    || cacheReadTokens === undefined
+    || cacheWriteTokens === undefined
+  ) {
+    return undefined;
+  }
+  const normalizedContextWindow = typeof input.contextWindow === "number" && Number.isFinite(input.contextWindow) && input.contextWindow > 0
+    ? input.contextWindow
+    : "";
+  return [
+    input.messageId,
+    inputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    normalizedContextWindow,
+  ].join(":");
 }
 
 function permissionRules(mode: InteractionMode): RecordLike[] {
@@ -146,7 +224,7 @@ export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
   readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true };
-  private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null;
+  private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   constructor(emit: EmitEvent) { this.emit = emit; }
 
   async discover(): Promise<ProviderStatus> {
@@ -164,7 +242,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildOpenCodeEnv();
-    for (let attempt = 0; attempt < 2; attempt += 1) { const output = await probe(OPENCODE_BINARY, ["models", "--verbose"], env, 30_000); if (output !== null) { const models = parseOpenCodeModels(output); if (models.length || attempt === 1) return models; } if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000)); }
+    for (let attempt = 0; attempt < 2; attempt += 1) { const output = await probe(OPENCODE_BINARY, ["models", "--verbose"], env, 30_000); if (output !== null) { const models = parseOpenCodeModels(output); if (models.length || attempt === 1) { for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens); return models; } } if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000)); }
     throw new Error("OpenCode model inventory failed.");
   }
 
@@ -186,7 +264,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     }
     if (!sessionId) sessionId = responseData(await client.request("POST", "/session", { permission: permissionRules(mode) }))?.id;
     if (!sessionId) { await server.dispose(); throw new Error("OpenCode session response did not include an id."); }
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), turnTokens: { input: 0, output: 0 }, pendingPermissions: new Map(), pendingUserInputs: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -200,8 +278,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const { buildOpenCodeAttachmentParts, composePromptText } = await import("../promptAttachments.js");
     const files = await buildOpenCodeAttachmentParts(input.attachments); const prompt = composePromptText(text, "");
     if (!prompt && !files.length) throw new Error("Turn input must include text or an attachment.");
+    if (input.model) { session.model = input.model; session.contextWindow = this.modelContextWindows.get(input.model); }
     const model = modelSlug(input.model ?? session.model); if (!model) throw new Error("OpenCode model selection must use the 'provider/model' format.");
-    const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { session.activeTurnId = turnId; session.turnTokens = { input: 0, output: 0 }; this.emit({ ...base(session), type: "turn.started", turnId }); }
+    const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { session.activeTurnId = turnId; session.lastEmittedTokenUsageKey = undefined; this.emit({ ...base(session), type: "turn.started", turnId }); }
     try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/prompt_async`, { model, ...(input.effort || session.variant ? { variant: input.effort ?? session.variant } : {}), parts: [...(prompt ? [{ type: "text", text: prompt }] : []), ...files] }); }
     catch (error) { if (!steering) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "failed", message: errorMessage(error) }); } throw error; }
     return { threadId: input.threadId, turnId };
@@ -236,14 +315,40 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.eventsAbort.abort();
   }
 
+  private emitTokenUsage(session: OpenCodeSession, usage: TokenUsage): void {
+    this.emit({ ...base(session), type: "thread.token-usage.updated", usage });
+  }
+
+  private maybeEmitAssistantTokenUsage(session: OpenCodeSession, messageId: string, tokens: unknown): void {
+    const usage = normalizeOpenCodeTokenUsage(tokens, session.contextWindow);
+    const usageKey = usage ? buildOpenCodeTokenUsageKey({ messageId, tokens, contextWindow: session.contextWindow }) : undefined;
+    if (!usage || !usageKey || usageKey === session.lastEmittedTokenUsageKey) return;
+    session.lastEmittedTokenUsageKey = usageKey;
+    this.emitTokenUsage(session, usage);
+  }
+
   private handleEvent(session: OpenCodeSession, event: OpenCodeEvent): void {
     const p = event.properties ?? {}; const active = session.activeTurnId;
     switch (event.type) {
-      case "message.updated": { const info = record(p.info); if (info?.id && info.role) { session.messageRoleById.set(info.id, info.role); for (const part of session.partById.values()) if (part.messageID === info.id) this.handlePart(session, part); } break; }
+      case "message.updated": {
+        const info = record(p.info);
+        if (info?.id && info.role) {
+          session.messageRoleById.set(info.id, info.role);
+          if (info.role === "assistant" && info.tokens !== undefined) {
+            this.maybeEmitAssistantTokenUsage(session, info.id, info.tokens);
+          }
+          for (const part of session.partById.values()) if (part.messageID === info.id) this.handlePart(session, part);
+        }
+        break;
+      }
       case "message.removed": session.messageRoleById.delete(p.messageID); break;
       case "message.part.delta": { const part = session.partById.get(p.partID); const role = part?.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (!part || (role !== undefined && role !== "assistant") || !active || typeof p.delta !== "string") break; const prior = session.emittedTextByPartId.get(p.partID) ?? ""; const merged = appendOpenCodeTextDelta(prior, p.delta); session.emittedTextByPartId.set(p.partID, merged.text); this.emit({ ...base(session), type: "item.updated", turnId: active, item: { itemId: p.partID, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text } }); break; }
       case "message.part.updated": this.handlePart(session, p.part); break;
-      case "session.next.step.ended": session.turnTokens = accumulateOpenCodeTokens(session.turnTokens, p.tokens); break;
+      case "session.next.step.ended": {
+        const usage = normalizeOpenCodeTokenUsage(p.tokens, session.contextWindow);
+        if (usage) this.emitTokenUsage(session, usage);
+        break;
+      }
       case "session.idle": this.complete(session); break;
       case "session.status": if (p.status?.type === "idle") this.complete(session); break;
        case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
@@ -279,9 +384,6 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.activeTurnId = undefined;
     const interrupting = session.interrupting;
     session.interrupting = false;
-    const usage = session.turnTokens;
-    session.turnTokens = { input: 0, output: 0 };
-    this.emit({ ...base(session), type: "thread.token-usage.updated", usage: { input: usage.input, output: usage.output, total: usage.input + usage.output } });
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }

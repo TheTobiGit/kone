@@ -357,6 +357,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     provider?: ProviderKind;
     model?: string;
     conversationId?: string;
+    contextUsed?: number;
+    contextWindow?: number;
+    compactsAutomatically?: boolean;
   }): void {
     const providerChanged = Boolean(stored.provider) && stored.provider !== provider.value;
     if (stored.provider) provider.value = stored.provider;
@@ -366,6 +369,18 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (stored.model !== undefined) model.value = stored.model;
     else if (providerChanged) model.value = undefined;
     pendingResumeId = stored.conversationId;
+    // Restore the last context-window snapshot so a reopened thread shows its
+    // meter filled straight away (sweeping in), instead of an empty ring until
+    // the next turn re-reports usage. Absent snapshot → leave the meter hidden.
+    tokenUsage.value =
+      stored.contextWindow !== undefined || stored.contextUsed !== undefined
+        ? {
+            total: stored.contextUsed,
+            contextUsed: stored.contextUsed,
+            contextWindow: stored.contextWindow,
+            compactsAutomatically: stored.compactsAutomatically,
+          }
+        : null;
   }
 
   /** Reload the project's last persisted thread into this timeline, adopting its
@@ -462,8 +477,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     threadId.value = stored.threadId;
     blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
     title.value = stored.title?.trim() || "";
-    adoptStoredThread(stored);
-    tokenUsage.value = null;
+    adoptStoredThread(stored); // also restores the persisted context-meter snapshot
     error.value = null;
     sessionState.value = "starting";
     await start();
@@ -952,6 +966,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           : `Done — for "${prompt}", the parts now render in the true order they arrived: thinking, tool calls, and text interleaved, exactly like a real ${provider.value} session. This is a mocked reply (no agent ran in the browser), but every event flowed through the same stream.`,
       );
       if (cancelled) return;
+      // Feed the context meter so its come-in and fill are reviewable in browser
+      // dev (no bridge) — it grows with each turn toward the window, crossing the
+      // warm/full colour steps after enough turns. No-op cost in the desktop mock.
+      const priorTurns = blocks.value.filter((b) => b.role === "user").length;
+      const contextWindow = 200_000;
+      const contextUsed = Math.min(contextWindow, 14_000 + priorTurns * 26_000);
+      tokenUsage.value = { total: contextUsed, contextUsed, contextWindow, compactsAutomatically: true };
       reduce({ ...base("turn.completed"), type: "turn.completed", turnId } as RuntimeEvent);
       sessionState.value = "ready";
       stopMock();

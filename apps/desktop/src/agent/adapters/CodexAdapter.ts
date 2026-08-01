@@ -711,6 +711,15 @@ export class CodexAdapter implements ProviderAdapter {
       // only sent `last` (or an older flat payload).
       const breakdown = totalBreakdown ?? lastBreakdown ?? tokenUsage;
       if (!breakdown) return;
+      const contextUsed =
+        numberOrUndefined(lastBreakdown?.totalTokens) ??
+        numberOrUndefined(lastBreakdown?.total_tokens) ??
+        numberOrUndefined(lastBreakdown?.total);
+      const contextWindow =
+        numberOrUndefined(tokenUsage?.modelContextWindow) ??
+        numberOrUndefined(tokenUsage?.model_context_window) ??
+        numberOrUndefined(payload?.modelContextWindow) ??
+        numberOrUndefined(payload?.model_context_window);
       const total =
         numberOrUndefined(totalBreakdown?.totalTokens) ??
         numberOrUndefined(totalBreakdown?.total_tokens) ??
@@ -732,6 +741,9 @@ export class CodexAdapter implements ProviderAdapter {
             numberOrUndefined(breakdown.output_tokens) ??
             numberOrUndefined(breakdown.output),
           total,
+          ...(contextUsed !== undefined ? { contextUsed } : {}),
+          ...(contextWindow !== undefined ? { contextWindow } : {}),
+          ...(contextWindow !== undefined ? { compactsAutomatically: true } : {}),
         },
       });
     });
