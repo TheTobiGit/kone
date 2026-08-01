@@ -70,6 +70,15 @@ export interface OpenOptions {
   threadId?: string;
 }
 
+export interface RestoreOptions {
+  /** Skip eager attach of the focused thread/terminal (and the boot-thread
+   *  consumer) on restore. The project home opens on the working-tree overview,
+   *  so spawning a stored conversation here would block git/history IPC behind a
+   *  heavy openThread + agent start. Heavy panes attach when the board surface
+   *  is shown or the pane is focused. */
+  deferHeavyAttach?: boolean;
+}
+
 export interface UseBoardReturn {
   entries: Ref<PaneEntry[]>;
   panes: ComputedRef<Pane[]>;
@@ -106,6 +115,7 @@ export interface UseBoardReturn {
   restore: (
     layout: BoardLayout | null,
     knownThreadIds?: ReadonlySet<string>,
+    opts?: RestoreOptions,
   ) => Promise<boolean>;
 }
 
@@ -749,11 +759,13 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   async function restore(
     layout: BoardLayout | null,
     knownThreadIds?: ReadonlySet<string>,
+    opts?: RestoreOptions,
   ): Promise<boolean> {
     if (!layout || layout.version !== 1 || !Array.isArray(layout.panes)) return false;
     const sanitized = sanitizeLayout(layout, knownThreadIds);
     if (!sanitized.length && layout.panes.length > 0) return false;
     const firstThread = sanitized.find((e) => e.kind === "thread");
+    const deferHeavy = opts?.deferHeavyAttach ?? false;
 
     await mutate(async () => {
       entries.value = sanitized;
@@ -765,7 +777,8 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       // Attach eagerly only what's cheap or needed to land on content:
       //   · every eagerAttach kind (the scratchpad — text, no process),
       //   · the focused pane, whatever its kind (you should see content, not a
-      //     dormant placeholder, on the pane you left focused),
+      //     dormant placeholder, on the pane you left focused) — unless
+      //     `deferHeavyAttach` (project-home open: thread/terminal spawn later),
       //   · exactly ONE thread when the focused pane isn't itself a thread, so
       //     the boot session useAgent already spawned gets consumed (openThread
       //     evicts the idle boot) instead of lingering as an extra pane.
@@ -776,8 +789,8 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       const toAttach = new Set<PaneId>();
       for (const e of sanitized) if (paneKindMeta(e.kind).eagerAttach) toAttach.add(e.id);
       const focusedEntry = sanitized.find((e) => e.id === focusedId.value);
-      if (focusedEntry) toAttach.add(focusedEntry.id);
-      if (firstThread && focusedEntry?.kind !== "thread") toAttach.add(firstThread.id);
+      if (focusedEntry && !deferHeavy) toAttach.add(focusedEntry.id);
+      if (firstThread && focusedEntry?.kind !== "thread" && !deferHeavy) toAttach.add(firstThread.id);
       for (const id of toAttach) await attach(id);
 
       // G6 — dispose stray idle blank threads. useAgent still spawns one session at

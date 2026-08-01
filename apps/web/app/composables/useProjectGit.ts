@@ -44,21 +44,27 @@ export function useProjectGit(project: Ref<Project>) {
   }
 
   async function refresh() {
-    const [detected, status] = await Promise.all([
-      git.detect(project.value.path),
-      git.status(project.value.path),
-    ]);
-    repo.value = detected !== null;
-    if (status) {
-      applyStatus(status);
-    } else {
-      // Not a repo (or the heavier read is unavailable in dev) — fall back to the
-      // lightweight detect summary so the greeting still reads sensibly.
-      branch.value = detected?.branch ?? null;
-      changes.value = [];
-      hasCommits.value = true;
-      ahead.value = detected?.ahead ?? 0;
-      behind.value = detected?.behind ?? 0;
+    try {
+      const [detected, status] = await Promise.all([
+        git.detect(project.value.path),
+        git.status(project.value.path),
+      ]);
+      repo.value = detected !== null;
+      if (status) {
+        applyStatus(status);
+      } else {
+        // Not a repo (or the heavier read is unavailable in dev) — fall back to the
+        // lightweight detect summary so the greeting still reads sensibly.
+        branch.value = detected?.branch ?? null;
+        changes.value = [];
+        hasCommits.value = true;
+        ahead.value = detected?.ahead ?? 0;
+        behind.value = detected?.behind ?? 0;
+        loaded.value = true;
+      }
+    } catch {
+      // A rejected IPC/git call must not leave the project home stuck in its
+      // loading shell forever — settle the greeting and let the watcher retry.
       loaded.value = true;
     }
   }

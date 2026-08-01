@@ -328,6 +328,14 @@ const pickerProviders = computed<PickerProvider[]>(() =>
 // tree will land later — the thread never clears, so it's safe to leave for now.)
 const surface = ref<"overview" | "board">("overview");
 
+// A restored thread/terminal pane stays dormant while the overview is showing.
+// Attach it once the board surface is revealed so the column is live on entry.
+watch(surface, (s, prev) => {
+  if (s !== "board" || prev === "board") return;
+  const id = focusedId.value;
+  if (id) void board.attach(id);
+});
+
 onMounted(async () => {
   // Providers + models are warmed at app open (agent-warmup plugin); this awaits
   // that in-flight run (deduped — no second probe) or returns instantly if done,
@@ -401,7 +409,11 @@ onMounted(async () => {
   // their client-minted id and would otherwise return as empty columns. No
   // bridge (nuxt dev) → undefined, and restore keeps ids unfiltered.
   const knownThreadIds = await loadKnownThreadIds(props.project.path);
-  await board.restore(layout, knownThreadIds);
+  // Land on the working-tree home unless we're resuming a specific thread.
+  // Defer spawning the saved board's focused thread/terminal — openThread +
+  // agent start on mount would queue behind that work and leave git + history
+  // IPC stuck in the loading shell (greeting with no changes/sessions).
+  await board.restore(layout, knownThreadIds, { deferHeavyAttach: !resume });
   if (resume) {
     // Launcher asked to resume a specific conversation. It's often already on the
     // restored board (as a live or dormant thread pane) — focus it there, which
@@ -1063,7 +1075,7 @@ function onDiscardFile(path: string) {
         :aria-label="surface === 'board' ? 'Back to project' : 'Back to projects'"
         :initial="{ opacity: 0, x: -6 }"
         :animate="{ opacity: 1, x: 0 }"
-        :transition="{ duration: 0.4, delay: 0.05 }"
+        :transition="{ duration: 0.3 }"
         @click="onBack"
       >
         <HugeiconsIcon
@@ -1205,7 +1217,7 @@ function onDiscardFile(path: string) {
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
-      :transition="{ type: 'spring', stiffness: 210, damping: 22, mass: 0.9, delay: 0.92 }"
+      :transition="{ type: 'spring', stiffness: 260, damping: 24, mass: 0.9, delay: 0.42 }"
       @mouseenter="folderHovered = true"
       @mouseleave="folderHovered = false"
     >
@@ -1481,12 +1493,12 @@ function onDiscardFile(path: string) {
      --proj-enter-* and layer their own internal stagger on top. Defined on the
      mount root (not a per-surface class) so the docked composer keeps its delay
      regardless of which surface owns the viewport. */
-  --proj-enter-back: 50ms;
-  --proj-enter-greet: 120ms;
-  --proj-enter-changes: 340ms;
-  --proj-enter-sessions: 580ms;
-  --proj-enter-composer: 760ms;
-  --proj-enter-folder: 920ms;
+   --proj-enter-back: 0ms;
+   --proj-enter-greet: 30ms;
+   --proj-enter-changes: 130ms;
+   --proj-enter-sessions: 230ms;
+   --proj-enter-composer: 330ms;
+   --proj-enter-folder: 400ms;
 }
 
 /* Each layer holds the viewport and centres its content, exactly as the old
