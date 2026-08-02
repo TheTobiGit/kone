@@ -3,10 +3,10 @@ import { computed, h, nextTick, onMounted, onUnmounted, ref, render, watch } fro
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, Attachment01Icon, FlashIcon } from "@hugeicons/core-free-icons";
-import ProviderLogo from "~/components/ProviderLogo.vue";
 import ParticleOrb from "~/components/ParticleOrb.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
 import MentionChip from "~/components/MentionChip.vue";
+import ProviderLogo from "~/components/ProviderLogo.vue";
 import type { AttachmentKind, GitProjectFile, InteractionMode } from "~/types/desktop";
 import { useProjectFiles } from "~/composables/useProjectFiles";
 import {
@@ -110,6 +110,9 @@ const currentWindow = computed(() => {
 const modelName = computed(
   () => currentFamily.value?.label ?? props.modelId ?? "Default model",
 );
+// The mark beside the model name is the model's own vendor — already resolved
+// on the family (a harness provider's family carries its true vendor, so an
+// opencode DeepSeek model shows DeepSeek here).
 const modelBrand = computed(() => currentFamily.value?.brand ?? "generic");
 
 // The model name opens the full picker (hosted by the parent); the composer

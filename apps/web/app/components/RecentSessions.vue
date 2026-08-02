@@ -12,6 +12,7 @@ import { computed } from "vue";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { Magnet } from "~/components/ui/magnet";
+import { sessionBrand } from "~/utils/modelCatalog";
 import type { SessionSummary } from "~/types/session";
 
 // The "recent conversations" block on Project Home — the PINNED / RECENT session
@@ -133,7 +134,7 @@ function hasDiff(s: SessionSummary): boolean {
         >
           <div class="rs__main">
             <div class="rs__title">
-              <ProviderLogo :brand="s.brand" :size="16" />
+              <ProviderLogo :brand="sessionBrand(s.provider, s.brand, s.model)" :size="16" />
               <span class="rs__name">{{ s.title }}</span>
             </div>
 

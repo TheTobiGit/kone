@@ -201,6 +201,24 @@ function brandOf(core: string): { brand: BrandKey; vendor: string } {
   return { brand: "generic", vendor: "" };
 }
 
+/** The logomark a running session/thread should show. For a harness provider
+ *  (opencode) that's the model's *true* vendor resolved from its id — an
+ *  opencode thread on DeepSeek shows DeepSeek — falling back to the provider's
+ *  own mark (`providerBrand`) when the model names no vendor we know. For a
+ *  single-vendor provider it's just that provider's mark. So every session
+ *  surface — strip headers, recent rows, away pills — shares one rule. */
+export function sessionBrand(
+  provider: ProviderKind,
+  providerBrand: BrandKey,
+  modelId: string | undefined,
+): BrandKey {
+  if (modelId && HARNESS_PROVIDERS.has(provider)) {
+    const { brand } = brandOf(modelId);
+    if (brand !== "generic") return brand;
+  }
+  return providerBrand;
+}
+
 /** Peel a trailing effort tier off a raw id → { core, tier }. Ids with no
  *  recognised suffix are their own core with a `base` tier. */
 function splitEffort(id: string): { core: string; tier: EffortTier } {

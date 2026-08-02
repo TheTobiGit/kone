@@ -41,7 +41,7 @@ const props = defineProps<{
   /** The thread's working title — the pill's identity, shown as a quiet overline
    *  so you know *which* conversation is cooking while you're away from it. */
   threadTitle?: string;
-  /** Vendor logomark of the thread's provider — a quiet cue to whose turn it is. */
+  /** Vendor logomark of the thread's model — a quiet cue to whose turn it is. */
   brand?: BrandKey;
   /** The checklist row the thread is on, when it has a plan. It outranks the
    *  moment-to-moment tool status as the pill's headline — "Wiring the pill

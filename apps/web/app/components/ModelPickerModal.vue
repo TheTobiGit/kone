@@ -5,8 +5,7 @@ import { motion } from "motion-v";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon } from "@hugeicons/core-free-icons";
-import { EFFORT_META, HARNESS_PROVIDERS, type BrandKey, type EffortTier, type PickerProvider } from "~/utils/modelCatalog";
-import ProviderBadge from "~/components/ProviderBadge.vue";
+import { EFFORT_META, type BrandKey, type EffortTier, type PickerProvider } from "~/utils/modelCatalog";
 import type { ProviderKind } from "~/types/desktop";
 
 // The model picker — a persistent left rail of providers next to a masked model
@@ -239,17 +238,6 @@ function seedPending() {
 }
 function openProvider(p: MProvider) {
   provider.value = p;
-}
-// The mark shown for a model row. For a harness provider (opencode) the main
-// mark is the harness itself and the model's true vendor sits as a corner
-// badge — so a row reads "opencode, but this model". Anywhere else the model's
-// own vendor mark is shown alone, exactly as before.
-function modelBadge(m: MModel): { brand: BrandKey; corner?: BrandKey } {
-  const p = realProviders.value.find((x) => x.id === m.providerId);
-  if (p && HARNESS_PROVIDERS.has(m.providerId) && p.brand !== m.brand) {
-    return { brand: p.brand, corner: m.brand };
-  }
-  return { brand: m.brand };
 }
 function focus(
   m: MModel,
@@ -566,7 +554,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
                   :class="{ 'mp-row--on': isCurrentModel(m) || isPending(defaultEffortId(m)) }"
                   @click="selectModel(m)"
                 >
-                  <span class="mp-icon"><ProviderBadge :brand="modelBadge(m).brand" :corner="modelBadge(m).corner" :size="17" /></span>
+                  <span class="mp-icon"><ProviderLogo :brand="m.brand" :size="17" /></span>
                   <span class="mp-body">
                     <span class="mp-label">{{ m.label }}</span>
                     <span class="mp-meta">

@@ -108,6 +108,9 @@ export type ThreadSummary = {
   threadId: string;
   title: string;
   provider: ProviderKind;
+  /** The raw model id the thread last ran on, if known — lets the away pill show
+   *  a harness provider's true model vendor on its badge corner. */
+  model?: string;
   block: AssistantBlock | null;
   /** The checklist row the thread is on right now (null when it has no plan) —
    *  what the pill names while you're away from the conversation. */
@@ -1186,6 +1189,7 @@ export function useAgent(options: UseAgentOptions) {
       threadId: s.threadId.value,
       title: s.title.value,
       provider: s.provider.value,
+      model: s.model.value,
       block: latestAssistant(s.blocks.value),
       task: activePlanTask(s.blocks.value),
       busy: s.busy.value,
