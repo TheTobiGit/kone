@@ -12,6 +12,11 @@ const props = defineProps<{
   /** Viewport anchor — left edge of the seam trigger, vertically centred. */
   x: number;
   y: number;
+  /** Which way the card unfolds from the anchor. Trailing seams sit at a column's
+   *  right edge, so the card opens left, into the column ("left", the default). The
+   *  leading seam sits at the board's left edge with nothing to its left, so it
+   *  opens "right" instead — otherwise the card spills off the viewport. */
+  side?: "left" | "right";
   /** The project's one scratchpad is already on the strip — can't insert a 2nd. */
   scratchpadOpen?: boolean;
   /** The strip is a single untouched thread — inserting another would just stack
@@ -76,6 +81,7 @@ function onPick(kind: PaneKind, disabled: boolean): void {
         <div class="insert-layer" aria-hidden="true" @click="emit('close')" />
         <div
           class="insert-anchor"
+          :class="{ 'insert-anchor--right': side === 'right' }"
           :style="{
             top: `${y}px`,
             left: `${x}px`,
@@ -156,12 +162,19 @@ function onPick(kind: PaneKind, disabled: boolean): void {
   pointer-events: none;
   transform: translate(calc(-100% - 8px), -50%);
 }
+/* Leading seam: unfold to the right of the anchor instead of the left. */
+.insert-anchor--right {
+  transform: translate(8px, -50%);
+}
 
 .insert-pop {
   width: min(11.5rem, calc(100vw - 2rem));
   pointer-events: auto;
   transform-origin: right center;
   will-change: transform, opacity;
+}
+.insert-anchor--right .insert-pop {
+  transform-origin: left center;
 }
 
 .insert-card {

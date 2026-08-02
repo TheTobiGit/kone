@@ -450,6 +450,11 @@ function animateZoom(from: string): void {
 
 const isSolo = computed(() => props.panes.length === 1);
 
+/** The leading seam mirrored before the first column (see template) is a real
+ *  14px-wide element in the plane, so it shifts the lone column right of centre
+ *  unless the start pad gives its width back. Matches `.col-joint` width in CSS. */
+const LEAD_JOINT_PX = 14;
+
 /** Leading pad centres the lone thread; trailing pad lets the last column scroll
  *  to centre when there are two or more. */
 const soloPadStart = computed(() => {
@@ -457,7 +462,9 @@ const soloPadStart = computed(() => {
   const s = props.panes[0];
   if (!s) return 0;
   const colW = Math.min(presetFor(s.id).px, railWidth.value);
-  return Math.max(0, (railWidth.value - colW) / 2);
+  // Pull the pad in by the leading seam's width so the column itself — not the
+  // seam+column pair — sits centred, exactly as it did before the seam existed.
+  return Math.max(0, (railWidth.value - colW) / 2 - LEAD_JOINT_PX);
 });
 const railPads = computed(() => {
   // In overview nothing centre-scrolls, so the half-screen trailing pad would just be
@@ -951,7 +958,9 @@ function toggleJoint(i: number, target: EventTarget | null): void {
   }
   const rect = el.getBoundingClientRect();
   menuAnchor.value = {
-    x: rect.left,
+    // The leading seam (-1) unfolds rightward, so anchor its card to the seam's
+    // right edge; every trailing seam unfolds leftward from its left edge.
+    x: i === -1 ? rect.right : rect.left,
     y: rect.top + rect.height / 2,
   };
   openSeam.value = i;
@@ -1154,6 +1163,24 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
           <div class="rail__pad rail__pad--start" aria-hidden="true" />
 
           <template v-for="(c, i) in panes" :key="c.id">
+            <!-- Leading seam — first column only. Every column carries a trailing
+                 seam (below) that inserts to its right; without borders that seam is
+                 also the one visible mark of a column's right edge. The leftmost
+                 column's left edge — the board's own left bound — has no such mark, so
+                 mirror a seam there. Insert index -1 → `seamIndex + 1` = 0, the left
+                 edge (useBoard clamps `at` to [0, length]). -->
+            <button
+              v-if="i === 0"
+              type="button"
+              class="col-joint col-joint--lead"
+              aria-label="Insert column at start"
+              aria-haspopup="dialog"
+              :aria-expanded="openSeam === -1"
+              :inert="overview"
+              @click.stop="toggleJoint(-1, $event.currentTarget)"
+            >
+              <span class="col-joint__pill" aria-hidden="true" />
+            </button>
             <section
               :ref="(el) => setCol(c.id, el)"
               class="col"
@@ -1368,6 +1395,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
       :open="openSeam !== null"
       :x="menuAnchor.x"
       :y="menuAnchor.y"
+      :side="openSeam === -1 ? 'right' : 'left'"
       :scratchpad-open="hasScratchpad"
       :blank-thread-open="hasBlankThread"
       @close="closeJoint"
