@@ -383,6 +383,49 @@ export type PlanTask = {
   status: PlanTaskStatus;
 };
 
+// ── nested subagents ─────────────────────────────────────────────────────────
+// A provider-native nested agent: the main agent's Task/Agent tool call spawns a
+// child agent that runs its own turn and reports back as the tool's result. NOT
+// a second thread/session — the run stays nested inside the parent turn, hanging
+// off the `tool_call` item that spawned it. Mirrors apps/desktop/src/agent/types.ts.
+
+/** Lifecycle of one subagent run. `stopped` is a user/parent-initiated kill,
+ *  distinct from a `failed` run. */
+export type SubagentStatus = "starting" | "running" | "completed" | "failed" | "stopped";
+
+/** Identity + status for one subagent run, without its transcript. Every
+ *  `subagent.*` event carries a full snapshot, so a consumer merges not patches. */
+export type SubagentRunSnapshot = {
+  /** The spawning Task/Agent tool-use id — the run's stable id. */
+  toolUseId: string;
+  /** The provider's own task id, once known. Needed to stop the run. */
+  taskId?: string;
+  /** `itemId` of the parent turn's `tool_call` item this run hangs under. */
+  parentItemId?: string;
+  /** The agent definition that was invoked, e.g. `explore` / `worker-high`. */
+  agentType?: string;
+  /** The Task tool's one-line `description` — the run's label. */
+  description?: string;
+  /** The brief the parent handed the child. */
+  prompt?: string;
+  model?: string;
+  effort?: string;
+  /** True for a fire-and-forget background run. */
+  background?: boolean;
+  status: SubagentStatus;
+  /** The child's final report, once it settles. */
+  summary?: string;
+  /** Name of the tool the child ran most recently — a live progress hint. */
+  lastToolName?: string;
+  tokens?: number;
+  toolUses?: number;
+  startedAt: number;
+  endedAt?: number;
+};
+
+/** A subagent run plus the transcript it produced, in arrival order. */
+export type SubagentRun = SubagentRunSnapshot & { items: RuntimeItem[] };
+
 export type RuntimeItem = {
   itemId: string;
   kind: RuntimeItemKind;
@@ -396,6 +439,10 @@ export type RuntimeItem = {
   /** A tool_call's full result body (command output, a diff, a changed-file
    *  list) — shown on demand. Undefined when there's nothing to expand. */
   detail?: string;
+  /** For a Task/Agent `tool_call`: the nested run it spawned, assembled by the
+   *  consumer from the `subagent.*` events plus items tagged with this run's
+   *  `subagentToolUseId` — adapters emit the pieces, never the tree. */
+  subagent?: SubagentRun;
 };
 
 export type TokenUsage = {
@@ -453,9 +500,31 @@ export type RuntimeEvent =
       reason: RuntimeTurnState;
       message?: string;
     })
-  | (AgentBaseEvent & { type: "item.started"; turnId: string; item: RuntimeItem })
-  | (AgentBaseEvent & { type: "item.updated"; turnId: string; item: RuntimeItem })
-  | (AgentBaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem })
+  // `subagentToolUseId` scopes the item to a nested subagent run instead of the
+  // parent turn's own body.
+  | (AgentBaseEvent & {
+      type: "item.started";
+      turnId: string;
+      item: RuntimeItem;
+      subagentToolUseId?: string;
+    })
+  | (AgentBaseEvent & {
+      type: "item.updated";
+      turnId: string;
+      item: RuntimeItem;
+      subagentToolUseId?: string;
+    })
+  | (AgentBaseEvent & {
+      type: "item.completed";
+      turnId: string;
+      item: RuntimeItem;
+      subagentToolUseId?: string;
+    })
+  // One nested subagent run's identity/status. Its transcript arrives as ordinary
+  // item events tagged with the run's `subagentToolUseId`.
+  | (AgentBaseEvent & { type: "subagent.started"; turnId: string; subagent: SubagentRunSnapshot })
+  | (AgentBaseEvent & { type: "subagent.updated"; turnId: string; subagent: SubagentRunSnapshot })
+  | (AgentBaseEvent & { type: "subagent.completed"; turnId: string; subagent: SubagentRunSnapshot })
   | (AgentBaseEvent & {
       type: "user-input.requested";
       requestId: string;
@@ -559,6 +628,12 @@ export type KoneAgentApi = {
     requestId: string,
     answers: UserInputAnswers,
   ) => Promise<void>;
+  /** Stop one nested subagent run without ending the parent turn. No-op on
+   *  providers without a nested-agent surface. */
+  stopSubagent: (threadId: string, toolUseId: string) => Promise<void>;
+  /** Queue a mid-task message for a running nested subagent. Delivered on the
+   *  child's next tool call. */
+  steerSubagent: (threadId: string, toolUseId: string, message: string) => Promise<void>;
   listSessions: () => Promise<Session[]>;
   /** Subscribe to the runtime event stream; returns an unsubscribe fn. */
   onEvent: (cb: (event: RuntimeEvent) => void) => () => void;

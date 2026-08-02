@@ -12,6 +12,7 @@ import type {
   StoredBlock,
   StoredThread,
   StoredThreadMeta,
+  SubagentRun,
 } from "./types.js";
 
 // Durable conversation persistence for the agent layer. Threads, turns, and the
@@ -30,7 +31,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -248,7 +249,45 @@ function migrate(db: DatabaseSync): void {
     version = 11;
   }
 
-  // Future migrations append here: `if (version < 12) { …; version = 12; }`
+  if (version < 12) {
+    // v12 persists nested subagent runs. An item produced *inside* a run carries
+    // the spawning Task tool-use id so loadThread can re-nest it, and each run's
+    // own snapshot (status, agent type, token/tool counters, summary) lives in a
+    // sibling table keyed by that same id. Runs are per-turn, so the key is
+    // (thread_id, turn_id, tool_use_id) — the parent item id is stored rather
+    // than derived, because a streamed tool call's item id is positional
+    // (`turn:msg:index`) and isn't recoverable from the tool-use id.
+    db.exec(`
+      ALTER TABLE items ADD COLUMN subagent_tool_use_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS subagents (
+        seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool_use_id    TEXT NOT NULL,
+        thread_id      TEXT NOT NULL,
+        turn_id        TEXT NOT NULL,
+        task_id        TEXT,
+        parent_item_id TEXT,
+        agent_type     TEXT,
+        description    TEXT,
+        prompt         TEXT,
+        model          TEXT,
+        effort         TEXT,
+        background     INTEGER,
+        status         TEXT NOT NULL,
+        summary        TEXT,
+        last_tool_name TEXT,
+        tokens         INTEGER,
+        tool_uses      INTEGER,
+        started_at     INTEGER NOT NULL,
+        ended_at       INTEGER,
+        UNIQUE (thread_id, turn_id, tool_use_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_subagents_turn ON subagents (thread_id, turn_id, seq);
+    `);
+    version = 12;
+  }
+
+  // Future migrations append here: `if (version < 13) { …; version = 13; }`
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -594,8 +633,8 @@ export class ConversationStore {
         case "item.completed": {
           const it = event.item;
           db.prepare(
-            `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail, tasks_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail, tasks_json, subagent_tool_use_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
                kind        = excluded.kind,
                status      = excluded.status,
@@ -613,6 +652,57 @@ export class ConversationStore {
             it.name ?? null,
             it.detail ?? null,
             it.tasks?.length ? JSON.stringify(it.tasks) : null,
+            event.subagentToolUseId ?? null,
+          );
+          this.touch(db, event.threadId, event.at);
+          break;
+        }
+        case "subagent.started":
+        case "subagent.updated":
+        case "subagent.completed": {
+          // Whole-snapshot upsert, matching the item.* convention: the adapter
+          // sends the full run each time, so there's no patch to merge here.
+          const s = event.subagent;
+          db.prepare(
+            `INSERT INTO subagents (
+               tool_use_id, thread_id, turn_id, task_id, parent_item_id, agent_type,
+               description, prompt, model, effort, background, status, summary,
+               last_tool_name, tokens, tool_uses, started_at, ended_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(thread_id, turn_id, tool_use_id) DO UPDATE SET
+               task_id        = COALESCE(excluded.task_id, subagents.task_id),
+               parent_item_id = COALESCE(excluded.parent_item_id, subagents.parent_item_id),
+               agent_type     = COALESCE(excluded.agent_type, subagents.agent_type),
+               description    = COALESCE(excluded.description, subagents.description),
+               prompt         = COALESCE(excluded.prompt, subagents.prompt),
+               model          = COALESCE(excluded.model, subagents.model),
+               effort         = COALESCE(excluded.effort, subagents.effort),
+               background     = COALESCE(excluded.background, subagents.background),
+               status         = excluded.status,
+               summary        = COALESCE(excluded.summary, subagents.summary),
+               last_tool_name = COALESCE(excluded.last_tool_name, subagents.last_tool_name),
+               tokens         = COALESCE(excluded.tokens, subagents.tokens),
+               tool_uses      = COALESCE(excluded.tool_uses, subagents.tool_uses),
+               ended_at       = COALESCE(excluded.ended_at, subagents.ended_at)`,
+          ).run(
+            s.toolUseId,
+            event.threadId,
+            event.turnId,
+            s.taskId ?? null,
+            s.parentItemId ?? null,
+            s.agentType ?? null,
+            s.description ?? null,
+            s.prompt ?? null,
+            s.model ?? null,
+            s.effort ?? null,
+            s.background === undefined ? null : s.background ? 1 : 0,
+            s.status,
+            s.summary ?? null,
+            s.lastToolName ?? null,
+            s.tokens ?? null,
+            s.toolUses ?? null,
+            s.startedAt,
+            s.endedAt ?? null,
           );
           this.touch(db, event.threadId, event.at);
           break;
@@ -870,12 +960,45 @@ export class ConversationStore {
         .prepare(`SELECT * FROM items WHERE thread_id = ? ORDER BY turn_id, seq`)
         .all(threadId) as ItemRow[];
 
-      // Group items by turn once, then attach — avoids a query per assistant block.
+      const subagentRows = db
+        .prepare(`SELECT * FROM subagents WHERE thread_id = ? ORDER BY turn_id, seq`)
+        .all(threadId) as SubagentRow[];
+
+      // Rebuild the nested runs first: each run is a snapshot plus the items its
+      // child emitted, keyed per turn by the spawning tool-use id.
+      const runsByTurn = new Map<string, Map<string, SubagentRun>>();
+      for (const r of subagentRows) {
+        const perTurn = runsByTurn.get(r.turn_id) ?? new Map<string, SubagentRun>();
+        perTurn.set(r.tool_use_id, rowToSubagent(r));
+        runsByTurn.set(r.turn_id, perTurn);
+      }
+
+      // Group items by turn once, then attach — avoids a query per assistant
+      // block. Items tagged with a run's tool-use id go into that run instead of
+      // the turn body, and the run is hung off its parent tool_call item below.
       const itemsByTurn = new Map<string, RuntimeItem[]>();
+      const itemsById = new Map<string, RuntimeItem>();
       for (const r of itemRows) {
+        const item = rowToItem(r);
+        const run = r.subagent_tool_use_id
+          ? runsByTurn.get(r.turn_id)?.get(r.subagent_tool_use_id)
+          : undefined;
+        if (run) {
+          run.items.push(item);
+          continue;
+        }
+        itemsById.set(`${r.turn_id} ${r.item_id}`, item);
         const list = itemsByTurn.get(r.turn_id) ?? [];
-        list.push(rowToItem(r));
+        list.push(item);
         itemsByTurn.set(r.turn_id, list);
+      }
+
+      for (const [turnId, perTurn] of runsByTurn) {
+        for (const run of perTurn.values()) {
+          if (!run.parentItemId) continue;
+          const parent = itemsById.get(`${turnId} ${run.parentItemId}`);
+          if (parent) parent.subagent = run;
+        }
       }
 
       const blocks: StoredBlock[] = blockRows.map((b) =>
@@ -1191,6 +1314,27 @@ type ItemRow = {
   name: string | null;
   detail: string | null;
   tasks_json: string | null;
+  subagent_tool_use_id: string | null;
+};
+
+type SubagentRow = {
+  tool_use_id: string;
+  turn_id: string;
+  task_id: string | null;
+  parent_item_id: string | null;
+  agent_type: string | null;
+  description: string | null;
+  prompt: string | null;
+  model: string | null;
+  effort: string | null;
+  background: number | null;
+  status: string;
+  summary: string | null;
+  last_tool_name: string | null;
+  tokens: number | null;
+  tool_uses: number | null;
+  started_at: number;
+  ended_at: number | null;
 };
 
 function rowToMeta(row: ThreadRow): StoredThreadMeta {
@@ -1231,6 +1375,28 @@ function rowToItem(row: ItemRow): RuntimeItem {
     name: row.name ?? undefined,
     detail: row.detail ?? undefined,
     ...(tasks?.length ? { tasks } : {}),
+  };
+}
+
+function rowToSubagent(row: SubagentRow): SubagentRun {
+  return {
+    toolUseId: row.tool_use_id,
+    taskId: row.task_id ?? undefined,
+    parentItemId: row.parent_item_id ?? undefined,
+    agentType: row.agent_type ?? undefined,
+    description: row.description ?? undefined,
+    prompt: row.prompt ?? undefined,
+    model: row.model ?? undefined,
+    effort: row.effort ?? undefined,
+    background: row.background === null ? undefined : row.background === 1,
+    status: row.status as SubagentRun["status"],
+    summary: row.summary ?? undefined,
+    lastToolName: row.last_tool_name ?? undefined,
+    tokens: row.tokens ?? undefined,
+    toolUses: row.tool_uses ?? undefined,
+    startedAt: row.started_at,
+    endedAt: row.ended_at ?? undefined,
+    items: [],
   };
 }
 

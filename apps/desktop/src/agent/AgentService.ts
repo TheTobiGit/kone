@@ -138,6 +138,18 @@ export class AgentService {
     return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
   }
 
+  // ── subagents (routed; no-op on providers without a nested-agent surface) ──
+
+  /** Stop one nested subagent run without ending the parent turn. */
+  async stopSubagent(threadId: string, toolUseId: string): Promise<void> {
+    return this.adapterForThread(threadId).stopSubagent?.(threadId, toolUseId);
+  }
+
+  /** Send a mid-task message to a running nested subagent. */
+  async steerSubagent(threadId: string, toolUseId: string, message: string): Promise<void> {
+    return this.adapterForThread(threadId).steerSubagent?.(threadId, toolUseId, message);
+  }
+
   async listSessions(): Promise<Session[]> {
     const all = await Promise.all([...this.adapters.values()].map((a) => a.listSessions()));
     return all.flat();

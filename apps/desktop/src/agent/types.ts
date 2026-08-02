@@ -332,6 +332,72 @@ export type PlanTask = {
   status: PlanTaskStatus;
 };
 
+// ── provider-native subagents ────────────────────────────────────────────────
+// A provider can spawn *its own* nested agents inside a single turn: Claude
+// Code's `Task`/`Agent` tool hands a scoped brief to a fresh agent with its own
+// model, effort, tool allowlist and transcript, then folds that agent's final
+// report back into the parent turn as the tool's result.
+//
+// This is NOT kone spawning a second thread/session (research's "thread spawn" —
+// a separate conversation with its own provider process). It's one provider
+// model it: the Task tool call is the run's identity (`tool_use_id`), the SDK's
+// task lifecycle (`task_started`/`task_progress`/`task_notification`) carries
+// its status and spend, and every message the child emits is tagged with
+// `parent_tool_use_id` = that same tool-use id so it can be projected onto the
+// child rather than the parent (research's ClaudeAdapter `subagentRefs`).
+//
+// Where research routes that child traffic onto a real child *thread*, kone keeps
+// it nested inside the parent turn: the run hangs off the `tool_call` item that
+// spawned it (`RuntimeItem.subagent`) and carries its own ordered `items`. Same
+// data, one less concept — and it persists and rehydrates with the turn.
+
+/** Lifecycle of one subagent run. `stopped` is a user/parent-initiated kill
+ *  (Claude's `task_notification` status), distinct from a `failed` run. */
+export type SubagentStatus = "starting" | "running" | "completed" | "failed" | "stopped";
+
+/** Identity + status for one subagent run, without its transcript. Every
+ *  `subagent.*` event carries a full snapshot (the same whole-value convention
+ *  the `item.*` events use), so a consumer merges rather than patches. */
+export type SubagentRunSnapshot = {
+  /** The spawning Task/Agent tool-use id — the run's stable id, and the value
+   *  every child message carries as `parent_tool_use_id`. */
+  toolUseId: string;
+  /** The provider's own task id, once known. Needed to stop the run. */
+  taskId?: string;
+  /** `itemId` of the parent turn's `tool_call` item this run hangs under, when
+   *  it was still open when the run was recognized. Absent leaves the run an
+   *  orphan the UI can render at the top level of the turn. */
+  parentItemId?: string;
+  /** The agent definition that was invoked, e.g. `explore` / `worker-high`. */
+  agentType?: string;
+  /** The Task tool's one-line `description` — the run's label. */
+  description?: string;
+  /** The brief the parent handed the child. */
+  prompt?: string;
+  /** Model the child runs (the Agent tool's `model` param), when reported. */
+  model?: string;
+  /** Reasoning effort the child runs at, when derivable (for Claude that's the
+   *  `worker-<tier>` agent type, since the Agent tool has no effort param). */
+  effort?: string;
+  /** True for a fire-and-forget background run (the parent didn't block on it). */
+  background?: boolean;
+  status: SubagentStatus;
+  /** The child's final report, once it settles. */
+  summary?: string;
+  /** Name of the tool the child ran most recently — a live progress hint. */
+  lastToolName?: string;
+  /** Tokens the child spent (its own meter, not the parent's). */
+  tokens?: number;
+  /** How many tool calls the child has made. */
+  toolUses?: number;
+  startedAt: number;
+  endedAt?: number;
+};
+
+/** A subagent run plus the transcript it produced, in arrival order. Items are
+ *  ordinary RuntimeItems — a child that itself delegates nests one level deeper. */
+export type SubagentRun = SubagentRunSnapshot & { items: RuntimeItem[] };
+
 /** One rendered item within a turn (text block or tool call). */
 export type RuntimeItem = {
   itemId: string;
@@ -351,6 +417,11 @@ export type RuntimeItem = {
    *  changed-file list — shown on demand. Undefined when there's nothing to
    *  expand. */
   detail?: string;
+  /** For a `tool_call` that spawned a provider-native subagent (Claude's
+   *  Task/Agent tool): the child run and its own transcript. Consumers build
+   *  this from the `subagent.*` events plus the `item.*` events tagged with the
+   *  run's `subagentToolUseId` — adapters emit the pieces, never the tree. */
+  subagent?: SubagentRun;
 };
 
 /** Token accounting for a thread, when the provider exposes it. */
@@ -408,9 +479,32 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "turn.started"; turnId: string })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: RuntimeTurnState; message?: string })
-  | (BaseEvent & { type: "item.started"; turnId: string; item: RuntimeItem })
-  | (BaseEvent & { type: "item.updated"; turnId: string; item: RuntimeItem })
-  | (BaseEvent & { type: "item.completed"; turnId: string; item: RuntimeItem })
+  // `subagentToolUseId` scopes the item to a nested subagent run instead of the
+  // turn itself: it belongs in that run's `items`, not the assistant block's.
+  | (BaseEvent & {
+      type: "item.started";
+      turnId: string;
+      item: RuntimeItem;
+      subagentToolUseId?: string;
+    })
+  | (BaseEvent & {
+      type: "item.updated";
+      turnId: string;
+      item: RuntimeItem;
+      subagentToolUseId?: string;
+    })
+  | (BaseEvent & {
+      type: "item.completed";
+      turnId: string;
+      item: RuntimeItem;
+      subagentToolUseId?: string;
+    })
+  // A provider-native subagent run was recognized / changed / settled. Each
+  // carries the full snapshot; the run's transcript arrives as `item.*` events
+  // tagged with its `subagentToolUseId`.
+  | (BaseEvent & { type: "subagent.started"; turnId: string; subagent: SubagentRunSnapshot })
+  | (BaseEvent & { type: "subagent.updated"; turnId: string; subagent: SubagentRunSnapshot })
+  | (BaseEvent & { type: "subagent.completed"; turnId: string; subagent: SubagentRunSnapshot })
   // The agent is asking the user one or more questions mid-turn and the turn is
   // parked until they answer (respondToUserInput). `turnId` is the turn that
   // raised it, when known.
@@ -441,6 +535,9 @@ export type AdapterCapabilities = {
   supportsResume: boolean;
   /** Exposes a model list. */
   supportsModelList: boolean;
+  /** Spawns provider-native subagents inside a turn and reports their nested
+   *  transcripts (`subagent.*` events + items tagged with a run). */
+  supportsSubagents: boolean;
 };
 
 /** Every provider implements this. Methods return once the request is accepted;
@@ -469,6 +566,19 @@ export interface ProviderAdapter {
    *  requestUserInput), unblocking the parked provider callback so the turn
    *  continues. No-op when nothing is pending for that requestId. */
   respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void>;
+
+  /** Kill one running subagent without touching the rest of the turn (Claude:
+   *  `query.stopTask`). The parent's Task tool call settles with a stopped
+   *  result and the turn carries on. Optional — omitted by providers with no
+   *  native subagents. */
+  stopSubagent?(threadId: string, toolUseId: string): Promise<void>;
+
+  /** Deliver a mid-task message to a *running* subagent, so the user can nudge
+   *  a child agent without interrupting the parent turn (Claude: queued and
+   *  injected as `additionalContext` on the child's next tool call, the only SDK
+   *  channel that reaches a live subagent — see research's `steerSubagent`).
+   *  Optional; a no-op resolve when the run already finished. */
+  steerSubagent?(threadId: string, toolUseId: string, message: string): Promise<void>;
 
   // introspection
   listSessions(): Promise<Session[]>;

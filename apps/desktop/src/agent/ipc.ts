@@ -263,6 +263,16 @@ export function registerAgentIpc(): void {
     (_event, threadId: string, requestId: string, answers: UserInputAnswers) =>
       svc.respondToUserInput(threadId, requestId, answers),
   );
+  // Nested subagent controls — scoped to one run inside a turn, so stopping or
+  // steering a child never touches the parent conversation.
+  ipcMain.handle("agent:stop-subagent", (_event, threadId: string, toolUseId: string) =>
+    svc.stopSubagent(threadId, toolUseId),
+  );
+  ipcMain.handle(
+    "agent:steer-subagent",
+    (_event, threadId: string, toolUseId: string, message: string) =>
+      svc.steerSubagent(threadId, toolUseId, message),
+  );
   ipcMain.handle("agent:list-sessions", () => svc.listSessions());
 
   // Persisted conversation history. Reads rehydrate a project's last thread on

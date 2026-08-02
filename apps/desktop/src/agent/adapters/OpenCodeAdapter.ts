@@ -223,7 +223,7 @@ export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
-  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true };
+  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: false };
   private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   /** The CLI executable to spawn — the user's override or the `opencode` default. */
   private binary = OPENCODE_BINARY;

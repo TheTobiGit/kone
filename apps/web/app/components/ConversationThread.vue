@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { motion, AnimatePresence } from "motion-v";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -12,9 +12,8 @@ import {
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
-import TurnOrb from "~/components/TurnOrb.vue";
 import AgentActivity from "~/components/AgentActivity.vue";
-import { renderGroups, segText } from "~/utils/conversationSegments";
+import { renderGroups, segText, type Segment } from "~/utils/conversationSegments";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
 // The live conversation — where the agent's turns become a timeline.
@@ -33,10 +32,8 @@ import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 // feels earned.
 //
 //   · a batch of thinking + tool calls renders inline as an <AgentActivity>
-//     item — while active it's a plain step list kept short by a sliding window;
+//     item — one working orb heads the batch from send through every step;
 //     once the agent moves on to text the batch folds into a horizontal strip;
-//   · a general working orb holds any quiet gap — left-aligned particles that
-//     grow longer and denser the longer the wait;
 //   · text renders as rich Markdown the whole way through — streaming or settled
 //     — so a reply reads as a proper preview as it grows, never a raw block;
 //
@@ -78,72 +75,28 @@ function lastStepsKey(block: AssistantBlock): string | null {
   return null;
 }
 
-// ── waiting ───────────────────────────────────────────────────────────────────
-// A live turn with nothing currently in flight — the opening gap after send,
-// or a lull between one step settling and the next starting. The working orb
-// fills it; the activity feed and streaming text take over while those run.
-//
-// The gap has to be a REAL one. A turn is quiet for a beat between almost every
-// pair of items — each text delta and each tool call settles before the next
-// starts — so reading the raw "nothing in progress" flag made the orb mount and
-// unmount ~38 times across a single reply, adding and removing a 20px row (plus
-// the stack's 15px gap) each time. That is what made a streaming answer shudder.
-// So: the turn must be quiet for QUIET_MS before the orb appears, and any new
-// activity hides it immediately. Sub-second gaps now pass in silence.
-const QUIET_MS = 700;
-const waiting = reactive<Record<string, boolean>>({});
-const quietTimers = new Map<string, number>();
+// ── live activity orb ───────────────────────────────────────────────────────────
+// One working orb per turn, anchored in AgentActivity from the first moment the
+// turn runs. It stays mounted (stable key) while steps stream in — orb → line →
+// thinking — instead of a stack-level orb handing off to a second one.
+function liveActivity(block: AssistantBlock): {
+  show: boolean;
+  segments: Segment[];
+  active: boolean;
+} {
+  const groups = renderGroups(block);
+  const tailKey = lastStepsKey(block);
+  const tailIsSteps = groups.length > 0 && groups[groups.length - 1]!.kind === "steps";
 
-function nothingInFlight(block: AssistantBlock): boolean {
-  if (block.state !== "running") return false;
-  const last = block.items[block.items.length - 1];
-  return !last || last.status !== "in-progress";
+  if (block.state === "running" && (groups.length === 0 || tailIsSteps)) {
+    const tail = tailKey
+      ? groups.find((g): g is Extract<typeof g, { kind: "steps" }> => g.kind === "steps" && g.key === tailKey)
+      : null;
+    return { show: true, segments: tail?.segments ?? [], active: true };
+  }
+
+  return { show: false, segments: [], active: false };
 }
-
-function armQuiet(id: string) {
-  quietTimers.set(
-    id,
-    window.setTimeout(() => {
-      quietTimers.delete(id);
-      const cur = props.blocks.find((b) => b.id === id);
-      if (cur && cur.role === "assistant" && nothingInFlight(cur)) waiting[id] = true;
-    }, QUIET_MS),
-  );
-}
-
-watch(
-  () =>
-    props.blocks
-      .map((b) =>
-        b.role === "assistant"
-          ? `${b.id}:${b.state}:${b.items.length}:${b.items[b.items.length - 1]?.status ?? ""}`
-          : b.id,
-      )
-      .join("|"),
-  () => {
-    for (const b of props.blocks) {
-      if (b.role !== "assistant") continue;
-      if (!nothingInFlight(b)) {
-        const t = quietTimers.get(b.id);
-        if (t) {
-          window.clearTimeout(t);
-          quietTimers.delete(b.id);
-        }
-        waiting[b.id] = false;
-        continue;
-      }
-      // Already showing, or already counting down — don't restart the clock.
-      if (waiting[b.id] || quietTimers.has(b.id)) continue;
-      if (import.meta.client) armQuiet(b.id);
-    }
-  },
-  { immediate: true },
-);
-
-onBeforeUnmount(() => {
-  for (const t of quietTimers.values()) window.clearTimeout(t);
-  quietTimers.clear();
-});
 
 // ── timing / status ────────────────────────────────────────────────────────────
 function fmt(seconds: number): string {
@@ -253,33 +206,102 @@ function tailSignature(): string {
   const chars = last.items.reduce((n, i) => n + i.text.length, 0);
   return `${props.blocks.length}:a:${last.items.length}:${chars}:${last.state}`;
 }
-// Follow the tail, calmly. The old version fired `scrollTo({behavior:"smooth"})`
-// on every streamed chunk; each call RESTARTS the browser's easing curve toward
-// a target that has already moved, so the scroller never settles into a steady
-// rate — it crawled 1px some frames and lurched 37px on others. That uneven
-// velocity is felt as the reply shaking, not scrolling.
+// Anchor each new request to the top, then let the reply grow *down* into blank
+// space — never shove the prior exchange up.
 //
-// Instead: coalesce every update in the frame into one rAF, and pin the bottom
-// instantly while a turn is streaming. Content grows a line at a time, so an
-// instant pin *is* smooth — each new line slides the ones above it up by exactly
-// its own height, once, with no easing to fight. A brand-new turn (the block
-// count changed) still animates, because that's a real jump, not a follow.
+// The old model pinned the bottom every streamed frame. On a fresh thread that
+// reads as calm (nothing above to move), but on the second turn the reply, to
+// stay in view, drags the whole first exchange upward one line at a time — and
+// the entering-turn spring transform fighting that per-frame scroll is the
+// flashing / shaking you feel.
+//
+// Instead we do what a reader expects: when a new request lands we lift it to
+// the top of the viewport and reserve a screen of empty space below it, so the
+// answer streams downward into that space with everything above held perfectly
+// still. As the reply grows we simply trim the reserve to exactly what's needed
+// to keep the request pinned at the top — every one of those changes happens
+// *below the fold*, so it's invisible and can't jitter. Only once a reply
+// outgrows a full screen does the reserve reach zero and we fall back to a calm
+// bottom-follow (unless you've scrolled up to read, which we leave alone).
+// Where the request locks to the top. Must match the sticky `top` in .turn--you
+// so the anchor scroll lands the request exactly on its sticky rail with no jump
+// as it takes over.
+const TOP_PAD = 14;
+const tailSpacer = ref(0);
+const tailSpacerEl = ref<HTMLElement | null>(null);
 let scrollQueued = false;
-let lastCount = props.blocks.length;
+let anchoredUserId: string | null = null;
+let anchorAt = 0;
+
+function lastUserBlock(): ThreadBlock | null {
+  for (let i = props.blocks.length - 1; i >= 0; i--) {
+    const b = props.blocks[i];
+    if (b && b.role === "user") return b;
+  }
+  return null;
+}
+function turnEl(id: string): HTMLElement | null {
+  return root.value?.querySelector<HTMLElement>(`[data-turn-id="${id}"]`) ?? null;
+}
+// How much empty space we must reserve below so `userEl`'s top can rest TOP_PAD
+// from the viewport top. Measured against the content height *without* our own
+// reserve, so it's stable frame to frame.
+function neededSpacer(sc: HTMLElement, userEl: HTMLElement): number {
+  const userTop = sc.scrollTop + (userEl.getBoundingClientRect().top - sc.getBoundingClientRect().top);
+  // Measure the reserve's *live* DOM height, not the reactive ref — Vue commits
+  // the ref to the DOM a tick late, so subtracting the ref from `scrollHeight`
+  // reads two different moments and makes `base` (and thus `needed`) jitter.
+  const reserve = tailSpacerEl.value?.offsetHeight ?? 0;
+  const base = sc.scrollHeight - reserve;
+  return Math.max(0, userTop - TOP_PAD + sc.clientHeight - base);
+}
+
 watch(tailSignature, () => {
   if (!import.meta.client || scrollQueued) return;
   scrollQueued = true;
-  const newTurn = props.blocks.length !== lastCount;
-  lastCount = props.blocks.length;
   requestAnimationFrame(() => {
     scrollQueued = false;
     const sc = scroller();
     if (!sc) return;
+    const lu = lastUserBlock();
+
+    // A brand-new request — lift it to the top with a screen of room below.
+    if (lu && lu.id !== anchoredUserId) {
+      anchoredUserId = lu.id;
+      const last = props.blocks[props.blocks.length - 1];
+      const live =
+        last?.role === "user" ||
+        (last?.role === "assistant" && last.state === "running");
+      if (!live) return; // opening a settled thread — adopt the id, don't yank
+      anchorAt = performance.now();
+      tailSpacer.value = sc.clientHeight; // reserve first, so the row can reach the top
+      requestAnimationFrame(() => {
+        const el = turnEl(lu.id);
+        if (!el) return;
+        const target =
+          sc.scrollTop + (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - TOP_PAD;
+        sc.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+      });
+      return;
+    }
+
+    // Let the lift settle before we start trimming, so we don't fight the smooth
+    // scroll toward the top with per-frame reserve changes.
+    if (performance.now() - anchorAt < 450) return;
+
+    // Mid-stream: hold the request at the top by trimming the reserve.
+    const el = lu ? turnEl(lu.id) : null;
+    const needed = el ? neededSpacer(sc, el) : 0;
+    if (needed > 0) {
+      tailSpacer.value = needed;
+      return;
+    }
+    // Reply outgrew the screen — release the reserve and calmly follow the tail.
+    tailSpacer.value = 0;
     const gap = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
     if (gap > 260) return; // scrolled away to read — don't yank them back
     if (gap <= 1) return; // already pinned
-    if (newTurn) sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" });
-    else sc.scrollTop = sc.scrollHeight;
+    sc.scrollTop = sc.scrollHeight;
   });
 });
 function scroller(): HTMLElement | null {
@@ -291,7 +313,68 @@ function scroller(): HTMLElement | null {
   }
   return (document.scrollingElement as HTMLElement) ?? document.documentElement;
 }
+
+// ── is the live request actually stuck? ────────────────────────────────────────
+// The pinned request carries an OPAQUE sheet of paper above it — that's what
+// makes the reply vanish under it instead of showing through. But a sticky
+// element is only a header while it's *stuck*; the rest of the time it sits in
+// normal flow, and there the sheet is just a slab of paper blanking whatever
+// exchange happens to be above it. (Scroll up mid-stream to reread the previous
+// answer and it's gone — that's this.) So the fog is gated on the request having
+// actually reached its rail.
+const stuckId = ref<string | null>(null);
+let stuckQueued = false;
+function measureStuck(): void {
+  if (!import.meta.client) return;
+  const sc = scroller();
+  const lu = lastUserBlock();
+  const el = sc && lu ? turnEl(lu.id) : null;
+  if (!sc || !lu || !el) {
+    stuckId.value = null;
+    return;
+  }
+  const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+  stuckId.value = top <= TOP_PAD + 1.5 ? lu.id : null;
+}
+function queueStuck(): void {
+  if (stuckQueued) return;
+  stuckQueued = true;
+  requestAnimationFrame(() => {
+    stuckQueued = false;
+    measureStuck();
+  });
+}
+let scrollHost: HTMLElement | null = null;
+onMounted(() => {
+  scrollHost = scroller();
+  scrollHost?.addEventListener("scroll", queueStuck, { passive: true });
+  queueStuck();
+});
+onBeforeUnmount(() => scrollHost?.removeEventListener("scroll", queueStuck));
+// The reply growing under a held request changes the answer too, not just the
+// scroll position.
+watch(tailSignature, queueStuck);
 const hasBlocks = computed(() => props.blocks.length > 0);
+
+// Group the flat block list into exchanges: each user request opens a new group
+// and the assistant turn(s) that follow it belong to that group. The group is the
+// sticky containing block for the request (see the template + .exchange CSS).
+const exchanges = computed(() => {
+  const groups: { key: string; blocks: ThreadBlock[] }[] = [];
+  for (const b of props.blocks) {
+    if (b.role === "user" || groups.length === 0) groups.push({ key: b.id, blocks: [b] });
+    else groups[groups.length - 1]!.blocks.push(b);
+  }
+  // `live` = the reply is still streaming (or just sent, response not started).
+  // Only the live exchange pins its request to the top; once the reply settles
+  // the whole exchange scrolls like ordinary content again.
+  return groups.map((g, i) => {
+    const asst = g.blocks.filter((b) => b.role === "assistant");
+    const running = asst.some((b) => b.role === "assistant" && b.state === "running");
+    const awaiting = asst.length === 0 && i === groups.length - 1;
+    return { ...g, live: running || awaiting };
+  });
+});
 </script>
 
 <template>
@@ -305,12 +388,20 @@ const hasBlocks = computed(() => props.blocks.length > 0);
       <p>Nothing here yet — say something to begin.</p>
     </div>
 
+    <!-- One request + its response form an "exchange" — the sticky containing
+         block for the request. Grouping this way is what lets each new request
+         push the previous one up and out of the sticky spot, instead of two
+         sticky headers piling on top of each other. -->
+    <div v-for="ex in exchanges" :key="ex.key" class="exchange">
     <motion.div
-      v-for="block in blocks"
+      v-for="block in ex.blocks"
       :key="block.id"
+      :data-turn-id="block.id"
       class="turn"
       :class="[
         block.role === 'user' ? 'turn--you' : 'turn--kone',
+        block.role === 'user' && ex.live ? 'turn--pinned' : '',
+        block.role === 'user' && ex.live && stuckId === block.id ? 'turn--stuck' : '',
         block.role === 'assistant' && block.state !== 'running' ? 'turn--settled' : '',
         block.role === 'assistant' && flash[block.id] ? 'turn--flash' : '',
       ]"
@@ -374,15 +465,14 @@ const hasBlocks = computed(() => props.blocks.length > 0);
       <template v-else>
         <div class="stack selectable">
           <template v-for="grp in renderGroups(block)" :key="grp.kind === 'text' ? grp.seg.key : grp.key">
-            <!-- Steps — one batch of thinking + tool calls, inline. While active
-                 it shows a sliding window (≤5 full rows + a horizontal strip of
-                 older icons); once the agent moves on to text the whole batch
-                 folds into the strip. -->
+            <!-- Steps — done batches only. The live tail (or the opening beat
+                 before the first step lands) is a single AgentActivity below with
+                 a stable key so the working orb never hands off. -->
             <AgentActivity
-              v-if="grp.kind === 'steps'"
+              v-if="grp.kind === 'steps' && !(liveActivity(block).show && grp.key === lastStepsKey(block))"
               :segments="grp.segments"
               :running="block.state === 'running'"
-              :is-tail="grp.key === lastStepsKey(block)"
+              :is-tail="false"
               :historical="block.historical"
             />
 
@@ -390,7 +480,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
                  or settled, so the reply reads as a proper preview as it grows
                  (never a raw block that only formats once complete). -->
             <div
-              v-else
+              v-else-if="grp.kind === 'text'"
               class="answer-wrap"
               :data-markdown-source="segText(grp.seg)"
             >
@@ -402,20 +492,16 @@ const hasBlocks = computed(() => props.blocks.length > 0);
             </div>
           </template>
 
-          <!-- Working orb — visible while the turn is alive but nothing is
-               streaming (request just sent, or a quiet gap between steps). -->
-          <AnimatePresence>
-            <motion.div
-              v-if="waiting[block.id]"
-              class="waiting"
-              :initial="{ opacity: 0, scale: 0.86 }"
-              :animate="{ opacity: 1, scale: 1 }"
-              :exit="{ opacity: 0, scale: 0.86 }"
-              :transition="{ type: 'spring', stiffness: 300, damping: 26, mass: 0.7 }"
-            >
-              <TurnOrb state="working" :size="20" aria-label="Working" />
-            </motion.div>
-          </AnimatePresence>
+          <!-- Live activity — one orb for the whole run: from send through every
+               thinking step and tool call until text takes over. -->
+          <AgentActivity
+            v-if="liveActivity(block).show"
+            :key="`${block.id}:live-activity`"
+            :segments="liveActivity(block).segments"
+            :running="block.state === 'running'"
+            :is-tail="true"
+            :historical="block.historical"
+          />
 
           <!-- Failure note. -->
           <p v-if="block.state === 'failed' && block.error" class="body body--error">
@@ -454,6 +540,17 @@ const hasBlocks = computed(() => props.blocks.length > 0);
         </div>
       </template>
     </motion.div>
+    </div>
+
+    <!-- Reserved room the live turn streams down into, so a new request can sit
+         at the top of the viewport instead of shoving the last exchange up. -->
+    <div
+      v-if="tailSpacer > 0"
+      ref="tailSpacerEl"
+      class="thread__tail-spacer"
+      :style="{ height: `${tailSpacer}px` }"
+      aria-hidden="true"
+    />
   </div>
 </template>
 
@@ -511,13 +608,61 @@ const hasBlocks = computed(() => props.blocks.length > 0);
   text-wrap: pretty;
 }
 
+.thread__tail-spacer {
+  flex: none;
+  width: 100%;
+  pointer-events: none;
+}
+/* An exchange = one request + its response. It's the sticky containing block for
+   the request: the request sticks to the top only while its own exchange is on
+   screen, so the next request cleanly takes over the rail as you scroll on. */
+.exchange {
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+}
 .turn {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+/* The request rides at the top of its exchange as its own opaque header while
+   the response scrolls underneath — exactly like the thread body sliding under
+   the thread header. The ::before is a full-bleed sheet of paper that reaches
+   far above (hiding everything the reply scrolls up behind it, completely — not
+   a translucent tint) and ends in a short blurred skirt where the reply emerges
+   softly from under it. */
 .turn--you {
   align-items: flex-end;
+}
+/* Only the live exchange pins its request as a header; a settled exchange drops
+   the stickiness and scrolls away normally. */
+.turn--you.turn--pinned {
+  position: sticky;
+  top: 14px; /* keep in sync with TOP_PAD */
+  z-index: 4;
+}
+/* Only once it has actually reached the rail — in normal flow this opaque sheet
+   would blank the exchange above it (see `measureStuck`). */
+.turn--you.turn--pinned.turn--stuck::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -1200px; /* cover everything above — clipped by the scroller */
+  bottom: -6px;
+  left: -50vw;
+  right: -50vw;
+  background: linear-gradient(
+    to bottom,
+    var(--ground) 0%,
+    var(--ground) calc(100% - 26px),
+    transparent 100%
+  );
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 26px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 26px), transparent 100%);
+  pointer-events: none;
 }
 
 /* ── The turn's body stack ─────────────────────────────────────────────────── */
@@ -622,14 +767,6 @@ const hasBlocks = computed(() => props.blocks.length > 0);
 .answer {
   width: 100%;
   max-width: 42rem;
-}
-
-/* ── Waiting orb ───────────────────────────────────────────────────────────── */
-.waiting {
-  display: flex;
-  align-items: center;
-  margin: -2px 0;
-  will-change: transform, opacity;
 }
 
 /* ── Turn footer (meta) — editorial dotted leader ──────────────────────────── */

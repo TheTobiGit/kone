@@ -9,6 +9,8 @@ import type {
   RuntimeItemKind,
   RuntimeSessionState,
   Session,
+  SubagentRun,
+  SubagentRunSnapshot,
   TokenUsage,
   UserInputAnswers,
   UserInputQuestion,
@@ -244,10 +246,48 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   function upsertItem(block: AssistantBlock, item: RuntimeItem): void {
     const idx = block.items.findIndex((i) => i.itemId === item.itemId);
+    // A tool_call that spawned a subagent keeps the run we've already nested on
+    // it — later updates to the call itself (its result, status) must not drop
+    // the child's transcript.
     if (idx === -1) block.items.push(item);
-    else block.items[idx] = item;
+    else block.items[idx] = { ...item, ...(block.items[idx]!.subagent ? { subagent: block.items[idx]!.subagent } : {}) };
     // Reassign so the shallow array ref stays reactive on nested edits.
     block.items = [...block.items];
+  }
+
+  /** Find a nested run within a turn by the tool-use id that spawned it. Runs
+   *  live on their parent `tool_call` item, so this is a scan of the turn's
+   *  items — cheap at kone's item counts, and it keeps the tree the single
+   *  source of truth instead of a parallel index. */
+  function findRun(block: AssistantBlock, toolUseId: string): SubagentRun | undefined {
+    for (const item of block.items) {
+      if (item.subagent?.toolUseId === toolUseId) return item.subagent;
+    }
+    return undefined;
+  }
+
+  /** Merge a subagent snapshot into the turn, attaching the run to its parent
+   *  tool_call item the first time we see it. The adapter emits pieces (snapshots
+   *  + tagged items); assembling the tree is the consumer's job. */
+  function upsertRun(block: AssistantBlock, snapshot: SubagentRunSnapshot): SubagentRun | undefined {
+    const existing = findRun(block, snapshot.toolUseId);
+    if (existing) {
+      Object.assign(existing, snapshot);
+      blocks.value = [...blocks.value];
+      return existing;
+    }
+    // The parent tool call is normally already open (the run is recognized when
+    // its input finishes streaming); if it isn't, the run is dropped until the
+    // parent item shows up and a later snapshot re-attaches it.
+    const parent = snapshot.parentItemId
+      ? block.items.find((i) => i.itemId === snapshot.parentItemId)
+      : undefined;
+    if (!parent) return undefined;
+    const run: SubagentRun = { ...snapshot, items: [] };
+    parent.subagent = run;
+    block.items = [...block.items];
+    blocks.value = [...blocks.value];
+    return run;
   }
 
   /** Fold one event into this thread's state. The manager only calls this for
@@ -295,10 +335,28 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       case "item.updated":
       case "item.completed": {
         const block = currentAssistant(event.turnId);
-        if (block) {
+        if (!block) break;
+        // An item produced inside a nested run belongs to that run's transcript,
+        // not the parent turn's body.
+        const run = event.subagentToolUseId
+          ? findRun(block, event.subagentToolUseId)
+          : undefined;
+        if (run) {
+          const idx = run.items.findIndex((i) => i.itemId === event.item.itemId);
+          if (idx === -1) run.items.push(event.item);
+          else run.items[idx] = event.item;
+          run.items = [...run.items];
+        } else if (!event.subagentToolUseId) {
           upsertItem(block, event.item);
-          blocks.value = [...blocks.value];
         }
+        blocks.value = [...blocks.value];
+        break;
+      }
+      case "subagent.started":
+      case "subagent.updated":
+      case "subagent.completed": {
+        const block = currentAssistant(event.turnId);
+        if (block) upsertRun(block, event.subagent);
         break;
       }
       case "turn.completed": {
@@ -571,6 +629,29 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       await api.interrupt(threadId.value);
     } catch {
       // The turn.aborted event (or its absence) is the source of truth.
+    }
+  }
+
+  /** Stop one nested subagent run, leaving the parent turn running. */
+  async function stopSubagent(toolUseId: string): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    try {
+      await api.stopSubagent(threadId.value, toolUseId);
+    } catch {
+      // The run's `subagent.completed` event (or its absence) is the truth.
+    }
+  }
+
+  /** Send a mid-task message to a running nested subagent. It's delivered on the
+   *  child's next tool call, so a child about to finish may never see it. */
+  async function steerSubagent(toolUseId: string, message: string): Promise<void> {
+    const api = bridge();
+    if (!api) return;
+    try {
+      await api.steerSubagent(threadId.value, toolUseId, message);
+    } catch {
+      // Best-effort — the run may have settled between render and click.
     }
   }
 
@@ -1034,6 +1115,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     uploadAttachment,
     demo,
     interrupt,
+    stopSubagent,
+    steerSubagent,
     respondUserInput,
     setProvider,
     setModel,
@@ -1211,6 +1294,12 @@ export function useAgent(options: UseAgentOptions) {
     return s.uploadAttachment(file);
   };
   const interrupt = async () => { await active.value?.interrupt(); };
+  const stopSubagent = async (toolUseId: string) => {
+    await active.value?.stopSubagent(toolUseId);
+  };
+  const steerSubagent = async (toolUseId: string, message: string) => {
+    await active.value?.steerSubagent(toolUseId, message);
+  };
   const respondUserInput = async (requestId: string, answers: UserInputAnswers) => {
     await active.value?.respondUserInput(requestId, answers);
   };
@@ -1466,6 +1555,8 @@ export function useAgent(options: UseAgentOptions) {
     uploadAttachment,
     demo,
     interrupt,
+    stopSubagent,
+    steerSubagent,
     respondUserInput,
     setProvider,
     setModel,

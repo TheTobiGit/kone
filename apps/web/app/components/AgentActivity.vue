@@ -1,9 +1,24 @@
+<script lang="ts">
+// Module scope — deliberately NOT in `<script setup>`, whose top level is the
+// per-instance setup body. This map is a hand-off *between* instances.
+//
+// A batch's open height, carried across the component swap that ends its live
+// life. When the agent starts streaming text, ConversationThread stops rendering
+// the live tail activity and renders the *same batch* as a settled one instead —
+// a different component instance. Without the hand-off the new instance mounts
+// flat at 0 and the reply below eats the whole collapse in a single frame, which
+// is exactly the lurch this component exists to prevent. Keyed by the batch's
+// first entry, and consumed once.
+const carriedHeights = new Map<string, number>();
+</script>
+
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import ActivityStep from "~/components/ActivityStep.vue";
+import TurnOrb from "~/components/TurnOrb.vue";
 import {
   activityEntries,
   segStreaming,
@@ -19,19 +34,48 @@ import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
 // One batch of thinking + tool calls, rendered inline — no header, no collapse.
 // A batch has two lives:
 //
-//   • ACTIVE (still working) — up to five step rows show in full at once. When a
-//     sixth arrives the oldest row slides up and fades, its icon filed into a
-//     compact horizontal strip above the list; consecutive same-type actions
-//     merge into one ×N chip so the strip stays tight across a long run. The
-//     latest steps always stay in view at the bottom.
+//   • ACTIVE (still working) — the batch is headed by the working orb, and the
+//     first step's rail runs up into it (orb → line → thinking). Up to five step
+//     rows show in full at once. When a sixth arrives the oldest row slides up and
+//     fades, its icon filed into a compact horizontal strip above the list;
+//     consecutive same-type actions merge into one ×N chip so the strip stays
+//     tight across a long run. The latest steps always stay in view at the bottom.
 //
 //   • DONE (the agent has moved on to streaming text, or the turn ended) — the
 //     remaining rows fold up into the strip too, so a finished batch reads as a
-//     single horizontal row of icons sitting above its result. The next batch of
-//     tool calls opens a fresh window and repeats.
+//     single horizontal row of icons beside a settled orb. The strip is a toggle:
+//     click it to unfold the whole batch back into the full step list
+//     (every call, its target, and its result), click again to re-compact it.
+//     The next batch of tool calls opens a fresh window and repeats.
 //
 // For a short active batch (≤5 steps) there's no strip yet — it looks exactly
 // like the plain inline step list it always was.
+//
+// ── How the rows move (the whole point of this file's machinery) ───────────────
+//
+// Everything below the batch — the streaming reply, the next exchange — sits on
+// top of this component's height. So *every* row appearing, leaving, or folding
+// into the strip is a shove felt by the reader mid-sentence. The old version let
+// rows enter and exit the flex flow directly: five rows collapsing into one strip
+// deleted ~140px of layout in a single frame and yanked the reply up with it.
+//
+// So the rows don't live in the flow at all. They live in a **bottom-anchored
+// viewport**: `.window` is an explicitly sized, clipped box whose height we
+// animate, and `.window__inner` is absolutely pinned to its bottom edge, free to
+// overflow upward. That gives two guarantees:
+//
+//   1. Height is the only thing the rest of the thread ever sees, and it always
+//      transitions — folding into the strip is a smooth 380ms close, never a jump.
+//   2. New rows always grow the stack *upward* from a fixed bottom edge, so the
+//      pinned-window ticker needs no per-row exit animation and rows never
+//      reflow each other.
+//
+// Adding a row still moves the inner box's top edge instantly (it just got
+// taller). We cancel that exactly: right after the DOM update we offset the inner
+// by the height it gained, with transitions off, then release it to 0. The offset
+// and the height transition then run in lockstep, and the algebra cancels — rows
+// already on screen hold *perfectly* still while the new one is revealed by the
+// growing edge. That's the difference between "the list grew" and "the page moved".
 
 const props = defineProps<{
   segments: Segment[];
@@ -50,16 +94,220 @@ const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.9 } as con
 const entries = computed(() => activityEntries(props.segments));
 const total = computed(() => entries.value.length);
 
-// The batch is active while the turn runs and this is still its tail group. Once
-// text streams after it (no longer the tail) or the turn ends, it is done.
-const active = computed(() => props.running && props.isTail !== false);
+// The batch is active only while the turn runs and this is the live tail group.
+const active = computed(() => props.running && props.isTail === true);
 
-// Active: the last five steps stay in view, everything earlier files to the
-// strip. Done: nothing stays in view — every step goes to the strip.
-const visible = computed(() => (active.value ? entries.value.slice(-WINDOW) : []));
-const archived = computed(() =>
-  active.value ? entries.value.slice(0, Math.max(0, total.value - WINDOW)) : entries.value,
-);
+// A done batch can be unfolded back into its full step list. `expanded` is the
+// user's toggle; it only applies once the batch is done (an active batch owns
+// its own sliding window).
+const { cue } = useSound();
+const expanded = ref(false);
+const canExpand = computed(() => !active.value && total.value > 0);
+function toggleExpanded(): void {
+  if (!canExpand.value) return;
+  expanded.value = !expanded.value;
+  cue("toggle");
+}
+
+// The orb is the fixed head; steps live either as horizontal chips beside it or
+// as vertical rows beneath it — never both for the same step.
+//   Active: the last five steps are rows; everything earlier is a chip.
+//   Done & collapsed: no rows — every step is a chip on the orb's line.
+//   Done & expanded: no chips — every step drops down into a full row.
+const archived = computed(() => {
+  if (active.value) return entries.value.slice(0, Math.max(0, total.value - WINDOW));
+  return expanded.value ? [] : entries.value;
+});
+
+// ── The viewport ───────────────────────────────────────────────────────────────
+// Rows are wanted on screen while the batch is working or while you've unfolded a
+// finished one. `rowsAlive` lags that by one animation: the rows stay mounted
+// through the fold-away so there's something to animate, and unmount when the
+// height transition lands on 0.
+const wantRows = computed(() => active.value || expanded.value);
+const rowsAlive = ref(wantRows.value);
+
+// While rows are folding away the entry list must not change under them, or the
+// closing animation would re-measure mid-flight. Freeze what was on screen.
+const frozen = ref<ActivityEntry[] | null>(null);
+
+// A long run doesn't need every past row in the DOM — only enough above the
+// five-row window to cover the slide-out. Rows dropping off the far top are
+// invisible (they're above the clip) and, because the stack is bottom-anchored,
+// removing them moves nothing.
+const KEEP = WINDOW + 8;
+const rowList = computed<ActivityEntry[]>(() => {
+  if (!rowsAlive.value) return [];
+  if (frozen.value) return frozen.value;
+  return active.value ? entries.value.slice(-KEEP) : entries.value;
+});
+
+// A live batch past five steps runs as a ticker: the box holds the last five and
+// the rest overflow above the clip.
+const windowed = computed(() => active.value && rowList.value.length > WINDOW);
+// Whether anything is actually cut off — measured, so the top fade is on for the
+// ticker *and* for the fold, and off for a short batch that fits.
+const masked = ref(false);
+
+const winEl = ref<HTMLElement | null>(null);
+const innerEl = ref<HTMLElement | null>(null);
+// Bleed above the clip so the first row's 22px rail can still reach up into the
+// orb; folded flat there's no bleed, so nothing peeks out of a closed batch.
+const BLEED = 12;
+const GAP = 6;
+
+let prevInnerH = 0;
+let lastTarget = -1;
+let firstSync = true;
+let ro: ResizeObserver | null = null;
+
+function reduced(): boolean {
+  return !!import.meta.client && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+// Size the viewport to what should be visible, cancelling the instant jump that
+// the inner box's own growth would otherwise cause. See the header comment.
+function sync(): void {
+  const win = winEl.value;
+  const inner = innerEl.value;
+  if (!win || !inner) return;
+
+  const innerH = inner.offsetHeight;
+  const rows = Array.from(inner.children) as HTMLElement[];
+  // Driven by what the batch *wants*, not by what's mounted: rows outlive the
+  // close so there's something to watch fold away.
+  const target = Math.round(
+    !wantRows.value
+      ? 0
+      : windowed.value && rows.length > WINDOW
+        ? Math.max(0, innerH - (rows[rows.length - WINDOW]?.offsetTop ?? 0))
+        : innerH,
+  );
+  // Rows are cut at the *top* both when the ticker scrolls and when the box folds
+  // shut (the stack hangs from the bottom edge), so the fade belongs on wherever
+  // content exceeds the box — not just on the live window.
+  masked.value = rowsAlive.value && innerH > target + 1;
+
+  // Both the ResizeObserver and the watchers can land on the same change. A
+  // second pass would see `grew === 0` and snap the transform back to 0 with
+  // transitions off — killing the slide mid-flight. So ignore no-op syncs.
+  if (!firstSync && innerH === prevInnerH && target === lastTarget) return;
+
+  const grew = innerH - prevInnerH;
+  prevInnerH = innerH;
+  lastTarget = target;
+
+  // Publish the open height continuously rather than on unmount: Vue mounts the
+  // replacement instance *before* tearing this one down, so an unmount hook would
+  // hand the height over one beat too late to be picked up.
+  if (batchKey.value) {
+    if (target > 0) carriedHeights.set(batchKey.value, target);
+    else carriedHeights.delete(batchKey.value);
+  }
+
+  // No motion on first paint (a restored thread shouldn't unroll) or when the
+  // reader has asked for none.
+  const instant = firstSync || reduced();
+  firstSync = false;
+
+  // Offset the inner box by what it just gained, so the rows already on screen
+  // don't lurch. Crucially this ACCUMULATES onto whatever offset is still
+  // unwinding from a previous row: a step landing mid-slide would otherwise have
+  // its transform yanked from its in-flight value straight to the new one, and
+  // that discontinuity is felt as the whole tree shaking. Read the live animated
+  // value first — once transitions are off, the computed value collapses to the
+  // end state.
+  if (instant) {
+    inner.style.transition = "none";
+    inner.style.transform = "translateY(0px)";
+    win.style.transition = "none";
+  } else if (grew > 0) {
+    const pending = new DOMMatrixReadOnly(getComputedStyle(inner).transform).m42;
+    inner.style.transition = "none";
+    inner.style.transform = `translateY(${pending + grew}px)`;
+  }
+  // grew <= 0 deliberately leaves the transform alone: the box only ever loses
+  // height off the *top* (rows trimmed above the clip), which moves nothing, and
+  // touching it would cut short a slide that's still running.
+
+  win.style.height = `${target}px`;
+  win.style.paddingTop = target > 0 ? `${BLEED}px` : "0px";
+  win.style.marginTop = target > 0 ? `${GAP - BLEED}px` : "0px";
+
+  void win.offsetHeight; // flush the above as the transition's starting point
+
+  if (instant) {
+    inner.style.transition = "";
+    win.style.transition = "";
+  } else if (grew > 0) {
+    // Released together with the height, same duration and curve — that lockstep
+    // is what holds the visible rows perfectly still.
+    inner.style.transition = "";
+    inner.style.transform = "translateY(0px)";
+  }
+}
+
+function onWinTransitionEnd(e: TransitionEvent): void {
+  if (e.propertyName !== "height" || e.target !== winEl.value) return;
+  if (!wantRows.value) {
+    rowsAlive.value = false;
+    frozen.value = null;
+    prevInnerH = 0;
+    lastTarget = 0;
+  }
+}
+
+watch(wantRows, (want) => {
+  if (want) {
+    frozen.value = null;
+    rowsAlive.value = true;
+  } else if (rowsAlive.value) {
+    // Hold the list still for the length of the fold.
+    frozen.value = rowList.value;
+  }
+  void nextTick(sync);
+});
+watch(rowList, () => void nextTick(sync));
+
+const batchKey = computed(() => entries.value[0]?.key ?? "");
+
+onMounted(async () => {
+  // Row content grows too — a thinking row streams its text — so watch the box
+  // itself rather than only the entry list.
+  if (innerEl.value && "ResizeObserver" in window) {
+    ro = new ResizeObserver(() => sync());
+    ro.observe(innerEl.value);
+  }
+
+  // Taking over a batch that was live a moment ago: adopt the height *and* the
+  // rows the outgoing instance was showing, so the reader watches the steps fold
+  // away rather than an empty box closing. The bottom-anchored viewport does the
+  // rest — clipped to the carried height, the visible rows are exactly the ones
+  // that were on screen.
+  const carried = carriedHeights.get(batchKey.value);
+  carriedHeights.delete(batchKey.value);
+  if (carried && carried > 0 && !wantRows.value) {
+    rowsAlive.value = true;
+    frozen.value = entries.value.slice(-KEEP);
+    await nextTick();
+    const win = winEl.value;
+    if (win && innerEl.value) {
+      win.style.transition = "none";
+      win.style.height = `${carried}px`;
+      win.style.paddingTop = `${BLEED}px`;
+      win.style.marginTop = `${GAP - BLEED}px`;
+      void win.offsetHeight; // resolve styles: this is the transition's start
+      win.style.transition = "";
+      prevInnerH = innerEl.value.offsetHeight; // rows are unchanged — no offset
+      lastTarget = carried;
+      firstSync = false;
+      requestAnimationFrame(sync); // …and now close it
+      return;
+    }
+  }
+  sync();
+});
+onBeforeUnmount(() => ro?.disconnect());
 
 type Glyph = { icon: HugeIcon; hue: string; label: string };
 function glyphOf(e: ActivityEntry): Glyph {
@@ -120,84 +368,232 @@ function stepProps(e: ActivityEntry) {
 </script>
 
 <template>
-  <motion.section class="activity" layout :transition="SPRING" aria-label="Agent activity">
-    <!-- History strip — icons of steps that have slid out of the window. -->
-    <div v-if="historyChips.length" class="strip" aria-label="Earlier actions">
-      <AnimatePresence :initial="false">
-        <motion.span
-          v-for="chip in historyChips"
-          :key="chip.key"
-          class="strip__chip"
-          :style="{ '--hue': chip.hue }"
-          layout
-          :initial="{ opacity: 0, scale: 0.6, y: -4 }"
-          :animate="{ opacity: 1, scale: 1, y: 0 }"
-          :exit="{ opacity: 0, scale: 0.6 }"
-          :transition="SPRING"
-          :title="chip.count > 1 ? `${chip.label} ×${chip.count}` : chip.label"
-        >
-          <HugeiconsIcon :icon="chip.icon" :size="14" :stroke-width="1.8" />
-          <span v-if="chip.count > 1" class="strip__count">×{{ chip.count }}</span>
-        </motion.span>
-      </AnimatePresence>
-    </div>
+  <section class="activity" aria-label="Agent activity">
+    <!-- Head line — the orb is the fixed anchor and always comes first. Beside it,
+         inline, are the chips for compacted steps: horizontally when collapsed,
+         and none at all when expanded (they've dropped into the rows below). So
+         the orb is the first thing in both the horizontal and the vertical stack,
+         and it never moves as the two swap. Once done, the whole line is a toggle. -->
+    <component
+      :is="canExpand ? 'button' : 'div'"
+      :type="canExpand ? 'button' : undefined"
+      v-if="active || total > 0"
+      class="head"
+      :class="{ 'head--toggle': canExpand }"
+      :aria-label="canExpand ? (expanded ? 'Collapse steps' : `Show all ${total} steps`) : undefined"
+      :aria-expanded="canExpand ? (expanded ? 'true' : 'false') : undefined"
+      @click="toggleExpanded"
+    >
+      <span class="head__orb">
+        <TurnOrb
+          state="working"
+          :size="16"
+          :active="active"
+          :aria-label="active ? 'Working' : 'Steps'"
+        />
+      </span>
 
-    <!-- Sliding window — up to five latest steps, in full. -->
-    <div class="window">
-      <AnimatePresence mode="popLayout" :initial="false">
+      <!-- The chips get their own clipped track. Kept on one line on purpose: a
+           strip that wraps changes the head's height, and since the head sits
+           *above* the step rows, that shoves the whole batch — and everything
+           below it in the thread — down by a line at the exact moment the batch
+           is folding up. One row in, one row out, and the tree stays still. -->
+      <span class="head__strip">
+        <AnimatePresence :initial="false">
+          <motion.span
+            v-for="chip in historyChips"
+            :key="chip.key"
+            class="head__chip"
+            :style="{ '--hue': chip.hue }"
+            :initial="{ opacity: 0, scale: 0.6, y: -4 }"
+            :animate="{ opacity: 1, scale: 1, y: 0 }"
+            :exit="{ opacity: 0, scale: 0.6 }"
+            :transition="SPRING"
+            :title="chip.count > 1 ? `${chip.label} ×${chip.count}` : chip.label"
+          >
+            <HugeiconsIcon :icon="chip.icon" :size="14" :stroke-width="1.8" />
+            <span v-if="chip.count > 1" class="head__count">×{{ chip.count }}</span>
+          </motion.span>
+        </AnimatePresence>
+      </span>
+
+      <HugeiconsIcon
+        v-if="canExpand"
+        :icon="ArrowRight01Icon"
+        :size="13"
+        :stroke-width="2"
+        class="head__chev"
+        :class="{ 'head__chev--open': expanded }"
+      />
+    </component>
+
+    <!-- Vertical steps — a bottom-anchored viewport, not a list in the flow. Its
+         height is the only thing the rest of the thread ever feels, and that
+         height always transitions, so folding into the strip glides instead of
+         yanking the reply below it upward. Rows stack upward from the fixed
+         bottom edge; the top fade dissolves the ones sliding out of the window. -->
+    <div
+      ref="winEl"
+      class="window"
+      :class="{ 'window--masked': masked }"
+      @transitionend="onWinTransitionEnd"
+    >
+      <div ref="innerEl" class="window__inner">
         <motion.div
-          v-for="(e, i) in visible"
+          v-for="e in rowList"
           :key="e.key"
           class="window__row"
-          layout
-          :initial="historical ? false : { opacity: 0, y: 10 }"
-          :animate="{ opacity: 1, y: 0 }"
-          :exit="{ opacity: 0, y: -8, scale: 0.96 }"
-          :transition="SPRING"
+          :initial="historical ? false : { opacity: 0 }"
+          :animate="{ opacity: 1 }"
+          :transition="{ duration: 0.26, ease: 'easeOut' }"
         >
-          <ActivityStep :entry="e" :rail="i > 0" v-bind="stepProps(e)" />
+          <ActivityStep :entry="e" rail v-bind="stepProps(e)" />
         </motion.div>
-      </AnimatePresence>
+      </div>
     </div>
-  </motion.section>
+  </section>
 </template>
 
 <style scoped>
 .activity {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   width: 100%;
 }
 
-/* ── History strip ─────────────────────────────────────────────────────────── */
-.strip {
+/* ── Head line ─────────────────────────────────────────────────────────────────
+   The orb anchors the top-left corner and always comes first. Compacted steps sit
+   inline to its right as chips (the horizontal stack); when expanded there are no
+   chips and the steps become the rows below (the vertical stack). Either way the
+   orb is the first item and holds its place — it never moves as the two swap.
+   The orb shares the left column with every row's icon, so the first row's rail
+   runs straight up into it; its opaque ground caps that rail without crossing. */
+/* Fixed height, in every state. The head is the one thing above the rows, so any
+   size change here moves the entire batch and everything under it — and it would
+   land at the worst possible moment, since the chips arrive exactly as the rows
+   fold away. Padding and metrics are identical for the plain and toggle forms so
+   that swapping <div> for <button> is invisible too. */
+.head {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px 8px;
-  padding: 2px 0 4px 1px;
+  gap: 8px;
+  width: 100%;
+  min-height: 26px;
+  /* Pull the window up so the 22px rail reaches into the orb when rows follow. */
+  margin: 0 -6px -2px;
+  padding: 3px 6px 5px;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  color: inherit;
+  text-align: left;
 }
-.strip__chip {
+/* A done batch's line is a toggle between the horizontal and vertical stacks. */
+.head--toggle {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.head--toggle:hover {
+  background: var(--hover);
+}
+.head__orb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: var(--ground);
+  /* Keep the canvas orb out of any row-enter transforms below. */
+  isolation: isolate;
+  transform: translateZ(0);
+}
+/* The clipped one-line track. It takes the leftover width so the chevron keeps
+   its place at the right, and fades rather than cuts when a very long run
+   outgrows it — the toggle is there to see the full list. */
+.head__strip {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+}
+.head__chip {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 2px;
   color: var(--hue, var(--muted));
   opacity: 0.85;
 }
-.strip__count {
+.head__count {
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--muted);
 }
+.head__chev {
+  flex: none;
+  margin-left: auto;
+  opacity: 0.5;
+  transition: transform 0.22s ease;
+}
+.head__chev--open {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .head__chev {
+    transition: none;
+  }
+}
 
-/* ── Sliding window ────────────────────────────────────────────────────────── */
+/* ── Vertical steps ────────────────────────────────────────────────────────────
+   The viewport. Height (and the bleed padding that lets the top row's rail reach
+   the orb) is driven from script and always transitions — that transition IS the
+   smoothness the whole thread feels when a batch folds into its strip.
+   `content-box` keeps the scripted height meaning *content*, so the bleed doesn't
+   have to be arithmetic. */
 .window {
   position: relative;
+  box-sizing: content-box;
+  height: 0;
+  overflow: hidden;
+  transition:
+    height 380ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    padding-top 380ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    margin-top 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+/* Rows hang from the bottom edge and overflow upward, so a new row never pushes
+   its neighbours around — the edge simply reveals more of the stack. */
+.window__inner {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
+  transition: transform 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+/* Only once the window is a ticker — otherwise this would fade the first row of
+   a short batch for no reason. */
+.window--masked {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 26px);
 }
 .window__row {
-  will-change: transform, opacity;
+  will-change: opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .window,
+  .window__inner {
+    transition: none;
+  }
 }
 </style>

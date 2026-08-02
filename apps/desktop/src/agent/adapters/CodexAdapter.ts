@@ -375,6 +375,9 @@ export class CodexAdapter implements ProviderAdapter {
     supportsToolEvents: true,
     supportsResume: true,
     supportsModelList: true,
+    // Codex has no nested-agent surface of its own (no Task/Agent tool), so a
+    // turn never fans out into runs kone could project.
+    supportsSubagents: false,
   };
 
   private readonly emit: EmitEvent;

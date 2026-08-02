@@ -1860,8 +1860,8 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
 }
 
 .col__body {
-  --fade-top: 10px;
-  --fade-end: 40px;
+  --fade-top: 0px;
+  --fade-end: 14px;
 
   display: flex;
   flex-direction: column;

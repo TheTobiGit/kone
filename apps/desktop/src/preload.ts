@@ -162,6 +162,10 @@ const api = {
       answers: UserInputAnswers,
     ): Promise<void> =>
       ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers),
+    stopSubagent: (threadId: string, toolUseId: string): Promise<void> =>
+      ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
+    steerSubagent: (threadId: string, toolUseId: string, message: string): Promise<void> =>
+      ipcRenderer.invoke("agent:steer-subagent", threadId, toolUseId, message),
     listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
     // Persisted conversation history (read-only): rehydrate a project's last
     // thread on open, or list past ones. Null when nothing is stored yet.
