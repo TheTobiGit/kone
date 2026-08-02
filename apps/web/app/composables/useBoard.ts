@@ -473,10 +473,14 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     }
 
     // Blank-thread suppression is a board invariant (L3), not a caller opt-in.
+    // Reuse the one blank column instead of stacking a second — including a
+    // restored dormant blank slot, which we attach here so the reused pane is
+    // live on return (matching the mint path's `await attach` below).
     if (kind === "thread" && !o.threadId && blankThreadPane.value) {
-      const id = blankThreadPane.value.id;
-      if (doFocus) focus(id);
-      return id;
+      const existing = blankThreadPane.value;
+      if (!existing.session) await attach(existing.id);
+      if (doFocus) focus(existing.id);
+      return existing.id;
     }
 
     const id = mintPaneId();

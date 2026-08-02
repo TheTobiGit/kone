@@ -363,6 +363,37 @@ describe("useBoard — board laws", () => {
     expect(board.focusedId.value).toBe(firstId);
   });
 
+  test("L3: open(thread) reuses a restored DORMANT blank slot, not a second column", async () => {
+    const { board } = harness();
+
+    // Project-home open: the saved blank column restores dormant (deferHeavyAttach
+    // leaves it un-attached, session === null). This is the case that used to slip
+    // past blank suppression and land the home with two empty threads.
+    await board.restore(
+      {
+        version: 1 as const,
+        panes: [
+          { id: "p-blank", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: null }, width: 0 },
+        ],
+        focusedId: "p-blank",
+      },
+      undefined,
+      { deferHeavyAttach: true },
+    );
+    await settle();
+    expect(board.entries.value.length).toBe(1);
+    expect(board.panes.value[0]!.session).toBeNull(); // dormant
+
+    // Creating a new thread must reuse that slot (attaching it), never stack a
+    // second blank column.
+    await board.open("thread");
+    await settle();
+
+    expect(board.entries.value.length).toBe(1);
+    expect(board.entries.value[0]!.id).toBe("p-blank");
+    expect(board.panes.value[0]!.session).not.toBeNull(); // reused → now live
+  });
+
   test("L3: open(thread, { threadId }) always creates a second column", async () => {
     const { board } = harness();
 

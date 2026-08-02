@@ -25,12 +25,20 @@ export function threadHasIdentity(pane: Pane | null): boolean {
 }
 
 /** The inverse, restricted to thread panes: a thread column that is a slot, not
- *  a conversation. A dormant (session === null) thread pane is NOT blank — it's
- *  a real stored conversation that hasn't been attached yet. That distinction is
- *  the one people get wrong. */
+ *  a conversation. This backs the board's "one blank thread" invariant, so it
+ *  must catch a blank slot in EITHER form:
+ *   · attached — a live session with no transcript and no turn in flight;
+ *   · dormant — no session yet AND an anchor that remembers no thread id (a
+ *     restored blank column, deferHeavyAttach left un-attached at project home).
+ *  A dormant pane WITH a remembered id is the case people get wrong: that's a
+ *  real stored conversation waiting to re-attach (see threadHasIdentity), never
+ *  a blank slot — so it's excluded. Missing the dormant-blank case is what let a
+ *  restored empty column and a freshly-minted one both count as "not blank",
+ *  landing the project home with two empty threads. */
 export function isBlankThread(pane: Pane | null): boolean {
-  if (!pane || pane.kind !== "thread" || !pane.session) return false;
-  return isThreadSessionBlank(pane.session);
+  if (!pane || pane.kind !== "thread") return false;
+  if (pane.session) return isThreadSessionBlank(pane.session);
+  return pane.entry.anchor.kind === "thread" && pane.entry.anchor.threadId === null;
 }
 
 /** Kind-agnostic: does removing this artifact destroy something unrecoverable?
