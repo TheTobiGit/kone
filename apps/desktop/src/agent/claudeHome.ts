@@ -20,6 +20,31 @@ export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): st
   return env.CLAUDE_CONFIG_DIR?.trim() || path.join(homedir(), ".claude");
 }
 
+/** Where the SDK's bundled `claude` binary really lives in a packaged build.
+ *
+ *  The SDK resolves its native binary relative to its own module path — which,
+ *  once packaged, is *inside* app.asar. Electron's asar shim patches `fs` but
+ *  not `child_process.spawn`, so the OS walks the path, hits app.asar (a file,
+ *  not a directory) and the spawn fails with ENOTDIR. electron-builder does
+ *  unpack the binary, so the working path is the app.asar.unpacked twin.
+ *
+ *  Returns undefined when that path isn't there (notably `electron dev`, where
+ *  nothing is packed) — the caller then omits the option and lets the SDK
+ *  resolve the binary itself, which works fine unpacked. */
+export function resolveClaudeExecutable(): string | undefined {
+  if (!process.resourcesPath) return undefined;
+  const pkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+  const binary = process.platform === "win32" ? "claude.exe" : "claude";
+  const unpacked = path.join(
+    process.resourcesPath,
+    "app.asar.unpacked",
+    "node_modules",
+    pkg,
+    binary,
+  );
+  return existsSync(unpacked) ? unpacked : undefined;
+}
+
 // Direct-credential env keys — a token/key that, if present, the CLI would use
 // *instead of* the user's subscription login. We strip these when a real login
 // exists so the subscription always wins over a leaked/stale key.

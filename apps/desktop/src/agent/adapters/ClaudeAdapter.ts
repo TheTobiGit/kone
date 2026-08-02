@@ -15,7 +15,12 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { buildClaudeEnv, parseClaudeCliVersion, summarizeClaudeAccount } from "../claudeHome.js";
+import {
+  buildClaudeEnv,
+  parseClaudeCliVersion,
+  resolveClaudeExecutable,
+  summarizeClaudeAccount,
+} from "../claudeHome.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { probe } from "../spawn.js";
 import type {
@@ -565,6 +570,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const controller = new AbortController();
     try {
       const env = await buildClaudeEnv();
+      const executable = resolveClaudeExecutable();
       const q = query({
         prompt: idlePrompt(controller.signal),
         options: {
@@ -578,11 +584,16 @@ export class ClaudeAdapter implements ProviderAdapter {
           settingSources: [],
           includePartialMessages: false,
           systemPrompt: { type: "preset", preset: "claude_code" },
+          ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
         },
       });
       const init = await q.initializationResult();
       return { account: init.account, models: init.models };
-    } catch {
+    } catch (error) {
+      // A failed probe is reported to the user as the generic "Needs sign-in",
+      // which is indistinguishable from a real logged-out state. Log the actual
+      // reason so a spawn/auth failure in a packaged build is diagnosable.
+      console.error("[kone] Claude discovery probe failed:", error);
       return null;
     } finally {
       controller.abort();
@@ -593,6 +604,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   async startSession(input: SessionStartInput): Promise<Session> {
     const env = await buildClaudeEnv();
+    const executable = resolveClaudeExecutable();
     const mode: InteractionMode = input.mode ?? "accept-edits";
     const effort = normalizeEffort(input.effort);
     const abort = new AbortController();
@@ -621,6 +633,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       systemPrompt: { type: "preset", preset: "claude_code" },
       settingSources: ["user", "project", "local"],
       includePartialMessages: true,
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     };
 
     const q = query({ prompt: prompt.iterable(), options });

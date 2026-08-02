@@ -122,7 +122,10 @@ async function createWindow() {
     return;
   }
 
-  await mainWindow.loadURL("app://./index.html");
+  // Load the root path (not "/index.html") so Nuxt's client router matches the
+  // home route. The app:// handler maps "/" to the index.html file on disk;
+  // pointing the router at "/index.html" makes it 404 against its own routes.
+  await mainWindow.loadURL("app://./");
 }
 
 app.whenReady().then(async () => {
