@@ -6,7 +6,7 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../pla
 import { probe } from "../spawn.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
-import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
 
 type RecordLike = Record<string, any>;
 type OpenCodeEvent = { type: string; properties?: RecordLike };
@@ -225,10 +225,21 @@ export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
   readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true };
   private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
+  /** The CLI executable to spawn — the user's override or the `opencode` default. */
+  private binary = OPENCODE_BINARY;
   constructor(emit: EmitEvent) { this.emit = emit; }
 
+  /** Adopt the user's persisted install settings. A blank binaryPath falls back
+   *  to the default; drop the model cache so the next probe uses the new binary. */
+  setConfig(config: ProviderConfig): void {
+    const next = config.binaryPath?.trim() || OPENCODE_BINARY;
+    if (next === this.binary) return;
+    this.binary = next;
+    this.modelsCache = null;
+  }
+
   async discover(): Promise<ProviderStatus> {
-    const env = await buildOpenCodeEnv(); const output = await probe(OPENCODE_BINARY, ["--version"], env, 5_000);
+    const env = await buildOpenCodeEnv(); const output = await probe(this.binary, ["--version"], env, 5_000);
     if (output === null) return classifyOpenCodeSpawnFailure(new Error("ENOENT"));
     const version = parseOpenCodeVersion(output);
     if (!isOpenCodeVersionSupported(version)) return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", version, message: `OpenCode v${version ?? "unknown"} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.` };
@@ -242,13 +253,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildOpenCodeEnv();
-    for (let attempt = 0; attempt < 2; attempt += 1) { const output = await probe(OPENCODE_BINARY, ["models", "--verbose"], env, 30_000); if (output !== null) { const models = parseOpenCodeModels(output); if (models.length || attempt === 1) { for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens); return models; } } if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000)); }
+    for (let attempt = 0; attempt < 2; attempt += 1) { const output = await probe(this.binary, ["models", "--verbose"], env, 30_000); if (output !== null) { const models = parseOpenCodeModels(output); if (models.length || attempt === 1) { for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens); return models; } } if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000)); }
     throw new Error("OpenCode model inventory failed.");
   }
 
   async startSession(input: SessionStartInput): Promise<Session> {
     const prior = this.sessions.get(input.threadId); if (prior) await this.stopSession(input.threadId);
-    const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv(); const server = await startOpenCodeServer({ cwd: input.cwd, env });
+    const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv(); const server = await startOpenCodeServer({ cwd: input.cwd, env, binary: this.binary });
     const client = makeClient(server.baseUrl); let sessionId: string | undefined;
     const resume = input.resume?.trim();
     if (resume && /^ses_/.test(resume)) {

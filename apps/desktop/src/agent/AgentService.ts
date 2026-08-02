@@ -1,12 +1,15 @@
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
+import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
 import type {
   ApprovalDecision,
   EmitEvent,
   ModelDescriptor,
   ProviderAdapter,
+  ProviderConfig,
   ProviderKind,
+  ProviderSettingsMap,
   ProviderStatus,
   RuntimeEvent,
   Session,
@@ -38,6 +41,13 @@ export class AgentService {
     this.register(new CodexAdapter(emit));
     this.register(new ClaudeAdapter(emit));
     this.register(new OpenCodeAdapter(emit));
+    // Point each adapter at the user's persisted install settings (custom binary
+    // path, …) before anything probes or spawns. Unset providers keep their
+    // built-in default, so a fresh install behaves exactly as before.
+    const settings = readProviderSettings();
+    for (const [provider, adapter] of this.adapters) {
+      adapter.setConfig?.(settings[provider] ?? {});
+    }
   }
 
   private register(adapter: ProviderAdapter): void {
@@ -71,6 +81,22 @@ export class AgentService {
 
   async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
     return this.adapter(provider).listModels();
+  }
+
+  // ── install settings ────────────────────────────────────────────────────────
+
+  /** The user's persisted per-provider install settings (binary paths, …). */
+  getProviderSettings(): ProviderSettingsMap {
+    return readProviderSettings();
+  }
+
+  /** Persist one provider's install settings and apply them to its live adapter
+   *  so the next discover / session picks up the change without a restart.
+   *  Returns the full updated map. */
+  setProviderSettings(provider: ProviderKind, config: ProviderConfig): ProviderSettingsMap {
+    const next = writeProviderSettings(provider, config);
+    this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
+    return next;
   }
 
   // ── lifecycle (routed) ──────────────────────────────────────────────────────

@@ -29,9 +29,11 @@ export async function startOpenCodeServer(input: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  /** CLI executable to serve from; defaults to `opencode` on PATH. */
+  binary?: string;
 }): Promise<OpenCodeServer> {
   const port = await reservePort();
-  const child = spawn(OPENCODE_BINARY, ["serve", `--hostname=127.0.0.1`, `--port=${port}`], {
+  const child = spawn(input.binary || OPENCODE_BINARY, ["serve", `--hostname=127.0.0.1`, `--port=${port}`], {
     cwd: input.cwd,
     env: input.env,
     detached: process.platform !== "win32",

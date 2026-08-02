@@ -11,6 +11,7 @@ import {
 } from "./threadTitle.js";
 import type {
   ApprovalDecision,
+  ProviderConfig,
   ProviderKind,
   RuntimeEvent,
   SendTurnInput,
@@ -176,6 +177,16 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:discover", () => svc.discover());
   ipcMain.handle("agent:models", (_event, provider: ProviderKind) =>
     svc.listModels(provider),
+  );
+
+  // Per-provider install settings (custom CLI binary path, …). Read on the
+  // Providers settings pane; a write persists to disk and re-points the live
+  // adapter so the next discover / session uses it.
+  ipcMain.handle("agent:get-settings", () => svc.getProviderSettings());
+  ipcMain.handle(
+    "agent:set-settings",
+    (_event, provider: ProviderKind, config: ProviderConfig) =>
+      svc.setProviderSettings(provider, config),
   );
 
   // Subscribe/unsubscribe the calling renderer to the event stream.

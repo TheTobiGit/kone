@@ -6,7 +6,9 @@ import type {
   ApprovalDecision,
   ChatAttachment,
   ModelDescriptor,
+  ProviderConfig,
   ProviderKind,
+  ProviderSettingsMap,
   ProviderStatus,
   RuntimeEvent,
   SendTurnInput,
@@ -129,6 +131,12 @@ const api = {
     discover: (): Promise<ProviderStatus[]> => ipcRenderer.invoke("agent:discover"),
     models: (provider: ProviderKind): Promise<ModelDescriptor[]> =>
       ipcRenderer.invoke("agent:models", provider),
+    // Per-provider install settings (custom CLI binary path, …). Read once on
+    // app open; writing one provider persists the whole map and re-points its
+    // live adapter, and resolves to the updated full map.
+    getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
+    setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
+      ipcRenderer.invoke("agent:set-settings", provider, config),
     // Session lifecycle — these resolve when the turn is *accepted*; the actual
     // output arrives on the agent:event stream (subscribe via onEvent).
     startSession: (input: SessionStartInput): Promise<Session> =>

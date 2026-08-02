@@ -13,6 +13,7 @@ import type {
   ModelDescriptor,
   PlanTask,
   ProviderAdapter,
+  ProviderConfig,
   ProviderStatus,
   RuntimeItem,
   RuntimeItemKind,
@@ -379,16 +380,27 @@ export class CodexAdapter implements ProviderAdapter {
   private readonly emit: EmitEvent;
   private readonly sessions = new Map<string, CodexSession>();
   private modelsCache: Promise<ModelDescriptor[]> | null = null;
+  /** The CLI executable to spawn — the user's override or the `codex` default. */
+  private binary = CODEX_BINARY;
 
   constructor(emit: EmitEvent) {
     this.emit = emit;
+  }
+
+  /** Adopt the user's persisted install settings. A blank binaryPath falls back
+   *  to the default; drop the model cache so the next probe uses the new binary. */
+  setConfig(config: ProviderConfig): void {
+    const next = config.binaryPath?.trim() || CODEX_BINARY;
+    if (next === this.binary) return;
+    this.binary = next;
+    this.modelsCache = null;
   }
 
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {
     const env = await buildAgentEnv();
-    const output = await probe(CODEX_BINARY, ["--version"], env, 5_000);
+    const output = await probe(this.binary, ["--version"], env, 5_000);
     if (output === null) {
       return {
         provider: this.provider,
@@ -453,7 +465,7 @@ export class CodexAdapter implements ProviderAdapter {
    *  calls this once at app open). */
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildAgentEnv();
-    const rpc = new JsonRpcClient(CODEX_BINARY, ["app-server"], { cwd: homedir(), env });
+    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: homedir(), env });
     try {
       await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
       rpc.notify("initialized");
@@ -472,7 +484,7 @@ export class CodexAdapter implements ProviderAdapter {
 
   async startSession(input: SessionStartInput): Promise<Session> {
     const env = await buildAgentEnv();
-    const rpc = new JsonRpcClient(CODEX_BINARY, ["app-server"], { cwd: input.cwd, env });
+    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: input.cwd, env });
     const mode: InteractionMode = input.mode ?? "accept-edits";
 
     const session: CodexSession = {

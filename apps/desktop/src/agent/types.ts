@@ -473,4 +473,24 @@ export interface ProviderAdapter {
   // introspection
   listSessions(): Promise<Session[]>;
   hasSession(threadId: string): Promise<boolean>;
+
+  /** Apply the user's persisted install settings for this provider (e.g. a
+   *  custom CLI binary path). Optional — adapters with nothing to configure
+   *  (Claude runs the SDK's embedded CLI) omit it. Takes effect on the next
+   *  discover / session; running sessions keep the binary they spawned with. */
+  setConfig?(config: ProviderConfig): void;
 }
+
+/** The user's persisted install settings for one provider. "Bring your own
+ *  subscription" holds: kone never stores credentials — only how to reach the
+ *  CLI the user already installed + logged into. An empty/absent field means
+ *  "use the adapter's built-in default" (e.g. resolve `codex` on PATH). */
+export type ProviderConfig = {
+  /** Override the CLI executable — an absolute path or a name on PATH. Empty
+   *  falls back to the adapter's default (`codex` / `opencode`). Ignored by
+   *  providers with no external binary (Claude). */
+  binaryPath?: string;
+};
+
+/** Persisted install settings for every provider, keyed by provider. */
+export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;

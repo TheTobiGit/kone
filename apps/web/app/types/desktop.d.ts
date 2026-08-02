@@ -217,6 +217,18 @@ export type ProviderStatus = {
   message?: string;
 };
 
+/** The user's persisted per-provider install settings (mirrors
+ *  apps/desktop/src/agent/types.ts). Credential-free by design — only how to
+ *  reach the CLI the user already installed + logged into. */
+export type ProviderConfig = {
+  /** Override the CLI executable (absolute path or a name on PATH). Empty falls
+   *  back to the adapter default (`codex` / `opencode`); ignored by providers
+   *  with no external binary (Claude). */
+  binaryPath?: string;
+};
+
+export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
+
 export type ModelDescriptor = {
   id: string;
   label: string;
@@ -516,6 +528,14 @@ export type KoneAgentApi = {
   /** Probe which agent CLIs are installed + logged in on this machine. */
   discover: () => Promise<ProviderStatus[]>;
   models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;
+  /** The user's persisted per-provider install settings (custom binary path, …). */
+  getSettings: () => Promise<ProviderSettingsMap>;
+  /** Persist one provider's install settings; re-points its live adapter and
+   *  resolves to the updated full map. */
+  setSettings: (
+    provider: ProviderKind,
+    config: ProviderConfig,
+  ) => Promise<ProviderSettingsMap>;
   /** Persisted conversation history (read-only). */
   history: KoneAgentHistoryApi;
   /** Start a thread; resolves once the session is ready. */
