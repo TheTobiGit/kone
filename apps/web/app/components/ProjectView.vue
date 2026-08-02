@@ -20,7 +20,7 @@ import type {
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import { buildModelCatalog, effortForTier, familyForId, EFFORT_META } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId, sessionBrand, EFFORT_META } from "~/utils/modelCatalog";
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import { SESSION_BRAND } from "~/types/session";
 import { deriveActivePlan } from "~/utils/planTasks";
@@ -44,6 +44,9 @@ const { warm } = useHighlighter();
 // nothing here knows it's Codex underneath. In `nuxt dev` (no bridge) the
 // composable streams a faithful mock so the whole flow is demoable in a browser.
 const providers = useAgentProviders();
+// The user's per-provider install settings — here just for the enable toggle,
+// which decides whether a detected provider is offered in the picker rail.
+const providerSettings = useProviderSettings();
 // cwd is a getter so the session always boots in whatever project is active —
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
@@ -99,7 +102,7 @@ const board = useBoard({
     setDraft: (text) => composerRef.value?.setDraft(text),
   },
 });
-const { panes, focusedId, focusedPane } = board;
+const { panes, focusedId, focusedPane, blankThreadPane, attach } = board;
 
 // ── board persistence ──────────────────────────────────────────────────────
 // The layout (pane order, kinds, backend ids, widths, focus) is written to the
@@ -139,10 +142,13 @@ function setPaneWidth(id: string, width: number): void {
   board.setWidth(id, width);
 }
 
-// The composer only docks under a focused thread pane. agent.activeKey deliberately
-// keeps pointing at the last thread while you work in a terminal (background turns
-// keep streaming) — chrome derives from the focused pane's session, not the
-// projection. showChooser suppresses the composer on a bare desktop.
+// The composer only docks under a focused thread pane ON the board, or on the
+// working-tree overview (the entry point there). Model/mode/reasoning must ride
+// the session that will actually receive the next turn — the focused thread
+// column on the board, or the board's blank thread slot on overview (what
+// board.open('thread') focuses on send). agent.activeKey can still point at a
+// background thread while a terminal column is focused, so we re-project before
+// any composer edit and keep activeKey aligned with that target.
 const focusedThread = computed(() =>
   focusedPane.value?.kind === "thread" ? focusedPane.value.session : null,
 );
@@ -311,9 +317,16 @@ const REASONING_KEY = "kone:reasoning";
 const MODE_KEY = `kone:mode:${props.project.path}`;
 const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
 
-// The provider rail the model picker shows — one ready provider per catalog.
+// Ready providers the user hasn't switched off in settings. The enable toggle is
+// a pure picker-rail filter (it never tears down a running session), so both the
+// rail and the boot pick read this rather than `providers.ready` directly.
+const enabledReady = computed(() =>
+  providers.ready.value.filter((s) => providerSettings.isEnabled(s.provider)),
+);
+
+// The provider rail the model picker shows — one ready, enabled provider per catalog.
 const pickerProviders = computed<PickerProvider[]>(() =>
-  providers.ready.value.map((s) => ({
+  enabledReady.value.map((s) => ({
     id: s.provider,
     label: s.label,
     sub: `${PROVIDER_VENDOR[s.provider]} · ${catalogs.value[s.provider]?.length ?? 0} models`,
@@ -328,6 +341,50 @@ const pickerProviders = computed<PickerProvider[]>(() =>
 // tree will land later — the thread never clears, so it's safe to leave for now.)
 const surface = ref<"overview" | "board">("overview");
 
+/** Point agent.activeKey at the thread the composer is editing so setModel and
+ *  friends land on the session the next send will use. No-ops until the board
+ *  has restored — the immediate pre-mount sync used to miss the blank thread
+ *  slot and sometimes left no live session at all after restore evicted the boot
+ *  thread. */
+let syncingComposerTarget: Promise<void> | null = null;
+async function syncComposerTarget(): Promise<void> {
+  if (syncingComposerTarget) return syncingComposerTarget;
+  syncingComposerTarget = (async () => {
+    if (!boardReady.value) return;
+    if (focusedThread.value) {
+      agent.focusThread(focusedThread.value.key);
+      return;
+    }
+    if (surface.value !== "overview") return;
+
+    let blank = blankThreadPane.value;
+    // Same invariant as onSend: overview sends through the blank thread slot (or
+    // mint one if the board has none yet). Materialise it here so model picks
+    // aren't written to a boot session restore is about to evict.
+    if (!blank) {
+      await board.open("thread", { focus: false });
+      blank = blankThreadPane.value;
+    }
+    if (!blank) return;
+    if (!blank.session) await attach(blank.id);
+    const sk = blankThreadPane.value?.session?.key;
+    if (sk) agent.focusThread(sk);
+  })().finally(() => {
+    syncingComposerTarget = null;
+  });
+  return syncingComposerTarget;
+}
+
+const composerVisible = computed(
+  () => surface.value === "overview" || activePaneIsThread.value,
+);
+watch(
+  [boardReady, composerVisible, focusedId, () => blankThreadPane.value?.session?.key],
+  () => {
+    if (boardReady.value && composerVisible.value) void syncComposerTarget();
+  },
+);
+
 // A restored thread/terminal pane stays dormant while the overview is showing.
 // Attach it once the board surface is revealed so the column is live on entry.
 watch(surface, (s, prev) => {
@@ -341,7 +398,12 @@ onMounted(async () => {
   // that in-flight run (deduped — no second probe) or returns instantly if done,
   // then reads the cached lists. Build a catalog for every ready provider.
   await providers.prepare();
-  const readyProviders = providers.ready.value;
+  // Warm persisted install settings so the enable filter (and any binary paths)
+  // are in hand before we pick a provider to boot.
+  await providerSettings.load();
+  // Only offer providers the user hasn't switched off — the boot pick and the
+  // rail draw from the same enabled set.
+  const readyProviders = enabledReady.value;
   await Promise.all(
     readyProviders.map(async (s) => {
       const raw = await providers.models(s.provider);
@@ -359,39 +421,6 @@ onMounted(async () => {
     : readyProviders.find((s) => s.provider === "codex")?.provider
       ?? readyProviders.find((s) => s.provider === "opencode")?.provider
       ?? readyProviders[0]?.provider;
-  if (chosen) agent.setProvider(chosen);
-
-  // Pick a default model within the chosen provider (restoring the saved one when
-  // it's still in that provider's catalog).
-  if (!model.value) {
-    const savedModel = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
-    const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === savedModel));
-    if (savedModel && inCatalog) agent.setModel(savedModel);
-    else {
-      const first = modelOptions.value[0];
-      const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-      if (eff) agent.setModel(eff.modelId);
-    }
-  }
-  // Restore the app-wide last-used reasoning effort, clamped to what the active
-  // model's family actually offers (effortForTier falls back to the family
-  // default otherwise). The model watcher re-derives effort from reasoning.value,
-  // so seeding it here makes the restored tier stick.
-  if (import.meta.client) {
-    const savedReasoning = localStorage.getItem(REASONING_KEY);
-    if (savedReasoning && savedReasoning in EFFORT_META) {
-      const fam = familyForId(modelOptions.value, model.value);
-      const eff = effortForTier(fam, savedReasoning as EffortTier);
-      if (eff) agent.setReasoning(eff.tier);
-    }
-  }
-  // Restore the last permission mode for this project.
-  if (import.meta.client) {
-    const savedMode = localStorage.getItem(MODE_KEY);
-    if (savedMode && (MODES as string[]).includes(savedMode)) {
-      agent.setMode(savedMode as InteractionMode);
-    }
-  }
   // If the launcher asked to resume a specific conversation (a click on the App
   // Home "recent sessions" list), open THAT thread directly and drop into chat —
   // don't rehydrate + spawn the project's latest thread first only to tear it
@@ -433,6 +462,40 @@ onMounted(async () => {
   // Only now let layout changes persist — past this point the board reflects the
   // user's real arrangement, not the boot adopt.
   boardReady.value = true;
+  await syncComposerTarget();
+
+  // Seed provider/model/mode onto the composer target *after* restore + sync.
+  // Doing this earlier wrote into the construction boot thread that restore often
+  // evicts, which left overview model picks as no-ops until a board visit
+  // attached a real session.
+  if (!resume) {
+    if (chosen) agent.setProvider(chosen);
+
+    if (!model.value) {
+      const savedModel = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
+      const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === savedModel));
+      if (savedModel && inCatalog) agent.setModel(savedModel);
+      else {
+        const first = modelOptions.value[0];
+        const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+        if (eff) agent.setModel(eff.modelId);
+      }
+    }
+    if (import.meta.client) {
+      const savedReasoning = localStorage.getItem(REASONING_KEY);
+      if (savedReasoning && savedReasoning in EFFORT_META) {
+        const fam = familyForId(modelOptions.value, model.value);
+        const eff = effortForTier(fam, savedReasoning as EffortTier);
+        if (eff) agent.setReasoning(eff.tier);
+      }
+    }
+    if (import.meta.client) {
+      const savedMode = localStorage.getItem(MODE_KEY);
+      if (savedMode && (MODES as string[]).includes(savedMode)) {
+        agent.setMode(savedMode as InteractionMode);
+      }
+    }
+  }
 });
 
 // Derive the effort tier for the current model id and ride it along on each
@@ -473,6 +536,9 @@ watch(reasoning, (tier) => {
 // The full providers→models→effort picker (opened from the composer's model
 // name). It applies a raw model id, exactly like the composer's inline paths.
 const modelPickerOpen = ref(false);
+watch(modelPickerOpen, (open) => {
+  if (open) void syncComposerTarget();
+});
 // Clear transient thread chrome when focus leaves — model picker today, any future
 // overlay someone adds should land here too so it can't strand over a terminal.
 watch(
@@ -722,6 +788,7 @@ function onBranchSwitched() {
 // Codex changes ride the next turn in-session, no restart.
 type ModelPick = { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean; contextWindow?: string };
 async function applyModelEffort(picked: ModelPick) {
+  await syncComposerTarget();
   const providerChanged = picked.provider !== agent.provider.value;
   const modelChanged = picked.modelId !== model.value;
   if (providerChanged) agent.setProvider(picked.provider);
@@ -759,8 +826,22 @@ function onModelSelect(picked: ModelPick) {
 // applied on the next turn.
 const fastActive = computed(() => Boolean(serviceTier.value));
 function onUpdateFastMode(on: boolean) {
-  const fam = familyForId(modelOptions.value, model.value);
-  agent.setServiceTier(on ? fam?.fastTier?.id : undefined);
+  void syncComposerTarget().then(() => {
+    const fam = familyForId(modelOptions.value, model.value);
+    agent.setServiceTier(on ? fam?.fastTier?.id : undefined);
+  });
+}
+function onComposerModelId(id: string) {
+  void syncComposerTarget().then(() => agent.setModel(id));
+}
+function onComposerReasoning(tier: EffortTier) {
+  void syncComposerTarget().then(() => agent.setReasoning(tier));
+}
+function onComposerContextWindow(id: string) {
+  void syncComposerTarget().then(() => agent.setContextWindow(id));
+}
+function onComposerMode(next: InteractionMode) {
+  void syncComposerTarget().then(() => agent.setMode(next));
 }
 
 async function onSend(text: string, files?: File[]) {
@@ -949,7 +1030,7 @@ const pillThreads = computed(() => {
       key: t.key,
       threadId: t.threadId,
       title: t.title,
-      brand: SESSION_BRAND[t.provider] ?? "generic",
+      brand: sessionBrand(t.provider, SESSION_BRAND[t.provider] ?? "generic", t.model),
       block: t.block,
       turnId: t.block?.turnId ?? "",
       task: t.task,
@@ -1265,7 +1346,11 @@ function onDiscardFile(path: string) {
          wake it, then it stretches into the input. It stays docked to the
          viewport while the page behind scrolls. Entering the strip's overview takes
          it away; fade rather than cut, so it doesn't blink out from under the cursor
-         while the board behind it is still gliding back. -->
+         while the board behind it is still gliding back.
+         On the working-tree home the composer is the page's entry point, so it
+         shows regardless of what the hidden board's focus is (a restored terminal,
+         or a bare desktop); on the board itself it only docks under a focused
+         thread pane. -->
     <Transition
       enter-active-class="transition-opacity duration-200 ease-out"
       enter-from-class="opacity-0"
@@ -1273,7 +1358,7 @@ function onDiscardFile(path: string) {
       leave-to-class="opacity-0"
     >
       <div
-        v-if="!focusedPendingUserInput && activePaneIsThread && !showChooser && !stripOverview"
+        v-if="!focusedPendingUserInput && (surface === 'overview' || activePaneIsThread) && !showChooser && !stripOverview"
         class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
         :inert="Boolean(activeFile)"
       >
@@ -1290,11 +1375,11 @@ function onDiscardFile(path: string) {
           :context-window="contextWindow"
           @send="onSend"
           @interrupt="onInterrupt"
-          @update:model-id="agent.setModel"
-          @update:reasoning="agent.setReasoning"
-          @update:mode="agent.setMode"
+          @update:model-id="onComposerModelId"
+          @update:reasoning="onComposerReasoning"
+          @update:mode="onComposerMode"
           @update:fast-mode="onUpdateFastMode"
-          @update:context-window="agent.setContextWindow"
+          @update:context-window="onComposerContextWindow"
           @open-models="modelPickerOpen = true"
         />
       </div>
