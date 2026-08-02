@@ -24,8 +24,8 @@ import FileChip from "~/components/FileChip.vue";
 // semantic elements styled below via `.md :deep(...)`.
 
 // `historical` marks a reply loaded from storage: it mounts already-complete, so
-// it skips the per-word blur-in reveal (and the extra span-per-word nodes) and
-// just renders as settled text — no animation replay when reopening a thread.
+// it skips the per-word spring-scale-in reveal (and the extra span-per-word
+// nodes) and just renders as settled text — no animation replay on reopen.
 const props = defineProps<{ source: string; historical?: boolean }>();
 
 const { parse } = useMarkdown();
@@ -43,12 +43,11 @@ watch(
 );
 
 // Every word gets its own stable key, so a streamed word mounts as a genuinely
-// new element the instant it arrives — the same "resolves from soft focus"
-// reveal HomeGreeting uses for its state line, but driven by real arrival time
-// instead of an artificial stagger: each word's blur-in fires exactly when it
-// lands, one after another as the reply grows. A fully-formed message (history)
-// mounts all its words at once, so it just settles as a single soft block
-// instead of a per-word cascade.
+// new element the instant it arrives — and springs into place on mount, driven
+// by real arrival time instead of an artificial stagger: each word's
+// spring-scale-in fires exactly when it lands, one after another as the reply
+// grows. A fully-formed message (history) mounts all its words at once, so it
+// just settles together instead of a per-word cascade.
 //
 // The key is the word's PATH in the tree (`0.2.1w4`), not its ordinal in a
 // running counter. Live Markdown is reparsed from scratch on every chunk, and a
@@ -164,8 +163,8 @@ function styleOf(node: MdNode): Record<string, string> | undefined {
 }
 
 /** Split a text run into words wrapped in individually-keyed spans (so each
- *  one mounts as its own DOM node and can carry the blur-in reveal), with
- *  whitespace passed through untouched between them. */
+ *  one mounts as its own DOM node and can carry the spring-scale-in reveal),
+ *  with whitespace passed through untouched between them. */
 function renderWords(content: string, key: number, path: string): VNode | string {
   // History: render the run as plain text — no per-word spans, no blur-in.
   if (props.historical) return content;
@@ -323,16 +322,19 @@ const Rendered = defineComponent({
   overflow-wrap: anywhere;
 }
 
-/* Each word resolves from soft focus as it mounts — the same reveal
-   HomeGreeting uses for its state line. Streamed words each land at their own
-   real moment so this alone reads as one word settling after another; a
-   fully-formed message just mounts all its words in the same tick and settles
-   as a single soft block. */
+/* Each word pops into place as it mounts — the `spring-scale-in` effect: a soft
+   overshoot scale settling like a physical spring (cubic-bezier y2 = 1.56).
+   Streamed words each land at their own real moment so this reads as one word
+   springing in after another; a fully-formed message just mounts all its words
+   in the same tick and settles together. inline-block is required — transforms
+   don't apply to `display: inline`. */
 .md :deep(.stream-word) {
-  display: inline;
+  display: inline-block;
+  transform-origin: 50% 55%;
+  will-change: transform, opacity;
   transition:
-    opacity 420ms ease,
-    filter 420ms ease;
+    opacity 360ms ease,
+    transform 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 /* An atom (file chip / inline code) hugs its child so the wrapper never
    disturbs baseline alignment or wrapping. Atoms intentionally do not carry
@@ -346,7 +348,7 @@ const Rendered = defineComponent({
 @starting-style {
   .md :deep(.stream-word) {
     opacity: 0;
-    filter: blur(6px);
+    transform: scale(0.7);
   }
 }
 
@@ -510,6 +512,6 @@ const Rendered = defineComponent({
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .md :deep(.stream-word) { transition: none; }
+  .md :deep(.stream-word) { transition: none; transform: none; }
 }
 </style>
