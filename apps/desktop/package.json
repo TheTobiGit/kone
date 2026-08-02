@@ -8,6 +8,7 @@
     "dev": "bun run scripts/dev.ts",
     "build": "bun run scripts/build.ts",
     "package": "bun run scripts/package.ts",
+    "install:local": "bun run scripts/install-local.ts",
     "check-types": "tsc --noEmit",
     "test": "bun test",
     "postinstall": "electron-rebuild"
@@ -41,13 +42,22 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dir"]
+      "target": [
+        "dir"
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.inherit.plist"
     },
     "linux": {
-      "target": ["dir"]
+      "target": [
+        "dir"
+      ]
     },
     "win": {
-      "target": ["dir"]
+      "target": [
+        "dir"
+      ]
     }
   }
 }

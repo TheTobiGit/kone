@@ -20,7 +20,8 @@
     "dev:web": "turbo run dev -F web",
     "dev:desktop": "turbo run dev -F desktop",
     "build:desktop": "turbo run build -F desktop",
-    "package:desktop": "turbo run package -F desktop"
+    "package:desktop": "turbo run package -F desktop",
+    "install:desktop": "turbo run install:local -F desktop"
   },
   "devDependencies": {
     "@kone/config": "workspace:*",

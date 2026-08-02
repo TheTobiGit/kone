@@ -12,6 +12,9 @@
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["release/**"]
     },
+    "install:local": {
+      "cache": false
+    },
     "lint": {
       "dependsOn": ["^lint"]
     },
