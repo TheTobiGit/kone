@@ -478,6 +478,11 @@ const MAX_W = 720;
 const SIDE_W = 200;
 // Horizontal budget around the text: left pad + gap + send seed + right pad + rim.
 const EXTRAS = 78;
+// The slack the input keeps at the settled pill width (EXTRAS minus the 72px
+// the field spends on padding, gap and the send seed). When a keystroke's text
+// exceeds the pill's current width by more than this, the width ease would wrap
+// it to the next row at every intermediate width — so we snap that step instead.
+const EDGE_SLACK = EXTRAS - 72;
 const surfaceH = ref(REST);
 const surfaceW = ref(MIN_W);
 // Multi-line — pin the send seed to the bottom instead of centring it.
@@ -726,6 +731,14 @@ function sync() {
   springy.value = jumped || structural;
   lastCard = card.value;
 
+  // A keystroke that outgrows the pill's current width would wrap the text to
+  // the next row at every intermediate width of the width ease — a one-letter
+  // flash on row two. Snap that step (and only it) so the pill widens to fit
+  // instantly and the text never leaves the first row. Once it has, the width
+  // ease returns for the ordinary per-keystroke tracking.
+  const grewPastEdge =
+    pill && !opening.value && desired < cap && desired > prevW + EDGE_SLACK;
+
   if (el) {
     // Keep the imperative class in step with the ref so the synchronous width
     // reapply below eases on the right curve (Vue would only patch it next tick).
@@ -733,8 +746,11 @@ function sync() {
     const target = pill ? `${surfaceW.value}px` : "";
     el.style.width = paintedWidth; // back to where it was painting…
     void el.offsetWidth; // …flush that before transitions come back…
-    el.style.transition = savedTransition;
+    el.style.transition = grewPastEdge ? "none" : savedTransition;
     el.style.width = target; // …then ease to the target from there.
+    // Snaps are one-shot: give the transition back to the CSS class so the next
+    // keystroke's width change eases again (an inline "none" would stick around).
+    if (grewPastEdge) el.style.transition = savedTransition;
   }
 }
 // A width change (open, pill↔card) is mid-flight when it fires, so measuring
@@ -1030,23 +1046,27 @@ defineExpose({ wake, setDraft });
                logo + the bare filename) the browser deletes as one unit. What we
                send is serialized off this DOM — chips written back as full @paths
                — so display and value can differ without any twin/overlay. -->
-          <div
-            ref="field"
-            class="field__input"
-            :class="{ 'field__input--empty': isEmpty }"
-            contenteditable="true"
-            role="textbox"
-            aria-multiline="true"
-            aria-label="Ask anything"
-            data-placeholder="Ask anything…"
-            :tabindex="open ? 0 : -1"
-            @keydown="onFieldKeydown"
-            @input="onFieldInput"
-            @click="onFieldClick"
-            @keyup="onFieldKeyup"
-            @focus="onFieldClick"
-            @paste="onPaste"
-          />
+          <div class="field__ed">
+            <!-- Placeholder overlay, not a ::before: it sits above the empty
+                 field but takes no layout, so the caret stays at the true left
+                 edge (a pseudo-element would push the cursor after the label). -->
+            <span v-if="isEmpty" class="field__placeholder" aria-hidden="true">Ask anything…</span>
+            <div
+              ref="field"
+              class="field__input"
+              contenteditable="true"
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Ask anything"
+              :tabindex="open ? 0 : -1"
+              @keydown="onFieldKeydown"
+              @input="onFieldInput"
+              @click="onFieldClick"
+              @keyup="onFieldKeyup"
+              @focus="onFieldClick"
+              @paste="onPaste"
+            />
+          </div>
           <button
             type="button"
             class="seed"
@@ -1417,7 +1437,20 @@ defineExpose({ wake, setDraft });
    line until it hits the pill's cap (or a Shift+Enter break), then wraps and
    grows its own height — no textarea, no overlay. The type ramp here must stay
    in step with .mirror below so the measured width matches what's painted. */
+/* The input's box: positioned so its text (and caret) paint above the
+   placeholder overlay below. */
+.field__ed {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+}
+.surface.is-card .field__ed { flex: 0 0 auto; }
 .field__input {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   width: 100%;
   min-width: 0;
@@ -1439,11 +1472,22 @@ defineExpose({ wake, setDraft });
 }
 .field__input:focus { outline: 0; }
 .surface.is-card .field__input { flex: 0 0 auto; line-height: 25px; }
-/* Placeholder — shown only while the field is empty. */
-.field__input--empty::before {
-  content: attr(data-placeholder);
+/* Placeholder overlay — shown only while the field is empty. It's a sibling
+   overlay (not ::before) so it never pushes the caret: an empty field's caret
+   stays at the true left edge under the label, and clearing the draft returns
+   the cursor to the start instead of leaving it after the text. */
+.field__placeholder {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--placeholder);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 20px;
+  white-space: nowrap;
   pointer-events: none;
+  user-select: none;
 }
 
 /* Off-screen twin of the field's content (same chips, same type) — measured to

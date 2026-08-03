@@ -25,6 +25,7 @@ import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/
 import { SESSION_BRAND } from "~/types/session";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
+import { deriveActiveSubagents } from "~/utils/subagentRuns";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 
@@ -115,6 +116,21 @@ const { panes, focusedId, focusedPane, blankThreadPane, attach } = board;
 // thread adopted on the strip.
 const boardStore = useBoardPersistence(() => props.project.path);
 const boardReady = ref(false);
+/** Resolves once the async mount (provider detection → catalogs → board restore)
+ *  has finished. Callers that must not act on the pre-mount boot session — the
+ *  composer target sync and every send — await this instead of no-opping, which
+ *  used to let a cold-start send run on the hardcoded `codex` default carrying a
+ *  model restored from another provider. */
+function whenBoardReady(): Promise<void> {
+  if (boardReady.value) return Promise.resolve();
+  return new Promise((resolve) => {
+    const stop = watch(boardReady, (v) => {
+      if (!v) return;
+      stop();
+      resolve();
+    });
+  });
+}
 
 // The project's persisted thread ids (metadata only) — restore() checks stored
 // panes against these so a blank thread that was saved with its client id, but
@@ -242,6 +258,10 @@ const activeChangesRaw = computed(() =>
   deriveChangedFiles(focusedThread.value?.blocks.value ?? []),
 );
 const activeChanges = refDebounced(activeChangesRaw, 100);
+const activeSubagentsRaw = computed(() =>
+  deriveActiveSubagents(focusedThread.value?.blocks.value ?? []),
+);
+const activeSubagents = refDebounced(activeSubagentsRaw, 100);
 
 // The project's persisted agent threads, split into pinned + recent for the
 // "recent conversations" block on the working-tree home. Reads real history on
@@ -298,6 +318,32 @@ function openSession(threadId: string): void {
 // families with real efforts. The composer + picker drive everything off these;
 // the raw id (which carries the effort) is what we send to the session.
 const catalogs = ref<Partial<Record<ProviderKind, ModelOption[]>>>({});
+// Mount seeds these from the disk snapshot so the picker is usable immediately;
+// the live re-probe finishes a moment later and may correct a list (a CLI upgrade
+// that added or dropped a model). Rebuild rather than leave the stale one on
+// screen — the whole point of showing the snapshot early is that it converges.
+watch(
+  () => providers.modelCache.value,
+  (raw) => {
+    const next: Partial<Record<ProviderKind, ModelOption[]>> = {};
+    for (const [provider, list] of Object.entries(raw)) {
+      if (list?.length) next[provider as ProviderKind] = buildModelCatalog(list);
+    }
+    catalogs.value = { ...catalogs.value, ...next };
+    // Reconcile the live pick. A refresh can drop the model the user is on (a
+    // CLI upgrade retired it), and leaving a now-unknown id in place is exactly
+    // the desync the desktop guards had to catch — clear it here so the composer
+    // shows what will actually run. Mount does its own seeding, so only act once
+    // the board is real.
+    if (!boardReady.value) return;
+    const current = agent.model.value;
+    const options = catalogs.value[agent.provider.value] ?? [];
+    if (!current || options.some((o) => o.efforts.some((e) => e.modelId === current))) return;
+    const first = options[0];
+    const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+    agent.setModel(eff ? eff.modelId : undefined);
+  },
+);
 // The active provider's catalog feeds the composer's own model name + effort dial.
 const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 
@@ -305,8 +351,8 @@ const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 // apply to a running session — it needs a fresh one. Codex takes model/effort
 // per turn, so it changes in place. Mirrors each adapter's `sessionModelSwitch`.
 const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent", "opencode"]);
-const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", opencode: "OpenCode" };
-const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", opencode: "opencode" };
+const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode" };
+const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode" };
 
 // The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
 // "last used" choice that every project opens with (not per-project). The
@@ -350,7 +396,10 @@ let syncingComposerTarget: Promise<void> | null = null;
 async function syncComposerTarget(): Promise<void> {
   if (syncingComposerTarget) return syncingComposerTarget;
   syncingComposerTarget = (async () => {
-    if (!boardReady.value) return;
+    // Wait rather than bail: bailing left agent.activeKey on the construction
+    // boot session, so a send fired during the async mount ran on the pre-mount
+    // `codex` default with whatever model localStorage restored.
+    await whenBoardReady();
     if (focusedThread.value) {
       agent.focusThread(focusedThread.value.key);
       return;
@@ -394,13 +443,35 @@ watch(surface, (s, prev) => {
 });
 
 onMounted(async () => {
-  // Providers + models are warmed at app open (agent-warmup plugin); this awaits
-  // that in-flight run (deduped — no second probe) or returns instantly if done,
-  // then reads the cached lists. Build a catalog for every ready provider.
-  await providers.prepare();
-  // Warm persisted install settings so the enable filter (and any binary paths)
-  // are in hand before we pick a provider to boot.
-  await providerSettings.load();
+  // Everything the mount needs is fetched up front and in parallel. These six
+  // loads are independent of each other but each costs an IPC round-trip, and
+  // awaiting them in a chain made entering a project cost the *sum* — which is
+  // the stall between clicking a project and the board being usable. Kicked
+  // together here, then awaited at the point each one is actually needed.
+  //
+  // Providers + models are warmed at app open (agent-warmup plugin). prepare()
+  // resolves as soon as the main process's disk snapshot of the last known
+  // providers/catalogs is in hand — no CLI spawn — with the live re-probe running
+  // behind it, so entering a project doesn't wait on a `codex app-server`
+  // handshake. Only a first-ever launch (nothing cached) actually waits.
+  //
+  // None of these reject (each swallows its own failure and resolves to a
+  // fallback), so holding them unawaited can't strand a rejection.
+  const surfaceReady = Promise.all([
+    providers.prepare(),
+    // Persisted install settings, so the enable filter (and any binary paths)
+    // are in hand before we pick a provider to boot.
+    providerSettings.load(),
+  ]);
+  const scratchpadReady = scratchpad.hydrate();
+  const savedBoardReady = boardStore.load();
+  // The set of thread ids that actually have a stored conversation. restore()
+  // uses it to drop phantom thread panes — blank slates that were persisted with
+  // their client-minted id and would otherwise return as empty columns. No
+  // bridge (nuxt dev) → undefined, and restore keeps ids unfiltered.
+  const knownThreadIdsReady = loadKnownThreadIds(props.project.path);
+
+  await surfaceReady;
   // Only offer providers the user hasn't switched off — the boot pick and the
   // rail draw from the same enabled set.
   const readyProviders = enabledReady.value;
@@ -428,16 +499,14 @@ onMounted(async () => {
   // session for it; the plain-open path still lands on the project home.
   // Consume the request so a later re-open of this project behaves normally.
   const resume = pendingThread.value;
-  await scratchpad.hydrate();
+  // The scratchpad has to be hydrated before restore(), which eagerly attaches
+  // the pad pane.
+  await scratchpadReady;
   // Restore the persisted board on mount. A missing layout normalises to an empty
   // desktop so useAgent's construction spawn is evicted rather than adopted.
-  const savedBoard = await boardStore.load();
+  const savedBoard = await savedBoardReady;
   const layout = savedBoard ?? { version: 1 as const, panes: [], focusedId: null };
-  // The set of thread ids that actually have a stored conversation. restore()
-  // uses it to drop phantom thread panes — blank slates that were persisted with
-  // their client-minted id and would otherwise return as empty columns. No
-  // bridge (nuxt dev) → undefined, and restore keeps ids unfiltered.
-  const knownThreadIds = await loadKnownThreadIds(props.project.path);
+  const knownThreadIds = await knownThreadIdsReady;
   // Land on the working-tree home unless we're resuming a specific thread.
   // Defer spawning the saved board's focused thread/terminal — openThread +
   // agent start on mount would queue behind that work and leave git + history
@@ -469,16 +538,35 @@ onMounted(async () => {
   // evicts, which left overview model picks as no-ops until a board visit
   // attached a real session.
   if (!resume) {
+    // The composer target exists by now (attach → newThreadAt) but is deferred —
+    // no CLI has spawned, so setProvider here is the whole switch and the
+    // restart below degrades to a re-defer. It stays because the target isn't
+    // always blank: a restored board can hand us a live session, and there
+    // setProvider only flips the ref while the running CLI keeps going, which is
+    // how a Cursor model id used to ride a Codex session into the wrong adapter.
+    const providerChanged = Boolean(chosen) && chosen !== agent.provider.value;
     if (chosen) agent.setProvider(chosen);
 
-    if (!model.value) {
+    // Validate unconditionally. This used to be gated behind `if (!model.value)`,
+    // which skipped the catalog check whenever a model was already set — so a
+    // model belonging to another provider (MODEL_KEY is global, not per-provider)
+    // survived onto the chosen provider and reached its CLI verbatim.
+    {
+      const current = model.value;
+      const owned = (id: string | null | undefined) =>
+        Boolean(id) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === id));
       const savedModel = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
-      const inCatalog = modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === savedModel));
-      if (savedModel && inCatalog) agent.setModel(savedModel);
+      if (owned(current)) {
+        // Already valid for this provider — leave the user's pick alone.
+      } else if (owned(savedModel)) agent.setModel(savedModel!);
       else {
         const first = modelOptions.value[0];
         const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-        if (eff) agent.setModel(eff.modelId);
+        // No catalog to pick from (the provider's model probe failed or hasn't
+        // landed) — clear rather than leave a foreign id in place. Keeping it was
+        // how a Cursor `composer-*` id rode a Codex session all the way to the
+        // CLI; undefined just means "provider default".
+        agent.setModel(eff ? eff.modelId : undefined);
       }
     }
     if (import.meta.client) {
@@ -495,6 +583,10 @@ onMounted(async () => {
         agent.setMode(savedMode as InteractionMode);
       }
     }
+    // Re-spawn on the provider we actually settled on, mirroring what the model
+    // picker does (applyModelEffort → restart when the provider changes). The
+    // thread is blank at this point, so nothing is lost.
+    if (providerChanged) await agent.restart();
   }
 });
 
@@ -849,8 +941,16 @@ async function onSend(text: string, files?: File[]) {
   // conversation rather than continuing the last-opened one — the session boots
   // rehydrated with the project's latest thread, so without this a first send
   // would silently append to that old transcript.
+  // Never send on top of the pre-mount boot session: it carries the hardcoded
+  // `codex` default and rehydrates the project's LAST stored thread on its first
+  // start(), which silently replaces the composer's provider/model and resumes a
+  // foreign conversation id. Settling the target first is what makes the model
+  // shown in the composer the model that actually runs.
+  await syncComposerTarget();
   if (surface.value === "overview") await board.open("thread");
   surface.value = "board";
+  // board.open may have minted/reused a different pane than the sync settled on.
+  await syncComposerTarget();
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
   // carries; a failed upload is dropped rather than sinking the whole send.
@@ -1396,6 +1496,24 @@ function onDiscardFile(path: string) {
       @cancel="onCancelUserInput"
     />
 
+    <!-- Subagents dock — the nested runs the agent delegated to this turn. It's
+         a taller, wider panel than the Changes/Tasks cards, so it lives in the
+         bottom-LEFT corner (free on the board — the folder only perches there on
+         home) instead of crowding the right-hand stack. -->
+    <div
+      v-if="surface === 'board' && !activeFile && focusedThread"
+      class="sub-dock-corner"
+    >
+      <AnimatePresence :initial="false">
+        <AgentSubagentDock
+          v-if="activeSubagents.runs.length"
+          key="agent-subagents-dock"
+          :runs="activeSubagents.runs"
+          :streaming="activeSubagents.streaming"
+        />
+      </AnimatePresence>
+    </div>
+
     <!-- Corner dock stack — the agent's live side-panels in the folder-picker
          shell, bottom-right while a turn runs. Changes (files touched this
          thread) rides above Tasks (the model's TodoWrite checklist); the column
@@ -1514,6 +1632,22 @@ function onDiscardFile(path: string) {
 }
 .dock-stack--lifted {
   bottom: 5.25rem;
+}
+
+/* ── Subagents dock (bottom-left) ─────────────────────────────────────────── */
+/* The nested-run panel lives in the opposite corner from the Changes/Tasks
+   stack: it's the widest of the three and grows downward as more subagents
+   spawn, so the right-hand column stays uncrowded. The container ignores
+   pointer events; the card re-enables them for itself. */
+.sub-dock-corner {
+  position: fixed;
+  left: 2rem;
+  bottom: 2rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  pointer-events: none;
 }
 
 /* ── Away-from-thread pill stack ──────────────────────────────────────────── */

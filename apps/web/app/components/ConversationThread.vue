@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -10,10 +10,11 @@ import {
   Note01Icon,
 } from "@hugeicons/core-free-icons";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
+import type { RuntimeItem } from "~/types/desktop";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
 import AgentActivity from "~/components/AgentActivity.vue";
-import { renderGroups, segText, type Segment } from "~/utils/conversationSegments";
+import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
 // The live conversation — where the agent's turns become a timeline.
@@ -63,39 +64,71 @@ const { cue } = useSound();
 // the first chunk.
 if (import.meta.client) void useMarkdown().parse("");
 
-// The last "steps" batch of a turn is its *current* activity — it stays active
-// for the whole running turn. An earlier batch (already overtaken by streamed
-// text) is done and folds into its horizontal strip.
-function lastStepsKey(block: AssistantBlock): string | null {
-  const groups = renderGroups(block);
-  for (let i = groups.length - 1; i >= 0; i--) {
-    const g = groups[i]!;
-    if (g.kind === "steps") return g.key;
-  }
-  return null;
-}
-
-// ── live activity orb ───────────────────────────────────────────────────────────
+// ── per-turn view, built once ──────────────────────────────────────────────────
+// What the template needs to render one assistant turn: the settled groups, plus
+// the live activity batch (if the turn is still running).
+//
 // One working orb per turn, anchored in AgentActivity from the first moment the
 // turn runs. It stays mounted (stable key) while steps stream in — orb → line →
-// thinking — instead of a stack-level orb handing off to a second one.
-function liveActivity(block: AssistantBlock): {
-  show: boolean;
-  segments: Segment[];
-  active: boolean;
-} {
-  const groups = renderGroups(block);
-  const tailKey = lastStepsKey(block);
-  const tailIsSteps = groups.length > 0 && groups[groups.length - 1]!.kind === "steps";
+// thinking — instead of a stack-level orb handing off to a second one. So the
+// *last* steps group is lifted out of `groups` while it's live and handed back as
+// `live`; once text takes over (or the turn ends) it rejoins the list and folds
+// into its horizontal strip.
+type BlockView = { groups: RenderGroup[]; live: { segments: Segment[] } | null };
 
-  if (block.state === "running" && (groups.length === 0 || tailIsSteps)) {
-    const tail = tailKey
-      ? groups.find((g): g is Extract<typeof g, { kind: "steps" }> => g.kind === "steps" && g.key === tailKey)
-      : null;
-    return { show: true, segments: tail?.segments ?? [], active: true };
+function buildView(block: AssistantBlock): BlockView {
+  const all = renderGroups(block);
+  const tail = all[all.length - 1];
+  const tailIsSteps = tail?.kind === "steps";
+  const live = block.state === "running" && (all.length === 0 || tailIsSteps);
+  if (!live) return { groups: all, live: null };
+  if (tailIsSteps) return { groups: all.slice(0, -1), live: { segments: tail.segments } };
+  return { groups: all, live: { segments: [] } };
+}
+
+// Built once per turn and kept until that turn's content actually changes.
+//
+// This used to be three bare `renderGroups(block)` calls in the template, so every
+// turn on screen re-walked all its items on every re-render — and `now` ticks once
+// a second for the whole of a running turn, which made that a per-second
+// O(turns × items) sweep of the entire transcript. Worse, the rebuilt group
+// objects were new every time, so each AgentActivity saw a changed `segments`
+// prop and re-ran its own computeds. Holding identity steady is most of the win.
+//
+// The cache key is the `items` array's own identity, which is exact rather than
+// merely usually-right: useAgent's reducer reassigns `block.items` (never mutates
+// it in place) for every append, replace and subagent update, so a changed array
+// means changed content and an unchanged one means there is nothing to rebuild.
+// The tempting key — "rebuild only while state is 'running'" — reads true of the
+// adapters today, but it makes the memo silently depend on no provider ever
+// emitting a straggler item after its turn.completed, and the failure mode is a
+// turn frozen permanently mid-render rather than one late row.
+const viewCache = new Map<
+  string,
+  { items: RuntimeItem[]; state: AssistantBlock["state"]; view: BlockView }
+>();
+const viewByBlock = computed(() => {
+  const out = new Map<string, BlockView>();
+  for (const b of props.blocks) {
+    if (b.role !== "assistant") continue;
+    const hit = viewCache.get(b.id);
+    // `state` too: it decides whether the tail batch is the live one, and a turn
+    // can settle without its items changing at all.
+    if (hit && hit.items === b.items && hit.state === b.state) {
+      out.set(b.id, hit.view);
+      continue;
+    }
+    const view = buildView(b);
+    viewCache.set(b.id, { items: b.items, state: b.state, view });
+    out.set(b.id, view);
   }
+  for (const id of viewCache.keys()) if (!out.has(id)) viewCache.delete(id);
+  return out;
+});
 
-  return { show: false, segments: [], active: false };
+const EMPTY_VIEW: BlockView = { groups: [], live: null };
+function viewOf(block: AssistantBlock): BlockView {
+  return viewByBlock.value.get(block.id) ?? EMPTY_VIEW;
 }
 
 // ── timing / status ────────────────────────────────────────────────────────────
@@ -359,7 +392,7 @@ const hasBlocks = computed(() => props.blocks.length > 0);
 // Group the flat block list into exchanges: each user request opens a new group
 // and the assistant turn(s) that follow it belong to that group. The group is the
 // sticky containing block for the request (see the template + .exchange CSS).
-const exchanges = computed(() => {
+const allExchanges = computed(() => {
   const groups: { key: string; blocks: ThreadBlock[] }[] = [];
   for (const b of props.blocks) {
     if (b.role === "user" || groups.length === 0) groups.push({ key: b.id, blocks: [b] });
@@ -375,6 +408,46 @@ const exchanges = computed(() => {
     return { ...g, live: running || awaiting };
   });
 });
+
+// ── the open window ────────────────────────────────────────────────────────────
+// Reopening a long conversation used to mount every exchange it ever had: every
+// activity feed, every Markdown answer, and a Shiki tokenisation per code fence —
+// all before the first frame, and all of it scrolled far off the top where nobody
+// was going to look. So we mount the tail and offer the rest.
+//
+// A window, not virtualisation: real virtualisation would have to measure and
+// recycle rows, and this transcript's sticky requests, reserved tail space and
+// anchored auto-scroll all read live DOM geometry (see `neededSpacer`). Mounting
+// a suffix keeps every one of those measurements exactly as true as before —
+// the only thing that changes is how much history is above the fold.
+const OPEN_WINDOW = 8;
+const showAllExchanges = ref(false);
+const earlierCount = computed(() =>
+  showAllExchanges.value ? 0 : Math.max(0, allExchanges.value.length - OPEN_WINDOW),
+);
+const exchanges = computed(() =>
+  earlierCount.value > 0 ? allExchanges.value.slice(earlierCount.value) : allExchanges.value,
+);
+
+// Re-collapse when the column is pointed at a different conversation — the
+// component is reused across threads, and inheriting "expanded" would hand the
+// next long transcript the very cost this avoids.
+watch(
+  () => props.sourceKey,
+  () => (showAllExchanges.value = false),
+);
+
+// Reveal without moving the ground: history mounts *above* the viewport, so pin
+// the distance to the bottom and let the scroll offset absorb the new content.
+async function revealEarlier(): Promise<void> {
+  cue("toggle");
+  const sc = import.meta.client ? scroller() : null;
+  const fromBottom = sc ? sc.scrollHeight - sc.scrollTop : 0;
+  showAllExchanges.value = true;
+  if (!sc) return;
+  await nextTick();
+  sc.scrollTop = sc.scrollHeight - fromBottom;
+}
 </script>
 
 <template>
@@ -392,6 +465,16 @@ const exchanges = computed(() => {
          block for the request. Grouping this way is what lets each new request
          push the previous one up and out of the sticky spot, instead of two
          sticky headers piling on top of each other. -->
+    <button
+      v-if="earlierCount > 0"
+      type="button"
+      class="earlier"
+      @click="revealEarlier"
+    >
+      <HugeiconsIcon :icon="ArrowUp01Icon" :size="13" :stroke-width="2" />
+      <span>{{ earlierCount }} earlier {{ earlierCount === 1 ? "exchange" : "exchanges" }}</span>
+    </button>
+
     <div v-for="ex in exchanges" :key="ex.key" class="exchange">
     <motion.div
       v-for="block in ex.blocks"
@@ -464,12 +547,13 @@ const exchanges = computed(() => {
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
       <template v-else>
         <div class="stack selectable">
-          <template v-for="grp in renderGroups(block)" :key="grp.kind === 'text' ? grp.seg.key : grp.key">
+          <template v-for="grp in viewOf(block).groups" :key="grp.kind === 'text' ? grp.seg.key : grp.key">
             <!-- Steps — done batches only. The live tail (or the opening beat
                  before the first step lands) is a single AgentActivity below with
-                 a stable key so the working orb never hands off. -->
+                 a stable key so the working orb never hands off; `viewOf` has
+                 already lifted that batch out of this list. -->
             <AgentActivity
-              v-if="grp.kind === 'steps' && !(liveActivity(block).show && grp.key === lastStepsKey(block))"
+              v-if="grp.kind === 'steps'"
               :segments="grp.segments"
               :running="block.state === 'running'"
               :is-tail="false"
@@ -495,9 +579,9 @@ const exchanges = computed(() => {
           <!-- Live activity — one orb for the whole run: from send through every
                thinking step and tool call until text takes over. -->
           <AgentActivity
-            v-if="liveActivity(block).show"
+            v-if="viewOf(block).live"
             :key="`${block.id}:live-activity`"
-            :segments="liveActivity(block).segments"
+            :segments="viewOf(block).live!.segments"
             :running="block.state === 'running'"
             :is-tail="true"
             :historical="block.historical"
@@ -613,6 +697,29 @@ const exchanges = computed(() => {
   width: 100%;
   pointer-events: none;
 }
+/* The way back into a long conversation's history. Deliberately the quietest
+   thing on the page — it sits above the oldest mounted request, where the eye
+   only lands if it's already reading upward. */
+.earlier {
+  display: inline-flex;
+  align-self: center;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.earlier:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
 /* An exchange = one request + its response. It's the sticky containing block for
    the request: the request sticks to the top only while its own exchange is on
    screen, so the next request cleanly takes over the rail as you scroll on. */

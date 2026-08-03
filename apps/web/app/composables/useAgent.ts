@@ -9,6 +9,7 @@ import type {
   RuntimeItemKind,
   RuntimeSessionState,
   Session,
+  StoredThread,
   SubagentRun,
   SubagentRunSnapshot,
   TokenUsage,
@@ -38,7 +39,6 @@ import {
 // conversation view reads. Non-active threads stay live in the background — a
 // turn you stepped away from keeps streaming — which is what lets the away-from-
 // thread status pill surface every running/just-settled thread as a stack.
-// (Pattern borrowed from research's by-id store + research's per-thread atoms.)
 
 /** Set on blocks bulk-loaded from storage (rehydrate/openThread) so the view
  *  renders them settled — no entry springs, no per-word blur-in. Live turns
@@ -126,6 +126,51 @@ export type ThreadSummary = {
 
 /** Tag every block from a stored thread as historical so the view mounts them
  *  settled instead of replaying entry/word animations across the whole thread. */
+// ── transcript prefetch ───────────────────────────────────────────────────────
+// A thread's transcript read is the one unavoidable round-trip left on the open
+// path — everything else (the CLI spawn, the pane binding) is now deferred or
+// synchronous. But the user tells us which thread they want a beat before they
+// click it: they point at it. Hovering a recent-session row starts the read, so
+// by the time the click lands the rows are usually already in hand.
+//
+// Deliberately small and short-lived. A prefetch is a *snapshot*, and a thread
+// the agent is still writing to moves on without it, so an entry that isn't
+// consumed almost immediately is thrown away rather than served stale. (The live
+// case can't reach here anyway — openThreadHandle hands back the resident
+// session before openStored is ever called.)
+const PREFETCH_TTL_MS = 20_000;
+const PREFETCH_MAX = 6;
+const prefetched = new Map<string, { at: number; load: Promise<StoredThread | null> }>();
+
+/** Start reading a stored thread's transcript now, so opening it later is free.
+ *  Fire-and-forget and idempotent — safe to call on every pointerenter. */
+export function prefetchThread(id: string): void {
+  if (!import.meta.client || !id) return;
+  const api = window.koneDesktop?.agent;
+  if (!api) return;
+  const hit = prefetched.get(id);
+  if (hit && Date.now() - hit.at < PREFETCH_TTL_MS) return;
+  // Never let a rejected read reach an unhandled-rejection: the consumer may
+  // never come, and a failed prefetch just means openStored does the read itself.
+  const load = api.history.thread(id).catch(() => null);
+  prefetched.delete(id); // re-insert, so this id is now the newest in Map order
+  prefetched.set(id, { at: Date.now(), load });
+  while (prefetched.size > PREFETCH_MAX) {
+    const oldest = prefetched.keys().next().value;
+    if (oldest === undefined) break;
+    prefetched.delete(oldest);
+  }
+}
+
+/** Consume a prefetched transcript, if one is in hand and still fresh. Always
+ *  removes the entry — a transcript is read once, on open. */
+function takePrefetched(id: string): Promise<StoredThread | null> | null {
+  const hit = prefetched.get(id);
+  if (!hit) return null;
+  prefetched.delete(id);
+  return Date.now() - hit.at < PREFETCH_TTL_MS ? hit.load : null;
+}
+
 function markHistorical(blocks: ThreadBlock[]): ThreadBlock[] {
   return blocks.map((b) => ({ ...b, historical: true }));
 }
@@ -221,9 +266,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const serviceTier = ref<string | undefined>(options.serviceTier);
   const contextWindow = ref<string | undefined>(options.contextWindow);
 
+  // True from the moment a send is accepted until the turn is actually handed to
+  // the provider. On a deferred thread that window contains the CLI spawn, so
+  // without folding it into `busy` the composer would read as idle — and accept
+  // a second send — while the first is still standing the session up.
+  const dispatching = ref(false);
+
   // Busy while a turn is in flight — the composer disables send + shows stop.
   const busy = computed(
     () =>
+      dispatching.value ||
       sessionState.value === "running" ||
       blocks.value.some((b) => b.role === "assistant" && b.state === "running"),
   );
@@ -312,7 +364,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         break;
       }
       case "thread.token-usage.updated":
-        tokenUsage.value = event.usage;
+        // Providers report usage as they have it; a later event may carry only
+        // part of the picture (a fresh contextUsed with no window). Merge, so a
+        // partial report refreshes what it knows and leaves the rest standing —
+        // the last known contextWindow in particular — instead of clobbering it.
+        tokenUsage.value = { ...tokenUsage.value, ...event.usage };
         break;
       case "thread.title.updated":
         title.value = event.title;
@@ -408,6 +464,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // a stored thread is brought on-screen so continued turns keep its full
   // context. Consumed and cleared in start() — a later fresh start never resumes.
   let pendingResumeId: string | undefined;
+  // …and which provider minted it. A resume id means nothing to another CLI, so
+  // start() drops the resume if the provider has moved on since it was staged.
+  // This used to be implicit — the resume was consumed by the start() that
+  // openStored awaited, before the user could touch the picker. Now that opening
+  // a stored thread only *arms* a session, the id sits staged across any number
+  // of provider switches, and handing a Codex conversation id to Claude is the
+  // same desync AgentService's validModelFor guards one axis over.
+  let pendingResumeProvider: ProviderKind | undefined;
 
   /** Adopt a stored thread's provider/model and stage its conversation id for
    *  resume, so continuing it runs on the CLI + model that produced it and keeps
@@ -418,6 +482,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     provider?: ProviderKind;
     model?: string;
     conversationId?: string;
+    tokens?: number;
     contextUsed?: number;
     contextWindow?: number;
     compactsAutomatically?: boolean;
@@ -430,13 +495,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (stored.model !== undefined) model.value = stored.model;
     else if (providerChanged) model.value = undefined;
     pendingResumeId = stored.conversationId;
+    pendingResumeProvider = provider.value;
     // Restore the last context-window snapshot so a reopened thread shows its
     // meter filled straight away (sweeping in), instead of an empty ring until
     // the next turn re-reports usage. Absent snapshot → leave the meter hidden.
+    // `total` is the thread's persisted cumulative spend — the faithful value
+    // for both running-total (Codex/Cursor) and per-turn (Claude) providers —
+    // so a later partial live event merges onto the real total, not contextUsed.
     tokenUsage.value =
       stored.contextWindow !== undefined || stored.contextUsed !== undefined
         ? {
-            total: stored.contextUsed,
+            total: stored.tokens,
             contextUsed: stored.contextUsed,
             contextWindow: stored.contextWindow,
             compactsAutomatically: stored.compactsAutomatically,
@@ -465,9 +534,56 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   // ── actions ───────────────────────────────────────────────────────────────
 
+  // ── lazy start ──────────────────────────────────────────────────────────────
+  // Spawning the provider process is the slow part of opening a thread: an IPC
+  // round-trip, a CLI process, and a protocol handshake. Doing it before the
+  // column paints is what made ⌘N sit on "Opening…" for seconds.
+  //
+  // A blank thread doesn't need any of that to be *usable* — it needs to render
+  // and accept typing. So `deferStart()` marks a session as "will start when
+  // first used", and the real handshake happens inside `send()`, in the window
+  // where the user is already waiting on a model rather than on the app.
+  //
+  // This also closes a bug class rather than just hiding it: nothing spawns on
+  // the registry's boot default any more, so there's no live session running the
+  // wrong provider for the composer to desync from.
+  // A ref, not a plain flag: `unstarted` below is a computed over it, and with a
+  // bare `let` that computed would only ever re-evaluate when `session.value`
+  // happened to change — reading true long after the CLI came up.
+  const deferred = ref(false);
+  let starting: Promise<void> | null = null;
+
+  /** Mark this session as startable-on-demand instead of starting it now. */
+  function deferStart(): void {
+    if (session.value) return; // already live — nothing to defer
+    deferred.value = true;
+    error.value = null;
+    // Optimistic: the column is usable. A real failure surfaces on first send,
+    // attributed to the send, which is where the user can act on it.
+    sessionState.value = "ready";
+  }
+
+  /** True while this session is only *notionally* up — deferred and not yet
+   *  spawned. Surfaces that need to know whether a real CLI is behind the
+   *  column (rather than whether it's usable) read this. */
+  const unstarted = computed(() => deferred.value && !session.value);
+
+  /** Start if we haven't yet. Deduped, so a fast double-send can't spawn two
+   *  sessions for one thread. Safe to call unconditionally. */
+  function ensureStarted(): Promise<void> {
+    if (!deferred.value) return Promise.resolve();
+    starting ??= start().finally(() => {
+      starting = null;
+    });
+    return starting;
+  }
+
   /** Start this thread's session. The manager owns the event listener, so this
    *  only spawns the provider process (after an optional rehydrate). */
   async function start(): Promise<void> {
+    // Any explicit start satisfies the deferral — otherwise the flag would
+    // survive and the first send would start a second time.
+    deferred.value = false;
     // Forgotten mid-load (opened then archived/deleted) — never spawn a process
     // for a thread the user just removed (startSession → ensureThread would
     // recreate a deleted row).
@@ -481,9 +597,18 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     await rehydrate(api);
     // One-shot: read and clear now so neither a throw below nor a later fresh
-    // start re-resumes a stale conversation.
-    const resume = pendingResumeId;
+    // start re-resumes a stale conversation. A resume id is provider-native, so
+    // it's only good if we're still on the provider that minted it — otherwise
+    // drop it and start clean rather than hand one CLI another's conversation.
+    const staged = pendingResumeId;
+    const resume = pendingResumeProvider === provider.value ? staged : undefined;
+    if (staged && !resume) {
+      console.warn(
+        `[agent] dropping resume id — staged for ${pendingResumeProvider}, starting on ${provider.value}`,
+      );
+    }
     pendingResumeId = undefined;
+    pendingResumeProvider = undefined;
     try {
       session.value = await api.startSession({
         threadId: threadId.value,
@@ -506,10 +631,32 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
   }
 
+  /** Claim a stored thread's id on this session *synchronously*, before any of
+   *  its transcript has been read. Two things need that. The registry's
+   *  find-by-id lookups (the openThread dedupe, forgetThread, the event router)
+   *  can only see a session once it carries the id, and the board can only bind
+   *  a pane to a session it can find — so without this the column sits dormant
+   *  on "Opening…" for the whole load. Adopting the id reveals nothing on its
+   *  own; `blocks` stays empty until openStored fills it. */
+  function claimStoredId(id: string): void {
+    // start() must not reload the project's *latest* thread over this one.
+    rehydratedOnce = true;
+    threadId.value = id;
+  }
+
   /** Bring a specific stored thread on-screen and continue it: adopt the
-   *  thread's id + transcript and start a session bound to it so new turns
-   *  append to it. Best-effort; desktop only. */
+   *  thread's id + transcript, and arm a session bound to it so new turns append
+   *  to it. Best-effort; desktop only.
+   *
+   *  Deliberately does NOT spawn the provider process. Resuming a conversation
+   *  is the same shape of work as opening a blank one — an IPC round-trip, a CLI
+   *  process, a handshake — and making the user watch it is what left an old
+   *  thread sitting on "Opening…" for seconds. The resume id is staged on
+   *  `pendingResumeId` and start() consumes it whenever the first send finally
+   *  brings the CLI up, so continued turns still land on the same provider
+   *  conversation with its full context. */
   async function openStored(id: string): Promise<void> {
+    claimStoredId(id);
     const api = bridge();
     // Browser dev has no history bridge — just bring a (mock) session up so the
     // composer is live rather than leaving the view without a session.
@@ -519,29 +666,31 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     let stored;
     try {
-      stored = await api.history.thread(id);
+      // Hovering the row that opened this thread may already have started the
+      // read (see prefetchThread) — take that in-flight promise rather than
+      // firing a second one.
+      stored = await (takePrefetched(id) ?? api.history.thread(id));
     } catch {
       stored = null;
     }
     // Forgotten while the history load was in flight (opened then immediately
-    // archived/deleted) — bail before adopting the id or starting, so the
-    // removed thread is never revealed or recreated.
+    // archived/deleted) — bail before revealing the transcript or arming a
+    // session, so the removed thread is never shown or recreated.
     if (forgotten) return;
-    // Thread vanished (deleted/archived under us) — fall back to a fresh session
-    // rather than an empty, session-less view.
+    // Thread vanished (deleted/archived under us) — fall back to a fresh blank
+    // thread rather than an empty, session-less view. Drop the claimed id on the
+    // way: keeping it would have the first send hand `startSession` the id of a
+    // thread the user just deleted, and ensureThread would write the row back.
     if (!stored) {
-      await start();
+      threadId.value = uid();
+      deferStart();
       return;
     }
-    // start() must not reload the project's *latest* thread over this one.
-    rehydratedOnce = true;
-    threadId.value = stored.threadId;
     blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
     title.value = stored.title?.trim() || "";
     adoptStoredThread(stored); // also restores the persisted context-meter snapshot
     error.value = null;
-    sessionState.value = "starting";
-    await start();
+    deferStart();
   }
 
   /** Send a user turn. Pushes the user block immediately; the reply streams in.
@@ -571,7 +720,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       mockTurn(trimmed || files[0]?.name || "Attachment");
       return;
     }
+    dispatching.value = true;
     try {
+      // A deferred thread spawns its CLI here, on the user's first send. The user
+      // block is already on screen above, so the handshake reads as the model
+      // starting to think rather than the app being slow to open.
+      const wasDeferred = deferred.value;
+      await ensureStarted();
+      // Only bail on a start we actually performed — a stale error from an
+      // earlier turn must not wedge every later send.
+      if (wasDeferred && !session.value) return;
       await api.sendTurn({
         threadId: threadId.value,
         input: trimmed,
@@ -584,6 +742,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       });
     } catch (e) {
       error.value = peelIpcError(e, "Could not send to the agent");
+    } finally {
+      dispatching.value = false;
     }
   }
 
@@ -672,7 +832,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   }
 
   function setProvider(next: ProviderKind): void {
+    if (next === provider.value) return;
     provider.value = next;
+    // Resume ids are provider-native. Handing one minted by the previous CLI to
+    // the new one either hard-fails ("conversation id does not exist" — Claude
+    // rethrows on a bad resume) or is silently swallowed into a fresh thread.
+    // Switching engines means this conversation can't be continued in-place.
+    pendingResumeId = undefined;
+    // A model id from the old provider's catalog is meaningless to the new one
+    // (a Cursor `composer-*` id sent to Codex draws a 400 from the upstream API).
+    // Drop it so start() falls back to the new provider's default.
+    model.value = undefined;
   }
   function setModel(id: string | undefined): void {
     model.value = id;
@@ -716,14 +886,27 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  effort/model are baked when the SDK subprocess spawns. Prior turns stay on
    *  screen as history; new turns stream in under the new session. */
   async function restart(): Promise<void> {
+    // Nothing was ever spawned (a deferred thread whose provider the user just
+    // switched). There's no CLI to re-birth, and eagerly starting one here would
+    // put back exactly the boot-time spawn we removed.
+    const wasLive = Boolean(session.value);
     await dispose();
     // A restart is a deliberate re-birth of this session (provider/model switch),
     // not a teardown — clear the dispose() latch so start() below runs.
     forgotten = false;
     rehydratedOnce = true;
+    error.value = null;
+    if (!wasLive) {
+      // Keep this thread's identity. A new id is only right when we're replacing
+      // a session that already ran under the old one; here nothing did, and a
+      // re-mint on a *reopened stored* thread — now a real case, since opening
+      // one no longer spawns — would cut the column loose from its conversation
+      // in storage and strand its staged resume on a foreign provider.
+      deferStart();
+      return;
+    }
     threadId.value = uid();
     tokenUsage.value = null;
-    error.value = null;
     sessionState.value = "starting";
     await start();
   }
@@ -831,6 +1014,92 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       item.status = "completed";
       emit(item, "item.completed");
     };
+    // A nested subagent spawn — the whole shape the real ClaudeAdapter produces:
+    // the parent's Task tool_call opens, `subagent.started` nests a run on it, the
+    // child's transcript streams in as items tagged with the run's toolUseId (the
+    // corner Subagents dock reads these), the run settles with a summary, then the
+    // parent tool call completes carrying that summary. Exercises the dock's
+    // starting → running → completed lifecycle end to end.
+    const spawnSubagent = async (opts: {
+      agentType: string;
+      description: string;
+      model?: string;
+      effort?: string;
+      /** Hold before the run opens — staggers concurrent spawns in the dock. */
+      leadMs?: number;
+      steps: Array<{ kind: RuntimeItemKind; name?: string; text: string; ms: number }>;
+      summary: string;
+    }): Promise<void> => {
+      if (opts.leadMs) await wait(opts.leadMs);
+      if (cancelled) return;
+      const toolUseId = uid();
+      const parentItemId = uid();
+      const startedAt = Date.now();
+      // 1 — the parent Task tool call opens (the spawn point).
+      const parent: RuntimeItem = {
+        itemId: parentItemId,
+        kind: "tool_call",
+        status: "in-progress",
+        name: "task",
+        text: `task: ${opts.description}`,
+      };
+      emit(parent, "item.started");
+      const snapshot: SubagentRunSnapshot = {
+        toolUseId,
+        parentItemId,
+        agentType: opts.agentType,
+        description: opts.description,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
+        status: "starting",
+        startedAt,
+        toolUses: 0,
+      };
+      const emitRun = (type: "subagent.started" | "subagent.updated" | "subagent.completed") =>
+        reduce({ ...base(type), type, turnId, subagent: { ...snapshot } } as RuntimeEvent);
+      // 2 — the run is recognized and nested onto its parent tool call.
+      emitRun("subagent.started");
+      await wait(320);
+      if (cancelled) return;
+      snapshot.status = "running";
+      emitRun("subagent.updated");
+      // 3 — the child's transcript streams in, tagged with the run's id so it
+      //     lands inside the run, not the parent turn's body.
+      let toolUses = 0;
+      for (const step of opts.steps) {
+        if (cancelled) return;
+        const child: RuntimeItem = {
+          itemId: uid(),
+          kind: step.kind,
+          status: "in-progress",
+          text: step.kind === "tool_call" && step.name ? `${step.name}: ${step.text}` : step.text,
+          ...(step.name ? { name: step.name } : {}),
+        };
+        reduce({ ...base("item.started"), type: "item.started", turnId, item: { ...child }, subagentToolUseId: toolUseId } as RuntimeEvent);
+        if (step.kind === "tool_call") {
+          toolUses += 1;
+          snapshot.toolUses = toolUses;
+          snapshot.lastToolName = step.name;
+          emitRun("subagent.updated");
+        }
+        await wait(step.ms);
+        if (cancelled) return;
+        child.status = "completed";
+        reduce({ ...base("item.completed"), type: "item.completed", turnId, item: { ...child }, subagentToolUseId: toolUseId } as RuntimeEvent);
+      }
+      if (cancelled) return;
+      // 4 — the run settles with its report…
+      snapshot.status = "completed";
+      snapshot.summary = opts.summary;
+      snapshot.endedAt = Date.now();
+      delete snapshot.lastToolName;
+      emitRun("subagent.completed");
+      // 5 — …and the parent tool call completes, carrying that report.
+      parent.status = "completed";
+      parent.detail = opts.summary;
+      emit(parent, "item.completed");
+    };
+
     // A TodoWrite-style plan — one item that can be updated in place as tasks
     // move pending → in-progress → completed, then settles at the end.
     let planItem: RuntimeItem | null = null;
@@ -1010,12 +1279,86 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           760,
         );
         if (cancelled) return;
-        await tool(
-          "task",
-          "Audit the step-list rail for regressions",
-          "Sub-agent checked the connecting line across 4 group shapes (thinking-only, tools-only, mixed, text-broken) — no gaps found.",
-          1400,
-        );
+        // Several real nested subagents, launched together — the corner
+        // Subagents dock fills with concurrent runs (each streaming its own
+        // transcript) that settle one by one as the parent waits on the batch.
+        await Promise.all([
+          spawnSubagent({
+            agentType: "explore",
+            description: "Map the conversation-thread render path",
+            model: "claude-haiku-4-5",
+            effort: "low",
+            leadMs: 0,
+            steps: [
+              {
+                kind: "reasoning_text",
+                text: "I'll trace how a turn's parts reach the screen — from the reducer's ordered items through AgentActivity into the thread.",
+                ms: 1100,
+              },
+              { kind: "tool_call", name: "grep_search", text: "segKindOf · 4 matches", ms: 900 },
+              { kind: "tool_call", name: "read_file", text: "ConversationThread.vue", ms: 1300 },
+              { kind: "tool_call", name: "read_file", text: "AgentActivity.vue", ms: 1200 },
+              { kind: "tool_call", name: "list_dir", text: "apps/web/app/components", ms: 800 },
+              {
+                kind: "assistant_text",
+                text: "The reducer folds events into ordered parts; AgentActivity groups thinking + tools, and the thread paints them in arrival order.",
+                ms: 900,
+              },
+            ],
+            summary:
+              "Mapped the render path: reducer → ordered RuntimeItems → AgentActivity (groups thinking + tools) → ConversationThread paints in arrival order. No indirection between the stream and the timeline.",
+          }),
+          spawnSubagent({
+            agentType: "review",
+            description: "Audit the step-list rail for regressions",
+            model: "claude-sonnet-5",
+            effort: "high",
+            leadMs: 700,
+            steps: [
+              {
+                kind: "reasoning_text",
+                text: "I'll walk the connecting line across every group shape — thinking-only, tools-only, mixed, and text-broken — and look for gaps.",
+                ms: 1300,
+              },
+              { kind: "tool_call", name: "read_file", text: "AgentActivity.vue", ms: 1100 },
+              { kind: "tool_call", name: "grep_search", text: "seg-rail · 5 matches", ms: 900 },
+              { kind: "tool_call", name: "read_file", text: "ActivityStep.vue", ms: 1200 },
+              { kind: "tool_call", name: "bash", text: "bun test conversation-thread", ms: 1600 },
+              {
+                kind: "assistant_text",
+                text: "Rail holds across all four shapes — the connector never breaks between a thought and the tool that follows it.",
+                ms: 800,
+              },
+            ],
+            summary:
+              "Reviewed the step-list rail across 4 group shapes (thinking-only, tools-only, mixed, text-broken) — connecting line is continuous, no gaps found. Suite green.",
+          }),
+          spawnSubagent({
+            agentType: "build",
+            description: "Draft the nested-transcript inline view",
+            model: "claude-sonnet-5",
+            effort: "medium",
+            leadMs: 1500,
+            steps: [
+              {
+                kind: "reasoning_text",
+                text: "I'll sketch a collapsible transcript that hangs under the spawning tool call, reusing the same ordered-parts renderer.",
+                ms: 1200,
+              },
+              { kind: "tool_call", name: "read_file", text: "AgentSubagentDock.vue", ms: 1100 },
+              { kind: "tool_call", name: "write_to_file", text: "SubagentTranscript.vue", ms: 1500 },
+              { kind: "tool_call", name: "edit_file", text: "ConversationThread.vue", ms: 1400 },
+              { kind: "tool_call", name: "bash", text: "bun run check-types", ms: 1800 },
+              {
+                kind: "assistant_text",
+                text: "Drafted SubagentTranscript.vue and wired it under the parent tool call — types pass.",
+                ms: 900,
+              },
+            ],
+            summary:
+              "Drafted SubagentTranscript.vue — a collapsible child transcript nested under the spawning tool call, reusing the ordered-parts renderer. Types pass; left unwired behind the dock for review.",
+          }),
+        ]);
         if (cancelled) return;
         await tool("rm", "tmp/scratch.log", undefined, 340);
         if (cancelled) return;
@@ -1100,6 +1443,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     error,
     tokenUsage,
     pendingUserInput,
+    unstarted,
     model,
     mode,
     reasoning,
@@ -1109,6 +1453,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     reduce,
     // actions
     start,
+    deferStart,
+    ensureStarted,
     openStored,
     restart,
     send,
@@ -1334,7 +1680,9 @@ export function useAgent(options: UseAgentOptions) {
     // composer's provider/model/reasoning/mode rather than the boot defaults.
     if (prev && prev !== fresh) inheritSettings(prev, fresh);
     activeKey.value = fresh.key;
-    await fresh.start();
+    // Same as newThreadAt: the blank thread is usable immediately; its provider
+    // process comes up on the first send.
+    fresh.deferStart();
     // Drop the prior thread if it's idle and never ran a live turn this session —
     // whether a blank slate or the project's rehydrated latest the user stepped
     // past to start something new. Its transcript is on disk, so reopening it
@@ -1347,8 +1695,10 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   /** Open a blank thread at a specific strip index (0 = left edge). Used by the
-   *  seam action bar to insert left or right of a column boundary. */
-  async function newThreadAt(index: number): Promise<void> {
+   *  seam action bar to insert left or right of a column boundary. Returns the
+   *  new column's stable key so a caller can bind to it directly rather than
+   *  diffing the session set to work out which one it just made. */
+  async function newThreadAt(index: number): Promise<string> {
     const fresh = spawn({ rehydrate: false });
     const list = [...sessions.value];
     list.pop();
@@ -1360,29 +1710,37 @@ export function useAgent(options: UseAgentOptions) {
     if (neighbor) inheritSettings(neighbor, fresh);
 
     activeKey.value = fresh.key;
-    await fresh.start();
+    // Don't await a CLI spawn to show a blank column. The session object exists
+    // now, so the board records its key and the pane paints this tick; the
+    // provider process comes up on the first send (see deferStart). This is the
+    // whole of the ⌘N stall.
+    fresh.deferStart();
     pruneResident();
+    return fresh.key;
   }
 
-  /** Bring a specific stored thread on-screen. If it's already resident (still
-   *  running in the background, say), just activate it — no reload, no teardown.
-   *  Otherwise spin up a session for it, load its transcript, and continue it. */
-  async function openThread(id: string): Promise<void> {
+  /** Bring a specific stored thread on-screen, handing back its column's stable
+   *  key *immediately* — before a byte of transcript has been read — alongside a
+   *  `ready` promise that settles once the load has. The split is what lets the
+   *  board bind a pane and paint on the same tick the user clicks: waiting for
+   *  `ready` first is what left a reopened conversation showing "Opening…".
+   *
+   *  If the thread is already resident (still running in the background, say),
+   *  just activate it — no reload, no teardown. */
+  function openThreadHandle(id: string): { key: string; ready: Promise<void> } {
     const existing = sessions.value.find((x) => x.threadId.value === id);
     if (existing) {
       activeKey.value = existing.key;
-      return;
+      return { key: existing.key, ready: Promise.resolve() };
     }
-    // Dedupe concurrent opens of the same thread. openStored only adopts the
-    // thread id after an `await`, so a second rapid call would miss the
-    // `existing` check above and spin up a duplicate session bound to the same
-    // thread. While an open is in flight, fold later calls into it — but still
-    // re-activate the loading session, since a repeat open is the user's latest
-    // intent (open A, B, then A again must end on A, not B).
+    // Dedupe concurrent opens of the same thread. While an open is in flight,
+    // fold later calls into it — but still re-activate the loading session,
+    // since a repeat open is the user's latest intent (open A, B, then A again
+    // must end on A, not B).
     const inFlight = opening.get(id);
     if (inFlight) {
       activeKey.value = inFlight.key;
-      return inFlight.promise;
+      return { key: inFlight.key, ready: inFlight.promise };
     }
     // If the active thread is idle and never ran a live turn this session (a
     // blank slate or a rehydrated latest the user stepped past), drop it rather
@@ -1390,30 +1748,40 @@ export function useAgent(options: UseAgentOptions) {
     const prev = active.value;
     const s = spawn({ rehydrate: false });
     activeKey.value = s.key;
-    const promise = (async () => {
-      await s.openStored(id);
-      // Never evict the thread that's now active (under interleaved opens `prev`
-      // may have been re-activated by a later request) nor one whose own open is
-      // still in flight (evicting would dispose it mid-load).
-      const prevOpening = prev && [...opening.values()].some((e) => e.key === prev.key);
-      if (
-        prev &&
-        prev !== s &&
-        prev.key !== activeKey.value &&
-        !prevOpening &&
-        !prev.busy.value &&
-        !prev.everRan.value
-      ) {
-        await evict(prev);
+    // openStored() claims the thread id in its synchronous prologue, so by the
+    // time this call returns the session is already findable by id — which is
+    // what makes the `existing` check above race-free without the opening map
+    // having to carry it.
+    const ready = (async () => {
+      try {
+        await s.openStored(id);
+        // Never evict the thread that's now active (under interleaved opens
+        // `prev` may have been re-activated by a later request) nor one whose
+        // own open is still in flight (evicting would dispose it mid-load).
+        const prevOpening = prev && [...opening.values()].some((e) => e.key === prev.key);
+        if (
+          prev &&
+          prev !== s &&
+          prev.key !== activeKey.value &&
+          !prevOpening &&
+          !prev.busy.value &&
+          !prev.everRan.value
+        ) {
+          await evict(prev);
+        }
+        pruneResident();
+      } finally {
+        opening.delete(id);
       }
-      pruneResident();
     })();
-    opening.set(id, { key: s.key, promise });
-    try {
-      await promise;
-    } finally {
-      opening.delete(id);
-    }
+    opening.set(id, { key: s.key, promise: ready });
+    return { key: s.key, ready };
+  }
+
+  /** openThreadHandle, awaited — for callers that just want the thread on screen
+   *  and settled. */
+  async function openThread(id: string): Promise<void> {
+    await openThreadHandle(id).ready;
   }
 
   /** Drop a thread from the registry entirely — for when it's archived or
@@ -1441,7 +1809,7 @@ export function useAgent(options: UseAgentOptions) {
       const fresh = spawn({ rehydrate: false });
       inheritSettings(s, fresh);
       activeKey.value = fresh.key;
-      await fresh.start();
+      fresh.deferStart();
     }
     await evict(s);
   }
@@ -1551,6 +1919,7 @@ export function useAgent(options: UseAgentOptions) {
     newThread,
     newThreadAt,
     openThread,
+    openThreadHandle,
     send,
     uploadAttachment,
     demo,

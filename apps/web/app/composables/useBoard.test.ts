@@ -40,12 +40,30 @@ function harness() {
   const agent = {
     sessions: agentSessions,
     activeKey: ref<string | null>(null),
-    openThread: async () => {},
+    // Mirrors the real registry: the column exists (and its key is knowable) the
+    // moment you ask for it, while the transcript load resolves separately. The
+    // board relies on exactly that split to bind a pane before its history lands.
+    openThreadHandle: (threadId: string) => {
+      const found = agentSessions.value.find((s) => s.threadId.value === threadId);
+      if (found) return { key: found.key, ready: Promise.resolve() };
+      const t = makeThread(`thread-${agentSessions.value.length + 1}`, threadId);
+      // The real openStored adopts the stored transcript synchronously and only
+      // defers the CLI spawn, so the session is non-blank the instant it exists.
+      // That matters here: persistableThreadId treats a blank session as an
+      // unsaved slate and would null out the pane's anchor.
+      t.blocks.value = [{ role: "user", text: "stored" }];
+      agentSessions.value = [...agentSessions.value, t];
+      return { key: t.key, ready: nextTick() };
+    },
+    openThread: async (threadId: string) => {
+      await agent.openThreadHandle(threadId).ready;
+    },
     newThreadAt: async (index: number) => {
       const t = makeThread(`thread-${agentSessions.value.length + 1}`);
       const list = [...agentSessions.value];
       list.splice(Math.min(index, list.length), 0, t);
       agentSessions.value = list;
+      return t.key;
     },
     closeThread: async (k: string) => {
       agentSessions.value = agentSessions.value.filter((s) => s.key !== k);

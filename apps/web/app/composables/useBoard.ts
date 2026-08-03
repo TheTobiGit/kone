@@ -411,22 +411,22 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
         const threadId = entry.anchor.kind === "thread" ? entry.anchor.threadId : null;
         try {
           if (threadId) {
-            await agent.openThread(threadId);
-            // Re-check: a rival attach may have recorded while we awaited.
-            if (sessionKeyOf(id)) return;
-            const sk = agent.sessions.value.find((s) => s.threadId.value === threadId)?.key;
-            // No activeKey fallback: if the open didn't surface a session with our
-            // id, recording *some* key would bind the pane to the wrong thread.
-            if (sk) record(id, sk);
+            // Bind the pane to its column *before* the transcript loads. The
+            // handle hands back the session key synchronously; awaiting the open
+            // first is what kept a reopened conversation dormant — and so showing
+            // ThreadStrip's "Opening…" — for the whole history round-trip.
+            const { key, ready } = agent.openThreadHandle(threadId);
+            // A rival attach may already have recorded for this pane; leave its
+            // binding alone, but still see the open through.
+            if (!sessionKeyOf(id)) record(id, key);
+            await ready;
           } else {
-            // A fresh blank thread. newThreadAt always spawns (no empty-guard);
-            // diff the session set to find exactly the one it added (activeKey is
-            // a projection that a concurrent open could have already moved).
-            const before = new Set(agent.sessions.value.map((s) => s.key));
-            await agent.newThreadAt(agent.sessions.value.length);
+            // A fresh blank thread. newThreadAt always spawns (no empty-guard)
+            // and hands back the column it made, so there's no set-diff to get
+            // wrong when a concurrent open moves activeKey out from under us.
+            const sk = await agent.newThreadAt(agent.sessions.value.length);
             if (sessionKeyOf(id)) return;
-            const sk = agent.sessions.value.find((s) => !before.has(s.key))?.key;
-            if (sk) record(id, sk);
+            record(id, sk);
           }
         } catch (err) {
           // The thread wouldn't open (deleted underneath us, adapter error). Don't

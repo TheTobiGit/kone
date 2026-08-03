@@ -11,6 +11,16 @@ function storageKey(projectPath: string): string {
   return `kone:board:${projectPath}`;
 }
 
+// Last known layout per project path, module-scoped so it outlives the
+// <ProjectView> that read it. ProjectView is keyed on the path, so switching
+// projects unmounts the whole subtree and re-entering one re-ran this load
+// against SQLite every time — a round-trip the user waits on before any pane
+// can paint. This app is the only writer, and `save()` writes through below, so
+// once we've seen a path's layout the in-memory copy is authoritative and the
+// second visit costs nothing. Bounded by the number of projects opened in one
+// run, holding a small JSON each.
+const layoutCache = new Map<string, BoardLayout | null>();
+
 export function useBoardPersistence(projectPath: string | (() => string)) {
   const resolvePath = () =>
     typeof projectPath === "function" ? projectPath() : projectPath;
@@ -47,19 +57,31 @@ export function useBoardPersistence(projectPath: string | (() => string)) {
 
   async function load(): Promise<BoardLayout | null> {
     const path = resolvePath();
+    // Second and later visits to a project in this run answer from memory.
+    if (layoutCache.has(path)) return layoutCache.get(path) ?? null;
     const api = bridge();
+    let layout: BoardLayout | null;
     if (api) {
       try {
-        return await api.load({ projectPath: path });
+        layout = await api.load({ projectPath: path });
       } catch {
+        // Don't cache a failed read — a transient IPC error shouldn't pin this
+        // project to an empty desktop for the rest of the run.
         return null;
       }
+    } else {
+      layout = readLocal(path);
     }
-    return readLocal(path);
+    layoutCache.set(path, layout);
+    return layout;
   }
 
   function save(layout: BoardLayout): void {
     const path = resolvePath();
+    // Write through, so the cache never serves a layout older than the last
+    // gesture — including the flush ProjectView does on unmount, which is
+    // exactly the state the next visit should come back to.
+    layoutCache.set(path, layout);
     const api = bridge();
     if (api) {
       void api.save({ projectPath: path, layout }).catch(() => {
