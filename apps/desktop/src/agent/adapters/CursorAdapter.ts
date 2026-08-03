@@ -805,8 +805,22 @@ export class CursorAdapter implements ProviderAdapter {
   async stopSession(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session) return;
+    this.abortLiveTurn(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
+  }
+
+  /** Seal a turn that's still live as we tear the session down. Killing the
+   *  transport means Cursor's `session/cancel` reply never arrives, so nothing
+   *  else will ever speak for this turn — without this the journaled assistant
+   *  block stays 'running' forever and the thread reopens permanently busy.
+   *  See CodexAdapter for the same guard. */
+  private abortLiveTurn(session: CursorSession): void {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    session.activeTurnId = undefined;
+    session.interrupting = false;
+    this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
   }
 
   async stopAll(): Promise<void> {

@@ -350,7 +350,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   async interruptTurn(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session?.activeTurnId) return; this.drain(session); session.interrupting = true; await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); }
-  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); }
+  // `disposed` gates unexpectedExit, so a deliberate stop emits nothing terminal on its
+  // own — seal a still-live turn here or the journaled assistant block stays 'running'
+  // forever and the thread reopens permanently busy. After settleLiveSubagents, which
+  // reads activeTurnId while it's still set.
+  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); const reply = decision === "allow-once" ? "once" : decision === "allow-always" ? "always" : "reject"; await session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply }); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> { const session = this.require(threadId); const pending = session.pendingUserInputs.get(requestId); if (!pending) return; session.pendingUserInputs.delete(requestId); pending.resolve(answers); }
@@ -360,6 +364,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private require(threadId: string): OpenCodeSession { const session = this.sessions.get(threadId); if (!session) throw new Error(`No OpenCode session for thread ${threadId}`); return session; }
   private toSession(s: OpenCodeSession): Session { return { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, activeTurnId: s.activeTurnId, model: s.model, mode: s.mode }; }
   private drain(s: OpenCodeSession): void { for (const [id, pending] of s.pendingUserInputs) { s.pendingUserInputs.delete(id); pending.resolve({}); } }
+  private abortLiveTurn(s: OpenCodeSession): void { const turnId = s.activeTurnId; if (!turnId) return; s.activeTurnId = undefined; s.interrupting = false; this.emit({ ...base(s, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "interrupted" }); }
 
   private async consumeEvents(session: OpenCodeSession): Promise<void> {
     try {

@@ -612,8 +612,22 @@ export class CodexAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session) return;
     this.drainUserInputs(session);
+    this.abortLiveTurn(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
+  }
+
+  /** Seal a turn that's still live as we tear the session down. Killing the
+   *  transport means Codex's own cancellation reply never arrives, so nothing
+   *  else will ever speak for this turn — without this the journaled assistant
+   *  block stays 'running' forever and the thread reopens permanently busy.
+   *  `session.exited` (from the kill) can't cover it: that seals as 'failed',
+   *  and a deliberate stop is an interrupt, not a failure. */
+  private abortLiveTurn(session: CodexSession): void {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    session.activeTurnId = undefined;
+    this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
   }
 
   async stopAll(): Promise<void> {

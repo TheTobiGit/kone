@@ -999,6 +999,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.disposed = true;
     this.settleLiveSubagents(session, "stopped");
     this.drainUserInputs(session);
+    // Seal a turn that's still live. `disposed` gates the `session.exited` emit
+    // in consume()'s finally, so a deliberate stop otherwise emits nothing
+    // terminal at all — the journaled assistant block would stay 'running'
+    // forever and the thread would reopen permanently busy. Must run after
+    // settleLiveSubagents, which reads activeTurnId while it's still set.
+    const turnId = session.activeTurnId;
+    if (turnId) {
+      session.activeTurnId = undefined;
+      this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
+    }
     session.prompt.close();
     session.abort.abort();
     this.sessions.delete(threadId);
