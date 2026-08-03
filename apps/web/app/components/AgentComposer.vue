@@ -1463,13 +1463,27 @@ defineExpose({ wake, setDraft });
   font-size: 16px;
   line-height: 20px;
   letter-spacing: normal;
-  white-space: pre-wrap;
+  /* Single-line (pill) NEVER wraps a keystroke to row two: the field holds the
+     text on one line — matching the `pre` mirror — and the pill widens to fit it
+     a tick later. Only once it's genuinely multi-line (hit the width cap, or a
+     Shift+Enter break) does it flip to `pre-wrap` and grow tall (rule below).
+     Without this, a character typed at the pill's right edge drops to row two for
+     the frame before the width ease catches up — the per-keystroke vertical flash
+     on the first row. */
+  white-space: pre;
   overflow-wrap: anywhere;
   word-break: break-word;
   max-height: 240px;
+  /* Explicit overflow-x: hidden — with `pre`, a single line can briefly run
+     wider than the field for the frame before the pill widens to fit it, and a
+     bare `overflow-y: auto` makes the browser promote overflow-x to `auto` too,
+     flashing a horizontal scrollbar. Clip it; the pill catches up a tick later. */
+  overflow-x: hidden;
   overflow-y: auto;
   cursor: text;
 }
+.field--tall .field__input,
+.surface.is-card .field__input { white-space: pre-wrap; }
 .field__input:focus { outline: 0; }
 .surface.is-card .field__input { flex: 0 0 auto; line-height: 25px; }
 /* Placeholder overlay — shown only while the field is empty. It's a sibling
