@@ -6,11 +6,21 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../pla
 import { probe } from "../spawn.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
-import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
 
 type RecordLike = Record<string, any>;
 type OpenCodeEvent = { type: string; properties?: RecordLike };
 type OpenCodeClient = { request(method: string, route: string, body?: unknown, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
+/** One opencode `task` tool call, recognized from its tool part. opencode runs
+ *  the child as a *separate session* on the same server, so we also track the
+ *  child session id (from `state.metadata.sessionId`) to route its events back
+ *  into the run's transcript. */
+type OpenCodeSubagentRun = {
+  snapshot: SubagentRunSnapshot;
+  announced: boolean;
+  settled: boolean;
+  childToolPartIds: Set<string>;
+};
 type OpenCodeSession = {
   threadId: string; cwd: string; model?: string; variant?: string; contextWindow?: number; mode: InteractionMode; baseUrl: string;
   client: OpenCodeClient; server: OpenCodeServer; openCodeSessionId: string; activeTurnId?: string;
@@ -18,6 +28,12 @@ type OpenCodeSession = {
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
   pendingPermissions: Map<string, string>; pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
+  /** Provider-native subagents (Task tool) recognized this session, keyed by the
+   *  task tool's call id. */
+  subagentRuns: Map<string, OpenCodeSubagentRun>;
+  /** Child session id → the task tool call id that spawned it, so child-session
+   *  events can be routed into the run's transcript. */
+  subagentChildSessions: Map<string, string>;
   disposed: boolean; interrupting: boolean; planTasks: PlanTask[]; exitNotified: boolean;
 };
 
@@ -90,6 +106,42 @@ export function accumulateOpenCodeTokens(current: { input: number; output: numbe
 
 function nonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && Number.isInteger(value) ? value : undefined;
+}
+
+function stringField(value: unknown, key: string): string | undefined {
+  const field = record(value)?.[key];
+  return typeof field === "string" ? field : undefined;
+}
+
+function openCodeModelName(metadata: RecordLike | undefined): string | undefined {
+  const providerID = stringField(metadata, "providerID");
+  const modelID = stringField(metadata, "modelID");
+  return providerID && modelID ? `${providerID}/${modelID}` : undefined;
+}
+
+/** The one-line brief the parent handed the child. */
+function subagentDescription(input: RecordLike | undefined, title: unknown): string | undefined {
+  return stringField(input, "description") ?? (typeof title === "string" && title ? title : undefined);
+}
+
+/** The agent definition invoked, e.g. `explore` / `general`. */
+function subagentType(input: RecordLike | undefined): string | undefined {
+  return stringField(input, "subagent_type");
+}
+
+function subagentStatus(status: unknown): SubagentStatus {
+  if (status === "completed") return "completed";
+  if (status === "error") return "failed";
+  if (status === "pending") return "starting";
+  return "running";
+}
+
+/** Strip the `<task>`/`<task_result>` wrapper opencode renders around the
+ *  child's final output into a plain summary. */
+function openCodeTaskSummary(output: unknown): string | undefined {
+  if (typeof output !== "string" || !output) return undefined;
+  const cleaned = output.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned || undefined;
 }
 
 /** OpenCode reports cumulative session totals on assistant messages and step ends. */
@@ -223,7 +275,7 @@ export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
-  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: false };
+  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true };
   private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   /** The CLI executable to spawn — the user's override or the `opencode` default. */
   private binary = OPENCODE_BINARY;
@@ -275,7 +327,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     }
     if (!sessionId) sessionId = responseData(await client.request("POST", "/session", { permission: permissionRules(mode) }))?.id;
     if (!sessionId) { await server.dispose(); throw new Error("OpenCode session response did not include an id."); }
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -298,7 +350,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   async interruptTurn(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session?.activeTurnId) return; this.drain(session); session.interrupting = true; await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); }
-  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); }
+  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); const reply = decision === "allow-once" ? "once" : decision === "allow-always" ? "always" : "reject"; await session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply }); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> { const session = this.require(threadId); const pending = session.pendingUserInputs.get(requestId); if (!pending) return; session.pendingUserInputs.delete(requestId); pending.resolve(answers); }
@@ -310,8 +362,31 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private drain(s: OpenCodeSession): void { for (const [id, pending] of s.pendingUserInputs) { s.pendingUserInputs.delete(id); pending.resolve({}); } }
 
   private async consumeEvents(session: OpenCodeSession): Promise<void> {
-    try { for await (const event of session.client.events(session.eventsAbort.signal)) { if (!translateOpenCodeEvent(session.openCodeSessionId, event) || session.disposed) continue; this.handleEvent(session, event); } }
+    try {
+      for await (const event of session.client.events(session.eventsAbort.signal)) {
+        if (session.disposed) continue;
+        // opencode runs a Task tool's child as a separate session on the same
+        // server, so its events arrive with the child's session id. Route them
+        // into the run's transcript instead of dropping them like unrelated
+        // sessions.
+        if (!translateOpenCodeEvent(session.openCodeSessionId, event)) {
+          const childId = this.eventSessionId(event);
+          const toolUseId = childId ? session.subagentChildSessions.get(childId) : undefined;
+          if (!toolUseId) continue;
+          this.handleChildEvent(session, toolUseId, event);
+          continue;
+        }
+        this.handleEvent(session, event);
+      }
+    }
     catch (error) { if (!session.disposed && !session.eventsAbort.signal.aborted) this.unexpectedExit(session, null, errorMessage(error)); }
+  }
+
+  /** The session id an SSE event belongs to, wherever opencode stashed it. */
+  private eventSessionId(event: OpenCodeEvent): string | undefined {
+    const p = event.properties ?? {};
+    return typeof p.sessionID === "string" ? p.sessionID
+      : stringField(p.info, "sessionID") ?? stringField(p.part, "sessionID") ?? stringField(p.tool, "sessionID");
   }
 
   private unexpectedExit(session: OpenCodeSession, code: number | null, message?: string): void {
@@ -319,6 +394,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.exitNotified = true;
     const turnId = session.activeTurnId;
     session.activeTurnId = undefined;
+    this.settleLiveSubagents(session, "failed");
     if (turnId) this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "failed", ...(message ? { message } : {}) });
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", ...(message ? { message } : {}) });
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code });
@@ -377,13 +453,144 @@ export class OpenCodeAdapter implements ProviderAdapter {
     }
   }
 
-  private handlePart(session: OpenCodeSession, part: RecordLike | undefined): void {
+  private handlePart(session: OpenCodeSession, part: RecordLike | undefined, subagentToolUseId?: string): void {
      if (!part || !session.activeTurnId) return; session.partById.set(part.id, part); const turnId = session.activeTurnId;
-     if (part.type === "text" || part.type === "reasoning") { const role = part.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(part.id); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(part.id), String(part.text ?? "")); session.emittedTextByPartId.set(part.id, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) this.emit({ ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: part.id, kind, status: "in-progress", text: merged.text } }); if (part.time?.end && !session.completedTextPartIds.has(part.id)) { session.completedTextPartIds.add(part.id); this.emit({ ...base(session), type: "item.completed", turnId, item: { itemId: part.id, kind, status: "completed", text: merged.text } }); } return; }
+     if (part.type === "text" || part.type === "reasoning") { const role = part.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(part.id); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(part.id), String(part.text ?? "")); session.emittedTextByPartId.set(part.id, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) this.emit({ ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: part.id, kind, status: "in-progress", text: merged.text }, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); if (part.time?.end && !session.completedTextPartIds.has(part.id)) { session.completedTextPartIds.add(part.id); this.emit({ ...base(session), type: "item.completed", turnId, item: { itemId: part.id, kind, status: "completed", text: merged.text }, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); } return; }
     if (part.type !== "tool") return; const state = record(part.state) ?? {}; const kind = toolKind(String(part.tool ?? "tool"));
-    if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(state.status), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item }); return; }
+    if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(state.status), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); return; }
     const item: RuntimeItem = { itemId: String(part.callID ?? part.id), kind: "tool_call", status: toolStatus(String(state.status)), text: String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool"), ...(detailForTool(state) ? { detail: detailForTool(state) } : {}) };
-    this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item });
+    this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item, ...(subagentToolUseId ? { subagentToolUseId } : {}) });
+    // The child's own tool calls are progress hints on the run; the parent's
+    // `task` call is the run itself.
+    if (subagentToolUseId) {
+      const run = session.subagentRuns.get(subagentToolUseId);
+      if (run) {
+        run.snapshot.lastToolName = String(part.tool ?? "tool");
+        if (!run.childToolPartIds.has(String(part.id))) {
+          run.childToolPartIds.add(String(part.id));
+          run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;
+        }
+        this.emitSubagent(session, run, "subagent.updated");
+      }
+    } else if (String(part.tool ?? "") === "task") {
+      this.handleTaskTool(session, part, state);
+    }
+  }
+
+  /** Recognizes an opencode `task` tool call as a provider-native subagent run.
+   *  The tool part's `state.metadata` carries the child session id opencode
+   *  created for the delegated agent, plus its model; the input carries the
+   *  brief. Status mirrors the tool part's state ladder, and the run settles
+   *  when the tool part completes/errors (which happens only after the child
+   *  session's events have streamed). */
+  private handleTaskTool(session: OpenCodeSession, part: RecordLike, state: RecordLike): void {
+    const toolUseId = String(part.callID ?? part.id);
+    const input = record(state.input) ?? {};
+    const metadata = record(state.metadata) ?? {};
+    const childSessionId = stringField(metadata, "sessionId");
+    const status = subagentStatus(state.status);
+    if (childSessionId) session.subagentChildSessions.set(childSessionId, toolUseId);
+
+    const existing = session.subagentRuns.get(toolUseId);
+    if (existing) {
+      existing.snapshot.status = status;
+      if (status === "completed" || status === "failed") this.settleSubagent(session, existing, status, state);
+      else this.emitSubagent(session, existing, "subagent.updated");
+      return;
+    }
+    const snapshot: SubagentRunSnapshot = {
+      toolUseId,
+      parentItemId: toolUseId,
+      status,
+      startedAt: Date.now(),
+      ...(childSessionId ? { taskId: childSessionId } : {}),
+      ...(subagentType(input) ? { agentType: subagentType(input) } : {}),
+      ...(subagentDescription(input, state.title) ? { description: subagentDescription(input, state.title) } : {}),
+      ...(stringField(input, "prompt") ? { prompt: stringField(input, "prompt") } : {}),
+      ...(openCodeModelName(metadata) ? { model: openCodeModelName(metadata) } : {}),
+      ...(metadata.background === true || input.background === true ? { background: true } : {}),
+    };
+    const run: OpenCodeSubagentRun = { snapshot, announced: false, settled: false, childToolPartIds: new Set() };
+    session.subagentRuns.set(toolUseId, run);
+    if (status === "completed" || status === "failed") this.settleSubagent(session, run, status, state);
+    else this.emitSubagent(session, run, "subagent.started");
+  }
+
+  /** Folds a child session's events into its run: roles, transcript items
+   *  (scoped with the run's tool-use id), token spend. Never touches the parent
+   *  turn's lifecycle — the child going idle is not the parent finishing. */
+  private handleChildEvent(session: OpenCodeSession, toolUseId: string, event: OpenCodeEvent): void {
+    const p = event.properties ?? {};
+    const run = session.subagentRuns.get(toolUseId);
+    switch (event.type) {
+      case "message.updated": {
+        const info = record(p.info);
+        if (info?.id && info.role) {
+          session.messageRoleById.set(info.id, info.role);
+          if (info.role === "assistant" && info.tokens !== undefined && run) {
+            const usage = normalizeOpenCodeTokenUsage(info.tokens);
+            if (usage?.total !== undefined) run.snapshot.tokens = usage.total;
+          }
+          for (const part of session.partById.values()) if (part.messageID === info.id) this.handlePart(session, part, toolUseId);
+        }
+        break;
+      }
+      case "message.part.delta": {
+        const part = session.partById.get(p.partID);
+        const role = part?.messageID ? session.messageRoleById.get(part.messageID) : undefined;
+        if (!part || (role !== undefined && role !== "assistant") || !session.activeTurnId || typeof p.delta !== "string") break;
+        const prior = session.emittedTextByPartId.get(p.partID) ?? "";
+        const merged = appendOpenCodeTextDelta(prior, p.delta);
+        session.emittedTextByPartId.set(p.partID, merged.text);
+        this.emit({ ...base(session), type: "item.updated", turnId: session.activeTurnId, item: { itemId: p.partID, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text }, subagentToolUseId: toolUseId });
+        break;
+      }
+      case "message.part.updated": this.handlePart(session, p.part, toolUseId); break;
+      case "session.next.step.ended": {
+        if (!run) break;
+        const usage = normalizeOpenCodeTokenUsage(p.tokens);
+        if (usage?.total !== undefined) run.snapshot.tokens = usage.total;
+        this.emitSubagent(session, run, "subagent.updated");
+        break;
+      }
+      case "session.error": {
+        if (!run) break;
+        this.settleSubagent(session, run, "failed", { error: errorMessage(p.error) });
+        break;
+      }
+      case "session.status": if (p.status?.type === "idle" && run) this.emitSubagent(session, run, "subagent.updated"); break;
+      default: break;
+    }
+  }
+
+  private emitSubagent(session: OpenCodeSession, run: OpenCodeSubagentRun, type: "subagent.started" | "subagent.updated" | "subagent.completed"): void {
+    const turnId = session.activeTurnId;
+    if (!turnId || run.settled && type !== "subagent.completed") return;
+    if (!run.snapshot.model && session.model) run.snapshot.model = session.model;
+    run.announced = true;
+    this.emit({ ...base(session), type, turnId, subagent: { ...run.snapshot } });
+  }
+
+  /** Idempotent run close: stamp the final status and emit once. */
+  private settleSubagent(session: OpenCodeSession, run: OpenCodeSubagentRun, status: SubagentStatus, state: RecordLike): void {
+    if (run.settled) return;
+    run.settled = true;
+    run.snapshot.status = status;
+    run.snapshot.endedAt = Date.now();
+    if (status === "completed") {
+      const summary = openCodeTaskSummary(state.output);
+      if (summary) run.snapshot.summary = summary;
+    } else {
+      const error = typeof state.error === "string" && state.error ? state.error : openCodeTaskSummary(state.output);
+      if (error) run.snapshot.summary = error;
+    }
+    this.emitSubagent(session, run, "subagent.completed");
+    session.subagentRuns.delete(run.snapshot.toolUseId);
+  }
+
+  /** Settle anything still live — the turn ended or the session is going away. */
+  private settleLiveSubagents(session: OpenCodeSession, status: SubagentStatus): void {
+    for (const run of [...session.subagentRuns.values()]) this.settleSubagent(session, run, status, {});
   }
 
   /** Closes the active turn on idle. `session.abort` also lands as idle, so an
@@ -395,6 +602,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     session.activeTurnId = undefined;
     const interrupting = session.interrupting;
     session.interrupting = false;
+    this.settleLiveSubagents(session, interrupting ? "stopped" : "completed");
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }
