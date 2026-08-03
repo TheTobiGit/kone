@@ -11,7 +11,7 @@ import { SESSION_BRAND, type SessionSummary } from "~/types/session";
 // useAgent.
 //
 // Titles are persisted on the thread (first-turn word fallback, then an
-// agent-generated rename — research shape), so the desktop path reads them
+// agent-generated rename), so the desktop path reads them
 // straight off the metadata list without reconstructing every transcript. Rows
 // render the diff / token columns only when a value is present.
 

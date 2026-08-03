@@ -5,7 +5,7 @@ import type { TerminalEvent, TerminalStatus } from "~/types/desktop";
 // A project-scoped registry of live PTY terminals, the sibling of useAgent.
 // ProjectView merges its `sessions` with the agent threads to drive the strip.
 //
-// Design (borrowed from research's client runtime): xterm.js is the source
+// Design: xterm.js is the source
 // of truth for what's on screen. This composable keeps, per terminal, a capped
 // *replay buffer* (for cold (re)attach) that is deliberately NON-reactive, plus
 // a set of live *sinks* that receive each output delta directly. Live PTY output

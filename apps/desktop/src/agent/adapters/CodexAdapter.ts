@@ -51,26 +51,22 @@ import {
 // controls the sandbox (what Codex is actually allowed to touch), just not
 // whether it stops to ask first.
 //
-// kone's three InteractionModes ARE the approval-policy ladder. research (a WIP
-// branch of the same product) has expanded this to a 4-rung `RuntimeMode`
-// (approval-required/auto-accept-edits/auto/full-access), but the 4th rung
-// ("auto", an AI-reviewed middle ground via `approvalsReviewer: "auto_review"`)
-// only landed there 2 days ago and has never shipped in the actual product —
-// kone deliberately tracks the proven 3-rung shape instead: ask → research's
+// kone's three InteractionModes ARE the approval-policy ladder: ask →
 // "approval-required", accept-edits → "auto-accept-edits", full-access →
-// "full-access". (There's also a second, orthogonal "ProviderInteractionMode"
-// expose yet; don't confuse it with this ladder.) mapModeTo*Overrides below is
-// the exact per-rung mapping (approvalPolicy/sandbox/approvalsReviewer),
-// ported from research's runtimeModeToThreadConfig / runtimeModeToTurnSandboxPolicy
-// rather than reasoned out independently.
+// "full-access". kone deliberately tracks this 3-rung shape rather than a 4th
+// "auto" rung (an AI-reviewed middle ground via `approvalsReviewer:
+// "auto_review"`) that's brand-new and unshipped. (There's also a second,
+// orthogonal "ProviderInteractionMode" plan/build toggle in the Codex protocol
+// — a different axis kone doesn't expose yet; don't confuse it with this
+// ladder.) mapModeTo*Overrides below is the exact per-rung mapping
+// (approvalPolicy/sandbox/approvalsReviewer).
 //
-// Verified directly against research's generated JSON-RPC method table
-// (meta.gen.ts): the current app-server protocol has no standalone
-// `turn/aborted` server notification — interruption/failure surfaces via
-// `turn/completed` with `status: "interrupted" | "failed" | "cancelled"`. We
-// rely on that alone; a reference implementation elsewhere handles a
-// `turn/aborted` notification too, but that appears to target an older
-// protocol revision this file doesn't need to match.
+// Verified against the app-server protocol's generated JSON-RPC method table
+// (meta.gen.ts): there's no standalone `turn/aborted` server notification —
+// interruption/failure surfaces via `turn/completed` with `status:
+// "interrupted" | "failed" | "cancelled"`. We rely on that alone; a
+// `turn/aborted` notification would target an older protocol revision this file
+// doesn't need to match.
 
 const CODEX_BINARY = "codex";
 
@@ -175,11 +171,9 @@ function parseCodexUserInputQuestions(params: unknown): UserInputQuestion[] {
 // ── mode → Codex approval/sandbox mapping ───────────────────────────────────
 // Thread-level `sandbox` is a flat kebab-case enum; turn-level `sandboxPolicy`
 // is an object with a camelCase `type` — this asymmetry is Codex's own, not a
-// typo (confirmed from the reference implementation's turn/thread param
-// builders). `approvalsReviewer` is sent explicitly on every mode change
-// (thread AND turn) regardless — it's always "user" here since kone's ladder
-// stops short of research's unshipped "auto" rung (the only one that ever sets
-// it to "auto_review").
+// typo. `approvalsReviewer` is sent explicitly on every mode change (thread AND
+// turn) regardless — it's always "user" here since kone's ladder has no "auto"
+// rung (the only one that would set it to "auto_review").
 
 function mapModeToThreadOverrides(
   mode: InteractionMode,
@@ -517,8 +511,8 @@ export class CodexAdapter implements ProviderAdapter {
       };
 
       // Resume the prior Codex thread by id (via `thread/resume`) so the
-      // conversation continues with its full context — mirrors research's
-      // app-server resume path. If resume is refused (thread pruned/expired),
+      // conversation continues with its full context. If resume is refused
+      // (thread pruned/expired),
       // fall back to a fresh `thread/start` rather than failing the open.
       let response: Record<string, unknown> | undefined;
       let openMethod: "thread/start" | "thread/resume" = "thread/start";
@@ -706,9 +700,9 @@ export class CodexAdapter implements ProviderAdapter {
     });
 
     rpc.onNotification("thread/tokenUsage/updated", (params) => {
-      // Codex shape (confirmed in research): `{ tokenUsage: { last, total } }`
-      // where each side is a breakdown with `totalTokens` / `inputTokens` / …
-      // `total` is the running thread cumulative — ConversationStore keeps MAX
+      // Codex shape: `{ tokenUsage: { last, total } }` where each side is a
+      // breakdown with `totalTokens` / `inputTokens` / … `total` is the running
+      // thread cumulative — ConversationStore keeps MAX
       // of it. Looking for a flat `params.usage.totalTokens` silently drops
       // every update.
       const payload = asRecord(params);

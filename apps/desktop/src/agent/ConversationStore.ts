@@ -20,12 +20,12 @@ import type {
 // stream, so a conversation survives reload / quit / project switch instead of
 // living only in the renderer's in-memory timeline.
 //
-// The design is distilled from research's and research's stores (a single SQLite
-// file under the per-user state dir, thread → turn → ordered-item model) but
-// deliberately simplified for kone's scale: we write the read model directly
-// from the normalized RuntimeEvent stream, with none of their event-sourcing /
-// CQRS / projection machinery. The one lesson we do keep is schema versioning
-// (PRAGMA user_version) so the shape can evolve without losing data.
+// The design is distilled from a single SQLite file under the per-user state
+// dir, using a thread → turn → ordered-item model, but deliberately simplified
+// for kone's scale: we write the read model directly from the normalized
+// RuntimeEvent stream, without any event-sourcing / CQRS / projection
+// machinery. The one lesson we do keep is schema versioning (PRAGMA
+// user_version) so the shape can evolve without losing data.
 //
 // Persistence is best-effort, exactly like windowState.ts: every call is guarded
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
@@ -73,7 +73,7 @@ function migrate(db: DatabaseSync): void {
 
       -- The ordered parts inside a turn (assistant_text / reasoning_text /
       -- plan_text / tool_call), kept in first-seen order via seq — kone's
-      -- "ordered-parts" model, the analogue of research's thread activities.
+      -- "ordered-parts" model of the turn's thread activity.
       CREATE TABLE IF NOT EXISTS items (
         seq       INTEGER PRIMARY KEY AUTOINCREMENT,
         item_id   TEXT NOT NULL,
@@ -119,8 +119,8 @@ function migrate(db: DatabaseSync): void {
   if (version < 4) {
     // v4 persists an agent-generated (or word-fallback) working title so the
     // recent list doesn't have to reconstruct every transcript just to label
-    // a row. Same model research use: title lives on the thread, not
-    // derived from the first user turn at read time. Backfill existing rows
+    // a row. Title lives on the thread, not derived from the first user turn
+    // at read time. Backfill existing rows
     // from their first user prompt (word-capped) so upgraded installs don't
     // flash "Untitled session" for every prior conversation.
     db.exec(`ALTER TABLE threads ADD COLUMN title TEXT;`);
@@ -183,8 +183,7 @@ function migrate(db: DatabaseSync): void {
     // adapters resolve at dispatch, plus enough metadata for GC of orphaned
     // files. The attachment *metadata* is also denormalized onto the owning
     // user block (`attachments_json`) so a reloaded thread rebuilds its chips
-    // without a per-block join. Mirrors research's managed_attachment_blobs table
-    // (simplified: no staging state machine — kone uploads straight to disk).
+    // without a per-block join.
     db.exec(`
       CREATE TABLE IF NOT EXISTS attachments (
         attachment_id TEXT PRIMARY KEY,
@@ -203,9 +202,9 @@ function migrate(db: DatabaseSync): void {
   }
 
   if (version < 9) {
-    // v9 — per-project scratchpad documents (markdown source, one row per pad).
-    // Mirrors research's projection_threads.notes column but as first-class rows
-    // so a project can hold several open pads with stable ids across reloads.
+    // v9 — per-project scratchpad documents (markdown source, one row per pad),
+    // as first-class rows so a project can hold several open pads with stable
+    // ids across reloads.
     db.exec(`
       CREATE TABLE IF NOT EXISTS scratchpads (
         id          TEXT PRIMARY KEY,
@@ -421,12 +420,12 @@ export class ConversationStore {
       // live — any assistant block still 'running' belongs to a turn whose
       // provider process died (quit/crash) without a session.exited seal. That
       // includes a turn parked waiting on an unanswered AskUserQuestion /
-      // requestUserInput: the parked promise is in-memory only (as in
-      // research) and cannot survive a restart. Seal them here, once, so the
+      // requestUserInput: the parked promise is in-memory only and cannot
+      // survive a restart. Seal them here, once, so the
       // rehydrated thread reads settled — otherwise a stale 'running' block keeps
       // the renderer's `busy` true forever and the composer stays disabled. This
-      // mirrors the reference stores reconciling orphaned pending state at the
-      // recovery point; kone's simpler read model makes it a single UPDATE.
+      // is reconciling orphaned pending state at the recovery point; kone's
+      // simpler read model makes it a single UPDATE.
       this.sealOrphanedTurns(db);
       return db;
     } catch (err) {
@@ -732,30 +731,44 @@ export class ConversationStore {
         case "thread.token-usage.updated": {
           const total = event.usage.total;
           if (typeof total === "number" && Number.isFinite(total)) {
-            // Codex and OpenCode report running thread totals (keep the max);
-            // Claude reports per-turn spend (accumulate).
-            const isRunningTotal = event.provider === "codex" || event.provider === "opencode";
+            // Codex, OpenCode and Cursor report running thread totals (keep the
+            // max); Claude reports per-turn spend (accumulate).
+            const isRunningTotal =
+              event.provider === "codex" ||
+              event.provider === "opencode" ||
+              event.provider === "cursor";
             const sql = isRunningTotal
                 ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`
                 : `UPDATE threads SET tokens = COALESCE(tokens, 0) + ? WHERE thread_id = ?`;
             db.prepare(sql).run(Math.round(total), event.threadId);
           }
           // Snapshot the live context-window fill (overwrite, not accumulate) so
-          // a reopened thread restores its meter without waiting for a turn.
+          // a reopened thread restores its meter without waiting for a turn. A
+          // provider may report only part of the picture (a fresh fill without
+          // the window, or a window change without a fill), so each column is
+          // overwritten only when that field is present — a partial payload must
+          // never blank a value the thread already knew.
           const { contextUsed, contextWindow, compactsAutomatically } = event.usage;
-          if (typeof contextWindow === "number" && Number.isFinite(contextWindow)) {
+          if (
+            (typeof contextWindow === "number" && Number.isFinite(contextWindow)) ||
+            (typeof contextUsed === "number" && Number.isFinite(contextUsed))
+          ) {
+            const compacts =
+              compactsAutomatically === undefined ? null : compactsAutomatically ? 1 : 0;
             db.prepare(
               `UPDATE threads
-                 SET context_used   = ?,
-                     context_window = ?,
-                     compacts_auto  = ?
+                 SET context_used   = COALESCE(?, context_used),
+                     context_window = COALESCE(?, context_window),
+                     compacts_auto  = COALESCE(?, compacts_auto)
                WHERE thread_id = ?`,
             ).run(
               typeof contextUsed === "number" && Number.isFinite(contextUsed)
                 ? Math.round(contextUsed)
                 : null,
-              Math.round(contextWindow),
-              compactsAutomatically ? 1 : 0,
+              typeof contextWindow === "number" && Number.isFinite(contextWindow)
+                ? Math.round(contextWindow)
+                : null,
+              compacts,
               event.threadId,
             );
           }

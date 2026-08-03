@@ -3,11 +3,9 @@ import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 // The subagent *catalog* kone hands the Claude Agent SDK — the set of nested
 // agents the main agent may spawn with its Task/Agent tool.
 //
-// Ported from research's agent-mention alias table (packages/contracts
-// agentMentions.ts) + its `buildClaudeSdkSubagents()`: a small set of curated
-// role agents (explore / plan / build / review) with their own prompts, tool
-// allowlists and cheap-model defaults, plus four `worker-<tier>` variants that
-// exist purely to carry reasoning effort.
+// A small set of curated role agents (explore / plan / build / review) with
+// their own prompts, tool allowlists and cheap-model defaults, plus four
+// `worker-<tier>` variants that exist purely to carry reasoning effort.
 //
 // Why the worker tiers: the Agent tool's input has a `model` parameter but NO
 // effort parameter, so effort can only be chosen by picking an agent definition
@@ -89,8 +87,8 @@ export function claudeSubagentEffort(agentType: string | undefined): string | un
 }
 
 /** Guidance appended to the Claude Code system preset so the main agent knows
- *  the catalog exists and how effort is chosen (research's
- *  buildEmbeddedClaudeSystemPromptAppend, trimmed to the subagent lines). */
+ *  the catalog exists and how effort is chosen (trimmed to the subagent
+ *  lines). */
 export const CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND = [
   "When delegating with the Agent tool, set its `model` parameter and pick reasoning effort by choosing a worker-<tier> subagent type (worker-low, worker-medium, worker-high, worker-xhigh).",
   "Honor explicit user instructions about a subagent's model or effort verbatim; otherwise match task complexity: mechanical work → haiku or worker-low, standard work → sonnet or worker-medium, hard reasoning → opus with worker-high or above.",

@@ -51,6 +51,19 @@ lerna-debug.log*
 coverage
 .nyc_output
 
+# Local agent config & instructions
+.claude/
+.agents/
+AGENTS.md
+CLAUDE.md
+
+# Planning / research docs
+docs/
+
+# Prototype capture scripts
+/*.mjs
+/.*.mjs
+
 # Misc
 *.tgz
 .cache

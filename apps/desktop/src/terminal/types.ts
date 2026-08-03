@@ -1,9 +1,9 @@
 // ── Terminal data model ──────────────────────────────────────────────────────
 // The contract for kone's integrated terminal. A terminal is a first-class
-// column in the thread strip (niri-style), not a bottom drawer like the
-// wholesale from them: node-pty on the main process, xterm.js in the renderer,
-// one pushed event stream on the "terminal:event" IPC channel (mirroring how
-// the agent layer fans out "agent:event").
+// column in the thread strip (niri-style), not a bottom drawer — with the
+// PTY/transport model built on node-pty on the main process, xterm.js in the
+// renderer, and one pushed event stream on the "terminal:event" IPC channel
+// (mirroring how the agent layer fans out "agent:event").
 //
 // Everything here is flat + serializable — it all crosses the IPC boundary.
 // Mirror any change in apps/web/app/types/desktop.d.ts.

@@ -1,7 +1,6 @@
 // Tracks Claude Code's TaskCreate / TaskUpdate / TaskList / TaskGet tools into a
 // live checklist — the surface Claude actually uses for its working task list
-// (TodoWrite is the older/alternate path). Borrowed from research's
-// claudeTaskTracker.ts.
+// (TodoWrite is the older/alternate path).
 
 import type { PlanTask, PlanTaskStatus } from "./types.js";
 

@@ -4,11 +4,11 @@
 // TerminalEvent stream the IPC layer fans out to renderers — the direct
 // analogue of the agent layer's AgentService.
 //
-// Borrowed from research's TerminalManager: per-session state keyed by id,
-// output batching, kill escalation (SIGTERM → SIGKILL), and an in-memory
-// scrollback cap. kone keeps history in memory (capped) for replay rather than
-// persisting to log files — a deliberate v1 simplification; the references
-// sanitize + persist scrollback to disk, which we can layer on later.
+// Per-session state keyed by id, output batching, kill escalation
+// (SIGTERM → SIGKILL), and an in-memory scrollback cap. kone keeps history in
+// memory (capped) for replay rather than persisting to log files — a deliberate
+// v1 simplification; sanitizing + persisting scrollback to disk can be layered
+// on later.
 
 import { spawnPty, type PtyProcess } from "./Pty.js";
 import type {
@@ -27,9 +27,9 @@ const DEFAULT_ROWS = 24;
  *  a long build's worth of scrollback without unbounded growth. */
 const HISTORY_CAP = 512 * 1024;
 /** Coalesce raw PTY output and flush at ~60fps (or sooner on a big burst) so a
- *  noisy command doesn't fire one IPC message per read. Mirrors research's
- *  16ms / size-cap batch: parsing/history/emit cost then scales with batches
- *  (~60/s), not with the raw chunk count. */
+ *  noisy command doesn't fire one IPC message per read. A 16ms / size-cap
+ *  batch: parsing/history/emit cost then scales with batches (~60/s), not with
+ *  the raw chunk count. */
 const OUTPUT_FLUSH_INTERVAL_MS = 16;
 const OUTPUT_FLUSH_SIZE = 64 * 1024;
 

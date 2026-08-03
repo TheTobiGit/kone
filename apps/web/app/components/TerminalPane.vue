@@ -26,7 +26,7 @@ let darkQuery: MediaQueryList | null = null;
 let onSchemeChange: (() => void) | null = null;
 
 // ── Theme ────────────────────────────────────────────────────────────────────
-// Follow research's approach: the terminal is NOT hardcoded dark. Foreground /
+// The terminal is NOT hardcoded dark. Foreground /
 // background / cursor / selection are read live from kone's design tokens
 // (--ground, --ink, --accent) so the terminal reads correctly in both light and
 // dark, and the ANSI-16 palette is a calm, kone-tinted set chosen per scheme
@@ -165,7 +165,7 @@ onMounted(() => {
 
 /** Load the WebGL renderer for crisp text (once the container is sized). If the
  *  GPU context is unavailable or later lost, dispose it and let xterm fall back
- *  to the DOM renderer — mirrors research's context-loss handling. */
+ *  to the DOM renderer. */
 function loadWebgl(): void {
   if (!term || webgl) return;
   try {

@@ -79,8 +79,8 @@ function mockSessions(): SessionSummary[] {
       removed: 22,
       tokens: 620_000,
       updatedAt: now - 0.9 * DAY,
-      projectPath: "/Users/you/Developer/research",
-      projectName: "research",
+      projectPath: "/Users/you/Developer/nova",
+      projectName: "nova",
     },
     {
       threadId: "all-mock-3",
@@ -105,8 +105,8 @@ function mockSessions(): SessionSummary[] {
       removed: 96,
       tokens: 2_100_000,
       updatedAt: now - 3 * DAY,
-      projectPath: "/Users/you/Developer/research",
-      projectName: "research",
+      projectPath: "/Users/you/Developer/atlas",
+      projectName: "atlas",
     },
     {
       threadId: "all-mock-5",

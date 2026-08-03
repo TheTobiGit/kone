@@ -1,8 +1,8 @@
 // ── PTY adapter ──────────────────────────────────────────────────────────────
 // A thin wrapper around node-pty: resolves the user's shell, builds a sane env
 // (login-shell PATH, like the agent layer), and exposes the small surface the
-// TerminalManager drives. Borrowed from research's PtyAdapter shape, but
-// kone runs on Electron's Node (not Bun), so node-pty is the only adapter.
+// TerminalManager drives. kone runs on Electron's Node (not Bun), so node-pty
+// is the only adapter.
 
 import { existsSync } from "node:fs";
 
@@ -12,10 +12,10 @@ import { buildAgentEnv } from "../agent/processEnv.js";
 
 /** Env keys carrying the *host* terminal's identity. We inherit the user's full
  *  environment (PATH, toolchains) but must scrub these, then pin our own — the
- *  embedded shell is talking to xterm.js, not to iTerm/Ghostty/VS Code. Borrowed
- *  from research's TERMINAL_ENV_BLOCKLIST: an inherited `TERM=xterm-ghostty` makes
- *  curses apps bail with "unknown terminal type" and redraw as garbage, and an
- *  inherited `NO_COLOR`/`FORCE_COLOR` from a harness shell breaks colour. */
+ *  embedded shell is talking to xterm.js, not to iTerm/Ghostty/VS Code. An
+ *  inherited `TERM=xterm-ghostty` makes curses apps bail with "unknown terminal
+ *  type" and redraw as garbage, and an inherited `NO_COLOR`/`FORCE_COLOR` from a
+ *  harness shell breaks colour. */
 const HOST_TERMINAL_ENV_BLOCKLIST = [
   "TERM",
   "TERMINFO",

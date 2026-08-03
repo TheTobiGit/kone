@@ -20,9 +20,9 @@ import {
 // ConversationStore so adapters can resolve `id → file` at dispatch (even after
 // a reload). The turn itself only ever carries the ChatAttachment metadata.
 //
-// The design is research's: bytes on disk (never SQLite blobs, never in the turn
-// payload), a minted id that doubles as the filename stem, and a traversal-safe
-// path resolver. Simplified for kone's scale — a flat `<id><ext>` layout and no
+// The design: bytes on disk (never SQLite blobs, never in the turn payload), a
+// minted id that doubles as the filename stem, and a traversal-safe path
+// resolver. Simplified for kone's scale — a flat `<id><ext>` layout and no
 // staged→claimed state machine (we write straight to the final file).
 
 /** Original file name → extension, when it's a sane short alnum ext. */

@@ -70,9 +70,9 @@ import {
 // Claude adapter — drives Claude Code through `@anthropic-ai/claude-agent-sdk`'s
 // `query()`. One kone thread = one live `query()` session: prompts are pushed
 // into an async queue the SDK consumes, and every SDKMessage the query yields is
-// translated into kone's normalized RuntimeEvent union. This mirrors how the
-// programmatic surface (raw `claude --output-format stream-json` is only for
-// one-shot text generation there, not interactive tool/approval streaming).
+// translated into kone's normalized RuntimeEvent union. The SDK is the
+// supported programmatic surface (raw `claude --output-format stream-json` is
+// only for one-shot text generation, not interactive tool/approval streaming).
 //
 // "Bring your own subscription": the SDK runs the user's own Claude Code login
 // (macOS keychain OAuth / ~/.claude credentials / an external Bedrock-Vertex
@@ -97,8 +97,8 @@ import {
 // the same generic "fast" service-tier the composer already renders for Codex:
 // a model that reports `supportsFastMode` advertises one synthetic `fast` tier
 // (FAST_SERVICE_TIER), and a turn carrying `serviceTier: "fast"` toggles the
-// Setting on for the session (see sendTurn). This mirrors shipped research, which
-// likewise drives fastMode through applyFlagSettings gated per-model.
+// Setting on for the session (see sendTurn). fastMode is gated per-model: only
+// models that report `supportsFastMode` advertise the tier.
 //
 // Context window is a second live Setting in the same shape. Current Claude
 // Subagents: the SDK is handed a catalog of nested agents (claudeSubagents.ts)
@@ -106,9 +106,8 @@ import {
 // makes it forward the child's whole conversation — every message tagged with
 // `parent_tool_use_id` = the spawning tool-use id. This adapter keeps one
 // projection *scope* per live run (ClaudeScope), so a child's text/thinking/tool
-// items are emitted against the run instead of the parent turn, exactly like
-// research's `subagentRefs`-scoped contexts (it routes them onto a child thread;
-// kone nests them under the parent's tool_call item — see types.ts SubagentRun).
+// items are emitted against the run instead of the parent turn, nested under the
+// parent's tool_call item (see types.ts SubagentRun).
 // The run's status/spend come from the SDK's task lifecycle
 // (task_started/task_progress/task_updated/task_notification), which is also
 // where the `task_id` needed to stop one arrives.
@@ -118,7 +117,7 @@ import {
 // token budget Claude Code compacts the transcript at. kone offers 200k (a safer
 // default) vs the full 1M on every non-Haiku model, carried per-turn as
 // `contextWindow` and applied live via applyFlagSettings({ autoCompactWindow })
-// — again mirroring research's Claude adapter, no session restart.
+// — no session restart.
 
 const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
 
@@ -131,10 +130,10 @@ const FAST_SERVICE_TIER = { id: "fast", label: "Fast" };
 // *auto-compact window* — the token budget Claude Code compacts the transcript
 // at — NOT the raw model capacity, and NOT the legacy `context-1m-2025-08-07`
 // beta (that flag was Sonnet-4/4.5-only; every current Claude model is natively
-// 1M). Mirrors research's Claude autoCompactWindowOptions: default to a safer 200k
-// budget and let a thread opt into the full 1M. `tokens` is the value handed to
-// the SDK's `autoCompactWindow` Setting (see sendTurn). Single-window models
-// (Haiku, 200k) get no `contextWindows` and so no picker.
+// 1M). Default to a safer 200k budget and let a thread opt into the full 1M.
+// `tokens` is the value handed to the SDK's `autoCompactWindow` Setting (see
+// sendTurn). Single-window models (Haiku, 200k) get no `contextWindows` and so
+// no picker.
 const CLAUDE_CONTEXT_WINDOWS = [
   { id: "200k", label: "200K", tokens: 200_000, isDefault: true as const },
   { id: "1m", label: "1M", tokens: 1_000_000 },
@@ -153,8 +152,8 @@ const DEFAULT_CLAUDE_CONTEXT_WINDOW = contextWindowTokens("200k");
 /** Which context-window options a Claude model exposes. Current Claude models
  *  are natively 1M except the Haiku line (200k), so every non-Haiku Claude model
  *  gets the 200k/1M auto-compact choice; a single-window model gets none. The
- *  SDK's live ModelInfo carries no context-window field, so — like research's
- *  static capability table — this is derived from the id. */
+ *  SDK's live ModelInfo carries no context-window field, so — like a static
+ *  capability table — this is derived from the id. */
 function contextWindowsForModel(id: string): typeof CLAUDE_CONTEXT_WINDOWS | undefined {
   return /haiku/i.test(id) ? undefined : CLAUDE_CONTEXT_WINDOWS;
 }
@@ -167,13 +166,12 @@ const CLAUDE_FULL_EFFORTS: string[] = ["low", "medium", "high", "xhigh", "max"];
 const CLAUDE_EXTENDED_EFFORTS: string[] = ["low", "medium", "high", "max"];
 const CLAUDE_BASIC_EFFORTS: string[] = ["low", "medium", "high"];
 
-// kone's curated Claude catalog — the hand-maintained ground truth, ported from
-// research's static MODEL_OPTIONS_BY_PROVIDER.claudeAgent table (packages/contracts
-// model.ts). This is the *base* of the picker: listModels() merges whatever the
-// live SDK reports on top of it (see mergeClaudeModels), so older versions the
-// SDK no longer advertises still appear, and a brand-new release the SDK knows
-// about surfaces even before it's baked here. Each entry mirrors research's
-// verified per-model capabilities exactly:
+// kone's curated Claude catalog — the hand-maintained ground truth. This is the
+// *base* of the picker: listModels() merges whatever the live SDK reports on
+// top of it (see mergeClaudeModels), so older versions the SDK no longer
+// advertises still appear, and a brand-new release the SDK knows about surfaces
+// even before it's baked here. Each entry carries verified per-model
+// capabilities:
 //   • fast mode — only the Opus fast-mode lane (5 / 4.8 / 4.7 / 4.6) advertises
 //     the `fast` tier; Fable, Sonnet and Haiku don't.
 //   • context window — the 200k/1M auto-compact switch is present on every
@@ -703,7 +701,27 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   // ── lifecycle ────────────────────────────────────────────────────────────
 
+  /** Start a session, tolerating a dead or foreign resume id. Every sibling
+   *  adapter already falls back to a fresh conversation when resume fails (Codex
+   *  swallows `thread/resume` errors, Cursor falls back to `session/new`); Claude
+   *  alone rethrew, so a stale stored conversation id surfaced to the user as a
+   *  hard "conversation id does not exist" the moment a thread opened. Retry once
+   *  without the resume rather than stranding the thread. */
   async startSession(input: SessionStartInput): Promise<Session> {
+    if (!input.resume) return this.startFreshSession(input);
+    try {
+      return await this.startFreshSession(input);
+    } catch (error) {
+      console.warn(
+        `[claude] resume "${input.resume}" failed (${
+          error instanceof Error ? error.message : String(error)
+        }) — starting a fresh conversation`,
+      );
+      return this.startFreshSession({ ...input, resume: undefined });
+    }
+  }
+
+  private async startFreshSession(input: SessionStartInput): Promise<Session> {
     const env = await buildClaudeEnv();
     const executable = resolveClaudeExecutable();
     const mode: InteractionMode = input.mode ?? "accept-edits";
@@ -721,9 +739,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(effort ? { effort } : {}),
       // Resume a prior Claude Code conversation by its session id so the new
       // query continues with its full transcript/context (the SDK's supported
-      // resume surface — mirrors research's ClaudeAdapter). The resumed
-      // run reports its own session id via system/init, which refreshes the
-      // stored conversationId on the next turn.completed.
+      // resume surface). The resumed run reports its own session id via
+      // system/init, which refreshes the stored conversationId on the next
+      // turn.completed.
       ...(input.resume ? { resume: input.resume } : {}),
       permissionMode,
       ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
@@ -917,8 +935,8 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     // Context window is the other live session Setting: the auto-compact budget
     // Claude Code compacts the transcript at. Like fast mode it's carried as a
-    // persistent per-session Setting toggled via applyFlagSettings (research's
-    // Claude adapter drives it exactly this way). The composer only sends a
+    // persistent per-session Setting toggled via applyFlagSettings. The
+    // composer only sends a
     // contextWindow for models that advertise the choice, and an unknown id
     // resolves to undefined here — meaning "leave the window where it is".
     const wantWindow = contextWindowTokens(input.contextWindow);
@@ -1389,7 +1407,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // new prefix is written). Reading `input_tokens` alone dropped the
       // cached reads — which dominate — so Claude threads reported a tiny
       // fraction of their real spend. Fold all three in, matching Codex (whose
-      // total already counts re-sent context) and research's canonical formula.
+      // total already counts re-sent context).
       const freshInput = readNumber(usage, "input_tokens");
       const cacheRead = readNumber(usage, "cache_read_input_tokens");
       const cacheCreation = readNumber(usage, "cache_creation_input_tokens");
@@ -1652,6 +1670,10 @@ export class ClaudeAdapter implements ProviderAdapter {
   ): void {
     const turnId = session.activeTurnId;
     if (!turnId) return;
+    // A spawn that names no model runs on the parent's model (the SDK's built-in
+    // agents inherit it), so report that rather than leaving the run modelless —
+    // otherwise the UI falls back to a generic "Default model" placeholder.
+    if (!run.snapshot.model && session.model) run.snapshot.model = session.model;
     const eventType = type ?? (run.announced ? "subagent.updated" : "subagent.started");
     run.announced = true;
     this.emit({
@@ -1855,8 +1877,8 @@ function mapClaudeModels(models: ModelInfo[]): ModelDescriptor[] {
 }
 
 /** Merge kone's curated Claude catalog with whatever the live SDK reports.
- *  Mirrors research's mergeDynamicModelOptions (static table + dynamic discovery):
- *  the curated list is authoritative for capability *shape* — the fast-mode lane
+ *  Static table + dynamic discovery: the curated list is authoritative for
+ *  capability *shape* — the fast-mode lane
  *  and, crucially, the 200k-only vs 200k/1M auto-compact switch, which the SDK's
  *  ModelInfo simply can't express — so a model the curated list already knows
  *  keeps its verified toggles rather than the id-derived guesses mapClaudeModels
