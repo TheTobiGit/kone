@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { app, BrowserWindow, net, protocol, shell } from "electron";
 
-import { registerAgentIpc, shutdownAgents } from "./agent/index.js";
+import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
@@ -109,6 +109,19 @@ async function createWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
+
+    // Warm the agent layer a beat after first paint — not at IPC registration.
+    // Registration runs before the window exists, so firing the four CLI probes
+    // (`codex --version`, …) plus the app-server handshake there made them
+    // compete with window creation and the renderer's first frame for CPU and
+    // process slots, slowing first paint. Warming after show leaves first
+    // paint and hydration the machine to themselves; the ~250ms beat guarantees
+    // this no longer runs mid-paint. Fire-and-forget: `warm()` dedupes and
+    // never rejects, and the renderer's own warmup (`agent:surface` →
+    // `agent:warm`) coalesces onto this run, so nothing waits on the send path.
+    setTimeout(() => {
+      void getAgentService().warm().catch(() => {});
+    }, 250);
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

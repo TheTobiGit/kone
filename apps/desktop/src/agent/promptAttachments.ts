@@ -31,6 +31,9 @@ export type OpenCodeFilePart = {
   url: string;
 };
 
+/** An ACP image content block — Cursor advertises `promptCapabilities.image: true`. */
+export type CursorImageBlock = { type: "image"; mimeType: string; data: string };
+
 type FileEntry = { name: string; mimeType: string; sizeBytes: number; absPath: string };
 
 /** Compact human byte size for the path block (e.g. "1.2 MB"). */
@@ -43,7 +46,7 @@ function humanSize(bytes: number): string {
 }
 
 /** The `<attached_files>` prompt block naming each file's on-disk path, or ""
- *  when there are none. Same shape research hands the agents. */
+ *  when there are none. */
 function fileBlock(entries: FileEntry[]): string {
   if (entries.length === 0) return "";
   const lines = entries.map(
@@ -129,6 +132,32 @@ export async function buildOpenCodeAttachmentParts(
     parts.push({ type: "file", mime: att.mimeType, filename: att.name, url: pathToFileURL(absPath).href });
   }
   return parts;
+}
+
+/** Build Cursor's ACP image blocks + a path block for everything else. Like
+ *  Codex, Cursor renders any `image/*` natively, so only unreadable images fall
+ *  through to the file block. */
+export async function buildCursorAttachmentInput(
+  attachments: ChatAttachment[] | undefined,
+): Promise<{ imageBlocks: CursorImageBlock[]; fileBlock?: string }> {
+  const store = getAttachmentStore();
+  const imageBlocks: CursorImageBlock[] = [];
+  const files: FileEntry[] = [];
+
+  for (const att of attachments ?? []) {
+    const absPath = store.resolveAbsPath(att.id);
+    if (!absPath) continue; // never uploaded / GC'd — nothing to attach
+    if (att.type === "image") {
+      const bytes = await store.readBytes(att.id);
+      if (bytes) {
+        imageBlocks.push({ type: "image", mimeType: att.mimeType, data: bytes.toString("base64") });
+        continue;
+      }
+    }
+    files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
+  }
+
+  return { imageBlocks, fileBlock: fileBlock(files) };
 }
 
 /** Join the prompt text with an `<attached_files>` block (either may be empty). */

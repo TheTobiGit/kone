@@ -3,16 +3,17 @@
 // here is flat and serializable — it all crosses the IPC boundary to the
 // renderer. Mirror any change in apps/web/app/types/desktop.d.ts.
 //
-// The design (distilled from research's provider layer): session control is
-// request/ack — startSession/sendTurn/interrupt resolve as soon as the turn is
+// The design: session control is request/ack — startSession/sendTurn/interrupt
+// resolve as soon as the turn is
 // *accepted* — and ALL streamed output flows through one normalized RuntimeEvent
 // union. The renderer is written once against that union and never learns which
 // CLI is underneath. Adding a provider is a new adapter, not a UI change.
 
 /** A supported agent provider. `claudeAgent` drives Claude Code through the
  *  `@anthropic-ai/claude-agent-sdk` (which runs the user's own Claude login);
- *  `codex` drives `codex app-server`. Grows as adapters land. */
-export type ProviderKind = "codex" | "claudeAgent" | "opencode";
+ *  `codex` drives `codex app-server`; `cursor` drives `cursor-agent acp`.
+ *  Grows as adapters land. */
+export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -63,8 +64,8 @@ export type ModelDescriptor = {
    *  For Claude this is the *auto-compact window* — the token budget Claude
    *  Code compacts the conversation at — not a raw model-capacity switch:
    *  current Claude models are natively 1M, so the real per-thread choice is
-   *  whether to compact early at a safer 200k or run out to the full 1M
-   *  (mirrors research's Claude `autoCompactWindowOptions`). Absent for a model
+   *  whether to compact early at a safer 200k or run out to the full 1M.
+   *  Absent for a model
    *  with a single fixed window (e.g. Haiku, 200k only). `tokens` is the raw
    *  budget the adapter applies; `id`/`label` drive the picker. */
   contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
@@ -76,14 +77,12 @@ export type ModelDescriptor = {
 /** The approval-policy ladder — how much the agent may do without asking,
  *  from most to least restrictive: `ask` always asks first (read-only
  *  sandbox); `accept-edits` auto-approves file edits but still asks before
- *  commands/other actions; `full-access` never prompts. Maps onto research's
- *  own `RuntimeMode` axis (approval-required/auto-accept-edits/full-access) —
- *  see CodexAdapter.ts's mapModeTo*Overrides. kone deliberately stops short of
- *  research's 4th rung (`auto`, an AI-reviewed middle ground) since that's a
- *  brand-new, unshipped addition there, not the shipped research model this
- *  ladder otherwise tracks. This is also deliberately NOT the same axis as a
- *  provider's separate plan/build turn mode (research's
- *  `ProviderInteractionMode`) — kone doesn't have that second toggle yet. */
+ *  commands/other actions; `full-access` never prompts. See CodexAdapter.ts's
+ *  mapModeTo*Overrides for the per-mode mapping. kone deliberately stops short
+ *  of a 4th `auto` rung (an AI-reviewed middle ground) — it's brand-new and
+ *  unshipped. This is also deliberately NOT the same axis as a provider's
+ *  separate plan/build turn mode (`ProviderInteractionMode`) — kone doesn't
+ *  have that second toggle yet. */
 export type InteractionMode = "ask" | "accept-edits" | "full-access";
 
 export type SessionStartInput = {
@@ -124,9 +123,9 @@ export type Session = {
 };
 
 // ── Attachments ────────────────────────────────────────────────────────────
-// Files/images the user attaches to a prompt. The data model is borrowed
-// wholesale from research: a turn carries only lightweight *metadata*
-// (id + name + mime + size) — never bytes. The bytes are uploaded once over
+// Files/images the user attaches to a prompt. A turn carries only lightweight
+// *metadata* (id + name + mime + size) — never bytes. The bytes are uploaded
+// once over
 // IPC (agent:upload-attachment), written to a per-user attachments dir, and
 // read back off disk by each adapter at dispatch, where they're re-encoded
 // into whatever that CLI wants (Codex data-URL image item / Claude base64
@@ -162,11 +161,12 @@ export type UploadAttachmentInput = {
   data: string;
 };
 
+/** Max bytes for an image attachment (10 MB). */
 export const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-/** Max bytes for a non-image file attachment (25 MB, as in research). */
+/** Max bytes for a non-image file attachment (25 MB). */
 export const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 /** Image mime types Claude renders natively; anything else falls back to the
- *  on-disk path block (research's SUPPORTED_CLAUDE_IMAGE_MIME_TYPES). */
+ *  on-disk path block. */
 export const CLAUDE_NATIVE_IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -208,8 +208,7 @@ export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
 // ── mid-turn user-input questions ────────────────────────────────────────────
 // When the agent needs to ask the user something mid-turn — Claude's built-in
 // `AskUserQuestion` tool, Codex's `item/tool/requestUserInput` app-server
-// request — both are normalized into this one provider-neutral shape (ported
-// wholesale from research's UserInputQuestion / ProviderUserInputAnswers).
+// request — both are normalized into this one provider-neutral shape.
 // The adapter parks the provider callback on a promise, emits a
 // `user-input.requested` event, and resolves the promise when the renderer calls
 // respondToUserInput — which returns the answers to the provider so the turn
@@ -338,18 +337,18 @@ export type PlanTask = {
 // model, effort, tool allowlist and transcript, then folds that agent's final
 // report back into the parent turn as the tool's result.
 //
-// This is NOT kone spawning a second thread/session (research's "thread spawn" —
-// a separate conversation with its own provider process). It's one provider
-// model it: the Task tool call is the run's identity (`tool_use_id`), the SDK's
+// This is NOT kone spawning a second thread/session (a separate conversation
+// with its own provider process). It's one provider process running nested
+// agents: the Task tool call is the run's identity (`tool_use_id`), the SDK's
 // task lifecycle (`task_started`/`task_progress`/`task_notification`) carries
 // its status and spend, and every message the child emits is tagged with
 // `parent_tool_use_id` = that same tool-use id so it can be projected onto the
-// child rather than the parent (research's ClaudeAdapter `subagentRefs`).
+// child rather than the parent.
 //
-// Where research routes that child traffic onto a real child *thread*, kone keeps
-// it nested inside the parent turn: the run hangs off the `tool_call` item that
-// spawned it (`RuntimeItem.subagent`) and carries its own ordered `items`. Same
-// data, one less concept — and it persists and rehydrates with the turn.
+// kone keeps the child traffic nested inside the parent turn: the run hangs off
+// the `tool_call` item that spawned it (`RuntimeItem.subagent`) and carries its
+// own ordered `items`. Same data, one less concept — and it persists and
+// rehydrates with the turn.
 
 /** Lifecycle of one subagent run. `stopped` is a user/parent-initiated kill
  *  (Claude's `task_notification` status), distinct from a `failed` run. */
@@ -458,6 +457,12 @@ export type RuntimeEventSource =
   | "opencode.sse.message"
   | "opencode.sse.stderr"
   | "opencode.sse.lifecycle"
+  // Cursor speaks ACP (Agent Client Protocol) over `cursor-agent acp`'s stdio:
+  // `notification` = a `session/update` notification, `stderr` = the CLI's
+  // stderr line, `lifecycle` = process/session start+exit.
+  | "cursor.acp.notification"
+  | "cursor.acp.stderr"
+  | "cursor.acp.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
@@ -575,8 +580,8 @@ export interface ProviderAdapter {
 
   /** Deliver a mid-task message to a *running* subagent, so the user can nudge
    *  a child agent without interrupting the parent turn (Claude: queued and
-   *  injected as `additionalContext` on the child's next tool call, the only SDK
-   *  channel that reaches a live subagent — see research's `steerSubagent`).
+   *  injected as `additionalContext` on the child's next tool call, the only
+   *  SDK channel that reaches a live subagent).
    *  Optional; a no-op resolve when the run already finished. */
   steerSubagent?(threadId: string, toolUseId: string, message: string): Promise<void>;
 

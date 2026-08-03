@@ -5,14 +5,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { buildClaudeEnv } from "./claudeHome.js";
+import { buildCursorEnv } from "./cursorHome.js";
 import { buildOpenCodeEnv } from "./opencodeHome.js";
 import { buildAgentEnv } from "./processEnv.js";
 import type { ProviderKind } from "./types.js";
 
-// Thread/conversation naming — distilled from research (`chatThreads.ts` +
-// `textGenerationShared.buildThreadTitlePrompt`) and research
-// (`TextGenerationPrompts.buildThreadTitlePrompt` + ProviderCommandReactor's
-// first-turn rename). Flow:
+// Thread/conversation naming. Flow:
 //   1. First send → deterministic word-cap fallback (instant sidebar label).
 //   2. Background one-shot CLI JSON call (Codex or Claude, matching the
 //      thread's provider) → compact generated title.
@@ -31,6 +29,7 @@ const MAX_THREAD_TITLE_LENGTH = 60;
 const CODEX_TITLE_MODEL = "gpt-5.4-mini";
 const CLAUDE_TITLE_MODEL = "claude-haiku-4-5";
 const OPENCODE_TITLE_MODEL = "opencode-go/deepseek-v4-flash";
+const CURSOR_TITLE_MODEL = "composer-2.5-fast";
 const TITLE_GENERATION_TIMEOUT_MS = 45_000;
 
 const TITLE_SCHEMA = {
@@ -84,7 +83,7 @@ export function isGenericThreadTitle(title: string | null | undefined): boolean 
 }
 
 /** True when the current title is still auto-owned (generic or the first-turn
- *  fallback seed) — matching research's `canReplaceThreadTitle`. */
+ *  fallback seed). */
 export function canReplaceThreadTitle(
   currentTitle: string | null | undefined,
   titleSeed?: string,
@@ -122,7 +121,7 @@ function extractTitle(raw: string): string | null {
       return extractTitle(parsed.part.text);
     }
     // Claude `-p --output-format json` wraps the schema result in
-    // `{ structured_output: … }` (research's ClaudeTextGeneration envelope).
+    // `{ structured_output: … }`.
     const payload =
       parsed.structured_output !== undefined ? parsed.structured_output : parsed;
     if (payload && typeof payload === "object" && typeof (payload as { title?: unknown }).title === "string") {
@@ -152,7 +151,9 @@ export async function generateThreadTitle(input: {
         ? await generateWithClaude({ cwd: input.cwd, prompt })
         : input.provider === "opencode"
           ? await generateWithOpenCode({ cwd: input.cwd, prompt })
-          : await generateWithCodex({ cwd: input.cwd, prompt });
+          : input.provider === "cursor"
+            ? await generateWithCursor({ cwd: input.cwd, prompt })
+            : await generateWithCodex({ cwd: input.cwd, prompt });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;
@@ -209,8 +210,8 @@ async function generateWithCodex(input: {
   }
 }
 
-/** One-shot `claude -p` with structured JSON — same surface research's
- *  ClaudeTextGeneration uses for titles (not the interactive Agent SDK). */
+/** One-shot `claude -p` with structured JSON for titles (not the interactive
+ *  Agent SDK). */
 async function generateWithClaude(input: {
   cwd: string;
   prompt: string;
@@ -249,6 +250,21 @@ async function generateWithOpenCode(input: { cwd: string; prompt: string }): Pro
   }).then((raw) => {
     if (!raw) return null;
     return raw.split(/\r?\n/).map(extractTitle).find((value): value is string => Boolean(value)) ?? raw;
+  });
+}
+
+/** One-shot `cursor-agent --print` with plain text. Titles run through Cursor's
+ *  cheap in-house model on the print CLI — the interactive ACP protocol is the
+ *  turn transport, not a one-shot text surface. */
+async function generateWithCursor(input: { cwd: string; prompt: string }): Promise<string | null> {
+  const env = await buildCursorEnv();
+  return runCli({
+    command: "cursor-agent",
+    args: ["--print", "--output-format", "text", "--model", CURSOR_TITLE_MODEL, input.prompt],
+    cwd: input.cwd,
+    env,
+    stdin: "",
+    timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
   });
 }
 

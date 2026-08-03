@@ -1,6 +1,13 @@
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
+import { CursorAdapter } from "./adapters/CursorAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
+import {
+  cacheModels,
+  cacheStatuses,
+  readProviderCache,
+  type ProviderCacheSnapshot,
+} from "./providerCache.js";
 import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
 import type {
   ApprovalDecision,
@@ -19,9 +26,9 @@ import type {
   UserInputAnswers,
 } from "./types.js";
 
-// The cross-provider facade that lives in the Electron main process (the agent
-// analogue of ProviderService in research). It owns the adapter registry, routes
-// thread-scoped calls to the adapter that owns the thread, and fans every
+// The cross-provider facade that lives in the Electron main process. It owns
+// the adapter registry, routes thread-scoped calls to the adapter that owns the
+// thread, and fans every
 // adapter's events out to a single set of listeners (the IPC layer subscribes
 // one listener that forwards to the renderer).
 //
@@ -33,6 +40,10 @@ export class AgentService {
   /** threadId → provider, so thread-scoped calls find the right adapter. */
   private readonly routing = new Map<string, ProviderKind>();
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
+  /** Last known catalog per provider — seeded from disk at construction, so a
+   *  cold launch can validate a model id without spawning a probe CLI. */
+  private readonly catalogs = new Map<ProviderKind, ModelDescriptor[]>();
+  private warming: Promise<void> | null = null;
 
   constructor() {
     const emit: EmitEvent = (event) => {
@@ -41,12 +52,16 @@ export class AgentService {
     this.register(new CodexAdapter(emit));
     this.register(new ClaudeAdapter(emit));
     this.register(new OpenCodeAdapter(emit));
+    this.register(new CursorAdapter(emit));
     // Point each adapter at the user's persisted install settings (custom binary
     // path, …) before anything probes or spawns. Unset providers keep their
     // built-in default, so a fresh install behaves exactly as before.
     const settings = readProviderSettings();
     for (const [provider, adapter] of this.adapters) {
       adapter.setConfig?.(settings[provider] ?? {});
+    }
+    for (const [provider, models] of Object.entries(readProviderCache().models)) {
+      if (models?.length) this.catalogs.set(provider as ProviderKind, models);
     }
   }
 
@@ -74,13 +89,67 @@ export class AgentService {
 
   // ── discovery ─────────────────────────────────────────────────────────────
 
+  /** The last known provider surface, straight off the disk cache — no CLI is
+   *  spawned, so this answers in microseconds. The renderer hydrates its picker
+   *  from this at app open and refreshes in the background, which is what makes
+   *  a cold launch present a provider list that's actually usable rather than
+   *  one that only *looks* populated. Empty on a first-ever run. */
+  cachedSurface(): ProviderCacheSnapshot {
+    return readProviderCache();
+  }
+
   /** Probe every provider on the user's machine — what's installed + logged in. */
   async discover(): Promise<ProviderStatus[]> {
-    return Promise.all([...this.adapters.values()].map((a) => a.discover()));
+    const statuses = await Promise.all([...this.adapters.values()].map((a) => a.discover()));
+    cacheStatuses(statuses);
+    return statuses;
   }
 
   async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
-    return this.adapter(provider).listModels();
+    const models = await this.adapter(provider).listModels();
+    if (models.length) {
+      this.catalogs.set(provider, models);
+      cacheModels(provider, models);
+    }
+    return models;
+  }
+
+  /** Refresh the whole surface in the background at app open: discover, then
+   *  pull each installed provider's catalog, writing both through to disk. The
+   *  point is that by the time the user sends anything, `catalogFor` is warm —
+   *  validation on the send path must never be the thing that spawns a CLI.
+   *  Deduped, and never rejects: a missing or broken CLI just leaves the
+   *  previous snapshot in place. */
+  warm(): Promise<void> {
+    this.warming ??= (async () => {
+      try {
+        const found = await this.discover();
+        await Promise.all(
+          found
+            .filter((s) => s.available)
+            .map((s) => this.listModels(s.provider).catch(() => [])),
+        );
+      } catch {
+        // Warming is opportunistic — the cached snapshot stays valid.
+      } finally {
+        this.warming = null;
+      }
+    })();
+    return this.warming;
+  }
+
+  /** The catalog we already know for `provider`, or undefined if we've never
+   *  successfully read one. Deliberately non-spawning: the validators below run
+   *  on the send path, and `listModels()` there would stall the user's turn
+   *  behind a fresh `codex app-server` handshake. Unknown catalog → no
+   *  validation, which is the same permissive behaviour as a failed probe. */
+  private catalogFor(provider: ProviderKind): ModelDescriptor[] | undefined {
+    const known = this.catalogs.get(provider);
+    if (known?.length) return known;
+    // Nothing in memory yet — kick off a refresh so the *next* turn is guarded,
+    // but don't make this one wait for it.
+    void this.listModels(provider).catch(() => []);
+    return undefined;
   }
 
   // ── install settings ────────────────────────────────────────────────────────
@@ -101,14 +170,65 @@ export class AgentService {
 
   // ── lifecycle (routed) ──────────────────────────────────────────────────────
 
+  /** Drop a model id that doesn't belong to `provider`, so a renderer-side
+   *  provider/model desync can't reach the CLI verbatim and come back as an
+   *  opaque upstream 400 (a Cursor `composer-*` id sent to Codex draws
+   *  "The 'composer-2.5' model is not supported when using Codex with a ChatGPT
+   *  account."). Returning undefined lets the provider pick its own default — a
+   *  working turn on the default model beats a dead thread. Only acts when the
+   *  catalog is non-empty, so a failed probe never strips a legitimate model. */
+  private validModelFor(provider: ProviderKind, model: string | undefined): string | undefined {
+    if (!model) return model;
+    const catalog = this.catalogFor(provider);
+    if (!catalog) return model;
+    if (catalog.some((m) => m.id === model)) return model;
+    console.warn(
+      `[agent] dropping model "${model}" — not in ${provider}'s catalog; using provider default`,
+    );
+    return undefined;
+  }
+
+  /** Same desync story as `validModelFor`, one axis over. `"base"` is a
+   *  renderer-internal sentinel from modelCatalog meaning "this model has no
+   *  reasoning-effort axis" — it is not a provider value and must never cross
+   *  the IPC boundary, or Codex answers with
+   *  "[reasoning.effort] Invalid value: 'base'". Beyond that, an effort the
+   *  chosen model doesn't list (a tier carried over from another provider's
+   *  ladder) is dropped so the provider applies its own default. */
+  private validEffortFor(
+    provider: ProviderKind,
+    model: string | undefined,
+    effort: string | undefined,
+  ): string | undefined {
+    if (!effort || effort === "base") return undefined;
+    if (!model) return effort;
+    const catalog = this.catalogFor(provider);
+    if (!catalog) return effort;
+    const efforts = catalog.find((m) => m.id === model)?.reasoningEfforts;
+    if (!efforts || efforts.length === 0 || efforts.includes(effort)) return effort;
+    console.warn(
+      `[agent] dropping effort "${effort}" — not supported by ${provider}/${model}; using provider default`,
+    );
+    return undefined;
+  }
+
   async startSession(input: SessionStartInput): Promise<Session> {
-    const session = await this.adapter(input.provider).startSession(input);
+    const model = this.validModelFor(input.provider, input.model);
+    const effort = this.validEffortFor(input.provider, model, input.effort);
+    const session = await this.adapter(input.provider).startSession({ ...input, model, effort });
     this.routing.set(input.threadId, input.provider);
     return session;
   }
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
-    return this.adapterForThread(input.threadId).sendTurn(input);
+    // SendTurnInput.model overrides the session model per turn (CodexAdapter
+    // sets `session.model = input.model`), so guarding startSession alone left
+    // the desync fully live — every turn re-supplied the foreign id.
+    const provider = this.routing.get(input.threadId);
+    if (!provider) return this.adapterForThread(input.threadId).sendTurn(input);
+    const model = this.validModelFor(provider, input.model);
+    const effort = this.validEffortFor(provider, model, input.effort);
+    return this.adapterForThread(input.threadId).sendTurn({ ...input, model, effort });
   }
 
   async interruptTurn(threadId: string): Promise<void> {

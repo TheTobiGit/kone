@@ -9,4 +9,5 @@
 
 export * from "./types.js";
 export { AgentService } from "./AgentService.js";
+export type { ProviderCacheSnapshot } from "./providerCache.js";
 export { registerAgentIpc, getAgentService, shutdownAgents } from "./ipc.js";

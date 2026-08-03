@@ -202,7 +202,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "codex" | "claudeAgent" | "opencode";
+export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
 
@@ -255,9 +255,8 @@ export type ModelDescriptor = {
 /** The approval-policy ladder — how much the agent may do without asking,
  *  from most to least restrictive: `ask` always asks first (read-only
  *  sandbox); `accept-edits` auto-approves file edits but still asks before
- *  commands/other actions; `full-access` never prompts. Maps onto research's
- *  own `RuntimeMode` axis (minus its unshipped 4th "auto" rung) — see
- *  CodexAdapter.ts. */
+ *  commands/other actions; `full-access` never prompts. No 4th "auto" rung
+ *  (an AI-reviewed middle ground) — see CodexAdapter.ts. */
 export type InteractionMode = "ask" | "accept-edits" | "full-access";
 
 export type SessionStartInput = {
@@ -471,6 +470,11 @@ export type RuntimeEventSource =
   | "opencode.sse.message"
   | "opencode.sse.stderr"
   | "opencode.sse.lifecycle"
+  // Cursor Agent ACP: `notification` = session/model notices from the ACP
+  // extension methods; `lifecycle` = session start/exit; `stderr` = CLI stderr.
+  | "cursor.acp.notification"
+  | "cursor.acp.stderr"
+  | "cursor.acp.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
@@ -593,7 +597,22 @@ export type KoneAgentHistoryApi = {
   remove: (threadId: string) => Promise<void>;
 };
 
+/** The main process's disk-backed snapshot of the last known provider surface.
+ *  Reading it spawns no CLI, so the picker can be genuinely populated the
+ *  instant the app opens; a background refresh corrects it in place. */
+export type ProviderSurfaceSnapshot = {
+  version: number;
+  /** ms epoch of the last write — 0 on a first-ever run (nothing cached yet). */
+  savedAt: number;
+  statuses: ProviderStatus[];
+  models: Partial<Record<ProviderKind, ModelDescriptor[]>>;
+};
+
 export type KoneAgentApi = {
+  /** Last known statuses + model catalogs, straight off disk. Instant. */
+  surface: () => Promise<ProviderSurfaceSnapshot>;
+  /** Ask the main process to re-probe every provider in the background. */
+  warm: () => Promise<void>;
   /** Probe which agent CLIs are installed + logged in on this machine. */
   discover: () => Promise<ProviderStatus[]>;
   models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;

@@ -92,8 +92,8 @@ export function registerAgentIpc(): void {
     );
   }
 
-  /** First-turn naming (research shape): set a word-cap fallback
-   *  immediately, then ask the thread's own provider (Codex or Claude) for a
+  /** First-turn naming: set a word-cap fallback immediately, then ask the
+   *  thread's own provider (Codex or Claude) for a
    *  compact generated title in the background. Generation failures leave the
    *  fallback in place; a title the user (or a later rename) already moved off
    *  the seed is never clobbered. */
@@ -174,6 +174,11 @@ export function registerAgentIpc(): void {
   }
 
   // Discovery + models (read-only probes of the user's installed CLIs).
+  // `agent:surface` is the instant one — last known statuses + catalogs off the
+  // disk cache, no CLI spawned — so the renderer can present a real provider
+  // list at app open and refresh behind it.
+  ipcMain.handle("agent:surface", () => svc.cachedSurface());
+  ipcMain.handle("agent:warm", () => svc.warm());
   ipcMain.handle("agent:discover", () => svc.discover());
   ipcMain.handle("agent:models", (_event, provider: ProviderKind) =>
     svc.listModels(provider),

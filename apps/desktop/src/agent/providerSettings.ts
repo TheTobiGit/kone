@@ -7,15 +7,14 @@ import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.
 
 // Persists the user's per-provider install settings (a custom CLI binary path,
 // today) so the agent adapters can be pointed at a non-default install between
-// launches. The analogue of research's `ServerSettings.providers` map — the
-// bare, credential-free subset kone needs: kone still holds no provider secrets,
-// only how to reach the CLI the user already logged into.
+// launches. kone holds no provider secrets, only how to reach the CLI the user
+// already logged into.
 //
 // Stored as a small JSON file under the per-user app data directory, next to
 // window-state.json, and read/written with the same plain, best-effort file I/O
 // (no electron-store dependency, matching the rest of the desktop main process).
 
-const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode"];
+const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cursor"];
 
 let cachedPath: string | null = null;
 function settingsFilePath(): string {

@@ -6,6 +6,7 @@ import type {
   ApprovalDecision,
   ChatAttachment,
   ModelDescriptor,
+  ProviderCacheSnapshot,
   ProviderConfig,
   ProviderKind,
   ProviderSettingsMap,
@@ -127,6 +128,12 @@ const api = {
       ipcRenderer.invoke("system:reveal", target),
   },
   agent: {
+    // The last known provider surface off the main process's disk cache — no
+    // CLI is spawned, so this resolves immediately and lets the picker be real
+    // at app open instead of merely populated.
+    surface: (): Promise<ProviderCacheSnapshot> => ipcRenderer.invoke("agent:surface"),
+    // Ask the main process to re-probe everything in the background.
+    warm: (): Promise<void> => ipcRenderer.invoke("agent:warm"),
     // Probe which agent CLIs are installed + logged in on this machine.
     discover: (): Promise<ProviderStatus[]> => ipcRenderer.invoke("agent:discover"),
     models: (provider: ProviderKind): Promise<ModelDescriptor[]> =>
