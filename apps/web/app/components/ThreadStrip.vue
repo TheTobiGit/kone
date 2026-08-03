@@ -28,7 +28,7 @@ import {
 } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowExpand01Icon, ArrowShrink01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
@@ -68,6 +68,10 @@ const emit = defineEmits<{
   move: [delta: number];
   /** Close this column. */
   close: [key: string];
+  /** Archive this thread and close its column. Carries the provider thread id (so
+   *  the store/history row can be stamped archived) and the pane key (so the
+   *  column can be closed). Only ever fired for a non-blank thread column. */
+  archive: [threadId: string, key: string];
   /** Insert a blank thread to the right of seam `seamIndex`. */
   "insert-column": [seamIndex: number, kind: "thread" | "terminal" | "scratchpad"];
   /** Write terminal input data. Keyed by the terminal *session* key, not the pane
@@ -935,6 +939,12 @@ function onClose(key: string): void {
   emit("close", key);
 }
 
+function onArchive(c: Pane): void {
+  if (c.kind !== "thread" || !c.session) return;
+  cue("press");
+  emit("archive", c.session.threadId.value, c.id);
+}
+
 function onInsertColumn(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   cue("press");
   emit("insert-column", seamIndex, kind);
@@ -1240,6 +1250,16 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                       :stroke-width="2"
                       aria-hidden="true"
                     />
+                  </button>
+                  <button
+                    v-if="c.kind === 'thread' && c.session && !isBlankThread(c)"
+                    type="button"
+                    class="col__tool"
+                    aria-label="Archive conversation"
+                    title="Archive conversation"
+                    @click.stop="onArchive(c)"
+                  >
+                    <HugeiconsIcon :icon="Archive02Icon" :size="13" :stroke-width="2" aria-hidden="true" />
                   </button>
                   <button
                     v-if="canClose()"

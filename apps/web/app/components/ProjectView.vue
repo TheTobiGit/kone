@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
-import { onClickOutside, onKeyStroke, refDebounced, useDebounceFn, useEventListener } from "@vueuse/core";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, toRef, watch } from "vue";
+import { onClickOutside, onKeyStroke, useDebounceFn, useEventListener, watchDebounced } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -218,6 +218,13 @@ function movePane(delta: number): void {
 function closePane(id: string): void {
   void board.close(id);
 }
+// Archiving a thread from its column header stamps the history row (and forgets
+// the in-memory registry thread, same as the recent-list archive), then closes
+// the now-empty column so it doesn't linger on the board pointing at a hidden row.
+function archivePane(threadId: string, id: string): void {
+  archiveSession(threadId);
+  void board.close(id);
+}
 function insertPane(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   // Seam `i` sits after pane `i`; a pick inserts to its right.
   void board.open(kind, { at: seamIndex + 1 });
@@ -245,23 +252,65 @@ function captureToScratchpad(text: string, sourceKey: string): void {
   void board.dispatch({ type: "capture-text", text, from: sourceKey });
 }
 
-// The two corner docks (Tasks + Changes) derive from the whole block list, so
-// they'd otherwise re-run deriveActivePlan / deriveChangedFiles on every streamed
-// token of a live turn. Neither drives anything time-critical — a ~100ms lag on
-// the dock is imperceptible — so debounce the derived value: the raw computeds
-// stay reactive, but the docks read a ref that settles at most ~10×/s. (E2)
+// The two corner docks (Tasks + Changes) plus the Subagents dock derive from the
+// whole block list, so they'd otherwise re-run their derive on every streamed
+// token of a live turn. Nothing here is time-critical, so the docks read a
+// snapshot that we refresh at most ~10×/s rather than the live computed. (E2)
 const activePlanRaw = computed(() =>
   deriveActivePlan(focusedThread.value?.blocks.value ?? []),
 );
-const activePlan = refDebounced(activePlanRaw, 100);
 const activeChangesRaw = computed(() =>
   deriveChangedFiles(focusedThread.value?.blocks.value ?? []),
 );
-const activeChanges = refDebounced(activeChangesRaw, 100);
 const activeSubagentsRaw = computed(() =>
   deriveActiveSubagents(focusedThread.value?.blocks.value ?? []),
 );
-const activeSubagents = refDebounced(activeSubagentsRaw, 100);
+
+// What the docks actually render — a debounced snapshot of the three derives.
+const activePlan = shallowRef(activePlanRaw.value);
+const activeChanges = shallowRef(activeChangesRaw.value);
+const activeSubagents = shallowRef(activeSubagentsRaw.value);
+function syncDockSnapshot(): void {
+  activePlan.value = activePlanRaw.value;
+  activeChanges.value = activeChangesRaw.value;
+  activeSubagents.value = activeSubagentsRaw.value;
+}
+
+// Switching threads used to morph one thread's docks into another's *in place* —
+// file rows and card height reflowed mid-flight and it read as broken. So a
+// switch is treated as a context swap: fade the whole stack out (still showing
+// the thread you're leaving), swap the data at the invisible midpoint, then fade
+// the new thread's docks in. The reflow still runs — it's just hidden behind the
+// fade. Streaming *within* a thread keeps updating the snapshot in place (no
+// fade), so a live turn's docks still tick along.
+const focusedKey = computed(() => focusedThread.value?.key ?? null);
+const docksSwapping = ref(false);
+let dockSwapTimer: ReturnType<typeof setTimeout> | undefined;
+
+watchDebounced(
+  [activePlanRaw, activeChangesRaw, activeSubagentsRaw],
+  () => {
+    if (docksSwapping.value) return; // mid-swap: the timer owns the snapshot
+    syncDockSnapshot();
+  },
+  { debounce: 100, maxWait: 200 },
+);
+
+watch(focusedKey, (key, prev) => {
+  // First focus, or leaving / re-entering the board (null on either side): no
+  // crossfade — snap so the docks are right the instant a thread takes focus.
+  if (key === prev || prev == null || key == null) {
+    syncDockSnapshot();
+    return;
+  }
+  docksSwapping.value = true;
+  clearTimeout(dockSwapTimer);
+  dockSwapTimer = setTimeout(() => {
+    syncDockSnapshot();
+    docksSwapping.value = false;
+  }, 165);
+});
+onBeforeUnmount(() => clearTimeout(dockSwapTimer));
 
 // The project's persisted agent threads, split into pinned + recent for the
 // "recent conversations" block on the working-tree home. Reads real history on
@@ -351,8 +400,8 @@ const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 // apply to a running session — it needs a fresh one. Codex takes model/effort
 // per turn, so it changes in place. Mirrors each adapter's `sessionModelSwitch`.
 const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent", "opencode"]);
-const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode" };
-const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode" };
+const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode", droid: "Factory" };
+const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode", droid: "droid" };
 
 // The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
 // "last used" choice that every project opens with (not per-project). The
@@ -1297,6 +1346,7 @@ function onDiscardFile(path: string) {
         @shift="shiftPaneFocus"
         @move="movePane"
         @close="closePane"
+        @archive="archivePane"
         @insert-column="insertPane"
         @terminal-write="terminal.write"
         @terminal-resize="terminal.resize"
@@ -1503,6 +1553,7 @@ function onDiscardFile(path: string) {
     <div
       v-if="surface === 'board' && !activeFile && focusedThread"
       class="sub-dock-corner"
+      :class="{ 'sub-dock-corner--swapping': docksSwapping }"
     >
       <AnimatePresence :initial="false">
         <AgentSubagentDock
@@ -1521,7 +1572,10 @@ function onDiscardFile(path: string) {
     <div
       v-if="surface === 'board' && !activeFile && focusedThread"
       class="dock-stack"
-      :class="{ 'dock-stack--lifted': pillThreads.length > 0 }"
+      :class="{
+        'dock-stack--lifted': pillThreads.length > 0,
+        'dock-stack--swapping': docksSwapping,
+      }"
     >
       <AnimatePresence :initial="false">
         <ChangedFilesList
@@ -1628,10 +1682,22 @@ function onDiscardFile(path: string) {
   align-items: flex-end;
   gap: 12px;
   pointer-events: none;
-  transition: bottom 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: 100% 100%;
+  transition:
+    bottom 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 .dock-stack--lifted {
   bottom: 5.25rem;
+}
+/* Thread switch: the whole stack fades/settles out so the data swap and its row
+   reflow happen while invisible, then the new thread's docks fade back in. */
+.dock-stack--swapping,
+.sub-dock-corner--swapping {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  pointer-events: none;
 }
 
 /* ── Subagents dock (bottom-left) ─────────────────────────────────────────── */
@@ -1648,6 +1714,10 @@ function onDiscardFile(path: string) {
   flex-direction: column;
   align-items: flex-start;
   pointer-events: none;
+  transform-origin: 0 100%;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 
 /* ── Away-from-thread pill stack ──────────────────────────────────────────── */
