@@ -121,6 +121,19 @@ function mockSessions(): SessionSummary[] {
       projectPath: "/Users/you/Developer/paper",
       projectName: "paper",
     },
+    {
+      threadId: "all-mock-6",
+      title: "Wire the droid ACP turn params",
+      provider: "droid",
+      brand: "droid",
+      branch: "droid-bridge",
+      added: 118,
+      removed: 31,
+      tokens: 740_000,
+      updatedAt: now - 0.6 * DAY,
+      projectPath: "/Users/you/Developer/kone",
+      projectName: "kone",
+    },
   ];
 }
 

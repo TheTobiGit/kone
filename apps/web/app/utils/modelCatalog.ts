@@ -40,6 +40,7 @@ export type BrandKey =
   | "xiaomi"
   | "nvidia"
   | "zai"
+  | "droid"
   | "generic";
 
 /** Provider kinds that are *harnesses* — a house of upstream providers, so one

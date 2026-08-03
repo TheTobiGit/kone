@@ -67,6 +67,14 @@ const MOCK_STATUSES: ProviderStatus[] = [
     version: "1.2.0",
     authLabel: "Cursor Pro",
   },
+  {
+    provider: "droid",
+    label: "Factory Droid",
+    available: true,
+    authStatus: "authenticated",
+    readiness: "ready",
+    authLabel: "Factory account",
+  },
 ];
 
 // Real ids + display names + reasoning efforts, captured live from
@@ -247,6 +255,20 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
     },
     { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
     { id: "kimi-k3-high", label: "Kimi K3 High" },
+  ],
+  // Factory Droid is NOT a fixed catalog: its model list is fetched at runtime
+  // from the user's ~/.factory/settings.json (per-user `custom:*` models), same
+  // as every other CLI-backed provider — see `models()`. The one entry below is
+  // a browser-dev stand-in ONLY (no bridge → no runtime fetch), illustrative and
+  // not authoritative; it deliberately exercises the effort dial with values from
+  // droid's accepted set and carries no service-tier / context-window axis.
+  droid: [
+    {
+      id: "custom:default",
+      label: "Custom (default)",
+      reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+    },
   ],
 };
 

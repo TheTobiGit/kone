@@ -155,6 +155,19 @@ const mono = computed(() => props.tone === "mono");
       d="m12.606 1.806l-1.677 2.388a1.42 1.42 0 0 1-1.161.606H.606V1.794c-.012.012 12 .012 12 .012m11.394 0l-14.4 20.4H0l14.4-20.4zm-12.606 20.4l1.69-2.4a1.42 1.42 0 0 1 1.161-.606h9.149v3.006z"
     />
 
+    <!-- ── Factory Droid — a robot head: antenna, face plate, punched eyes ──
+         The eyes and mouth are punched out of the face plate by `evenodd`, so
+         they must never overlap each other: two odd-winding subpaths that cross
+         re-fill their intersection, which shows up as a nick where the mouth
+         meets an eye. Keeping the pair 1.35r at y12 and the mouth below y14.1
+         leaves ~2.3 units of clearance, so the punch stays clean at any size. -->
+    <path
+      v-else-if="brand === 'droid'"
+      :fill="mono ? '#ffffff' : 'currentColor'"
+      fill-rule="evenodd"
+      d="M11 1.6h2v3.1h-2V1.6ZM7.5 4.7h9a2.5 2.5 0 0 1 2.5 2.5v7.6a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 14.8V7.2a2.5 2.5 0 0 1 2.5-2.5Zm2 5.95a1.35 1.35 0 1 0 0 2.7 1.35 1.35 0 0 0 0-2.7Zm5 0a1.35 1.35 0 1 0 0 2.7 1.35 1.35 0 0 0 0-2.7Zm-4.1 3.45h3.2v1.2h-3.2Z"
+    />
+
     <!-- ── Unknown provider — a calm dot ─────────────────────────────────── -->
     <circle v-else cx="12" cy="12" r="4.5" :fill="mono ? '#ffffff' : 'currentColor'" />
   </svg>

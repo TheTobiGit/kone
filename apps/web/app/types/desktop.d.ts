@@ -202,7 +202,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode";
+export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode" | "droid";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
 
@@ -475,6 +475,11 @@ export type RuntimeEventSource =
   | "cursor.acp.notification"
   | "cursor.acp.stderr"
   | "cursor.acp.lifecycle"
+  // Factory Droid ACP (`droid exec --output-format acp`): same three sources as
+  // Cursor's ACP transport.
+  | "droid.acp.notification"
+  | "droid.acp.stderr"
+  | "droid.acp.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 

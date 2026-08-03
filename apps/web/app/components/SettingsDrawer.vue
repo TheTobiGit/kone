@@ -139,8 +139,9 @@ const PROVIDER_META: Record<
   claudeAgent: { label: "Claude", vendor: "Anthropic", binary: null },
   cursor: { label: "Cursor", vendor: "Cursor", binary: "cursor-agent" },
   opencode: { label: "OpenCode", vendor: "OpenCode", binary: "opencode" },
+  droid: { label: "Factory Droid", vendor: "Factory", binary: "droid" },
 };
-const PROVIDER_ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode"];
+const PROVIDER_ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid"];
 
 // One row per known provider (stable order), merging its live probe status. A
 // provider with no probe yet shows as pending until discovery lands.

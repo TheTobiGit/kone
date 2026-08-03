@@ -99,6 +99,17 @@ function mockSessions(): SessionSummary[] {
       tokens: 480_000,
       updatedAt: now - 3 * DAY,
     },
+    {
+      threadId: "mock-6",
+      title: "Wire the droid ACP turn params",
+      provider: "droid",
+      brand: "droid",
+      branch: "droid-bridge",
+      added: 118,
+      removed: 31,
+      tokens: 740_000,
+      updatedAt: now - 0.6 * DAY,
+    },
   ];
 }
 
