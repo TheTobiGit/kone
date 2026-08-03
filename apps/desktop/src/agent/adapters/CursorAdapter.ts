@@ -633,6 +633,11 @@ export class CursorAdapter implements ProviderAdapter {
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   async startSession(input: SessionStartInput): Promise<Session> {
+    // Retire whatever this thread already owns before spawning its replacement —
+    // the map is overwritten unconditionally below, so the previous `cursor acp`
+    // child would otherwise never be killed. See CodexAdapter for the same guard.
+    if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
+
     const env = await buildCursorEnv();
     const rpc = new JsonRpcClient(this.binary, ["acp"], { cwd: input.cwd, env });
     const mode: InteractionMode = input.mode ?? "accept-edits";
@@ -654,7 +659,12 @@ export class CursorAdapter implements ProviderAdapter {
     this.wireNotifications(session);
     this.wireRequests(session);
     rpc.onExit((code) => {
-      this.sessions.delete(input.threadId);
+      // Only the session the map still points at may retire the entry; a
+      // replacement can claim this threadId while this child shuts down. No
+      // entry means stopSession already took ours, so still announce the exit.
+      const current = this.sessions.get(input.threadId);
+      if (current && current !== session) return;
+      if (current) this.sessions.delete(input.threadId);
       this.emit({ ...this.base(session), source: "cursor.acp.lifecycle", type: "session.exited", code });
     });
 

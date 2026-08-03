@@ -480,6 +480,12 @@ export class CodexAdapter implements ProviderAdapter {
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   async startSession(input: SessionStartInput): Promise<Session> {
+    // Retire whatever this thread already owns before spawning its replacement.
+    // The map is overwritten unconditionally at the end of this method, so
+    // without this the previous `codex app-server` child is never killed — it
+    // lingers holding the workspace. OpenCodeAdapter has always done this.
+    if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
+
     const env = await buildAgentEnv();
     const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: input.cwd, env });
     const mode: InteractionMode = input.mode ?? "accept-edits";
@@ -496,7 +502,14 @@ export class CodexAdapter implements ProviderAdapter {
     this.wireNotifications(session);
     this.wireRequests(session);
     rpc.onExit((code) => {
-      this.sessions.delete(input.threadId);
+      // Only the session the map still points at may retire the entry. A
+      // replacement can claim this threadId while this child is shutting down,
+      // and deleting then would drop a live session and report it as exited.
+      // No entry at all means stopSession already removed ours, so the exit is
+      // still genuinely this session's to announce.
+      const current = this.sessions.get(input.threadId);
+      if (current && current !== session) return;
+      if (current) this.sessions.delete(input.threadId);
       this.emit({ ...this.base(session), type: "session.exited", code });
     });
 

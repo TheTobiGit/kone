@@ -708,6 +708,13 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  hard "conversation id does not exist" the moment a thread opened. Retry once
    *  without the resume rather than stranding the thread. */
   async startSession(input: SessionStartInput): Promise<Session> {
+    // Retire whatever this thread already owns before starting its replacement.
+    // `startFreshSession` overwrites the map entry unconditionally, so the
+    // previous `query` subprocess would otherwise keep running — and keep
+    // emitting events tagged with this same threadId. Guard lives here rather
+    // than in startFreshSession so the resume-retry path below doesn't re-run it.
+    if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
+
     if (!input.resume) return this.startFreshSession(input);
     try {
       return await this.startFreshSession(input);
