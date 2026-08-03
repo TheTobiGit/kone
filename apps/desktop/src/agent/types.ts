@@ -11,9 +11,10 @@
 
 /** A supported agent provider. `claudeAgent` drives Claude Code through the
  *  `@anthropic-ai/claude-agent-sdk` (which runs the user's own Claude login);
- *  `codex` drives `codex app-server`; `cursor` drives `cursor-agent acp`.
+ *  `codex` drives `codex app-server`; `cursor` drives `cursor-agent acp`;
+ *  `droid` drives Factory's `droid exec --output-format acp`.
  *  Grows as adapters land. */
-export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor";
+export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "droid";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -463,6 +464,13 @@ export type RuntimeEventSource =
   | "cursor.acp.notification"
   | "cursor.acp.stderr"
   | "cursor.acp.lifecycle"
+  // Factory Droid speaks the same ACP dialect over `droid exec --output-format
+  // acp`'s stdio, so it carries the same three sources. Unlike Cursor's, this
+  // agent advertises `loadSession` + session list/resume, so a stored thread
+  // resumes in-protocol rather than starting cold.
+  | "droid.acp.notification"
+  | "droid.acp.stderr"
+  | "droid.acp.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 

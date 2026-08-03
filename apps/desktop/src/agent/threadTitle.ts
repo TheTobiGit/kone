@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { buildClaudeEnv } from "./claudeHome.js";
 import { buildCursorEnv } from "./cursorHome.js";
+import { buildDroidEnv, DROID_BINARY } from "./droidHome.js";
 import { buildOpenCodeEnv } from "./opencodeHome.js";
 import { buildAgentEnv } from "./processEnv.js";
 import type { ProviderKind } from "./types.js";
@@ -153,7 +154,9 @@ export async function generateThreadTitle(input: {
           ? await generateWithOpenCode({ cwd: input.cwd, prompt })
           : input.provider === "cursor"
             ? await generateWithCursor({ cwd: input.cwd, prompt })
-            : await generateWithCodex({ cwd: input.cwd, prompt });
+            : input.provider === "droid"
+              ? await generateWithDroid({ cwd: input.cwd, prompt })
+              : await generateWithCodex({ cwd: input.cwd, prompt });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;
@@ -261,6 +264,29 @@ async function generateWithCursor(input: { cwd: string; prompt: string }): Promi
   return runCli({
     command: "cursor-agent",
     args: ["--print", "--output-format", "text", "--model", CURSOR_TITLE_MODEL, input.prompt],
+    cwd: input.cwd,
+    env,
+    stdin: "",
+    timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+  });
+}
+
+/** One-shot `droid exec` at its default (read-only) autonomy.
+ *
+ *  Deliberately passes no `-m`, unlike every sibling above. Droid's model ids
+ *  are both per-user — `custom:*` entries come from the user's own
+ *  ~/.factory/settings.json — and gated by org policy: asking for a built-in id
+ *  on a managed account answers "Model blocked by organization policy", and on
+ *  the account this was written against even the *advertised default* was
+ *  refused while the user's own custom models worked. There is therefore no id
+ *  kone can name that is safe for everyone, and the user's configured default is
+ *  the only one guaranteed to be valid for them. A failure here is cheap: the
+ *  caller keeps the deterministic word-cap fallback title. */
+async function generateWithDroid(input: { cwd: string; prompt: string }): Promise<string | null> {
+  const env = await buildDroidEnv();
+  return runCli({
+    command: DROID_BINARY,
+    args: ["exec", "--output-format", "text", "--cwd", input.cwd, input.prompt],
     cwd: input.cwd,
     env,
     stdin: "",

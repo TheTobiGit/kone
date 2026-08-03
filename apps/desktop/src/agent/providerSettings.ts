@@ -14,7 +14,7 @@ import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.
 // window-state.json, and read/written with the same plain, best-effort file I/O
 // (no electron-store dependency, matching the rest of the desktop main process).
 
-const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cursor"];
+const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cursor", "droid"];
 
 let cachedPath: string | null = null;
 function settingsFilePath(): string {

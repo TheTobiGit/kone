@@ -1,6 +1,7 @@
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
+import { DroidAdapter } from "./adapters/DroidAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
 import {
   cacheModels,
@@ -53,6 +54,7 @@ export class AgentService {
     this.register(new ClaudeAdapter(emit));
     this.register(new OpenCodeAdapter(emit));
     this.register(new CursorAdapter(emit));
+    this.register(new DroidAdapter(emit));
     // Point each adapter at the user's persisted install settings (custom binary
     // path, …) before anything probes or spawns. Unset providers keep their
     // built-in default, so a fresh install behaves exactly as before.
