@@ -21,6 +21,14 @@ let probed = false;
 // project reads a warm list instead of re-shelling out to the CLI.
 const modelCache = ref<Partial<Record<ProviderKind, ModelDescriptor[]>>>({});
 let preparing: Promise<void> | null = null;
+let refreshing: Promise<void> | null = null;
+let hydrating: Promise<void> | null = null;
+let hydrated = false;
+/** True once a live probe (not just the disk snapshot) has answered. Surfaces
+ *  can use this to tell "these are last-known models" from "these are
+ *  confirmed" — the snapshot is trustworthy enough to type against, but a
+ *  provider the user logged out of since last launch still reads as ready. */
+const confirmed = ref(false);
 
 const MOCK_STATUSES: ProviderStatus[] = [
   {
@@ -49,6 +57,15 @@ const MOCK_STATUSES: ProviderStatus[] = [
     readiness: "ready",
     version: "1.18.10",
     authLabel: "Connected providers",
+  },
+  {
+    provider: "cursor",
+    label: "Cursor",
+    available: true,
+    authStatus: "authenticated",
+    readiness: "ready",
+    version: "1.2.0",
+    authLabel: "Cursor Pro",
   },
 ];
 
@@ -152,6 +169,85 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
       defaultReasoningEffort: "medium",
     },
   ],
+  // Cursor is a house of providers too: it re-sells claude/gpt/gemini/grok/kimi
+  // and its own `composer-*` family. Real ids/labels from a live
+  // `cursor-agent models` list. Effort is a bracketed turn parameter there, so
+  // the ladders below mirror what the ACP session actually exposes per model
+  // (Claude lane → low…max with high default; GPT lane → none…max with medium).
+  // `kimi-k3-high` is the one baked-suffix id, so buildModelCatalog() exercises
+  // the suffix path for cursor too. No `contextWindows` yet — the suffix
+  // (`context=300k`) rides the id, which the mock leaves off for now.
+  cursor: [
+    { id: "auto", label: "Auto" },
+    {
+      id: "composer-2.5",
+      label: "Composer 2.5",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "claude-opus-5",
+      label: "Claude Opus 5",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "claude-sonnet-5",
+      label: "Claude Sonnet 5",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+    },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    {
+      id: "gpt-5.6-sol",
+      label: "GPT-5.6 Sol",
+      reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "gpt-5.6-luna",
+      label: "GPT-5.6 Luna",
+      reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "gpt-5.5",
+      label: "GPT-5.5",
+      reasoningEfforts: ["none", "low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "gpt-5.4-mini",
+      label: "GPT-5.4 Mini",
+      reasoningEfforts: ["none", "low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "gpt-5.3-codex",
+      label: "GPT-5.3 Codex",
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "grok-4.5",
+      label: "Grok 4.5",
+      reasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: [{ id: "fast", label: "Fast", description: "Lower latency, same model" }],
+    },
+    {
+      id: "gemini-3.6-flash",
+      label: "Gemini 3.6 Flash",
+      reasoningEfforts: ["minimal", "low", "medium", "high"],
+      defaultReasoningEffort: "high",
+    },
+    { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+    { id: "kimi-k3-high", label: "Kimi K3 High" },
+  ],
 };
 
 export function useAgentProviders() {
@@ -170,6 +266,7 @@ export function useAgentProviders() {
       const api = bridge();
       statuses.value = api ? await api.discover() : MOCK_STATUSES;
       probed = true;
+      confirmed.value = true;
       return statuses.value;
     } catch (error) {
       loadError.value = peelIpcError(error, "Could not check your agent tools");
@@ -203,18 +300,92 @@ export function useAgentProviders() {
     return raw;
   }
 
-  /** Warm the whole provider surface at app open: probe the machine once, then
-   *  prefetch models for every installed provider so opening a project is
-   *  instant. Deduped — concurrent callers await the same run. */
+  /** Seed statuses + catalogs from the main process's disk snapshot. This spawns
+   *  no CLI, so it settles in about the time of one IPC round-trip — the whole
+   *  point being that a cold launch has real provider and model ids in hand
+   *  before the user can finish reaching for the composer. A first-ever run has
+   *  nothing cached and resolves to a no-op. Deduped. */
+  async function hydrate(): Promise<void> {
+    if (hydrated) return;
+    if (hydrating) return hydrating;
+    hydrating = (async () => {
+      const api = bridge();
+      if (!api?.surface) {
+        // Browser dev (no bridge): the mocks are the snapshot.
+        statuses.value = MOCK_STATUSES;
+        modelCache.value = { ...MOCK_MODELS };
+        probed = true;
+        hydrated = true;
+        return;
+      }
+      try {
+        const snapshot = await api.surface();
+        if (snapshot.statuses.length) {
+          statuses.value = snapshot.statuses;
+          // Serve the snapshot rather than re-probing on demand; `refresh()`
+          // corrects it in the background.
+          probed = true;
+        }
+        const seeded = Object.entries(snapshot.models).filter(([, list]) => list?.length);
+        if (seeded.length) {
+          modelCache.value = { ...Object.fromEntries(seeded), ...modelCache.value };
+        }
+      } catch {
+        // No snapshot is a soft failure — `refresh()` still has to run.
+      } finally {
+        hydrated = true;
+      }
+    })();
+    try {
+      await hydrating;
+    } finally {
+      hydrating = null;
+    }
+  }
+
+  /** Re-probe the machine for real and refresh every installed provider's
+   *  catalog, overwriting whatever the snapshot said. Deduped. */
+  async function refresh(): Promise<void> {
+    if (refreshing) return refreshing;
+    refreshing = (async () => {
+      const api = bridge();
+      if (!api?.warm || !api?.surface) {
+        const found = await discover(true);
+        await Promise.all(found.filter((s) => s.available).map((s) => models(s.provider, true)));
+        return;
+      }
+      // Let the main process do the probing: it dedupes its own warm run (which
+      // already started at app launch), so asking here never doubles the CLI
+      // spawns, and it writes the result through to the snapshot for next time.
+      await api.warm();
+      const snapshot = await api.surface();
+      if (snapshot.statuses.length) {
+        statuses.value = snapshot.statuses;
+        probed = true;
+        confirmed.value = true;
+      }
+      const fresh = Object.entries(snapshot.models).filter(([, list]) => list?.length);
+      if (fresh.length) modelCache.value = { ...modelCache.value, ...Object.fromEntries(fresh) };
+    })();
+    try {
+      await refreshing;
+    } finally {
+      refreshing = null;
+    }
+  }
+
+  /** Make the provider surface usable. Hydrates from disk first and returns as
+   *  soon as that lands, kicking the live re-probe off behind it — callers that
+   *  `await prepare()` are gating UI on it, and a cold CLI handshake is not
+   *  something the user should be made to watch. Only a first-ever run (nothing
+   *  cached) actually waits for the probe, because there's nothing else to
+   *  show. Deduped — concurrent callers await the same run. */
   async function prepare(): Promise<void> {
     if (preparing) return preparing;
     preparing = (async () => {
-      const found = await discover();
-      await Promise.all(
-        found
-          .filter((s) => s.available && !modelCache.value[s.provider])
-          .map((s) => models(s.provider)),
-      );
+      await hydrate();
+      if (statuses.value.length) void refresh().catch(() => {});
+      else await refresh();
     })();
     try {
       await preparing;
@@ -225,12 +396,19 @@ export function useAgentProviders() {
 
   return {
     statuses,
+    /** The raw per-provider catalogs, reactive — surfaces that derive from them
+     *  (the picker's model list) watch this so a background `refresh()` lands
+     *  without a reload. */
+    modelCache,
     ready,
     loading,
     loadError,
+    confirmed,
     byProvider,
     discover,
     models,
+    hydrate,
+    refresh,
     prepare,
   };
 }

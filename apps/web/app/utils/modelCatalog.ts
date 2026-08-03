@@ -30,6 +30,8 @@ export type BrandKey =
   | "claude"
   | "gpt"
   | "codex"
+  | "cursor"
+  | "grok"
   | "opencode"
   | "deepseek"
   | "qwen"
@@ -42,9 +44,14 @@ export type BrandKey =
 
 /** Provider kinds that are *harnesses* — a house of upstream providers, so one
  *  provider's catalog spans many real vendors (opencode → deepseek, openai,
- *  qwen, …). For these, a model row shows the harness's own mark with the
- *  model's true vendor badge on its corner, instead of the vendor mark alone. */
-export const HARNESS_PROVIDERS: ReadonlySet<ProviderKind> = new Set(["opencode"]);
+ *  qwen, …; cursor re-sells claude, gpt, gemini, grok, kimi plus its own
+ *  `composer-*` family). For these, a model row shows the harness's own mark
+ *  with the model's true vendor badge on its corner, instead of the vendor mark
+ *  alone. */
+export const HARNESS_PROVIDERS: ReadonlySet<ProviderKind> = new Set([
+  "opencode",
+  "cursor",
+]);
 
 /** The reasoning-effort tiers we know how to style, whether baked into an id
  *  suffix or reported live by a provider's real `supportedReasoningEfforts`.
@@ -151,6 +158,10 @@ export type ModelOption = {
  *  we can name but have no logomark for still gets its name (brand `generic`
  *  renders the calm dot) — better an honest dot than the wrong mark. */
 const MODEL_VENDORS: [RegExp, BrandKey, string][] = [
+  // Cursor's own in-house family. Re-sold vendors (claude/gpt/gemini/…) match
+  // further down, so only `composer-*` and the auto/default aliases land here.
+  [/^composer-/, "cursor", "Cursor"],
+  [/^(default|auto)$/, "cursor", "Cursor"],
   [/^claude/, "claude", "Anthropic"],
   [/^(gemini|gemma)/, "gemini", "Google"],
   [/^(gpt|o3|o4)/, "gpt", "OpenAI"],
@@ -161,7 +172,7 @@ const MODEL_VENDORS: [RegExp, BrandKey, string][] = [
   [/minimax/, "minimax", "MiniMax"],
   [/mimo/, "xiaomi", "Xiaomi"],
   [/nemotron/, "nvidia", "NVIDIA"],
-  [/grok/, "generic", "xAI"],
+  [/grok/, "grok", "xAI"],
 ];
 
 /** Fallback for a model id that names no vendor we know — the gateway it came
@@ -176,10 +187,11 @@ const GATEWAY_VENDORS: [RegExp, BrandKey, string][] = [
   [/^(zai|zhipu)/, "zai", "Z.ai"],
   [/^minimax/, "minimax", "MiniMax"],
   [/^cerebras/, "generic", "Cerebras"],
-  [/^(xai|grok)/, "generic", "xAI"],
-  // Last: OpenCode's own gateways. Only reached when neither the model id nor a
-  // named upstream matched, i.e. it really is an OpenCode-native model.
+  [/^(xai|grok)/, "grok", "xAI"],
+  // Last: the harness gateways themselves. Only reached when neither the model id
+  // nor a named upstream matched, i.e. it really is a harness-native model.
   [/^opencode/, "opencode", "OpenCode"],
+  [/^cursor/, "cursor", "Cursor"],
 ];
 
 /** The logomark and vendor name for a catalog entry.
@@ -195,7 +207,12 @@ const GATEWAY_VENDORS: [RegExp, BrandKey, string][] = [
 function brandOf(core: string): { brand: BrandKey; vendor: string } {
   const slash = core.indexOf("/");
   const gateway = slash > 0 ? core.slice(0, slash).toLowerCase() : "";
-  const model = (slash > 0 ? core.slice(slash + 1) : core).toLowerCase();
+  // Cursor's ids carry a bracketed turn-parameter suffix
+  // (`claude-opus-5[thinking=true,effort=high]`) that is not part of the model
+  // name — peel it so it never defeats vendor matching.
+  const model = (slash > 0 ? core.slice(slash + 1) : core)
+    .replace(/\[[^\]]*\]$/u, "")
+    .toLowerCase();
   for (const [re, brand, vendor] of MODEL_VENDORS) if (re.test(model)) return { brand, vendor };
   for (const [re, brand, vendor] of GATEWAY_VENDORS) if (re.test(gateway)) return { brand, vendor };
   return { brand: "generic", vendor: "" };
@@ -217,6 +234,44 @@ export function sessionBrand(
     if (brand !== "generic") return brand;
   }
   return providerBrand;
+}
+
+// A few ids whose Title-Case would read wrong — kept short and honest.
+const MODEL_ACRONYMS: Record<string, string> = { gpt: "GPT", glm: "GLM", ai: "AI" };
+
+/** Turn a bare model id into a human name when we have no catalog `label` for
+ *  it — e.g. a subagent's `claude-sonnet-5` → "Claude Sonnet 5", `claude-haiku-4-5`
+ *  → "Claude Haiku 4.5". Drops a trailing date stamp and a `gateway/` prefix,
+ *  Title-Cases the words, and joins adjacent version numbers with a dot. */
+function prettifyModelId(core: string): string {
+  const slash = core.lastIndexOf("/");
+  const bare = (slash >= 0 ? core.slice(slash + 1) : core).replace(/-?\d{6,}$/, "");
+  const out: string[] = [];
+  for (const raw of bare.split(/[-_]/).filter(Boolean)) {
+    const token = raw.toLowerCase();
+    if (/^\d+$/.test(token)) {
+      const prev = out[out.length - 1];
+      if (prev && /^[\d.]+$/.test(prev)) out[out.length - 1] = `${prev}.${token}`;
+      else out.push(token);
+    } else {
+      out.push(MODEL_ACRONYMS[token] ?? token.charAt(0).toUpperCase() + token.slice(1));
+    }
+  }
+  return out.join(" ") || core;
+}
+
+/** The logomark brand + display name for a raw model id, independent of any live
+ *  catalog — for surfaces that hold an id but not the built family (e.g. a nested
+ *  subagent's `model`). Prefers a real catalog label when one is passed. */
+export function describeModelId(
+  id: string | undefined,
+  catalog?: ModelOption[],
+): { brand: BrandKey; name: string } {
+  if (!id) return { brand: "generic", name: "Default model" };
+  const fam = catalog ? familyForId(catalog, id) : undefined;
+  const { core } = splitEffort(id);
+  const { brand } = brandOf(core);
+  return { brand: fam?.brand ?? brand, name: fam?.label ?? prettifyModelId(core) };
 }
 
 /** Peel a trailing effort tier off a raw id → { core, tier }. Ids with no

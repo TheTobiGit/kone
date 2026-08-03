@@ -45,8 +45,8 @@ describe("brandOf — OpenCode is a house of providers", () => {
     expect(brandFor("cerebras/something-unknown")).toEqual({ brand: "generic", vendor: "Cerebras" });
   });
 
-  test("names a vendor even with no logomark, rather than mis-marking it", () => {
-    expect(brandFor("opencode-go/grok-4.5")).toEqual({ brand: "generic", vendor: "xAI" });
+  test("a vendor that gained a mark resolves to it, not the generic dot", () => {
+    expect(brandFor("opencode-go/grok-4.5")).toEqual({ brand: "grok", vendor: "xAI" });
   });
 
   test("bare single-vendor ids (Codex, Claude) are unchanged", () => {

@@ -14,6 +14,7 @@ import type { BrandKey } from "~/utils/modelCatalog";
 export const SESSION_BRAND: Record<ProviderKind, BrandKey> = {
   codex: "gpt",
   claudeAgent: "claude",
+  cursor: "cursor",
   opencode: "opencode",
 };
 

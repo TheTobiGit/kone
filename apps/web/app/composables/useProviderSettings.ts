@@ -19,7 +19,7 @@ import type { ProviderKind, ProviderSettingsMap } from "~/types/desktop";
 // Module-scope state so every surface (the drawer, ProjectView's rail) reads one
 // reactive source and a change in one is seen everywhere without a reload.
 
-const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode"];
+const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode"];
 
 // Where the dev (no-bridge) fallback stashes binary paths, mirroring the shape
 // the desktop store persists. Kept separate from `enabled` so the two axes never

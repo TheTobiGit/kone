@@ -37,8 +37,22 @@ function formatTokens(value: number | undefined): string {
   return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
 }
 
-const used = computed(() => props.usage.contextUsed ?? props.usage.total ?? 0);
+// A usable numerator: a concrete reported fill — an explicit 0 counts, since
+// "nothing consumed yet" is a real answer. Absent both contextUsed and total we
+// don't know how much sits in the window, and a fallback of 0 would read as
+// "nothing consumed", which is false.
+const usedKnown = computed(() => {
+  const n = props.usage.contextUsed ?? props.usage.total;
+  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+});
 const max = computed(() => props.usage.contextWindow);
+const hasWindow = computed(() => typeof max.value === "number" && max.value > 0);
+// A ring is a fraction — "x of a window" — so it needs BOTH halves. A window
+// with no reported fill (Cursor derives the window from the selected model but
+// its ACP transport never reports usage) would otherwise sit forever on an
+// empty 0% arc that claims "nothing consumed" when we simply don't know.
+const showRing = computed(() => hasWindow.value && usedKnown.value !== undefined);
+const used = computed(() => usedKnown.value ?? 0);
 const percentage = computed(() =>
   max.value && max.value > 0 ? Math.min(100, Math.max(0, (used.value / max.value) * 100)) : 0,
 );
@@ -68,6 +82,7 @@ const tooltip = computed(() =>
 
 <template>
   <span
+    v-if="showRing"
     class="context-meter"
     :class="`is-${level}`"
     role="img"

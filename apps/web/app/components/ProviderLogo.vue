@@ -9,7 +9,9 @@ import type { BrandKey } from "~/utils/modelCatalog";
 // The model-vendor marks below (OpenCode, DeepSeek, Qwen, Kimi, MiniMax, Xiaomi,
 // NVIDIA, Z.ai) are the official paths from Simple Icons, inlined at authoring
 // time on the same 24×24 grid so the no-network guarantee above still holds.
-// They needed adding because OpenCode is a house of providers: `brandOf()` in
+// Cursor and Grok — new agent providers, one a harness that re-sells the other —
+// use their official marks. They needed adding because OpenCode is a house of
+// providers: `brandOf()` in
 // modelCatalog.ts resolves `opencode-go/deepseek-v4-flash` to DeepSeek, not to
 // OpenCode. A vendor we can name but have no mark for falls through to the dot.
 //
@@ -90,6 +92,19 @@ const mono = computed(() => props.tone === "mono");
       :fill="mono ? '#ffffff' : 'currentColor'"
       d="M22 24H2V0h20zM17 4.8H7v14.4h10z"
     />
+
+    <!-- ── Cursor — the tilted cube cut by a diagonal C (official mark) ── -->
+    <path
+      v-else-if="brand === 'cursor'"
+      :fill="mono ? '#ffffff' : 'currentColor'"
+      d="M22.07 5.7L12.5 0.18C12.19 0 11.81 0 11.5 0.18L1.93 5.7C1.67 5.85 1.51 6.13 1.51 6.43V17.57C1.51 17.87 1.67 18.15 1.93 18.3L11.5 23.82C11.81 24 12.19 24 12.5 23.82L22.07 18.3C22.33 18.15 22.49 17.87 22.49 17.57V6.43C22.49 6.13 22.33 5.85 22.07 5.7H22.07ZM21.47 6.87L12.23 22.88C12.16 22.99 12 22.94 12 22.82V12.34C12 12.13 11.89 11.94 11.71 11.83L2.63 6.59C2.52 6.53 2.57 6.36 2.69 6.36H21.17C21.44 6.36 21.6 6.65 21.47 6.88H21.47Z"
+    />
+
+    <!-- ── Grok — the G-with-a-slash mark (official mark) ──────────────── -->
+    <template v-else-if="brand === 'grok'">
+      <path :fill="mono ? '#ffffff' : 'currentColor'" d="M9.27 15.28L17.25 9.36C17.64 9.07 18.2 9.18 18.38 9.63C19.37 12.01 18.93 14.87 16.98 16.83C15.02 18.8 12.31 19.23 9.83 18.25L7.11 19.51C11 22.18 15.73 21.52 18.68 18.55C21.02 16.2 21.74 12.99 21.07 10.1L21.07 10.1C20.09 5.85 21.31 4.15 23.82 0.68C23.88 0.6 23.94 0.51 24 0.43L20.7 3.75L20.7 3.74L9.27 15.29" />
+      <path :fill="mono ? '#ffffff' : 'currentColor'" d="M7.62 16.72C4.83 14.04 5.31 9.89 7.69 7.5C9.46 5.73 12.34 5 14.86 6.07L17.57 4.81C17.08 4.46 16.45 4.08 15.74 3.81C12.5 2.47 8.62 3.14 5.98 5.78C3.45 8.33 2.65 12.25 4.02 15.59C5.04 18.09 3.37 19.85 1.68 21.64C1.08 22.27 0.48 22.9 0 23.57L7.62 16.73" />
+    </template>
 
     <!-- ── DeepSeek — the whale ──────────────────────────────────────────── -->
     <path

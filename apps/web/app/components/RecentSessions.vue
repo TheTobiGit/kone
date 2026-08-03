@@ -13,6 +13,7 @@ import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { Magnet } from "~/components/ui/magnet";
 import { sessionBrand } from "~/utils/modelCatalog";
+import { prefetchThread } from "~/composables/useAgent";
 import type { SessionSummary } from "~/types/session";
 
 // The "recent conversations" block on Project Home — the PINNED / RECENT session
@@ -131,6 +132,8 @@ function hasDiff(s: SessionSummary): boolean {
           @click="emit('open', s.threadId)"
           @keydown.enter.prevent="emit('open', s.threadId)"
           @keydown.space.prevent="emit('open', s.threadId)"
+          @pointerenter="prefetchThread(s.threadId)"
+          @focus="prefetchThread(s.threadId)"
         >
           <div class="rs__main">
             <div class="rs__title">
@@ -160,7 +163,10 @@ function hasDiff(s: SessionSummary): boolean {
           </div>
 
           <div class="rs__trail">
-            <div v-if="typeof s.tokens === 'number'" class="rs__tokens">
+            <!-- A token tally reads as "this thread cost X" — absent or zero it
+                 would claim "cost nothing", which a Cursor thread (no usage
+                 reported) must never imply. Only render a real, positive spend. -->
+            <div v-if="typeof s.tokens === 'number' && s.tokens > 0" class="rs__tokens">
               <span class="rs__count">{{ formatTokens(s.tokens) }}</span>
               <span class="rs__unit">TOKENS</span>
             </div>
