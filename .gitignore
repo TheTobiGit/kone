@@ -64,6 +64,9 @@ docs/
 /*.mjs
 /.*.mjs
 
+# Local agent artifacts
+.factory/
+
 # Misc
 *.tgz
 .cache
