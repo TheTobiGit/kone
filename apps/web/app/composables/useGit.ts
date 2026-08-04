@@ -1,18 +1,55 @@
 import type {
   GitBranch,
   GitCommit,
+  GitCommitAuthors,
+  GitCommitDetail,
+  GitCommitOptions,
+  GitContributors,
   GitFileContent,
   GitFileDiff,
+  GitIdentity,
+  GitLogo,
+  GitHubPrCreateOptions,
+  GitHubPrCreateResult,
+  GitHubPullRequest,
+  GitHubPullRequestDetail,
+  GitHubRepoInfo,
+  GitHubStatus,
+  GitHubUser,
   GitProjectFile,
+  GitPullOptions,
+  GitPushOptions,
+  GitReadme,
+  GitRemote,
   GitRepo,
+  GitRepoState,
+  GitStashEntry,
   GitStatus,
 } from "~/types/desktop";
 import {
   mockBranches,
+  mockCommitAuthors,
+  mockCommitDetail,
+  mockCommitDiff,
   mockContent,
+  mockContributors,
   mockDetect,
   mockDiff,
   mockFiles,
+  mockGhContributors,
+  mockGhMe,
+  mockGhRepo,
+  mockGhStatus,
+  mockIdentity,
+  mockLog,
+  mockLogo,
+  mockPrDetail,
+  mockPrDiff,
+  mockPrs,
+  mockReadme,
+  mockRemotes,
+  mockRepoState,
+  mockStashes,
   mockStatus,
 } from "~/lib/devMocks";
 
@@ -55,8 +92,29 @@ export function useGit() {
       // demoable (checkout below stays a no-op — nothing on disk to move).
       return withLatency(mockBranches(dir)).then((b) => b ?? []);
     },
-    log(dir: string, limit?: number): Promise<GitCommit[]> {
-      return git ? git.log(dir, limit) : Promise.resolve([]);
+    log(dir: string, limit?: number, skip?: number): Promise<GitCommit[]> {
+      if (git) return git.log(dir, limit, skip);
+      return withLatency(mockLog(dir, limit, skip)).then((c) => c ?? []);
+    },
+    remotes(dir: string): Promise<GitRemote[]> {
+      if (git) return git.remotes(dir);
+      return withLatency(mockRemotes(dir)).then((r) => r ?? []);
+    },
+    repoState(dir: string): Promise<GitRepoState | null> {
+      if (git) return git.repoState(dir);
+      return withLatency(mockRepoState(dir));
+    },
+    commitDetail(dir: string, hash: string): Promise<GitCommitDetail | null> {
+      if (git) return git.commitDetail(dir, hash);
+      return withLatency(mockCommitDetail(dir, hash));
+    },
+    commitDiff(dir: string, hash: string, path: string): Promise<GitFileDiff | null> {
+      if (git) return git.commitDiff(dir, hash, path);
+      return withLatency(mockCommitDiff(dir, hash, path));
+    },
+    stashes(dir: string): Promise<GitStashEntry[]> {
+      if (git) return git.stashes(dir);
+      return withLatency(mockStashes(dir)).then((s) => s ?? []);
     },
     // Live status. Only the desktop bridge can watch a real filesystem, so in
     // `nuxt dev` this is a no-op (the mock repos never change on disk anyway).
@@ -79,9 +137,153 @@ export function useGit() {
     // (an instant resolve would snap the picker shut with no in-progress cue).
     checkout(dir: string, branch: string): Promise<void> {
       if (git) return git.checkout(dir, branch);
-      return withLatency(branch).then(() => undefined);
+      return beat();
+    },
+
+    // ── Git Space mutations ──────────────────────────────────────────────────
+    // Same rule as above: real git through the bridge, a latency beat and no
+    // effect in the browser. Every one of these rejects with git's own message
+    // when it fails — useGitSpace turns that into the masthead's error line.
+    commit(dir: string, opts: GitCommitOptions): Promise<void> {
+      return git ? git.commit(dir, opts) : beat();
+    },
+    fetch(dir: string, remote?: string): Promise<void> {
+      return git ? git.fetch(dir, remote) : beat();
+    },
+    pull(dir: string, opts?: GitPullOptions): Promise<void> {
+      return git ? git.pull(dir, opts) : beat();
+    },
+    push(dir: string, opts?: GitPushOptions): Promise<void> {
+      return git ? git.push(dir, opts) : beat();
+    },
+    createBranch(
+      dir: string,
+      name: string,
+      opts?: { from?: string; checkout?: boolean },
+    ): Promise<void> {
+      return git ? git.createBranch(dir, name, opts) : beat();
+    },
+    deleteBranch(
+      dir: string,
+      name: string,
+      opts?: { force?: boolean; remote?: boolean },
+    ): Promise<void> {
+      return git ? git.deleteBranch(dir, name, opts) : beat();
+    },
+    renameBranch(dir: string, from: string, to: string): Promise<void> {
+      return git ? git.renameBranch(dir, from, to) : beat();
+    },
+    mergeBranch(dir: string, name: string, opts?: { noFf?: boolean }): Promise<void> {
+      return git ? git.mergeBranch(dir, name, opts) : beat();
+    },
+    continueOperation(dir: string): Promise<void> {
+      return git ? git.continueOperation(dir) : beat();
+    },
+    abortOperation(dir: string): Promise<void> {
+      return git ? git.abortOperation(dir) : beat();
+    },
+    stashPush(
+      dir: string,
+      opts?: { message?: string; includeUntracked?: boolean },
+    ): Promise<void> {
+      return git ? git.stashPush(dir, opts) : beat();
+    },
+    stashApply(dir: string, index: number, opts?: { pop?: boolean }): Promise<void> {
+      return git ? git.stashApply(dir, index, opts) : beat();
+    },
+    stashDrop(dir: string, index: number): Promise<void> {
+      return git ? git.stashDrop(dir, index) : beat();
+    },
+
+    // ── About section ───────────────────────────────────────────────────────
+    // Same rule as the reads above: the bridge reads the real repo, browser
+    // dev resolves against the demo world.
+    readme(dir: string): Promise<GitReadme | null> {
+      if (git) return git.readme(dir);
+      return withLatency(mockReadme(dir));
+    },
+    identity(dir: string): Promise<GitIdentity> {
+      if (git) return git.identity(dir);
+      return withLatency(mockIdentity(dir)).then(
+        (id) => id ?? { name: null, email: null },
+      );
+    },
+    logo(dir: string): Promise<GitLogo | null> {
+      if (git) return git.logo(dir);
+      return withLatency(mockLogo(dir));
+    },
+    contributors(dir: string): Promise<GitContributors> {
+      if (git) return git.contributors(dir);
+      return withLatency(mockContributors(dir)).then(
+        (c) => c ?? { source: "git", people: [], total: 0 },
+      );
+    },
+
+    // ── GitHub, through the `gh` CLI ─────────────────────────────────────────
+    // Browser dev answers with an installed, signed-in GitHub so the pull-request
+    // section is demoable; its writes are no-ops.
+    github: {
+      status(): Promise<GitHubStatus> {
+        if (git) return git.github.status();
+        return withLatency(mockGhStatus()).then((s) => s ?? mockGhStatus());
+      },
+      repo(dir: string): Promise<GitHubRepoInfo | null> {
+        if (git) return git.github.repo(dir);
+        return withLatency(mockGhRepo(dir));
+      },
+      contributors(dir: string): Promise<GitContributors | null> {
+        if (git) return git.github.contributors(dir);
+        return withLatency(mockGhContributors(dir));
+      },
+      commitAuthors(dir: string): Promise<GitCommitAuthors | null> {
+        if (git) return git.github.commitAuthors(dir);
+        return withLatency(mockCommitAuthors());
+      },
+      me(): Promise<GitHubUser | null> {
+        if (git) return git.github.me();
+        return withLatency(mockGhMe());
+      },
+      prs(
+        dir: string,
+        opts?: { state?: "open" | "all"; limit?: number },
+      ): Promise<GitHubPullRequest[]> {
+        if (git) return git.github.prs(dir, opts);
+        return withLatency(mockPrs(dir, opts?.state ?? "open")).then((p) => p ?? []);
+      },
+      prDetail(dir: string, number: number): Promise<GitHubPullRequestDetail | null> {
+        if (git) return git.github.prDetail(dir, number);
+        return withLatency(mockPrDetail(number));
+      },
+      prDiff(dir: string, number: number): Promise<GitFileDiff[]> {
+        if (git) return git.github.prDiff(dir, number);
+        return withLatency(mockPrDiff(number)).then((f) => f ?? []);
+      },
+      createPr(dir: string, opts: GitHubPrCreateOptions): Promise<GitHubPrCreateResult> {
+        if (git) return git.github.createPr(dir, opts);
+        // The dev world mints the next number so the composer's success line reads
+        // like the real thing.
+        const next = (mockPrs(dir, "all")[0]?.number ?? 0) + 1;
+        return withLatency({
+          number: next,
+          url: `https://github.com/kone-dev/kone/pull/${next}`,
+        }).then((r) => r!);
+      },
+      checkoutPr(dir: string, number: number): Promise<void> {
+        return git ? git.github.checkoutPr(dir, number) : beat();
+      },
+      open(url: string): Promise<void> {
+        if (git) return git.github.open(url);
+        window.open(url, "_blank", "noopener");
+        return Promise.resolve();
+      },
     },
   };
+}
+
+/** A browser-dev mutation: no effect, but it takes a git-like moment so the
+ *  caller's in-flight state gets at least one frame on screen. */
+function beat(): Promise<void> {
+  return withLatency(true).then(() => undefined);
 }
 
 // A short, slightly-staggered delay stands in for real git latency, so the dev
