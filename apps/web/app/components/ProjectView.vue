@@ -36,6 +36,10 @@ const emit = defineEmits<{ close: [] }>();
 // its derived counts, and the action handlers edit it in place so a change
 // shows up everywhere at once.
 const g = useProjectGit(toRef(props, "project"));
+// The repository surface reads through its own funnel, but shares the working
+// tree model above rather than opening a second watcher. Constructing it is free
+// (it fetches nothing until the space is entered), so it can live here with `g`.
+const space = useGitSpace(toRef(props, "project"), g);
 const { cue } = useSound();
 const { warm } = useHighlighter();
 
@@ -431,10 +435,10 @@ const pickerProviders = computed<PickerProvider[]>(() =>
   })),
 );
 
-// Two views over the same page: the working tree ("work") and the conversation
-// ("chat"). Sending the first turn flips to chat. (A way back to the working
-// tree will land later — the thread never clears, so it's safe to leave for now.)
-const surface = ref<"overview" | "board">("overview");
+// Three views over the same page: the working tree ("overview"), the
+// conversation ("board"), and the repository ("git"). Sending the first turn
+// flips to the board; the corner glyphs move between overview and git.
+const surface = ref<"overview" | "board" | "git">("overview");
 
 /** Point agent.activeKey at the thread the composer is editing so setModel and
  *  friends land on the session the next send will use. No-ops until the board
@@ -881,15 +885,34 @@ function toLauncher() {
   emit("close");
 }
 
-// The corner back arrow steps out one layer at a time: from the conversation it
-// returns to the project's working tree (the thread stays put); from there it
-// leaves for the launcher.
+// The corner back arrow steps out one layer at a time: from the conversation or
+// the repository it returns to the project's working tree (both stay put); from
+// there it leaves for the launcher. It's away whenever a surface draws its own
+// return glyph — the file detail, a commit, a pull request — so it never has to
+// answer for a layer it can't see.
 function onBack() {
-  if (surface.value === "board") {
+  if (surface.value === "board" || surface.value === "git") {
     surface.value = "overview";
     return;
   }
   toLauncher();
+}
+const backIsAway = computed(() => Boolean(activeFile.value) || gitDepth.value > 0);
+
+// ── the repository surface ────────────────────────────────────────────────────
+// Mounted on first entry and kept for the project's lifetime: its lists (history
+// pages, branches, pull requests) are worth holding on to across a step back to
+// the working tree, but none of it should cost anything on project open.
+const gitMounted = ref(false);
+/** How deep into a commit or pull request the space is; those views draw their
+ *  own return glyph, so the corner arrow gets out of their way. */
+const gitDepth = ref(0);
+function openGitSpace() {
+  if (!g.repo.value) return;
+  cue("press");
+  gitMounted.value = true;
+  surface.value = "git";
+  void space.load();
 }
 
 // Hovering the corner folder fans its peeking papers up out of the pocket.
@@ -1165,8 +1188,9 @@ const pillThreads = computed(() => {
   // On the strip every live thread is already a column you can see, so a pill
   // would only duplicate it — a thread working off the edge of the viewport
   // announces itself by pulsing its dash in the strip's column indicator
-  // instead. Pills are for the working-tree home, where no thread is on screen.
-  if (surface.value === "board") return [];
+  // instead. Pills are for the working-tree home, where no thread is on screen —
+  // and the repository surface is its own world, so they step aside there too.
+  if (surface.value !== "overview") return [];
   return agent.threads.value
     .filter((t) => {
       if (!t.everRan || !t.block) return false;
@@ -1250,6 +1274,14 @@ function onCommit() {
 }
 
 // ── file detail ───────────────────────────────────────────────────────────────
+// A file opened from the repository surface reuses the working tree's own detail
+// overlay — one diff viewer for the whole app. It grows from the clicked row
+// when the space hands us its rect, and from nothing when it can't.
+function onOpenFileFromGit(path: string, rect: DOMRect | null) {
+  cue("press");
+  originRect.value = rect;
+  activePath.value = path;
+}
 function onOpenFile(item: ChangeItem, rect: DOMRect) {
   cue("press");
   originRect.value = rect;
@@ -1288,23 +1320,28 @@ function onDiscardFile(path: string) {
   <main class="project-main relative bg-ground">
     <!-- Back to the launcher — a bare return glyph in the corner, on the same
          magnet-pull the app's other buttons ride, lighting up to the accent
-         on hover. It steps aside only for the file-detail overlay. -->
+         on hover. It steps aside for any surface that draws its own: the
+         file-detail overlay covers it, and a commit or pull request — which puts
+         the same glyph beside its own title — fades it out rather than stand as
+         a second, identical arrow across the page from the first. -->
     <Magnet
       class="project-back-magnet"
       inner-class="w-fit"
       :padding="12"
       :magnet-strength="9"
-      :disabled="Boolean(activeFile)"
+      :disabled="backIsAway"
       active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
       inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
     >
       <motion.button
         type="button"
         class="project-back"
-        :inert="Boolean(activeFile)"
-        :aria-label="surface === 'board' ? 'Back to project' : 'Back to projects'"
+        :inert="backIsAway"
+        :aria-label="
+          surface === 'board' || surface === 'git' ? 'Back to project' : 'Back to projects'
+        "
         :initial="{ opacity: 0, x: -6 }"
-        :animate="{ opacity: 1, x: 0 }"
+        :animate="gitDepth > 0 ? { opacity: 0, x: -6 } : { opacity: 1, x: 0 }"
         :transition="{ duration: 0.3 }"
         @click="onBack"
       >
@@ -1315,6 +1352,39 @@ function onDiscardFile(path: string) {
           :stroke-width="2"
           aria-hidden="true"
         />
+      </motion.button>
+    </Magnet>
+
+    <!-- Into the repository — the far end of the row the back arrow starts. A
+         bare branch glyph that speaks its branch name on hover, and carries the
+         one piece of state the corner is worth spending: how far this branch has
+         drifted from its upstream. Git projects only. -->
+    <Magnet
+      v-if="g.repo.value && surface === 'overview'"
+      class="project-git-magnet"
+      inner-class="w-fit"
+      :padding="12"
+      :magnet-strength="9"
+      :disabled="Boolean(activeFile)"
+      active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+      inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+    >
+      <motion.button
+        type="button"
+        class="project-git"
+        :inert="Boolean(activeFile)"
+        :aria-label="g.branch.value ? `Open the repository — on ${g.branch.value}` : 'Open the repository'"
+        :initial="{ opacity: 0, x: 6 }"
+        :animate="{ opacity: 1, x: 0 }"
+        :transition="{ duration: 0.3, delay: 0.05 }"
+        @click="openGitSpace"
+      >
+        <span v-if="g.branch.value" class="project-git__branch">{{ g.branch.value }}</span>
+        <span v-if="g.ahead.value || g.behind.value" class="project-git__sync">
+          <span v-if="g.ahead.value" class="project-git__ahead">↑{{ g.ahead.value }}</span>
+          <span v-if="g.behind.value" class="project-git__behind">↓{{ g.behind.value }}</span>
+        </span>
+        <HugeiconsIcon :icon="GitBranchIcon" :size="18" :stroke-width="2" aria-hidden="true" />
       </motion.button>
     </Magnet>
 
@@ -1438,12 +1508,33 @@ function onDiscardFile(path: string) {
       </div>
     </div>
 
+    <!-- GIT · the repository. Unlike the other two layers this one is mounted on
+         first entry rather than on project open — nothing in it belongs on the
+         critical path — but once mounted it stays, so a paged history and a
+         loaded pull-request list survive a step back to the working tree. -->
+    <div
+      v-if="gitMounted"
+      class="surface-layer surface-layer--git"
+      :class="{ 'surface-layer--hidden': surface !== 'git' }"
+      :inert="surface !== 'git' || Boolean(activeFile)"
+      :aria-hidden="surface !== 'git' ? 'true' : undefined"
+    >
+      <GitSpace
+        :project="project"
+        :space="space"
+        :git="g"
+        :visible="surface === 'git'"
+        @open-file="onOpenFileFromGit"
+        @detail-depth="gitDepth = $event"
+      />
+    </div>
+
     <!-- The folder settles into the corner last — rising into place with a soft
          spring, the physical grace note after the greeting, changes, sessions,
          and composer have landed. (Home only — it steps aside once the
          conversation takes over.) -->
     <motion.div
-      v-if="surface !== 'board'"
+      v-if="surface === 'overview'"
       class="project-folder-row absolute bottom-10 left-10 flex items-center gap-4"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
@@ -1508,7 +1599,7 @@ function onDiscardFile(path: string) {
       leave-to-class="opacity-0"
     >
       <div
-        v-if="!focusedPendingUserInput && (surface === 'overview' || activePaneIsThread) && !showChooser && !stripOverview"
+        v-if="!focusedPendingUserInput && surface !== 'git' && (surface === 'overview' || activePaneIsThread) && !showChooser && !stripOverview"
         class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
         :inert="Boolean(activeFile)"
       >
@@ -1769,6 +1860,79 @@ function onDiscardFile(path: string) {
   transform: rotate(180deg) scaleX(-1);
 }
 
+/* ── Into the repository ──────────────────────────────────────────────────── */
+/* The back arrow's opposite number, at the far end of the same row and wearing
+   the same clothes. At rest it is only a glyph; hovering it says which branch
+   you're standing on, and a branch that has drifted from its upstream keeps its
+   ↑↓ on show whether you're looking or not. */
+.project-git-magnet {
+  position: fixed;
+  top: 2rem;
+  right: 2rem;
+  z-index: 40;
+}
+.project-git {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  opacity: 0.7;
+  cursor: pointer;
+  transition:
+    opacity 0.18s ease,
+    color 0.25s ease;
+}
+.project-git:hover,
+.project-git:focus-visible {
+  outline: none;
+  opacity: 1;
+  color: var(--ink);
+}
+/* Folded away at rest, unfurling to the left of the glyph on hover — the corner
+   stays a single mark until it's asked a question. */
+.project-git__branch {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(6px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  transition:
+    max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease,
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.project-git:hover .project-git__branch,
+.project-git:focus-visible .project-git__branch {
+  max-width: 20ch;
+  opacity: 1;
+  transform: none;
+}
+.project-git__sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.project-git__ahead {
+  color: var(--ink-soft);
+}
+.project-git__behind {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-git__branch {
+    transition: none;
+  }
+}
+
 /* ── Surfaces ─────────────────────────────────────────────────────────────── */
 /* The two surfaces (overview + board) are layers, not pages: both stay mounted
    for the project's lifetime and only one is visible at a time. Hiding is
@@ -1801,6 +1965,11 @@ function onDiscardFile(path: string) {
   overflow: hidden;
 }
 .surface-layer--board {
+  align-items: stretch;
+}
+/* The repository owns its own inner padding and scroll regions, so the layer
+   just hands it the viewport. */
+.surface-layer--git {
   align-items: stretch;
 }
 .surface-layer--overview {
