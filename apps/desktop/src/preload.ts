@@ -9,8 +9,10 @@ import type {
   ProviderCacheSnapshot,
   ProviderConfig,
   ProviderKind,
+  ProviderMaintenance,
   ProviderSettingsMap,
   ProviderStatus,
+  ProviderUpdateResult,
   RuntimeEvent,
   SendTurnInput,
   Session,
@@ -256,6 +258,16 @@ const api = {
     getSettings: (): Promise<ProviderSettingsMap> => ipcRenderer.invoke("agent:get-settings"),
     setSettings: (provider: ProviderKind, config: ProviderConfig): Promise<ProviderSettingsMap> =>
       ipcRenderer.invoke("agent:set-settings", provider, config),
+    // How each provider's CLI is installed, and whether a newer one exists.
+    // `checkLatest` is the network half — the settings pane asks for it when the
+    // user is looking; nothing else in the app does.
+    maintenance: (options?: {
+      checkLatest?: boolean;
+      force?: boolean;
+    }): Promise<ProviderMaintenance[]> => ipcRenderer.invoke("agent:provider-maintenance", options),
+    // Run the update through whichever channel installed the CLI, then re-probe.
+    updateProvider: (provider: ProviderKind): Promise<ProviderUpdateResult> =>
+      ipcRenderer.invoke("agent:update-provider", provider),
     // Session lifecycle — these resolve when the turn is *accepted*; the actual
     // output arrives on the agent:event stream (subscribe via onEvent).
     startSession: (input: SessionStartInput): Promise<Session> =>

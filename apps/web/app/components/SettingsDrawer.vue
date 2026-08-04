@@ -5,10 +5,7 @@ import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiChipIcon,
-  AlertCircleIcon,
   ArrowTurnBackwardIcon,
-  CheckmarkCircle02Icon,
-  CommandLineIcon,
   DistributeHorizontalCenterIcon,
   KeyboardIcon,
   RefreshIcon,
@@ -20,21 +17,23 @@ import {
 import { Magnet } from "~/components/ui/magnet";
 import type { ShortcutAction } from "~/composables/useShortcuts";
 import type { CenterMode } from "~/composables/useStripPrefs";
-import type { ProviderKind, ProviderStatus } from "~/types/desktop";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
 // It doesn't float over the launcher — it sits pinned to the left edge, and the
 // launcher itself slides aside (see index.vue's stage) to reveal it. So this is
 // just the panel surface; the reveal lives upstream.
 //
-// The panel is a small navigable drawer: a root list of section groups (General,
-// Personalization) that pushes into detail panes within the same 320px aside.
-// Two detail panes today: Shortcuts, which rebinds the app's custom,
-// genuinely rebind-worthy gestures (currently just Switch project); and Strip
-// motion, which holds the board's scroll-feel settings. OS-convention keys
-// (⌘, / ⌘K) and fixed keys (Esc / Enter / type-to-compose) stay in the shortcut
-// registry — handlers still consult them — but are deliberately hidden from the
-// UI; there's no meaning in rebinding those.
+// The panel is a small navigable drawer: a root list of section groups that
+// pushes into detail panes. Two of those panes are lists and live here in the
+// 320px column — Shortcuts, which rebinds the app's custom, genuinely
+// rebind-worthy gestures; and Thread strip, which holds the board's scroll-feel
+// settings. OS-convention keys (⌘, / ⌘K) and fixed keys (Esc / Enter /
+// type-to-compose) stay in the shortcut registry — handlers still consult them —
+// but are deliberately hidden from the UI; there's no meaning in rebinding those.
+//
+// The third, Agent providers, is a *page*: the drawer widens and hands the whole
+// surface to SettingsProvidersPane. Panes that are pages are declared in
+// useSettingsSurface, since the launcher's slide is measured from the same value.
 //
 // Thread strip earns its own pane rather than sitting inline: today it's a single
 // center-focused-column choice, but it's the shelf the rest of the strip's
@@ -119,43 +118,16 @@ function onCenterKeydown(e: KeyboardEvent, i: number) {
 }
 
 // ── agent providers ───────────────────────────────────────────────────────────
-// The install-settings surface for the agent CLIs kone drives. useAgentProviders
-// only *detects* what's installed + logged in; useProviderSettings holds the
-// user's knobs on top of that — a custom binary path (which reaches the Electron
-// adapters) and whether the provider shows up in the picker rail at all. "Bring
-// your own subscription" still holds: no credentials live here, only how to reach
-// a CLI the user already signed into.
+// The row only summarises; the surface itself is SettingsProvidersPane, which the
+// drawer widens for (see useSettingsSurface) because a provider's install,
+// version, channel and executable don't belong in a 320px column.
+//
+// What the row owes the user is the one fact worth knowing without opening it:
+// how far the picker actually reaches, or that something is behind.
 const providers = useAgentProviders();
 const providerSettings = useProviderSettings();
+const upkeep = useProviderMaintenance();
 
-// Static per-provider facts the probe doesn't carry: display label, vendor, and
-// whether the provider spawns an external binary the user can repoint (Claude
-// runs the SDK's bundled CLI, so it has no path knob).
-const PROVIDER_META: Record<
-  ProviderKind,
-  { label: string; vendor: string; binary: string | null }
-> = {
-  codex: { label: "Codex", vendor: "OpenAI", binary: "codex" },
-  claudeAgent: { label: "Claude", vendor: "Anthropic", binary: null },
-  cursor: { label: "Cursor", vendor: "Cursor", binary: "cursor-agent" },
-  opencode: { label: "OpenCode", vendor: "OpenCode", binary: "opencode" },
-  droid: { label: "Factory Droid", vendor: "Factory", binary: "droid" },
-};
-const PROVIDER_ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid"];
-
-// One row per known provider (stable order), merging its live probe status. A
-// provider with no probe yet shows as pending until discovery lands.
-const providerRows = computed(() =>
-  PROVIDER_ORDER.map((provider) => ({
-    provider,
-    meta: PROVIDER_META[provider],
-    status: providers.statuses.value.find((s) => s.provider === provider) ?? null,
-    enabled: providerSettings.isEnabled(provider),
-  })),
-);
-
-// How many detected providers the rail will actually offer (ready ∧ enabled) —
-// trails the root row so the current reach reads without opening the pane.
 const readyEnabledCount = computed(
   () =>
     providers.statuses.value.filter(
@@ -163,61 +135,14 @@ const readyEnabledCount = computed(
     ).length,
 );
 
-// Map a probe result onto a small status chip: a glyph + label + whether it's the
-// "good" (ready) state, which the row marks in --ink like the motion pane's tick.
-function statusChip(status: ProviderStatus | null): {
-  label: string;
-  ready: boolean;
-  bad: boolean;
-} {
-  if (!status) return { label: "Checking…", ready: false, bad: false };
-  switch (status.readiness) {
-    case "ready":
-      return { label: status.authLabel ?? "Ready", ready: true, bad: false };
-    case "needs-login":
-      return { label: "Needs sign-in", ready: false, bad: true };
-    case "not-installed":
-      return { label: "Not installed", ready: false, bad: false };
-    default:
-      return { label: "Unavailable", ready: false, bad: true };
-  }
-}
-
-// Local drafts for the binary-path inputs so typing doesn't thrash the store on
-// every keystroke — committed on blur / Enter. Seeded (and re-seeded) from the
-// persisted paths as they load.
-const binaryDrafts = ref<Partial<Record<ProviderKind, string>>>({});
-watch(
-  () => providerSettings.binaryPaths.value,
-  (paths) => {
-    binaryDrafts.value = { ...paths };
-  },
-  { immediate: true, deep: true },
-);
-
-function commitBinary(provider: ProviderKind) {
-  void providerSettings.setBinaryPath(provider, binaryDrafts.value[provider] ?? "");
-  cue("toggle");
-}
-
-function toggleProvider(provider: ProviderKind) {
-  providerSettings.setEnabled(provider, !providerSettings.isEnabled(provider));
-  cue("toggle");
-}
-
-// Re-probe every CLI (installed? logged in?) on demand — after the user fixes a
-// path or signs in elsewhere, so the pane reflects it without an app restart.
-const rechecking = ref(false);
-async function recheckProviders() {
-  if (rechecking.value) return;
-  rechecking.value = true;
-  cue("press");
-  try {
-    await providers.discover(true);
-  } finally {
-    rechecking.value = false;
-  }
-}
+// An available update outranks the ready count: it's the only one of the two
+// that's asking for something. Only populated once the pane has looked (the
+// lookup is a network call), so a session that never opened it just reads "ready".
+const providerSummary = computed(() => {
+  const behind = upkeep.outdated.value.length;
+  if (behind) return `${behind} update${behind === 1 ? "" : "s"}`;
+  return readyEnabledCount.value ? `${readyEnabledCount.value} ready` : "";
+});
 
 function onSoundToggle() {
   toggleMuted();
@@ -231,8 +156,12 @@ function onSoundToggle() {
 // reached by tapping its row. The drawer always reopens at root so the user lands
 // somewhere predictable, and leaving the shortcuts pane abandons any in-flight
 // rebind capture.
-type Pane = "root" | "shortcuts" | "motion" | "providers";
-const pane = ref<Pane>("root");
+//
+// The pane lives in useSettingsSurface rather than here because the launcher
+// slides aside by exactly this drawer's width, and one pane (Agent providers) is
+// a page rather than a column — so the stage upstream has to know which pane is
+// open to know how far to move.
+const { pane, isPage, revealWidth } = useSettingsSurface();
 
 function openShortcuts() {
   pane.value = "shortcuts";
@@ -247,10 +176,6 @@ function openMotion() {
 function openProviders() {
   pane.value = "providers";
   cue("press");
-  // Warm the probe + persisted settings on entry (deduped — no-op if already
-  // done at app open). A blank list resolves to "Checking…" rows meanwhile.
-  void providers.discover();
-  void providerSettings.load();
 }
 
 function backToRoot() {
@@ -375,14 +300,23 @@ defineExpose({ cancelCapture });
 
 <template>
   <aside
-    class="settings-scroll fixed inset-y-0 left-0 z-0 flex w-[320px] max-w-[80vw] flex-col overflow-y-auto bg-sunken px-5 pt-16 pb-7"
+    class="settings-scroll fixed inset-y-0 left-0 z-0 flex flex-col bg-sunken"
+    :class="isPage ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-16 pb-7'"
+    :style="{ width: `${revealWidth}px` }"
     :aria-hidden="!open"
     role="dialog"
     aria-label="Settings and personalization"
   >
+    <!-- Agent providers is a page, not a column: it takes the whole widened
+         aside and lays itself out (masthead, rail, panel). The width change is
+         deliberately not animated here — the stage sliding over the top of this
+         panel is what uncovers it, so animating both would be two springs
+         racing to describe one movement. -->
+    <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
+
     <!-- Both panes stack in one grid cell so the push transition overlaps them;
          the active pane is keyed and slides in over the outgoing one. -->
-    <div class="grid min-h-0 flex-1 content-start">
+    <div v-else class="grid min-h-0 flex-1 content-start">
       <!-- Root pane: the Personalization section — a Keyboard shortcuts row
            that pushes into the shortcuts detail pane. Borderless rows on the
            sunken surface; the row rides the same magnet pull as the app's
@@ -464,10 +398,10 @@ defineExpose({ cancelCapture });
             </button>
           </Magnet>
 
-          <!-- Agent providers — pushes into a pane listing each agent CLI kone
-               can drive (status, binary path, whether it's offered in the rail).
-               The trailing count is the reach the picker actually has right now
-               (ready ∧ enabled). -->
+          <!-- Agent providers — opens the widened provider page (each CLI kone
+               can drive: status, version, install channel, executable, whether
+               it's offered in the picker). The trailing summary is the picker's
+               real reach right now, or the updates waiting if there are any. -->
           <Magnet
             class="block"
             inner-class="w-full"
@@ -494,10 +428,10 @@ defineExpose({ cancelCapture });
                 Agent providers
               </span>
               <span
-                v-if="readyEnabledCount"
+                v-if="providerSummary"
                 class="shrink-0 text-[12px] leading-tight text-muted"
               >
-                {{ readyEnabledCount }} ready
+                {{ providerSummary }}
               </span>
             </button>
           </Magnet>
@@ -727,168 +661,6 @@ defineExpose({ cancelCapture });
         </section>
       </motion.section>
 
-      <!-- Providers pane: each agent CLI kone can drive. Per provider: a status
-           line (installed? logged in?), an enable switch (whether it's offered in
-           the model-picker rail), and — for providers that spawn an external
-           binary — a path override. Claude runs the SDK's bundled CLI, so it
-           carries a note instead of a path field. A single Re-check re-probes
-           them all. -->
-      <motion.section
-        v-else-if="pane === 'providers'"
-        key="providers"
-        class="col-start-1 row-start-1 flex flex-col"
-        aria-label="Agent providers"
-        :initial="{ opacity: 0, x: paneOffset }"
-        :animate="{ opacity: 1, x: 0 }"
-        :transition="paneSpring"
-      >
-        <div class="mb-4 flex items-center justify-between gap-3 pr-3">
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="back-glyph flex size-6 items-center justify-center text-muted transition-colors hover:text-ink focus-visible:text-ink focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Back to settings"
-              @click="backToRoot"
-            >
-              <HugeiconsIcon
-                :icon="ArrowTurnBackwardIcon"
-                :size="16"
-                :stroke-width="2"
-                aria-hidden="true"
-              />
-            </button>
-            <h2 class="px-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
-              Agent providers
-            </h2>
-          </div>
-          <button
-            type="button"
-            :tabindex="open ? 0 : -1"
-            class="flex items-center gap-1 rounded-[7px] px-1.5 py-1 text-[11px] leading-none text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none disabled:opacity-50"
-            :disabled="rechecking"
-            aria-label="Re-check installed agent tools"
-            @click="recheckProviders"
-          >
-            <HugeiconsIcon
-              :icon="RefreshIcon"
-              :size="12"
-              :stroke-width="2"
-              class="transition-transform"
-              :class="rechecking ? 'animate-spin' : ''"
-              aria-hidden="true"
-            />
-            {{ rechecking ? "Checking…" : "Re-check" }}
-          </button>
-        </div>
-
-        <div class="flex flex-col gap-6">
-          <section
-            v-for="row in providerRows"
-            :key="row.provider"
-            class="flex flex-col gap-2"
-            :aria-label="row.meta.label"
-          >
-            <!-- Header: name + vendor on the left, enable switch on the right. -->
-            <div class="flex items-start justify-between gap-3 px-3">
-              <div class="flex min-w-0 flex-col">
-                <span class="text-[14px] leading-tight text-ink">
-                  {{ row.meta.label }}
-                </span>
-                <span class="mt-0.5 flex items-center gap-1.5 text-[11px] leading-snug">
-                  <HugeiconsIcon
-                    :icon="statusChip(row.status).ready ? CheckmarkCircle02Icon : AlertCircleIcon"
-                    :size="12"
-                    :stroke-width="2"
-                    class="shrink-0"
-                    :class="
-                      statusChip(row.status).ready
-                        ? 'text-ink'
-                        : statusChip(row.status).bad
-                          ? 'text-red-500'
-                          : 'text-muted'
-                    "
-                    aria-hidden="true"
-                  />
-                  <span
-                    :class="statusChip(row.status).ready ? 'text-ink-soft' : 'text-muted'"
-                  >
-                    {{ row.meta.vendor }} · {{ statusChip(row.status).label }}
-                  </span>
-                  <span v-if="row.status?.version" class="text-muted">
-                    · v{{ row.status.version }}
-                  </span>
-                </span>
-              </div>
-
-              <!-- Offer-in-rail switch (same idiom as the sound toggle). -->
-              <button
-                type="button"
-                role="switch"
-                :aria-label="`Offer ${row.meta.label} in the model picker`"
-                :aria-checked="row.enabled"
-                :tabindex="open ? 0 : -1"
-                class="switch relative mt-0.5 inline-flex h-[22px] w-[38px] shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus-visible:outline-none"
-                :style="{
-                  backgroundColor: row.enabled
-                    ? 'var(--ink)'
-                    : 'color-mix(in srgb, var(--ink) 14%, transparent)',
-                }"
-                @click="toggleProvider(row.provider)"
-              >
-                <span
-                  class="knob absolute size-[18px] rounded-full bg-ground transition-transform duration-200 ease-out"
-                  :class="row.enabled ? 'translate-x-[18px]' : 'translate-x-[2px]'"
-                />
-              </button>
-            </div>
-
-            <!-- Binary path (providers with an external CLI) or a bundled-CLI
-                 note (Claude). The message line, when the probe carries one,
-                 sits under it as quiet guidance. -->
-            <div v-if="row.meta.binary" class="flex flex-col gap-1 px-3">
-              <label
-                :for="`bin-${row.provider}`"
-                class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted"
-              >
-                <HugeiconsIcon
-                  :icon="CommandLineIcon"
-                  :size="11"
-                  :stroke-width="2"
-                  aria-hidden="true"
-                />
-                CLI path
-              </label>
-              <input
-                :id="`bin-${row.provider}`"
-                v-model="binaryDrafts[row.provider]"
-                type="text"
-                spellcheck="false"
-                autocapitalize="off"
-                autocorrect="off"
-                :tabindex="open ? 0 : -1"
-                :placeholder="row.meta.binary"
-                class="bin-input w-full rounded-[8px] bg-hover px-2.5 py-1.5 font-mono text-[12px] leading-tight text-ink-soft placeholder:text-muted focus-visible:outline-none"
-                @change="commitBinary(row.provider)"
-                @keydown.enter.prevent="commitBinary(row.provider)"
-              />
-              <p class="text-[11px] leading-snug text-muted">
-                Leave blank to use <span class="font-mono">{{ row.meta.binary }}</span> on your PATH.
-              </p>
-            </div>
-            <p v-else class="px-3 text-[11px] leading-snug text-muted">
-              Runs the bundled Claude Code CLI — no path to set.
-            </p>
-
-            <p
-              v-if="row.status?.message && row.status.readiness !== 'ready'"
-              class="px-3 text-[11px] leading-snug text-muted"
-            >
-              {{ row.status.message }}
-            </p>
-          </section>
-        </div>
-      </motion.section>
     </div>
 
     <!-- Controls sit at the foot of the panel. Sound is the first. Only the

@@ -194,6 +194,18 @@ export function registerAgentIpc(): void {
       svc.setProviderSettings(provider, config),
   );
 
+  // Install maintenance: how each CLI was installed, and whether it's behind.
+  // `check-latest` is the only provider call that reaches the network, so it's
+  // its own channel — nothing on the launch or send path touches it.
+  ipcMain.handle(
+    "agent:provider-maintenance",
+    (_event, options?: { checkLatest?: boolean; force?: boolean }) =>
+      svc.providerMaintenance(options),
+  );
+  ipcMain.handle("agent:update-provider", (_event, provider: ProviderKind) =>
+    svc.updateProvider(provider),
+  );
+
   // Subscribe/unsubscribe the calling renderer to the event stream.
   ipcMain.handle("agent:subscribe", (event) => {
     const wc = event.sender;

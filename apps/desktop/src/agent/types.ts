@@ -617,3 +617,64 @@ export type ProviderConfig = {
 
 /** Persisted install settings for every provider, keyed by provider. */
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
+
+// ── Install maintenance (see providerMaintenance.ts) ─────────────────────────
+
+/** Which channel installed a provider's CLI, and therefore which one has to
+ *  update it. `native` — the CLI's own updater; `bundled` — kone ships the
+ *  runtime, so there's no user install at all; `unknown` — found on PATH but in
+ *  a layout kone doesn't recognise, so it won't guess an update command. */
+export type ProviderInstallSource =
+  | "npm"
+  | "bun"
+  | "pnpm"
+  | "homebrew"
+  | "native"
+  | "bundled"
+  | "unknown";
+
+/** How the installed version stands against the newest published one.
+ *  `unknown` covers both "we couldn't ask" and "there's nowhere to ask". */
+export type VersionStanding = "current" | "behind" | "unknown";
+
+/** What kone knows about how one provider's CLI is installed and updated. */
+export type ProviderMaintenance = {
+  provider: ProviderKind;
+  installSource: ProviderInstallSource;
+  /** The executable name/path kone resolves this provider by. */
+  binary: string | null;
+  /** Where that resolved on disk (the PATH entry), and what it points at when
+   *  it's a shim into a versioned directory. */
+  resolvedPath: string | null;
+  realPath: string | null;
+  /** Registry package the CLI publishes under, when it has one. */
+  packageName: string | null;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  /** False when there's no registry kone can read a "latest" from — a
+   *  self-updating CLI. Such a provider must never be shown as out of date. */
+  latestKnowable: boolean;
+  standing: VersionStanding;
+  /** The exact shell command kone would run, shown so the user can run it
+   *  themselves instead of trusting a button. */
+  updateCommand: string | null;
+  canUpdate: boolean;
+  /** ms epoch of the last successful "latest version" lookup. */
+  checkedAt: number | null;
+};
+
+export type ProviderUpdateOutcome = "succeeded" | "failed" | "unchanged" | "unsupported";
+
+/** The result of running one provider's update, with the installer's own
+ *  transcript and the re-probed provider surface. */
+export type ProviderUpdateResult = {
+  provider: ProviderKind;
+  outcome: ProviderUpdateOutcome;
+  message: string | null;
+  output: string | null;
+  /** Fresh maintenance for this provider, after the update ran. */
+  maintenance: ProviderMaintenance;
+  /** Re-probed statuses for every provider — an update changes the version the
+   *  status row reports, so the pane refreshes from this rather than guessing. */
+  statuses: ProviderStatus[];
+};

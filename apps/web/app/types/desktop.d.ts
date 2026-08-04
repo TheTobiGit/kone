@@ -603,6 +603,60 @@ export type ProviderConfig = {
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
 
+// ── Install maintenance (mirrors apps/desktop/src/agent/providerMaintenance.ts) ─
+
+/** Which channel installed a provider's CLI, and therefore which one has to
+ *  update it. `native` — the CLI's own updater; `bundled` — kone ships the
+ *  runtime, so there's no user install at all; `unknown` — found but in a
+ *  layout kone doesn't recognise, so it won't guess an update command. */
+export type ProviderInstallSource =
+  | "npm"
+  | "bun"
+  | "pnpm"
+  | "homebrew"
+  | "native"
+  | "bundled"
+  | "unknown";
+
+/** How the installed version stands against the newest published one.
+ *  `unknown` covers both "we couldn't ask" and "there's nowhere to ask". */
+export type VersionStanding = "current" | "behind" | "unknown";
+
+/** What kone knows about how one provider's CLI is installed and updated. */
+export type ProviderMaintenance = {
+  provider: ProviderKind;
+  installSource: ProviderInstallSource;
+  binary: string | null;
+  /** The PATH entry the binary resolved to, and what it points at when that's
+   *  a shim into a versioned install directory. */
+  resolvedPath: string | null;
+  realPath: string | null;
+  packageName: string | null;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  /** False when there's no registry to read a "latest" from — a self-updating
+   *  CLI, which must never be presented as out of date. */
+  latestKnowable: boolean;
+  standing: VersionStanding;
+  /** The exact command kone would run, shown so the user can run it themselves. */
+  updateCommand: string | null;
+  canUpdate: boolean;
+  checkedAt: number | null;
+};
+
+export type ProviderUpdateOutcome = "succeeded" | "failed" | "unchanged" | "unsupported";
+
+export type ProviderUpdateResult = {
+  provider: ProviderKind;
+  outcome: ProviderUpdateOutcome;
+  message: string | null;
+  /** The installer's own transcript — a failure usually names its cause. */
+  output: string | null;
+  maintenance: ProviderMaintenance;
+  /** Re-probed statuses for every provider, since an update moves a version. */
+  statuses: ProviderStatus[];
+};
+
 export type ModelDescriptor = {
   id: string;
   label: string;
@@ -1003,6 +1057,15 @@ export type KoneAgentApi = {
     provider: ProviderKind,
     config: ProviderConfig,
   ) => Promise<ProviderSettingsMap>;
+  /** How each provider's CLI is installed, and whether it's behind. Passing
+   *  `checkLatest: false` keeps it entirely local (no registry call). */
+  maintenance: (options?: {
+    checkLatest?: boolean;
+    force?: boolean;
+  }) => Promise<ProviderMaintenance[]>;
+  /** Update one provider's CLI through the channel that installed it, then
+   *  re-probe. Resolves with the transcript and the refreshed surface. */
+  updateProvider: (provider: ProviderKind) => Promise<ProviderUpdateResult>;
   /** Persisted conversation history (read-only). */
   history: KoneAgentHistoryApi;
   /** Start a thread; resolves once the session is ready. */

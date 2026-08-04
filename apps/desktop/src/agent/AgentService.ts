@@ -3,12 +3,14 @@ import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
 import { DroidAdapter } from "./adapters/DroidAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
+import { buildAgentEnv } from "./processEnv.js";
 import {
   cacheModels,
   cacheStatuses,
   readProviderCache,
   type ProviderCacheSnapshot,
 } from "./providerCache.js";
+import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
 import type {
   ApprovalDecision,
@@ -17,8 +19,10 @@ import type {
   ProviderAdapter,
   ProviderConfig,
   ProviderKind,
+  ProviderMaintenance,
   ProviderSettingsMap,
   ProviderStatus,
+  ProviderUpdateResult,
   RuntimeEvent,
   Session,
   SendTurnInput,
@@ -168,6 +172,97 @@ export class AgentService {
     const next = writeProviderSettings(provider, config);
     this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
     return next;
+  }
+
+  // ── install maintenance ─────────────────────────────────────────────────────
+
+  /** The version discovery last read for `provider`. Taken from the disk
+   *  snapshot rather than a fresh probe: maintenance is about the install, and
+   *  re-spawning five `--version` handshakes to decorate a settings pane is
+   *  exactly the kind of thing kone keeps off the interactive path. */
+  private knownVersion(provider: ProviderKind): string | null {
+    const status = readProviderCache().statuses.find((s) => s.provider === provider);
+    return status?.version ?? null;
+  }
+
+  /** Where each provider's CLI came from, and whether it's behind. `checkLatest`
+   *  is what makes this a network call, so callers that only want the local
+   *  facts (install channel, resolved path, update command) can leave it off. */
+  async providerMaintenance(options?: {
+    checkLatest?: boolean;
+    force?: boolean;
+  }): Promise<ProviderMaintenance[]> {
+    const env = await buildAgentEnv();
+    const settings = readProviderSettings();
+    return Promise.all(
+      [...this.adapters.keys()].map((provider) =>
+        resolveProviderMaintenance({
+          provider,
+          ...(settings[provider]?.binaryPath
+            ? { binaryOverride: settings[provider]?.binaryPath }
+            : {}),
+          currentVersion: this.knownVersion(provider),
+          env,
+          checkLatest: options?.checkLatest ?? true,
+          force: options?.force ?? false,
+        }),
+      ),
+    );
+  }
+
+  /** Update one provider's CLI through the channel that installed it, then
+   *  re-probe so the caller sees the version that actually landed. A run that
+   *  succeeded without moving the version reports `unchanged` — "already up to
+   *  date" is a real outcome, and calling it success invites the user to wonder
+   *  why nothing happened. */
+  async updateProvider(provider: ProviderKind): Promise<ProviderUpdateResult> {
+    const env = await buildAgentEnv();
+    const settings = readProviderSettings();
+    const override = settings[provider]?.binaryPath;
+    const before = this.knownVersion(provider);
+
+    const run = await runProviderUpdate({
+      provider,
+      ...(override ? { binaryOverride: override } : {}),
+      env,
+    });
+
+    if (run.outcome === "unsupported") {
+      return {
+        provider,
+        outcome: run.outcome,
+        message: run.message,
+        output: run.output,
+        maintenance: await resolveProviderMaintenance({
+          provider,
+          ...(override ? { binaryOverride: override } : {}),
+          currentVersion: before,
+          env,
+          checkLatest: false,
+        }),
+        statuses: readProviderCache().statuses,
+      };
+    }
+
+    // The install moved (or tried to), so everything downstream of it is stale:
+    // re-probe every provider and refresh the model catalog, since a new CLI can
+    // ship new models.
+    const statuses = await this.discover();
+    const after = statuses.find((s) => s.provider === provider)?.version ?? null;
+    void this.listModels(provider).catch(() => []);
+
+    const maintenance = await resolveProviderMaintenance({
+      provider,
+      ...(override ? { binaryOverride: override } : {}),
+      currentVersion: after,
+      env,
+      checkLatest: true,
+      force: true,
+    });
+
+    const outcome =
+      run.outcome === "succeeded" && before && after && before === after ? "unchanged" : run.outcome;
+    return { provider, outcome, message: run.message, output: run.output, maintenance, statuses };
   }
 
   // ── lifecycle (routed) ──────────────────────────────────────────────────────

@@ -40,6 +40,14 @@ const enabledMap = useStorage<Partial<Record<ProviderKind, boolean>>>(
   { listenToStorageChanges: true },
 );
 
+// Whether the providers pane may look up newer CLI versions when it opens. On by
+// default, but genuinely optional: it's a network call about software the user
+// might have pinned deliberately, and kone shouldn't reach out to registries
+// behind the back of someone who'd rather it didn't.
+const updateChecks = useStorage<boolean>("kone.providers.updateChecks", true, undefined, {
+  listenToStorageChanges: true,
+});
+
 function bridge() {
   return import.meta.client ? window.koneDesktop?.agent : undefined;
 }
@@ -139,6 +147,7 @@ export function useProviderSettings() {
   return {
     binaryPaths,
     enabledMap,
+    updateChecks,
     load,
     binaryPath,
     setBinaryPath,
