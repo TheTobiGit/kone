@@ -21,8 +21,9 @@ async function diffRun(cwd: string, args: string[]): Promise<string> {
 
 /** Parse one file's unified diff into numbered hunks. Header/metadata lines set
  *  the status; `@@` lines seed the old/new counters that each body line then
- *  advances. */
-function parseFileDiff(relPath: string, out: string): GitFileDiff {
+ *  advances. Shared with the history module, which parses per-commit file diffs
+ *  through the exact same parser so the two views can't drift. */
+export function parseFileDiff(relPath: string, out: string): GitFileDiff {
   const result: GitFileDiff = {
     path: relPath,
     status: "modified",

@@ -42,11 +42,30 @@ import type {
   CreateProjectResult,
   GitBranch,
   GitCommit,
+  GitCommitAuthors,
+  GitCommitDetail,
+  GitCommitOptions,
+  GitContributors,
   GitFileContent,
   GitFileDiff,
+  GitIdentity,
+  GitLogo,
   GitProjectFile,
+  GitPullOptions,
+  GitPushOptions,
+  GitReadme,
+  GitRemote,
   GitRepo,
+  GitRepoState,
+  GitStashEntry,
   GitStatus,
+  GitHubPrCreateOptions,
+  GitHubPrCreateResult,
+  GitHubPullRequest,
+  GitHubPullRequestDetail,
+  GitHubRepoInfo,
+  GitHubStatus,
+  GitHubUser,
 } from "./git/index.js";
 
 const api = {
@@ -75,8 +94,101 @@ const api = {
       ipcRenderer.invoke("git:files", dir, query),
     branches: (dir: string): Promise<GitBranch[]> =>
       ipcRenderer.invoke("git:branches", dir),
-    log: (dir: string, limit?: number): Promise<GitCommit[]> =>
-      ipcRenderer.invoke("git:log", dir, limit),
+    log: (dir: string, limit?: number, skip?: number): Promise<GitCommit[]> =>
+      ipcRenderer.invoke("git:log", dir, limit, skip),
+    // ── Git Space surface (spec §5.2) ──────────────────────────────────────
+    /** Configured remotes, origin first. */
+    remotes: (dir: string): Promise<GitRemote[]> =>
+      ipcRenderer.invoke("git:remotes", dir),
+    /** Mid-operation state (merge/rebase/…) + conflicted paths. */
+    repoState: (dir: string): Promise<GitRepoState | null> =>
+      ipcRenderer.invoke("git:repo-state", dir),
+    /** Commit staged changes (optionally amend / skip hooks). */
+    commit: (dir: string, opts: GitCommitOptions): Promise<void> =>
+      ipcRenderer.invoke("git:commit", dir, opts),
+    fetch: (dir: string, remote?: string): Promise<void> =>
+      ipcRenderer.invoke("git:fetch", dir, remote),
+    pull: (dir: string, opts?: GitPullOptions): Promise<void> =>
+      ipcRenderer.invoke("git:pull", dir, opts),
+    push: (dir: string, opts?: GitPushOptions): Promise<void> =>
+      ipcRenderer.invoke("git:push", dir, opts),
+    createBranch: (
+      dir: string,
+      name: string,
+      opts?: { from?: string; checkout?: boolean },
+    ): Promise<void> => ipcRenderer.invoke("git:create-branch", dir, name, opts),
+    deleteBranch: (
+      dir: string,
+      name: string,
+      opts?: { force?: boolean; remote?: boolean },
+    ): Promise<void> => ipcRenderer.invoke("git:delete-branch", dir, name, opts),
+    renameBranch: (dir: string, from: string, to: string): Promise<void> =>
+      ipcRenderer.invoke("git:rename-branch", dir, from, to),
+    mergeBranch: (
+      dir: string,
+      name: string,
+      opts?: { noFf?: boolean },
+    ): Promise<void> => ipcRenderer.invoke("git:merge-branch", dir, name, opts),
+    /** Continue / abort whatever repoState() reports. */
+    continueOperation: (dir: string): Promise<void> =>
+      ipcRenderer.invoke("git:continue-operation", dir),
+    abortOperation: (dir: string): Promise<void> =>
+      ipcRenderer.invoke("git:abort-operation", dir),
+    commitDetail: (dir: string, hash: string): Promise<GitCommitDetail | null> =>
+      ipcRenderer.invoke("git:commit-detail", dir, hash),
+    commitDiff: (dir: string, hash: string, path: string): Promise<GitFileDiff | null> =>
+      ipcRenderer.invoke("git:commit-diff", dir, hash, path),
+    stashes: (dir: string): Promise<GitStashEntry[]> =>
+      ipcRenderer.invoke("git:stashes", dir),
+    stashPush: (
+      dir: string,
+      opts?: { message?: string; includeUntracked?: boolean },
+    ): Promise<void> => ipcRenderer.invoke("git:stash-push", dir, opts),
+    /** `pop: true` removes the entry after applying. */
+    stashApply: (dir: string, index: number, opts?: { pop?: boolean }): Promise<void> =>
+      ipcRenderer.invoke("git:stash-apply", dir, index, opts),
+    stashDrop: (dir: string, index: number): Promise<void> =>
+      ipcRenderer.invoke("git:stash-drop", dir, index),
+    // ── About section ──────────────────────────────────────────────────────
+    /** Repo README markdown, or null when the repo has none. */
+    readme: (dir: string): Promise<GitReadme | null> =>
+      ipcRenderer.invoke("git:readme", dir),
+    /** The name/email git attributes work to in this repo. */
+    identity: (dir: string): Promise<GitIdentity> =>
+      ipcRenderer.invoke("git:identity", dir),
+    /** Repo logo as a data URL, or null when nothing qualifies. */
+    logo: (dir: string): Promise<GitLogo | null> =>
+      ipcRenderer.invoke("git:logo", dir),
+    /** The repo's contributors, from git — always available, no network. */
+    contributors: (dir: string): Promise<GitContributors> =>
+      ipcRenderer.invoke("git:contributors", dir),
+    github: {
+      status: (): Promise<GitHubStatus> => ipcRenderer.invoke("github:status"),
+      /** The repo's public GitHub surface, or null when there's no GitHub info. */
+      repo: (dir: string): Promise<GitHubRepoInfo | null> =>
+        ipcRenderer.invoke("github:repo", dir),
+      /** The repo's GitHub contributors (with avatars), or null when there's no GitHub info. */
+      contributors: (dir: string): Promise<GitContributors | null> =>
+        ipcRenderer.invoke("github:contributors", dir),
+      /** The signed-in GitHub user (with avatar data URL), or null. */
+      me: (): Promise<GitHubUser | null> => ipcRenderer.invoke("github:me"),
+      prs: (
+        dir: string,
+        opts?: { state?: "open" | "all"; limit?: number },
+      ): Promise<GitHubPullRequest[]> => ipcRenderer.invoke("github:prs", dir, opts),
+      createPr: (dir: string, opts: GitHubPrCreateOptions): Promise<GitHubPrCreateResult> =>
+        ipcRenderer.invoke("github:create-pr", dir, opts),
+      checkoutPr: (dir: string, number: number): Promise<void> =>
+        ipcRenderer.invoke("github:checkout-pr", dir, number),
+      prDetail: (dir: string, number: number): Promise<GitHubPullRequestDetail | null> =>
+        ipcRenderer.invoke("github:pr-detail", dir, number),
+      prDiff: (dir: string, number: number): Promise<GitFileDiff[]> =>
+        ipcRenderer.invoke("github:pr-diff", dir, number),
+      commitAuthors: (dir: string): Promise<GitCommitAuthors | null> =>
+        ipcRenderer.invoke("github:commit-authors", dir),
+      /** Open a URL in the user's real browser. */
+      open: (url: string): Promise<void> => ipcRenderer.invoke("github:open", url),
+    },
     clone: (url: string, dest: string): Promise<CloneResult> =>
       ipcRenderer.invoke("git:clone", url, dest),
     // Abort the clone currently in flight (its git.clone() invoke then rejects).
