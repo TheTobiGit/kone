@@ -5,9 +5,10 @@ import {
   hexToHueDeg,
   type OrbDrawCtx,
   type ToolOrbFamily,
+  type TurnOrbState,
 } from "~/utils/toolOrbDraw";
 
-export type TurnOrbState = "working" | "thinking" | ToolOrbFamily;
+export type { ToolOrbFamily, TurnOrbState };
 
 export function stateForToolFamily(family: ToolOrbFamily | undefined): TurnOrbState {
   return family ?? "neutral";
