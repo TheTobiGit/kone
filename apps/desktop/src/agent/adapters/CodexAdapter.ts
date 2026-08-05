@@ -92,6 +92,8 @@ type CodexSession = {
   model?: string;
   mode: InteractionMode;
   conversationId?: string;
+  /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
+  resumedFrom?: string;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, CodexItemBuffer>;
@@ -551,6 +553,10 @@ export class CodexAdapter implements ProviderAdapter {
       const conversationId = readString(thread, "id") ?? readString(response, "threadId");
       if (!conversationId) throw new Error(`${openMethod} response did not include a thread id.`);
       session.conversationId = conversationId;
+      // Only when resume was the method that actually opened this thread — the catch
+      // above swallows a refused resume, so `input.resume` alone proves nothing about
+      // whether the context came back. See Session.resumedFrom.
+      if (openMethod === "thread/resume") session.resumedFrom = input.resume;
     } catch (error) {
       rpc.kill();
       throw error;
@@ -972,6 +978,11 @@ export class CodexAdapter implements ProviderAdapter {
       provider: this.provider,
       at: Date.now(),
       source: "codex.rpc.notification" as const,
+      // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
+      // never completes still leaves the thread resumable.
+      ...(session.conversationId
+        ? { refs: { conversationId: session.conversationId } }
+        : {}),
     };
   }
 
@@ -982,6 +993,7 @@ export class CodexAdapter implements ProviderAdapter {
       cwd: session.cwd,
       status: session.activeTurnId ? "running" : "ready",
       conversationId: session.conversationId,
+      resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
       mode: session.mode,

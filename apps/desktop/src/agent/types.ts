@@ -117,6 +117,15 @@ export type Session = {
   status: RuntimeSessionState;
   /** Provider-native conversation id, once known — used to resume. */
   conversationId?: string;
+  /** The resume id this session actually adopted, when `SessionStartInput.resume`
+   *  was honored. Absent means the process came up with an empty context — either
+   *  no resume was asked for, or the provider refused the one it was given
+   *  (pruned/expired/foreign) and the adapter fell back to a fresh conversation,
+   *  which every adapter does silently. Callers need the distinction: a thread
+   *  with a stored transcript sitting on a blank process is the state where
+   *  "continue" means nothing to the agent, so the send path replays the
+   *  transcript as context instead. */
+  resumedFrom?: string;
   /** Turn currently running, if any. */
   activeTurnId?: string;
   model?: string;

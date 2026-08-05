@@ -177,6 +177,8 @@ type DroidSession = {
   model?: string;
   mode: InteractionMode;
   conversationId?: string;
+  /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
+  resumedFrom?: string;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, DroidItemBuffer>;
@@ -658,6 +660,7 @@ export class DroidAdapter implements ProviderAdapter {
               SESSION_SETUP_TIMEOUT_MS,
             );
             session.conversationId = input.resume;
+            session.resumedFrom = input.resume;
           } catch {
             response = undefined;
           }
@@ -1222,6 +1225,11 @@ export class DroidAdapter implements ProviderAdapter {
       provider: this.provider,
       at: Date.now(),
       source: "droid.acp.notification" as const,
+      // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
+      // never completes still leaves the thread resumable.
+      ...(session.conversationId
+        ? { refs: { conversationId: session.conversationId } }
+        : {}),
     };
   }
 
@@ -1232,6 +1240,7 @@ export class DroidAdapter implements ProviderAdapter {
       cwd: session.cwd,
       status: session.activeTurnId ? "running" : "ready",
       conversationId: session.conversationId,
+      resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
       mode: session.mode,

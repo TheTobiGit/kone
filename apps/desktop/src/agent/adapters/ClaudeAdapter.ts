@@ -251,6 +251,8 @@ type ClaudeSession = {
   abort: AbortController;
   /** Claude-native session id (from system/init) — for display/resume. */
   sessionId?: string;
+  /** The resume id this process actually adopted, when one was honored. */
+  resumedFrom?: string;
   activeTurnId?: string;
   /** The main conversation's projection scope. */
   main: ClaudeScope;
@@ -805,11 +807,15 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     try {
       // Resolves once the CLI subprocess has initialized — our request/ack point.
+      // A dead or foreign `resume` id fails here ("conversation id does not
+      // exist"), which is what startSession's catch retries without it, so
+      // getting past this line means the resume was genuinely adopted.
       await q.initializationResult();
     } catch (error) {
       abort.abort();
       throw error;
     }
+    if (input.resume) session.resumedFrom = input.resume;
 
     this.sessions.set(input.threadId, session);
     this.emit({ ...this.base(session, "claude.sdk.lifecycle"), type: "session.started" });
@@ -1832,6 +1838,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       provider: this.provider,
       at: Date.now(),
       source,
+      // Carry the Claude session id on every envelope so the store can persist
+      // the thread's resume id as soon as system/init reports it, instead of
+      // waiting for turn.completed — a turn killed mid-flight used to leave the
+      // thread with no resume id at all.
+      ...(session.sessionId ? { refs: { conversationId: session.sessionId } } : {}),
     };
   }
 
@@ -1842,6 +1853,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       cwd: session.cwd,
       status: session.activeTurnId ? "running" : "ready",
       conversationId: session.sessionId,
+      resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
       mode: session.mode,

@@ -403,6 +403,11 @@ function backfillOrphanedTurns(db: DatabaseSync): void {
 
 export class ConversationStore {
   private db: DatabaseSync | null = null;
+  /** threadId → the provider conversation id already written for it. Events carry
+   *  the id on every envelope (see ProviderRefs), including one per streamed text
+   *  delta, so this memo keeps the capture to a single write per session instead
+   *  of an UPDATE (and an fsync) per token. */
+  private readonly knownConversationIds = new Map<string, string>();
 
   /** Open (and migrate) the database lazily on first use. Returns null and
    *  disables the store for the process if the DB can't be opened — persistence
@@ -414,6 +419,15 @@ export class ConversationStore {
       const db = new DatabaseSync(file);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA busy_timeout = 2000");
+      // WAL's default `synchronous = NORMAL` doesn't fsync on commit: the file
+      // stays consistent through a crash, but transactions committed since the
+      // last checkpoint can be *rolled back* by a power cut (SIGKILL is safe —
+      // the page cache outlives the process; losing mains power is not). Rather
+      // than pay an fsync on the streaming path — `item.updated` fires per text
+      // delta, so that would be thousands per turn — the few low-frequency rows a
+      // conversation can't be reconstructed without are committed through
+      // `durably()` below, and the per-delta churn stays at NORMAL.
+      db.exec("PRAGMA synchronous = NORMAL");
       migrate(db);
       this.db = db;
       // Recovery: this is the first DB open of a fresh process, so no session is
@@ -434,17 +448,65 @@ export class ConversationStore {
     }
   }
 
-  /** Seal every assistant turn left 'running' from a previous process as
-   *  'interrupted'. Safe to run only at first DB open (no live session yet):
-   *  after startup a 'running' block is a genuinely live turn, so this must never
-   *  be called on a per-thread read. Best-effort — a failure just leaves the
+  /** Commit `write` with an fsync behind it, so the rows it touches survive a
+   *  power cut and not just a process kill. Scoped to one call because
+   *  `synchronous` is a connection-level setting: raise it, commit, put it back.
+   *  Reserved for the handful of writes a conversation can't be rebuilt without
+   *  (the user's prompt, the provider resume id, a turn's start/settle) — never
+   *  the per-delta item churn.
+   *
+   *  Must be called outside a transaction: SQLite rejects a safety-level change
+   *  inside one ("Safety level may not be changed inside a transaction"), and the
+   *  catch below would swallow that into a silently unfsynced write. Every write
+   *  path here runs statement-per-statement; deleteThread is the only BEGIN, and
+   *  it doesn't route through here. */
+  private durably(db: DatabaseSync, write: () => void): void {
+    try {
+      db.exec("PRAGMA synchronous = FULL");
+    } catch {
+      // Couldn't raise it — the write below is still correct, just not fsynced.
+    }
+    try {
+      write();
+    } finally {
+      try {
+        db.exec("PRAGMA synchronous = NORMAL");
+      } catch {
+        /* leave it raised rather than fail the write */
+      }
+    }
+  }
+
+  /** Seal everything left mid-flight by a previous process. Safe to run only at
+   *  first DB open (no live session yet): after startup a 'running' block is a
+   *  genuinely live turn, so this must never be called on a per-thread read.
+   *
+   *  Two levels, because a crashed turn strands state at both. The assistant
+   *  *block* goes 'interrupted' — otherwise a stale 'running' keeps the
+   *  renderer's `busy` true forever and the composer stays disabled. The *items*
+   *  inside it (a tool call that was executing, the reply text mid-stream) are
+   *  sealed too: they have no live process to finish them, and a reopened thread
+   *  that renders a settled turn around a permanently spinning tool row is the
+   *  same stuck-state bug one level down. Best-effort — a failure just leaves the
    *  stale state, which is what we already had. */
   private sealOrphanedTurns(db: DatabaseSync): void {
     try {
+      const now = Date.now();
       db.prepare(
         `UPDATE blocks SET state = 'interrupted', ended_at = ?
          WHERE role = 'assistant' AND state = 'running'`,
-      ).run(Date.now());
+      ).run(now);
+      // 'failed' rather than 'interrupted': RuntimeItemStatus has no interrupted
+      // rung, and a half-run tool call did not succeed.
+      db.prepare(
+        `UPDATE items SET status = 'failed'
+         WHERE status = 'in-progress'`,
+      ).run();
+      // Only the live rungs of SubagentStatus — 'stopped' is already settled.
+      db.prepare(
+        `UPDATE subagents SET status = 'failed', ended_at = COALESCE(ended_at, ?)
+         WHERE status IN ('starting', 'running')`,
+      ).run(now);
     } catch (err) {
       console.error("[conversation-store] could not seal orphaned turns:", err);
     }
@@ -491,16 +553,22 @@ export class ConversationStore {
     if (!db) return 0;
     try {
       const at = input.at ?? Date.now();
-      db.prepare(
-        `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json)
-         VALUES (?, ?, 'user', ?, ?, ?)`,
-      ).run(
-        randomUUID(),
-        input.threadId,
-        input.text,
-        at,
-        input.attachments?.length ? JSON.stringify(input.attachments) : null,
-      );
+      // Durable: the prompt is the one row in a conversation that cannot be
+      // reconstructed from anywhere else — the provider's own transcript may hold
+      // the reply, but if kone loses the ask, the thread reads as an answer to
+      // nothing. Cheap here: once per user turn, not per streamed delta.
+      this.durably(db, () => {
+        db.prepare(
+          `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json)
+           VALUES (?, ?, 'user', ?, ?, ?)`,
+        ).run(
+          randomUUID(),
+          input.threadId,
+          input.text,
+          at,
+          input.attachments?.length ? JSON.stringify(input.attachments) : null,
+        );
+      });
       this.touch(db, input.threadId, at);
       const row = db
         .prepare(
@@ -611,19 +679,76 @@ export class ConversationStore {
     }
   }
 
+  /** Persist the provider's own conversation id the moment it is first seen on an
+   *  event envelope, rather than waiting for the turn that carries it to finish.
+   *
+   *  This is the fix for the hard-crash case. The id used to be written only by
+   *  `turn.completed`, so a turn that never completed — power cut, SIGKILL, a
+   *  crash mid-tool — left `conversation_id` NULL. On reopen the renderer had
+   *  nothing to stage as a resume (useAgent's `pendingResumeId`), so the next
+   *  send spawned a *fresh* CLI with no history: the transcript still rendered
+   *  from `blocks`, but the provider behind it was blank, and "continue" meant
+   *  nothing to it. Capturing on arrival means a thread is resumable from its
+   *  first streamed event onward.
+   *
+   *  Memoized per thread so one write covers a whole session rather than one per
+   *  event. Only ever moves the value forward — a resumed session reports its own
+   *  new id, and never blanks a known one. Mirrors how the reference server
+   *  advances its resume cursor as soon as a durable provider message names a
+   *  session.
+   *
+   *  The memo is only set once a row has actually been updated. Adapters emit
+   *  `session.started` — which carries the id — from inside startSession, i.e.
+   *  before ipc.ts registers the thread, so on a brand-new thread the first
+   *  attempt matches no row. Memoizing that would drop the id for the entire
+   *  session, which is the very bug this method exists to fix; instead it retries
+   *  on the next event, by which time the row exists. */
+  private captureConversationId(db: DatabaseSync, event: RuntimeEvent): void {
+    const conversationId =
+      event.refs?.conversationId ??
+      (event.type === "turn.completed" ? event.conversationId : undefined);
+    if (!conversationId) return;
+    if (this.knownConversationIds.get(event.threadId) === conversationId) return;
+    // `item.updated` is the per-delta type — thousands per turn. Every turn also
+    // produces item.started and turn.completed, so the id lands from those
+    // without hanging a write attempt (and an fsync) off every token.
+    if (event.type === "item.updated") return;
+    let written = false;
+    this.durably(db, () => {
+      const result = db
+        .prepare(`UPDATE threads SET conversation_id = ? WHERE thread_id = ?`)
+        .run(conversationId, event.threadId);
+      written = Number(result.changes) > 0;
+    });
+    if (written) this.knownConversationIds.set(event.threadId, conversationId);
+  }
+
   /** Fold one normalized runtime event into the stored read model — the write
    *  half of persistence. Mirrors the renderer's reducer, but to rows. */
   applyEvent(event: RuntimeEvent): void {
     const db = this.handle();
     if (!db) return;
     try {
+      // Before the per-type fold: any envelope may be the one that first names
+      // the provider conversation, and the id must not wait for a turn to settle.
+      this.captureConversationId(db, event);
       switch (event.type) {
         case "turn.started": {
-          db.prepare(
-            `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, at)
-             VALUES (?, ?, 'assistant', ?, 'running', ?)
-             ON CONFLICT(block_id) DO NOTHING`,
-          ).run(assistantBlockId(event.threadId, event.turnId), event.threadId, event.turnId, event.at);
+          // Durable: the block is what anchors every item in the turn, so losing
+          // it loses the reply even when the items themselves survived (the
+          // failure mode the v6 migration had to repair after the fact).
+          this.durably(db, () => {
+            db.prepare(
+              `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, at)
+               VALUES (?, ?, 'assistant', ?, 'running', ?)
+               ON CONFLICT(block_id) DO NOTHING`,
+            ).run(
+              assistantBlockId(event.threadId, event.turnId),
+              event.threadId,
+              event.turnId,
+              event.at,
+            );
+          });
           this.touch(db, event.threadId, event.at);
           break;
         }
@@ -707,24 +832,31 @@ export class ConversationStore {
           break;
         }
         case "turn.completed": {
-          db.prepare(
-            `UPDATE blocks SET state = 'completed', ended_at = ?
-             WHERE block_id = ?`,
-          ).run(event.at, assistantBlockId(event.threadId, event.turnId));
-          if (event.conversationId) {
+          // `conversationId` is already handled by captureConversationId above —
+          // it no longer waits for this event, which is the whole point of the
+          // crash fix.
+          this.durably(db, () => {
             db.prepare(
-              `UPDATE threads SET conversation_id = ? WHERE thread_id = ?`,
-            ).run(event.conversationId, event.threadId);
-          }
+              `UPDATE blocks SET state = 'completed', ended_at = ?
+               WHERE block_id = ?`,
+            ).run(event.at, assistantBlockId(event.threadId, event.turnId));
+          });
           this.touch(db, event.threadId, event.at);
           break;
         }
         case "turn.aborted": {
           const state = event.reason === "interrupted" ? "interrupted" : "failed";
-          db.prepare(
-            `UPDATE blocks SET state = ?, error = ?, ended_at = ?
-             WHERE block_id = ?`,
-          ).run(state, event.message ?? null, event.at, assistantBlockId(event.threadId, event.turnId));
+          this.durably(db, () => {
+            db.prepare(
+              `UPDATE blocks SET state = ?, error = ?, ended_at = ?
+               WHERE block_id = ?`,
+            ).run(
+              state,
+              event.message ?? null,
+              event.at,
+              assistantBlockId(event.threadId, event.turnId),
+            );
+          });
           this.touch(db, event.threadId, event.at);
           break;
         }
@@ -884,6 +1016,7 @@ export class ConversationStore {
       db.prepare(`DELETE FROM attachments WHERE thread_id = ?`).run(threadId);
       db.prepare(`DELETE FROM threads     WHERE thread_id = ?`).run(threadId);
       db.exec("COMMIT");
+      this.knownConversationIds.delete(threadId);
     } catch (err) {
       try {
         db.exec("ROLLBACK");
@@ -1067,6 +1200,23 @@ export class ConversationStore {
     } catch (err) {
       console.error("[conversation-store] listThreads failed:", err);
       return [];
+    }
+  }
+
+  /** Whether this thread has ever had a user turn — i.e. whether there is a
+   *  conversation here that a fresh provider session would be missing. Cheap
+   *  enough for the session-open path, unlike loadThread. */
+  hasUserTurn(threadId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const row = db
+        .prepare(`SELECT 1 FROM blocks WHERE thread_id = ? AND role = 'user' LIMIT 1`)
+        .get(threadId);
+      return row !== undefined;
+    } catch (err) {
+      console.error("[conversation-store] hasUserTurn failed:", err);
+      return false;
     }
   }
 

@@ -4,6 +4,7 @@ import { AgentService } from "./AgentService.js";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { getConversationStore } from "./ConversationStore.js";
 import { detect, diffStatBetween, snapshotWorkingTree } from "../git/status.js";
+import { buildResumeContext } from "./resumeContext.js";
 import {
   buildPromptThreadTitleFallback,
   canReplaceThreadTitle,
@@ -36,6 +37,14 @@ export function getAgentService(): AgentService {
 // Renderers currently subscribed to the event stream. We hold WebContents and
 // drop them on destroy so a closed window leaks no forwarding.
 const subscribers = new Set<WebContents>();
+
+// Threads whose live provider session came up with none of the thread's context
+// — no stored resume id to offer, or the provider refused the one we had (see
+// Session.resumedFrom). kone still has the transcript, so the next turn on such
+// a thread carries a condensed replay of it (resumeContext.ts) instead of asking
+// a blank agent to "continue". One-shot: the first turn re-establishes the
+// context, and everything after it is a normal continuation.
+const threadsNeedingReplay = new Set<string>();
 
 /** Register the agent:* IPC handlers. Call once, before creating the window. */
 export function registerAgentIpc(): void {
@@ -232,6 +241,11 @@ export function registerAgentIpc(): void {
     // diffstat measures only what the conversation changes (no-op if the thread
     // already has a baseline — a resumed session keeps its original one).
     captureBaseline(input.threadId, input.cwd);
+    // A session that adopted the provider's own conversation carries its context
+    // with it and needs nothing from us. One that didn't, on a thread that has a
+    // transcript, is the crash case: stage the replay for its next turn.
+    if (session.resumedFrom) threadsNeedingReplay.delete(input.threadId);
+    else if (store.hasUserTurn(input.threadId)) threadsNeedingReplay.add(input.threadId);
     return session;
   });
   // Persist an attachment's bytes to disk and hand back the bytes-free metadata
@@ -241,7 +255,17 @@ export function registerAgentIpc(): void {
     attachments.save(input),
   );
 
+  /** The recovered-transcript preamble for a thread whose session came up blank,
+   *  or null. Read before the new prompt is journaled, so the digest ends at the
+   *  last thing the agent actually saw. Consumed once. */
+  function replayPreamble(threadId: string): string | null {
+    if (!threadsNeedingReplay.delete(threadId)) return null;
+    const thread = store.loadThread(threadId);
+    return thread ? buildResumeContext(thread) : null;
+  }
+
   ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) => {
+    const preamble = replayPreamble(input.threadId);
     // Persist the user prompt (with any attachment metadata) before dispatching,
     // so it precedes the turn in arrival order (turn.started lands after this).
     const userTurnCount = store.recordUserBlock({
@@ -262,7 +286,11 @@ export function registerAgentIpc(): void {
         });
       }
     }
-    return svc.sendTurn(input);
+    // Only the dispatched prompt carries the replay — the block journaled above
+    // keeps the user's own words, so the transcript never shows the machinery.
+    return svc.sendTurn(
+      preamble ? { ...input, input: `${preamble}\n\n${input.input}` } : input,
+    );
   });
   ipcMain.handle("agent:interrupt", (_event, threadId: string) =>
     svc.interruptTurn(threadId),
@@ -313,6 +341,7 @@ export function registerAgentIpc(): void {
     // row — otherwise the bytes on disk would outlive the conversation.
     await attachments.deleteThreadFiles(threadId);
     store.deleteThread(threadId);
+    threadsNeedingReplay.delete(threadId);
   });
 }
 

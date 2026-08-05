@@ -24,6 +24,8 @@ type OpenCodeSubagentRun = {
 type OpenCodeSession = {
   threadId: string; cwd: string; model?: string; variant?: string; contextWindow?: number; mode: InteractionMode; baseUrl: string;
   client: OpenCodeClient; server: OpenCodeServer; openCodeSessionId: string; activeTurnId?: string;
+  /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
+  resumedFrom?: string;
   eventsAbort: AbortController; messageRoleById: Map<string, string>; partById: Map<string, RecordLike>;
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
@@ -325,9 +327,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
         else await client.request("PATCH", `/session/${encodeURIComponent(adoptedId)}`, { permission: permissionRules(mode) });
       } catch (error) { if (!isOpenCodeNotFound(error)) { await server.dispose(); throw error; } }
     }
+    // Set only if the resume id was found and adopted above (or forked from, which
+    // copies the transcript). A pruned id leaves it undefined and falls through to a
+    // fresh session, which the caller has to be able to tell apart — see Session.resumedFrom.
+    const resumedFrom = sessionId ? resume : undefined;
     if (!sessionId) sessionId = responseData(await client.request("POST", "/session", { permission: permissionRules(mode) }))?.id;
     if (!sessionId) { await server.dispose(); throw new Error("OpenCode session response did not include an id."); }
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -362,7 +368,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   async hasSession(threadId: string): Promise<boolean> { return this.sessions.has(threadId); }
 
   private require(threadId: string): OpenCodeSession { const session = this.sessions.get(threadId); if (!session) throw new Error(`No OpenCode session for thread ${threadId}`); return session; }
-  private toSession(s: OpenCodeSession): Session { return { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, activeTurnId: s.activeTurnId, model: s.model, mode: s.mode }; }
+  private toSession(s: OpenCodeSession): Session { return { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, resumedFrom: s.resumedFrom, activeTurnId: s.activeTurnId, model: s.model, mode: s.mode }; }
   private drain(s: OpenCodeSession): void { for (const [id, pending] of s.pendingUserInputs) { s.pendingUserInputs.delete(id); pending.resolve({}); } }
   private abortLiveTurn(s: OpenCodeSession): void { const turnId = s.activeTurnId; if (!turnId) return; s.activeTurnId = undefined; s.interrupting = false; this.emit({ ...base(s, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "interrupted" }); }
 

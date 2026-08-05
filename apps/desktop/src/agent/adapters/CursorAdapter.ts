@@ -145,6 +145,8 @@ type CursorSession = {
   model?: string;
   mode: InteractionMode;
   conversationId?: string;
+  /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
+  resumedFrom?: string;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, CursorItemBuffer>;
@@ -686,6 +688,7 @@ export class CursorAdapter implements ProviderAdapter {
             SESSION_SETUP_TIMEOUT_MS,
           );
           session.conversationId = input.resume;
+          session.resumedFrom = input.resume;
         } catch {
           response = undefined;
         }
@@ -1262,6 +1265,11 @@ export class CursorAdapter implements ProviderAdapter {
       provider: this.provider,
       at: Date.now(),
       source: "cursor.acp.notification" as const,
+      // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
+      // never completes still leaves the thread resumable.
+      ...(session.conversationId
+        ? { refs: { conversationId: session.conversationId } }
+        : {}),
     };
   }
 
@@ -1272,6 +1280,7 @@ export class CursorAdapter implements ProviderAdapter {
       cwd: session.cwd,
       status: session.activeTurnId ? "running" : "ready",
       conversationId: session.conversationId,
+      resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
       mode: session.mode,
