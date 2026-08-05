@@ -9,14 +9,13 @@ import {
   DistributeHorizontalCenterIcon,
   KeyboardIcon,
   RefreshIcon,
-  Tick02Icon,
   UndoIcon,
   VolumeHighIcon,
   VolumeMute01Icon,
 } from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
 import type { ShortcutAction } from "~/composables/useShortcuts";
-import type { CenterMode } from "~/composables/useStripPrefs";
+import { CENTER_MODES } from "~/utils/stripScroll";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
 // It doesn't float over the launcher — it sits pinned to the left edge, and the
@@ -24,20 +23,22 @@ import type { CenterMode } from "~/composables/useStripPrefs";
 // just the panel surface; the reveal lives upstream.
 //
 // The panel is a small navigable drawer: a root list of section groups that
-// pushes into detail panes. Two of those panes are lists and live here in the
+// pushes into detail panes. One of those panes is a list and lives here in the
 // 320px column — Shortcuts, which rebinds the app's custom, genuinely
-// rebind-worthy gestures; and Thread strip, which holds the board's scroll-feel
-// settings. OS-convention keys (⌘, / ⌘K) and fixed keys (Esc / Enter /
-// type-to-compose) stay in the shortcut registry — handlers still consult them —
-// but are deliberately hidden from the UI; there's no meaning in rebinding those.
+// rebind-worthy gestures. OS-convention keys (⌘, / ⌘K) and fixed keys (Esc /
+// Enter / type-to-compose) stay in the shortcut registry — handlers still consult
+// them — but are deliberately hidden from the UI; there's no meaning in rebinding
+// those.
 //
-// The third, Agent providers, is a *page*: the drawer widens and hands the whole
-// surface to SettingsProvidersPane. Panes that are pages are declared in
-// useSettingsSurface, since the launcher's slide is measured from the same value.
+// The other two are *pages*: the drawer widens and hands the whole surface to
+// SettingsProvidersPane and SettingsThreadStripPane. Panes that are pages are
+// declared in useSettingsSurface, since the launcher's slide is measured from the
+// same value.
 //
-// Thread strip earns its own pane rather than sitting inline: today it's a single
-// center-focused-column choice, but it's the shelf the rest of the strip's
-// knobs will land on (gaps, snap feel, width steps), so it wants room to grow.
+// Thread strip is a page rather than a column list because the setting it holds
+// can't be explained in a sentence — the page previews all three modes live, and a
+// strip needs width to be a strip. It's also the shelf the rest of the strip's
+// knobs will land on (gaps, snap feel, width steps).
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
@@ -57,65 +58,15 @@ const {
 
 // ── thread strip (niri's center-focused-column) ─────────────────────────────────
 // The same module-scope ref ThreadStrip.vue reads, so setting it here steers the
-// board's scroll behaviour live — no reload, no prop threaded across. In the pane
-// the three choices sit as a vertical radio list, each with a line on what it does.
+// board's scroll behaviour live — no reload, no prop threaded across.
 const { centerMode } = useStripPrefs();
-const centerOptions: { value: CenterMode; label: string; description: string }[] = [
-  {
-    value: "never",
-    label: "Never",
-    description: "Keep the strip anchored — nudge the focused column just into view.",
-  },
-  {
-    value: "on-overflow",
-    label: "When needed",
-    description: "Center the focused column only when the strip has to scroll.",
-  },
-  {
-    value: "always",
-    label: "Always",
-    description: "Recenter the strip on every focus change.",
-  },
-];
 
 // The active option, shown trailing the root row so the current choice reads
-// without opening the pane.
-const currentCenterOption = computed(() =>
-  centerOptions.find((o) => o.value === centerMode.value),
+// without opening the page. The labels come from CENTER_MODES rather than a copy
+// kept here, so the row and the page can't disagree about what a mode is called.
+const currentCenterOption = computed(
+  () => CENTER_MODES.find((o) => o.value === centerMode.value)?.label ?? "",
 );
-
-// Keep the button elements so arrow-key navigation can move focus with the
-// selection, the way a native radiogroup does (roving focus, not roving tabindex
-// alone). Order tracks the v-for, so index maps straight onto centerOptions.
-const centerRadioEls = ref<HTMLElement[]>([]);
-function setCenterRadioEl(el: unknown, i: number) {
-  if (el instanceof HTMLElement) centerRadioEls.value[i] = el;
-}
-
-function setCenterMode(mode: CenterMode) {
-  if (centerMode.value === mode) return;
-  centerMode.value = mode;
-  cue("toggle");
-}
-
-function onCenterKeydown(e: KeyboardEvent, i: number) {
-  // Only a bare arrow navigates the group. A modified arrow (⌘⌥← / → is the
-  // board's focus-thread shortcut) or an arrow while the pane isn't showing must
-  // pass straight through — a radio button that still holds focus after the
-  // drawer shuts mustn't swallow the app's chords.
-  if (!props.open || pane.value !== "motion") return;
-  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-  const forward = e.key === "ArrowDown" || e.key === "ArrowRight";
-  const back = e.key === "ArrowUp" || e.key === "ArrowLeft";
-  if (!forward && !back) return;
-  // Arrows own the group's focus; don't let them also scroll the drawer.
-  e.preventDefault();
-  const next = (i + (forward ? 1 : -1) + centerOptions.length) % centerOptions.length;
-  const option = centerOptions[next];
-  if (!option) return;
-  setCenterMode(option.value);
-  centerRadioEls.value[next]?.focus();
-}
 
 // ── agent providers ───────────────────────────────────────────────────────────
 // The row only summarises; the surface itself is SettingsProvidersPane, which the
@@ -393,7 +344,7 @@ defineExpose({ cancelCapture });
                 Thread strip
               </span>
               <span class="shrink-0 text-[12px] leading-tight text-muted">
-                {{ currentCenterOption?.label }}
+                {{ currentCenterOption }}
               </span>
             </button>
           </Magnet>
@@ -580,86 +531,7 @@ defineExpose({ cancelCapture });
         </p>
       </motion.section>
 
-      <!-- Motion pane: the board's scroll-feel settings. Today just the
-           center-focused-column choice, laid out as a vertical radio list — each
-           option is a borderless row carrying its own one-line explanation, the
-           selected one marked in --ink with a tick (Geist is 400-only, so colour +
-           glyph carry the state weight can't). Room here for gaps / snap / width
-           knobs later. -->
-      <motion.section
-        v-else-if="pane === 'motion'"
-        key="motion"
-        class="col-start-1 row-start-1 flex flex-col"
-        aria-label="Thread strip"
-        :initial="{ opacity: 0, x: paneOffset }"
-        :animate="{ opacity: 1, x: 0 }"
-        :transition="paneSpring"
-      >
-        <div class="mb-4 flex items-center gap-2 pr-3">
-          <button
-            type="button"
-            class="back-glyph flex size-6 items-center justify-center text-muted transition-colors hover:text-ink focus-visible:text-ink focus-visible:outline-none"
-            :tabindex="open ? 0 : -1"
-            aria-label="Back to settings"
-            @click="backToRoot"
-          >
-            <HugeiconsIcon
-              :icon="ArrowTurnBackwardIcon"
-              :size="16"
-              :stroke-width="2"
-              aria-hidden="true"
-            />
-          </button>
-          <h2 class="px-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
-            Thread strip
-          </h2>
-        </div>
-
-        <section class="flex flex-col gap-1.5" aria-label="Center focused column">
-          <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
-            Center focused column
-          </p>
-          <div
-            class="flex flex-col"
-            role="radiogroup"
-            aria-label="Center focused column"
-          >
-            <button
-              v-for="(opt, i) in centerOptions"
-              :key="opt.value"
-              :ref="(el) => setCenterRadioEl(el, i)"
-              type="button"
-              role="radio"
-              :aria-checked="centerMode === opt.value"
-              :aria-label="opt.label"
-              :tabindex="open ? (centerMode === opt.value ? 0 : -1) : -1"
-              class="center-opt flex cursor-pointer items-start gap-3 rounded-[10px] px-3 py-2.5 text-left focus-visible:outline-none hover:bg-hover focus-visible:bg-hover"
-              @click="setCenterMode(opt.value)"
-              @keydown="onCenterKeydown($event, i)"
-            >
-              <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span
-                  class="text-[14px] leading-tight"
-                  :class="centerMode === opt.value ? 'text-ink' : 'text-ink-soft'"
-                >
-                  {{ opt.label }}
-                </span>
-                <span class="text-[11px] leading-snug text-muted">
-                  {{ opt.description }}
-                </span>
-              </span>
-              <HugeiconsIcon
-                v-if="centerMode === opt.value"
-                :icon="Tick02Icon"
-                :size="15"
-                :stroke-width="2"
-                class="mt-0.5 shrink-0 text-ink"
-                aria-hidden="true"
-              />
-            </button>
-          </div>
-        </section>
-      </motion.section>
+      <SettingsThreadStripPane v-else-if="pane === 'motion'" :open="open" @back="backToRoot" />
 
     </div>
 

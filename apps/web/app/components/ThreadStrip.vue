@@ -34,6 +34,17 @@ import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
 import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
+// The scroll rule the centring modes name, and the geometry it reads. Shared with
+// SettingsThreadStripPane so the settings preview runs the board's own maths rather
+// than a copy of it — see the header of that module.
+import {
+  JOINT_PX,
+  LADDER_PX,
+  MIN_ANIMATED_PX,
+  padEndFor,
+  resolveScrollTarget,
+  resolveSnapTarget,
+} from "~/utils/stripScroll";
 import { SESSION_BRAND } from "~/types/session";
 import ContextWindowMeter from "~/components/ContextWindowMeter.vue";
 
@@ -111,7 +122,8 @@ const reducedMotion = usePreferredReducedMotion();
 // in a resizable app window, so the ladder itself does not drift every time you
 // drag the window edge. Each rung is an absolute width that holds until you step
 // it; the viewport cap only kicks in when the window is narrower than the preset.
-const LADDER_PX = [840, 960, 1120, 1240] as const;
+// The rungs themselves live in `~/utils/stripScroll` because the settings preview
+// has to model a column at the default width to predict where the strip will land.
 const LAST_STEPPED = LADDER_PX.length - 2;
 const DEFAULT_PRESET = 0; // 840px — default and narrowest rung
 
@@ -454,11 +466,6 @@ function animateZoom(from: string): void {
 
 const isSolo = computed(() => props.panes.length === 1);
 
-/** The leading seam mirrored before the first column (see template) is a real
- *  14px-wide element in the plane, so it shifts the lone column right of centre
- *  unless the start pad gives its width back. Matches `.col-joint` width in CSS. */
-const LEAD_JOINT_PX = 14;
-
 /** Leading pad centres the lone thread; trailing pad lets the last column scroll
  *  to centre when there are two or more. */
 const soloPadStart = computed(() => {
@@ -468,7 +475,9 @@ const soloPadStart = computed(() => {
   const colW = Math.min(presetFor(s.id).px, railWidth.value);
   // Pull the pad in by the leading seam's width so the column itself — not the
   // seam+column pair — sits centred, exactly as it did before the seam existed.
-  return Math.max(0, (railWidth.value - colW) / 2 - LEAD_JOINT_PX);
+  // (The leading seam mirrored before the first column is a real element in the
+  // plane, so it would otherwise shift the lone column right of centre.)
+  return Math.max(0, (railWidth.value - colW) / 2 - JOINT_PX);
 });
 const railPads = computed(() => {
   // In overview nothing centre-scrolls, so the half-screen trailing pad would just be
@@ -488,7 +497,7 @@ const railPads = computed(() => {
   // emptiness past the end of the strip — you'd swipe into nothing and nearestKey
   // (which picks by viewport centre) would start answering out there. Shrink it to
   // a peek. `on-overflow` still centres when it moves, so it keeps the half-screen.
-  const padEnd = centerMode.value === "never" ? PEEK_PX : railWidth.value / 2;
+  const padEnd = padEndFor(centerMode.value, railWidth.value);
   return {
     "--rail-pad-start": isSolo.value ? `${soloPadStart.value}px` : "0px",
     "--rail-pad-end": isSolo.value ? "0px" : `${padEnd}px`,
@@ -508,44 +517,32 @@ function setCol(key: string, el: unknown): void {
  *  Returning `null` — rather than the current position — is what makes the strip
  *  *stay put*: `scrollToColumn` already treats null as a no-op, so nothing
  *  programmatic fires and no smooth-scroll animation is queued. */
-const VISIBILITY_EPS = 1; // sub-pixel layout noise; don't scroll for half a pixel
-const PEEK_PX = 24;       // in `never`, leave a sliver of the neighbour showing
-
 let programmaticAt = 0;
+
+/** The column's geometry in the rail's *scroller* coordinates.
+ *
+ *  `offsetLeft`/`offsetWidth` are unscaled *plane* coordinates, but `scrollLeft`
+ *  and `scrollWidth` are the rail's *scaled* scroller coordinates in overview. The
+ *  scaler shrinks the layout by exactly `k`, so multiply the column's geometry by k
+ *  to speak the same units. Without this, arrow-navigating in overview scrolls to
+ *  wildly wrong positions — the subtlest bug in the feature. Outside overview k is 1. */
+function measureColumn(r: HTMLElement, el: HTMLElement) {
+  const s = overview.value ? k.value : 1;
+  return {
+    mode: centerMode.value,
+    left: el.offsetLeft * s,
+    width: el.offsetWidth * s,
+    viewport: r.clientWidth,
+    scrollLeft: r.scrollLeft,
+    maxScroll: Math.max(0, r.scrollWidth - r.clientWidth),
+  };
+}
+
 function scrollTargetFor(key: string): number | null {
   const r = rail.value;
   const el = colEls.get(key);
   if (!r || !el) return null;
-
-  const max = Math.max(0, r.scrollWidth - r.clientWidth);
-  const clamp = (n: number) => Math.max(0, Math.min(max, n));
-
-  // `offsetLeft`/`offsetWidth` are unscaled *plane* coordinates, but `scrollLeft`
-  // and `scrollWidth` are the rail's *scaled* scroller coordinates in overview. The
-  // scaler shrinks the layout by exactly `k`, so multiply the column's geometry by k
-  // to speak the same units. Without this, arrow-navigating in overview scrolls to
-  // wildly wrong positions — the subtlest bug in the feature. Outside overview k is 1.
-  const s = overview.value ? k.value : 1;
-  const left = el.offsetLeft * s;
-  const width = el.offsetWidth * s;
-  const right = left + width;
-  const centred = clamp(left + width / 2 - r.clientWidth / 2);
-
-  if (centerMode.value === "always") return centred;
-
-  // A column wider than the viewport can never be "fully visible" — centring it
-  // would hide its left edge, which is where reading starts. Pin its left edge.
-  if (width >= r.clientWidth) return clamp(left);
-
-  const viewL = r.scrollLeft;
-  const viewR = viewL + r.clientWidth;
-  if (left >= viewL - VISIBILITY_EPS && right <= viewR + VISIBILITY_EPS) return null;
-
-  if (centerMode.value === "on-overflow") return centred;
-
-  // `never`: the smallest move that brings it in, plus a peek so the neighbour it
-  // came from stays hinted at rather than guillotined at the frame edge.
-  return clamp(left < viewL ? left - PEEK_PX : right - r.clientWidth + PEEK_PX);
+  return resolveScrollTarget(measureColumn(r, el));
 }
 
 /** Where the rail should settle after a free swipe. Unlike `scrollTargetFor` this
@@ -558,16 +555,10 @@ function snapTargetFor(key: string): number | null {
   const r = rail.value;
   const el = colEls.get(key);
   if (!r || !el) return null;
-  const max = Math.max(0, r.scrollWidth - r.clientWidth);
-  const clamp = (n: number) => Math.max(0, Math.min(max, n));
-  // Same scaled-coordinate correction as scrollTargetFor (see there). k is 1 outside
-  // overview, and the settle path is suspended while overview is on anyway, but keep
-  // the units honest so this function never lies about a column boundary.
-  const s = overview.value ? k.value : 1;
-  const left = el.offsetLeft * s;
-  const width = el.offsetWidth * s;
-  if (centerMode.value === "never") return clamp(left);
-  return clamp(left + width / 2 - r.clientWidth / 2);
+  // Measured through the same scaled-coordinate correction as scrollTargetFor. k is 1
+  // outside overview, and the settle path is suspended while overview is on anyway,
+  // but keep the units honest so this never lies about a column boundary.
+  return resolveSnapTarget(measureColumn(r, el));
 }
 let snapKey: string | null = null;
 let snapAt = 0;
@@ -601,7 +592,7 @@ function scrollToColumn(
   // against its own animation for the length of the glide. While a zoom is in flight the
   // scroll is part of that animation's from-state, so it has to be instant.
   const how = zoomBusy.value ? "auto" : behavior;
-  if (how !== "auto" && Math.abs(r.scrollLeft - target) < 6) return;
+  if (how !== "auto" && Math.abs(r.scrollLeft - target) < MIN_ANIMATED_PX) return;
   if (mode === "snap") {
     snapKey = key;
     snapAt = Date.now();

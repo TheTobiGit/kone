@@ -26,7 +26,7 @@ const PAGE_MAX = 1040;
 const pane = ref<SettingsPane>("root");
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
-const PAGE_PANES: SettingsPane[] = ["providers"];
+const PAGE_PANES: SettingsPane[] = ["providers", "motion"];
 
 export function useSettingsSurface() {
   const { width } = useWindowSize();
@@ -38,6 +38,13 @@ export function useSettingsSurface() {
    *  the column — the narrow case is always the safe one to render first. */
   const revealWidth = computed(() => {
     if (!isPage.value) return COLUMN_WIDTH;
+
+    // Every page takes the same measure. Thread strip used to be capped narrower on
+    // the grounds that a single column of options would strand its prose at an
+    // unreadable line length — but that page carries no prose now beyond one capped
+    // line, and what it does carry is three miniatures of the strip, which get more
+    // honest the closer they run to the width they're modelling. The only line long
+    // enough to need protecting sets its own `max-width`.
     return Math.round(Math.min(PAGE_MAX, Math.max(COLUMN_WIDTH, width.value - STAGE_REMAINDER)));
   });
 
