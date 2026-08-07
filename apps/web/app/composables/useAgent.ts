@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type {
   ChatAttachment,
+  ForkContext,
   InteractionMode,
   KoneAgentApi,
   ProviderKind,
@@ -245,6 +246,27 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   const threadId = ref(uid());
   const blocks = ref<ThreadBlock[]>([]);
+  /** True when this session hosts a side chat — a root thread forked from
+   *  another thread (docs/side-chat-design.md). Set when the stored thread's
+   *  forkContext is adopted; cleared on restart (a fresh thread is never a
+   *  side chat). Drives the temporary look and the timeline's hiding of the
+   *  fork-imported transcript. */
+  const sideChat = ref(false);
+  /** The thread this side chat was forked from (forkContext.sourceThreadId). */
+  const sideChatSource = ref<string | null>(null);
+  const isSideChat = computed(() => sideChat.value);
+  /** The timeline the conversation view renders: a side chat hides its
+   *  fork-imported transcript (reference-only context — the model sees it via
+   *  the one-shot bootstrap, the user sees only the side chat's own turns), a
+   *  normal thread renders everything. `blocks` stays the full source of
+   *  truth for busy/persistence/dock state. */
+  const timelineBlocks = computed<ThreadBlock[]>(() =>
+    isSideChat.value
+      ? blocks.value.filter(
+          (b) => (b as ThreadBlock & { source?: string }).source !== "fork-import",
+        )
+      : blocks.value,
+  );
   /** Agent-named (or first-turn word-fallback) working title. Empty until the
    *  first user turn or a rehydrated/opened thread that already has one. */
   const title = ref("");
@@ -486,6 +508,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     contextUsed?: number;
     contextWindow?: number;
     compactsAutomatically?: boolean;
+    /** Present on a side chat — marks this session as one (forkContext
+     *  presence is the discriminator, never a title prefix). */
+    forkContext?: ForkContext;
   }): void {
     const providerChanged = Boolean(stored.provider) && stored.provider !== provider.value;
     if (stored.provider) provider.value = stored.provider;
@@ -496,6 +521,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     else if (providerChanged) model.value = undefined;
     pendingResumeId = stored.conversationId;
     pendingResumeProvider = provider.value;
+    if (stored.forkContext) {
+      sideChat.value = true;
+      sideChatSource.value = stored.forkContext.sourceThreadId;
+    }
     // Restore the last context-window snapshot so a reopened thread shows its
     // meter filled straight away (sweeping in), instead of an empty ring until
     // the next turn re-reports usage. Absent snapshot → leave the meter hidden.
@@ -908,6 +937,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     threadId.value = uid();
     tokenUsage.value = null;
     sessionState.value = "starting";
+    // A restart is a deliberate re-birth: the new thread is a fresh
+    // conversation, never a side chat.
+    sideChat.value = false;
+    sideChatSource.value = null;
     await start();
   }
 
@@ -1434,6 +1467,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     threadId,
     provider,
     title,
+    // side-chat state
+    isSideChat,
+    sideChatSource,
+    timelineBlocks,
     // state
     blocks,
     session,
@@ -1619,8 +1656,10 @@ export function useAgent(options: UseAgentOptions) {
       title: s.title.value,
       provider: s.provider.value,
       model: s.model.value,
-      block: latestAssistant(s.blocks.value),
-      task: activePlanTask(s.blocks.value),
+      // A side chat's pill reads its own timeline — the fork-imported history
+      // is reference context, not something to surface as a "replied" state.
+      block: latestAssistant(s.timelineBlocks.value),
+      task: activePlanTask(s.timelineBlocks.value),
       busy: s.busy.value,
       everRan: s.everRan.value,
       isActive: s.key === activeKey.value,

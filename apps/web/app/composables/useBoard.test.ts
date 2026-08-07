@@ -424,6 +424,44 @@ describe("useBoard — board laws", () => {
     expect(board.entries.value[1]!.anchor).toEqual({ kind: "thread", threadId: "real-1" });
   });
 
+  test("L3: open(thread, { threadId }) of an already-hosted thread focuses its pane (one pane per thread)", async () => {
+    const { board } = harness();
+
+    await board.open("thread", { threadId: "side-1" });
+    await settle();
+    const firstId = board.entries.value[0]!.id;
+    const firstAnchor = board.entries.value[0]!.anchor;
+
+    // The same thread (the side-chat join path) must not mint a second column —
+    // it focuses the pane that already hosts it.
+    const again = await board.open("thread", { threadId: "side-1", near: firstId });
+    await settle();
+
+    expect(board.entries.value.length).toBe(1);
+    expect(again).toBe(firstId);
+    expect(board.focusedId.value).toBe(firstId);
+    expect(firstAnchor).toEqual({ kind: "thread", threadId: "side-1" });
+  });
+
+  test("L3: open(thread, { threadId }) re-opens a CLOSED thread as a fresh column", async () => {
+    const { board } = harness();
+
+    await board.open("thread", { threadId: "side-1" });
+    await settle();
+    const firstId = board.entries.value[0]!.id;
+    await board.close(firstId);
+    await settle();
+    expect(board.entries.value.length).toBe(0);
+
+    // Once its pane is gone the thread is no longer hosted — reopening mints a
+    // new column bound to the same thread.
+    const again = await board.open("thread", { threadId: "side-1" });
+    await settle();
+    expect(board.entries.value.length).toBe(1);
+    expect(again).not.toBe(firstId);
+    expect(board.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "side-1" });
+  });
+
   test("L4: open(terminal) lands immediately right of the focused column", async () => {
     const { board } = harness();
 

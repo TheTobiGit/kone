@@ -28,6 +28,7 @@ import { deriveChangedFiles } from "~/utils/changedFiles";
 import { deriveActiveSubagents } from "~/utils/subagentRuns";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
+import { createOrJoinSidechat } from "~/composables/useSideChats";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: [] }>();
@@ -228,6 +229,32 @@ function closePane(id: string): void {
 function archivePane(threadId: string, id: string): void {
   archiveSession(threadId);
   void board.close(id);
+}
+// The per-host-thread side-chat creator (the thread column's "add panel"
+// button): fork a side chat off the source thread and open it as a column
+// beside it. The child is a normal thread pane — full composer, resumable,
+// archivable — wearing the temporary look. In-flight joins are deduped by
+// createOrJoinSidechat; the first send rides the imported-transcript bootstrap.
+function openSideChat(paneId: string): void {
+  const pane = panes.value.find((p) => p.id === paneId);
+  if (pane?.kind !== "thread" || !pane.session) return;
+  const sourceThreadId = pane.session.threadId.value;
+  const sourcePaneId = pane.id;
+  void (async () => {
+    try {
+      const { threadId } = await createOrJoinSidechat({
+        sourceThreadId,
+        sendPrompt: () => {},
+        onPromptError: () => {},
+      });
+      const id = await board.open("thread", { threadId, near: sourcePaneId });
+      if (id) void composerRef.value?.wake();
+    } catch (err) {
+      // Creation is best-effort: a missing source thread or an idempotency
+      // conflict surfaces as a silent no-op — the column simply doesn't open.
+      console.warn("[sidechat] could not open side chat:", err);
+    }
+  })();
 }
 function insertPane(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   // Seam `i` sits after pane `i`; a pick inserts to its right.
@@ -1417,6 +1444,7 @@ function onDiscardFile(path: string) {
         @move="movePane"
         @close="closePane"
         @archive="archivePane"
+        @side-chat="openSideChat"
         @insert-column="insertPane"
         @terminal-write="terminal.write"
         @terminal-resize="terminal.resize"

@@ -12,6 +12,7 @@ import {
 } from "./providerCache.js";
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
+import { sidechatBootstrapForTurn } from "./sidechat.js";
 import type {
   ApprovalDecision,
   EmitEvent,
@@ -322,10 +323,17 @@ export class AgentService {
     // sets `session.model = input.model`), so guarding startSession alone left
     // the desync fully live — every turn re-supplied the foreign id.
     const provider = this.routing.get(input.threadId);
-    if (!provider) return this.adapterForThread(input.threadId).sendTurn(input);
-    const model = this.validModelFor(provider, input.model);
-    const effort = this.validEffortFor(provider, model, input.effort);
-    return this.adapterForThread(input.threadId).sendTurn({ ...input, model, effort });
+    // A side chat's FIRST turn carries the one-shot `<sidechat_context>`
+    // bootstrap (sidechat.ts): the imported transcript as reference-only
+    // context, the boundary instruction, and the user's message wrapped in
+    // `<latest_user_message>`. Null for every other turn/thread. Overlong
+    // turns (imported context + message > send cap) reject here, up front.
+    const sidechatInput = sidechatBootstrapForTurn(input.threadId, input.input);
+    const next = sidechatInput ? { ...input, input: sidechatInput } : input;
+    if (!provider) return this.adapterForThread(input.threadId).sendTurn(next);
+    const model = this.validModelFor(provider, next.model);
+    const effort = this.validEffortFor(provider, model, next.effort);
+    return this.adapterForThread(input.threadId).sendTurn({ ...next, model, effort });
   }
 
   async interruptTurn(threadId: string): Promise<void> {

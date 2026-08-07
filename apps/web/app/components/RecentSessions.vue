@@ -2,6 +2,7 @@
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Archive02Icon,
+  BubbleChatTemporaryIcon,
   Delete02Icon,
   Folder01Icon,
   GitBranchIcon,
@@ -138,6 +139,9 @@ function hasDiff(s: SessionSummary): boolean {
           <div class="rs__main">
             <div class="rs__title">
               <ProviderLogo :brand="sessionBrand(s.provider, s.brand, s.model)" :size="16" />
+              <span v-if="s.sideChat" class="rs__sidechat" title="Side chat — forked from a conversation">
+                <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="12" :stroke-width="2" aria-hidden="true" />
+              </span>
               <span class="rs__name">{{ s.title }}</span>
             </div>
 
@@ -376,6 +380,14 @@ function hasDiff(s: SessionSummary): boolean {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The side-chat marker — just the icon, tinted the same accent as the thread
+   column's, so a forked conversation never reads as a main one. */
+.rs__sidechat {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: color-mix(in srgb, var(--accent, #8b5cf6) 75%, var(--ink-soft, #3f3f46));
 }
 
 /* mono meta line — branch · diff · when */

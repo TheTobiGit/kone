@@ -5,6 +5,7 @@ import { getAttachmentStore } from "./AttachmentStore.js";
 import { getConversationStore } from "./ConversationStore.js";
 import { detect, diffStatBetween, snapshotWorkingTree } from "../git/status.js";
 import { buildResumeContext } from "./resumeContext.js";
+import { createSidechatThread } from "./sidechat.js";
 import {
   buildPromptThreadTitleFallback,
   canReplaceThreadTitle,
@@ -12,6 +13,7 @@ import {
 } from "./threadTitle.js";
 import type {
   ApprovalDecision,
+  CreateSideChatInput,
   ProviderConfig,
   ProviderKind,
   RuntimeEvent,
@@ -243,9 +245,13 @@ export function registerAgentIpc(): void {
     captureBaseline(input.threadId, input.cwd);
     // A session that adopted the provider's own conversation carries its context
     // with it and needs nothing from us. One that didn't, on a thread that has a
-    // transcript, is the crash case: stage the replay for its next turn.
+    // transcript, is the crash case: stage the replay for its next turn. Side
+    // chat threads are exempt — their imported transcript reaches the model via
+    // the one-shot `<sidechat_context>` bootstrap instead, and replaying the
+    // digest on top of it would hand the agent the same history twice.
     if (session.resumedFrom) threadsNeedingReplay.delete(input.threadId);
-    else if (store.hasUserTurn(input.threadId)) threadsNeedingReplay.add(input.threadId);
+    else if (!store.threadForkContext(input.threadId) && store.hasUserTurn(input.threadId))
+      threadsNeedingReplay.add(input.threadId);
     return session;
   });
   // Persist an attachment's bytes to disk and hand back the bytes-free metadata
@@ -254,6 +260,28 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:upload-attachment", (_event, input: UploadAttachmentInput) =>
     attachments.save(input),
   );
+
+  // Side chat creation (docs/side-chat-design.md). The renderer mints the
+  // thread id + request id; a replay of the same id resolves "exists" instead
+  // of forking twice. The result streams to every renderer as
+  // `thread.sidechat-created`; the child's session/turns then flow through the
+  // normal start-session → send-turn path (the first send carries the
+  // imported-transcript bootstrap).
+  ipcMain.handle("agent:create-side-chat", (_event, input: CreateSideChatInput) => {
+    const result = createSidechatThread(input);
+    if (result.status === "created") {
+      broadcast({
+        type: "thread.sidechat-created",
+        threadId: result.threadId,
+        provider: result.provider,
+        at: Date.now(),
+        source: "kone.store",
+        sourceThreadId: result.sourceThreadId,
+        requestId: result.requestId,
+      });
+    }
+    return result;
+  });
 
   /** The recovered-transcript preamble for a thread whose session came up blank,
    *  or null. Read before the new prompt is journaled, so the digest ends at the

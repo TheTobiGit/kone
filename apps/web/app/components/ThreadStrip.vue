@@ -28,7 +28,7 @@ import {
 } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
@@ -83,6 +83,9 @@ const emit = defineEmits<{
    *  the store/history row can be stamped archived) and the pane key (so the
    *  column can be closed). Only ever fired for a non-blank thread column. */
   archive: [threadId: string, key: string];
+  /** Fork a side chat off this thread's column (the per-host-thread "add panel"
+   *  creator). Carries the source pane id; ProjectView opens the child beside it. */
+  "side-chat": [paneId: string];
   /** Insert a blank thread to the right of seam `seamIndex`. */
   "insert-column": [seamIndex: number, kind: "thread" | "terminal" | "scratchpad"];
   /** Write terminal input data. Keyed by the terminal *session* key, not the pane
@@ -154,9 +157,18 @@ function scrollBehavior(): ScrollBehavior {
   return reducedMotionOn() ? "auto" : "smooth";
 }
 
+/** Is a pane a side chat? Side chats are locked to the narrowest width rung —
+ *  no expanding, no zen — and cannot fork further side chats. */
+function isSideChatPane(id: string): boolean {
+  const c = props.panes.find((p) => p.id === id);
+  return c?.kind === "thread" && !!c.session?.isSideChat.value;
+}
+
 /** The width preset a column shows — read from the pane entry, the board's
- *  single source of truth. Emits back on change so restore/move can't drift. */
+ *  single source of truth. Emits back on change so restore/move can't drift.
+ *  A side chat is pinned to the narrowest rung whatever the stored width says. */
 function presetIndexFor(key: string): number {
+  if (isSideChatPane(key)) return 0;
   const fromEntry = props.panes.find((c) => c.id === key)?.entry.width;
   return typeof fromEntry === "number" ? clampPreset(fromEntry) : DEFAULT_PRESET;
 }
@@ -217,6 +229,9 @@ function flagWidthAnim(key: string): void {
   );
 }
 function setPreset(key: string, index: number): void {
+  // Side chats are fixed at the narrowest rung — the width ladder never
+  // touches them (no expanding).
+  if (isSideChatPane(key)) return;
   const next = clampPreset(index);
   if (next === presetIndexFor(key)) return;
   // Mirror the choice onto the pane entry so it persists across restart.
@@ -248,7 +263,8 @@ function shrinkWidth(key: string): void {
 }
 
 function toggleZen(): void {
-  if (!props.focusedId || props.panes.length === 0) return;
+  // Side chats never maximize — they are narrow by design.
+  if (!props.focusedId || props.panes.length === 0 || isSideChatPane(props.focusedId)) return;
   cue("toggle");
   const id = props.focusedId;
   const next = new Set(zenIds.value);
@@ -1074,7 +1090,10 @@ const hasScratchpad = computed(() => {
 });
 
 function columnLabel(c: Pane): string {
-  if (c.kind === "thread") return c.session?.title.value || "New thread";
+  if (c.kind === "thread") {
+    const title = c.session?.title.value || "New thread";
+    return c.session?.isSideChat.value ? `Side chat · ${title}` : title;
+  }
   return paneKindMeta(c.kind).label;
 }
 
@@ -1137,6 +1156,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
             'is-dormant': !c.session && c.id !== focusedId,
             'is-live': c.kind === 'thread' && !!c.session && c.session.busy.value && c.id !== focusedId,
             'is-pulse': c.id === props.pulseKey,
+            'is-sidechat': c.kind === 'thread' && !!c.session?.isSideChat.value,
           },
         ]"
         :aria-label="`Column ${i + 1}: ${columnLabel(c)}`"
@@ -1189,6 +1209,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
               :class="{
                 'is-focused': c.id === focusedId,
                 'is-width-anim': widthAnim[c.id],
+                'is-sidechat': c.kind === 'thread' && !!c.session?.isSideChat.value,
               }"
               :style="{ '--col-w': presetFor(c.id).width }"
               :role="overview ? 'button' : undefined"
@@ -1205,6 +1226,13 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                 <div class="col__title-wrap">
                   <template v-if="c.kind === 'thread' && c.session">
                     <ProviderLogo :brand="brandOf(c)" :size="15" />
+                    <span
+                      v-if="c.session.isSideChat.value"
+                      class="col__sidechat"
+                      :title="'Side chat — forked from a conversation'"
+                    >
+                      <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="11" :stroke-width="2" aria-hidden="true" />
+                    </span>
                     <h2 class="col__title">{{ c.session.title.value || "New thread" }}</h2>
                     <ContextWindowMeter
                       v-if="c.session.tokenUsage.value"
@@ -1218,6 +1246,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                 </div>
                 <div class="col__tools">
                   <button
+                    v-if="!isSideChatPane(c.id)"
                     type="button"
                     class="col__tool col__tool--width"
                     :disabled="isZen(c.id)"
@@ -1228,7 +1257,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     {{ presetFor(c.id).label }}
                   </button>
                   <button
-                    v-if="c.id === focusedId"
+                    v-if="c.id === focusedId && !isSideChatPane(c.id)"
                     type="button"
                     class="col__tool"
                     :aria-label="isZen(c.id) ? 'Restore column' : 'Maximize column'"
@@ -1241,6 +1270,21 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                       :stroke-width="2"
                       aria-hidden="true"
                     />
+                  </button>
+                  <button
+                    v-if="
+                      c.kind === 'thread' &&
+                      c.session &&
+                      !isBlankThread(c) &&
+                      !c.session.isSideChat.value
+                    "
+                    type="button"
+                    class="col__tool"
+                    aria-label="Open a side chat"
+                    title="Open a side chat"
+                    @click.stop="emit('side-chat', c.id)"
+                  >
+                    <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="13" :stroke-width="2" aria-hidden="true" />
                   </button>
                   <button
                     v-if="c.kind === 'thread' && c.session && !isBlankThread(c)"
@@ -1273,7 +1317,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
               >
                 <template v-if="c.kind === 'thread' && c.session">
                   <ConversationThread
-                    :blocks="c.session.blocks.value"
+                    :blocks="c.session.timelineBlocks.value"
                     :now="now"
                     :session-error="c.session.error.value"
                     :source-key="c.id"
@@ -1807,6 +1851,38 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
   color: var(--ink);
 }
 
+/* ── side chats: the temporary look ────────────────────────────────────────────
+   A side chat is a forked, throwaway conversation — a question asked on the
+   side. It reads as provisional chrome: the side-chat icon beside the title, an
+   italic accent-tinted title and a faint accent wash over the body. No text, no
+   borders — the icon carries the signal. Deliberately distinct from a main
+   thread column — the user should never wonder whether this column is a real
+   conversation. */
+.col__sidechat {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink-soft));
+}
+.col.is-sidechat .col__title {
+  color: color-mix(in srgb, var(--accent) 58%, var(--muted));
+  font-style: italic;
+  font-weight: 560;
+}
+.col.is-focused .col.is-sidechat .col__title,
+.col.is-sidechat.is-focused .col__title {
+  color: color-mix(in srgb, var(--accent) 66%, var(--ink));
+}
+.col.is-sidechat .col__body {
+  background: color-mix(in srgb, var(--accent) 2.5%, transparent);
+}
+.index__dash.is-sidechat {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.index__dash.is-sidechat.is-focused {
+  background: color-mix(in srgb, var(--accent) 82%, transparent);
+}
+
 /* Dormant body — a single muted line, centred, no chrome. */
 .col__dormant {
   margin: 0;
@@ -1981,6 +2057,11 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
     0 calc(1px * var(--inv-k, 1)) calc(2px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 5%, transparent),
     0 calc(10px * var(--inv-k, 1)) calc(30px * var(--inv-k, 1)) calc(-14px * var(--inv-k, 1)) color-mix(in srgb, var(--accent) 34%, transparent),
     0 0 0 calc(1.5px * var(--inv-k, 1)) color-mix(in srgb, var(--accent) 42%, transparent);
+}
+/* A side chat's overview card carries its provisional tint, so the map still
+   tells the temporary columns apart from real conversations at a glance. */
+.rail.is-overview .col.is-sidechat {
+  background: color-mix(in srgb, var(--accent) 4.5%, var(--ground));
 }
 /* A subtle lift on hover. It's on the card, not the plane, so it doesn't fight the
    plane's scale — but the lift distance is in plane px, so counter-scale it or a 4px

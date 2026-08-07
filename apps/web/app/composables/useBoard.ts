@@ -161,16 +161,25 @@ function persistableThreadId(s: ThreadSession): string | null {
   return s.blocks.value.length === 0 && !s.busy.value ? null : s.threadId.value;
 }
 
-function anchorFor(kind: PaneKind): PaneAnchor {
-  switch (kind) {
-    case "thread":
-      return { kind: "thread", threadId: null };
-    case "terminal":
-      return { kind: "terminal", terminalId: null };
-    case "scratchpad":
-      return { kind: "scratchpad", padId: null };
+  function anchorFor(kind: PaneKind): PaneAnchor {
+    switch (kind) {
+      case "thread":
+        return { kind: "thread", threadId: null };
+      case "terminal":
+        return { kind: "terminal", terminalId: null };
+      case "scratchpad":
+        return { kind: "scratchpad", padId: null };
+    }
   }
-}
+
+  /** The stored thread id a thread pane is bound to: its live session's id
+   *  (claimed synchronously on open), or its anchor's remembered id while
+   *  dormant. Null for non-thread panes and unbound blank slots. */
+  function threadAnchorId(p: Pane): string | null {
+    if (p.kind !== "thread") return null;
+    if (p.session) return p.session.threadId.value;
+    return p.entry.anchor.kind === "thread" ? p.entry.anchor.threadId : null;
+  }
 
 export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   const { agent, terminal, scratchpad } = opts;
@@ -462,6 +471,22 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   async function open(kind: PaneKind, o: OpenOptions = {}): Promise<PaneId> {
     const meta = paneKindMeta(kind);
     const doFocus = o.focus !== false;
+
+    // A thread is hosted by exactly one pane: opening a thread that is already
+    // on the board (live, or dormant with its anchor remembering the id)
+    // focuses its pane instead of minting a second column. The side-chat join
+    // path leans on this — one side chat per source thread means one pane for
+    // it, however the button is reached (in-flight join, or a reopen of an
+    // existing fork).
+    if (kind === "thread" && o.threadId) {
+      const hosted = panes.value.find(
+        (p) => p.kind === "thread" && threadAnchorId(p) === o.threadId,
+      );
+      if (hosted) {
+        if (doFocus) focus(hosted.id);
+        return hosted.id;
+      }
+    }
 
     // Singleton kinds (the scratchpad) — never a second; focus the existing one.
     if (meta.singleton) {

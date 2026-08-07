@@ -6,6 +6,7 @@ import { app } from "electron";
 
 import type {
   ChatAttachment,
+  ForkContext,
   ProviderKind,
   RuntimeEvent,
   RuntimeItem,
@@ -13,6 +14,7 @@ import type {
   StoredThread,
   StoredThreadMeta,
   SubagentRun,
+  ThreadLineage,
 } from "./types.js";
 
 // Durable conversation persistence for the agent layer. Threads, turns, and the
@@ -31,7 +33,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 14;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -287,6 +289,56 @@ function migrate(db: DatabaseSync): void {
   }
 
   // Future migrations append here: `if (version < 13) { …; version = 13; }`
+
+  if (version < 13) {
+    // v13 adds side chats. A side chat is a root thread with a fork pointer
+    // back at its source (docs/side-chat-design.md): threads gain the source
+    // pointer, the stored handoff context (ForkContext — bootstrap flag and
+    // fork point), the lineage block (relationship to the source — side chats
+    // are roots, so parentThreadId stays null), and the caller's idempotency
+    // key. Blocks gain a `source` column ('native' | 'fork-import') so
+    // imported rows render as history rather than activity: they keep their
+    // original `at` and never refresh a thread's updated_at.
+    db.exec(`
+      ALTER TABLE threads ADD COLUMN source_thread_id TEXT;
+      ALTER TABLE threads ADD COLUMN fork_context_json TEXT;
+      ALTER TABLE threads ADD COLUMN lineage_json TEXT;
+      ALTER TABLE threads ADD COLUMN request_id TEXT;
+      ALTER TABLE blocks ADD COLUMN source TEXT NOT NULL DEFAULT 'native';
+    `);
+    version = 13;
+  }
+
+  if (version < 14) {
+    // v14 enforces one side chat per source thread at the DB level, so a
+    // racing second fork can't slip past the app-level join check in
+    // createSidechatThread. A unique index on the (nullable) source pointer:
+    // NULL rows (every non-side-chat thread) are exempt, so each source can
+    // carry at most one fork. Guarded: installs that already hold duplicate
+    // side chats (from the pre-v14 lax round) keep the app-level join rule and
+    // log instead of failing the migration.
+    const dupes = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT source_thread_id FROM threads
+            WHERE source_thread_id IS NOT NULL
+            GROUP BY source_thread_id HAVING COUNT(*) > 1
+         )`,
+      )
+      .get() as { n: number };
+    if (dupes.n === 0) {
+      db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_sidechat_source
+           ON threads (source_thread_id) WHERE source_thread_id IS NOT NULL`,
+      );
+    } else {
+      console.warn(
+        `[conversation-store] found ${dupes.n} source thread(s) with duplicate side chats; ` +
+          "skipping the v14 unique index — the app-level join rule still applies",
+      );
+    }
+    version = 14;
+  }
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
@@ -840,6 +892,10 @@ export class ConversationStore {
               `UPDATE blocks SET state = 'completed', ended_at = ?
                WHERE block_id = ?`,
             ).run(event.at, assistantBlockId(event.threadId, event.turnId));
+            // A side chat's first turn settling consumes the one-shot
+            // `<sidechat_context>` bootstrap — the imported transcript has
+            // reached the model, so it is never injected again.
+            this.completeSidechatBootstrap(db, event.threadId);
           });
           this.touch(db, event.threadId, event.at);
           break;
@@ -1157,6 +1213,7 @@ export class ConversationStore {
               ...(parseAttachments(b.attachments_json)?.length
                 ? { attachments: parseAttachments(b.attachments_json) }
                 : {}),
+              ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
             }
           : {
               id: b.block_id,
@@ -1167,6 +1224,7 @@ export class ConversationStore {
               error: b.error ?? undefined,
               at: b.at,
               endedAt: b.ended_at ?? undefined,
+              ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
             },
       );
 
@@ -1217,6 +1275,211 @@ export class ConversationStore {
     } catch (err) {
       console.error("[conversation-store] hasUserTurn failed:", err);
       return false;
+    }
+  }
+
+  // ── side chats (fork pointer, lineage, fork-import blocks) ─────────────────
+
+  /** Whether a thread row already exists under this id. The natural
+   *  idempotency for client-minted thread ids: a replayed create resolves as
+   *  "exists" instead of writing a second row. */
+  threadExists(threadId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      return (
+        db.prepare(`SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1`).get(threadId) !==
+        undefined
+      );
+    } catch (err) {
+      console.error("[conversation-store] threadExists failed:", err);
+      return false;
+    }
+  }
+
+  /** The thread id a caller's idempotency key was already used for, if any.
+   *  A replayed requestId must land on the same thread — a different threadId
+   *  with the same key is an idempotency conflict. */
+  threadIdForRequestId(requestId: string): string | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(`SELECT thread_id FROM threads WHERE request_id = ? LIMIT 1`)
+        .get(requestId) as { thread_id: string } | undefined;
+      return row?.thread_id ?? null;
+    } catch (err) {
+      console.error("[conversation-store] threadIdForRequestId failed:", err);
+      return null;
+    }
+  }
+
+  /** The side chat already forked from a source thread, if any — the
+   *  one-side-chat-per-source rule. A second fork request joins the existing
+   *  one instead of minting another. */
+  sidechatForSource(sourceThreadId: string): { threadId: string; provider: ProviderKind } | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(
+          `SELECT thread_id, provider FROM threads
+            WHERE source_thread_id = ?
+            ORDER BY created_at ASC LIMIT 1`,
+        )
+        .get(sourceThreadId) as { thread_id: string; provider: string } | undefined;
+      return row ? { threadId: row.thread_id, provider: row.provider as ProviderKind } : null;
+    } catch (err) {
+      console.error("[conversation-store] sidechatForSource failed:", err);
+      return null;
+    }
+  }
+
+  /** Whether the thread has a live (native) assistant turn yet. Fork-imported
+   *  assistant blocks are the source's history, not the side chat's own
+   *  activity — only a native assistant block means the child has actually
+   *  answered. This is the one-shot gate for the `<sidechat_context>` bootstrap
+  hasNativeAssistantTurn(threadId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const row = db
+        .prepare(
+          `SELECT 1 FROM blocks
+            WHERE thread_id = ? AND role = 'assistant'
+              AND (source IS NULL OR source = 'native')
+            LIMIT 1`,
+        )
+        .get(threadId);
+      return row !== undefined;
+    } catch (err) {
+      console.error("[conversation-store] hasNativeAssistantTurn failed:", err);
+      return false;
+    }
+  }
+
+  /** The thread's stored fork context (side chat handoff), or null when the
+   *  thread isn't a fork. */
+  threadForkContext(threadId: string): ForkContext | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(`SELECT fork_context_json FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { fork_context_json: string | null } | undefined;
+      return parseJsonObject<ForkContext>(row?.fork_context_json ?? null) ?? null;
+    } catch (err) {
+      console.error("[conversation-store] threadForkContext failed:", err);
+      return null;
+    }
+  }
+
+  /** Persist a side-chat fork: the thread row (with its fork pointer, stored
+   *  handoff context, lineage block and idempotency key) and the imported
+   *  blocks, in one transaction. Imported blocks keep their original `at`
+   *  timestamps and never touch the thread's `updated_at` — they are history,
+   *  not activity. Returns false when the thread id is already taken
+   *  (requireThreadAbsent — the caller's natural idempotency). */
+  writeForkThread(input: {
+    threadId: string;
+    projectPath: string;
+    provider: ProviderKind;
+    model?: string;
+    createdAt: number;
+    title?: string;
+    sourceThreadId: string;
+    forkContext: ForkContext;
+    lineage: ThreadLineage;
+    requestId?: string;
+    /** Imported blocks in arrival order. Assistant rows carry their narrative
+     *  as text — the source's tool items are not imported — and get a
+     *  synthetic turn id so loadThread re-attaches that narrative as one
+     *  `assistant_text` item (an assistant block with no items would read as
+     *  an empty reply). */
+    importedBlocks: Array<{
+      id: string;
+      role: "user" | "assistant";
+      text: string;
+      at: number;
+      attachments?: ChatAttachment[];
+    }>;
+  }): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const insertThread = db.prepare(
+        `INSERT INTO threads (
+           thread_id, project_path, provider, model, created_at, updated_at,
+           title, source_thread_id, fork_context_json, lineage_json, request_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const insertBlock = db.prepare(
+        `INSERT INTO blocks (block_id, thread_id, role, turn_id, text, state, at, ended_at, attachments_json, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork-import')`,
+      );
+      const insertNarrativeItem = db.prepare(
+        `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text)
+         VALUES (?, ?, ?, 'assistant_text', 'completed', ?)`,
+      );
+      this.durably(db, () => {
+        const now = input.createdAt;
+        insertThread.run(
+          input.threadId,
+          input.projectPath,
+          input.provider,
+          input.model ?? null,
+          now,
+          now,
+          input.title ?? null,
+          input.sourceThreadId,
+          JSON.stringify(input.forkContext),
+          JSON.stringify(input.lineage),
+          input.requestId ?? null,
+        );
+        for (const block of input.importedBlocks) {
+          const turnId = block.role === "assistant" ? `fork-import:${block.id}` : null;
+          insertBlock.run(
+            block.id,
+            input.threadId,
+            block.role,
+            turnId,
+            block.text,
+            block.role === "assistant" ? "completed" : null,
+            block.at,
+            block.role === "assistant" ? block.at : null,
+            block.attachments?.length ? JSON.stringify(block.attachments) : null,
+          );
+          if (turnId) {
+            insertNarrativeItem.run(`${block.id}:narrative`, input.threadId, turnId, block.text);
+          }
+        }
+      });
+      return true;
+    } catch (err) {
+      // A duplicate thread id surfaces here as a UNIQUE constraint violation —
+      // the caller checks threadExists() first, but a race still lands here.
+      console.error("[conversation-store] writeForkThread failed:", err);
+      return false;
+    }
+  }
+
+  /** Flip a side chat's one-shot bootstrap flag to "completed" — called when
+   *  its first turn settles, so the imported-transcript injection never runs
+   *  twice. No-op for non-forks and already-completed forks. */
+  private completeSidechatBootstrap(db: DatabaseSync, threadId: string): void {
+    try {
+      const row = db
+        .prepare(`SELECT fork_context_json FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { fork_context_json: string | null } | undefined;
+      const ctx = parseJsonObject<ForkContext>(row?.fork_context_json ?? null);
+      if (!ctx || ctx.bootstrapStatus !== "pending") return;
+      ctx.bootstrapStatus = "completed";
+      db.prepare(`UPDATE threads SET fork_context_json = ? WHERE thread_id = ?`).run(
+        JSON.stringify(ctx),
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] completeSidechatBootstrap failed:", err);
     }
   }
 
@@ -1409,6 +1672,10 @@ type ThreadRow = {
   archived: number | null;
   title: string | null;
   base_tree: string | null;
+  source_thread_id: string | null;
+  fork_context_json: string | null;
+  lineage_json: string | null;
+  request_id: string | null;
 };
 
 type BlockRow = {
@@ -1422,6 +1689,7 @@ type BlockRow = {
   at: number;
   ended_at: number | null;
   attachments_json: string | null;
+  source: string | null;
 };
 
 /** An attachment's registry row — its metadata plus where the bytes live. */
@@ -1517,7 +1785,25 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
     contextWindow: row.context_window ?? undefined,
     compactsAutomatically: row.compacts_auto ? true : undefined,
     title: row.title ?? undefined,
+    ...(parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json)
+      ? { forkContext: parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json) }
+      : {}),
+    ...(parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json)
+      ? { lineage: parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json) }
+      : {}),
   };
+}
+
+/** Parse a JSON blob column, tolerating bad/absent JSON (a corrupt row reads
+ *  as absent — persistence is best-effort). */
+function parseJsonObject<T>(json: string | null): T | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as T) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function rowToItem(row: ItemRow): RuntimeItem {

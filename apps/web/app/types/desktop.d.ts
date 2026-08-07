@@ -765,6 +765,54 @@ export type SendTurnInput = {
 
 export type TurnStartResult = { threadId: string; turnId: string };
 
+// ── side chat creation (mirror apps/desktop/src/agent/types.ts) ──────────────
+// A side chat is a root thread with a fork pointer back at its source: the
+// renderer mints the threadId + requestId, the desktop side validates + imports
+// the source transcript, and the result streams as `thread.sidechat-created`.
+// Duplicate dispatch with the same threadId resolves "exists" — requireThreadAbsent
+// idempotency; requestId makes that exactly-once across app restarts.
+
+/** Provider/model/effort/mode for a forked child. Absent fields inherit the
+ *  source thread (provider always inherits when unset; model only when it
+ *  stays on the same provider). */
+export type CreateSideChatTarget = {
+  provider?: ProviderKind;
+  model?: string;
+  effort?: string;
+  mode?: InteractionMode;
+};
+
+export type CreateSideChatInput = {
+  /** Caller-chosen idempotency key. Same requestId replayed with the same
+   *  threadId resolves "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new side chat thread. */
+  threadId: string;
+  /** The thread this side chat is forked from. */
+  sourceThreadId: string;
+  /** Optional first prompt — dispatched as a normal first turn after
+   *  creation; the bootstrap context rides it. */
+  prompt?: string;
+  /** Overrides the default `Sidechat: <seed>` title. */
+  title?: string;
+  /** Target provider/model/effort/mode for the child. */
+  target?: CreateSideChatTarget;
+};
+
+export type CreateSideChatResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** The provider the child is set up for (resolved target or source thread's). */
+  provider: ProviderKind;
+  /** The model the child is set up for, when one resolved. */
+  model?: string;
+  /** `"created"` = the fork was written; `"exists"` = a thread with this id
+   *  was already there (idempotent replay of the same creation). */
+  status: "created" | "exists";
+};
+
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
 
 // ── mid-turn user-input questions (mirror apps/desktop/src/agent/types.ts) ────
@@ -929,6 +977,13 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "session.exited"; code: number | null })
   | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (AgentBaseEvent & { type: "thread.title.updated"; title: string })
+  // A side chat fork was persisted (agent:create-side-chat). `threadId` is the
+  // new side chat's id; `sourceThreadId` is the thread it was forked from.
+  | (AgentBaseEvent & {
+      type: "thread.sidechat-created";
+      sourceThreadId: string;
+      requestId: string;
+    })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   | (AgentBaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (AgentBaseEvent & {
@@ -999,10 +1054,67 @@ export type StoredThreadMeta = {
   compactsAutomatically?: boolean;
   /** Agent-generated (or first-turn word-fallback) working title. */
   title?: string;
+  /** Present when this thread is a side chat (or any future fork): the stored
+   *  handoff context — source thread, fork point, import time, bootstrap
+   *  status. The renderer reads it to label + filter the timeline. */
+  forkContext?: ForkContext;
+  /** Present for app-owned relationships (side chats today, subagents with the
+   *  spawn design). `relationshipToParent === "side_chat"` is the
+   *  discriminator. */
+  lineage?: ThreadLineage;
 };
 
+// ── thread lineage & fork context (side chats) ───────────────────────────────
+// A side chat is a user-initiated child conversation forked from a parent
+// thread: it inherits the parent's transcript as *reference-only* context,
+// runs as its own root thread, and never pollutes the parent. The
+// discriminator for "is this thread a side chat" is
+// `lineage.relationshipToParent === "side_chat"` — never a title prefix, never
+// a message source. Mirrors apps/desktop/src/agent/types.ts.
+
+/** How an app-owned thread relates to another thread. `"subagent"` =
+ *  agent-initiated work unit (spawn design, Phase 0); `"side_chat"` =
+ *  user-initiated fork. */
+export type RelationshipToParent = "subagent" | "side_chat";
+
+/** Thread lineage for app-owned relationships. Side chats are roots:
+ *  `parentThreadId` is null and archive/retention subtree walks ignore them. */
+export type ThreadLineage = {
+  parentThreadId: string | null;
+  relationshipToParent: RelationshipToParent | null;
+  rootThreadId: string;
+};
+
+/** Stored handoff context — the fork point and what was imported. */
+export type ForkContext = {
+  /** The thread this side chat was forked from. */
+  sourceThreadId: string;
+  /** Id of the last native block in the source at import time. Provenance
+   *  only — the import is never truncated. */
+  forkPointMessageId: string | null;
+  /** Epoch millis when the fork was created. */
+  importedAt: number;
+  /** One-shot bootstrap flag: `"pending"` until the thread's first turn
+   *  completes. Gates the `<sidechat_context>` injection. */
+  bootstrapStatus: "pending" | "completed";
+};
+
+/** Where a stored block came from: a live conversation row (`"native"`) or a
+ *  fork import (`"fork-import"`). Imported rows carry their original `at` and
+ *  are not activity — they never refresh a thread's `updated_at`. */
+export type BlockSource = "native" | "fork-import";
+
 export type StoredBlock =
-  | { id: string; role: "user"; text: string; at: number; attachments?: ChatAttachment[] }
+  | {
+      id: string;
+      role: "user";
+      text: string;
+      at: number;
+      attachments?: ChatAttachment[];
+      /** Absent = `"native"`; `"fork-import"` = copied in from a side chat's
+       *  source thread (original `at`, never refreshes `updated_at`). */
+      source?: BlockSource;
+    }
   | {
       id: string;
       role: "assistant";
@@ -1012,6 +1124,7 @@ export type StoredBlock =
       error?: string;
       at: number;
       endedAt?: number;
+      source?: BlockSource;
     };
 
 export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
@@ -1075,6 +1188,11 @@ export type KoneAgentApi = {
   uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;
   /** Send a turn; resolves when accepted — output flows through onEvent. */
   sendTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
+  /** Fork a side chat off a source thread. The renderer mints the thread id;
+   *  a replayed id resolves "exists". The created fork streams as
+   *  `thread.sidechat-created`; its first send carries the imported-transcript
+   *  bootstrap. */
+  createSideChat: (input: CreateSideChatInput) => Promise<CreateSideChatResult>;
   interrupt: (threadId: string) => Promise<void>;
   stopSession: (threadId: string) => Promise<void>;
   respond: (

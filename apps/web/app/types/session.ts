@@ -38,6 +38,9 @@ export type SessionSummary = {
   updatedAt: number;
   /** Kept in front of the list under a PINNED header. */
   pinned?: boolean;
+  /** True when this thread is a side chat (forked from another conversation) —
+   *  rows wear the temporary chip instead of reading as a main conversation. */
+  sideChat?: boolean;
   /** The project this thread belongs to. Only set on the App Home aggregate
    *  list (which spans every project); the in-project block leaves it undefined
    *  since the project is implied. Drives the project chip on the row. */

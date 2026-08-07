@@ -45,6 +45,7 @@ function summarize(
     pinned,
     projectPath: meta.projectPath,
     projectName,
+    sideChat: Boolean(meta.forkContext),
   };
 }
 

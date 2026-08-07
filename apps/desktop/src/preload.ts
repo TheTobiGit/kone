@@ -5,6 +5,8 @@ import type { BoardLoadInput, BoardSaveInput } from "./board/index.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
+  CreateSideChatInput,
+  CreateSideChatResult,
   ModelDescriptor,
   ProviderCacheSnapshot,
   ProviderConfig,
@@ -278,6 +280,10 @@ const api = {
       ipcRenderer.invoke("agent:upload-attachment", input),
     sendTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:send-turn", input),
+    // Fork a side chat off a source thread (docs/side-chat-design.md). The
+    // renderer mints the thread id; a replayed id resolves "exists".
+    createSideChat: (input: CreateSideChatInput): Promise<CreateSideChatResult> =>
+      ipcRenderer.invoke("agent:create-side-chat", input),
     interrupt: (threadId: string): Promise<void> =>
       ipcRenderer.invoke("agent:interrupt", threadId),
     stopSession: (threadId: string): Promise<void> =>

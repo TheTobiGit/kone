@@ -33,6 +33,9 @@ function summarize(meta: StoredThreadMeta, pinned: boolean): SessionSummary {
     tokens: meta.tokens,
     updatedAt: meta.updatedAt,
     pinned,
+    // A side chat is a fork — forkContext presence is the discriminator
+    // (never the `Sidechat:` title prefix).
+    sideChat: Boolean(meta.forkContext),
   };
 }
 
