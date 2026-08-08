@@ -355,7 +355,7 @@ const api = {
   scratchpad: {
     list: (input: ScratchpadListInput): Promise<ScratchpadRecord[]> =>
       ipcRenderer.invoke("scratchpad:list", input),
-    save: (input: ScratchpadSaveInput): Promise<{ savedAt: number } | null> =>
+    save: (input: ScratchpadSaveInput): Promise<{ savedAt: number; revision: number } | { conflict: number } | null> =>
       ipcRenderer.invoke("scratchpad:save", input),
     delete: (input: ScratchpadDeleteInput): Promise<void> =>
       ipcRenderer.invoke("scratchpad:delete", input),

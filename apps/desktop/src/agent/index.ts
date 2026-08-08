@@ -3,7 +3,7 @@
 // first), bridged to the renderer through the agent:* IPC in ipc.ts. This barrel
 // is what main.ts and the preload bridge types reach for.
 //
-// See docs/agentic-providers-plan.md for the architecture and the "bring your own
+// See docs/archive/agentic-providers-plan.md for the architecture and the "bring your own
 // subscription" stance (detect an installed, logged-in CLI and drive it — never
 // store provider credentials).
 

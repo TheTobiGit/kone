@@ -15,7 +15,7 @@ import { detectDroidAuth, droidHomeDir, parseDroidVersion, resolveDroidBinary } 
 
 // Every fixture below is a verbatim shape captured from a live `droid exec
 // --output-format acp` session (droid 0.186.0, 2026-08-03; captures in
-// docs/droid/raw/), not one invented from the ACP spec — the fields droid
+// docs/archive/droid/raw/), not one invented from the ACP spec — the fields droid
 // actually sends (modelId, file_path, reasoning_effort, autonomy_level, …)
 // are its own spellings, and they disagree with a spec-derived guess in
 // exactly the places a fixture would quietly break.

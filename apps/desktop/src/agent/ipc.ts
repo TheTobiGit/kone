@@ -3,6 +3,7 @@ import { ipcMain, type WebContents } from "electron";
 import { AgentService } from "./AgentService.js";
 import { getAttachmentStore } from "./AttachmentStore.js";
 import { getConversationStore } from "./ConversationStore.js";
+import { createGateway, type GatewayHandle } from "./gateway/index.js";
 import { detect, diffStatBetween, snapshotWorkingTree } from "../git/status.js";
 import { buildResumeContext } from "./resumeContext.js";
 import { createSidechatThread } from "./sidechat.js";
@@ -30,6 +31,9 @@ import type {
 
 let service: AgentService | null = null;
 
+/** The gateway instance (lazily created with the service). */
+let gateway: GatewayHandle | null = null;
+
 /** The single AgentService instance (lazily created). */
 export function getAgentService(): AgentService {
   if (!service) service = new AgentService();
@@ -53,6 +57,18 @@ export function registerAgentIpc(): void {
   const svc = getAgentService();
   const store = getConversationStore();
   const attachments = getAttachmentStore();
+
+  // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
+  // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
+  // flow through the same broadcast → agent:event stream; it watches the turn
+  // lifecycle for its write-authority boundary. Token minting/revocation rides
+  // AgentService.startSession/stopSession.
+  gateway = createGateway({
+    store,
+    emit: (event) => broadcast(event),
+    onEvents: (listener) => svc.onEvent(listener),
+  });
+  svc.attachGateway(gateway);
 
   /** Push one runtime event to every subscribed renderer (and optionally
    *  journal it). Title updates skip the store's applyEvent — they're written
@@ -230,15 +246,17 @@ export function registerAgentIpc(): void {
 
   // Session lifecycle (request/ack — results flow through agent:event).
   ipcMain.handle("agent:start-session", async (_event, input: SessionStartInput) => {
-    const session = await svc.startSession(input);
-    // Register the thread now so the project/provider/model association exists
-    // before any turn streams in.
+    // Register the thread BEFORE the session starts: the gateway mints the
+    // session's MCP token in startSession and the provider connects to it
+    // synchronously (alwaysLoad), so threadProjectPath must already resolve
+    // or every initialize is 401 and the tools never load.
     store.ensureThread({
       threadId: input.threadId,
       projectPath: input.cwd,
       provider: input.provider,
       model: input.model,
     });
+    const session = await svc.startSession(input);
     // Record where the repo stood as this conversation begins, so its settled
     // diffstat measures only what the conversation changes (no-op if the thread
     // already has a baseline — a resumed session keeps its original one).
@@ -375,5 +393,9 @@ export function registerAgentIpc(): void {
 
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
+  if (gateway) {
+    await gateway.shutdown().catch(() => {});
+    gateway = null;
+  }
   if (service) await service.stopAll();
 }

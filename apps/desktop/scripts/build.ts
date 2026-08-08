@@ -36,6 +36,9 @@ console.log("Bundling Electron main/preload...");
 await $`bun build src/main.ts --outfile dist/main.js --target node --external electron --external @anthropic-ai/claude-agent-sdk --external node-pty`.cwd(
   desktopDir,
 );
+// The stdio→HTTP MCP proxy is a plain runtime asset (not bundled — injection.ts
+// resolves it relative to the bundle, so it must sit next to dist/main.js).
+cpSync(path.join(desktopDir, "src/agent/gateway/stdioProxy.mjs"), path.join(desktopDir, "dist/stdioProxy.mjs"));
 // Sandboxed preloads must be CommonJS; emit .cjs so it's unambiguous under
 // package.json "type": "module".
 await $`bun build src/preload.ts --outfile dist/preload.cjs --format cjs --target node --external electron`.cwd(desktopDir);

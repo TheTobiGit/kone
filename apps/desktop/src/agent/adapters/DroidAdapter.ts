@@ -11,12 +11,15 @@ import {
 } from "../droidHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
 import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
+import { koneHostContextForFirstRun } from "../gateway/appContext.js";
+import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
 import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
   EmitEvent,
+  GatewayConnection,
   InteractionMode,
   ModelDescriptor,
   PlanTask,
@@ -38,7 +41,7 @@ import type {
 // persistent JSON-RPC-over-stdio child per thread speaking ACP (the Agent
 // Client Protocol), the same transport CursorAdapter drives for `cursor-agent
 // acp`. Everything below was verified live against droid 0.186.0 on 2026-08-03
-// (captures in docs/droid/raw/).
+// (captures in docs/archive/droid/raw/).
 //
 // "Bring your own subscription" holds: kone never runs `droid` login and never
 // opens a credential — discover() checks FACTORY_API_KEY / ~/.factory auth-file
@@ -179,6 +182,11 @@ type DroidSession = {
   conversationId?: string;
   /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
   resumedFrom?: string;
+  /** The kone gateway connection minted at startSession — the agent's app
+   *  tools (kone_scratchpad_read/write via the gateway's MCP server). */
+  gatewayConnection?: GatewayConnection;
+  /** User turns sent so far; the kone host-context block rides the first one. */
+  runOrdinal: number;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, DroidItemBuffer>;
@@ -202,6 +210,14 @@ type DroidSession = {
 };
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
+
+/** The droid MCP config entry name for one session's gateway connection.
+ *  Thread-scoped: droid's `mcp` config is global per user, so concurrent
+ *  droid sessions must never share an entry (a shared entry would clobber
+ *  the previous session's token). */
+function koneMcpServerName(threadId: string): string {
+  return `kone-${threadId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 8)}`;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -607,6 +623,8 @@ export class DroidAdapter implements ProviderAdapter {
       items: new Map(),
       configOptions: [],
       modeIds: [],
+      gatewayConnection: input.gatewayConnection,
+      runOrdinal: 0,
       interrupting: false,
       segmentCount: 0,
       openItemIds: new Set(),
@@ -630,6 +648,37 @@ export class DroidAdapter implements ProviderAdapter {
         INITIALIZE_TIMEOUT_MS,
       );
       await this.authenticateRpc(rpc, initializeResult);
+
+      // The kone gateway (docs/mcp-gateway-design.md §4): droid manages MCP
+      // servers through its own persistent CLI config (`droid mcp add`), not
+      // the ACP `mcpServers` session param (which droid ignores — verified
+      // against the live binary). Register per-session here so the agent's
+      // tools resolve; the config is global per user, so the server name is
+      // thread-scoped (kone-<threadId prefix>) to keep concurrent droid
+      // sessions from clobbering each other's token, and stopSession removes
+      // exactly that entry.
+      if (input.gatewayConnection) {
+        try {
+          await this.registerGatewayMcp(input.threadId, input.gatewayConnection);
+        } catch (error) {
+          console.error(
+            "[droid] kone MCP registration failed:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+
+      // The kone gateway (docs/mcp-gateway-design.md §4): thread the app's MCP
+      // server into every session door. An agent that advertises
+      // `agentCapabilities.mcpCapabilities.http` gets the direct loopback HTTP
+      // entry; otherwise droid spawns the stdio proxy (stdioProxy.mjs), which
+      // forwards JSON-RPC to the same endpoint. No gateway connection → no
+      // mcpServers at all — never promise tools the session can't reach.
+      const mcpServers = input.gatewayConnection
+        ? acpMcpServers(input.gatewayConnection, {
+            httpCapable: acpAgentSupportsHttp(initializeResult),
+          })
+        : [];
 
       // droid advertises `sessionCapabilities.resume` (no replay) AND
       // `loadSession` (may replay history). Resume prefers `session/resume`
@@ -656,7 +705,7 @@ export class DroidAdapter implements ProviderAdapter {
           try {
             response = await rpc.call<Record<string, unknown>>(
               method,
-              { sessionId: input.resume, cwd: input.cwd, mcpServers: [] },
+              { sessionId: input.resume, cwd: input.cwd, mcpServers },
               SESSION_SETUP_TIMEOUT_MS,
             );
             session.conversationId = input.resume;
@@ -669,7 +718,7 @@ export class DroidAdapter implements ProviderAdapter {
       if (!response) {
         response = await rpc.call<Record<string, unknown>>(
           "session/new",
-          { cwd: input.cwd, mcpServers: [] },
+          { cwd: input.cwd, mcpServers },
           SESSION_SETUP_TIMEOUT_MS,
         );
         const sessionId = readString(response, "sessionId");
@@ -746,6 +795,15 @@ export class DroidAdapter implements ProviderAdapter {
       imageBlocks = built.imageBlocks;
       promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
     }
+    // prependT3OrchestrationInstructions pattern — the same wiring as
+    // OpenCodeAdapter): the app-context block rides the very first user turn
+    // so the agent knows the gateway tools exist.
+    promptText = koneHostContextForFirstRun({
+      prompt: promptText,
+      runOrdinal: session.runOrdinal + 1,
+      gatewayControlAvailable: session.gatewayConnection !== undefined,
+    });
+    session.runOrdinal += 1;
     const prompt: Array<{ type: "text"; text: string } | CursorImageBlock> = [];
     if (promptText.length > 0) prompt.push({ type: "text", text: promptText });
     prompt.push(...imageBlocks);
@@ -801,6 +859,35 @@ export class DroidAdapter implements ProviderAdapter {
     this.abortLiveTurn(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
+    // Drop the per-session kone MCP entry from droid's persistent config so a
+    // revoked token never lingers. Best-effort and fire-and-forget.
+    const name = koneMcpServerName(threadId);
+    void probe(this.binary, ["mcp", "remove", name], process.env, 10_000);
+  }
+
+  /** Register the kone gateway in droid's persistent MCP config (the ACP
+   *  `mcpServers` session param is ignored by droid — its CLI owns that
+   *  surface). Thread-scoped name so concurrent droid sessions don't clobber
+   *  each other's token. The bearer rides the `--header` arg, visible only to
+   *  local processes for the duration of the CLI call. */
+  private async registerGatewayMcp(threadId: string, connection: GatewayConnection): Promise<void> {
+    const env = await buildDroidEnv();
+    const name = koneMcpServerName(threadId);
+    await probe(this.binary, ["mcp", "remove", name], env, 10_000);
+    const output = await probe(
+      this.binary,
+      [
+        "mcp", "add", name, connection.url,
+        "--type", "http",
+        "--header", `Authorization: Bearer ${connection.bearerToken}`,
+        "--no-oauth",
+      ],
+      env,
+      15_000,
+    );
+    if (output === null) {
+      throw new Error("droid mcp add exited non-zero");
+    }
   }
 
   /** Seal a turn that's still live as we tear the session down. Killing the

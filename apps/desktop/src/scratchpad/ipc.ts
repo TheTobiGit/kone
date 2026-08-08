@@ -25,6 +25,7 @@ export function registerScratchpadIpc(): void {
       projectPath: input.projectPath,
       title: input.title,
       body: input.body,
+      expectedRevision: input.expectedRevision,
     }),
   );
   ipcMain.handle("scratchpad:delete", (_event, input: ScratchpadDeleteInput) => {

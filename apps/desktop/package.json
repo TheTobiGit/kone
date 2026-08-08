@@ -20,6 +20,7 @@
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@kone/config": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "electron": "^35.1.5",
     "electron-builder": "^26.0.12",
     "typescript": "catalog:"

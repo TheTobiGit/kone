@@ -33,7 +33,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -338,6 +338,34 @@ function migrate(db: DatabaseSync): void {
       );
     }
     version = 14;
+  }
+
+  if (version < 15) {
+    // v15 — the agent-facing MCP gateway (docs/mcp-gateway-design.md):
+    // `revision` on scratchpads gives the gateway's kone_scratchpad_write an
+    // optimistic concurrency guard against the web editor (the editor is the
+    // revision source of truth; agent writes carry the revision they were
+    // based on and conflict when it moved). Backfilled to 1 so upgraded pads
+    // read as already-written. `gateway_ops` is the idempotency reserve for
+    // all future gateway tools (kind = "scratchpad.write" today): agent-side
+    // write retries replay the stored result instead of re-applying.
+    db.exec(`
+      ALTER TABLE scratchpads ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+      CREATE TABLE IF NOT EXISTS gateway_ops (
+        thread_id   TEXT NOT NULL,
+        turn_id     TEXT NOT NULL,
+        request_id  TEXT NOT NULL,
+        kind        TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, turn_id, request_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_gateway_ops_kind
+        ON gateway_ops (kind, created_at);
+    `);
+    version = 15;
   }
 
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
@@ -1491,7 +1519,7 @@ export class ConversationStore {
     try {
       const rows = db
         .prepare(
-          `SELECT id, project_path, title, body, created_at, updated_at, sort_index
+          `SELECT id, project_path, title, body, created_at, updated_at, sort_index, revision
              FROM scratchpads
             WHERE project_path = ?
             ORDER BY sort_index ASC, created_at ASC`,
@@ -1504,19 +1532,58 @@ export class ConversationStore {
     }
   }
 
+  /** Read one pad by id, or null when it doesn't exist. */
+  getScratchpad(padId: string): ScratchpadRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(
+          `SELECT id, project_path, title, body, created_at, updated_at, sort_index, revision
+             FROM scratchpads WHERE id = ?`,
+        )
+        .get(padId) as ScratchpadRow | undefined;
+      return row ? rowToScratchpad(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] getScratchpad failed:", err);
+      return null;
+    }
+  }
+
+  /** Upsert a pad. `expectedRevision` is an optimistic lock: when given and it
+   *  doesn't match the row's current revision the write is refused and the
+   *  current revision returned — the caller (the gateway tool) surfaces it as a
+   *  `revision_conflict` so the agent can re-send against fresh state. Omitting
+   *  it overwrites unconditionally (the web editor's first save of a pad it
+   *  just created). `append: true` merges server-side (current body + "\n\n" +
+   *  new body) so agent appends race nothing — the merge and the revision bump
+   *  happen in the same statement sequence. Every write bumps `revision`. */
   saveScratchpad(input: {
     padId: string;
     projectPath: string;
     title: string;
     body: string;
-  }): { savedAt: number } | null {
+    expectedRevision?: number;
+    append?: boolean;
+  }): { savedAt: number; revision: number } | { conflict: number } | null {
     const db = this.handle();
     if (!db) return null;
     const savedAt = Date.now();
     try {
       const existing = db
-        .prepare(`SELECT created_at, sort_index FROM scratchpads WHERE id = ?`)
-        .get(input.padId) as { created_at: number; sort_index: number } | undefined;
+        .prepare(
+          `SELECT created_at, sort_index, revision, body FROM scratchpads WHERE id = ?`,
+        )
+        .get(input.padId) as
+        | { created_at: number; sort_index: number; revision: number; body: string }
+        | undefined;
+      if (
+        existing &&
+        input.expectedRevision !== undefined &&
+        input.expectedRevision !== existing.revision
+      ) {
+        return { conflict: existing.revision };
+      }
       const sortIndex =
         existing?.sort_index ??
         ((db
@@ -1525,23 +1592,30 @@ export class ConversationStore {
                FROM scratchpads WHERE project_path = ?`,
           )
           .get(input.projectPath) as { next: number }).next ?? 0);
+      const revision = existing ? existing.revision + 1 : 1;
+      const body =
+        input.append && existing && existing.body.trim()
+          ? `${existing.body}\n\n${input.body}`
+          : input.body;
       db.prepare(
-        `INSERT INTO scratchpads (id, project_path, title, body, created_at, updated_at, sort_index)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO scratchpads (id, project_path, title, body, created_at, updated_at, sort_index, revision)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            body = excluded.body,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           revision = excluded.revision`,
       ).run(
         input.padId,
         input.projectPath,
         input.title,
-        input.body,
+        body,
         existing?.created_at ?? savedAt,
         savedAt,
         sortIndex,
+        revision,
       );
-      return { savedAt };
+      return { savedAt, revision };
     } catch (err) {
       console.error("[conversation-store] saveScratchpad failed:", err);
       return null;
@@ -1557,6 +1631,85 @@ export class ConversationStore {
       console.error("[conversation-store] deleteScratchpad failed:", err);
     }
   }
+
+  // ── gateway idempotency ops (docs/mcp-gateway-design.md §7) ───────────────
+  // One table for every gateway tool: agent write tools carry a clientRequestId
+  // so ambiguous-network-failure retries replay instead of re-applying. Keys
+  // come from the bound authority context (thread + turn + agent-supplied
+  // request id); the fingerprint is over the canonicalized request.
+
+  /** Reserve one gateway operation, or resolve a prior one:
+   *  - "reserved" — first sighting; the caller performs the work, then
+   *    `setGatewayOpResult`.
+   *  - { kind: "replay"; result } — same key + same fingerprint, completed
+   *    before: return the stored post-write result. If a crash between the
+   *    write and `setGatewayOpResult` left the row without a result, the
+   *    retry falls through to "reserved" and re-applies (the revision guard
+   *    catches a write that actually landed).
+   *  - "conflict" — same key, different fingerprint: the agent re-sent the
+   *    same request id with different content.
+   *  - null — store failure. */
+  reserveGatewayOp(input: {
+    threadId: string;
+    turnId: string;
+    requestId: string;
+    kind: string;
+    fingerprint: string;
+  }): { kind: "reserved" } | { kind: "replay"; result: unknown } | { kind: "conflict" } | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const inserted = db
+        .prepare(
+          `INSERT INTO gateway_ops (thread_id, turn_id, request_id, kind, fingerprint, result_json, created_at)
+           VALUES (?, ?, ?, ?, ?, '', ?)
+           ON CONFLICT(thread_id, turn_id, request_id) DO NOTHING`,
+        )
+        .run(input.threadId, input.turnId, input.requestId, input.kind, input.fingerprint, Date.now());
+      if (Number(inserted.changes) > 0) return { kind: "reserved" };
+      const prior = db
+        .prepare(
+          `SELECT fingerprint, result_json FROM gateway_ops
+            WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
+        )
+        .get(input.threadId, input.turnId, input.requestId) as
+        | { fingerprint: string; result_json: string }
+        | undefined;
+      if (prior && prior.fingerprint === input.fingerprint && prior.result_json) {
+        try {
+          return { kind: "replay", result: JSON.parse(prior.result_json) };
+        } catch {
+          return { kind: "conflict" };
+        }
+      }
+      return { kind: "conflict" };
+    } catch (err) {
+      console.error("[conversation-store] reserveGatewayOp failed:", err);
+      return null;
+    }
+  }
+
+  /** Record a completed gateway operation's result so a retry with the same
+   *  key + fingerprint replays it. Best-effort: an op row without a result is
+   *  treated as never-completed by `reserveGatewayOp`. */
+  setGatewayOpResult(input: {
+    threadId: string;
+    turnId: string;
+    requestId: string;
+    resultJson: string;
+  }): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE gateway_ops SET result_json = ?
+          WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
+      ).run(input.resultJson, input.threadId, input.turnId, input.requestId);
+    } catch (err) {
+      console.error("[conversation-store] setGatewayOpResult failed:", err);
+    }
+  }
+
 
   // ── project board layout ────────────────────────────────────────────────────
 
@@ -1626,6 +1779,10 @@ export type ScratchpadRecord = {
   createdAt: number;
   updatedAt: number;
   sortIndex: number;
+  /** Optimistic-concurrency counter, bumped on every write (v15). The web
+   *  editor sends its last-known value with each save; gateway agent writes
+   *  guard on it so user and agent edits never silently clobber each other. */
+  revision: number;
 };
 
 type ScratchpadRow = {
@@ -1636,6 +1793,7 @@ type ScratchpadRow = {
   created_at: number;
   updated_at: number;
   sort_index: number;
+  revision: number;
 };
 
 function rowToScratchpad(row: ScratchpadRow): ScratchpadRecord {
@@ -1647,6 +1805,7 @@ function rowToScratchpad(row: ScratchpadRow): ScratchpadRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     sortIndex: row.sort_index,
+    revision: row.revision,
   };
 }
 

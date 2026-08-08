@@ -9,6 +9,7 @@ import type {
   AdapterCapabilities,
   ApprovalDecision,
   EmitEvent,
+  GatewayConnection,
   InteractionMode,
   ModelDescriptor,
   PlanTask,
@@ -26,6 +27,7 @@ import type {
   UserInputQuestion,
   UserInputQuestionOption,
 } from "../types.js";
+import { buildCodexTurnCollaborationMode } from "../gateway/appContext.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks } from "../planTasks.js";
 import {
   buildCodexAttachmentInput,
@@ -94,6 +96,10 @@ type CodexSession = {
   conversationId?: string;
   /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
   resumedFrom?: string;
+  /** The session's loopback gateway connection (minted at startSession),
+   *  present exactly when the kone MCP server is live for this thread — gates
+   *  the collaborationMode/developer_instructions injection in sendTurn. */
+  gatewayConnection?: GatewayConnection;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, CodexItemBuffer>;
@@ -497,6 +503,7 @@ export class CodexAdapter implements ProviderAdapter {
       cwd: input.cwd,
       model: input.model,
       mode,
+      gatewayConnection: input.gatewayConnection,
       rpc,
       items: new Map(),
       pendingUserInputs: new Map(),
@@ -589,6 +596,16 @@ export class CodexAdapter implements ProviderAdapter {
       throw new Error("Turn input must include text or an attachment.");
     }
 
+    // The kone host-context block rides the codex-rs `developer_instructions`
+    // both use). Delivered on EVERY turn, which covers resumed threads too:
+    // a resumed conversation gets it on its next turn/start, same as fresh.
+    // Gated on the gateway connection so an agent is never told about tools
+    // it doesn't have.
+    const collaborationMode = buildCodexTurnCollaborationMode({
+      model: session.model,
+      effort: input.effort,
+      gatewayControlAvailable: session.gatewayConnection !== undefined,
+    });
     const response = await session.rpc.call<Record<string, unknown>>("turn/start", {
       threadId: session.conversationId,
       input: inputItems,
@@ -596,6 +613,7 @@ export class CodexAdapter implements ProviderAdapter {
       ...(session.model ? { model: session.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+      ...(collaborationMode ? { collaborationMode } : {}),
     });
     const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
     if (!turnId) throw new Error("turn/start response did not include a turn id.");

@@ -106,8 +106,13 @@ export type SessionStartInput = {
    *  (StoredThreadMeta.conversationId). Present means "continue this prior
    *  conversation with its full context" — Codex resumes it via `thread/resume`,
    *  Claude passes it as the SDK `resume` option. Absent starts a fresh session.
-   *  Only meaningful when the provider matches the one that produced the id. */
+   * Only meaningful when the provider matches the one that produced the id. */
   resume?: string;
+  /** MCP gateway connection for this session, filled main-side by
+   *  AgentService.startSession when the gateway is live. The adapter injects
+   *  it into the provider session's mcpServers config so the agent can call
+   *  kone tools. Renderer code never sets this. */
+  gatewayConnection?: GatewayConnection;
 };
 
 export type Session = {
@@ -571,6 +576,22 @@ export type ProviderRefs = {
   providerTurnId?: string;
 };
 
+/** Which agent session wrote a pad — carried by kone_scratchpad_write results
+ *  and scratchpad.updated events so the board can attribute agent edits.
+ *  User edits (the web editor) carry no writer. */
+export type ScratchpadWriter = {
+  model?: string;
+  provider: ProviderKind;
+};
+
+/** Loopback MCP gateway connection for one provider session
+ *  (apps/desktop/src/agent/gateway). Filled main-side at startSession — the
+ *  renderer never sends it. */
+export type GatewayConnection = {
+  url: string;
+  bearerToken: string;
+};
+
 /** Tags the transport an event came from — for debugging + provider-specific
  *  extension without polluting the union. */
 export type RuntimeEventSource =
@@ -622,6 +643,21 @@ export type RuntimeEvent =
       type: "thread.sidechat-created";
       sourceThreadId: string;
       requestId: string;
+    })
+  // An agent gateway write landed on a project's scratchpad
+  // (kone_scratchpad_write). `projectPath` scopes it to the project the pad
+  // belongs to (the board is project-scoped, not thread-scoped); `writer` is
+  // the agent session that wrote, null/absent for user edits. Consumers apply
+  // it only when `revision` is newer than their own.
+  | (BaseEvent & {
+      type: "scratchpad.updated";
+      padId: string;
+      projectPath: string;
+      title: string;
+      body: string;
+      revision: number;
+      savedAt: number;
+      writer: ScratchpadWriter | null;
     })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })

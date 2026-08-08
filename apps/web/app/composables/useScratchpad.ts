@@ -1,6 +1,6 @@
 import { onBeforeUnmount, ref, shallowRef, watch, type Ref } from "vue";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
-import type { ScratchpadRecord } from "~/types/desktop";
+import type { ScratchpadRecord, ScratchpadWriter } from "~/types/desktop";
 import { normalizeTaskLists } from "~/utils/padMarkdown";
 
 export type Snippet = {
@@ -121,8 +121,19 @@ export function useScratchpad(options: UseScratchpadOptions) {
   /** The project's pad row — its id and last-known body, even while closed. */
   const padId = ref("");
   const storedBody = ref("");
+  /** The exact raw body last persisted (or last landed from a gateway write) —
+   *  the no-op save guard compares drafts against this, not the html form. */
+  const storedRawBody = ref<string | null>(null);
   const storedSavedAt = ref<number | null>(null);
+  /** Last-known revision (the editor is the revision source of truth — it
+   *  sends this with every save so user edits and gateway agent writes never
+   *  silently clobber each other). */
+  const storedRevision = ref<number | null>(null);
+  /** The agent session that last wrote this pad via the gateway, if any —
+   *  the board renders a subtle "written by <model> via kone" marker. */
+  const lastWriter = ref<ScratchpadWriter | null>(null);
   let saveDebounced: ReturnType<typeof useDebounceFn> | null = null;
+  let detachEvents: (() => void) | null = null;
 
   function current(): ScratchpadSession | undefined {
     return sessions.value[0];
@@ -140,6 +151,14 @@ export function useScratchpad(options: UseScratchpadOptions) {
 
   async function persist(session: ScratchpadSession): Promise<void> {
     const projectPath = resolvePath();
+    // No-op guard: never bump the revision (and never trip a concurrent agent
+    // write into revision_conflict) for a draft identical to what's already
+    // persisted. Only meaningful once a save exists — a fresh empty pad still
+    // needs its row created.
+    if (storedRawBody.value !== null && session.doc.value === storedRawBody.value) {
+      session.status = "ready";
+      return;
+    }
     session.status = "saving";
     sessions.value = [...sessions.value];
 
@@ -148,13 +167,23 @@ export function useScratchpad(options: UseScratchpadOptions) {
       projectPath,
       title: SCRATCHPAD_TITLE,
       body: session.doc.value,
+      // The optimistic lock: the revision this draft was based on. A gateway
+      // agent write that landed since is a conflict — retry once against the
+      // fresh revision (the user's draft wins; the agent's write is replaced).
+      expectedRevision: storedRevision.value ?? undefined,
     };
 
     const api = bridge();
     let savedAt: number | null = null;
+    let revision = storedRevision.value;
     if (api) {
-      const result = await api.save(payload);
-      savedAt = result?.savedAt ?? Date.now();
+      let result = await api.save(payload);
+      if (result && "conflict" in result) {
+        result = await api.save({ ...payload, expectedRevision: result.conflict });
+      }
+      const saved = result && "revision" in result ? result : null;
+      savedAt = saved?.savedAt ?? Date.now();
+      revision = saved?.revision ?? revision;
     } else {
       const list = readLocal(projectPath);
       const idx = list.findIndex((r) => r.id === session.padId);
@@ -167,17 +196,21 @@ export function useScratchpad(options: UseScratchpadOptions) {
         createdAt: idx >= 0 ? list[idx]!.createdAt : now,
         updatedAt: now,
         sortIndex: idx >= 0 ? list[idx]!.sortIndex : list.length,
+        revision: idx >= 0 ? list[idx]!.revision + 1 : 1,
       };
       if (idx >= 0) list[idx] = row;
       else list.push(row);
       writeLocal(projectPath, list);
       savedAt = now;
+      revision = row.revision;
     }
 
     session.savedAt = savedAt;
     session.status = "ready";
     storedBody.value = session.doc.value;
+    storedRawBody.value = payload.body;
     storedSavedAt.value = savedAt;
+    storedRevision.value = revision;
     sessions.value = [...sessions.value];
   }
 
@@ -234,7 +267,9 @@ export function useScratchpad(options: UseScratchpadOptions) {
     }
     padId.value = keep.id;
     storedBody.value = await toPadHtml(keep.body);
+    storedRawBody.value = keep.body;
     storedSavedAt.value = keep.updatedAt ?? null;
+    storedRevision.value = keep.revision ?? null;
     const stale = sorted.slice(1);
     if (stale.length) {
       if (api) {
@@ -276,15 +311,64 @@ export function useScratchpad(options: UseScratchpadOptions) {
     scheduleSave();
   }
 
+  /**
+   * Live updates from the agent gateway (docs/mcp-gateway-design.md §6): a
+   * kone_scratchpad_write lands as `scratchpad.updated` on the shared
+   * agent:event stream. Applied only when the incoming revision is newer than
+   * what this pane last knew. An open editor with unsaved edits keeps its
+   * draft — the stored state still moves forward so the draft's next save
+   * overwrites the agent write (user drafts win until their save lands).
+   */
+  function subscribeToGatewayEvents(): void {
+    if (!import.meta.client) return;
+    const api = window.koneDesktop?.agent;
+    if (!api) return;
+    detachEvents = api.onEvent((event) => {
+      if (event.type !== "scratchpad.updated") return;
+      if (event.projectPath !== resolvePath()) return;
+      if (storedRevision.value != null && event.revision <= storedRevision.value) return;
+      void applyAgentWrite(event);
+    });
+  }
+
+  async function applyAgentWrite(event: {
+    padId: string;
+    body: string;
+    savedAt: number;
+    revision: number;
+    writer: ScratchpadWriter | null;
+  }): Promise<void> {
+    const html = await toPadHtml(event.body);
+    const session = current();
+    // Only touch the live editor when it holds no unsaved draft — otherwise
+    // the user's typing wins and the agent write is replaced on next save.
+    if (session && session.doc.value === storedBody.value) {
+      session.doc.value = html;
+      session.savedAt = event.savedAt;
+      session.status = "ready";
+    }
+    if (event.padId) padId.value = event.padId;
+    storedBody.value = html;
+    storedRawBody.value = event.body;
+    storedSavedAt.value = event.savedAt;
+    storedRevision.value = event.revision;
+    lastWriter.value = event.writer;
+    sessions.value = [...sessions.value];
+  }
+
   if (import.meta.client) {
     useEventListener(window, "beforeunload", () => {
       void flush();
     });
   }
 
+  subscribeToGatewayEvents();
+
   onBeforeUnmount(() => {
     void flush();
+    detachEvents?.();
+    detachEvents = null;
   });
 
-  return { sessions, open, close, append, hydrate, flush };
+  return { sessions, open, close, append, hydrate, flush, lastWriter };
 }

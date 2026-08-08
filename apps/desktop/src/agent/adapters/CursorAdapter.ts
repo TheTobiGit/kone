@@ -13,12 +13,15 @@ import {
 } from "../cursorHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
 import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
+import { koneHostContextForFirstRun } from "../gateway/appContext.js";
+import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
 import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
   EmitEvent,
+  GatewayConnection,
   InteractionMode,
   ModelDescriptor,
   PlanTask,
@@ -147,6 +150,11 @@ type CursorSession = {
   conversationId?: string;
   /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
   resumedFrom?: string;
+  /** The kone gateway connection minted at startSession — the agent's app
+   *  tools (kone_scratchpad_read/write via the gateway's MCP server). */
+  gatewayConnection?: GatewayConnection;
+  /** User turns sent so far; the kone host-context block rides the first one. */
+  runOrdinal: number;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, CursorItemBuffer>;
@@ -653,6 +661,8 @@ export class CursorAdapter implements ProviderAdapter {
       items: new Map(),
       configOptions: [],
       modeIds: [],
+      gatewayConnection: input.gatewayConnection,
+      runOrdinal: 0,
       interrupting: false,
       usageReported: false,
       segmentCount: 0,
@@ -671,8 +681,24 @@ export class CursorAdapter implements ProviderAdapter {
     });
 
     try {
-      await rpc.call("initialize", CURSOR_INITIALIZE_PARAMS, INITIALIZE_TIMEOUT_MS);
+      const initializeResult = await rpc.call<Record<string, unknown>>(
+        "initialize",
+        CURSOR_INITIALIZE_PARAMS,
+        INITIALIZE_TIMEOUT_MS,
+      );
       await this.authenticate(rpc);
+
+      // The kone gateway (docs/mcp-gateway-design.md §4): thread the app's MCP
+      // server into every session door. An agent that advertises
+      // `agentCapabilities.mcpCapabilities.http` gets the direct loopback HTTP
+      // entry; otherwise Cursor spawns the stdio proxy (stdioProxy.mjs), which
+      // forwards JSON-RPC to the same endpoint. No gateway connection → no
+      // mcpServers at all — never promise tools the session can't reach.
+      const mcpServers = input.gatewayConnection
+        ? acpMcpServers(input.gatewayConnection, {
+            httpCapable: acpAgentSupportsHttp(initializeResult),
+          })
+        : [];
 
       // Resuming replays the prior conversation into the same session id.
       // Cursor advertises `loadSession`, not `resume`, so `session/load` is the
@@ -684,7 +710,7 @@ export class CursorAdapter implements ProviderAdapter {
         try {
           response = await rpc.call<Record<string, unknown>>(
             "session/load",
-            { sessionId: input.resume, cwd: input.cwd, mcpServers: [] },
+            { sessionId: input.resume, cwd: input.cwd, mcpServers },
             SESSION_SETUP_TIMEOUT_MS,
           );
           session.conversationId = input.resume;
@@ -696,7 +722,7 @@ export class CursorAdapter implements ProviderAdapter {
       if (!response) {
         response = await rpc.call<Record<string, unknown>>(
           "session/new",
-          { cwd: input.cwd, mcpServers: [] },
+          { cwd: input.cwd, mcpServers },
           SESSION_SETUP_TIMEOUT_MS,
         );
         const sessionId = readString(response, "sessionId");
@@ -751,6 +777,15 @@ export class CursorAdapter implements ProviderAdapter {
       imageBlocks = built.imageBlocks;
       promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
     }
+    // prependT3OrchestrationInstructions pattern — the same wiring as
+    // OpenCodeAdapter): the app-context block rides the very first user turn
+    // so the agent knows the gateway tools exist.
+    promptText = koneHostContextForFirstRun({
+      prompt: promptText,
+      runOrdinal: session.runOrdinal + 1,
+      gatewayControlAvailable: session.gatewayConnection !== undefined,
+    });
+    session.runOrdinal += 1;
     const prompt: Array<{ type: "text"; text: string } | CursorImageBlock> = [];
     if (promptText.length > 0) prompt.push({ type: "text", text: promptText });
     prompt.push(...imageBlocks);

@@ -23,6 +23,8 @@ import {
   resolveClaudeExecutable,
   summarizeClaudeAccount,
 } from "../claudeHome.js";
+import { claudeSystemPromptAppend } from "../gateway/appContext.js";
+import { claudeMcpServers } from "../gateway/injection.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { probe } from "../spawn.js";
 import type {
@@ -761,9 +763,20 @@ export class ClaudeAdapter implements ProviderAdapter {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        // Tells the main agent the subagent catalog below exists and how to pick
-        // effort (the Agent tool has no effort param — it's the agent type).
-        append: CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND,
+        // The preset is preserved; these blocks are appended on top (the SDK's
+        // supported preset-append channel — sdk.d.ts: "Use default prompt with
+        // appended instructions"). First the subagent catalog guidance, then —
+        // when this session owns a gateway connection — the kone host-context
+        // block (identity + gateway tools + when to use them), same gate as the
+        // mcpServers injection below so an agent is never told about tools it
+        // doesn't have. Delivered on resumed sessions too: this is the one
+        // options builder fresh and resume paths share.
+        append: [
+          CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND,
+          claudeSystemPromptAppend(input.gatewayConnection !== undefined),
+        ]
+          .filter(Boolean)
+          .join("\n"),
       },
       // The nested agents this session may spawn (roles + effort-tier workers).
       agents: buildClaudeSubagentDefinitions(),
@@ -777,6 +790,13 @@ export class ClaudeAdapter implements ProviderAdapter {
       },
       settingSources: ["user", "project", "local"],
       includePartialMessages: true,
+      // The kone MCP gateway (docs/mcp-gateway-design.md): the session's
+      // loopback connection, minted at startSession. The agent gets the
+      // scratchpad tools and — later — spawn/theme/panes. Token is per-session
+      // and revoked at stopSession.
+      ...(input.gatewayConnection
+        ? { mcpServers: claudeMcpServers(input.gatewayConnection) }
+        : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     };
 

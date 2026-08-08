@@ -569,7 +569,7 @@ const MOCK_TOUCHABLE = [
   "apps/desktop/src/git/status.ts",
   "apps/desktop/src/git/diff.ts",
   "apps/desktop/src/preload.ts",
-  "docs/agentic-providers-plan.md",
+  "docs/archive/agentic-providers-plan.md",
   "README.md",
   "package.json",
 ];

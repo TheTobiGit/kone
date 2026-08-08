@@ -13,6 +13,7 @@ import {
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
 import { sidechatBootstrapForTurn } from "./sidechat.js";
+import type { GatewayHandle } from "./gateway/index.js";
 import type {
   ApprovalDecision,
   EmitEvent,
@@ -49,6 +50,10 @@ export class AgentService {
   /** Last known catalog per provider — seeded from disk at construction, so a
    *  cold launch can validate a model id without spawning a probe CLI. */
   private readonly catalogs = new Map<ProviderKind, ModelDescriptor[]>();
+  /** The MCP gateway (docs/mcp-gateway-design.md), attached after boot. When
+   *  live, each startSession mints a per-session bearer token and stopSession
+   *  revokes it — agents reach kone tools over loopback. */
+  private gateway: GatewayHandle | null = null;
   private warming: Promise<void> | null = null;
 
   constructor() {
@@ -92,6 +97,13 @@ export class AgentService {
   onEvent(listener: (event: RuntimeEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Wire the MCP gateway in (boot): session lifecycle starts minting and
+   *  revoking gateway credentials, and the gateway watches the turn stream
+   *  for its authority boundary. */
+  attachGateway(gateway: GatewayHandle): void {
+    this.gateway = gateway;
   }
 
   // ── discovery ─────────────────────────────────────────────────────────────
@@ -313,7 +325,20 @@ export class AgentService {
   async startSession(input: SessionStartInput): Promise<Session> {
     const model = this.validModelFor(input.provider, input.model);
     const effort = this.validEffortFor(input.provider, model, input.effort);
-    const session = await this.adapter(input.provider).startSession({ ...input, model, effort });
+    // Mint the gateway credential first so the adapter can inject it into the
+    // provider session's mcpServers config. Restarting a thread revokes the
+    // prior token (GatewayCredentials.issueSessionToken). The endpoint port
+    // resolves a beat after boot; awaiting `ready` guarantees the URL is real
+    // before a provider process tries to reach it.
+    const gatewayConnection = this.gateway
+      ? (await this.gateway.ready, this.gateway.connectionForThread(input.threadId, input.provider, model))
+      : undefined;
+    const session = await this.adapter(input.provider).startSession({
+      ...input,
+      model,
+      effort,
+      gatewayConnection,
+    });
     this.routing.set(input.threadId, input.provider);
     return session;
   }
@@ -345,6 +370,8 @@ export class AgentService {
     if (!provider) return;
     await this.adapter(provider).stopSession(threadId);
     this.routing.delete(threadId);
+    // The session is gone — its gateway credential must 401 from here on.
+    this.gateway?.revokeThread(threadId);
   }
 
   async respondToRequest(

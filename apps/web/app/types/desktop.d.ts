@@ -701,6 +701,18 @@ export type SessionStartInput = {
   /** Provider-native conversation id to resume when reopening a stored thread,
    *  so it continues with its full prior context. Absent starts fresh. */
   resume?: string;
+  /** MCP gateway connection for this session, filled main-side by
+   *  AgentService.startSession when the gateway is live. The adapter injects
+   *  it into the provider session's mcpServers config so the agent can call
+   *  kone tools. Renderer code never sets this. */
+  gatewayConnection?: GatewayConnection;
+};
+
+/** Loopback MCP gateway connection for one provider session
+ *  (apps/desktop/src/agent/gateway). */
+export type GatewayConnection = {
+  url: string;
+  bearerToken: string;
 };
 
 export type RuntimeSessionState =
@@ -983,6 +995,21 @@ export type RuntimeEvent =
       type: "thread.sidechat-created";
       sourceThreadId: string;
       requestId: string;
+    })
+  // An agent gateway write landed on a project's scratchpad
+  // (kone_scratchpad_write). `projectPath` scopes it to the project the pad
+  // belongs to (the board is project-scoped, not thread-scoped); `writer` is
+  // the agent session that wrote, null for user edits. Consumers apply it
+  // only when `revision` is newer than their own.
+  | (AgentBaseEvent & {
+      type: "scratchpad.updated";
+      padId: string;
+      projectPath: string;
+      title: string;
+      body: string;
+      revision: number;
+      savedAt: number;
+      writer: ScratchpadWriter | null;
     })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   | (AgentBaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
@@ -1289,6 +1316,10 @@ export type ScratchpadRecord = {
   createdAt: number;
   updatedAt: number;
   sortIndex: number;
+  /** Optimistic-concurrency counter, bumped on every write (store v15). The
+   *  editor sends its last-known value with each save; gateway agent writes
+   *  guard on it so user and agent edits never silently clobber each other. */
+  revision: number;
 };
 
 export type ScratchpadListInput = {
@@ -1300,6 +1331,26 @@ export type ScratchpadSaveInput = {
   projectPath: string;
   title: string;
   body: string;
+  /** The editor's last-known revision — the web editor always sends it so
+   *  user and agent (gateway) writes never silently clobber each other.
+   *  Omit to overwrite unconditionally. */
+  expectedRevision?: number;
+};
+
+/** The result of scratchpad:save — the persisted state, or a revision
+ *  conflict carrying the current revision so the editor can retry against
+ *  fresh state. Null = store failure. */
+export type ScratchpadSaveResult =
+  | { savedAt: number; revision: number }
+  | { conflict: number }
+  | null;
+
+/** Which agent session wrote a pad — carried by kone_scratchpad_write results
+ *  and scratchpad.updated events so the board can attribute agent edits.
+ *  User edits (the web editor) carry no writer. */
+export type ScratchpadWriter = {
+  model?: string;
+  provider: ProviderKind;
 };
 
 export type ScratchpadDeleteInput = {
@@ -1308,7 +1359,7 @@ export type ScratchpadDeleteInput = {
 
 export type KoneScratchpadApi = {
   list: (input: ScratchpadListInput) => Promise<ScratchpadRecord[]>;
-  save: (input: ScratchpadSaveInput) => Promise<{ savedAt: number } | null>;
+  save: (input: ScratchpadSaveInput) => Promise<ScratchpadSaveResult>;
   delete: (input: ScratchpadDeleteInput) => Promise<void>;
 };
 

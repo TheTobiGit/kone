@@ -6,7 +6,9 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../pla
 import { probe } from "../spawn.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
-import type { ApprovalDecision, EmitEvent, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import { koneHostContextForFirstRun } from "../gateway/appContext.js";
+import { buildOpenCodeMcpServer } from "../gateway/injection.js";
+import type { ApprovalDecision, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
 
 type RecordLike = Record<string, any>;
 type OpenCodeEvent = { type: string; properties?: RecordLike };
@@ -24,6 +26,10 @@ type OpenCodeSubagentRun = {
 type OpenCodeSession = {
   threadId: string; cwd: string; model?: string; variant?: string; contextWindow?: number; mode: InteractionMode; baseUrl: string;
   client: OpenCodeClient; server: OpenCodeServer; openCodeSessionId: string; activeTurnId?: string;
+  /** The kone gateway connection minted at startSession — the agent's app tools. */
+  gatewayConnection?: GatewayConnection;
+  /** User turns sent so far; the kone host-context block rides the first one. */
+  runOrdinal: number;
   /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
   resumedFrom?: string;
   eventsAbort: AbortController; messageRoleById: Map<string, string>; partById: Map<string, RecordLike>;
@@ -333,7 +339,30 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const resumedFrom = sessionId ? resume : undefined;
     if (!sessionId) sessionId = responseData(await client.request("POST", "/session", { permission: permissionRules(mode) }))?.id;
     if (!sessionId) { await server.dispose(); throw new Error("OpenCode session response did not include an id."); }
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    // kone gateway (docs/mcp-gateway-design.md §4): register the app's MCP
+    // server on this opencode server instance right after the session exists.
+    // The registry is per-server-process, so the tools die with the session's
+    // server — no cross-thread leakage. Failures are loud but non-fatal.
+    if (input.gatewayConnection) {
+      try {
+        const mcpResult = responseData(
+          await client.request("POST", "/mcp", {
+            name: "kone",
+            config: buildOpenCodeMcpServer(input.gatewayConnection),
+            directory: input.cwd,
+          }),
+        );
+        const koneStatus = record(mcpResult)?.["kone"];
+        if (koneStatus?.status !== "connected") {
+          console.error(
+            `[opencode] kone MCP server did not connect: ${koneStatus?.error ?? "unknown status"}`,
+          );
+        }
+      } catch (error) {
+        console.error("[opencode] kone MCP registration failed:", errorMessage(error));
+      }
+    }
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -345,7 +374,16 @@ export class OpenCodeAdapter implements ProviderAdapter {
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const session = this.require(input.threadId); const text = input.input.trim();
     const { buildOpenCodeAttachmentParts, composePromptText } = await import("../promptAttachments.js");
-    const files = await buildOpenCodeAttachmentParts(input.attachments); const prompt = composePromptText(text, "");
+    const files = await buildOpenCodeAttachmentParts(input.attachments);
+    // prependT3OrchestrationInstructions pattern): the app-context block rides
+    // the very first user turn so the agent knows the gateway tools exist.
+    const composed = composePromptText(text, "");
+    const prompt = koneHostContextForFirstRun({
+      prompt: composed,
+      runOrdinal: session.runOrdinal + 1,
+      gatewayControlAvailable: session.gatewayConnection !== undefined,
+    });
+    session.runOrdinal += 1;
     if (!prompt && !files.length) throw new Error("Turn input must include text or an attachment.");
     if (input.model) { session.model = input.model; session.contextWindow = this.modelContextWindows.get(input.model); }
     const model = modelSlug(input.model ?? session.model); if (!model) throw new Error("OpenCode model selection must use the 'provider/model' format.");
