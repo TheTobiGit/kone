@@ -84,6 +84,19 @@ const viewport = computed(() => Math.max(320, Math.round(windowWidth.value)));
 const planeWidth = computed(() => planeWidthFor(COUNT, COLUMN));
 const fitCount = computed(() => columnsInView(viewport.value, COLUMN));
 
+// The stage isn't the viewport here — if it were, a line drawn at either edge
+// would just trace the clip and show nothing. Instead the viewport is a centered
+// *window* that takes part of the stage, and the strip runs past it on both sides,
+// so a column is visibly outside the window (not yet viewable) before it crosses a
+// guide in. `VIEWPORT_SHARE` is how much of the stage the window claims; the rest
+// is context to measure the crossing against. The focused column still centres
+// inside the window (offsetStyle compensates for the window's position), so the
+// picture stays the board's own geometry.
+const VIEWPORT_SHARE = 0.62;
+const stageModel = computed(() => viewport.value / VIEWPORT_SHARE);
+/** How far the window's left edge sits from the stage's left, in model px. */
+const guideOffset = computed(() => (stageModel.value - viewport.value) / 2);
+
 /** One column's decision, for one mode, from one scroll position. Everything the
  *  page shows is derived from this — the captions, the positions, and the dry lap
  *  that decides whether two modes are worth telling apart. */
@@ -322,15 +335,16 @@ function onKeydown(e: KeyboardEvent, i: number) {
 }
 
 // ── drawing the miniature ─────────────────────────────────────────────────────
-// The stage frame *is* the viewport: the plane is laid out inside it at
-// viewport-relative percentages and clipped by it, so a column half out of frame is
-// genuinely half out of view and `never`'s peek sliver is the real 24px. Every
+// The stage holds a centered *window* (the viewport) plus a little strip context on
+// each side; the plane is laid out inside it at stage-relative percentages, and the
+// window's edges — not the stage's clip — are what a column crosses to enter or
+// leave view, so `never`'s peek sliver is the real 24px at the window edge. Every
 // number below comes out of the geometry functions, so the picture is drawn from
 // the same source as the behaviour rather than eyeballed to match it.
 const pct = (n: number) => `${Math.round(n * 1e6) / 1e4}%`;
 
 const railStyle = computed(() => ({
-  width: pct(planeWidth.value / viewport.value),
+  width: pct(planeWidth.value / stageModel.value),
 }));
 
 const columns = computed(() =>
@@ -344,7 +358,10 @@ const columns = computed(() =>
 );
 
 function offsetStyle(mode: CenterMode) {
-  return { transform: `translateX(${pct(-scrollOf[mode] / planeWidth.value)})` };
+  // Translate the rail by (guideOffset − scroll): the extra guideOffset parks the
+  // window's centre where the viewport's centre belongs, so a column that the rule
+  // centres ends up centred inside the window, not in the stage.
+  return { transform: `translateX(${pct((guideOffset.value - scrollOf[mode]) / planeWidth.value)})` };
 }
 </script>
 
@@ -426,14 +443,37 @@ function offsetStyle(mode: CenterMode) {
                 :class="{ 'pp__col--on': focused === c.n - 1 }"
                 :style="c.style"
               >
-                <span class="pp__n">{{ c.n }}</span>
+                <!-- A pane is a title over a body, so the miniature is too: a head
+                     strip carrying the number where the board puts the title, then
+                     the tall body below it. That internal hairline is what stops
+                     these reading as a stack of chips. -->
+                <span class="pp__col-head"><span class="pp__n">{{ c.n }}</span></span>
+                <span class="pp__col-body" aria-hidden="true"></span>
               </i>
             </div>
-            <!-- The frame's middle: what the centring modes aim at, and what
-                 `never` visibly ignores. A tick standing on the rule, with the
-                 faintest continuation upward so you can still read the alignment
-                 against a column that's covering it. -->
-            <i class="pp__mid" :class="{ 'pp__mid--idle': opt.value === 'never' }" />
+            <!-- The window: a faint band for the viewable area, framed by a guide
+                 at each edge — where the viewable area starts and ends. The strip
+                 runs past both guides, so a column half in, half out is visibly
+                 crossing a line, and the midpoint of the window is the aim the
+                 centring modes go for. -->
+            <i
+              class="pp__window"
+              aria-hidden="true"
+              :style="{
+                left: pct(guideOffset / stageModel),
+                width: pct(viewport / stageModel),
+              }"
+            />
+            <i
+              class="pp__guide pp__guide--l"
+              aria-hidden="true"
+              :style="{ left: pct(guideOffset / stageModel) }"
+            />
+            <i
+              class="pp__guide pp__guide--r"
+              aria-hidden="true"
+              :style="{ right: pct(guideOffset / stageModel) }"
+            />
           </div>
         </div>
       </div>
@@ -696,8 +736,11 @@ function offsetStyle(mode: CenterMode) {
    what's being compared is the *movement*, which a card frames rather than shows. */
 .pp__stage {
   position: relative;
-  height: 68px;
-  margin-top: 12px;
+  /* Tall enough that a column reads as a pane (a title over a body) rather than a
+     squat card, and keyed to the window's height so the ratio of miniature to the
+     real strip's full-height columns holds as the drawer itself grows and shrinks. */
+  height: clamp(116px, 17vh, 200px);
+  margin-top: 14px;
   overflow: hidden;
 }
 /* The rule the columns stand on — and the only thing on the page that draws the
@@ -711,26 +754,28 @@ function offsetStyle(mode: CenterMode) {
   height: 1px;
   background-color: color-mix(in srgb, var(--ink) 11%, transparent);
 }
-.pp__mid {
+.pp__guide {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 50%;
   z-index: 2;
   width: 1px;
-  /* A ruler's centre mark: assertive where it meets the rule, thinning to almost
+  /* A window's edge: assertive where it meets the rule, thinning to almost
      nothing higher up so it can cross a column without defacing it. */
   background-image: linear-gradient(
     to top,
     color-mix(in srgb, var(--ink) 34%, transparent) 0 14px,
     color-mix(in srgb, var(--ink) 9%, transparent) 14px 100%
   );
-  transition: opacity var(--pp-t-small) ease;
 }
-/* `never` never aims here, so the guide it ignores is dimmed rather than removed —
-   still there to measure against, no longer claiming to be a target. */
-.pp__mid--idle {
-  opacity: 0.4;
+/* The viewable area itself, faintly — just enough to separate what's inside the
+   window from the context the strip runs past on either side, without competing
+   with the columns that cross it. */
+.pp__window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: color-mix(in srgb, var(--ink) 4%, transparent);
 }
 .pp__rail {
   position: absolute;
@@ -746,8 +791,8 @@ function offsetStyle(mode: CenterMode) {
   position: absolute;
   inset-block: 0;
   display: flex;
-  align-items: flex-start;
-  padding: 6px 9px;
+  flex-direction: column;
+  overflow: hidden;
   border-radius: 7px 7px 2px 2px;
   background-color: var(--pp-slab);
   /* The board doesn't highlight the focused column — it recedes every other one:
@@ -773,6 +818,21 @@ function offsetStyle(mode: CenterMode) {
    rows differ in is where they've moved to, not what colour they are. */
 .pp__opt--on .pp__col--on {
   background-color: var(--pp-slab-live);
+}
+/* The head is the pane's title bar: a short strip at the top, with the hairline
+   beneath it marking where the title gives way to the body — the same seam the
+   board's columns carry between head and body. */
+.pp__col-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 8px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+}
+/* The body fills the pane below its title, like the thread it would be showing. */
+.pp__col-body {
+  flex: 1;
 }
 /* Sat at the head of the column, where a pane's title sits on the real board —
    which is also the only other thing the board brightens on focus. */
