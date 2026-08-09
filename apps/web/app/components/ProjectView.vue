@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, toRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref, shallowRef, toRef, watch } from "vue";
 import { onClickOutside, onKeyStroke, useDebounceFn, useEventListener, watchDebounced } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -12,6 +12,7 @@ import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
 import type {
+  ApprovalDecision,
   ChatAttachment,
   GitFileStatus,
   InteractionMode,
@@ -25,7 +26,13 @@ import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/
 import { SESSION_BRAND } from "~/types/session";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
-import { deriveActiveSubagents } from "~/utils/subagentRuns";
+import {
+  deriveActiveSubagents,
+  deriveDelegates,
+  SUBAGENT_OPEN_KEY,
+  type DelegateRow,
+} from "~/utils/subagentRuns";
+import SubagentShell from "~/components/SubagentShell.vue";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat } from "~/composables/useSideChats";
@@ -176,6 +183,9 @@ const focusedThread = computed(() =>
 const focusedPendingUserInput = computed(
   () => focusedThread.value?.pendingUserInput.value ?? null,
 );
+const focusedPendingApproval = computed(
+  () => focusedThread.value?.pendingApproval.value ?? null,
+);
 const activePaneIsThread = computed(() => focusedThread.value !== null);
 
 // ── bare-board chooser ───────────────────────────────────────────────────────
@@ -296,15 +306,23 @@ const activeChangesRaw = computed(() =>
 const activeSubagentsRaw = computed(() =>
   deriveActiveSubagents(focusedThread.value?.blocks.value ?? []),
 );
+const activeDelegatesRaw = computed(() =>
+  deriveDelegates(
+    focusedThread.value?.blocks.value ?? [],
+    focusedThread.value?.spawnedChildren.value ?? [],
+  ),
+);
 
-// What the docks actually render — a debounced snapshot of the three derives.
+// What the docks actually render — a debounced snapshot of the four derives.
 const activePlan = shallowRef(activePlanRaw.value);
 const activeChanges = shallowRef(activeChangesRaw.value);
 const activeSubagents = shallowRef(activeSubagentsRaw.value);
+const activeDelegates = shallowRef(activeDelegatesRaw.value);
 function syncDockSnapshot(): void {
   activePlan.value = activePlanRaw.value;
   activeChanges.value = activeChangesRaw.value;
   activeSubagents.value = activeSubagentsRaw.value;
+  activeDelegates.value = activeDelegatesRaw.value;
 }
 
 // Switching threads used to morph one thread's docks into another's *in place* —
@@ -319,7 +337,7 @@ const docksSwapping = ref(false);
 let dockSwapTimer: ReturnType<typeof setTimeout> | undefined;
 
 watchDebounced(
-  [activePlanRaw, activeChangesRaw, activeSubagentsRaw],
+  [activePlanRaw, activeChangesRaw, activeSubagentsRaw, activeDelegatesRaw],
   () => {
     if (docksSwapping.value) return; // mid-swap: the timer owns the snapshot
     syncDockSnapshot();
@@ -342,6 +360,89 @@ watch(focusedKey, (key, prev) => {
   }, 165);
 });
 onBeforeUnmount(() => clearTimeout(dockSwapTimer));
+
+// ── the open subagent shell ──────────────────────────────────────────────────
+// Clicking a row in the Subagents dock (or the activity feed's subagent step)
+// opens that delegate's EXPANDED shell — the zoom-in of the dock. The shell is
+// keyed by identity (a run's stable `toolUseId`, a spawned thread's `threadId`)
+// but derives the delegate itself fresh from the live block tree + spawn list,
+// so a still-working child keeps streaming into the open shell instead of
+// freezing on the snapshot the dock rows came from.
+type ShellTarget = { kind: "run"; toolUseId: string } | { kind: "thread"; threadId: string };
+const activeShell = ref<ShellTarget | null>(null);
+const activeShellRun = computed(() => {
+  const t = activeShell.value;
+  if (t?.kind === "run") {
+    return activeSubagentsRaw.value.runs.find((r) => r.toolUseId === t.toolUseId) ?? null;
+  }
+  return null;
+});
+const activeShellThread = computed(() => {
+  const t = activeShell.value;
+  if (t?.kind === "thread") {
+    return (
+      focusedThread.value?.spawnedChildren.value.find((c) => c.threadId === t.threadId) ?? null
+    );
+  }
+  return null;
+});
+function onOpenShell(target: ShellTarget): void {
+  cue("press");
+  activeShell.value = target;
+}
+function onCloseShell(): void {
+  activeShell.value = null;
+}
+// The approvals this shell's run is parked on — attributed upstream in useAgent
+// when exactly one run was live as the ask landed (originToolUseId). Un-attributable
+// asks (the parent's own, or a concurrent batch) stay with the main modal.
+const shellApprovals = computed(() => {
+  const run = activeShellRun.value;
+  if (!run) return [];
+  return (focusedThread.value?.pendingApprovals.value ?? []).filter(
+    (a) => a.originToolUseId === run.toolUseId,
+  );
+});
+// When the shell renders the pending approval inline, the main modal steps
+// aside for that request — one ask, one place to answer it.
+const shellSuppressesApproval = computed(() => {
+  const p = focusedPendingApproval.value;
+  return !!p && shellApprovals.value.some((a) => a.requestId === p.requestId);
+});
+function onDecideShellApproval(requestId: string, decision: ApprovalDecision): void {
+  onRespondApproval(requestId, decision);
+}
+function onShellOpenThread(): void {
+  const t = activeShell.value;
+  if (t?.kind !== "thread") return;
+  activeShell.value = null;
+  void revealThread(t.threadId);
+}
+// Clicking a delegate row opens what that kind of delegate IS: a provider-native
+// run opens its live transcript in the shell in place; a spawned thread is a
+// real, persistent conversation — the shell shows its projection, and the
+// shell's open-thread action reveals the thread itself (which loads its stored
+// transcript and flips to the board).
+function onOpenDelegate(row: DelegateRow): void {
+  if (row.target.kind === "run") {
+    onOpenShell({ kind: "run", toolUseId: row.target.toolUseId });
+    return;
+  }
+  onOpenShell({ kind: "thread", threadId: row.target.threadId });
+}
+// A shell belongs to one thread; switching the focused column (or leaving the
+// board) takes it away with the dock that opened it.
+watch(focusedKey, () => {
+  activeShell.value = null;
+});
+// A spawned thread that vanishes from the live list (never spawned, archived,
+// swept) takes its shell with it.
+watch(activeShellThread, (t) => {
+  if (activeShell.value?.kind === "thread" && !t) activeShell.value = null;
+});
+// The activity feed's subagent step rows have no direct emit path up here, so
+// the open handler rides provide/inject instead (see SUBAGENT_OPEN_KEY).
+provide(SUBAGENT_OPEN_KEY, (toolUseId: string) => onOpenShell({ kind: "run", toolUseId }));
 
 // The project's persisted agent threads, split into pinned + recent for the
 // "recent conversations" block on the working-tree home. Reads real history on
@@ -1074,6 +1175,11 @@ function onAnswerUserInput(requestId: string, answers: UserInputAnswers) {
 function onCancelUserInput(requestId: string) {
   void focusedThread.value?.respondUserInput(requestId, {});
 }
+// Decide a parked tool approval — hands the decision back to the adapter, which
+// resolves the parked provider request and lets the turn continue.
+function onRespondApproval(requestId: string, decision: ApprovalDecision) {
+  void focusedThread.value?.respondApproval(requestId, decision);
+}
 
 // Last path segment, tolerant of a trailing slash (a directory entry) so it
 // never yields an empty name.
@@ -1107,6 +1213,20 @@ const originRect = ref<DOMRect | null>(null);
 const activeFile = computed(
   () => changeItems.value.find((c) => c.path === activePath.value) ?? null,
 );
+// The right-hand "peek" drawer — opened by a lane's +N bundle. The stage slides
+// left to uncover it (the same spring the settings drawer's stage rides, so the
+// two reveals share a feel); picking a file closes it and opens that file's
+// detail instead, so the full-screen detail always owns the viewport when it's
+// up. The slide stops just short of the panel's width so the page's rounded
+// corners overlap the panel's own padding — the arc then reads against the
+// panel's sunken surface instead of the page's ground.
+const peekOpen = ref(false);
+const peekSpring = {
+  type: "spring",
+  stiffness: 520,
+  damping: 26,
+  mass: 0.8,
+} as const;
 // Self-close when the file leaves the tree; lock the page while the overlay is
 // up so only the file's own body scrolls.
 function lockPage(locked: boolean) {
@@ -1295,6 +1415,11 @@ function onUnstageAll() {
 function onDiscardPaths(paths: string[]) {
   g.discardPaths(paths);
 }
+// Discard from the peek covers every unstaged change — the same scope as the
+// Changed lane's own discard, just reachable from the all-files drawer.
+function onPeekDiscard() {
+  onDiscardPaths(changeItems.value.filter((c) => !c.staged).map((c) => c.path));
+}
 function onCommit() {
   cue("success");
   g.commit();
@@ -1311,20 +1436,38 @@ function onOpenFileFromGit(path: string, rect: DOMRect | null) {
 }
 function onOpenFile(item: ChangeItem, rect: DOMRect) {
   cue("press");
+  // Picked from the peek: slide the stage back and grow the detail from the row.
+  peekOpen.value = false;
   originRect.value = rect;
   activePath.value = item.path;
+}
+// Opening the peek from a lane's +N bundle — the stage steps aside for the list.
+function openPeek() {
+  cue("press");
+  peekOpen.value = true;
 }
 function onCloseFile() {
   activePath.value = null;
 }
-// Esc backs out of whatever is frontmost: the detail view, then an open switcher.
+// Esc backs out of whatever is frontmost: the detail view, then the peek, then
+// an open switcher. (The peek also owns its own Esc — this is the same step.)
 onKeyStroke("Escape", () => {
   if (activePath.value) {
     onCloseFile();
     return;
   }
+  if (peekOpen.value) {
+    peekOpen.value = false;
+    cue("toggle");
+    return;
+  }
   // The branch picker owns its own Escape (it's a modal); nothing to do here.
   if (switcherOpen.value) switcherOpen.value = false;
+});
+// The peek belongs to the working-tree home; step it aside when the surface
+// changes so a slid-aside stage never hangs over the board or repository.
+watch(surface, (s) => {
+  if (s !== "overview") peekOpen.value = false;
 });
 function onStageFile(path: string) {
   cue("toggle");
@@ -1344,7 +1487,24 @@ function onDiscardFile(path: string) {
 </script>
 
 <template>
-  <main class="project-main relative bg-ground">
+    <motion.main
+    class="project-main relative bg-ground"
+    :class="{ 'project-main--peek': peekOpen }"
+    :animate="{ x: peekOpen ? -342 : 0 }"
+    :transition="peekSpring"
+  >
+  <!-- While the peek is open, tapping the shoved-aside stage closes it (and
+       blocks the working tree underneath from being clicked) — the same
+       gesture as the settings drawer on the launcher. The file detail never
+       rides this overlay: picking a file closes the peek first. -->
+  <button
+    v-if="peekOpen && !activeFile"
+    type="button"
+    class="peek-dismiss absolute inset-0 z-50 cursor-pointer"
+    aria-label="Close changed files"
+    @click="peekOpen = false"
+  />
+
     <!-- Back to the launcher — a bare return glyph in the corner, on the same
          magnet-pull the app's other buttons ride, lighting up to the accent
          on hover. It steps aside for any surface that draws its own: the
@@ -1516,13 +1676,14 @@ function onDiscardFile(path: string) {
           @commit="onCommit"
           @discard-paths="onDiscardPaths"
           @open="onOpenFile"
+          @peek="openPeek"
         />
       </div>
       <!-- Recent conversations — the project's pinned + recent agent threads,
            each a vendor mark + title, meta line, and token tally. This is the
            one scroll region on the working-tree home; its PINNED / RECENT labels
            stick as the rows scroll under them. -->
-      <div class="work-sessions min-h-0 flex-1 overflow-y-auto pb-6">
+      <div class="work-sessions min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-6">
         <RecentSessions
           :pinned="pinnedSessions"
           :recent="recentSessions"
@@ -1627,7 +1788,7 @@ function onDiscardFile(path: string) {
       leave-to-class="opacity-0"
     >
       <div
-        v-if="!focusedPendingUserInput && surface !== 'git' && (surface === 'overview' || activePaneIsThread) && !showChooser && !stripOverview"
+        v-if="!focusedPendingUserInput && !focusedPendingApproval && surface !== 'git' && (surface === 'overview' || activePaneIsThread) && !showChooser && !stripOverview"
         class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
         :inert="Boolean(activeFile)"
       >
@@ -1665,21 +1826,35 @@ function onDiscardFile(path: string) {
       @cancel="onCancelUserInput"
     />
 
+    <!-- Tool approval: the turn is parked on the agent wanting to run something
+         (a command, a file change, a permission grant) in a restrictive mode.
+         The composer steps aside for this decision in the same spot — unless the
+         subagent shell is already showing the very same ask inline, in which
+         case the shell IS the answer spot and this modal steps aside. -->
+    <ApprovalModal
+      v-if="focusedPendingApproval && !shellSuppressesApproval"
+      :request-id="focusedPendingApproval.requestId"
+      :approval="focusedPendingApproval.approval"
+      @decide="onRespondApproval"
+    />
+
     <!-- Subagents dock — the nested runs the agent delegated to this turn. It's
          a taller, wider panel than the Changes/Tasks cards, so it lives in the
          bottom-LEFT corner (free on the board — the folder only perches there on
-         home) instead of crowding the right-hand stack. -->
+         home) instead of crowding the right-hand stack. It steps aside while
+         its shell is open — the shell is the zoom-in of this same dock. -->
     <div
-      v-if="surface === 'board' && !activeFile && focusedThread"
+      v-if="surface === 'board' && !activeFile && focusedThread && !activeShell"
       class="sub-dock-corner"
       :class="{ 'sub-dock-corner--swapping': docksSwapping }"
     >
       <AnimatePresence :initial="false">
         <AgentSubagentDock
-          v-if="activeSubagents.runs.length"
+          v-if="activeDelegates.rows.length"
           key="agent-subagents-dock"
-          :runs="activeSubagents.runs"
-          :streaming="activeSubagents.streaming"
+          :rows="activeDelegates.rows"
+          :streaming="activeDelegates.streaming"
+          @open="onOpenDelegate"
         />
       </AnimatePresence>
     </div>
@@ -1750,6 +1925,25 @@ function onDiscardFile(path: string) {
       />
     </Transition>
 
+    <!-- A subagent's expanded shell: clicked from the Subagents dock (or the
+         activity feed's subagent step), the shell rises over the board — the
+         delegate's identity + live status in the header, its live activity
+         filling the body, and any approval it parked on answerable inline. It
+         tracks the live delegate by identity, so a working child keeps
+         streaming into it. -->
+    <Transition name="sut">
+      <SubagentShell
+        v-if="activeShell"
+        :kind="activeShell.kind"
+        :run="activeShellRun"
+        :thread="activeShellThread"
+        :approvals="shellApprovals"
+        @close="onCloseShell"
+        @open-thread="onShellOpenThread"
+        @decide-approval="onDecideShellApproval"
+      />
+    </Transition>
+
     <!-- The full providers → models → effort picker, in the folder-picker shell. -->
     <ModelPickerModal
       v-if="modelPickerOpen"
@@ -1781,7 +1975,22 @@ function onDiscardFile(path: string) {
         :selected-index="cycleIndex"
       />
     </AnimatePresence>
-  </main>
+  </motion.main>
+
+  <!-- The right-hand peek — a sibling root so it stays pinned to the viewport's
+       right edge while `.project-main` slides left to uncover it (a fixed child
+       of the translated stage would ride along with the slide). Sits below the
+       stage (z-0) and steps aside for the file detail it opens. -->
+  <ChangePeek
+    :open="peekOpen"
+    :changes="changeItems"
+    :inert="!peekOpen || activeFile || surface !== 'overview'"
+    @close="peekOpen = false"
+    @open-file="onOpenFile"
+    @stage-all="onStageAll"
+    @unstage-all="onUnstageAll"
+    @discard="onPeekDiscard"
+  />
 </template>
 
 <style scoped>
@@ -1969,6 +2178,13 @@ function onDiscardFile(path: string) {
 .project-main {
   height: 100vh;
   overflow: hidden;
+  /* Sits above the peek (the sibling pinned to the right edge) so it fully
+     covers it at rest; the slide below opens the gap it shows through. */
+  position: relative;
+  z-index: 1;
+  /* The slide itself is the settings drawer's spring (driven by motion-v on
+     <motion.main>); only the corner curve eases in CSS, alongside it. */
+  transition: border-radius 0.4s cubic-bezier(0.22, 1, 0.36, 1);
   /* Project-home entrance cascade — read top → bottom, corner accents last.
      Child blocks (greeting, changes, sessions, composer) inherit these via
      --proj-enter-* and layer their own internal stagger on top. Defined on the
@@ -1980,6 +2196,22 @@ function onDiscardFile(path: string) {
    --proj-enter-sessions: 230ms;
    --proj-enter-composer: 330ms;
    --proj-enter-folder: 400ms;
+}
+/* The peek reveal — the slide is the settings drawer's spring (driven inline by
+   motion-v), the corner curve lives on the page: its right edge (the one facing
+   the peek) arcs inward, mirroring the settings page carrying the curve on the
+   edge facing its drawer. The slide stops just short of the peek's full width
+   (peek 360 − radius 18 = 342) so the rounded corners overlap only the panel's
+   own left padding — the arc then reads against the panel's sunken surface
+   instead of the page's ground (a flush slide shows --ground through the
+   corners, hiding the curve), while the rows themselves stay fully visible. */
+.project-main--peek {
+  border-radius: 0 18px 18px 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-main--peek {
+    transition: none;
+  }
 }
 
 /* Each layer holds the viewport and centres its content, exactly as the old
@@ -2137,10 +2369,27 @@ function onDiscardFile(path: string) {
   animation: pop-grow 0.26s cubic-bezier(0.4, 0, 0.9, 1) reverse;
   transform-origin: var(--ox, 50%) var(--oy, 50%);
 }
+/* The subagent transcript panel settles in as a centred card over the board —
+   a soft rise rather than the file detail's explosive grow. */
+.sut-enter-active,
+.sut-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sut-enter-from,
+.sut-leave-to {
+  opacity: 0;
+  transform: translateY(12px) scale(0.985);
+}
 @media (prefers-reduced-motion: reduce) {
   .pop-enter-active,
   .pop-leave-active {
     animation-duration: 0.01s;
+  }
+  .sut-enter-active,
+  .sut-leave-active {
+    transition: none;
   }
 }
 

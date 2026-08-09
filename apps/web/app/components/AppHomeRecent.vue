@@ -324,7 +324,7 @@ function onSideAction(
          with something to show, so an empty launcher stays exactly as it was. -->
     <section
       v-if="sessions.hasAny.value"
-      class="home-sessions relative z-10 mx-auto mt-24 flex min-h-0 w-full max-w-[820px] flex-1 flex-col overflow-y-auto pb-6"
+      class="home-sessions relative z-10 mx-auto mt-24 flex min-h-0 w-full max-w-[820px] flex-1 flex-col overflow-y-auto overflow-x-hidden pb-6"
     >
       <RecentSessions
         :pinned="sessions.pinned.value"

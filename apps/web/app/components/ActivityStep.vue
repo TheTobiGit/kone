@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, ArrowRight01Icon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import FileChip from "~/components/FileChip.vue";
 import SiteChip from "~/components/SiteChip.vue";
 import TurnOrb from "~/components/TurnOrb.vue";
 import type { ActivityEntry } from "~/utils/conversationSegments";
+import { SUBAGENT_OPEN_KEY, subagentTitle } from "~/utils/subagentRuns";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
 import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
 import { toolDetailFull, toolMeta, toolPhraseParts, toolStatus } from "~/utils/toolPresentation";
@@ -32,6 +33,15 @@ const props = defineProps<{
 
 const { cue } = useSound();
 
+// The parent's open-subagent handler, when this row lives inside a kone surface
+// that provides it (ProjectView). A subagent's spawning tool row carries the
+// nested run (`item.subagent`), so it gets a small "open thread" affordance.
+// Absent (tests, embedded renders) → no affordance, rows stay as they are.
+const openSubagent = inject(SUBAGENT_OPEN_KEY, null);
+const subagentRun = computed(() =>
+  props.entry.type === "tool" ? props.entry.item.subagent ?? null : null,
+);
+
 const open = ref(false);
 
 const isThinking = computed(() => props.entry.type === "thinking");
@@ -56,7 +66,7 @@ function toggle(): void {
 </script>
 
 <template>
-  <div class="astep" :class="[isThinking ? 'astep--think' : `astep--${status}`]" :style="{ '--hue': hue }">
+  <div class="astep" :class="[isThinking ? 'astep--think' : `astep--${status}`, subagentRun ? 'astep--sub' : '']" :style="{ '--hue': hue }">
     <span v-if="rail" class="astep__link" aria-hidden="true" />
 
     <component
@@ -128,6 +138,20 @@ function toggle(): void {
         :class="{ 'astep__chev--open': open }"
       />
     </component>
+
+    <!-- A subagent's spawning tool row carries its nested run — a small
+         "open thread" affordance parks over the row's right edge (the row's
+         padding makes room for it) and opens the child's own transcript. -->
+    <button
+      v-if="subagentRun && openSubagent"
+      type="button"
+      class="astep__open"
+      :title="`Open ${subagentTitle(subagentRun)}'s thread`"
+      :aria-label="`Open ${subagentTitle(subagentRun)}'s thread`"
+      @click.stop="openSubagent(subagentRun.toolUseId)"
+    >
+      <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="13" :stroke-width="2" />
+    </button>
 
     <div v-if="clickable" class="astep__body" :class="{ 'astep__body--open': open }">
       <div class="astep__body-inner">
@@ -225,6 +249,44 @@ function toggle(): void {
 .astep__chev--open {
   transform: rotate(90deg);
 }
+/* The open-thread affordance reserves the row's right edge and parks there.
+   Only present on a spawning subagent's tool row, and only when an opener was
+   injected — otherwise the row stays exactly as it was. */
+.astep--sub .astep__row {
+  padding-right: 26px;
+}
+.astep__open {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%) translate(-1px, 1px);
+  transition: opacity 0.14s ease, transform 0.18s ease, background-color 0.14s ease, color 0.14s ease;
+}
+.astep:hover .astep__open,
+.astep:focus-within .astep__open {
+  opacity: 0.85;
+  transform: translateY(-50%);
+}
+.astep__open:hover,
+.astep__open:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
+  opacity: 1;
+  outline: none;
+}
 /* Height-animated disclosure (grid 0fr → 1fr) so the body slides open/closed. */
 .astep__body {
   display: grid;
@@ -263,6 +325,7 @@ function toggle(): void {
 }
 @media (prefers-reduced-motion: reduce) {
   .astep__chev,
+  .astep__open,
   .astep__body {
     transition: none;
   }

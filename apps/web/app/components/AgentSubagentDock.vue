@@ -2,28 +2,82 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowRight01Icon, AiBrain01Icon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon, ArrowUpRight01Icon, AiBrain01Icon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/TurnOrb.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
-import { describeModelId, EFFORT_META } from "~/utils/modelCatalog";
-import type { EffortTier } from "~/utils/modelCatalog";
-import type { SubagentRunView } from "~/utils/subagentRuns";
+import { SESSION_BRAND } from "~/types/session";
+import type { BrandKey } from "~/utils/modelCatalog";
+import {
+  brainStack,
+  subagentEffort,
+  subagentModel,
+  type DelegateRow,
+} from "~/utils/subagentRuns";
+import {
+  childApprovalsInbox,
+  decideChildApproval,
+  type PendingApproval,
+} from "~/composables/useAgent";
+import type { ApprovalDecision } from "~/types/desktop";
 
 // The corner "Subagents" dock — a sibling of the Changes dock (ChangedFilesList)
 // and the Tasks dock (PlanTaskList) in the same folder-picker shell, docked
-// bottom-right while a turn spawns nested agents. It lists every subagent the
-// main agent has delegated to this thread: its role, the one-line brief, its
-// model, and a live status (working orb → ✓/✕ when it settles) with the tool it
-// last ran as a progress hint. Purely presentational — it renders the runs the
-// reducer already nested onto their spawning tool calls (deriveActiveSubagents).
+// bottom-right while a turn hands work off. It lists everything the agent has
+// delegated to this thread in one chronological list, of two kinds: provider-
+// native nested runs (ephemeral, one turn long — clicking opens that run's
+// transcript in the expanded shell, SubagentShell) and spawned kone threads
+// (real, persistent conversations that outlive the parent's turn — clicking
+// opens their shell too, whose open-thread action takes you to the thread
+// itself).
+//
+// Both kinds wear ONE row: same status vocabulary (working orb → ✓/✕), same
+// meta line, same trailing glyph. A delegate is a delegate, and giving the
+// newer kind its own chrome would fork this dock into two panels living in one
+// shell. What genuinely differs — that a spawned thread can sit parked waiting
+// on a human, or report how long it took — is carried in the row's hint line,
+// in words, where it costs the layout nothing. The row model
+// (deriveDelegates) still tracks those states honestly, so a later pass can
+// give them their own treatment here without touching anything upstream.
+//
+// One addition on top of the sibling's row model: a spawned child parked on an
+// APPROVAL gets an inline decision right in its row. The ask is not answerable
+// from the parent's session (the child has none in the renderer registry), so
+// the row reads the registry-level inbox (childApprovalsInbox — keyed by the
+// child's thread id) and decides through the existing agent:respond IPC via
+// decideChildApproval. A user-input gate has no decide action — its answer
+// lives in the child's own thread — so it stays a plain parked hint.
+//
+// Purely presentational apart from that one answer action — it renders the
+// rows deriveDelegates already built and reports which one the user wants to
+// open.
 
 const props = defineProps<{
-  runs: SubagentRunView[];
-  /** A subagent is still running — keeps the dock open. */
+  rows: DelegateRow[];
+  /** A delegate is still in flight — keeps the dock open. */
   streaming?: boolean;
 }>();
 
+const emit = defineEmits<{
+  /** Open one delegate — a run's transcript or a spawned thread's conversation.
+   *  One event; the parent decides what opening means for each kind. */
+  open: [row: DelegateRow];
+}>();
+
 const { cue } = useSound();
+
+/** A parked child's answerable approval, looked up by the child's thread id —
+ *  present exactly when the row is a spawned thread parked on an approval. */
+function rowApproval(row: DelegateRow): PendingApproval | null {
+  if (row.target.kind !== "thread") return null;
+  return childApprovalsInbox.value.get(row.target.threadId) ?? null;
+}
+
+function decideRowApproval(row: DelegateRow, decision: ApprovalDecision): void {
+  const pending = rowApproval(row);
+  if (!pending || row.target.kind !== "thread") return;
+  cue("press");
+  void decideChildApproval(row.target.threadId, pending.requestId, decision);
+}
 
 const expanded = ref(true);
 const shellEl = ref<HTMLElement | null>(null);
@@ -36,52 +90,21 @@ const canScroll = ref(false);
 let ro: ResizeObserver | null = null;
 let measureTimer: ReturnType<typeof setTimeout> | null = null;
 
-// worker-<tier> agents exist only to carry reasoning effort, so their role isn't
-// a meaningful label — fall back to the description instead.
-const WORKER_TIER = /^worker-(?:low|medium|high|xhigh)$/i;
-
-function isWorkerTier(role: string | undefined): boolean {
-  return typeof role === "string" && WORKER_TIER.test(role.trim());
-}
-
-function runTitle(run: SubagentRunView): string {
-  if (run.description) return run.description;
-  if (run.agentType && !isWorkerTier(run.agentType)) return run.agentType;
-  return "Subagent";
-}
-
-/** The engine's logomark + human model name (never the raw id). */
-function runModel(run: SubagentRunView): { brand: ReturnType<typeof describeModelId>["brand"]; name: string } {
-  return describeModelId(run.model);
-}
-
-/** Our effort indicator — the same brain-cluster + hue the composer uses. */
-function runEffort(run: SubagentRunView): (typeof EFFORT_META)[EffortTier] | null {
-  const tier = run.effort as EffortTier | undefined;
-  if (!tier) return null;
-  const meta = EFFORT_META[tier];
-  if (!meta || tier === "base" || tier === "none") return null;
-  return meta;
-}
-
-function brainStack(n: number): number[] {
-  return Array.from({ length: Math.max(1, n) }, (_, i) => i);
-}
-
-/** The live tool hint while the child works — a bare progress line. */
-function runHint(run: SubagentRunView): string {
-  return run.live && run.lastToolName ? `Running ${run.lastToolName}…` : "";
-}
-
-const running = computed(() => props.runs.filter((r) => r.live).length);
+const running = computed(() => props.rows.filter((r) => r.live).length);
 
 const meta = computed(() => {
-  const total = props.runs.length;
+  const total = props.rows.length;
   if (!total) return props.streaming ? "…" : "0";
   return running.value > 0 ? `${running.value}/${total}` : String(total);
 });
 
-const liveRun = computed(() => props.runs.find((r) => r.live));
+const liveRun = computed(() => props.rows.find((r) => r.live));
+
+// One label for both kinds — a nested run's transcript and a spawned thread's
+// conversation are both "that delegate's thread" to the person reading it.
+function rowLabel(row: DelegateRow): string {
+  return `Open ${row.title}'s thread`;
+}
 
 function measureScroll(): void {
   const el = scrollEl.value;
@@ -131,7 +154,7 @@ watch(
   },
 );
 
-watch([expanded, () => props.runs], () => {
+watch([expanded, () => props.rows], () => {
   void nextTick(syncHeight);
   scheduleMeasure();
 });
@@ -158,6 +181,15 @@ const chevSpring = { type: "spring", stiffness: 520, damping: 30, mass: 0.45 } a
 
 function rowDelay(index: number): number {
   return Math.min(index * 0.045, 0.28);
+}
+
+// The engine logomark: the model id's own vendor when the run carried one; a
+// spawned thread that crossed the bridge without a model id still names its
+// provider, so the row wears that mark instead of the unknown-vendor dot.
+function rowBrand(row: DelegateRow): BrandKey {
+  const brand = subagentModel(row).brand;
+  if (brand !== "generic") return brand;
+  return row.provider ? SESSION_BRAND[row.provider] : "generic";
 }
 </script>
 
@@ -188,15 +220,15 @@ function rowDelay(index: number): number {
             <AnimatePresence mode="wait">
               <motion.span
                 v-if="!expanded && liveRun"
-                :key="liveRun.toolUseId"
+                :key="liveRun.id"
                 class="sub-peek"
-                :title="runTitle(liveRun)"
+                :title="liveRun.title"
                 :initial="{ opacity: 0, x: 8, filter: 'blur(4px)' }"
                 :animate="{ opacity: 1, x: 0, filter: 'blur(0px)' }"
                 :exit="{ opacity: 0, x: -6, filter: 'blur(3px)' }"
                 :transition="{ duration: 0.22, ease: fadeEase }"
               >
-                {{ runTitle(liveRun) }}
+                {{ liveRun.title }}
               </motion.span>
             </AnimatePresence>
             <span class="sub-meta-wrap">
@@ -230,7 +262,7 @@ function rowDelay(index: number): number {
             <div ref="scrollEl" class="picker-scroll sub-scroll" :class="{ 'sub-scroll--scroll': canScroll }">
               <AnimatePresence mode="wait">
                 <motion.p
-                  v-if="!props.runs.length"
+                  v-if="!props.rows.length"
                   key="empty"
                   class="sub-empty"
                   :initial="{ opacity: 0, y: 6 }"
@@ -243,35 +275,51 @@ function rowDelay(index: number): number {
               </AnimatePresence>
 
               <AnimatePresence :initial="false">
-                <motion.div
-                  v-for="(run, index) in props.runs"
-                  :key="run.toolUseId"
+                <motion.button
+                  v-for="(row, index) in props.rows"
+                  :key="row.id"
+                  type="button"
                   class="sub-row"
                   :class="{
-                    'sub-row--live': run.live,
-                    'sub-row--done': run.status === 'completed',
-                    'sub-row--failed': run.status === 'failed' || run.status === 'stopped',
+                    'sub-row--live': row.live,
+                    'sub-row--done': row.state === 'done',
+                    'sub-row--failed': row.state === 'failed',
                   }"
+                  :aria-label="rowLabel(row)"
+                  :title="rowLabel(row)"
                   layout
                   :initial="{ opacity: 0, y: 8, scale: 0.98 }"
                   :animate="{ opacity: 1, y: 0, scale: 1 }"
                   :exit="{ opacity: 0, y: -6, scale: 0.98 }"
                   :transition="{ ...rowSpring, delay: rowDelay(index) }"
+                  @click="emit('open', row)"
                 >
                   <span class="sub-state" aria-hidden="true">
                     <span class="sub-state-stack">
+                      <!-- Every non-terminal state wears the working orb, which
+                           is what a native run already does for `starting` as
+                           well as `running`. A spawned thread parked on the
+                           user, or one that hasn't turned yet, is still a
+                           delegate in flight; its hint line says which. -->
                       <motion.span
                         class="sub-state-orb"
-                        :animate="{ opacity: run.live ? 1 : 0, scale: run.live ? 1 : 0.9 }"
+                        :animate="{
+                          opacity: row.live || row.state === 'idle' ? 1 : 0,
+                          scale: row.live || row.state === 'idle' ? 1 : 0.9,
+                        }"
                         :transition="stateFade"
                       >
-                        <TurnOrb state="working" :size="14" aria-label="Running" />
+                        <TurnOrb
+                          :state="row.thinking ? 'thinking' : 'working'"
+                          :size="14"
+                          :aria-label="row.thinking ? 'Thinking' : 'Running'"
+                        />
                       </motion.span>
                       <motion.span
                         class="sub-state-mark sub-state-mark--done"
                         :animate="{
-                          opacity: run.status === 'completed' ? 1 : 0,
-                          scale: run.status === 'completed' ? 1 : 0.88,
+                          opacity: row.state === 'done' ? 1 : 0,
+                          scale: row.state === 'done' ? 1 : 0.88,
                         }"
                         :transition="stateFade"
                       >
@@ -280,8 +328,8 @@ function rowDelay(index: number): number {
                       <motion.span
                         class="sub-state-mark sub-state-mark--failed"
                         :animate="{
-                          opacity: run.status === 'failed' || run.status === 'stopped' ? 1 : 0,
-                          scale: run.status === 'failed' || run.status === 'stopped' ? 1 : 0.88,
+                          opacity: row.state === 'failed' ? 1 : 0,
+                          scale: row.state === 'failed' ? 1 : 0.88,
                         }"
                         :transition="stateFade"
                       >
@@ -291,31 +339,31 @@ function rowDelay(index: number): number {
                   </span>
 
                   <span class="sub-run">
-                    <span class="sub-run-title" :title="runTitle(run)">{{ runTitle(run) }}</span>
+                    <span class="sub-run-title" :title="row.title">{{ row.title }}</span>
 
                     <span class="sub-run-meta">
                       <span class="sub-run-model">
                         <ProviderLogo
-                          v-if="runModel(run).brand !== 'generic'"
-                          :brand="runModel(run).brand"
+                          v-if="rowBrand(row) !== 'generic'"
+                          :brand="rowBrand(row)"
                           :size="13"
                         />
-                        <span class="sub-run-model-name" :title="runModel(run).name">
-                          {{ runModel(run).name }}
+                        <span class="sub-run-model-name" :title="subagentModel(row).name">
+                          {{ subagentModel(row).name }}
                         </span>
                         <span
-                          v-if="runEffort(run)"
+                          v-if="subagentEffort(row)"
                           class="sub-run-effort"
-                          :title="`Reasoning effort: ${runEffort(run)!.label}`"
+                          :title="`Reasoning effort: ${subagentEffort(row)!.label}`"
                         >
-                          <span class="sub-brains" :class="{ 'sub-brains--glow': runEffort(run)!.glow }">
+                          <span class="sub-brains" :class="{ 'sub-brains--glow': subagentEffort(row)!.glow }">
                             <HugeiconsIcon
-                              v-for="i in brainStack(runEffort(run)!.brains)"
+                              v-for="i in brainStack(subagentEffort(row)!.brains)"
                               :key="i"
                               :icon="AiBrain01Icon"
                               :size="12"
                               :stroke-width="2"
-                              :style="{ color: runEffort(run)!.hue }"
+                              :style="{ color: subagentEffort(row)!.hue }"
                             />
                           </span>
                         </span>
@@ -323,22 +371,71 @@ function rowDelay(index: number): number {
 
                       <AnimatePresence mode="wait">
                         <motion.span
-                          v-if="runHint(run)"
-                          :key="runHint(run)"
+                          v-if="row.hint"
+                          :key="row.hint"
                           class="sub-run-hint"
-                          :title="runHint(run)"
+                          :title="row.hintFull ?? row.hint"
                           :initial="{ opacity: 0, y: 3 }"
                           :animate="{ opacity: 1, y: 0 }"
                           :exit="{ opacity: 0, y: -3 }"
                           :transition="{ duration: 0.18, ease: fadeEase }"
                         >
                           <span class="sub-run-hint-dot" aria-hidden="true">·</span>
-                          {{ runHint(run) }}
+                          {{ row.hint }}
                         </motion.span>
                       </AnimatePresence>
                     </span>
+
+                    <!-- A spawned child parked on an approval can be answered
+                         right here — the ask is not reachable through the parent
+                         session, so this reads the registry-level inbox and
+                         decides via agent:respond. Stops propagation so the row
+                         doesn't also open. -->
+                    <AnimatePresence mode="wait">
+                      <motion.span
+                        v-if="rowApproval(row)"
+                        :key="rowApproval(row)!.requestId"
+                        class="sub-approve"
+                        :initial="{ opacity: 0, y: 3 }"
+                        :animate="{ opacity: 1, y: 0 }"
+                        :exit="{ opacity: 0, y: -3 }"
+                        :transition="{ duration: 0.18, ease: fadeEase }"
+                        @click.stop
+                      >
+                        <span class="sub-approve-ask" :title="rowApproval(row)!.approval.title">
+                          {{ rowApproval(row)!.approval.title }}
+                        </span>
+                        <span class="sub-approve-actions">
+                          <span
+                            class="sub-approve-btn"
+                            role="button"
+                            tabindex="0"
+                            @click.stop="decideRowApproval(row, 'reject-once')"
+                            @keydown.enter.prevent.stop="decideRowApproval(row, 'reject-once')"
+                          >Reject</span>
+                          <span
+                            class="sub-approve-btn"
+                            role="button"
+                            tabindex="0"
+                            @click.stop="decideRowApproval(row, 'allow-always')"
+                            @keydown.enter.prevent.stop="decideRowApproval(row, 'allow-always')"
+                          >Always</span>
+                          <span
+                            class="sub-approve-btn sub-approve-btn--allow"
+                            role="button"
+                            tabindex="0"
+                            @click.stop="decideRowApproval(row, 'allow-once')"
+                            @keydown.enter.prevent.stop="decideRowApproval(row, 'allow-once')"
+                          >Allow</span>
+                        </span>
+                      </motion.span>
+                    </AnimatePresence>
                   </span>
-                </motion.div>
+
+                  <span class="sub-open" aria-hidden="true">
+                    <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="14" :stroke-width="2" />
+                  </span>
+                </motion.button>
               </AnimatePresence>
             </div>
           </div>
@@ -517,8 +614,50 @@ function rowDelay(index: number): number {
   display: flex;
   align-items: flex-start;
   gap: 0.55rem;
+  width: 100%;
   padding: 0.5rem 0.5rem;
+  border: 0;
   border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+.sub-row:hover,
+.sub-row:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+.sub-row:focus-visible {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 26%, transparent);
+}
+
+/* The open affordance — a quiet up-right arrow that slides in on hover/focus,
+   so a row reads as a doorway into the run's transcript rather than a label. */
+.sub-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  opacity: 0;
+  transform: translate(-2px, 2px);
+  color: var(--muted);
+  transition: opacity 0.14s ease, transform 0.18s ease;
+}
+.sub-row:hover .sub-open,
+.sub-row:focus-visible .sub-open {
+  opacity: 0.85;
+  transform: none;
+}
+.sub-row--live .sub-open {
+  opacity: 0.6;
+  transform: none;
 }
 
 .sub-state {
@@ -580,10 +719,9 @@ function rowDelay(index: number): number {
   letter-spacing: -0.01em;
   line-height: 1.3;
   color: var(--ink-soft);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sub-row--live .sub-run-title {
   color: var(--ink);
@@ -661,6 +799,68 @@ function rowDelay(index: number): number {
 .sub-run-hint-dot {
   color: var(--muted);
   opacity: 0.6;
+}
+
+/* The inline approval — a parked child's ask answered in the row: the command
+   line or path, then the three decisions, in the row's own compact voice. */
+.sub-approve {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin-top: 0.2rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 20%, transparent);
+}
+.sub-approve-ask {
+  min-width: 0;
+  flex: 1;
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  line-height: 1.3;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sub-approve-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: none;
+}
+.sub-approve-btn {
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+.sub-approve-btn:hover,
+.sub-approve-btn:focus-visible {
+  color: var(--ink);
+  background: var(--hover);
+  outline: none;
+}
+.sub-approve-btn--reject:hover,
+.sub-approve-btn--reject:focus-visible {
+  color: var(--danger, #d97757);
+}
+.sub-approve-btn--allow {
+  color: var(--ground);
+  background: var(--ink);
+}
+.sub-approve-btn--allow:hover,
+.sub-approve-btn--allow:focus-visible {
+  color: var(--ground);
+  background: var(--ink);
+  opacity: 0.85;
 }
 
 .sub-empty {

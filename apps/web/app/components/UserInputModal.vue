@@ -453,8 +453,8 @@ const cardSpring = {
   color: var(--muted);
 }
 
-/* Free-text field — borderless, a hairline ring that firms with the accent on
-   focus (no boxed input chrome). */
+/* Free-text field — a soft tonal fill (no ring, no boxed input chrome), firming
+   slightly on focus — the same treatment as the home search / command fields. */
 .ask-input {
   width: 100%;
   resize: none;
@@ -463,16 +463,15 @@ const cardSpring = {
   font-size: 14px;
   line-height: 1.4;
   color: var(--ink);
-  background: transparent;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
-  transition: box-shadow 0.18s ease;
+  background: var(--hover, color-mix(in srgb, var(--ink) 4%, transparent));
+  transition: background 0.18s ease;
 }
 .ask-input::placeholder {
   color: var(--muted);
 }
 .ask-input:focus {
   outline: none;
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 22%, transparent);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
 }
 
 /* Inline "write your own" row — the option-row frame, but the label slot is a

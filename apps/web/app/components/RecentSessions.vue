@@ -333,6 +333,12 @@ function hasDiff(s: SessionSummary): boolean {
      once the row-in keyframes finish. Promoted to its own compositor layer so
      the scale composites instead of re-rasterizing the row's text each frame —
      that repaint is what read as rigid. */
+  /* The hover grows the row rightward from its left edge; reserve that growth
+     on the right so the scaled row never overflows the scroll region (whose
+     overflow-x-hidden would otherwise clip the trailing actions — the Delete
+     button's last letter was getting cut). 14px clears the max 0.9% growth at
+     the widest panel plus the delete button's magnet pull. */
+  margin-right: 14px;
   transform-origin: left center;
   will-change: transform;
   backface-visibility: hidden;

@@ -30,9 +30,11 @@ const emit = defineEmits<{
   discardLane: [];
   /** Open a single file's detail view, with the clicked card's rect (grow origin). */
   open: [item: ChangeItem, rect: DOMRect];
+  /** The +N bundle was clicked — open the all-files peek instead of growing
+   *  the lane past the page. */
+  peek: [];
 }>();
 
-const { cue } = useSound();
 const total = computed(() => props.items.length);
 
 // Cap at two rows exactly — read the column count back out of the rendered grid
@@ -52,23 +54,17 @@ onMounted(measureCols);
 const maxSlots = computed(() => cols.value * props.rows);
 const hasOverflow = computed(() => total.value > maxSlots.value);
 
-const expanded = ref(false);
-const collapsed = computed(() => hasOverflow.value && !expanded.value);
-function expand() {
-  expanded.value = true;
-  cue("toggle");
-}
-function collapse() {
-  expanded.value = false;
-  cue("toggle");
-}
-
+// The lane is always capped at `rows` exactly: overflow never unfolds in place
+// (that would grow the working-tree page past the viewport). The +N bundle
+// opens the all-files peek instead — and it occupies the *last slot of the
+// final row*, so the cards above it fill exactly `rows` rows and the bundle
+// sits where the next card would have gone.
 const visible = computed(() =>
-  collapsed.value ? props.items.slice(0, maxSlots.value - 1) : props.items,
+  hasOverflow.value
+    ? props.items.slice(0, Math.max(0, maxSlots.value - 1))
+    : props.items,
 );
-const overflow = computed(() =>
-  collapsed.value ? total.value - (maxSlots.value - 1) : 0,
-);
+const overflow = computed(() => total.value - visible.value.length);
 
 // Decorative fan for the +N bundle — four mini file cards splayed behind the
 const g = "#d0cec9";
@@ -162,7 +158,7 @@ const bundleCards: BundleCard[] = [
         type="button"
         class="bundle"
         :style="{ '--i': visible.length }"
-        @click="expand"
+        @click="emit('peek')"
       >
         <span class="bundle__inner">
           <span
@@ -170,7 +166,7 @@ const bundleCards: BundleCard[] = [
             :key="i"
             class="bundle__card"
             :class="{ 'bundle__card--front': card.front }"
-            :style="{ left: `${card.x}px`, top: `${card.y}px`, transform: `rotate(${card.r}deg)` }"
+            :style="{ left: `${card.x}px`, top: `${card.y}px`, '--r': `${card.r}deg` }"
           >
             <span class="bundle__badge" :style="{ background: card.bg, color: card.fg, fontSize: `${card.size}px` }">
               {{ card.badge }}
@@ -184,21 +180,6 @@ const bundleCards: BundleCard[] = [
             <span class="bundle__word">more</span>
           </span>
         </span>
-      </button>
-
-      <button
-        v-if="hasOverflow && expanded"
-        type="button"
-        class="fold"
-        :style="{ '--i': visible.length }"
-        @click="collapse"
-      >
-        <span class="fold__chevron">
-          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-            <path d="m6 15 6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </span>
-        <span class="fold__label">Show less</span>
       </button>
     </div>
   </section>
@@ -227,16 +208,14 @@ const bundleCards: BundleCard[] = [
   animation-delay: calc(var(--proj-enter-changes, 0ms) + 80ms + var(--lane-i, 0) * 60ms);
 }
 .grid > :deep(.card),
-.bundle,
-.fold {
+.bundle {
   animation: ch-tile-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: calc(var(--proj-enter-changes, 0ms) + 130ms + var(--lane-i, 0) * 60ms + var(--i, 0) * 30ms);
 }
 @media (prefers-reduced-motion: reduce) {
   .lane__head,
   .grid > :deep(.card),
-  .bundle,
-  .fold {
+  .bundle {
     animation: none;
   }
 }
@@ -326,6 +305,14 @@ const bundleCards: BundleCard[] = [
   height: 178px;
   border-radius: 12px;
   cursor: pointer;
+  /* Hovering fans the papers open — the rotation factor fans out from a
+     shared bottom pivot (where the count pill rests) so the stack "opens up"
+     instead of lifting as a block. */
+  --fan: 1;
+  transition: --fan 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.bundle:hover {
+  --fan: 1.7;
 }
 .bundle:focus-visible {
   outline: none;
@@ -348,7 +335,11 @@ const bundleCards: BundleCard[] = [
   background-color: var(--sheet-bg, #fff);
   border: 1px solid rgb(161 161 170 / 0.16);
   box-shadow: #1e1b1814 0 4px 12px;
-  transform-origin: top left;
+  /* Pivot at the bottom of each paper, where the fan meets the pill, so the
+     tops spread apart as the bundle fans open on hover. */
+  transform-origin: 50% 100%;
+  transform: rotate(calc(var(--r) * var(--fan)));
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .bundle__card--front { box-shadow: #1e1b1820 0 6px 16px; }
 .bundle__badge {
@@ -397,47 +388,6 @@ const bundleCards: BundleCard[] = [
   font-weight: 500;
   line-height: 1;
   color: #d4d4d8;
-}
-
-/* "Show less" tile — a quiet ghost matching the card footprint. */
-.fold {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  height: 178px;
-  border-radius: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background-color 0.16s ease, color 0.16s ease;
-}
-.fold:hover {
-  background-color: var(--hover);
-  color: var(--ink-soft);
-}
-.fold:focus-visible {
-  outline: none;
-  color: var(--ink-soft);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 28%, transparent);
-}
-.fold__chevron {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 999px;
-  background-color: var(--hover);
-  transition: background-color 0.16s ease;
-}
-.fold:hover .fold__chevron {
-  background-color: color-mix(in srgb, currentColor 12%, transparent);
-}
-.fold__label {
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 500;
 }
 
 @media (prefers-color-scheme: dark) {

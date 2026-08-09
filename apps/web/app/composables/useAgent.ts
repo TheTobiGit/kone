@@ -1,5 +1,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
   ChatAttachment,
   ForkContext,
   InteractionMode,
@@ -10,6 +12,7 @@ import type {
   RuntimeItemKind,
   RuntimeSessionState,
   Session,
+  SpawnedThread,
   StoredThread,
   SubagentRun,
   SubagentRunSnapshot,
@@ -75,6 +78,19 @@ export type ThreadBlock = UserBlock | AssistantBlock;
 export type PendingUserInput = {
   requestId: string;
   questions: UserInputQuestion[];
+};
+
+/** A live tool approval the agent is waiting on — the turn is parked until the
+ *  user picks allow-once / allow-always / reject. The composer gives way to the
+ *  approval modal while this is set. */
+export type PendingApproval = {
+  requestId: string;
+  approval: ApprovalRequest;
+  /** The nested run the ask arrived inside, when it can be attributed: set when
+   *  exactly one subagent was live in the turn at the moment the approval
+   *  landed. Absent means the ask is the parent's own, or several runs were
+   *  working at once — the main modal owns those, never a shell. */
+  originToolUseId?: string;
 };
 
 /** The composer's reasoning-effort tier. Codex exposes this as a flag-based
@@ -208,6 +224,83 @@ function latestAssistant(blocks: ThreadBlock[]): AssistantBlock | null {
   return null;
 }
 
+// ── spawned children's approvals (the registry-level inbox) ──────────────────
+// A spawned child has no session in this registry, so its `approval.requested`
+// event is dropped by the by-threadId fan-out — its gate would be surfaced but
+// unanswerable. These live in ONE module-scope inbox keyed by the CHILD's id
+// (unique app-wide), fed by the event router below, cleared on
+// `approval.resolved`. A child that IS resident (opened/revealed in the
+// renderer) is a normal session — its approvals route into its session's
+// pendingApprovals and the composer modal, never here. The dock/panel read the
+// inbox to render a parked child's gate with real decide buttons.
+const childApprovals = shallowRef(new Map<string, PendingApproval>());
+/** The inbox as a read-only computed — the dock/panel bind to it so a child's
+ *  parked ask appears (and its decide buttons work) without a resident session. */
+export const childApprovalsInbox = computed(() => childApprovals.value);
+
+function setChildApproval(childThreadId: string, pending: PendingApproval): void {
+  childApprovals.value = new Map(childApprovals.value).set(childThreadId, pending);
+}
+
+/** Clear the inbox entry for a child — a resolved request, or a newer request
+ *  that replaced it. Only removes when the parked requestId matches, so a stale
+ *  resolve can't wipe a fresher ask. */
+function clearChildApproval(childThreadId: string, requestId: string): void {
+  const current = childApprovals.value.get(childThreadId);
+  if (!current || current.requestId !== requestId) return;
+  const next = new Map(childApprovals.value);
+  next.delete(childThreadId);
+  childApprovals.value = next;
+}
+
+/** Drop the inbox entry for a child regardless of requestId — used when the
+ *  child's projection settles out of an approval gate (its turn ended, so no
+ *  `approval.resolved` ever arrives). */
+function clearChildApprovalFor(childThreadId: string): void {
+  if (!childApprovals.value.has(childThreadId)) return;
+  const next = new Map(childApprovals.value);
+  next.delete(childThreadId);
+  childApprovals.value = next;
+}
+
+/** Decide a spawned child's parked approval. The child has no session here, so
+ *  the response goes straight over the bridge to the existing agent:respond IPC
+ *  (the child's own thread id + the parked requestId) — no gateway tool, no
+ *  parent session involved. Cleared optimistically; the adapter's
+ *  `approval.resolved` is the belt-and-braces re-clear. */
+export async function decideChildApproval(
+  childThreadId: string,
+  requestId: string,
+  decision: ApprovalDecision,
+): Promise<void> {
+  clearChildApproval(childThreadId, requestId);
+  const api = import.meta.client ? window.koneDesktop?.agent : undefined;
+  if (!api) return;
+  try {
+    await api.respond(childThreadId, requestId, decision);
+  } catch {
+    // If the send fails the child's turn will abort and settle the gate anyway.
+  }
+}
+
+/** The one nested run still working inside a turn — the only run an approval
+ *  landing right now could have come from — else undefined (the parent asked,
+ *  or several runs were live at once and the ask can't be pinned to one).
+ *  Approvals carry no subagent attribution upstream, so this is the honest
+ *  best available read: it lets a single live child's ask render inline in
+ *  its shell without ever guessing wrong on a concurrent batch. */
+function originSubagentOfApproval(block: AssistantBlock | undefined): string | undefined {
+  if (!block) return undefined;
+  const live: string[] = [];
+  for (const item of block.items) {
+    const run = item.subagent;
+    if (run && (run.status === "starting" || run.status === "running")) {
+      live.push(run.toolUseId);
+    }
+  }
+  return live.length === 1 ? live[0] : undefined;
+}
+
 /** First-turn word-cap fallback — mirrors desktop `buildPromptThreadTitleFallback`
  *  so browser-dev / the instant before the agent rename lands still has a label. */
 function titleFromPrompt(message: string): string {
@@ -277,6 +370,19 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // A live question the agent is asking (AskUserQuestion / Codex requestUserInput).
   // Non-null while the modal is up; cleared once answered or resolved/aborted.
   const pendingUserInput = ref<PendingUserInput | null>(null);
+  // Live tool approvals the agent is parked on (Codex requestApproval / Claude
+  // canUseTool / ACP request_permission / OpenCode permission). A queue, not a
+  // single slot: providers can ask for several tools in parallel (Claude's
+  // parallel tool calls), and each must be answerable or its parked request
+  // hangs the turn. The modal shows the head.
+  const pendingApprovals = ref<PendingApproval[]>([]);
+  /** The child threads THIS thread spawned via kone_spawn_thread — what the
+   *  corner Subagents dock reads. Live-only state: the spawn events are
+   *  deliberately not journaled (reduce isn't a replay), so a session that
+   *  adopts a stored identity re-seeds it by an explicit query instead (see
+   *  seedSpawnedChildren). */
+  const spawnedChildren = ref<SpawnedThread[]>([]);
+  const pendingApproval = computed<PendingApproval | null>(() => pendingApprovals.value[0] ?? null);
 
   // The provider is mutable so a thread can switch engines (Codex ↔ Claude).
   // Because the two are separate CLIs with no shared conversation, a switch is a
@@ -367,6 +473,28 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   /** Fold one event into this thread's state. The manager only calls this for
    *  events whose `threadId` matches ours; the guard is belt-and-braces. */
   function reduce(event: RuntimeEvent): void {
+    // A spawned child's events bear the CHILD's id — the child is the subject,
+    // and its session is never in this registry (only the parent's is; the
+    // parent's dock is what these events maintain). The manager routes them to
+    // us by `spawned.parentThreadId`; fold by the child's own id, never ours.
+    if (
+      (event.type === "thread.spawned" || event.type === "thread.spawn-updated") &&
+      event.spawned.parentThreadId === threadId.value
+    ) {
+      const kids = event.spawned;
+      const exists = spawnedChildren.value.some((c) => c.threadId === kids.threadId);
+      // Replace wholesale — both event types carry the WHOLE SpawnedThread, and
+      // patching fields would resurrect stale ones (a cleared status, a dead
+      // elapsedMs). A fresh array each time: the dock is a derived view. Kept
+      // sorted by createdAt ascending so first-spawned reads as first.
+      const next = (
+        exists
+          ? spawnedChildren.value.map((c) => (c.threadId === kids.threadId ? kids : c))
+          : [...spawnedChildren.value, kids]
+      ).sort((a, b) => a.createdAt - b.createdAt);
+      spawnedChildren.value = next;
+      return;
+    }
     if (event.threadId !== threadId.value) return;
     switch (event.type) {
       case "session.state.changed":
@@ -454,6 +582,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           block.endedAt = event.at;
         }
         // An aborted turn can never have its question answered — drop the modal.
+        // (A parked approval clears via the backend's `approval.resolved`, which
+        // it emits with reject-once on interrupt.)
         pendingUserInput.value = null;
         blocks.value = [...blocks.value];
         break;
@@ -467,6 +597,26 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         if (pendingUserInput.value?.requestId === event.requestId) {
           pendingUserInput.value = null;
         }
+        break;
+      case "approval.requested": {
+        const block = event.turnId ? currentAssistant(event.turnId) : undefined;
+        const origin = originSubagentOfApproval(block);
+        pendingApprovals.value = [
+          ...pendingApprovals.value,
+          {
+            requestId: event.requestId,
+            approval: event.approval,
+            ...(origin ? { originToolUseId: origin } : {}),
+          },
+        ];
+        break;
+      }
+      case "approval.resolved":
+        // The backend settled this round-trip (our decision, or a drain on
+        // interrupt/stop). Drop it from the queue — the modal moves to the next.
+        pendingApprovals.value = pendingApprovals.value.filter(
+          (a) => a.requestId !== event.requestId,
+        );
         break;
       default:
         break;
@@ -542,6 +692,35 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         : null;
   }
 
+  /** Re-seed this session's spawned children from the bridge, for a thread that
+   *  just adopted a stored identity (rehydrate / openStored) — the spawn events
+   *  are deliberately not journaled, so the dock's live-only state must be
+   *  rebuilt by an explicit query to survive a reload. Best-effort, all the way
+   *  down: a missing bridge or method, a rejected query, or a thread id that
+   *  moved on while the query was in flight all leave the dock as it is — never
+   *  a surfaced error, never a stale thread's children clobbering newer state. */
+  function seedSpawnedChildren(): void {
+    const api = bridge();
+    // Declared on the bridge, but still checked at runtime: browser dev runs
+    // against a partial mock, and a dock that can't seed is a missing
+    // convenience, not a broken thread.
+    const query = api?.spawnChildren;
+    if (!query) return;
+    const id = threadId.value;
+    void query(id)
+      .then((kids) => {
+        // The session may have been re-homed onto another thread (a restart, or
+        // a newer open) while the query was out — drop the result rather than
+        // dump one thread's children into another's dock.
+        if (threadId.value !== id) return;
+        spawnedChildren.value = [...kids].sort((a, b) => a.createdAt - b.createdAt);
+      })
+      .catch(() => {
+        // The dock is a convenience — a failed seed is never worth an error;
+        // live spawn events will fill it in as the children run.
+      });
+  }
+
   /** Reload the project's last persisted thread into this timeline, adopting its
    *  id so continued turns append to the same stored thread. Best-effort: any
    *  failure just leaves a fresh, empty thread. Desktop only. */
@@ -555,6 +734,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
         title.value = stored.title?.trim() || title.value;
         adoptStoredThread(stored);
+        seedSpawnedChildren();
       }
     } catch {
       // History is a convenience — never block starting a session over it.
@@ -719,6 +899,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     title.value = stored.title?.trim() || "";
     adoptStoredThread(stored); // also restores the persisted context-meter snapshot
     error.value = null;
+    seedSpawnedChildren();
     deferStart();
   }
 
@@ -860,6 +1041,21 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
   }
 
+  /** Decide a parked tool approval. Drops it from the queue optimistically,
+   *  then hands the decision to the adapter — which resolves the parked
+   *  provider request and emits `approval.resolved` (a belt-and-braces
+   *  re-clear). */
+  async function respondApproval(requestId: string, decision: ApprovalDecision): Promise<void> {
+    pendingApprovals.value = pendingApprovals.value.filter((a) => a.requestId !== requestId);
+    const api = bridge();
+    if (!api) return;
+    try {
+      await api.respond(threadId.value, requestId, decision);
+    } catch {
+      // If the send fails the turn will abort and clear state via turn.aborted.
+    }
+  }
+
   function setProvider(next: ProviderKind): void {
     if (next === provider.value) return;
     provider.value = next;
@@ -941,6 +1137,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // conversation, never a side chat.
     sideChat.value = false;
     sideChatSource.value = null;
+    // …and it has spawned nothing yet — the old thread's children belong to
+    // the old thread, not this brand-new one.
+    spawnedChildren.value = [];
     await start();
   }
 
@@ -1479,7 +1678,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     everRan,
     error,
     tokenUsage,
+    // The child threads this one has spawned. Exposed per-session, not just on
+    // the active projection: the Subagents dock reads the FOCUSED thread, which
+    // on a multi-column board isn't necessarily the active one.
+    spawnedChildren,
     pendingUserInput,
+    pendingApproval,
+    pendingApprovals,
     unstarted,
     model,
     mode,
@@ -1501,6 +1706,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     stopSubagent,
     steerSubagent,
     respondUserInput,
+    respondApproval,
     setProvider,
     setModel,
     setMode,
@@ -1566,10 +1772,17 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   /** Trim settled, idle background threads down to the resident cap — oldest
-   *  first, never the active one and never anything still busy. */
+   *  first, never the active one and never anything still busy. A thread with
+   *  live spawned children is never evicted either: evicting tears down the
+   *  parent's provider session and revokes its gateway token mid-orchestration,
+   *  while its children keep running headless against a parent that can no
+   *  longer answer them. */
   function pruneResident(): void {
     const idle = sessions.value.filter(
-      (s) => s.key !== activeKey.value && !s.busy.value,
+      (s) =>
+        s.key !== activeKey.value &&
+        !s.busy.value &&
+        !s.spawnedChildren.value.some((c) => !c.terminal),
     );
     const overflow = sessions.value.length - MAX_RESIDENT_THREADS;
     for (let i = 0; i < overflow && i < idle.length; i++) {
@@ -1601,6 +1814,46 @@ export function useAgent(options: UseAgentOptions) {
     const api = ctx.bridge();
     if (api) {
       detach = api.onEvent((event: RuntimeEvent) => {
+        // A spawned child's events carry the CHILD's id — the child is the
+        // event's *subject* — but its session is never in this registry (only
+        // the parent's is, and the parent's dock is what these events
+        // maintain). Routing by `event.threadId` would hand them to nobody and
+        // the dock would silently stay empty. So these two types go to the
+        // session owning the child's parent instead. The event shape stays
+        // exactly as the main process emits it — the child genuinely is the
+        // subject — a future reader must not "fix" this back into a by-child
+        // lookup.
+        if (event.type === "thread.spawned" || event.type === "thread.spawn-updated") {
+          const parent = sessions.value.find(
+            (x) => x.threadId.value === event.spawned.parentThreadId,
+          );
+          parent?.reduce(event);
+          // A child whose gate settled (turn ended) never emits a matching
+          // approval.resolved — clear the inbox so a stale decide can't linger.
+          if (event.spawned.status !== "waiting-for-approval") {
+            clearChildApprovalFor(event.spawned.threadId);
+          }
+          return;
+        }
+        // A spawned child's approval events also carry the CHILD's id. A child
+        // resident in the registry (opened/revealed) folds them as a normal
+        // session; one that is not would see the ask dropped by the fan-out
+        // below, leaving a surfaced gate that cannot be answered. Route those
+        // into the registry-level inbox the dock's decide action reads.
+        if (event.type === "approval.requested" || event.type === "approval.resolved") {
+          const resident = sessions.value.some((x) => x.threadId.value === event.threadId);
+          if (!resident) {
+            if (event.type === "approval.requested") {
+              setChildApproval(event.threadId, {
+                requestId: event.requestId,
+                approval: event.approval,
+              });
+            } else {
+              clearChildApproval(event.threadId, event.requestId);
+            }
+            return;
+          }
+        }
         const s = sessions.value.find((x) => x.threadId.value === event.threadId);
         s?.reduce(event);
       });
@@ -1625,10 +1878,12 @@ export function useAgent(options: UseAgentOptions) {
 
   // ── active-thread projection (the public state the view binds) ───────────────
   const NO_BLOCKS: ThreadBlock[] = [];
+  const NO_SPAWNED_CHILDREN: SpawnedThread[] = [];
   const threadId = computed(() => active.value?.threadId.value ?? "");
   const provider = computed(() => active.value?.provider.value ?? options.provider);
   const title = computed(() => active.value?.title.value ?? "");
   const blocks = computed(() => active.value?.blocks.value ?? NO_BLOCKS);
+  const spawnedChildren = computed(() => active.value?.spawnedChildren.value ?? NO_SPAWNED_CHILDREN);
   const session = computed(() => active.value?.session.value ?? null);
   const sessionState = computed<RuntimeSessionState>(
     () => active.value?.sessionState.value ?? "stopped",
@@ -1637,6 +1892,7 @@ export function useAgent(options: UseAgentOptions) {
   const error = computed(() => active.value?.error.value ?? null);
   const tokenUsage = computed(() => active.value?.tokenUsage.value ?? null);
   const pendingUserInput = computed(() => active.value?.pendingUserInput.value ?? null);
+  const pendingApproval = computed(() => active.value?.pendingApproval.value ?? null);
   const model = computed(() => active.value?.model.value ?? options.model);
   const mode = computed<InteractionMode>(
     () => active.value?.mode.value ?? options.mode ?? "accept-edits",
@@ -1687,6 +1943,9 @@ export function useAgent(options: UseAgentOptions) {
   };
   const respondUserInput = async (requestId: string, answers: UserInputAnswers) => {
     await active.value?.respondUserInput(requestId, answers);
+  };
+  const respondApproval = async (requestId: string, decision: ApprovalDecision) => {
+    await active.value?.respondApproval(requestId, decision);
   };
   const demo = () => active.value?.demo();
   const restart = async () => { await active.value?.restart(); };
@@ -1925,12 +2184,14 @@ export function useAgent(options: UseAgentOptions) {
     title,
     // state (active-thread projection)
     blocks,
+    spawnedChildren,
     session,
     sessionState,
     busy,
     error,
     tokenUsage,
     pendingUserInput,
+    pendingApproval,
     model,
     mode,
     reasoning,
@@ -1966,6 +2227,7 @@ export function useAgent(options: UseAgentOptions) {
     stopSubagent,
     steerSubagent,
     respondUserInput,
+    respondApproval,
     setProvider,
     setModel,
     setMode,
