@@ -30,6 +30,8 @@ import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
+  ApprovalRequest,
+  ApprovalRequestKind,
   EmitEvent,
   InteractionMode,
   ModelDescriptor,
@@ -82,10 +84,12 @@ import {
 // claudeHome.ts, which also strips a stray ANTHROPIC_API_KEY from the child env
 // so the subscription always wins over a leaked key.
 //
-// No approval UI in kone v1: `canUseTool` auto-allows every tool call the
-// instant it's asked, exactly like CodexAdapter's auto-resolving wireRequests().
-// The InteractionMode still sets the SDK permissionMode (default / acceptEdits /
-// bypassPermissions) — that's the real safety knob — it just never stops to ask.
+// `canUseTool` parks every tool call the SDK isn't already auto-approving and
+// surfaces it to the user via an `approval.requested` event (see canUseTool).
+// The InteractionMode sets the SDK permissionMode (default / acceptEdits /
+// bypassPermissions), which is exactly what gates how often we stop to ask:
+// `ask` consults this callback for every tool, `accept-edits` only for the
+// non-file-edit tools, `full-access` never reaches it.
 //
 // Effort is a spawn-time SDK option (`Options.effort`), not a live control, so
 // the adapter advertises `sessionModelSwitch: "restart-session"`: changing the
@@ -296,6 +300,15 @@ type ClaudeSession = {
    *  the resolver the parked `canUseTool` promise is awaiting — settled by
    *  respondToUserInput (the user answered) or drained on interrupt/stop. */
   pendingUserInputs: Map<string, PendingUserInput>;
+  /** In-flight tool approvals, keyed by our requestId. Each holds the ask we
+   *  surfaced and the resolver the parked `canUseTool` promise is awaiting —
+   *  settled by respondToRequest (the user decided) or drained on teardown. */
+  pendingApprovals: Map<string, PendingApproval>;
+  /** True once the user picked "allow always" for this live session: later
+   *  canUseTool prompts auto-allow without asking again. Deliberately NOT
+   *  persisted across sessions — it is a live-session-only decision (the
+   *  approvalsAlwaysAllowedForSession). */
+  approvalsAlwaysAllowed: boolean;
 };
 
 /** A parked AskUserQuestion: the questions we emitted and the resolver that
@@ -303,6 +316,13 @@ type ClaudeSession = {
 type PendingUserInput = {
   questions: UserInputQuestion[];
   resolve: (answers: UserInputAnswers) => void;
+};
+
+/** A parked tool approval: the ask we surfaced and the resolver that unblocks
+ *  canUseTool once the renderer decides (or we drain on teardown). */
+type PendingApproval = {
+  approval: ApprovalRequest;
+  resolve: (decision: ApprovalDecision) => void;
 };
 
 function newScope(subagentToolUseId?: string): ClaudeScope {
@@ -360,8 +380,37 @@ function readNumber(value: unknown, ...path: string[]): number | undefined {
 /** Normalize the SDK's `AskUserQuestion` tool input into kone's neutral
  *  UserInputQuestion[]. Claude's shape is `{ questions: [{ question, header,
  *  multiSelect?, options: [{ label, description? }] }] }`; options may also
- *  arrive as bare strings. The id is set to the question TEXT because the SDK
- *  keys answers by text when mapping the tool result. */
+  *  arrive as bare strings. The id is set to the question TEXT because the SDK
+  *  keys answers by text when mapping the tool result. */
+/** Normalize a Claude tool call into the neutral ask the renderer shows. The
+ *  subject is the tool's own headline input (the command, the file path); the
+ *  kind follows the tool family so the prompt can read "run this command" /
+ *  "read this file" / "edit this file". */
+function claudeApprovalRequest(
+  toolName: string,
+  input: Parameters<CanUseTool>[1],
+): ApprovalRequest {
+  const record = asRecord(input);
+  const subject =
+    readString(record, "command")?.trim() ??
+    readString(record, "file_path")?.trim() ??
+    readString(record, "path")?.trim() ??
+    readString(record, "glob")?.trim();
+  const kind: ApprovalRequestKind =
+    /^(bash|shell|terminal)$/i.test(toolName)
+      ? "command"
+      : /^(read|glob|grep|ls)$/i.test(toolName)
+        ? "file-read"
+        : /^(write|edit|multi_edit|notebook_edit)$/i.test(toolName)
+          ? "file-change"
+          : "tool";
+  return {
+    kind,
+    title: subject ?? toolName,
+    ...(subject ? { detail: toolName } : {}),
+  };
+}
+
 function parseAskUserQuestions(input: unknown): UserInputQuestion[] {
   const rawQuestions = asRecord(input)?.questions;
   if (!Array.isArray(rawQuestions)) return [];
@@ -404,8 +453,10 @@ function normalizeEffort(value: string | undefined): EffortLevel | undefined {
 }
 
 /** kone's InteractionMode → the SDK's spawn-time permission mode. `ask` maps to
- *  `default` (canUseTool is consulted — and auto-allows in v1); `accept-edits`
- *  to `acceptEdits`; `full-access` to `bypassPermissions`. */
+ *  `default` (canUseTool is consulted for every tool the SDK doesn't already
+ *  auto-approve — kone parks those as real approval gates, see askToolApproval,
+ *  it does not auto-allow); `accept-edits` to `acceptEdits`; `full-access` to
+ *  `bypassPermissions`. */
 function toPermissionMode(mode: InteractionMode): PermissionMode {
   switch (mode) {
     case "ask":
@@ -822,6 +873,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       trackedTasks: new Map(),
       taskPlanStarted: false,
       pendingUserInputs: new Map(),
+      pendingApprovals: new Map(),
+      approvalsAlwaysAllowed: false,
     };
     session.consumer = this.consume(session);
 
@@ -842,22 +895,124 @@ export class ClaudeAdapter implements ProviderAdapter {
     return this.toSession(session);
   }
 
-  /** kone's permission callback. Every tool but `AskUserQuestion` auto-allows
-   *  unchanged (there's no approval UI in v1 — see the file header). The
-   *  `AskUserQuestion` built-in is special: it's how Claude asks the user a
-   *  multiple-choice / free-text question mid-turn, so we park it for a real
-   *  answer from the renderer instead of allowing it to resolve empty. Under
-   *  `bypassPermissions` the SDK never calls this at all. */
+  /** kone's permission callback — the SDK consults it for every tool that
+   *  isn't auto-approved by the current permission mode: everything under
+   *  `default` (kone's `ask`), and the non-file-edit tools under `acceptEdits`
+   *  (`accept-edits`). Under `bypassPermissions` (`full-access`) the SDK never
+   *  calls this at all — so parking every non-question call here hands the user
+   *  exactly the ladder's "ask first" behaviour. The `AskUserQuestion` built-in
+   *  is special: it's how Claude asks the user a multiple-choice / free-text
+   *  question mid-turn, so we park it for a real answer from the renderer
+   *  instead of allowing it to resolve empty. */
   private canUseTool(
     session: ClaudeSession,
     toolName: string,
     input: Parameters<CanUseTool>[1],
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
+    // AskUserQuestion is a real question for the human, not a permission gate —
+    // it must reach the renderer even under "always allow for this session"
+    // (auto-allowing it would resolve the question empty). Same ordering as
     if (toolName === "AskUserQuestion") {
       return this.askUserQuestion(session, input, options);
     }
-    return Promise.resolve({ behavior: "allow", updatedInput: input });
+    // "Allow always for this session" outranks everything else, including the
+    // no-active-turn fail-closed: it is the user's explicit per-session choice,
+    // so a replay/recovery callback is auto-allowed exactly like any live one.
+    if (session.approvalsAlwaysAllowed) {
+      return Promise.resolve({ behavior: "allow", updatedInput: input });
+    }
+    // Fail closed: a canUseTool callback with no active turn (a recovery or
+    // replay callback after a crash/interrupt) has no trustworthy mode behind
+    // it — deny rather than park a gate nobody is watching.
+    if (!session.activeTurnId) {
+      return Promise.resolve({
+        behavior: "deny",
+        message: "No turn is active for this session.",
+      });
+    }
+    return this.askToolApproval(session, toolName, input, options);
+  }
+
+  /** Park a tool approval: normalize the ask, emit `approval.requested`, and
+   *  await the renderer's decision. "Always allow" flips the per-session flag
+   *  (so this session stops asking, live-session-only) and passes the SDK's own
+   *  permission suggestions back as `updatedPermissions` — kone's mode rung
+   *  (not a session permission-mode mutation) stays the standing gate. If the
+   *  turn is interrupted (abort signal) or torn down, the parked promise
+   *  resolves rejected so the SDK stops waiting. */
+  private async askToolApproval(
+    session: ClaudeSession,
+    toolName: string,
+    input: Parameters<CanUseTool>[1],
+    options: Parameters<CanUseTool>[2],
+  ): Promise<PermissionResult> {
+    const requestId = randomUUID();
+    const approval = claudeApprovalRequest(toolName, input);
+    // A canUseTool ask raised inside a native subagent carries the SDK's
+    // `agentID` — map it back to the run's tool-use id so permission traffic
+    // nests under the run (like `item.*` events tagged with subagentToolUseId).
+    const subagentToolUseId = options.agentID
+      ? this.runByTaskId(session, options.agentID)?.snapshot.toolUseId
+      : undefined;
+    const decision = await new Promise<ApprovalDecision>((resolve) => {
+      session.pendingApprovals.set(requestId, { approval, resolve });
+      this.emit({
+        ...this.base(session),
+        type: "approval.requested",
+        requestId,
+        turnId: session.activeTurnId,
+        approval,
+        ...(subagentToolUseId ? { subagentToolUseId } : {}),
+      });
+      // Unblock if the turn aborts mid-approval so the query can settle.
+      const signal = options?.signal;
+      if (signal) {
+        if (signal.aborted) this.resolveApproval(session, requestId, "reject-once");
+        else signal.addEventListener("abort", () => this.resolveApproval(session, requestId, "reject-once"), { once: true });
+      }
+    });
+
+    this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
+
+    if (decision === "allow-always") {
+      // Live-session-only: from here on this session auto-allows (checked at
+      // the top of canUseTool) and, where the SDK offered one, its persistent
+      // suggestion rides back so the CLI also stops re-prompting in-session.
+      session.approvalsAlwaysAllowed = true;
+      return {
+        behavior: "allow",
+        updatedInput: input,
+        ...(options.suggestions ? { updatedPermissions: [...options.suggestions] } : {}),
+      };
+    }
+    if (decision === "reject-and-stop") {
+      return {
+        behavior: "deny",
+        message: "The user stopped this turn.",
+        interrupt: true,
+      };
+    }
+    if (decision === "reject-once") {
+      return { behavior: "deny", message: "The user rejected this tool call." };
+    }
+    return { behavior: "allow", updatedInput: input };
+  }
+
+  /** Settle one parked tool approval (idempotent — a no-op once drained). */
+  private resolveApproval(session: ClaudeSession, requestId: string, decision: ApprovalDecision): void {
+    const pending = session.pendingApprovals.get(requestId);
+    if (!pending) return;
+    session.pendingApprovals.delete(requestId);
+    pending.resolve(decision);
+  }
+
+  /** Reject every parked approval — on interrupt/stop so no canUseTool promise
+   *  leaks and the renderer's pending prompt clears. */
+  private drainApprovals(session: ClaudeSession): void {
+    for (const [requestId] of [...session.pendingApprovals]) {
+      this.resolveApproval(session, requestId, "reject-once");
+    }
   }
 
   /** Park an AskUserQuestion round-trip: parse the questions, emit
@@ -1025,6 +1180,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.disposed = true;
     this.settleLiveSubagents(session, "stopped");
     this.drainUserInputs(session);
+    this.drainApprovals(session);
     // Seal a turn that's still live. `disposed` gates the `session.exited` emit
     // in consume()'s finally, so a deliberate stop otherwise emits nothing
     // terminal at all — the journaled assistant block would stay 'running'
@@ -1045,15 +1201,17 @@ export class ClaudeAdapter implements ProviderAdapter {
       session.disposed = true;
       this.settleLiveSubagents(session, "stopped");
       this.drainUserInputs(session);
+      this.drainApprovals(session);
       session.prompt.close();
       session.abort.abort();
     }
     this.sessions.clear();
   }
 
-  async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
-    // No-op — non-question tools auto-allow inline; nothing is left pending for
-    // the UI to approve (matches CodexAdapter). Questions use respondToUserInput.
+  async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.resolveApproval(session, requestId, decision);
   }
 
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
@@ -1088,6 +1246,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
     } finally {
       if (this.sessions.get(session.threadId) === session) this.sessions.delete(session.threadId);
+      // Fail closed on the way out: resolve every parked canUseTool round-trip
+      // (approvals + questions) as rejected so no SDK callback hangs on a
+      // promise nothing will settle after the query stream died. Idempotent —
+      // a deliberate stop already drained these.
+      this.drainApprovals(session);
+      this.drainUserInputs(session);
       if (!session.disposed) {
         this.emit({ ...this.base(session, "claude.sdk.lifecycle"), type: "session.exited", code: null });
       }
@@ -1876,6 +2040,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
+      effort: session.effort,
       mode: session.mode,
     };
   }

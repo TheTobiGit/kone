@@ -201,7 +201,14 @@ describe("gateway integration (real store + HTTP)", () => {
     // No live turn yet → write denied, read still works (not_found).
     let res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     const names = (res.json as any).result.tools.map((t: any) => t.name);
-    expect(names).toEqual(["kone_scratchpad_read", "kone_scratchpad_write"]);
+    expect(names).toEqual([
+      "kone_scratchpad_read",
+      "kone_scratchpad_write",
+      "kone_spawn_targets",
+      "kone_spawn_thread",
+      "kone_wait_for_threads",
+      "kone_read_thread",
+    ]);
 
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
     expect((res.json as any).result.isError).toBe(true);

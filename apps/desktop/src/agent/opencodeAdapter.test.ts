@@ -3,11 +3,13 @@ import { describe, expect, test } from "bun:test";
 import {
   accumulateOpenCodeTokens,
   appendOpenCodeTextDelta,
+  buildOpenCodeSubagentSnapshot,
   buildOpenCodeTokenUsageKey,
   isOpenCodeNotFound,
   isOpenCodeTurnEnd,
   normalizeOpenCodeTokenUsage,
   parseOpenCodeModels,
+  permissionRules,
   reconcileOpenCodeText,
   selectOpenCodeTurnId,
   translateOpenCodeEvent,
@@ -137,5 +139,69 @@ describe("OpenCode pure translation helpers", () => {
   test("steering reuses the active turn id", () => {
     expect(selectOpenCodeTurnId("opencode-turn-existing")).toBe("opencode-turn-existing");
     expect(selectOpenCodeTurnId(undefined)).toMatch(/^opencode-turn-/);
+  });
+});
+
+describe("OpenCode subagent run snapshots", () => {
+  test("an inherited parent variant becomes the run's effort", () => {
+    const snapshot = buildOpenCodeSubagentSnapshot({
+      toolUseId: "call-1",
+      status: "running",
+      toolInput: { subagent_type: "general", description: "Dig into the bug" },
+      toolMetadata: { sessionId: "ses_child", providerID: "opencode-go", modelID: "deepseek-v4-flash" },
+      stateTitle: undefined,
+      childSessionId: "ses_child",
+      variant: "high",
+    });
+    expect(snapshot.effort).toBe("high");
+    expect(snapshot.agentType).toBe("general");
+    expect(snapshot.model).toBe("opencode-go/deepseek-v4-flash");
+    expect(snapshot.taskId).toBe("ses_child");
+  });
+
+  test("no variant means no effort field on the run", () => {
+    const snapshot = buildOpenCodeSubagentSnapshot({
+      toolUseId: "call-2",
+      status: "completed",
+      toolInput: { description: "No variant" },
+      toolMetadata: {},
+      stateTitle: undefined,
+      childSessionId: undefined,
+    });
+    expect(snapshot.effort).toBeUndefined();
+  });
+});
+
+describe("OpenCode permission rules per mode", () => {
+  const last = (permission: string, mode: "ask" | "accept-edits" | "full-access") =>
+    [...permissionRules(mode)].reverse().find((r) => r.permission === permission);
+
+  test("accept-edits auto-approves file edits but keeps asking for everything else", () => {
+    // OpenCode resolves against the LAST matching rule, so the edit-allow rule
+    // must come after the edit-ask rule and the `*` catch-all.
+    const rules = permissionRules("accept-edits");
+    const edit = [...rules].reverse().find((r) => r.permission === "edit");
+    expect(edit?.action).toBe("allow");
+    for (const permission of ["bash", "webfetch", "websearch", "external_directory"]) {
+      const rule = [...rules].reverse().find((r) => r.permission === permission);
+      expect(rule?.action).toBe("ask");
+    }
+    expect([...rules].reverse().find((r) => r.permission === "question")?.action).toBe("allow");
+  });
+
+  test("ask asks for edits, full-access allows everything", () => {
+    const askEdit = last("edit", "ask");
+    expect(askEdit?.action).toBe("ask");
+    const fullRules = permissionRules("full-access");
+    expect(fullRules).toHaveLength(1);
+    expect(fullRules[0]).toEqual({ permission: "*", pattern: "*", action: "allow" });
+  });
+
+  test("accept-edits is closed by default outside the named families", () => {
+    const rules = permissionRules("accept-edits");
+    // The deny catch-all closes the surface for anything the explicit rules
+    // don't name (custom/MCP tools, future mutating tools).
+    const closed = rules.find((r) => r.permission === "*");
+    expect(closed?.action).toBe("deny");
   });
 });

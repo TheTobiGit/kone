@@ -8,7 +8,7 @@ import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSuppor
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { buildOpenCodeMcpServer } from "../gateway/injection.js";
-import type { ApprovalDecision, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import type { ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
 
 type RecordLike = Record<string, any>;
 type OpenCodeEvent = { type: string; properties?: RecordLike };
@@ -36,20 +36,48 @@ type OpenCodeSession = {
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
   pendingPermissions: Map<string, string>; pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
+  /** In-flight permission approvals, keyed by the permission request's id. Each
+   *  holds the ask we surfaced and the resolver that posts the reply — settled
+   *  by respondToRequest (the user decided) or drained on interrupt/stop. */
+  pendingApprovals: Map<string, PendingApproval>;
   /** Provider-native subagents (Task tool) recognized this session, keyed by the
    *  task tool's call id. */
   subagentRuns: Map<string, OpenCodeSubagentRun>;
   /** Child session id → the task tool call id that spawned it, so child-session
    *  events can be routed into the run's transcript. */
   subagentChildSessions: Map<string, string>;
+  /** Task tool call ids of runs that already settled. opencode re-emits tool
+   *  parts (each parent `message.updated` re-iterates every part) and child
+   *  sessions stream a tail after their tool part completes, so without this
+   *  set a settled run's id would be re-created (a duplicate
+   *  `subagent.completed`) and its leftover items would orphan in the parent
+   *  transcript. The Claude adapter guards the same way (`settledSubagents`). */
+  settledSubagentToolUseIds: Set<string>;
   disposed: boolean; interrupting: boolean; planTasks: PlanTask[]; exitNotified: boolean;
+};
+
+/** A parked opencode permission approval: the ask we surfaced and the resolver
+ *  that posts the `permission/{id}/reply` once the renderer decides. When the
+ *  ask came from a provider-native subagent (child session), `subagentToolUseId`
+ *  tags which run it belongs to so it routes with the child's transcript. */
+type PendingApproval = {
+  approval: ApprovalRequest;
+  resolve: (decision: ApprovalDecision) => void;
+  subagentToolUseId?: string;
 };
 
 const SLUG_LINE = /^(\S+\/\S+)\s*$/;
 
 function record(value: unknown): RecordLike | undefined { return value && typeof value === "object" ? value as RecordLike : undefined; }
 function responseData(value: any): any { return value?.data ?? value; }
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  // Provider payloads (e.g. session.error) carry plain `{ message }` objects —
+  // String() would render "[object Object]".
+  const r = record(error);
+  if (r && typeof r.message === "string" && r.message) return r.message;
+  return String(error);
+}
 function statusOf(error: unknown): number | undefined {
   const r = record(error); const response = record(r?.response);
   return typeof r?.status === "number" ? r.status : typeof r?.statusCode === "number" ? r.statusCode : typeof response?.status === "number" ? response.status : undefined;
@@ -223,8 +251,32 @@ export function buildOpenCodeTokenUsageKey(input: {
   ].join(":");
 }
 
-function permissionRules(mode: InteractionMode): RecordLike[] {
+export function permissionRules(mode: InteractionMode): RecordLike[] {
   if (mode === "full-access") return [{ permission: "*", pattern: "*", action: "allow" }];
+  if (mode === "accept-edits") {
+    // Closed by default: a deny base, then explicit allows for read operations
+    // and edit/write, with the mutating/network/out-of-tree families asked.
+    // A deny base also blocks custom/MCP tools and future mutating tools that
+    // a short denylist would accidentally leave enabled.
+    return [
+      { permission: "*", pattern: "*", action: "deny" },
+      { permission: "read", pattern: "*", action: "allow" },
+      { permission: "glob", pattern: "*", action: "allow" },
+      { permission: "grep", pattern: "*", action: "allow" },
+      { permission: "list", pattern: "*", action: "allow" },
+      { permission: "lsp", pattern: "*", action: "allow" },
+      { permission: "codesearch", pattern: "*", action: "allow" },
+      { permission: "todoread", pattern: "*", action: "allow" },
+      { permission: "todowrite", pattern: "*", action: "allow" },
+      { permission: "question", pattern: "*", action: "allow" },
+      { permission: "edit", pattern: "*", action: "allow" },
+      { permission: "write", pattern: "*", action: "allow" },
+      { permission: "bash", pattern: "*", action: "ask" },
+      { permission: "webfetch", pattern: "*", action: "ask" },
+      { permission: "websearch", pattern: "*", action: "ask" },
+      { permission: "external_directory", pattern: "*", action: "ask" },
+    ];
+  }
   return [{ permission: "*", pattern: "*", action: "ask" }, ...["bash", "edit", "webfetch", "websearch", "external_directory"].map((permission) => ({ permission, pattern: "*", action: "ask" })), { permission: "question", pattern: "*", action: "allow" }];
 }
 
@@ -234,6 +286,39 @@ function modelSlug(slug: string | undefined): { providerID: string; modelID: str
 }
 
 function toolKind(tool: string): RuntimeItemKind { return /^todo(write|read)$/i.test(tool) ? "plan_text" : "tool_call"; }
+/** Normalize an opencode permission ask into the neutral approval request. The
+ *  ask names the permission being requested (`bash`, `edit:path`, a URL for
+ *  webfetch); the kind follows its family. */
+function openCodeApprovalRequest(permission: unknown): ApprovalRequest {
+  const permissionRecord = record(permission);
+  const raw =
+    typeof permission === "string"
+      ? permission
+      : permissionRecord
+        ? String(permissionRecord.type ?? permissionRecord.permission ?? "")
+        : String(permission ?? "");
+  const text = raw.trim() || "Request permission";
+  const kind: ApprovalRequestKind = /^(bash|shell|terminal)/i.test(text)
+    ? "command"
+    : /^(edit|write|delete|move|patch|create)/i.test(text)
+      ? "file-change"
+      : /^read/i.test(text)
+        ? "file-read"
+        : "permission";
+  return { kind, title: text };
+}
+function toOpenCodeReply(decision: ApprovalDecision): "once" | "always" | "reject" {
+  switch (decision) {
+    case "allow-once":
+      return "once";
+    case "allow-always":
+      return "always";
+    default:
+      // reject-once and reject-and-stop both reply "reject" to the permission
+      // itself; the difference is that reject-and-stop then aborts the turn.
+      return "reject";
+  }
+}
 function toolStatus(status: string): RuntimeItemStatus { return status === "error" ? "failed" : status === "completed" ? "completed" : "in-progress"; }
 function detailForTool(state: RecordLike): string | undefined { return typeof state.output === "string" ? state.output : typeof state.error === "string" ? state.error : typeof state.title === "string" ? state.title : undefined; }
 
@@ -279,6 +364,36 @@ export function isOpenCodeTurnEnd(event: OpenCodeEvent): boolean {
 
 export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
   return activeTurnId ?? `opencode-turn-${randomUUID()}`;
+}
+
+/** Build the run snapshot for an opencode `task` tool part, folded from the
+ *  tool's input + metadata and the parent session's reasoning variant. The
+ *  child inherits the parent session's `variant` — opencode's native subagents
+ *  run under the spawning session's strength — so it is reported as the run's
+ *  `effort` when the parent has one. */
+export function buildOpenCodeSubagentSnapshot(input: {
+  toolUseId: string;
+  status: SubagentStatus;
+  toolInput: RecordLike;
+  toolMetadata: RecordLike;
+  stateTitle: unknown;
+  childSessionId: string | undefined;
+  variant?: string;
+}): SubagentRunSnapshot {
+  const { toolUseId, status, toolInput, toolMetadata, stateTitle, childSessionId, variant } = input;
+  return {
+    toolUseId,
+    parentItemId: toolUseId,
+    status,
+    startedAt: Date.now(),
+    ...(childSessionId ? { taskId: childSessionId } : {}),
+    ...(subagentType(toolInput) ? { agentType: subagentType(toolInput) } : {}),
+    ...(subagentDescription(toolInput, stateTitle) ? { description: subagentDescription(toolInput, stateTitle) } : {}),
+    ...(stringField(toolInput, "prompt") ? { prompt: stringField(toolInput, "prompt") } : {}),
+    ...(openCodeModelName(toolMetadata) ? { model: openCodeModelName(toolMetadata) } : {}),
+    ...(toolMetadata.background === true || toolInput.background === true ? { background: true } : {}),
+    ...(variant ? { effort: variant } : {}),
+  };
 }
 
 export class OpenCodeAdapter implements ProviderAdapter {
@@ -329,7 +444,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
         const same = found?.directory ? await this.sameDirectory(found.directory, input.cwd) : true;
         const adoptedId = sessionId;
         if (!adoptedId) throw new Error("OpenCode resume response did not include an id.");
-        if (!same) sessionId = responseData(await client.request("POST", `/session/${encodeURIComponent(adoptedId)}/fork`, { directory: input.cwd }))?.id;
+        if (!same) {
+          sessionId = responseData(await client.request("POST", `/session/${encodeURIComponent(adoptedId)}/fork`, { directory: input.cwd, permission: permissionRules(mode) }))?.id;
+          // Belt-and-braces: the fork may ignore the permission field (or carry
+          // the resumed session's ruleset), so re-assert the mode's ruleset on
+          // the forked session before the event pump starts below — a fork of a
+          // full-access session must not keep allow-all under ask/accept-edits.
+          if (sessionId) await client.request("PATCH", `/session/${encodeURIComponent(sessionId)}`, { permission: permissionRules(mode) });
+        }
         else await client.request("PATCH", `/session/${encodeURIComponent(adoptedId)}`, { permission: permissionRules(mode) });
       } catch (error) { if (!isOpenCodeNotFound(error)) { await server.dispose(); throw error; } }
     }
@@ -362,7 +484,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         console.error("[opencode] kone MCP registration failed:", errorMessage(error));
       }
     }
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), pendingApprovals: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), settledSubagentToolUseIds: new Set(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -375,6 +497,21 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const session = this.require(input.threadId); const text = input.input.trim();
     const { buildOpenCodeAttachmentParts, composePromptText } = await import("../promptAttachments.js");
     const files = await buildOpenCodeAttachmentParts(input.attachments);
+    // The ladder is applied to the session when it opens (and on resume); a
+    // mode change mid-session would otherwise silently never take effect —
+    // opencode persists `permission` on the session, and PATCH /session is the
+    // same live update the resume path already relies on. Best-effort: a
+    // refused PATCH leaves the session on its current rules, reported truthfully
+    // via session.mode.
+    const mode = input.mode ?? session.mode;
+    if (mode !== session.mode) {
+      try {
+        await session.client.request("PATCH", `/session/${encodeURIComponent(session.openCodeSessionId)}`, { permission: permissionRules(mode) });
+        session.mode = mode;
+      } catch (error) {
+        console.error("[opencode] failed to apply permission mode:", errorMessage(error));
+      }
+    }
     // prependT3OrchestrationInstructions pattern): the app-context block rides
     // the very first user turn so the agent knows the gateway tools exist.
     const composed = composePromptText(text, "");
@@ -400,14 +537,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
   // reads activeTurnId while it's still set.
   async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); }
-  async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); const reply = decision === "allow-once" ? "once" : decision === "allow-always" ? "always" : "reject"; await session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply }); }
+  async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); this.resolveApproval(session, requestId, decision); /* "Reject and stop" — the permission already gets its `reject` reply (toOpenCodeReply), and aborting the session turns that into an interrupted turn instead of a continued one. */ if (decision === "reject-and-stop") void this.interruptTurn(threadId); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> { const session = this.require(threadId); const pending = session.pendingUserInputs.get(requestId); if (!pending) return; session.pendingUserInputs.delete(requestId); pending.resolve(answers); }
   async listSessions(): Promise<Session[]> { return [...this.sessions.values()].map((session) => this.toSession(session)); }
   async hasSession(threadId: string): Promise<boolean> { return this.sessions.has(threadId); }
 
   private require(threadId: string): OpenCodeSession { const session = this.sessions.get(threadId); if (!session) throw new Error(`No OpenCode session for thread ${threadId}`); return session; }
-  private toSession(s: OpenCodeSession): Session { return { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, resumedFrom: s.resumedFrom, activeTurnId: s.activeTurnId, model: s.model, mode: s.mode }; }
-  private drain(s: OpenCodeSession): void { for (const [id, pending] of s.pendingUserInputs) { s.pendingUserInputs.delete(id); pending.resolve({}); } }
+  private toSession(s: OpenCodeSession): Session { return { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, resumedFrom: s.resumedFrom, activeTurnId: s.activeTurnId, model: s.model, ...(s.variant ? { effort: s.variant } : {}), mode: s.mode }; }
+  private drain(s: OpenCodeSession): void { for (const [id, pending] of s.pendingUserInputs) { s.pendingUserInputs.delete(id); pending.resolve({}); } for (const [id, pending] of s.pendingApprovals) { s.pendingApprovals.delete(id); pending.resolve("reject-once"); } }
   private abortLiveTurn(s: OpenCodeSession): void { const turnId = s.activeTurnId; if (!turnId) return; s.activeTurnId = undefined; s.interrupting = false; this.emit({ ...base(s, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "interrupted" }); }
 
   private async consumeEvents(session: OpenCodeSession): Promise<void> {
@@ -441,6 +578,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private unexpectedExit(session: OpenCodeSession, code: number | null, message?: string): void {
     if (session.disposed || session.exitNotified) return;
     session.exitNotified = true;
+    // Settle parked approvals/questions so their resolvers resolve and the
+    // renderer's modals clear — a crashed provider leaves no reply coming.
+    this.drain(session);
     const turnId = session.activeTurnId;
     session.activeTurnId = undefined;
     this.settleLiveSubagents(session, "failed");
@@ -504,6 +644,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   private handlePart(session: OpenCodeSession, part: RecordLike | undefined, subagentToolUseId?: string): void {
      if (!part || !session.activeTurnId) return; session.partById.set(part.id, part); const turnId = session.activeTurnId;
+     // A settled run's tail is dropped before anything is emitted: re-projecting
+     // it would orphan items under a tool-use id no run nests anymore (the same
+     // rule as ClaudeAdapter's settledSubagents tail drop).
+     if (subagentToolUseId && session.settledSubagentToolUseIds.has(subagentToolUseId)) return;
      if (part.type === "text" || part.type === "reasoning") { const role = part.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(part.id); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(part.id), String(part.text ?? "")); session.emittedTextByPartId.set(part.id, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) this.emit({ ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: part.id, kind, status: "in-progress", text: merged.text }, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); if (part.time?.end && !session.completedTextPartIds.has(part.id)) { session.completedTextPartIds.add(part.id); this.emit({ ...base(session), type: "item.completed", turnId, item: { itemId: part.id, kind, status: "completed", text: merged.text }, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); } return; }
     if (part.type !== "tool") return; const state = record(part.state) ?? {}; const kind = toolKind(String(part.tool ?? "tool"));
     if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(state.status), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); return; }
@@ -540,6 +684,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const status = subagentStatus(state.status);
     if (childSessionId) session.subagentChildSessions.set(childSessionId, toolUseId);
 
+    // opencode re-delivers the completed tool part (each parent message.updated
+    // re-iterates every part), and a re-created run would re-settle and emit a
+    // second subagent.completed. A settled id is terminal — keep only the child
+    // mapping, announce nothing.
+    if (session.settledSubagentToolUseIds.has(toolUseId)) return;
+
     const existing = session.subagentRuns.get(toolUseId);
     if (existing) {
       existing.snapshot.status = status;
@@ -547,18 +697,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
       else this.emitSubagent(session, existing, "subagent.updated");
       return;
     }
-    const snapshot: SubagentRunSnapshot = {
+    const snapshot = buildOpenCodeSubagentSnapshot({
       toolUseId,
-      parentItemId: toolUseId,
       status,
-      startedAt: Date.now(),
-      ...(childSessionId ? { taskId: childSessionId } : {}),
-      ...(subagentType(input) ? { agentType: subagentType(input) } : {}),
-      ...(subagentDescription(input, state.title) ? { description: subagentDescription(input, state.title) } : {}),
-      ...(stringField(input, "prompt") ? { prompt: stringField(input, "prompt") } : {}),
-      ...(openCodeModelName(metadata) ? { model: openCodeModelName(metadata) } : {}),
-      ...(metadata.background === true || input.background === true ? { background: true } : {}),
-    };
+      toolInput: input,
+      toolMetadata: metadata,
+      stateTitle: state.title,
+      childSessionId,
+      variant: session.variant,
+    });
     const run: OpenCodeSubagentRun = { snapshot, announced: false, settled: false, childToolPartIds: new Set() };
     session.subagentRuns.set(toolUseId, run);
     if (status === "completed" || status === "failed") this.settleSubagent(session, run, status, state);
@@ -570,6 +717,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
    *  turn's lifecycle — the child going idle is not the parent finishing. */
   private handleChildEvent(session: OpenCodeSession, toolUseId: string, event: OpenCodeEvent): void {
     const p = event.properties ?? {};
+    // A settled run's in-flight tail is dropped the same way the Claude adapter
+    // drops one — the run is closed, and re-projecting its leftovers would
+    // orphan items under an id no run nests anymore.
+    if (session.settledSubagentToolUseIds.has(toolUseId)) return;
     const run = session.subagentRuns.get(toolUseId);
     switch (event.type) {
       case "message.updated": {
@@ -595,6 +746,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
         break;
       }
       case "message.part.updated": this.handlePart(session, p.part, toolUseId); break;
+      case "permission.asked":
+      case "permission.v2.asked": void this.permissionAsked(session, p, toolUseId); break;
       case "session.next.step.ended": {
         if (!run) break;
         const usage = normalizeOpenCodeTokenUsage(p.tokens);
@@ -626,6 +779,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     run.settled = true;
     run.snapshot.status = status;
     run.snapshot.endedAt = Date.now();
+    // Remember the id so neither a re-delivered tool part nor the child's event
+    // tail can resurrect the run (see handleTaskTool / handleChildEvent).
+    session.settledSubagentToolUseIds.add(run.snapshot.toolUseId);
     if (status === "completed") {
       const summary = openCodeTaskSummary(state.output);
       if (summary) run.snapshot.summary = summary;
@@ -635,6 +791,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     }
     this.emitSubagent(session, run, "subagent.completed");
     session.subagentRuns.delete(run.snapshot.toolUseId);
+    // The child-session → tool-use-id mapping is only useful while the run is
+    // live; drop it on settle so stale entries can't accumulate and route a
+    // later unrelated session's events into a finished run.
+    if (run.snapshot.taskId) session.subagentChildSessions.delete(run.snapshot.taskId);
   }
 
   /** Settle anything still live — the turn ended or the session is going away. */
@@ -655,7 +815,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }
-  private async permissionAsked(session: OpenCodeSession, p: RecordLike): Promise<void> { session.pendingPermissions.set(p.id, p.permission); try { await session.client.request("POST", `/permission/${encodeURIComponent(p.id)}/reply`, { reply: "always" }); } catch { /* provider will surface session.error */ } }
+  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask that still fires (a tool outside the allow-all ruleset, e.g. an MCP tool the rules don't name) is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); this.emit({ ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
+  /** Settle one parked permission approval (idempotent — a no-op once drained). */
+  private resolveApproval(session: OpenCodeSession, requestId: string, decision: ApprovalDecision): void { const pending = session.pendingApprovals.get(requestId); if (!pending) return; session.pendingApprovals.delete(requestId); pending.resolve(decision); }
   private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((q: RecordLike, i: number) => ({ id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((o: RecordLike) => ({ label: String(o.label ?? ""), ...(o.description ? { description: String(o.description) } : {}) })) : [], multiSelect: q.multiple === true })); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }
   private questionResolved(session: OpenCodeSession, requestId: string, answers: string[][]): void { const pending = session.pendingUserInputs.get(requestId); if (!pending) return; const mapped: UserInputAnswers = {}; pending.questions.forEach((q, i) => { mapped[q.id] = answers[i]?.join(", ") ?? ""; }); session.pendingUserInputs.delete(requestId); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped }); }
 }

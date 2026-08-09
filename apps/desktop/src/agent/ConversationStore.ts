@@ -33,7 +33,7 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 17;
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
@@ -368,6 +368,39 @@ function migrate(db: DatabaseSync): void {
     version = 15;
   }
 
+  if (version < 16) {
+    // v16 — thread spawning (docs/thread-spawning-design.md): `parent_thread_id`
+    // is an indexed projection of lineage_json's parentThreadId — lineage_json
+    // stays the source of truth for the relationship, this column exists so
+    // "who are my children" and subtree walks are an indexed query instead of a
+    // JSON scan of every thread row. No backfill: no thread has ever carried a
+    // `subagent` lineage (side chats are roots, parentThreadId null), so the
+    // column ships empty, written only by the feature that owns it.
+    db.exec(`
+      ALTER TABLE threads ADD COLUMN parent_thread_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_threads_parent
+        ON threads (parent_thread_id, created_at);
+    `);
+    version = 16;
+  }
+
+  if (version < 17) {
+    // v17 — half-created spawn recovery (docs/thread-spawning-design.md, F8): a
+    // `dispatched` bit on gateway_ops marks a spawn.thread op whose startThread
+    // actually returned. A reserved op that was never marked dispatched is the
+    // durable trace of a crash between the store write and dispatch — at next
+    // boot sealUndispatchedSpawns turns the child into a failed thread so it
+    // reads terminal instead of projecting idle forever. No backfill: rows
+    // written before this migration predate the crash window's meaning, and
+    // sealing them would mislabel already-recovered children.
+    db.exec(`
+      ALTER TABLE gateway_ops ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_gateway_ops_undispatched
+        ON gateway_ops (kind, dispatched);
+    `);
+    version = 17;
+  }
+
   if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
   db.exec(`PRAGMA user_version = ${version}`);
 }
@@ -521,6 +554,10 @@ export class ConversationStore {
       // is reconciling orphaned pending state at the recovery point; kone's
       // simpler read model makes it a single UPDATE.
       this.sealOrphanedTurns(db);
+      // Same recovery point, second pass: a spawned child that was reserved but
+      // never dispatched (a crash between the row write and startThread) reads
+      // terminal now, not "idle forever" (F8).
+      this.sealUndispatchedSpawns(db);
       return db;
     } catch (err) {
       console.error("[conversation-store] could not open database:", err);
@@ -589,6 +626,78 @@ export class ConversationStore {
       ).run(now);
     } catch (err) {
       console.error("[conversation-store] could not seal orphaned turns:", err);
+    }
+  }
+
+  /** Mark half-created spawned children as failed. A spawn reserves its
+   *  gateway_ops row BEFORE the child thread is written and marks it dispatched
+   *  only AFTER startThread returns (threadSpawn.ts); a crash in between — or
+   *  right after the row write — leaves a `spawn.thread` op that was reserved
+   *  but never dispatched, a durable "child exists" answer for a thread that
+   *  never ran. Safe to run only at first DB open (no live session yet). Each
+   *  such child gets a synthetic failed turn, so the spawn engine's boot
+   *  fallback reads it as failed + terminal (with the reason) instead of
+   *  projecting idle forever while the parent's wait times out (F8). Best-effort
+   *  — a failure just leaves the stillborn read, which is already terminal. */
+  private sealUndispatchedSpawns(db: DatabaseSync): void {
+    try {
+      const now = Date.now();
+      const rows = db
+        .prepare(
+          `SELECT thread_id, turn_id, request_id, result_json FROM gateway_ops
+            WHERE kind = 'spawn.thread' AND dispatched = 0 AND result_json != ''`,
+        )
+        .all() as Array<{
+        thread_id: string;
+        turn_id: string;
+        request_id: string;
+        result_json: string;
+      }>;
+      const childMeta = db.prepare(`SELECT lineage_json FROM threads WHERE thread_id = ?`);
+      const hasAssistantBlock = db.prepare(
+        `SELECT 1 FROM blocks WHERE thread_id = ? AND role = 'assistant' LIMIT 1`,
+      );
+      const insertFailedTurn = db.prepare(
+        `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, error, at, ended_at)
+         VALUES (?, ?, 'assistant', '<undispatched>', 'failed', ?, ?, ?)
+         ON CONFLICT(block_id) DO NOTHING`,
+      );
+      const markDispatched = db.prepare(
+        `UPDATE gateway_ops SET dispatched = 1
+          WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
+      );
+      for (const row of rows) {
+        let childId: string | undefined;
+        try {
+          const parsed = JSON.parse(row.result_json) as { threadId?: string };
+          if (typeof parsed.threadId === "string") childId = parsed.threadId;
+        } catch {
+          childId = undefined;
+        }
+        if (!childId) continue;
+        // The child row must still exist with subagent lineage and no real
+        // turns yet — never clobber a child that actually ran.
+        const meta = childMeta.get(childId) as { lineage_json: string } | undefined;
+        if (!meta) continue;
+        try {
+          const lineage = JSON.parse(meta.lineage_json) as { relationshipToParent?: string };
+          if (lineage.relationshipToParent !== "subagent") continue;
+        } catch {
+          continue;
+        }
+        if (hasAssistantBlock.get(childId)) continue;
+        insertFailedTurn.run(
+          assistantBlockId(childId, "<undispatched>"),
+          childId,
+          "The app exited before this thread's first turn was dispatched — the spawn never started. Ask the parent to spawn it again with a fresh requestId.",
+          now,
+          now,
+        );
+        // Mark the op dispatched so this is one-shot, not re-sealed every boot.
+        markDispatched.run(row.thread_id, row.turn_id, row.request_id);
+      }
+    } catch (err) {
+      console.error("[conversation-store] could not seal undispatched spawns:", err);
     }
   }
 
@@ -1511,6 +1620,262 @@ export class ConversationStore {
     }
   }
 
+  // ── thread spawning (agent-owned child threads) ────────────────────────────
+  // A running agent opens a NEW thread on any installed provider via the MCP
+  // gateway (docs/thread-spawning-design.md): the child is a first-class
+  // thread — same rows, same event stream — plus a parent pointer so the UI
+  // can nest it and the engine can enforce the depth/breadth caps.
+  // `lineage_json` (shared with side chats) stays the source of truth for the
+  // relationship; `parent_thread_id` is the indexed projection the v16
+  // migration added so "who are my children" is one indexed query instead of
+  // a JSON scan.
+
+  /** Create the row for a spawned child thread. Returns false when the thread
+   *  id is already taken (a UNIQUE violation lands in the catch — same shape
+   *  as writeForkThread, the caller's natural idempotency for client-minted
+   *  ids).
+   *
+   *  Deliberately does NOT write `threads.request_id`. That column is the
+   *  side chat's *global* idempotency key — threadIdForRequestId queries it
+   *  with no thread scope — while a spawn's requestId is only unique within
+   *  its parent turn. Writing it would make an unrelated side chat report a
+   *  bogus idempotency conflict. Spawn idempotency rides gateway_ops
+   *  (reserveGatewayOp on (thread, turn, requestId)), never this column. */
+  writeSpawnedThread(input: {
+    threadId: string;
+    projectPath: string;
+    provider: ProviderKind;
+    model?: string;
+    createdAt: number;
+    title: string;
+    lineage: ThreadLineage;
+  }): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      // The thread row is the anchor every child event hangs off — the same
+      // durability class as a fork's row.
+      this.durably(db, () => {
+        db.prepare(
+          `INSERT INTO threads (
+             thread_id, project_path, provider, model, created_at, updated_at,
+             title, lineage_json, parent_thread_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          input.threadId,
+          input.projectPath,
+          input.provider,
+          input.model ?? null,
+          input.createdAt,
+          input.createdAt,
+          input.title,
+          JSON.stringify(input.lineage),
+          input.lineage.parentThreadId,
+        );
+      });
+      return true;
+    } catch (err) {
+      console.error("[conversation-store] writeSpawnedThread failed:", err);
+      return false;
+    }
+  }
+
+  /** The thread's stored lineage block, or null when the thread has none (a
+   *  plain root, or a missing row). Reads `lineage_json` — the source of
+   *  truth; callers that walk the tree use the indexed parent pointer instead. */
+  threadLineage(threadId: string): ThreadLineage | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(`SELECT lineage_json FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { lineage_json: string | null } | undefined;
+      return parseJsonObject<ThreadLineage>(row?.lineage_json ?? null) ?? null;
+    } catch (err) {
+      console.error("[conversation-store] threadLineage failed:", err);
+      return null;
+    }
+  }
+
+  /** Every thread that names this one as its parent, oldest first — the
+   *  "who are my children" query the v16 parent index exists for. */
+  spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(
+          `SELECT * FROM threads
+            WHERE parent_thread_id = ?
+            ORDER BY created_at ASC`,
+        )
+        .all(parentThreadId) as ThreadRow[];
+      return rows.map(rowToMeta);
+    } catch (err) {
+      console.error("[conversation-store] spawnedChildren failed:", err);
+      return [];
+    }
+  }
+
+  /** How many spawn hops above a root this thread sits — a root is 0, its
+   *  child 1, and so on; the engine's depth guard (MAX_SPAWN_DEPTH) refuses
+   *  past that.
+   *
+   *  Walks `parent_thread_id` upward and is deliberately cycle-guarded: a
+   *  corrupted row (a pointer loop) must return a large finite depth that the
+   *  guard refuses, never hang the store. A missing parent terminates the
+   *  walk — children survive their parent's deletion on purpose, and a
+   *  deleted parent just means the chain stops there. */
+  spawnDepth(threadId: string): number {
+    const db = this.handle();
+    if (!db) return 0;
+    try {
+      const parentOf = db.prepare(
+        `SELECT parent_thread_id FROM threads WHERE thread_id = ?`,
+      );
+      const visited = new Set<string>([threadId]);
+      let current = threadId;
+      let depth = 0;
+      // 64 is far past the real ceiling (MAX_SPAWN_DEPTH = 2): anything that
+      // reaches it is a cycle or a corrupted chain, and the caller's guard
+      // treats the finite-but-absurd value as "too deep to trust".
+      while (depth < 64) {
+        const row = parentOf.get(current) as
+          | { parent_thread_id: string | null }
+          | undefined;
+        const parent = row?.parent_thread_id;
+        if (!parent) break;
+        if (visited.has(parent)) return 64;
+        visited.add(parent);
+        current = parent;
+        depth++;
+      }
+      return depth;
+    } catch (err) {
+      console.error("[conversation-store] spawnDepth failed:", err);
+      return 0;
+    }
+  }
+
+  /** Every spawned thread with at least one assistant block still running —
+   *  the DB's notion of "still in flight", backing the breadth caps
+   *  (MAX_LIVE_CHILDREN_PER_PARENT, MAX_LIVE_SPAWNED_THREADS). One query, no
+   *  N+1: the EXISTS is served by the blocks (thread_id, seq) index. */
+  liveSpawnedThreadIds(): string[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(
+          `SELECT DISTINCT t.thread_id
+             FROM threads t
+            WHERE t.parent_thread_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM blocks b
+                 WHERE b.thread_id = t.thread_id
+                   AND b.role = 'assistant'
+                   AND b.state = 'running'
+              )`,
+        )
+        .all() as Array<{ thread_id: string }>;
+      return rows.map((r) => r.thread_id);
+    } catch (err) {
+      console.error("[conversation-store] liveSpawnedThreadIds failed:", err);
+      return [];
+    }
+  }
+
+  /** The most recent assistant block's narrative text — its `assistant_text`
+   *  items concatenated in arrival order, trimmed. This is what becomes the
+   *  child's summary, so it is the narrative only: reasoning, plan and tool
+   *  calls are excluded (they stay in the child's transcript, readable on
+   *  demand via kone_read_thread). Null when the thread has never produced
+   *  assistant text. */
+  latestAssistantText(threadId: string): string | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const block = db
+        .prepare(
+          `SELECT turn_id FROM blocks
+            WHERE thread_id = ? AND role = 'assistant'
+            ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(threadId) as { turn_id: string | null } | undefined;
+      if (!block?.turn_id) return null;
+      const items = db
+        .prepare(
+          `SELECT text FROM items
+            WHERE thread_id = ? AND turn_id = ? AND kind = 'assistant_text'
+            ORDER BY seq`,
+        )
+        .all(threadId, block.turn_id) as Array<{ text: string }>;
+      const text = items.map((i) => i.text).join("").trim();
+      return text || null;
+    } catch (err) {
+      console.error("[conversation-store] latestAssistantText failed:", err);
+      return null;
+    }
+  }
+
+  /** The child's elapsed-time readout: when its first turn started, when its
+   *  last turn ended, how many turns are still running, and how the NEWEST
+   *  assistant block settled. `endedAt` is null while anything is running — the
+   *  readout measures against "now" until the thread settles. `lastState` is
+   *  the state of the newest assistant block by `at`, so a caller that cannot
+   *  see the live projection (the spawn engine's boot fallback after a restart)
+   *  can tell a turn sealed 'interrupted' by sealOrphanedTurns from a turn that
+   *  genuinely completed. Null when the thread has no assistant blocks at all. */
+  threadTurnSpan(threadId: string): {
+    startedAt: number;
+    endedAt: number | null;
+    runningTurns: number;
+    lastState: "running" | "interrupted" | "failed" | "completed" | null;
+    /** The NEWEST assistant block's `error`, when it has one — carried up so
+     *  the boot-fallback projection can surface the reason a child failed
+     *  (e.g. the undispatched-spawn seal), not just the bare status. */
+    lastError?: string;
+  } | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db
+        .prepare(
+          `SELECT MIN(at) AS started_at,
+                  MAX(ended_at) AS ended_at,
+                  COUNT(CASE WHEN state = 'running' THEN 1 END) AS running,
+                  (SELECT state FROM blocks
+                    WHERE thread_id = ? AND role = 'assistant'
+                    ORDER BY at DESC, seq DESC LIMIT 1) AS last_state,
+                  (SELECT error FROM blocks
+                    WHERE thread_id = ? AND role = 'assistant'
+                    ORDER BY at DESC, seq DESC LIMIT 1) AS last_error
+             FROM blocks
+            WHERE thread_id = ? AND role = 'assistant'`,
+        )
+        .get(threadId, threadId, threadId) as
+        | {
+            started_at: number | null;
+            ended_at: number | null;
+            running: number;
+            last_state: "running" | "interrupted" | "failed" | "completed" | null;
+            last_error: string | null;
+          }
+        | undefined;
+      if (!row || row.started_at === null) return null;
+      return {
+        startedAt: row.started_at,
+        endedAt: row.running > 0 ? null : row.ended_at,
+        runningTurns: row.running,
+        lastState: row.last_state,
+        ...(row.last_error ? { lastError: row.last_error } : {}),
+      };
+    } catch (err) {
+      console.error("[conversation-store] threadTurnSpan failed:", err);
+      return null;
+    }
+  }
+
   // ── scratchpads ───────────────────────────────────────────────────────────
 
   listScratchpads(projectPath: string): ScratchpadRecord[] {
@@ -1710,6 +2075,29 @@ export class ConversationStore {
     }
   }
 
+  /** Record that a reserved gateway operation's side effect was actually
+   *  dispatched. For spawn.thread this runs AFTER startThread returns; a row
+   *  reserved but never marked dispatched is the durable trace of a
+   *  half-created child, which sealUndispatchedSpawns turns into a failed
+   *  thread at next boot. Best-effort — a missed mark only means the child
+   *  would be re-sealed at a later boot, which is idempotent. */
+  markGatewayOpDispatched(input: {
+    threadId: string;
+    turnId: string;
+    requestId: string;
+  }): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `UPDATE gateway_ops SET dispatched = 1
+          WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
+      ).run(input.threadId, input.turnId, input.requestId);
+    } catch (err) {
+      console.error("[conversation-store] markGatewayOpDispatched failed:", err);
+    }
+  }
+
 
   // ── project board layout ────────────────────────────────────────────────────
 
@@ -1835,6 +2223,7 @@ type ThreadRow = {
   fork_context_json: string | null;
   lineage_json: string | null;
   request_id: string | null;
+  parent_thread_id: string | null;
 };
 
 type BlockRow = {

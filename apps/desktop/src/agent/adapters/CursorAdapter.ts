@@ -20,6 +20,8 @@ import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
+  ApprovalRequest,
+  ApprovalRequestKind,
   EmitEvent,
   GatewayConnection,
   InteractionMode,
@@ -57,11 +59,11 @@ import type {
 // keychain and kone never runs `cursor-agent login` — discover() only reads
 // what `cursor-agent status` already reports.
 //
-// No approval UI in kone v1: the ACP `session/request_permission` reverse
-// request is auto-resolved the instant it arrives (see wireRequests), exactly
-// as CodexAdapter does. respondToRequest() is therefore a no-op. The
-// InteractionMode still matters — it picks Cursor's *session mode*, which is
-// what actually decides whether the agent may edit files or run commands.
+// The ACP `session/request_permission` reverse request is parked and surfaced
+// to the user via an `approval.requested` event (see wireRequests); the user's
+// decision selects the reply option. The InteractionMode still matters too —
+// it picks Cursor's *session mode*, which decides how often the agent is even
+// allowed to ask.
 //
 // Protocol facts worth knowing before editing this file — all confirmed live,
 // none of them guessable from the ACP spec:
@@ -179,6 +181,17 @@ type CursorSession = {
   /** Items emitted as started/updated but never completed — a tool call that a
    *  cancel cut mid-flight would otherwise spin in the transcript forever. */
   openItemIds: Set<string>;
+  /** In-flight `session/request_permission` round-trips, keyed by our
+   *  requestId. The RPC handler awaits `promise`; respondToRequest resolves it
+   *  (or we drain on interrupt/stop) — the decision selects the reply option. */
+  pendingApprovals: Map<string, PendingApproval>;
+};
+
+/** A parked ACP permission request: the ask we surfaced and the resolver the
+ *  awaited `session/request_permission` handler is blocked on. */
+type PendingApproval = {
+  approval: ApprovalRequest;
+  resolve: (decision: ApprovalDecision) => void;
 };
 
 type CursorConfigOption = {
@@ -209,6 +222,51 @@ function readNumber(value: unknown, ...path: string[]): number | undefined {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+/** Normalize an ACP `session/request_permission` payload into the neutral ask
+ *  the renderer shows. The request names the tool call it wants to allow, so
+ *  the headline is the command/title and the kind follows the tool family. */
+function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
+  const toolCall = asRecord(asRecord(params)?.toolCall);
+  const toolKind = readString(toolCall, "kind") ?? "";
+  const kind: ApprovalRequestKind = /^bash$/i.test(toolKind)
+    ? "command"
+    : /^(edit|write|delete|move|create)$/i.test(toolKind)
+      ? "file-change"
+      : /^read$/i.test(toolKind)
+        ? "file-read"
+        : "permission";
+  const title =
+    readString(toolCall, "command")?.trim() ??
+    readString(toolCall, "title")?.trim() ??
+    "Request permission";
+  const detail = readString(toolCall, "detail")?.trim();
+  return {
+    kind,
+    title,
+    ...(detail ? { detail } : {}),
+  };
+}
+
+/** Pick the reply option for a decision, matching the option's `kind` prefix
+ *  (`allow_once` / `allow_always` / `reject_once`) because the provider's
+ *  optionIds are its own spellings. Reject falls back to any deny/reject/cancel
+ *  option; `reject-and-stop` deliberately matches NOTHING — the provider gets a
+ *  cancelled outcome and the adapter interrupts the turn (the ACP spell of
+ *  undefined for "cancel"). No match returns undefined (a cancelled outcome). */
+function selectPermissionOption(options: unknown[], decision: ApprovalDecision): string | undefined {
+  if (decision === "reject-and-stop") return undefined;
+  const wanted = decision === "allow-once" ? "allow_once" : decision === "allow-always" ? "allow_always" : "reject_once";
+  const direct = options.find((option) => readString(option, "kind")?.startsWith(wanted));
+  if (direct) return readString(direct, "optionId");
+  if (decision === "reject-once") {
+    const fallback = options.find((option) =>
+      /^(deny|reject|cancel)/.test(readString(option, "kind") ?? ""),
+    );
+    if (fallback) return readString(fallback, "optionId");
+  }
+  return undefined;
 }
 
 /** Parse a Cursor config option (`{ id, name, category, currentValue, options:
@@ -418,10 +476,15 @@ export function toModelDescriptor(raw: unknown): ModelDescriptor | undefined {
 // ── mode → Cursor session mode ───────────────────────────────────────────────
 // Cursor ships three session modes: `agent` (full tool access), `plan`
 // (read-only, produces a plan), and `ask` (Q&A, no edits or commands). kone's
-// ladder has no plan/build axis, so only two rungs are reachable: `ask` is
-// kone's read-only rung, everything looser is `agent`. Mode ids come from
-// `session/new` rather than being hard-coded, with aliases so a renamed or
-// reordered mode list still resolves.
+// ladder has no plan/build axis, so only two rungs are reachable HERE: `ask` is
+// kone's read-only rung, everything looser is `agent`. The upper rungs
+// (`accept-edits` / `full-access`) are NOT distinguished by mode id — Cursor
+// has no rung between read-only and full agent, and ACP's own permission
+// rungs cover the difference: `accept-edits` parks request_permission gates for
+// a human, while `full-access` short-circuits them via the full-access
+// short-circuit in requestPermission. Mode ids come from `session/new` rather
+// than being hard-coded, with aliases so a renamed or reordered mode list still
+// resolves.
 
 const READ_ONLY_MODE_ALIASES = ["ask", "plan", "architect"];
 const AGENT_MODE_ALIASES = ["agent", "code", "default", "chat", "implement"];
@@ -667,6 +730,7 @@ export class CursorAdapter implements ProviderAdapter {
       usageReported: false,
       segmentCount: 0,
       openItemIds: new Set(),
+      pendingApprovals: new Map(),
     };
     this.wireNotifications(session);
     this.wireRequests(session);
@@ -675,8 +739,16 @@ export class CursorAdapter implements ProviderAdapter {
       // replacement can claim this threadId while this child shuts down. No
       // entry means stopSession already took ours, so still announce the exit.
       const current = this.sessions.get(input.threadId);
-      if (current && current !== session) return;
+      if (current && current !== session) {
+        // A replacement owns the thread now — the old session's parked asks
+        // still die with it.
+        this.drainApprovals(session);
+        return;
+      }
       if (current) this.sessions.delete(input.threadId);
+      // Fail closed on the way out: resolve every parked permission request as
+      // rejected so no RPC handler hangs on a promise nothing will settle.
+      this.drainApprovals(session);
       this.emit({ ...this.base(session), source: "cursor.acp.lifecycle", type: "session.exited", code });
     });
 
@@ -834,6 +906,7 @@ export class CursorAdapter implements ProviderAdapter {
   async interruptTurn(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session?.activeTurnId || !session.conversationId) return;
+    this.drainApprovals(session);
     // Flag first: the cancel lands as an ordinary `end_turn` (protocol fact 1),
     // and only this flag tells completeTurn which terminal event to emit.
     session.interrupting = true;
@@ -843,6 +916,7 @@ export class CursorAdapter implements ProviderAdapter {
   async stopSession(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session) return;
+    this.drainApprovals(session);
     this.abortLiveTurn(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
@@ -862,13 +936,23 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   async stopAll(): Promise<void> {
-    for (const session of this.sessions.values()) session.rpc.kill();
+    for (const session of this.sessions.values()) {
+      this.drainApprovals(session);
+      session.rpc.kill();
+    }
     this.sessions.clear();
   }
 
-  async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
-    // No-op — see wireRequests(): every `session/request_permission` is
-    // auto-resolved on arrival, so nothing is ever left pending to answer.
+  async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.resolveApproval(session, requestId, decision);
+    // "Reject and stop" — the parked call resolves with a cancelled outcome
+    // (selectPermissionOption matched nothing) and the TURN is interrupted, not
+    // just the call. Same session/cancel the interrupt path sends; drain's
+    // reject-once resolves are idempotent, so firing after the specific resolve
+    // is safe.
+    if (decision === "reject-and-stop") void this.interruptTurn(threadId);
   }
 
   async respondToUserInput(_threadId: string, _requestId: string, _answers: UserInputAnswers): Promise<void> {
@@ -974,18 +1058,75 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   private wireRequests(session: CursorSession): void {
-    // kone v1 has no approval UI, so a permission request is answered from the
-    // session's own mode: in the read-only rung nothing should be asking, and
-    // if it does the honest answer is no.
-    session.rpc.onRequest("session/request_permission", async (params) => {
-      const options = asArray(asRecord(params)?.options);
-      const wanted = session.mode === "ask" ? "reject" : "allow";
-      const match =
-        options.find((option) => readString(option, "kind")?.startsWith(`${wanted}_once`)) ??
-        options.find((option) => readString(option, "kind")?.startsWith(wanted));
-      const optionId = match ? readString(match, "optionId") : undefined;
-      return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
+    // A permission request is parked and surfaced to the user via
+    // `approval.requested`; the user's decision selects the reply option by its
+    // `kind` because Cursor's optionIds are its own spellings.
+    session.rpc.onRequest("session/request_permission", (params) =>
+      this.requestPermission(session, params),
+    );
+  }
+
+  /** Park one ACP permission request: normalize the ask, emit
+   *  `approval.requested`, and block the RPC handler on the resolver until the
+   *  renderer answers (or we drain on interrupt/stop). The decision selects the
+   *  option by kind (`allow_once` / `allow_always` / `reject_once`), falling
+   *  back to a cancelled outcome when none matches. */
+  private async requestPermission(
+    session: CursorSession,
+    params: unknown,
+  ): Promise<{ outcome: { outcome: string; optionId?: string } }> {
+    const options = asArray(asRecord(params)?.options);
+    // Fail closed: a permission request with no active turn (a recovery or
+    // replay callback after a crash/interrupt) has no trustworthy mode behind
+    // it — cancel rather than park a gate nobody is watching.
+    if (!session.activeTurnId) {
+      return { outcome: { outcome: "cancelled" } };
+    }
+    // Full Access never stops to ask: select an allow option (the persistent
+    // allow_always rung first, then the request-scoped allow_once) and return
+    // selectAcpFullAccessPermissionOptionId — a full-access child on a provider
+    // exposing only the protocol's persistent allow option must stay
+    // operational, and a full-access session must never deadlock on a gate.
+    if (session.mode === "full-access") {
+      const optionId =
+        selectPermissionOption(options, "allow-always") ??
+        selectPermissionOption(options, "allow-once");
+      return optionId
+        ? { outcome: { outcome: "selected", optionId } }
+        : { outcome: { outcome: "cancelled" } };
+    }
+    const requestId = randomUUID();
+    const turnId = session.activeTurnId;
+    const approval = buildAcpApprovalRequest(params);
+    const decision = await new Promise<ApprovalDecision>((resolve) => {
+      session.pendingApprovals.set(requestId, { approval, resolve });
+      this.emit({
+        ...this.base(session),
+        type: "approval.requested",
+        requestId,
+        turnId,
+        approval,
+      });
     });
+    this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
+    const optionId = selectPermissionOption(options, decision);
+    return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
+  }
+
+  /** Settle one parked permission request (idempotent — a no-op once drained). */
+  private resolveApproval(session: CursorSession, requestId: string, decision: ApprovalDecision): void {
+    const pending = session.pendingApprovals.get(requestId);
+    if (!pending) return;
+    session.pendingApprovals.delete(requestId);
+    pending.resolve(decision);
+  }
+
+  /** Reject every parked permission request — on interrupt/stop so no RPC
+   *  handler hangs and the renderer's pending prompt clears. */
+  private drainApprovals(session: CursorSession): void {
+    for (const [requestId] of [...session.pendingApprovals]) {
+      this.resolveApproval(session, requestId, "reject-once");
+    }
   }
 
   private handleSessionUpdate(session: CursorSession, update: Record<string, unknown>): void {
@@ -1309,6 +1450,10 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   private toSession(session: CursorSession): Session {
+    // Cursor holds effort on the session's live config matrix, not a fixed
+    // spawn option — the `effort`/`reasoning` option's currentValue is the
+    // honest read, absent when the current model exposes no effort axis.
+    const effort = findOption(session.configOptions, EFFORT_OPTION_IDS)?.currentValue;
     return {
       threadId: session.threadId,
       provider: this.provider,
@@ -1318,6 +1463,7 @@ export class CursorAdapter implements ProviderAdapter {
       resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
+      ...(effort ? { effort } : {}),
       mode: session.mode,
     };
   }

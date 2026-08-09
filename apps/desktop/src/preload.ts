@@ -19,6 +19,7 @@ import type {
   SendTurnInput,
   Session,
   SessionStartInput,
+  SpawnedThread,
   StoredThread,
   StoredThreadMeta,
   TurnStartResult,
@@ -303,6 +304,8 @@ const api = {
       ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
     steerSubagent: (threadId: string, toolUseId: string, message: string): Promise<void> =>
       ipcRenderer.invoke("agent:steer-subagent", threadId, toolUseId, message),
+    spawnChildren: (threadId: string): Promise<SpawnedThread[]> =>
+      ipcRenderer.invoke("agent:spawn-children", threadId),
     listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
     // Persisted conversation history (read-only): rehydrate a project's last
     // thread on open, or list past ones. Null when nothing is stored yet.

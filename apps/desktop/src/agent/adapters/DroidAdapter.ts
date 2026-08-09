@@ -18,6 +18,8 @@ import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
+  ApprovalRequest,
+  ApprovalRequestKind,
   EmitEvent,
   GatewayConnection,
   InteractionMode,
@@ -82,8 +84,9 @@ import type {
 //     {optionId:"proceed_always",kind:"allow_always",…},
 //     {optionId:"cancel",kind:"reject_once",…}]`). droid's optionIds are its
 //     own spellings — SELECT BY `kind`, RETURN the matched option's `optionId`.
-//     An unanswered request hangs the turn forever, so every request is
-//     auto-answered the instant it arrives (kone v1 has no approval UI).
+//     An unanswered request hangs the turn forever, so every request is parked
+//     and surfaced to the user via `approval.requested` (see wireRequests) —
+//     the turn stays hung until they decide.
 //  6. A cancelled turn resolves `session/prompt` with `stopReason: "cancelled"`
 //     (live) — unlike Cursor's ambiguous `end_turn`. The `interrupting` flag
 //     is still kept: belt-and-braces, identical to CursorAdapter's.
@@ -207,6 +210,17 @@ type DroidSession = {
   /** Items emitted as started/updated but never completed — a tool call a
    *  cancel cut mid-flight would otherwise spin in the transcript forever. */
   openItemIds: Set<string>;
+  /** In-flight `session/request_permission` round-trips, keyed by our
+   *  requestId. The RPC handler awaits `promise`; respondToRequest resolves it
+   *  (or we drain on interrupt/stop) — the decision selects the reply option. */
+  pendingApprovals: Map<string, PendingApproval>;
+};
+
+/** A parked ACP permission request: the ask we surfaced and the resolver the
+ *  awaited `session/request_permission` handler is blocked on. */
+type PendingApproval = {
+  approval: ApprovalRequest;
+  resolve: (decision: ApprovalDecision) => void;
 };
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
@@ -237,6 +251,51 @@ function readNumber(value: unknown, ...path: string[]): number | undefined {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+/** Normalize an ACP `session/request_permission` payload into the neutral ask
+ *  the renderer shows. The request names the tool call it wants to allow, so
+ *  the headline is the command/title and the kind follows the tool family. */
+function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
+  const toolCall = asRecord(asRecord(params)?.toolCall);
+  const toolKind = readString(toolCall, "kind") ?? "";
+  const kind: ApprovalRequestKind = /^bash$/i.test(toolKind)
+    ? "command"
+    : /^(edit|write|delete|move|create)$/i.test(toolKind)
+      ? "file-change"
+      : /^read$/i.test(toolKind)
+        ? "file-read"
+        : "permission";
+  const title =
+    readString(toolCall, "command")?.trim() ??
+    readString(toolCall, "title")?.trim() ??
+    "Request permission";
+  const detail = readString(toolCall, "detail")?.trim();
+  return {
+    kind,
+    title,
+    ...(detail ? { detail } : {}),
+  };
+}
+
+/** Pick the reply option for a decision, matching the option's `kind` prefix
+ *  (`allow_once` / `allow_always` / `reject_once`) because the provider's
+ *  optionIds are its own spellings. Reject falls back to any deny/reject/cancel
+ *  option; `reject-and-stop` deliberately matches NOTHING — the provider gets a
+ *  cancelled outcome and the adapter interrupts the turn (the ACP spell of
+ *  undefined for "cancel"). No match returns undefined (a cancelled outcome). */
+function selectPermissionOption(options: unknown[], decision: ApprovalDecision): string | undefined {
+  if (decision === "reject-and-stop") return undefined;
+  const wanted = decision === "allow-once" ? "allow_once" : decision === "allow-always" ? "allow_always" : "reject_once";
+  const direct = options.find((option) => readString(option, "kind")?.startsWith(wanted));
+  if (direct) return readString(direct, "optionId");
+  if (decision === "reject-once") {
+    const fallback = options.find((option) =>
+      /^(deny|reject|cancel)/.test(readString(option, "kind") ?? ""),
+    );
+    if (fallback) return readString(fallback, "optionId");
+  }
+  return undefined;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -628,6 +687,7 @@ export class DroidAdapter implements ProviderAdapter {
       interrupting: false,
       segmentCount: 0,
       openItemIds: new Set(),
+      pendingApprovals: new Map(),
     };
     this.wireNotifications(session);
     this.wireRequests(session);
@@ -636,8 +696,16 @@ export class DroidAdapter implements ProviderAdapter {
       // replacement can claim this threadId while this child shuts down. No
       // entry means stopSession already took ours, so still announce the exit.
       const current = this.sessions.get(input.threadId);
-      if (current && current !== session) return;
+      if (current && current !== session) {
+        // A replacement owns the thread now — the old session's parked asks
+        // still die with it.
+        this.drainApprovals(session);
+        return;
+      }
       if (current) this.sessions.delete(input.threadId);
+      // Fail closed on the way out: resolve every parked permission request as
+      // rejected so no RPC handler hangs on a promise nothing will settle.
+      this.drainApprovals(session);
       this.emit({ ...this.base(session), source: "droid.acp.lifecycle", type: "session.exited", code });
     });
 
@@ -847,6 +915,7 @@ export class DroidAdapter implements ProviderAdapter {
   async interruptTurn(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session?.activeTurnId || !session.conversationId) return;
+    this.drainApprovals(session);
     // Flag first: the cancel lands as `stopReason: "cancelled"` (fact 6), and
     // the flag is the belt-and-braces that decides the terminal event either way.
     session.interrupting = true;
@@ -856,6 +925,7 @@ export class DroidAdapter implements ProviderAdapter {
   async stopSession(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session) return;
+    this.drainApprovals(session);
     this.abortLiveTurn(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
@@ -904,13 +974,23 @@ export class DroidAdapter implements ProviderAdapter {
   }
 
   async stopAll(): Promise<void> {
-    for (const session of this.sessions.values()) session.rpc.kill();
+    for (const session of this.sessions.values()) {
+      this.drainApprovals(session);
+      session.rpc.kill();
+    }
     this.sessions.clear();
   }
 
-  async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
-    // No-op — see wireRequests(): every `session/request_permission` is
-    // auto-resolved on arrival, so nothing is ever left pending to answer.
+  async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.resolveApproval(session, requestId, decision);
+    // "Reject and stop" — the parked call resolves with a cancelled outcome
+    // (selectPermissionOption matched nothing) and the TURN is interrupted, not
+    // just the call. Same session/cancel the interrupt path sends; drain's
+    // reject-once resolves are idempotent, so firing after the specific resolve
+    // is safe.
+    if (decision === "reject-and-stop") void this.interruptTurn(threadId);
   }
 
   async respondToUserInput(_threadId: string, _requestId: string, _answers: UserInputAnswers): Promise<void> {
@@ -1043,31 +1123,76 @@ export class DroidAdapter implements ProviderAdapter {
   }
 
   private wireRequests(session: DroidSession): void {
-    // kone v1 has no approval UI, so a permission request is answered from the
-    // session's own mode the instant it arrives (an unanswered request hangs
-    // the turn — fact 5): `ask` rejects everything, `full-access` allows
-    // everything, `accept-edits` allows only the file-change kinds droid's
-    // `auto-low` tier itself auto-approves (edit/delete/move) and rejects the
-    // rest — preserving the rung's "edits yes, everything else asks" posture
-    // without a UI. Options are matched by `kind` because droid's optionIds
-    // are its own spellings (`proceed_once`, `cancel`, …).
-    session.rpc.onRequest("session/request_permission", async (params) => {
-      const options = asArray(asRecord(params)?.options);
-      const toolKind = readString(asRecord(asRecord(params)?.toolCall), "kind");
-      const wanted: "allow" | "reject" =
-        session.mode === "full-access"
-          ? "allow"
-          : session.mode === "ask"
-            ? "reject"
-            : toolKind === "edit" || toolKind === "delete" || toolKind === "move"
-              ? "allow"
-              : "reject";
-      const match =
-        options.find((option) => readString(option, "kind")?.startsWith(`${wanted}_once`)) ??
-        options.find((option) => readString(option, "kind")?.startsWith(wanted));
-      const optionId = match ? readString(match, "optionId") : undefined;
-      return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
+    // A permission request is parked and surfaced to the user via
+    // `approval.requested`; the user's decision selects the reply option by its
+    // `kind` because droid's optionIds are its own spellings (`proceed_once`,
+    // `cancel`, …).
+    session.rpc.onRequest("session/request_permission", (params) =>
+      this.requestPermission(session, params),
+    );
+  }
+
+  /** Park one ACP permission request: normalize the ask, emit
+   *  `approval.requested`, and block the RPC handler on the resolver until the
+   *  renderer answers (or we drain on interrupt/stop). The decision selects the
+   *  option by kind (`allow_once` / `allow_always` / `reject_once`), falling
+   *  back to a cancelled outcome when none matches. */
+  private async requestPermission(
+    session: DroidSession,
+    params: unknown,
+  ): Promise<{ outcome: { outcome: string; optionId?: string } }> {
+    const options = asArray(asRecord(params)?.options);
+    // Fail closed: a permission request with no active turn (a recovery or
+    // replay callback after a crash/interrupt) has no trustworthy mode behind
+    // it — cancel rather than park a gate nobody is watching.
+    if (!session.activeTurnId) {
+      return { outcome: { outcome: "cancelled" } };
+    }
+    // Full Access never stops to ask: select an allow option (the persistent
+    // allow_always rung first, then the request-scoped allow_once) and return
+    // selectAcpFullAccessPermissionOptionId — a full-access child on a provider
+    // exposing only the protocol's persistent allow option must stay
+    // operational, and a full-access session must never deadlock on a gate.
+    if (session.mode === "full-access") {
+      const optionId =
+        selectPermissionOption(options, "allow-always") ??
+        selectPermissionOption(options, "allow-once");
+      return optionId
+        ? { outcome: { outcome: "selected", optionId } }
+        : { outcome: { outcome: "cancelled" } };
+    }
+    const requestId = randomUUID();
+    const turnId = session.activeTurnId;
+    const approval = buildAcpApprovalRequest(params);
+    const decision = await new Promise<ApprovalDecision>((resolve) => {
+      session.pendingApprovals.set(requestId, { approval, resolve });
+      this.emit({
+        ...this.base(session),
+        type: "approval.requested",
+        requestId,
+        turnId,
+        approval,
+      });
     });
+    this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
+    const optionId = selectPermissionOption(options, decision);
+    return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
+  }
+
+  /** Settle one parked permission request (idempotent — a no-op once drained). */
+  private resolveApproval(session: DroidSession, requestId: string, decision: ApprovalDecision): void {
+    const pending = session.pendingApprovals.get(requestId);
+    if (!pending) return;
+    session.pendingApprovals.delete(requestId);
+    pending.resolve(decision);
+  }
+
+  /** Reject every parked permission request — on interrupt/stop so no RPC
+   *  handler hangs and the renderer's pending prompt clears. */
+  private drainApprovals(session: DroidSession): void {
+    for (const [requestId] of [...session.pendingApprovals]) {
+      this.resolveApproval(session, requestId, "reject-once");
+    }
   }
 
   private handleSessionUpdate(session: DroidSession, update: Record<string, unknown>): void {
@@ -1321,6 +1446,10 @@ export class DroidAdapter implements ProviderAdapter {
   }
 
   private toSession(session: DroidSession): Session {
+    // droid holds effort on the session's live config matrix — the
+    // `reasoning_effort` option's currentValue is the honest read, absent when
+    // the current model exposes no effort axis.
+    const effort = findOption(session.configOptions, EFFORT_CONFIG_IDS)?.currentValue;
     return {
       threadId: session.threadId,
       provider: this.provider,
@@ -1330,6 +1459,7 @@ export class DroidAdapter implements ProviderAdapter {
       resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
+      ...(effort ? { effort } : {}),
       mode: session.mode,
     };
   }

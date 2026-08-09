@@ -3,10 +3,10 @@
 // A loopback streamable-HTTP MCP server embedded in the desktop main process.
 // Provider sessions (Claude today, the rest in Phase B) reach it with a
 // per-session bearer token minted at startSession; write authority is pinned
-// to the exact running turn. It bootstraps with scratchpad tools so agents
-// can read/edit the project scratchpad the web board renders — the first
-// "agent steers the app" capability. Future tools (spawn threads, side chats,
-// theme, panes) are pure registry entries on the same server.
+// to the exact running turn. It bootstraps with the scratchpad and
+// thread-spawning tools — agents read/edit the project scratchpad the web
+// board renders, and open, follow and read kone threads. Future tools (side
+// chats, theme, panes) are pure registry entries on the same server.
 //
 // httpRoute.ts / AgentGatewayCredentials.ts), reimplemented in plain TS.
 
@@ -17,6 +17,7 @@ import { startGatewayHttpServer } from "./httpServer.js";
 import { makeMcpTransport } from "./mcpTransport.js";
 import { createRegistry } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
+import { createSpawnTools } from "./tools/spawn.js";
 
 export type { GatewayConnection } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
@@ -57,7 +58,10 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const credentials = new GatewayCredentials();
   const turnState = new Map<string, TurnState>();
 
-  const tools = createScratchpadTools({ store: input.store, emit: input.emit });
+  const tools = [
+    ...createScratchpadTools({ store: input.store, emit: input.emit }),
+    ...createSpawnTools({ store: input.store }),
+  ];
   const registry = createRegistry(tools);
   const transport = makeMcpTransport({
     credentials,
@@ -66,9 +70,10 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     turnState,
     serverVersion: GATEWAY_SERVER_VERSION,
     instructions:
-      "kone gateway: tools that read and write the project scratchpad. " +
-      "Writes are attributed to the calling agent and guarded by a revision " +
-      "shared with the web editor.",
+      "kone gateway: tools that read and write the project scratchpad, and that " +
+      "open, follow and read kone threads. Scratchpad writes are attributed to " +
+      "the calling agent and guarded by a revision shared with the web editor; " +
+      "spawned threads are first-class conversations the user can see.",
   });
   const server = startGatewayHttpServer({ credentials, transport });
 

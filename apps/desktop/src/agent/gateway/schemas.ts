@@ -117,3 +117,96 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA: Record<string, unknown> = {
   },
   required: ["title", "body"],
 };
+
+// ── spawn tool inputs (docs/thread-spawning-design.md) ───────────────────────
+// Schemas for the four thread-spawning tools. The zod `inputSchema` validates
+// args; the hand-written JSON schemas are what tools/list advertises, so the
+// enum literals are repeated there — the client never sees zod.
+
+/** The five provider kinds as a literal tuple — ProviderKind is a plain union,
+ *  and zod needs a runtime value for its enum. */
+const PROVIDER_KINDS = ["codex", "claudeAgent", "opencode", "cursor", "droid"] as const;
+
+/** The three interaction modes, same deal. */
+const INTERACTION_MODES = ["ask", "accept-edits", "full-access"] as const;
+
+export const SpawnTargetsInputSchema = z.object({});
+
+export const SpawnThreadInputSchema = z.object({
+  /** The child's first turn — the brief it wakes up to. */
+  prompt: z.string().min(1),
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
+  requestId: z.string().min(1).max(200),
+  /** Overrides the prompt-derived working title. */
+  title: z.string().min(1).optional(),
+  target: z.object({
+    provider: z.enum(PROVIDER_KINDS),
+    model: z.string().min(1).optional(),
+    effort: z.string().min(1).optional(),
+  }),
+  /** Clamped to the caller's mode — privilege never escalates across a spawn. */
+  mode: z.enum(INTERACTION_MODES).optional(),
+});
+
+export const WaitForThreadsInputSchema = z.object({
+  threadIds: z.array(z.string().min(1)).min(1).max(12),
+  /** Positionally paired with `threadIds`: the exact turn of that child to wait
+   *  on, so a human typing into the child mid-wait can't hand the parent a
+   *  different turn's outcome. Omit to wait on the child's latest turn. */
+  runIds: z.array(z.string().min(1)).max(12).optional(),
+  /** Engine default when omitted; the engine clamps to its own max. */
+  timeoutMs: z.number().int().nonnegative().optional(),
+});
+
+export const ReadThreadInputSchema = z.object({
+  threadId: z.string().min(1),
+  /** Blocks to return, newest last. Default 20. */
+  limit: z.number().int().min(1).max(100).optional(),
+  /** Per-message text cap; truncated with a visible marker. Default 1500. */
+  maxTextChars: z.number().int().min(200).optional(),
+});
+
+export const SPAWN_TARGETS_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {},
+};
+
+export const SPAWN_THREAD_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    prompt: { type: "string" },
+    requestId: { type: "string" },
+    title: { type: "string" },
+    target: {
+      type: "object",
+      properties: {
+        provider: { type: "string", enum: [...PROVIDER_KINDS] },
+        model: { type: "string" },
+        effort: { type: "string" },
+      },
+      required: ["provider"],
+    },
+    mode: { type: "string", enum: [...INTERACTION_MODES] },
+  },
+  required: ["prompt", "requestId", "target"],
+};
+
+export const WAIT_FOR_THREADS_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    threadIds: { type: "array", items: { type: "string" } },
+    runIds: { type: "array", items: { type: "string" } },
+    timeoutMs: { type: "integer" },
+  },
+  required: ["threadIds"],
+};
+
+export const READ_THREAD_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    threadId: { type: "string" },
+    limit: { type: "integer" },
+    maxTextChars: { type: "integer" },
+  },
+  required: ["threadId"],
+};

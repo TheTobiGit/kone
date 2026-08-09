@@ -8,6 +8,8 @@ import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
+  ApprovalRequest,
+  ApprovalRequestKind,
   EmitEvent,
   GatewayConnection,
   InteractionMode,
@@ -44,14 +46,15 @@ import {
 // "Bring your own subscription": kone never runs `codex login` or writes
 // auth.json — see codexHome.ts. discover() only reads what's already there.
 //
-// No approval UI in kone v1: every server-initiated approval request (command
-// execution, file change, file read, permissions) is auto-resolved the
-// instant it arrives — see wireRequests(). respondToRequest() is therefore a
-// no-op; nothing is ever left pending for the UI to answer. This mirrors
-// running every turn as if in "full-access" mode from Codex's own point of
-// view even when kone's InteractionMode is more conservative — the mode still
-// controls the sandbox (what Codex is actually allowed to touch), just not
-// whether it stops to ask first.
+// Every server-initiated approval request (command execution, file change,
+// file read, permissions) is parked and surfaced to the user via an
+// `approval.requested` event instead of being auto-resolved — see
+// wireRequests(). The user's decision (respondToRequest) resolves the parked
+// RPC handler with Codex's own reply. This makes the mode ladder honest: in
+// `ask` (approvalPolicy "untrusted") every action stops to ask, in
+// `accept-edits` ("on-request") only the non-file-edit actions do, and in
+// `full-access` ("never") nothing does. The mode still controls the sandbox
+// (what Codex is actually allowed to touch) and whether it stops to ask first.
 //
 // kone's three InteractionModes ARE the approval-policy ladder: ask →
 // "approval-required", accept-edits → "auto-accept-edits", full-access →
@@ -107,6 +110,10 @@ type CodexSession = {
    *  The JSON-RPC handler awaits `promise`; respondToUserInput resolves it (or
    *  we drain empty on interrupt/stop) — its answers become the RPC reply. */
   pendingUserInputs: Map<string, PendingUserInput>;
+  /** In-flight approval requests, keyed by our requestId. The RPC handler
+   *  awaits `promise`; respondToRequest resolves it (or we drain on
+   *  interrupt/stop) — the decision becomes the `requestApproval` reply. */
+  pendingApprovals: Map<string, PendingApproval>;
 };
 
 /** A parked Codex user-input request: the questions we emitted and the resolver
@@ -114,6 +121,13 @@ type CodexSession = {
 type PendingUserInput = {
   questions: UserInputQuestion[];
   resolve: (answers: UserInputAnswers) => void;
+};
+
+/** A parked Codex approval request: what we asked the user to approve and the
+ *  resolver the awaited `requestApproval` RPC handler is blocked on. */
+type PendingApproval = {
+  approval: ApprovalRequest;
+  resolve: (decision: ApprovalDecision) => void;
 };
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
@@ -135,6 +149,65 @@ function numberOrUndefined(value: unknown): number | undefined {
 function isNonFatalCodexError(message: string): boolean {
   const lower = message.trim().toLowerCase();
   return NON_FATAL_CODEX_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
+}
+
+/** Normalize one Codex `requestApproval` payload into the neutral ask the
+ *  renderer shows. Each request kind has its own fields — command execution
+ *  carries the command line, file change/read carry the path (or root), the
+ *  permissions grant carries no single subject. */
+function buildApprovalRequest(kind: ApprovalRequestKind, params: unknown): ApprovalRequest {
+  const reason = readString(params, "reason")?.trim();
+  switch (kind) {
+    case "command": {
+      const command = readString(params, "command")?.trim();
+      return {
+        kind,
+        title: command ?? "Run a command",
+        ...(reason ? { detail: reason } : {}),
+      };
+    }
+    case "file-change": {
+      const grantRoot = readString(params, "grantRoot")?.trim();
+      return {
+        kind,
+        title: grantRoot ?? "Change files",
+        ...(reason ? { detail: reason } : {}),
+      };
+    }
+    case "file-read": {
+      const path = readString(params, "path")?.trim() ?? readString(params, "grantRoot")?.trim();
+      return {
+        kind,
+        title: path ?? "Read files",
+        ...(reason ? { detail: reason } : {}),
+      };
+    }
+    case "permission":
+    default:
+      return {
+        kind,
+        title: "Grant expanded permissions",
+        ...(reason ? { detail: reason } : {}),
+      };
+  }
+}
+
+/** kone's ApprovalDecision → Codex's `requestApproval` reply vocabulary.
+ *  `reject-and-stop` is Codex's `cancel` — the command is denied AND the turn
+ *  is immediately interrupted (the app-server's own schema words it exactly
+ *  that: "User denied the command. The turn will also be immediately
+ *  interrupted."), so no extra work is needed on our side. */
+function toCodexApprovalDecision(decision: ApprovalDecision): string {
+  switch (decision) {
+    case "allow-always":
+      return "acceptForSession";
+    case "allow-once":
+      return "accept";
+    case "reject-once":
+      return "decline";
+    case "reject-and-stop":
+      return "cancel";
+  }
 }
 
 /** Coerce a resolved answer value (string | string[] | null) into the flat
@@ -507,6 +580,7 @@ export class CodexAdapter implements ProviderAdapter {
       rpc,
       items: new Map(),
       pendingUserInputs: new Map(),
+      pendingApprovals: new Map(),
     };
     this.wireNotifications(session);
     this.wireRequests(session);
@@ -517,8 +591,18 @@ export class CodexAdapter implements ProviderAdapter {
       // No entry at all means stopSession already removed ours, so the exit is
       // still genuinely this session's to announce.
       const current = this.sessions.get(input.threadId);
-      if (current && current !== session) return;
+      if (current && current !== session) {
+        // A replacement owns the thread now — the old session's parked asks
+        // still die with it.
+        this.drainApprovals(session);
+        this.drainUserInputs(session);
+        return;
+      }
       if (current) this.sessions.delete(input.threadId);
+      // Fail closed on the way out: resolve every parked approval/user-input
+      // request so no RPC handler hangs on a promise nothing will settle.
+      this.drainApprovals(session);
+      this.drainUserInputs(session);
       this.emit({ ...this.base(session), type: "session.exited", code });
     });
 
@@ -626,6 +710,7 @@ export class CodexAdapter implements ProviderAdapter {
     if (!session?.activeTurnId || !session.conversationId) return;
     // Unblock any parked user-input request so the interrupt lands cleanly.
     this.drainUserInputs(session);
+    this.drainApprovals(session);
     await session.rpc.call("turn/interrupt", {
       threadId: session.conversationId,
       turnId: session.activeTurnId,
@@ -636,6 +721,7 @@ export class CodexAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session) return;
     this.drainUserInputs(session);
+    this.drainApprovals(session);
     this.abortLiveTurn(session);
     session.rpc.kill();
     this.sessions.delete(threadId);
@@ -657,15 +743,16 @@ export class CodexAdapter implements ProviderAdapter {
   async stopAll(): Promise<void> {
     for (const session of this.sessions.values()) {
       this.drainUserInputs(session);
+      this.drainApprovals(session);
       session.rpc.kill();
     }
     this.sessions.clear();
   }
 
-  async respondToRequest(_threadId: string, _requestId: string, _decision: ApprovalDecision): Promise<void> {
-    // No-op — see wireRequests(): every Codex approval prompt is auto-resolved
-    // the instant it arrives, so nothing is ever left pending to respond to.
-    // User-input questions use respondToUserInput instead.
+  async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.resolveApproval(session, requestId, decision);
   }
 
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
@@ -830,20 +917,77 @@ export class CodexAdapter implements ProviderAdapter {
     });
   }
 
-  /** No approval UI in kone v1 — auto-resolve every server-initiated approval
-   *  request the instant it arrives (see the file header comment). Unhandled
-   *  methods fall through to jsonRpc.ts's own "method not found" reply. */
+  /** Every server-initiated approval request is parked and surfaced to the
+   *  renderer (`approval.requested`), blocking the RPC handler until the user
+   *  decides via respondToRequest — the decision becomes the `requestApproval`
+   *  reply, so the action runs (or not) exactly as approved. Unhandled methods
+   *  fall through to jsonRpc.ts's own "method not found" reply. Unlike the
+   *  approval prompts, a user-input request is a real question for the human —
+   *  park it for a renderer answer too. The handlers are async and jsonRpc.ts
+   *  awaits their promises, so blocking here is the reply. */
   private wireRequests(session: CodexSession): void {
     const { rpc } = session;
-    const autoApprove = async () => ({ decision: "acceptForSession" });
-    rpc.onRequest("item/commandExecution/requestApproval", autoApprove);
-    rpc.onRequest("item/fileChange/requestApproval", autoApprove);
-    rpc.onRequest("item/fileRead/requestApproval", autoApprove);
-    rpc.onRequest("item/permissions/requestApproval", autoApprove);
-    // Unlike the approval prompts above, a user-input request is a real
-    // question for the human — park it for a renderer answer. The handler is
-    // async and jsonRpc.ts awaits its promise, so blocking here is the reply.
+    rpc.onRequest("item/commandExecution/requestApproval", (params) =>
+      this.requestApproval(session, params, "command"),
+    );
+    rpc.onRequest("item/fileChange/requestApproval", (params) =>
+      this.requestApproval(session, params, "file-change"),
+    );
+    rpc.onRequest("item/fileRead/requestApproval", (params) =>
+      this.requestApproval(session, params, "file-read"),
+    );
+    rpc.onRequest("item/permissions/requestApproval", (params) =>
+      this.requestApproval(session, params, "permission"),
+    );
     rpc.onRequest("item/tool/requestUserInput", (params) => this.requestUserInput(session, params));
+  }
+
+  /** Park one Codex approval request: normalize the ask, emit
+   *  `approval.requested`, and block the RPC handler on the resolver until the
+   *  renderer answers (or we drain on interrupt/stop). The user's decision is
+   *  mapped to Codex's own reply vocabulary. */
+  private async requestApproval(
+    session: CodexSession,
+    params: unknown,
+    kind: ApprovalRequestKind,
+  ): Promise<{ decision: string }> {
+    // Fail closed: a permission request with no active turn (a recovery or
+    // replay callback after a crash/interrupt) has no trustworthy mode behind
+    // it — decline rather than park a gate nobody is watching.
+    if (!session.activeTurnId) {
+      return { decision: "decline" };
+    }
+    const requestId = randomUUID();
+    const turnId = readString(params, "turnId") ?? session.activeTurnId;
+    const approval = buildApprovalRequest(kind, params);
+    const decision = await new Promise<ApprovalDecision>((resolve) => {
+      session.pendingApprovals.set(requestId, { approval, resolve });
+      this.emit({
+        ...this.base(session),
+        type: "approval.requested",
+        requestId,
+        turnId,
+        approval,
+      });
+    });
+    this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
+    return { decision: toCodexApprovalDecision(decision) };
+  }
+
+  /** Settle one parked approval (idempotent — a no-op once drained). */
+  private resolveApproval(session: CodexSession, requestId: string, decision: ApprovalDecision): void {
+    const pending = session.pendingApprovals.get(requestId);
+    if (!pending) return;
+    session.pendingApprovals.delete(requestId);
+    pending.resolve(decision);
+  }
+
+  /** Reject every parked approval — on interrupt/stop so no RPC handler hangs
+   *  and the renderer's pending prompt clears. */
+  private drainApprovals(session: CodexSession): void {
+    for (const [requestId] of [...session.pendingApprovals]) {
+      this.resolveApproval(session, requestId, "reject-once");
+    }
   }
 
   /** Handle a Codex `item/tool/requestUserInput`: parse its questions, emit

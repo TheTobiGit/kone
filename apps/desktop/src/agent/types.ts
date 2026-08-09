@@ -134,6 +134,14 @@ export type Session = {
   /** Turn currently running, if any. */
   activeTurnId?: string;
   model?: string;
+  /** Reasoning-effort tier the session runs at, in the provider's own
+   *  vocabulary, when the adapter knows it. Flag-based providers (Codex) take
+   *  effort per turn and record nothing here; providers that fix effort when the
+   *  session spawns (Claude) and providers holding it on the session (OpenCode
+   *  `variant`, Cursor/Droid config-option currentValue) expose it — absent
+   *  when the adapter genuinely can't know. The spawn engine reads it to inherit
+   *  a parent's strength onto a child that doesn't request one. */
+  effort?: string;
   mode: InteractionMode;
 };
 
@@ -270,7 +278,37 @@ export type CreateSideChatResult = {
   status: "created" | "exists";
 };
 
-export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once";
+export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
+
+// ── tool approvals ───────────────────────────────────────────────────────────
+// When the thread's InteractionMode is restrictive enough that the provider
+// asks before an action (Codex's `item/*/requestApproval` server requests,
+// Claude's `canUseTool` callback, ACP `session/request_permission`, OpenCode's
+// `permission.asked`), the adapter parks the request on a promise and emits
+// `approval.requested` instead of auto-answering it. The renderer shows the
+// approve/reject prompt; the picked decision (ApprovalDecision) is handed back
+// via respondToRequest, which resolves the parked promise and turns into the
+// provider-native reply. `approval.resolved` is the adapter's ack. The four
+// decline / cancel): `allow-once` accepts the single call, `allow-always`
+// accepts the call AND auto-allows the rest of the live session (Claude) or
+// applies the provider's persistent suggestion, `reject-once` denies the call
+// and the turn continues, `reject-and-stop` denies the call AND interrupts the
+// turn (Codex `cancel`, ACP `cancelled`, OpenCode reject + abort). Mirror any
+// change in apps/web/app/types/desktop.d.ts.
+
+/** What an approval is being asked to allow. `tool` is the catch-all for a
+ *  permission/call kone doesn't classify further. */
+export type ApprovalRequestKind = "command" | "file-read" | "file-change" | "permission" | "tool";
+
+/** A parked provider-side request for the user's go-ahead before the agent
+ *  runs something — normalized across every provider's approval surface. */
+export type ApprovalRequest = {
+  kind: ApprovalRequestKind;
+  /** The headline — the command line, the path, the tool name. */
+  title: string;
+  /** The provider's stated reason, when it gives one. */
+  detail?: string;
+};
 
 // ── mid-turn user-input questions ────────────────────────────────────────────
 // When the agent needs to ask the user something mid-turn — Claude's built-in
@@ -425,6 +463,153 @@ export type ForkContext = {
  *  fork import (`"fork-import"`). Imported rows carry their original `at` and
  *  are not activity — they never refresh a thread's `updated_at`. */
 export type BlockSource = "native" | "fork-import";
+
+// ── thread spawning (agent-owned child threads) ──────────────────────────────
+// docs/thread-spawning-design.md. A running agent asks kone — over the MCP
+// gateway — to open a NEW thread on any installed provider, with its own
+// prompt, model and effort, and kone drives that thread to completion in the
+// main process. The child is a first-class thread: it appears in the sidebar,
+// persists, is resumable, and the user can open it.
+//
+// This is deliberately NOT the same thing as a provider-native subagent
+// (`SubagentRun` below): that is one CLI running nested agents inside a single
+// turn. A spawned thread is kone opening a second provider session. Both are
+// called "subagent" in the UI; `lineage.relationshipToParent === "subagent"`
+// is the discriminator for the app-owned kind.
+//
+// Mirror any change in apps/web/app/types/desktop.d.ts.
+
+/** How deep the spawn tree may go. The root thread is depth 0, a thread it
+ *  spawns is depth 1, that thread's children are depth 2 — and depth-2 threads
+ *  may not spawn. Two levels is enough for an orchestrator-and-workers shape
+ *  while keeping a runaway agent's blast radius finite. */
+export const MAX_SPAWN_DEPTH = 2;
+
+/** How many spawned children one parent thread may have running at once. */
+export const MAX_LIVE_CHILDREN_PER_PARENT = 12;
+
+/** How many spawned threads may be running app-wide at once, across every
+ *  parent and project — the backstop against a fork bomb. */
+export const MAX_LIVE_SPAWNED_THREADS = 32;
+
+/** Where the child should run. `provider` is required — an agent choosing to
+ *  spawn should choose deliberately; the other fields fall back to the
+ *  parent's when the parent is on the same provider. */
+export type SpawnTarget = {
+  provider: ProviderKind;
+  /** ModelDescriptor.id from `kone_spawn_targets`. A model that is not in the
+   *  provider's discovered catalog is rejected (with the catalog), never
+   *  silently swapped — the model is a deliberate choice. */
+  model?: string;
+  /** Reasoning-effort tier, in the provider's own vocabulary. Unlike `model`,
+   *  an unsupported effort is dropped (the provider's default applies) and
+   *  reported back in `SpawnThreadResult.adjustments` — effort is a nicety,
+   *  not a decision worth failing a spawn over. */
+  effort?: string;
+};
+
+export type SpawnThreadInput = {
+  /** The thread doing the spawning. Server-derived from the caller's gateway
+   *  credential — never agent-supplied, so a child's parentage cannot be
+  parentThreadId: string;
+  /** The parent's running turn, for idempotency scoping. */
+  parentTurnId: string;
+  /** Agent-supplied idempotency key. `(parentThreadId, parentTurnId,
+   *  requestId)` is the exactly-once seam: a replay with the same fingerprint
+   *  returns the original result instead of spawning twice. */
+  requestId: string;
+  /** The child's first turn — the brief the spawned agent wakes up to. */
+  prompt: string;
+  /** Overrides the prompt-derived working title. */
+  title?: string;
+  target: SpawnTarget;
+  /** Approval policy for the child. Clamped to the parent's — a child can be
+   *  more restrictive than its parent, never less (privilege never escalates
+   *  across a spawn). Defaults to the parent's mode. */
+  mode?: InteractionMode;
+};
+
+/** A target the caller asked for that kone had to change to make the spawn
+ *  work, so the parent agent is told rather than silently surprised. */
+export type SpawnAdjustment = {
+  field: "model" | "effort" | "mode";
+  requested: string;
+  applied: string | null;
+  reason: string;
+};
+
+export type SpawnThreadResult = {
+  requestId: string;
+  /** The child thread's kone id — the handle for `kone_wait_for_threads` and
+   *  `kone_read_thread`. Minted in the main process; agents never choose ids. */
+  threadId: string;
+  parentThreadId: string;
+  title: string;
+  provider: ProviderKind;
+  model?: string;
+  effort?: string;
+  mode: InteractionMode;
+  /** The child's FIRST turn id — the runId to pin kone_wait_for_threads to, so
+   *  the parent waits on the turn it spawned rather than whatever the child's
+   *  latest turn happens to be when the wait runs. */
+  firstTurnId?: string;
+  /** `"dispatched"` = the thread was created and its first turn started.
+   *  `"replayed"` = this exact (parent, turn, requestId) already spawned this
+   *  thread; nothing new happened. */
+  status: "dispatched" | "replayed";
+  adjustments?: SpawnAdjustment[];
+};
+
+/** A spawned thread's rolled-up state, as the parent agent and the UI see it.
+ *  Approval/input gates deliberately beat "running": a child parked on a
+ *  question is the single most important thing to surface, because nothing
+ *  moves until a human answers it. */
+export type SpawnedThreadStatus =
+  | "starting"
+  | "working"
+  | "waiting-for-approval"
+  | "waiting-for-user-input"
+  | "idle"
+  | "stillborn"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+/** One spawned child, projected for both the wait tool and the UI. The single
+ *  shape both consume — no second view model (trap #10). */
+export type SpawnedThread = {
+  threadId: string;
+  parentThreadId: string;
+  title: string;
+  provider: ProviderKind;
+  model?: string;
+  effort?: string;
+  status: SpawnedThreadStatus;
+  /** True once the child has settled and will not move again on its own. */
+  terminal: boolean;
+  createdAt: number;
+  updatedAt: number;
+  /** Wall-clock millis the child's turns have been running, for "replied in 52s". */
+  elapsedMs?: number;
+  /** The child's final assistant text, capped. THE ONLY thing that crosses
+   *  back into the parent's context — tool calls, reasoning and intermediate
+   *  output stay isolated in the child thread and are read on demand via
+   *  `kone_read_thread`. */
+  summary?: string;
+  /** Set when the child failed, or when it is parked: the question/approval
+   *  the child is blocked on, so the parent can tell the user what to do. */
+  detail?: string;
+  /** When the child is parked on an APPROVAL, the parked requestId + the
+   *  normalized ask — what a consumer needs to answer it in place via
+   *  `agent:respond(childThreadId, requestId, decision)`. Absent for every
+   *  other status; a user-input gate has no decide action (it resolves through
+   *  the child's own thread). */
+  gate?: { requestId: string; approval: ApprovalRequest };
+  tokens?: number;
+};
+
+/** How many characters of a child's final message ride back to the parent. */
+export const SPAWN_SUMMARY_CHAR_CAP = 2_000;
 
 // ── Normalized runtime event model ───────────────────────────────────────────
 // Every adapter translates its transport (print-mode stdout, JSON-RPC, ACP, an
@@ -629,6 +814,14 @@ type BaseEvent = {
   at: number;
   source: RuntimeEventSource;
   refs?: ProviderRefs;
+  /** Dedupe id, stamped by the IPC broadcast choke point when absent (adapters
+   *  may set their own). Lets the fan-out-to-N-renderers path and the journal
+   *  agree on one id per event. */
+  eventId?: string;
+  /** When this thread was spawned by another thread's turn, that spawning
+   *  turn's id — set at dispatch (dispatch.ts startThread/sendThreadTurn), so
+   *  a child's events correlate to the parent turn without a store walk. */
+  parentTurnId?: string;
 };
 
 export type RuntimeEvent =
@@ -644,6 +837,16 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
+  // An agent spawned a child thread (kone_spawn_thread), and every subsequent
+  // change to that child's rolled-up state. `threadId` is the CHILD's id, so
+  // these route like any other thread event; the snapshot carries the parent
+  // pointer. Both carry the whole `SpawnedThread` value (the same
+  // whole-snapshot convention as `subagent.*`) — consumers replace, never
+  // patch, so a dropped event can't leave a row half-updated. The main process
+  // is the only place a spawned child's status is derived; the renderer
+  // applies these rather than re-deriving from the child's raw turn events.
+  | (BaseEvent & { type: "thread.spawned"; spawned: SpawnedThread })
+  | (BaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
   // An agent gateway write landed on a project's scratchpad
   // (kone_scratchpad_write). `projectPath` scopes it to the project the pad
   // belongs to (the board is project-scoped, not thread-scoped); `writer` is
@@ -698,7 +901,24 @@ export type RuntimeEvent =
       questions: UserInputQuestion[];
     })
   // The parked question has been answered (or cancelled) — clear the prompt.
-  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers });
+  | (BaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
+  // The provider is asking for the user's go-ahead before the agent runs
+  // something (a shell command, a file change, a permission grant) and the
+  // turn is parked until they decide (respondToRequest). `approval` carries
+  // the normalized ask; the decision becomes `approval.resolved`.
+  // `subagentToolUseId` scopes the ask to a nested subagent run (the SDK's
+  // canUseTool `agentID` mapped back to the run's tool-use id) so permission
+  // traffic inside a child nests under the run, like `item.*` events do.
+  | (BaseEvent & {
+      type: "approval.requested";
+      requestId: string;
+      turnId?: string;
+      approval: ApprovalRequest;
+      subagentToolUseId?: string;
+    })
+  // The parked approval was answered (or drained on interrupt/stop) — clear
+  // the prompt.
+  | (BaseEvent & { type: "approval.resolved"; requestId: string; decision: ApprovalDecision });
 
 /** The sink an adapter pushes every event into. AgentService owns it and fans
  *  events out to the renderer over IPC. */
