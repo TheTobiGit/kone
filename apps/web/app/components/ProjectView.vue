@@ -1938,6 +1938,8 @@ function onDiscardFile(path: string) {
         <AgentComposer
           ref="composerRef"
           :project-path="project.path"
+          :project-name="project.name"
+          :branch="g.branch.value ?? undefined"
           :busy="busy"
           :queued="queuedTurns"
           :picking="modelPickerOpen"
@@ -1957,6 +1959,7 @@ function onDiscardFile(path: string) {
           @update:fast-mode="onUpdateFastMode"
           @update:context-window="onComposerContextWindow"
           @open-models="modelPickerOpen = true"
+          @open-branch="openBranchPicker"
         />
       </div>
     </Transition>

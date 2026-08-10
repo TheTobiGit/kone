@@ -4,9 +4,12 @@ import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiBrain01Icon,
-  Attachment01Icon,
+  ComputerIcon,
   CornerDownRightIcon,
   FlashIcon,
+  Folder01Icon,
+  GitBranchIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import ParticleOrb from "~/components/ParticleOrb.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
@@ -48,6 +51,11 @@ import {
 const props = defineProps<{
   /** Absolute project root used by the @ file picker. */
   projectPath: string;
+  /** Project display name for the context tray tucked under the card. */
+  projectName?: string;
+  /** The checked-out branch, shown in the tray. Clicking it asks the host to
+   *  open the branch picker; omit it (a non-git folder) and the chip is gone. */
+  branch?: string;
   /** A turn is running — the send seed becomes a stop, Enter is inert. */
   busy?: boolean;
   /** Follow-ups durably queued behind the running turn (AgentService). The
@@ -95,6 +103,8 @@ const emit = defineEmits<{
   "update:contextWindow": [id: string];
   /** Ask the host to open the full providers→models→effort picker. */
   "open-models": [];
+  /** Ask the host to open the branch picker (the tray's branch chip). */
+  "open-branch": [];
 }>();
 
 const { cue } = useSound();
@@ -217,7 +227,6 @@ const text = ref("");
 const field = ref<HTMLElement | null>(null);
 const surface = ref<HTMLElement | null>(null);
 const dock = ref<HTMLElement | null>(null);
-const mirror = ref<HTMLElement | null>(null);
 
 // ── draft persistence ────────────────────────────────────────────────────────
 // The draft (text + @mention chips) is component state, so a project switch or
@@ -276,9 +285,6 @@ const mentionError = computed(() => projectFiles.error.value);
 
 // Placeholder shows only when the field is truly empty (no prose, no chips).
 const isEmpty = computed(() => text.value.trim().length === 0);
-// The hidden mirror mirrors the field's rendered content — chips at their real
-// (name-sized) width — so the pill sizes to what's shown, not to the @paths.
-const mirrorSegments = computed(() => splitComposerMentionSegments(text.value));
 
 // Mint a chip element by mounting a live MentionChip into a detached host and
 // handing back its root node. It's mounted live (not cloned) because the file
@@ -513,28 +519,12 @@ function insertTextAtCaret(value: string): void {
 }
 
 // The surface is sized imperatively so it can animate (CSS can't transition to
-// `auto`). It grows WIDE first — the pill widens to hold the text up to MAX_W —
-// and only once it's capped does it grow TALL (the text wraps, height follows).
-// The resting orb is the same height as the open single-line pill, so opening
-// changes only width + corners, never height.
+// `auto`). Open, it is ONE shape — a card of fixed width (CSS owns it) whose
+// height follows the text. The orb expands straight into that card, so waking
+// is a single move (width + corners + height together) instead of a pill that
+// then has to widen per keystroke. Only the height is measured here.
 const REST = 55;
-const MIN_W = 360;
-const MAX_W = 720;
-// Each side control slot (matches .side width in CSS) — reserved so the pill
-// never grows wide enough to push them off the window. The trailing side now
-// carries two controls (model + effort), so the reserve is wider.
-const SIDE_W = 200;
-// Horizontal budget around the text: left pad + gap + send seed + right pad + rim.
-const EXTRAS = 78;
-// The slack the input keeps at the settled pill width (EXTRAS minus the 72px
-// the field spends on padding, gap and the send seed). When a keystroke's text
-// exceeds the pill's current width by more than this, the width ease would wrap
-// it to the next row at every intermediate width — so we snap that step instead.
-const EDGE_SLACK = EXTRAS - 72;
 const surfaceH = ref(REST);
-const surfaceW = ref(MIN_W);
-// Multi-line — pin the send seed to the bottom instead of centring it.
-const isTall = ref(false);
 // True only during the wake expand, so the corner-lead stagger applies then but
 // not on every keystroke width change.
 const opening = ref(false);
@@ -697,27 +687,9 @@ function onPaste(e: ClipboardEvent) {
 const hasAttachments = computed(() => attachments.value.length > 0);
 const hasText = computed(() => text.value.trim().length > 0);
 const armed = computed(() => hasText.value || hasAttachments.value);
+// Chips only ride the card when something is actually attached.
 const card = computed(() => hasAttachments.value);
 
-// The card keeps a fixed comfortable width (chips define it); the pill sizes to
-// its text. `undefined` lets CSS own the width (52 at rest, clamp for the card).
-const widthStyle = computed(() =>
-  open.value && !card.value ? `${surfaceW.value}px` : undefined,
-);
-
-// The widest the pill may get: MAX_W, but never so wide the side controls would
-// leave the window.
-function maxW(): number {
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
-  return Math.max(MIN_W, Math.min(MAX_W, vw - 2 * SIDE_W - 40));
-}
-// The hidden mirror carries the same text at the same type, unwrapped, so its
-// width is how wide the pill *wants* to be. Clamp it into [MIN_W, cap].
-function measureWidth(): number {
-  const m = mirror.value;
-  if (!m) return MIN_W;
-  return Math.max(MIN_W, Math.min(maxW(), Math.round(m.offsetWidth) + EXTRAS));
-}
 // Read the surface's natural height at its current (settled) width.
 function measure(): number {
   const el = surface.value;
@@ -728,81 +700,31 @@ function measure(): number {
   el.style.height = prev;
   return h;
 }
-// Size the pill: width to fit the text first, then — with that width applied —
-// grow the textarea and measure the height it needs.
+// Size the card: the width is fixed by CSS, so all this does is read the height
+// the content wants and hand it to the transition.
 function sync() {
   const el = surface.value;
-  const ed = field.value;
-  // Width first: the pill widens to fit the text, up to the cap.
-  const cap = maxW();
-  // Freeze the width transition around the measurement below. scrollHeight
-  // depends on how the text wraps, so reading it while the width is still easing
-  // (e.g. right after a paste jumps the pill open) over-wraps the text and locks
-  // in a too-tall box — the empty gap under the text. We snap to the target
-  // width with no transition, measure, then put the width back where it was
-  // painting and re-enable the transition — all in one synchronous pass, so the
-  // eased motion is the only thing the browser ever paints.
-  const savedTransition = el ? el.style.transition : "";
-  const paintedWidth = el ? getComputedStyle(el).width : "";
-  if (el) el.style.transition = "none";
-
-  const prevW = surfaceW.value;
   const prevH = surfaceH.value;
 
-  // A pill drives its own width inline to fit the text; the card lets CSS own it.
-  const pill = open.value && !card.value;
-  let desired = cap;
-  if (pill) {
-    const m = mirror.value;
-    desired = (m ? m.offsetWidth : 0) + EXTRAS;
-    surfaceW.value = Math.max(MIN_W, Math.min(cap, Math.round(desired)));
-    if (el) el.style.width = `${surfaceW.value}px`;
-  }
-  // Wrap (and grow tall) once the card is up, the pill has hit its cap, or the
-  // editor has already flowed onto a second line (e.g. a Shift+Enter break) —
-  // then the send seed drops to the bottom instead of centring on one line.
-  const multiline = open.value && !!ed && ed.scrollHeight > 30;
-  const wrap = card.value || (open.value && desired > cap) || multiline;
-  isTall.value = wrap;
   // The contenteditable owns its own height (it grows with its content), so we
   // just read the surface's resulting natural height — no explicit sizing here.
   surfaceH.value = open.value ? measure() : REST;
 
-  // Spring only for the big moves: a large width/height jump (paste, drop) or a
-  // structural change (pill↔card, the wake expand). A keystroke — including the
-  // one that first wraps a line — is a small change and stays snappy, so the
-  // field keeps up with the cursor instead of wobbling behind it.
-  const jumped =
-    Math.abs(surfaceW.value - prevW) > SPRING_MIN ||
-    Math.abs(surfaceH.value - prevH) > SPRING_MIN;
+  // Spring only for the big moves: a large height jump (paste, drop, a chips row
+  // appearing) or a structural change (the wake expand). An ordinary keystroke —
+  // including the one that first wraps a line — is a small change and stays
+  // snappy, so the field keeps up with the cursor instead of wobbling behind it.
+  const jumped = Math.abs(surfaceH.value - prevH) > SPRING_MIN;
   const structural = card.value !== lastCard || opening.value;
   springy.value = jumped || structural;
   lastCard = card.value;
 
-  // A keystroke that outgrows the pill's current width would wrap the text to
-  // the next row at every intermediate width of the width ease — a one-letter
-  // flash on row two. Snap that step (and only it) so the pill widens to fit
-  // instantly and the text never leaves the first row. Once it has, the width
-  // ease returns for the ordinary per-keystroke tracking.
-  const grewPastEdge =
-    pill && !opening.value && desired < cap && desired > prevW + EDGE_SLACK;
-
-  if (el) {
-    // Keep the imperative class in step with the ref so the synchronous width
-    // reapply below eases on the right curve (Vue would only patch it next tick).
-    el.classList.toggle("is-springy", springy.value);
-    const target = pill ? `${surfaceW.value}px` : "";
-    el.style.width = paintedWidth; // back to where it was painting…
-    void el.offsetWidth; // …flush that before transitions come back…
-    el.style.transition = grewPastEdge ? "none" : savedTransition;
-    el.style.width = target; // …then ease to the target from there.
-    // Snaps are one-shot: give the transition back to the CSS class so the next
-    // keystroke's width change eases again (an inline "none" would stick around).
-    if (grewPastEdge) el.style.transition = savedTransition;
-  }
+  // Keep the imperative class in step with the ref so the class is right for the
+  // height change Vue is about to patch in (it would only land next tick).
+  el?.classList.toggle("is-springy", springy.value);
 }
-// A width change (open, pill↔card) is mid-flight when it fires, so measuring
-// now would read the wrong wrap. Re-measure once the morph has settled.
+// The card's morph is mid-flight when this fires, so measuring now would read a
+// height from the wrong shape. Re-measure once it has settled.
 function syncSoon() {
   void nextTick(sync);
   window.setTimeout(sync, 380);
@@ -812,20 +734,12 @@ async function wake() {
   if (open.value) return;
   open.value = true;
   opening.value = true;
-  // Hold the single-line pill height through the expand; correct once landed.
-  surfaceH.value = REST;
   await nextTick();
-  surfaceW.value = measureWidth();
   field.value?.focus();
-  if (card.value) {
-    // Attachments are already pending → we open as a card, not a pill. Measure
-    // and apply the full card height NOW so the orb expands straight into its
-    // final shape (width + height together), instead of opening single-line and
-    // then growing tall a beat later to reveal the chips.
-    sync();
-  } else {
-    window.setTimeout(sync, 300);
-  }
+  // Measure and apply the full card height NOW so the orb expands straight into
+  // its final shape — width, corners and height on one move — instead of landing
+  // short and growing a beat later.
+  sync();
   window.setTimeout(() => (opening.value = false), 340);
 }
 
@@ -972,25 +886,12 @@ defineExpose({ wake, setDraft });
   <div
     ref="dock"
     class="dock"
-    :class="{ 'dock--tall': isTall, 'dock--drag': dragging }"
+    :class="{ 'dock--drag': dragging }"
     @dragenter="onDragEnter"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <!-- Hidden twin of the field's content, unwrapped — its width is how wide
-         the pill wants to be. It renders the SAME chips (via MentionChip) so the
-         pill sizes to the shown names, not to the underlying @paths. -->
-    <div ref="mirror" class="mirror" aria-hidden="true"><template
-        v-if="text"
-      ><template
-          v-for="(segment, index) in mirrorSegments"
-          :key="`${segment.type}-${index}`"
-        ><MentionChip
-            v-if="segment.type === 'mention'"
-            :path="segment.path"
-          /><template v-else>{{ segment.text }}</template></template><span> </span></template><template v-else>Ask anything…&nbsp;</template></div>
-
     <!-- Off-screen file picker, opened by the attach control. Accepts anything;
          images become vision blocks, everything else an on-disk path block. -->
     <input
@@ -1046,59 +947,12 @@ defineExpose({ wake, setDraft });
       </div>
     </Transition>
 
-    <!-- Controls sit beside the input, not in it. They fade in as it opens and
-         ride outward on the surface's growing edge. -->
-    <div class="side side--lead" :class="{ 'is-shown': open }" :inert="!open">
-      <!-- Permission mode — no dropdown. Clicking cycles up the autonomy ladder
-           (Ask → Edits → Full) and wraps; the hued icon + label carry it. -->
-      <button
-        type="button"
-        class="mode"
-        :class="{ 'mode--bump': modeBump }"
-        :style="{ '--mode-hue': currentMode.hue }"
-        :aria-label="currentMode.title"
-        :title="currentMode.title"
-        @click.stop="cycleMode"
-      >
-        <svg class="mode__icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <!-- Ask · a chat bubble with a question (the agent asks first) -->
-          <template v-if="currentMode.id === 'ask'">
-            <path d="M3 5.2c0-.9.7-1.6 1.6-1.6h8.8c.9 0 1.6.7 1.6 1.6v4.6c0 .9-.7 1.6-1.6 1.6H8l-3 2.4V11.4H4.6c-.9 0-1.6-.7-1.6-1.6Z" />
-            <path d="M7.6 6.7a1.4 1.4 0 1 1 1.9 1.3c-.5.3-.7.6-.7 1.1" />
-            <path d="M8.8 10.7v.02" />
-          </template>
-          <!-- Edits · a pencil (auto-applies edits) -->
-          <template v-else-if="currentMode.id === 'accept-edits'">
-            <path d="M11.4 3.7 14.3 6.6 6.9 14H4v-2.9Z" />
-            <path d="M10.4 4.7 13.3 7.6" />
-          </template>
-          <!-- Full access · a shield (no limits, nothing held back) -->
-          <template v-else>
-            <path d="M9 2.6 14 4.6V9C14 12 11.9 14 9 15.4 6.1 14 4 12 4 9V4.6Z" />
-          </template>
-        </svg>
-        <span class="mode__label">{{ currentMode.label }}</span>
-      </button>
-
-      <!-- Attach — opens the file picker. Drag-drop and paste feed the same
-           pending list. Borderless like the other side controls. -->
-      <button
-        type="button"
-        class="attach"
-        aria-label="Attach files"
-        title="Attach files, documents, or images"
-        @click.stop="openFilePicker"
-      >
-        <HugeiconsIcon :icon="Attachment01Icon" :size="18" :stroke-width="2" />
-      </button>
-    </div>
-
-    <!-- One surface, morphing. Closed it's the orb; open it's the field. -->
+    <!-- One surface, morphing. Closed it's the orb; open it's the card. -->
     <div
       ref="surface"
       class="surface"
       :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-springy': springy }"
-      :style="{ height: surfaceH + 'px', width: widthStyle }"
+      :style="{ height: surfaceH + 'px' }"
       role="button"
       :aria-label="open ? undefined : 'Wake the agent'"
       @click="onSurfaceClick"
@@ -1109,46 +963,46 @@ defineExpose({ wake, setDraft });
         <ParticleOrb :size="55" :energy="busy ? 1 : 0" :active="!open" />
       </div>
 
-      <!-- Attachment chips ride the gradient rim at the top of the card.
-           Images show a thumbnail; other files show an uppercase extension
-           badge. Clicking a chip removes it. -->
-      <Transition name="fade">
-        <div v-if="open && (hasAttachments || notice)" class="chips">
-          <div
-            v-for="at in attachments"
-            :key="at.id"
-            class="chip"
-            :class="{ 'chip--image': at.kind === 'image' }"
-            :title="at.name"
-          >
-            <img
-              v-if="at.kind === 'image' && at.previewUrl"
-              class="chip__thumb"
-              :src="at.previewUrl"
-              :alt="at.name"
-            />
-            <span v-else class="chip__badge">{{ at.ext }}</span>
-            <span class="chip__name">{{ at.name }}</span>
-            <!-- The ✕ is the only remove target — the thumbnail and name are
-                 inert, so clicking a chip's body never drops the attachment. -->
-            <button
-              type="button"
-              class="chip__remove"
-              :aria-label="`Remove ${at.name}`"
-              :title="`Remove ${at.name}`"
-              @click.stop="removeAttachment(at.id)"
-            >
-              <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
-                <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-              </svg>
-            </button>
-          </div>
-          <span v-if="notice" class="chips__notice">{{ notice }}</span>
-        </div>
-      </Transition>
-
       <!-- White panel: the sleeping face and the field share it, cross-fading. -->
       <div class="panel">
+        <!-- Attachment chips ride the top of the card, inside the white body
+             and on the field's own left margin. Images show a thumbnail; other
+             files show an uppercase extension badge. -->
+        <Transition name="fade">
+          <div v-if="open && (hasAttachments || notice)" class="chips">
+            <div
+              v-for="at in attachments"
+              :key="at.id"
+              class="chip"
+              :class="{ 'chip--image': at.kind === 'image' }"
+              :title="at.name"
+            >
+              <img
+                v-if="at.kind === 'image' && at.previewUrl"
+                class="chip__thumb"
+                :src="at.previewUrl"
+                :alt="at.name"
+              />
+              <span v-else class="chip__badge">{{ at.ext }}</span>
+              <span class="chip__name">{{ at.name }}</span>
+              <!-- The ✕ is the only remove target — the thumbnail and name are
+                   inert, so clicking a chip's body never drops the attachment. -->
+              <button
+                type="button"
+                class="chip__remove"
+                :aria-label="`Remove ${at.name}`"
+                :title="`Remove ${at.name}`"
+                @click.stop="removeAttachment(at.id)"
+              >
+                <svg class="chip__x" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                </svg>
+              </button>
+            </div>
+            <span v-if="notice" class="chips__notice">{{ notice }}</span>
+          </div>
+        </Transition>
+
         <!-- Dormant face -->
         <div class="face" aria-hidden="true">
           <svg class="face__eyes" viewBox="0 0 104 104">
@@ -1159,9 +1013,10 @@ defineExpose({ wake, setDraft });
           <span class="face__z face__z--far">z</span>
         </div>
 
-        <!-- Field · just the text and the send seed; the +/image/model controls
-             live beside the surface, not inside it. -->
-        <div class="field" :class="{ 'field--tall': isTall }">
+        <!-- Field · the text alone. Every control now lives in the bar below it,
+             inside the card, so the composer is one object on the ground rather
+             than a pill with satellites floating either side. -->
+        <div class="field">
           <!-- The field is a contenteditable surface: prose lives in text nodes
                and each completed @mention is an atomic MentionChip span (a type
                logo + the bare filename) the browser deletes as one unit. What we
@@ -1188,121 +1043,203 @@ defineExpose({ wake, setDraft });
               @paste="onPaste"
             />
           </div>
-          <!-- Steer — while a turn runs the seed is a stop and Enter queues;
-               this is the third path: inject the draft into the LIVE turn (no
-               new boundary). The provider's steer channel delivers it when it
-               builds its next request; providers without one queue it first. -->
-          <button
-            v-if="busy && open"
-            type="button"
-            class="steer"
-            :class="{ 'steer--armed': armed }"
-            :disabled="!armed"
-            :aria-label="'Send now — steer the running turn'"
-            :title="'Send now — steer the running turn'"
-            :tabindex="open ? 0 : -1"
-            @mousedown.prevent
-            @click.stop="steer"
-          >
-            <HugeiconsIcon :icon="CornerDownRightIcon" :size="16" :stroke-width="2" />
-          </button>
-          <button
-            type="button"
-            class="seed"
-            :class="{ 'seed--armed': armed || busy, 'seed--busy': busy }"
-            :aria-label="busy ? 'Stop' : 'Send'"
-            :tabindex="open ? 0 : -1"
-            @mousedown.prevent
-            @click.stop="send"
-          >
-            <!-- Stop square while a turn runs; the send arrow otherwise. -->
-            <svg v-if="busy" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
-              <rect x="5" y="5" width="8" height="8" rx="2" fill="#FFFFFF" />
-            </svg>
-            <svg v-else class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
-              <path d="M9 14V4.2M9 4.2L4.3 8.9M9 4.2L13.7 8.9" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
+        </div>
+
+        <!-- The bar — every control, on one rail along the card's floor. Left is
+             what the turn may DO (attach context, autonomy rung); right is what
+             will do it (model, effort, tier, window) and the send seed. It rides
+             in from below as the card opens, a beat after the field. -->
+        <div class="bar" :class="{ 'is-shown': open }" :inert="!open">
+          <div class="bar__group">
+            <!-- Attach — opens the file picker. Drag-drop and paste feed the
+                 same pending list. -->
+            <button
+              type="button"
+              class="barbtn attach"
+              aria-label="Attach files"
+              title="Attach files, documents, or images"
+              @click.stop="openFilePicker"
+            >
+              <HugeiconsIcon :icon="PlusSignIcon" :size="17" :stroke-width="2" />
+            </button>
+
+            <!-- Permission mode — no dropdown. Clicking cycles up the autonomy
+                 ladder (Ask → Edits → Full) and wraps; the hued icon + label
+                 carry it. -->
+            <button
+              type="button"
+              class="barbtn mode"
+              :class="{ 'mode--bump': modeBump }"
+              :style="{ '--mode-hue': currentMode.hue }"
+              :aria-label="currentMode.title"
+              :title="currentMode.title"
+              @click.stop="cycleMode"
+            >
+              <svg class="mode__icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <!-- Ask · a chat bubble with a question (the agent asks first) -->
+                <template v-if="currentMode.id === 'ask'">
+                  <path d="M3 5.2c0-.9.7-1.6 1.6-1.6h8.8c.9 0 1.6.7 1.6 1.6v4.6c0 .9-.7 1.6-1.6 1.6H8l-3 2.4V11.4H4.6c-.9 0-1.6-.7-1.6-1.6Z" />
+                  <path d="M7.6 6.7a1.4 1.4 0 1 1 1.9 1.3c-.5.3-.7.6-.7 1.1" />
+                  <path d="M8.8 10.7v.02" />
+                </template>
+                <!-- Edits · a pencil (auto-applies edits) -->
+                <template v-else-if="currentMode.id === 'accept-edits'">
+                  <path d="M11.4 3.7 14.3 6.6 6.9 14H4v-2.9Z" />
+                  <path d="M10.4 4.7 13.3 7.6" />
+                </template>
+                <!-- Full access · a shield (no limits, nothing held back) -->
+                <template v-else>
+                  <path d="M9 2.6 14 4.6V9C14 12 11.9 14 9 15.4 6.1 14 4 12 4 9V4.6Z" />
+                </template>
+              </svg>
+              <span class="mode__label">{{ currentMode.label }}</span>
+            </button>
+          </div>
+
+          <div class="bar__group bar__group--end">
+            <!-- Model — the name opens the full providers→models→effort picker. -->
+            <button type="button" class="barbtn model" @click.stop="openModels">
+              <ProviderLogo :brand="modelBrand" :size="15" />
+              <span class="model__name">{{ modelName }}</span>
+            </button>
+
+            <!-- Effort — no dropdown. Clicking the brain steps to the next real
+                 effort for this model and wraps. -->
+            <button
+              v-if="showEffort && currentEffort"
+              type="button"
+              class="barbtn effort"
+              :class="{ 'effort--bump': bumping }"
+              :aria-label="`Reasoning effort: ${currentEffort.label}. Click to change.`"
+              :title="`Reasoning effort · ${currentEffort.label}`"
+              @click.stop="cycleEffort"
+            >
+              <span class="stack" :class="{ 'stack--glow': currentEffort.glow }">
+                <HugeiconsIcon
+                  v-for="i in brainStack(currentEffort.brains)"
+                  :key="i"
+                  :icon="AiBrain01Icon"
+                  :size="15"
+                  :stroke-width="2"
+                  :style="{ color: currentEffort.hue }"
+                />
+              </span>
+              <span class="effort__label">{{ currentEffort.label }}</span>
+            </button>
+
+            <!-- Fast mode — a plain on/off for the model's real "fast" service
+                 tier, when it has one. -->
+            <button
+              v-if="fastTier"
+              type="button"
+              class="barbtn fast"
+              :class="{ 'fast--on': fastMode }"
+              :aria-pressed="Boolean(fastMode)"
+              :aria-label="`${fastTier.label}: ${fastMode ? 'on' : 'off'}. Click to toggle.`"
+              @click.stop="toggleFastMode"
+            >
+              <HugeiconsIcon :icon="FlashIcon" :size="15" :stroke-width="2" />
+            </button>
+
+            <!-- Context window — a small cycle over the model's windows
+                 (Claude's 200k/1m auto-compact window). -->
+            <button
+              v-if="currentWindow"
+              type="button"
+              class="barbtn ctxwin"
+              :aria-label="`Context window: ${currentWindow.label}. Click to change.`"
+              :title="`Context window · ${currentWindow.label}`"
+              @click.stop="cycleContextWindow"
+            >
+              {{ currentWindow.label }}
+            </button>
+
+            <!-- Steer — while a turn runs the seed is a stop and Enter queues;
+                 this is the third path: inject the draft into the LIVE turn (no
+                 new boundary). The provider's steer channel delivers it when it
+                 builds its next request; providers without one queue it first. -->
+            <button
+              v-if="busy && open"
+              type="button"
+              class="steer"
+              :class="{ 'steer--armed': armed }"
+              :disabled="!armed"
+              :aria-label="'Send now — steer the running turn'"
+              :title="'Send now — steer the running turn'"
+              :tabindex="open ? 0 : -1"
+              @mousedown.prevent
+              @click.stop="steer"
+            >
+              <HugeiconsIcon :icon="CornerDownRightIcon" :size="16" :stroke-width="2" />
+            </button>
+            <button
+              type="button"
+              class="seed"
+              :class="{ 'seed--armed': armed || busy, 'seed--busy': busy }"
+              :aria-label="busy ? 'Stop' : 'Send'"
+              :tabindex="open ? 0 : -1"
+              @mousedown.prevent
+              @click.stop="send"
+            >
+              <!-- Stop square while a turn runs; the send arrow otherwise. -->
+              <svg v-if="busy" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
+                <rect x="5" y="5" width="8" height="8" rx="2" fill="#FFFFFF" />
+              </svg>
+              <svg v-else class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M9 14V4.2M9 4.2L4.3 8.9M9 4.2L13.7 8.9" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Both pickers sit beside the input on the right: the model (with its own
-         provider logomark) and — when the model exposes more than one — the
-         effort. -->
-    <div class="side side--trail" :class="{ 'is-shown': open }" :inert="!open">
-      <!-- Model — the name opens the full providers→models→effort picker. -->
-      <button type="button" class="model" @click.stop="openModels">
-        <ProviderLogo :brand="modelBrand" :size="15" />
-        <span class="model__name">{{ modelName }}</span>
-      </button>
-
-      <!-- Effort — no dropdown. Clicking the brain steps to the next real effort
-           for this model and wraps; the stack + label carry the state. -->
+    <!-- Context tray — where the turn will land: project, machine, branch. It's
+         tucked BEHIND the card and only its bottom strip shows, so it reads as
+         the ground the composer is standing on rather than another control bar.
+         Everything here is ambient except the branch, which opens the picker. -->
+    <div class="tray" :class="{ 'is-shown': open }" :inert="!open" aria-label="Turn context">
+      <span v-if="projectName" class="tray__item">
+        <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label tray__label--strong">{{ projectName }}</span>
+      </span>
+      <span class="tray__item">
+        <HugeiconsIcon :icon="ComputerIcon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label">Local</span>
+      </span>
       <button
-        v-if="showEffort && currentEffort"
+        v-if="branch"
         type="button"
-        class="effort"
-        :class="{ 'effort--bump': bumping }"
-        :aria-label="`Reasoning effort: ${currentEffort.label}. Click to change.`"
-        @click.stop="cycleEffort"
+        class="tray__item tray__item--action"
+        :aria-label="`On ${branch}. Switch branch.`"
+        :title="`On ${branch} — click to switch branch`"
+        @click.stop="emit('open-branch')"
       >
-        <span class="stack" :class="{ 'stack--glow': currentEffort.glow }">
-          <HugeiconsIcon
-            v-for="i in brainStack(currentEffort.brains)"
-            :key="i"
-            :icon="AiBrain01Icon"
-            :size="15"
-            :stroke-width="2"
-            :style="{ color: currentEffort.hue }"
-          />
-        </span>
-      </button>
-
-      <!-- Fast mode — a plain on/off for the model's real "fast" service tier,
-           when it has one. -->
-      <button
-        v-if="fastTier"
-        type="button"
-        class="fast"
-        :class="{ 'fast--on': fastMode }"
-        :aria-pressed="Boolean(fastMode)"
-        :aria-label="`${fastTier.label}: ${fastMode ? 'on' : 'off'}. Click to toggle.`"
-        @click.stop="toggleFastMode"
-      >
-        <HugeiconsIcon :icon="FlashIcon" :size="15" :stroke-width="2" />
-      </button>
-
-      <!-- Context window — a small cycle over the model's windows (Claude's
-           200k/1m auto-compact window). The label carries the state; clicking
-           steps to the next window and wraps. -->
-      <button
-        v-if="currentWindow"
-        type="button"
-        class="ctxwin"
-        :aria-label="`Context window: ${currentWindow.label}. Click to change.`"
-        :title="`Context window · ${currentWindow.label}`"
-        @click.stop="cycleContextWindow"
-      >
-        {{ currentWindow.label }}
+        <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label">{{ branch }}</span>
       </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* Pill rim — one conic sweep through indigo → blue → teal → cream → coral,
-   plus a sheen the send seed layers on top so it reads as a glossy marble. */
+/* Pill rim — polished chrome: a conic sweep of two specular highlights and two
+   dark bands, cool in the shadows with one warm bounce so the metal reads as
+   lit rather than grey. The send seed layers the sheen on top for the marble. */
 .dock {
   --pill-rim: conic-gradient(
     in oklab from 205deg at 50% 50%,
-    oklab(65.3% 0.048 -0.161) 0%,
-    oklab(65.5% -0.02 -0.155) 20%,
-    oklab(79.6% -0.1 -0.046) 40%,
-    oklab(89.9% 0.019 0.087) 60%,
-    oklab(79.3% 0.1 0.069) 80%,
-    oklab(65.3% 0.048 -0.161) 100%
+    oklch(90% 0.004 250) 0%,
+    oklch(64% 0.006 258) 13%,
+    oklch(97% 0.002 250) 27%,
+    oklch(74% 0.005 262) 41%,
+    oklch(93% 0.006 85) 55%,
+    oklch(61% 0.006 258) 71%,
+    oklch(95% 0.003 250) 86%,
+    oklch(90% 0.004 250) 100%
   );
+  /* Accent rings (drag, armed, busy) ride the same metal, not a hue. */
+  --chrome-ring: 138 141 149;
   --sheen: radial-gradient(
     ellipse 125% 125% at 30% 24% in oklab,
     oklab(100% 0 0 / 85%) 0%,
@@ -1317,9 +1254,12 @@ defineExpose({ wake, setDraft });
   --chip: #fbfaf9;
   --chip-ink: #3a3a3e;
   --chip-x: #b0aea9;
+  /* The tray slab — one step below the card's white, never a hairline. */
+  --tray: #f0efec;
 
+  /* A column now: the card, with the context tray tucked in behind its floor. */
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
   position: relative;
   width: max-content;
@@ -1435,36 +1375,10 @@ defineExpose({ wake, setDraft });
     transform: none;
   }
 }
-/* When the pill grows tall, the side controls drop to the bottom with the send
-   seed (the padding lines them up with the seed's inset). */
-.dock--tall { align-items: flex-end; }
-.dock--tall .side { padding-bottom: 12px; }
-
-/* Dragging files over the dock: a soft indigo ring on the surface invites the
+/* Dragging files over the dock: a soft chrome ring on the surface invites the
    drop. No border/heavy shadow — a low, calm glow in kone's idiom. */
 .dock--drag .surface {
-  box-shadow: rgb(139 124 240 / 0.30) 0 0 0 3px;
-}
-
-/* ── Side controls ────────────────────────────────────────────────────────── */
-/* Equal-width slots flank the surface so it stays screen-centred; the controls
-   hug the pill and fade/slide in as it opens. */
-.side {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  width: 200px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.26s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.side--lead { justify-content: flex-end; gap: 8px; padding-right: 10px; transform: translateX(10px); }
-.side--trail { justify-content: flex-start; gap: 2px; padding-left: 10px; transform: translateX(-10px); }
-.side.is-shown {
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-  transition: opacity 0.22s ease 0.1s, transform 0.28s cubic-bezier(0.22, 1, 0.36, 1) 0.1s;
+  box-shadow: rgb(var(--chrome-ring) / 0.30) 0 0 0 3px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1478,6 +1392,21 @@ defineExpose({ wake, setDraft });
     --chip: #202024;
     --chip-ink: #e6e6e8;
     --chip-x: #7a7a80;
+    --tray: #202024;
+    /* Chrome darkens on a dark surface — the highlights stay bright so the rim
+       still reads as metal, but the dark bands drop to keep it off the page. */
+    --pill-rim: conic-gradient(
+      in oklab from 205deg at 50% 50%,
+      oklch(78% 0.004 250) 0%,
+      oklch(42% 0.006 258) 13%,
+      oklch(92% 0.002 250) 27%,
+      oklch(56% 0.005 262) 41%,
+      oklch(82% 0.006 85) 55%,
+      oklch(38% 0.006 258) 71%,
+      oklch(86% 0.003 250) 86%,
+      oklch(78% 0.004 250) 100%
+    );
+    --chrome-ring: 168 171 179;
   }
 }
 
@@ -1487,6 +1416,8 @@ defineExpose({ wake, setDraft });
    orb visibly expands and collapses. */
 .surface {
   position: relative;
+  /* Above the tray, which is tucked in behind its bottom edge. */
+  z-index: 1;
   overflow: hidden;
   /* Own compositing layer — keeps the rounded-corner clip of the gradient rim
      crisp instead of aliased. */
@@ -1513,10 +1444,17 @@ defineExpose({ wake, setDraft });
   background-image: none;
 }
 .surface.is-open {
-  width: 360px; /* fallback; the pill's real width is driven inline to fit text */
-  padding: 2.5px;
-  border-radius: 32px;
+  /* One open shape. The card holds a steady width and only grows downward as
+     the text runs on — nothing about the frame moves while you type. */
+  width: clamp(420px, 52vw, 680px);
+  padding: 1.5px;
+  border-radius: 26px;
   background-image: var(--pill-rim);
+  /* Soft and low — just enough to lift the card off the page and read the tray
+     as sitting under it. Never a heavy drop. */
+  box-shadow:
+    rgb(0 0 0 / 0.07) 0 10px 26px -12px,
+    rgb(0 0 0 / 0.05) 0 2px 6px -3px;
   cursor: default;
   display: flex;
   flex-direction: column;
@@ -1548,17 +1486,6 @@ defineExpose({ wake, setDraft });
     width 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
     height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s;
 }
-/* Card geometry only holds while open — attachments persist in the draft, so
-   `is-card` stays on through a collapse. Gating on `.is-open` lets the surface
-   shed the card's width/radius the instant it closes and ease back to the bead,
-   exactly like the no-attachment pill (whose width comes from the inline style
-   that clears on close). Without this the closed surface stays a wide rounded
-   box and the next open expands from that, not from the orb. */
-.surface.is-open.is-card {
-  width: clamp(400px, 56vw, 720px);
-  border-radius: 26px;
-}
-
 /* White field body. Transparent at rest so the orb reads as a solid marble.
    Its corners track the surface's on the same curve so the gradient rim keeps an
    even thickness all the way through the morph. */
@@ -1573,12 +1500,11 @@ defineExpose({ wake, setDraft });
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-radius: 29.5px;
+  border-radius: 24.5px;
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
 }
-.surface.is-open.is-card .panel { border-radius: 23.5px; }
 
 /* ── Resting particle bead ────────────────────────────────────────────────── */
 /* The turning cloud sits centred over the surface at rest. It fades and scales
@@ -1620,10 +1546,10 @@ defineExpose({ wake, setDraft });
   position: absolute;
   font-style: italic;
   font-weight: 600;
-  color: #b4b0be;
+  color: #b0b2b8;
 }
 .face__z--near { right: 8px; top: 6px; font-size: 12px; }
-.face__z--far { right: 1px; top: -2px; font-size: 9px; color: #c8c4d0; }
+.face__z--far { right: 1px; top: -2px; font-size: 9px; color: #c6c8ce; }
 @keyframes breathe {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.04); }
@@ -1634,16 +1560,15 @@ defineExpose({ wake, setDraft });
 .field {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
   height: 100%;
-  padding: 8px 8px 8px 20px;
+  /* The text sits high in the card with air under it — the bar below owns the
+     floor, so the field never pads down into it. */
+  padding: 16px 20px 4px;
   opacity: 0;
   transition: opacity 0.18s ease;
 }
-/* In card mode the panel is a flex column, so the field should fill the
-   remaining space after the chips row instead of stretching to 100 % of the
-   panel (which would overflow past chips). */
 .surface.is-open .field {
   flex: 1 1 auto;
   min-height: 0;
@@ -1652,30 +1577,19 @@ defineExpose({ wake, setDraft });
   transition: opacity 0.2s ease 0.08s;
 }
 .surface:not(.is-open) .field { flex: none; }
-/* Single line: text and seed sit centred. Once it wraps, the seed drops to the
-   bottom while the text fills upward. */
-.field--tall { align-items: flex-end; }
-.surface.is-card .field {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 14px;
-  padding: 14px 14px 14px 20px;
-}
-/* The contenteditable field. It flows text nodes + atomic chip spans on one
-   line until it hits the pill's cap (or a Shift+Enter break), then wraps and
-   grows its own height — no textarea, no overlay. The type ramp here must stay
-   in step with .mirror below so the measured width matches what's painted. */
+/* The contenteditable field. It flows text nodes + atomic chip spans, wrapping
+   at the card's fixed width and growing its own height — no textarea, no
+   overlay, and no per-keystroke width chase. */
 /* The input's box: positioned so its text (and caret) paint above the
    placeholder overlay below. */
 .field__ed {
   position: relative;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
-  min-height: 20px;
+  min-height: 22px;
   display: flex;
   align-items: center;
 }
-.surface.is-card .field__ed { flex: 0 0 auto; }
 .field__input {
   position: relative;
   z-index: 1;
@@ -1689,31 +1603,18 @@ defineExpose({ wake, setDraft });
   color: var(--field-ink);
   font-family: var(--font-sans);
   font-size: 16px;
-  line-height: 20px;
+  line-height: 25px;
   letter-spacing: normal;
-  /* Single-line (pill) NEVER wraps a keystroke to row two: the field holds the
-     text on one line — matching the `pre` mirror — and the pill widens to fit it
-     a tick later. Only once it's genuinely multi-line (hit the width cap, or a
-     Shift+Enter break) does it flip to `pre-wrap` and grow tall (rule below).
-     Without this, a character typed at the pill's right edge drops to row two for
-     the frame before the width ease catches up — the per-keystroke vertical flash
-     on the first row. */
-  white-space: pre;
+  /* The card's width is fixed, so text simply wraps and the card grows down. */
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  max-height: 240px;
-  /* Explicit overflow-x: hidden — with `pre`, a single line can briefly run
-     wider than the field for the frame before the pill widens to fit it, and a
-     bare `overflow-y: auto` makes the browser promote overflow-x to `auto` too,
-     flashing a horizontal scrollbar. Clip it; the pill catches up a tick later. */
+  max-height: 260px;
   overflow-x: hidden;
   overflow-y: auto;
   cursor: text;
 }
-.field--tall .field__input,
-.surface.is-card .field__input { white-space: pre-wrap; }
 .field__input:focus { outline: 0; }
-.surface.is-card .field__input { flex: 0 0 auto; line-height: 25px; }
 /* Placeholder overlay — shown only while the field is empty. It's a sibling
    overlay (not ::before) so it never pushes the caret: an empty field's caret
    stays at the true left edge under the label, and clearing the draft returns
@@ -1726,25 +1627,143 @@ defineExpose({ wake, setDraft });
   color: var(--placeholder);
   font-family: var(--font-sans);
   font-size: 16px;
-  line-height: 20px;
+  line-height: 25px;
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
 }
 
-/* Off-screen twin of the field's content (same chips, same type) — measured to
-   size the pill's width. Kept in sync with .field__input's font/size/line. */
-.mirror {
-  position: absolute;
-  left: -9999px;
-  top: 0;
-  visibility: hidden;
+/* ── The bar ──────────────────────────────────────────────────────────────── */
+/* One rail across the card's floor holding every control. Borderless, in kone's
+   idiom — the marks and labels carry the state, nothing draws a container. It
+   rises in from below as the card opens, just behind the field. */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 0 10px 9px 12px;
+  opacity: 0;
+  transform: translateY(6px);
   pointer-events: none;
-  white-space: pre;
-  font-family: var(--font-sans);
-  font-size: 16px;
-  line-height: 20px;
+  transition: opacity 0.18s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
+.bar.is-shown {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    opacity 0.22s ease 0.12s,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.12s;
+}
+.bar__group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+/* The right group must be free to shrink — a long model name gives way before
+   the send seed ever gets pushed off the card's edge. */
+.bar__group--end { gap: 4px; flex: 0 1 auto; }
+
+/* Every control on the bar wears the same clothes: a bare 30px-tall slot whose
+   ink lifts on hover. Only the send seed breaks it. */
+.barbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--btn-ink);
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
+}
+.barbtn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--chip-ink) 6%, transparent);
+}
+.barbtn:active { transform: scale(0.95); }
+
+/* ── Context tray ─────────────────────────────────────────────────────────── */
+/* Where the turn will land — project, machine, branch — tucked in behind the
+   card so only its bottom strip shows. It's ground, not chrome: a quieter
+   surface, smaller type, and no hairline anywhere. */
+.tray {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Narrower than the card, so it reads as something the card is standing on
+     rather than a second bar bolted to its bottom. */
+  width: calc(100% - 26px);
+  z-index: 0;
+  overflow: hidden;
+  height: 0;
+  margin-top: 0;
+  padding: 0 14px;
+  border-radius: 0 0 18px 18px;
+  background: var(--tray);
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition:
+    height 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tray.is-shown {
+  /* Taller than it shows: the card's rounded floor covers the top 14px, so the
+     tray reads as one slab the composer is resting on. */
+  height: 40px;
+  margin-top: -14px;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    height 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
+    margin-top 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
+    opacity 0.24s ease 0.14s,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.1s;
+}
+.tray__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* Sit on the strip that shows, not on the covered half. */
+  margin-top: 12px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--chip-x);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.tray__label {
+  color: var(--chip-ink);
+  opacity: 0.62;
+  max-width: 148px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tray__label--strong { opacity: 0.86; }
+.tray__item--action {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.tray__item--action:hover {
+  background: color-mix(in srgb, var(--chip-ink) 7%, transparent);
+}
+.tray__item--action:hover .tray__label { opacity: 0.9; }
 
 /* ── Send seed ────────────────────────────────────────────────────────────── */
 .seed {
@@ -1752,8 +1771,9 @@ defineExpose({ wake, setDraft });
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
+  margin-left: 4px;
   border: 0;
   padding: 0;
   border-radius: 50%;
@@ -1762,16 +1782,14 @@ defineExpose({ wake, setDraft });
   box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset;
   transition: box-shadow 0.3s ease, transform 0.2s ease;
 }
-.surface.is-card .seed { width: 36px; height: 36px; align-self: flex-end; }
 .seed--armed {
   box-shadow:
     rgb(255 255 255 / 0.6) 0 1px 2px inset,
-    rgb(139 124 240 / 0.16) 0 0 0 4px;
+    rgb(var(--chrome-ring) / 0.16) 0 0 0 4px;
 }
 .seed:hover { transform: scale(1.06); }
 .seed:active { transform: scale(0.94); }
 .seed__arrow { width: 15px; height: 15px; }
-.surface.is-card .seed__arrow { width: 16px; height: 16px; }
 
 /* Steer — the secondary "send now" beside the seed while a turn runs. A
    quiet round sibling: same pill language, no sheen, ink-tinted; disabled
@@ -1791,10 +1809,9 @@ defineExpose({ wake, setDraft });
   cursor: pointer;
   transition: box-shadow 0.3s ease, transform 0.2s ease, color 0.2s ease;
 }
-.surface.is-card .steer { align-self: flex-end; }
 .steer--armed {
   color: var(--ink);
-  box-shadow: rgb(139 124 240 / 0.12) 0 0 0 3px;
+  box-shadow: rgb(var(--chrome-ring) / 0.12) 0 0 0 3px;
 }
 .steer:hover:not(:disabled) { transform: scale(1.06); }
 .steer:active:not(:disabled) { transform: scale(0.94); }
@@ -1804,12 +1821,16 @@ defineExpose({ wake, setDraft });
 }
 
 /* ── Chips ────────────────────────────────────────────────────────────────── */
+/* Attachment chips ride above the text, on the field's own left margin so the
+   card reads as one column: chips, then prose, then the bar. */
 .chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 8px 12px 8px;
+  padding: 14px 18px 0;
 }
+/* With chips up top the field's own lead-in would double the gap. */
+.surface.is-card .field { padding-top: 10px; }
 .chip {
   display: flex;
   align-items: center;
@@ -1886,71 +1907,27 @@ defineExpose({ wake, setDraft });
   line-height: 16px;
 }
 
-/* ── Side control buttons (bare on the ground, beside the pill) ───────────── */
-/* No pill, no border, no shadow — just the mark, in kone's borderless idiom.
-   Hover only lifts the ink, it never draws a container. */
-.ibtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--btn-ink);
-  cursor: pointer;
-  opacity: 0.72;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.ibtn svg { width: 18px; height: 18px; }
-.ibtn:hover { opacity: 1; transform: translateY(-1px); }
-.ibtn:active { transform: translateY(0) scale(0.96); }
-.model {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: #9a9a97;
-  cursor: pointer;
-  opacity: 0.82;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.model:hover { opacity: 1; transform: translateY(-1px); }
+/* ── Model ────────────────────────────────────────────────────────────────── */
+/* Which model will answer — the vendor mark plus the family name, opening the
+   full picker. It's the one control allowed to give up width on a narrow card. */
+.model { flex: 0 1 auto; min-width: 0; gap: 7px; }
 .model__name {
   color: var(--chip-ink);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   line-height: 16px;
   white-space: nowrap;
-  max-width: 128px;
+  min-width: 0;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 /* ── Permission mode (autonomy ladder) ────────────────────────────────────── */
-/* Borderless like the model/effort controls: the hued icon carries the rung, a
-   neutral label names it. Cycles on click, with the same tactile pop. */
-.mode {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 38px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--mode-hue, #9a9a97);
-  cursor: pointer;
-  opacity: 0.9;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.mode:hover { opacity: 1; transform: translateY(-1px); }
-.mode:active { transform: translateY(0) scale(0.96); }
-.mode__icon { width: 16px; height: 16px; }
+/* The hued icon carries the rung and a neutral label names it. Cycles on click,
+   with a tactile pop. */
+.mode { color: var(--mode-hue, #9a9a97); opacity: 0.92; }
+.mode__icon { width: 15px; height: 15px; }
 .mode__label {
   color: var(--chip-ink);
   font-size: 12.5px;
@@ -1961,24 +1938,8 @@ defineExpose({ wake, setDraft });
 .mode--bump .mode__icon { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
 
 /* ── Attach control ───────────────────────────────────────────────────────── */
-/* Borderless, matching the model/effort/mode idiom: just the mark, ink lifts on
-   hover, no container. */
-.attach {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 38px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--btn-ink);
-  cursor: pointer;
-  opacity: 0.78;
-  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
-}
-.attach:hover { opacity: 1; transform: translateY(-1px); }
-.attach:active { transform: translateY(0) scale(0.96); }
+/* The card's one bare glyph: a plus, opening the file picker. */
+.attach { width: 30px; padding: 0; }
 /* The real <input type=file> is off-screen; the attach button drives it. */
 .file-input {
   position: absolute;
@@ -1993,64 +1954,35 @@ defineExpose({ wake, setDraft });
 }
 
 /* ── Effort control (brain-stack) ─────────────────────────────────────────── */
-.effort {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 38px;
-  padding: 0 6px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  opacity: 0.88;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+/* The stack shows how hard it will think; the label names the rung, so the
+   cycle is readable at a glance rather than something you have to count. */
+.effort { gap: 6px; opacity: 0.9; }
+.effort__label {
+  color: var(--chip-ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
 }
-.effort:hover { opacity: 1; transform: translateY(-1px); }
-.effort:active { transform: translateY(0) scale(0.96); }
 /* Each cycle step gives the stack a quick tactile pop. */
 .effort--bump .stack { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
+
 /* ── Fast mode toggle ─────────────────────────────────────────────────────── */
-.fast {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 38px;
-  width: 30px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--chip-ink);
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
-}
-.fast:hover { opacity: 1; transform: translateY(-1px); }
-.fast:active { transform: translateY(0) scale(0.96); }
+.fast { width: 28px; padding: 0; color: var(--chip-ink); opacity: 0.66; }
 .fast--on {
   color: #f5b300;
   opacity: 1;
   filter: drop-shadow(0 0 4px rgba(245, 179, 0, 0.5));
 }
+
 /* ── Context-window cycle ─────────────────────────────────────────────────── */
 .ctxwin {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 38px;
-  min-width: 34px;
-  padding: 0 8px;
-  border: 0;
-  background: transparent;
+  min-width: 32px;
   color: var(--chip-ink);
-  font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
+  font: 500 11px/1 var(--font-mono, ui-monospace, monospace);
   letter-spacing: 0.02em;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
+  opacity: 0.66;
 }
-.ctxwin:hover { opacity: 1; transform: translateY(-1px); }
-.ctxwin:active { transform: translateY(0) scale(0.96); }
 @keyframes effort-pop {
   0% { transform: scale(0.82); }
   60% { transform: scale(1.12); }
@@ -2126,11 +2058,10 @@ defineExpose({ wake, setDraft });
 
 /* ── Stop glyph (seed while a turn runs) ──────────────────────────────────── */
 .seed__stop { width: 15px; height: 15px; }
-.surface.is-card .seed__stop { width: 16px; height: 16px; }
 .seed--busy { animation: seed-pulse 1.8s ease-in-out infinite; }
 @keyframes seed-pulse {
-  0%, 100% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(139 124 240 / 0.10) 0 0 0 3px; }
-  50% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(139 124 240 / 0.28) 0 0 0 6px; }
+  0%, 100% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.10) 0 0 0 3px; }
+  50% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.28) 0 0 0 6px; }
 }
 
 .fade-enter-active { transition: opacity 0.24s ease 0.08s; }
@@ -2142,7 +2073,7 @@ defineExpose({ wake, setDraft });
   .dock { animation: none; }
   .face { animation: none; }
   .seed--busy { animation: none; }
-  .side { transition-duration: 0.01s; transition-delay: 0s; }
+  .bar, .tray { transition-duration: 0.01s; transition-delay: 0s; }
   .fade-enter-active, .fade-leave-active { transition-duration: 0.01s; }
   .menu-enter-active, .menu-leave-active { transition-duration: 0.01s; }
 }
