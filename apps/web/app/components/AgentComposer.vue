@@ -4,7 +4,6 @@ import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiBrain01Icon,
-  ComputerIcon,
   CornerDownRightIcon,
   FlashIcon,
   Folder01Icon,
@@ -198,9 +197,9 @@ function cycleContextWindow() {
 // doesn't expose that as its own toggle yet.)
 type ModeMeta = { id: InteractionMode; label: string; title: string; hue: string };
 const MODES: ModeMeta[] = [
-  { id: "ask", label: "Ask", title: "Ask — reads and asks before any change", hue: "#6E8BEF" },
-  { id: "accept-edits", label: "Edits", title: "Edits — auto-approves file edits, asks before commands", hue: "#5EAF8C" },
-  { id: "full-access", label: "Full", title: "Full access — runs everything without prompting", hue: "#D08466" },
+  { id: "ask", label: "Ask user", title: "Ask user — reads and asks before any change", hue: "#6E8BEF" },
+  { id: "accept-edits", label: "Edits only", title: "Edits only — auto-approves file edits, asks before commands", hue: "#5EAF8C" },
+  { id: "full-access", label: "Full access", title: "Full access — runs everything without prompting", hue: "#D08466" },
 ];
 const currentMode = computed(
   () => MODES.find((m) => m.id === (props.mode ?? "accept-edits")) ?? MODES[1]!,
@@ -1203,10 +1202,6 @@ defineExpose({ wake, setDraft });
         <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">{{ projectName }}</span>
       </span>
-      <span class="tray__item">
-        <HugeiconsIcon :icon="ComputerIcon" :size="13" :stroke-width="1.8" />
-        <span class="tray__label">Local</span>
-      </span>
       <button
         v-if="branch"
         type="button"
@@ -1245,16 +1240,20 @@ defineExpose({ wake, setDraft });
     oklab(100% 0 0 / 85%) 0%,
     oklab(100% 0 0 / 0%) 42%
   );
-  --surface: #ffffff;
+  /* A warm near-white so the card sits in the same family as the cream board
+     (--ground #f6f5f3) rather than reading cold on top of it — still bright
+     enough to lift clear of the page. */
+  --surface: #fffefb;
   --field-ink: #17171a;
   --placeholder: #b7b4ae;
-  --btn: #ffffff;
+  --btn: #fffefb;
   --btn-border: rgb(0 0 0 / 0.08);
   --btn-ink: #55555a;
-  --chip: #fbfaf9;
+  --chip: #faf9f6;
   --chip-ink: #3a3a3e;
   --chip-x: #b0aea9;
-  /* The tray slab — one step below the card's white, never a hairline. */
+  /* The tray slab — one step below the card, seated toward the ground so the
+     card reads as lifted above it. Never a hairline. */
   --tray: #f0efec;
 
   /* A column now: the card, with the context tray tucked in behind its floor. */
@@ -1262,7 +1261,10 @@ defineExpose({ wake, setDraft });
   flex-direction: column;
   align-items: center;
   position: relative;
-  width: max-content;
+  /* Fill the width the fixed bar gives us, capped so the reading measure stays
+     comfortable on wide screens and leaving a small gutter on narrow ones. The
+     resting orb (55px) still centres within this track. */
+  width: min(100% - 32px, 680px);
   animation: dock-rise 440ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--proj-enter-composer, 0ms);
 }
@@ -1383,16 +1385,20 @@ defineExpose({ wake, setDraft });
 
 @media (prefers-color-scheme: dark) {
   .dock {
-    --surface: #161619;
+    /* Neutral dark (no blue cast) in the same family as the near-black board
+       (--ground #070708) — a clear but calm lift, not a floating cool slab. */
+    --surface: #18181a;
     --field-ink: #f4f4f5;
     --placeholder: #6b6b72;
-    --btn: #1f1f23;
+    --btn: #202022;
     --btn-border: rgb(255 255 255 / 0.1);
     --btn-ink: #c4c4c8;
-    --chip: #202024;
+    --chip: #202022;
     --chip-ink: #e6e6e8;
     --chip-x: #7a7a80;
-    --tray: #202024;
+    /* Tray recedes below the card toward the ground (matching light mode's
+       card → tray → ground stacking), instead of floating brighter than it. */
+    --tray: #101012;
     /* Chrome darkens on a dark surface — the highlights stay bright so the rim
        still reads as metal, but the dark bands drop to keep it off the page. */
     --pill-rim: conic-gradient(
@@ -1444,12 +1450,13 @@ defineExpose({ wake, setDraft });
   background-image: none;
 }
 .surface.is-open {
-  /* One open shape. The card holds a steady width and only grows downward as
-     the text runs on — nothing about the frame moves while you type. */
-  width: clamp(420px, 52vw, 680px);
-  padding: 1.5px;
+  /* One open shape. It fills the dock's responsive track (full width up to the
+     680px cap) and only grows downward as the text runs on — nothing about the
+     frame moves while you type. */
+  width: 100%;
+  padding: 0;
   border-radius: 26px;
-  background-image: var(--pill-rim);
+  background-image: none;
   /* Soft and low — just enough to lift the card off the page and read the tray
      as sitting under it. Never a heavy drop. */
   box-shadow:
@@ -1500,7 +1507,7 @@ defineExpose({ wake, setDraft });
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-radius: 24.5px;
+  border-radius: 26px;
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
@@ -1565,7 +1572,7 @@ defineExpose({ wake, setDraft });
   height: 100%;
   /* The text sits high in the card with air under it — the bar below owns the
      floor, so the field never pads down into it. */
-  padding: 16px 20px 4px;
+  padding: 16px 14px 4px;
   opacity: 0;
   transition: opacity 0.18s ease;
 }
@@ -1586,9 +1593,11 @@ defineExpose({ wake, setDraft });
   position: relative;
   flex: 0 0 auto;
   min-width: 0;
-  min-height: 22px;
+  /* Open at two rows of room so the field never starts as a single cramped
+     line — text starts at the top and grows down from there. */
+  min-height: 50px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
 }
 .field__input {
   position: relative;
@@ -1596,7 +1605,7 @@ defineExpose({ wake, setDraft });
   flex: 1 1 0;
   width: 100%;
   min-width: 0;
-  min-height: 20px;
+  min-height: 50px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -1622,8 +1631,8 @@ defineExpose({ wake, setDraft });
 .field__placeholder {
   position: absolute;
   left: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  /* Sit on the first line so it lines up with the top-anchored caret. */
+  top: 0;
   color: var(--placeholder);
   font-family: var(--font-sans);
   font-size: 16px;
@@ -1643,7 +1652,7 @@ defineExpose({ wake, setDraft });
   justify-content: space-between;
   gap: 12px;
   flex: 0 0 auto;
-  padding: 0 10px 9px 12px;
+  padding: 0 8px 9px 8px;
   opacity: 0;
   transform: translateY(6px);
   pointer-events: none;
@@ -1778,14 +1787,11 @@ defineExpose({ wake, setDraft });
   padding: 0;
   border-radius: 50%;
   cursor: pointer;
-  background-image: var(--sheen), var(--pill-rim);
-  box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset;
+  background: var(--accent);
   transition: box-shadow 0.3s ease, transform 0.2s ease;
 }
 .seed--armed {
-  box-shadow:
-    rgb(255 255 255 / 0.6) 0 1px 2px inset,
-    rgb(var(--chrome-ring) / 0.16) 0 0 0 4px;
+  box-shadow: rgb(var(--chrome-ring) / 0.16) 0 0 0 4px;
 }
 .seed:hover { transform: scale(1.06); }
 .seed:active { transform: scale(0.94); }
@@ -1827,7 +1833,7 @@ defineExpose({ wake, setDraft });
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 14px 18px 0;
+  padding: 14px 14px 0;
 }
 /* With chips up top the field's own lead-in would double the gap. */
 .surface.is-card .field { padding-top: 10px; }

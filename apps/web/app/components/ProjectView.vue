@@ -172,13 +172,12 @@ function setPaneWidth(id: string, width: number): void {
   board.setWidth(id, width);
 }
 
-// The composer only docks under a focused thread pane ON the board, or on the
-// working-tree overview (the entry point there). Model/mode/reasoning must ride
-// the session that will actually receive the next turn — the focused thread
-// column on the board, or the board's blank thread slot on overview (what
-// board.open('thread') focuses on send). agent.activeKey can still point at a
-// background thread while a terminal column is focused, so we re-project before
-// any composer edit and keep activeKey aligned with that target.
+// The composer only docks under a focused thread pane ON the board — never on
+// the working-tree overview. Model/mode/reasoning must ride the session that
+// will actually receive the next turn: the focused thread column. agent.activeKey
+// can still point at a background thread while a terminal column is focused, so
+// we re-project before any composer edit and keep activeKey aligned with that
+// target.
 const focusedThread = computed(() =>
   focusedPane.value?.kind === "thread" ? focusedPane.value.session : null,
 );
@@ -676,7 +675,7 @@ async function syncComposerTarget(): Promise<void> {
 }
 
 const composerVisible = computed(
-  () => surface.value === "overview" || activePaneIsThread.value,
+  () => surface.value === "board" && activePaneIsThread.value,
 );
 watch(
   [boardReady, composerVisible, focusedId, () => blankThreadPane.value?.session?.key],
@@ -1028,10 +1027,10 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   surface.value = "board";
 });
 
-// Ctrl+N (mod+n) starts a fresh, empty thread — mirroring the composer's own
-// "send from the working-tree home" path. It flips to the board surface so
-// the user lands in the blank thread, and prunes the idle previous thread when
-// it never ran a live turn.
+// Ctrl+N (mod+n) starts a fresh, empty thread — the keyboard way to begin a
+// conversation from the working-tree home now that the composer lives on the
+// board. It flips to the board surface so the user lands in the blank thread,
+// and prunes the idle previous thread when it never ran a live turn.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!matchesShortcut("new-thread", e)) return;
   e.preventDefault();
@@ -1242,19 +1241,13 @@ function onComposerMode(next: InteractionMode) {
 }
 
 async function onSend(text: string, files?: File[]) {
-  // Sending from the overview (no thread focused) begins a fresh
-  // conversation rather than continuing the last-opened one — the session boots
-  // rehydrated with the project's latest thread, so without this a first send
-  // would silently append to that old transcript.
-  // Never send on top of the pre-mount boot session: it carries the hardcoded
-  // `codex` default and rehydrates the project's LAST stored thread on its first
-  // start(), which silently replaces the composer's provider/model and resumes a
-  // foreign conversation id. Settling the target first is what makes the model
-  // shown in the composer the model that actually runs.
-  await syncComposerTarget();
-  if (surface.value === "overview") await board.open("thread");
-  surface.value = "board";
-  // board.open may have minted/reused a different pane than the sync settled on.
+  // The composer only docks under a focused thread pane on the board, so the
+  // send target is that focused thread. Settle it first: never send on top of
+  // the pre-mount boot session — it carries the hardcoded `codex` default and
+  // rehydrates the project's LAST stored thread on its first start(), which
+  // silently replaces the composer's provider/model and resumes a foreign
+  // conversation id. Settling the target first is what makes the model shown
+  // in the composer the model that actually runs.
   await syncComposerTarget();
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
@@ -1272,9 +1265,6 @@ async function onSend(text: string, files?: File[]) {
  *  service), but routed through the steer channel: no new turn boundary, the
  *  provider consumes the nudge when it builds its next request. */
 async function onSteer(text: string, files?: File[]) {
-  await syncComposerTarget();
-  if (surface.value === "overview") await board.open("thread");
-  surface.value = "board";
   await syncComposerTarget();
   let attachments: ChatAttachment[] | undefined;
   if (files?.length) {
@@ -1862,16 +1852,16 @@ function onDiscardFile(path: string) {
     </div>
 
     <!-- The folder settles into the corner last — rising into place with a soft
-         spring, the physical grace note after the greeting, changes, sessions,
-         and composer have landed. (Home only — it steps aside once the
-         conversation takes over.) -->
+         spring, the physical grace note after the greeting, changes, and
+         sessions have landed. (Home only — it steps aside once the conversation
+         takes over.) -->
     <motion.div
       v-if="surface === 'overview'"
       class="project-folder-row absolute bottom-10 left-10 flex items-center gap-4"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
-      :transition="{ type: 'spring', stiffness: 260, damping: 24, mass: 0.9, delay: 0.42 }"
+      :transition="{ type: 'spring', stiffness: 260, damping: 24, mass: 0.9, delay: 0.33 }"
       @mouseenter="folderHovered = true"
       @mouseleave="folderHovered = false"
     >
@@ -1915,15 +1905,14 @@ function onDiscardFile(path: string) {
       </div>
     </motion.div>
 
-    <!-- The agent composer floats dead-centre at the bottom — dormant until you
-         wake it, then it stretches into the input. It stays docked to the
-         viewport while the page behind scrolls. Entering the strip's overview takes
-         it away; fade rather than cut, so it doesn't blink out from under the cursor
-         while the board behind it is still gliding back.
-         On the working-tree home the composer is the page's entry point, so it
-         shows regardless of what the hidden board's focus is (a restored terminal,
-         or a bare desktop); on the board itself it only docks under a focused
-         thread pane. -->
+    <!-- The agent composer docks dead-centre at the bottom of the BOARD, under
+         a focused thread pane — dormant until you wake it, then it stretches
+         into the input. It stays docked to the viewport while the column behind
+         scrolls. It no longer appears on the working-tree home: that page is the
+         project's dashboard, and conversation starts on the board (mod+b, mod+n,
+         or opening a session). Entering the strip's overview takes it away; fade
+         rather than cut, so it doesn't blink out from under the cursor while the
+         board behind it is still gliding back. -->
     <Transition
       enter-active-class="transition-opacity duration-200 ease-out"
       enter-from-class="opacity-0"
@@ -1931,7 +1920,7 @@ function onDiscardFile(path: string) {
       leave-to-class="opacity-0"
     >
       <div
-        v-if="!focusedPendingUserInput && !focusedPendingApproval && surface !== 'git' && (surface === 'overview' || activePaneIsThread) && !showChooser && !stripOverview"
+        v-if="!focusedPendingUserInput && !focusedPendingApproval && surface === 'board' && activePaneIsThread && !showChooser && !stripOverview"
         class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
         :inert="Boolean(activeFile)"
       >
@@ -2386,10 +2375,10 @@ function onDiscardFile(path: string) {
 }
 .surface-layer--overview {
   align-items: flex-start;
-  /* Bottom inset clears the docked composer orb. Trimmed from the old
-     full-page-scroll value (14rem) — now that only the listing scrolls, that
-     much reserved space stranded the fade cutoff high above the composer. */
-  padding: 6rem 4rem 8rem;
+  /* No bottom inset — the composer no longer docks on the working-tree home,
+     so the listing's smoke mask can fade rows all the way to the viewport's
+     bottom edge instead of stranding them above a reserved band. */
+  padding: 6rem 4rem 0;
 }
 .surface-layer--hidden {
   visibility: hidden;
@@ -2421,9 +2410,9 @@ function onDiscardFile(path: string) {
 }
 
 /* The one scroll region on the working-tree home. Its bottom edge fades into a
-   soft smoke mask so rows dissolve toward the docked composer rather than
-   clipping at a hard line, and the scrollbar stays out of sight — the same
-   treatment as the conversation thread and the launcher's session list. */
+   soft smoke mask so rows dissolve rather than clipping at a hard line, and the
+   scrollbar stays out of sight — the same treatment as the conversation thread
+   and the launcher's session list. */
 .work-sessions {
   scrollbar-width: none;
   -webkit-mask-image: linear-gradient(
