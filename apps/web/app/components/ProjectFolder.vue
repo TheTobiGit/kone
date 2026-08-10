@@ -26,11 +26,13 @@ const props = withDefaults(
   },
 );
 
-// Rest positions + hover deltas for the peeking paper fan.
+// Rest positions + hover deltas for the peeking paper fan. The rise (dy) is
+// deliberately capped so the papers fan out sideways without climbing into the
+// folder's hover actions, which sit directly above the folder.
 const SLOTS = [
-  { left: 44, bottom: 54, rotate: -10, dx: -14, dy: -42, dr: -10 },
-  { left: 78, bottom: 60, rotate: 1, dx: 0, dy: -48, dr: 0 },
-  { left: 112, bottom: 54, rotate: 11, dx: 14, dy: -42, dr: 10 },
+  { left: 44, bottom: 54, rotate: -10, dx: -14, dy: -4, dr: -6 },
+  { left: 78, bottom: 60, rotate: 1, dx: 0, dy: -5, dr: 0 },
+  { left: 112, bottom: 54, rotate: 11, dx: 14, dy: -4, dr: 6 },
 ] as const;
 
 // Sketch each paper's diff shape from its +/− magnitude — the same

@@ -1114,6 +1114,26 @@ function openGitSpace() {
   void space.load();
 }
 
+// ── the centre nav ──────────────────────────────────────────────────────────
+// The one row the back arrow and the branch glyph already bookend gains a middle:
+// three names for the three layers this project has — its working tree, the board
+// of threads, and the repository. It rides the same fixed top line and steps out
+// of the way (like the back arrow) whenever a sub-surface draws its own chrome.
+const NAV = [
+  { id: "overview", label: "Project" },
+  { id: "git", label: "Git" },
+] as const;
+const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
+function goSurface(target: (typeof NAV)[number]["id"]) {
+  if (target === surface.value) return;
+  if (target === "git") {
+    openGitSpace();
+    return;
+  }
+  cue("press");
+  surface.value = target;
+}
+
 // Hovering the corner folder fans its peeking papers up out of the pocket.
 const folderHovered = ref(false);
 const { reveal } = useReveal();
@@ -1675,38 +1695,31 @@ function onDiscardFile(path: string) {
       </motion.button>
     </Magnet>
 
-    <!-- Into the repository — the far end of the row the back arrow starts. A
-         bare branch glyph that speaks its branch name on hover, and carries the
-         one piece of state the corner is worth spending: how far this branch has
-         drifted from its upstream. Git projects only. -->
-    <Magnet
-      v-if="g.repo.value && surface === 'overview'"
-      class="project-git-magnet"
-      inner-class="w-fit"
-      :padding="12"
-      :magnet-strength="9"
-      :disabled="Boolean(activeFile)"
-      active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-      inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+    <!-- The centre of that same top row: the two layers, named. A borderless
+         rail with one soft pill that slides between them (arithmetic, not
+         measurement — the segments are equal-width). It steps aside with the back
+         arrow whenever a sub-surface draws its own chrome. Git is dimmed and
+         unclickable when the project isn't a repository. -->
+    <nav
+      class="project-nav"
+      :class="{ 'project-nav--away': backIsAway || surface === 'board' }"
+      :inert="backIsAway || surface === 'board'"
+      aria-label="Project sections"
     >
-      <motion.button
+      <i class="project-nav__mark" :style="{ '--at': navIndex }" aria-hidden="true" />
+      <button
+        v-for="n in NAV"
+        :key="n.id"
         type="button"
-        class="project-git"
-        :inert="Boolean(activeFile)"
-        :aria-label="g.branch.value ? `Open the repository — on ${g.branch.value}` : 'Open the repository'"
-        :initial="{ opacity: 0, x: 6 }"
-        :animate="{ opacity: 1, x: 0 }"
-        :transition="{ duration: 0.3, delay: 0.05 }"
-        @click="openGitSpace"
+        class="project-nav__row"
+        :class="{ 'project-nav__row--on': surface === n.id }"
+        :disabled="n.id === 'git' && !g.repo.value"
+        :aria-current="surface === n.id ? 'page' : undefined"
+        @click="goSurface(n.id)"
       >
-        <span v-if="g.branch.value" class="project-git__branch">{{ g.branch.value }}</span>
-        <span v-if="g.ahead.value || g.behind.value" class="project-git__sync">
-          <span v-if="g.ahead.value" class="project-git__ahead">↑{{ g.ahead.value }}</span>
-          <span v-if="g.behind.value" class="project-git__behind">↓{{ g.behind.value }}</span>
-        </span>
-        <HugeiconsIcon :icon="GitBranchIcon" :size="18" :stroke-width="2" aria-hidden="true" />
-      </motion.button>
-    </Magnet>
+        {{ n.label }}
+      </button>
+    </nav>
 
     <!-- BOARD · the thread strip. Every live thread in this project is a column
          on one horizontally scrollable rail (niri-style scrollable tiling), the
@@ -1857,7 +1870,7 @@ function onDiscardFile(path: string) {
          takes over.) -->
     <motion.div
       v-if="surface === 'overview'"
-      class="project-folder-row absolute bottom-10 left-10 flex items-center gap-4"
+      class="project-folder-row absolute bottom-10 left-10 flex flex-col-reverse items-center gap-6"
       :inert="Boolean(activeFile)"
       :initial="{ opacity: 0, y: 44, scale: 0.94 }"
       :animate="{ opacity: 1, y: 0, scale: 1 }"
@@ -2212,7 +2225,7 @@ function onDiscardFile(path: string) {
    app's other buttons and brightens to full ink on hover. */
 .project-back-magnet {
   position: fixed;
-  top: 2rem;
+  top: 1.25rem;
   left: 2rem;
   z-index: 40;
 }
@@ -2238,75 +2251,70 @@ function onDiscardFile(path: string) {
   transform: rotate(180deg) scaleX(-1);
 }
 
-/* ── Into the repository ──────────────────────────────────────────────────── */
-/* The back arrow's opposite number, at the far end of the same row and wearing
-   the same clothes. At rest it is only a glyph; hovering it says which branch
-   you're standing on, and a branch that has drifted from its upstream keeps its
-   ↑↓ on show whether you're looking or not. */
-.project-git-magnet {
+/* ── The centre nav ───────────────────────────────────────────────────────── */
+/* Pinned to the same fixed top line as the two corner buttons, held at centre.
+   Borderless like the rest of the app: the only mark of selection is one soft
+   ink-tinted pill sliding between three equal segments. */
+.project-nav {
   position: fixed;
-  top: 2rem;
-  right: 2rem;
+  top: 1.25rem;
+  left: 50%;
   z-index: 40;
-}
-.project-git {
   display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  opacity: 0.7;
-  cursor: pointer;
+  transform: translateX(-50%);
   transition:
-    opacity 0.18s ease,
-    color 0.25s ease;
+    opacity 0.3s ease,
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.project-git:hover,
-.project-git:focus-visible {
-  outline: none;
-  opacity: 1;
-  color: var(--ink);
-}
-/* Folded away at rest, unfurling to the left of the glyph on hover — the corner
-   stays a single mark until it's asked a question. */
-.project-git__branch {
-  max-width: 0;
-  overflow: hidden;
+.project-nav--away {
   opacity: 0;
-  transform: translateX(6px);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  transition:
-    max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.22s ease,
-    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateX(-50%) translateY(-6px);
+  pointer-events: none;
 }
-.project-git:hover .project-git__branch,
-.project-git:focus-visible .project-git__branch {
-  max-width: 20ch;
-  opacity: 1;
-  transform: none;
+/* One pill, arithmetic not measurement: each segment is a fixed 84px, so the
+   pill just steps by index — it can never fall out of step on a resize. */
+.project-nav__mark {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 84px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ink) 6.5%, transparent);
+  transform: translateX(calc(var(--at, 0) * 84px));
+  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
 }
-.project-git__sync {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
+.project-nav__row {
+  position: relative;
+  z-index: 1;
+  width: 84px;
+  padding: 7px 0;
+  border-radius: 999px;
+  font-size: 12.5px;
+  letter-spacing: -0.1px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.25s ease;
 }
-.project-git__ahead {
+.project-nav__row:not(.project-nav__row--on):not(:disabled):hover {
   color: var(--ink-soft);
 }
-.project-git__behind {
-  color: var(--muted);
+.project-nav__row:focus-visible {
+  outline: none;
+  color: var(--ink);
 }
-
+.project-nav__row--on {
+  color: var(--ink);
+}
+.project-nav__row:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 @media (prefers-reduced-motion: reduce) {
-  .project-git__branch {
+  .project-nav,
+  .project-nav__mark {
     transition: none;
   }
 }
@@ -2452,13 +2460,17 @@ function onDiscardFile(path: string) {
   transform: translateY(-3px);
 }
 
-/* Actions beside the folder: quiet, plain text + icon (no pill/fill), stacked
+/* Actions above the folder: quiet, plain text + icon (no pill/fill), stacked
    and surfaced only while the folder is hovered (or a menu it owns is open). */
 .folder-actions {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 9px;
+  /* Paint above the fanning papers, which are absolutely positioned inside the
+     folder and would otherwise overlap the buttons. */
+  position: relative;
+  z-index: 1;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
