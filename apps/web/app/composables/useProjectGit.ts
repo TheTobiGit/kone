@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
 import type { GitChange, GitStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
+import { createLatestWinsRun } from "~/utils/latestWins";
 
 // The live git model behind an open project. One reactive `changes` array is the
 // single source of truth; every count the page shows (line diffstat, file total,
@@ -43,7 +44,13 @@ export function useProjectGit(project: Ref<Project>) {
     loaded.value = true;
   }
 
-  async function refresh() {
+  // Refresh reads are serialized with latest-wins coalescing: at most one
+  // detect+status pair runs at a time, and calls that arrive while a read is
+  // running (a mutation's post-action refresh overlapping the watcher's,
+  // another action finishing, a project switch) coalesce into exactly one
+  // follow-up read of the newest state instead of fanning out concurrent git
+  // subprocesses whose stale results could then overwrite fresher ones.
+  const { run: refresh } = createLatestWinsRun(async () => {
     try {
       const [detected, status] = await Promise.all([
         git.detect(project.value.path),
@@ -67,7 +74,7 @@ export function useProjectGit(project: Ref<Project>) {
       // loading shell forever — settle the greeting and let the watcher retry.
       loaded.value = true;
     }
-  }
+  });
 
   // Live sync: the desktop watcher pushes a fresh status whenever the repo moves
   // on disk (an editor save, a terminal `git add`, a commit). We (re)subscribe

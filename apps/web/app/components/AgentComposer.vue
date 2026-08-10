@@ -2,13 +2,19 @@
 import { computed, h, nextTick, onMounted, onUnmounted, ref, render, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, Attachment01Icon, FlashIcon } from "@hugeicons/core-free-icons";
+import {
+  AiBrain01Icon,
+  Attachment01Icon,
+  CornerDownRightIcon,
+  FlashIcon,
+} from "@hugeicons/core-free-icons";
 import ParticleOrb from "~/components/ParticleOrb.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
 import MentionChip from "~/components/MentionChip.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import type { AttachmentKind, GitProjectFile, InteractionMode } from "~/types/desktop";
 import { useProjectFiles } from "~/composables/useProjectFiles";
+import type { QueuedTurnEntry } from "~/composables/useAgent";
 import {
   detectFileMentionTrigger,
   formatFileMention,
@@ -44,6 +50,10 @@ const props = defineProps<{
   projectPath: string;
   /** A turn is running — the send seed becomes a stop, Enter is inert. */
   busy?: boolean;
+  /** Follow-ups durably queued behind the running turn (AgentService). The
+   *  chips render from these — the host owns the queue (send while busy
+   *  enqueues; cancel/steer round-trip through the bridge). */
+  queued?: QueuedTurnEntry[];
   /** The full model picker is open (hosted by the parent, outside our dock).
    *  While it is, a click in it — or on its scrim — must NOT collapse us. */
   picking?: boolean;
@@ -71,6 +81,12 @@ const emit = defineEmits<{
   /** The draft, plus any picked files. The parent uploads the files (scoped to
    *  the final thread) and hands the resulting metadata to the agent turn. */
   send: [text: string, files?: File[]];
+  /** Steer the draft into the RUNNING turn — same turn, no new boundary. The
+   *  parent routes it to the provider's live-steer channel (or the queue
+   *  when the provider has none). */
+  steer: [text: string, files?: File[]];
+  /** Drop one durably queued follow-up (the chips' ✕). */
+  "remove-queued": [queueId: string];
   interrupt: [];
   "update:modelId": [id: string];
   "update:reasoning": [tier: EffortTier];
@@ -202,6 +218,38 @@ const field = ref<HTMLElement | null>(null);
 const surface = ref<HTMLElement | null>(null);
 const dock = ref<HTMLElement | null>(null);
 const mirror = ref<HTMLElement | null>(null);
+
+// ── draft persistence ────────────────────────────────────────────────────────
+// The draft (text + @mention chips) is component state, so a project switch or
+// a renderer reload used to wipe it. It's saved debounced to localStorage under
+// the composer's identity — the project root it's bound to — and restored on
+// mount. Attachments are File objects and can't survive a reload; only the
+// text rides along. Cleared on send, so a consumed draft never resurrects.
+const DRAFT_KEY = computed(() => `kone:draft:${props.projectPath}`);
+let draftSaveTimer: number | null = null;
+function scheduleDraftSave(): void {
+  if (draftSaveTimer) clearTimeout(draftSaveTimer);
+  draftSaveTimer = window.setTimeout(persistDraft, 350);
+}
+function persistDraft(): void {
+  draftSaveTimer = null;
+  try {
+    const draft = text.value.trim();
+    if (draft) window.localStorage.setItem(DRAFT_KEY.value, draft);
+    else window.localStorage.removeItem(DRAFT_KEY.value);
+  } catch {
+    // Storage unavailable (private mode / quota) — a lost draft is not an
+    // error worth surfacing; the in-memory draft still works this session.
+  }
+}
+function restoreDraft(): void {
+  try {
+    const saved = window.localStorage.getItem(DRAFT_KEY.value);
+    if (saved) setEditorFromText(saved);
+  } catch {
+    // Same: storage unavailable → start clean.
+  }
+}
 
 // ── project file mentions ────────────────────────────────────────────────────
 // @ opens a small project-scoped picker over the field. The field itself is a
@@ -402,7 +450,7 @@ function onFieldKeydown(e: KeyboardEvent): void {
   // line-break (it manages the caret correctly), which serializes back as "\n".
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    if (!props.busy) send();
+    submitOrQueue();
   }
 }
 
@@ -827,13 +875,11 @@ async function onGlobalKey(e: KeyboardEvent) {
 }
 useEventListener(window, "keydown", onGlobalKey);
 
-function send() {
-  // While a turn runs the seed is a stop button.
-  if (props.busy) {
-    emit("interrupt");
-    cue("press");
-    return;
-  }
+/** Ship the current draft (text + attachments) as a SEND. Shared by the seed
+ *  (idle) and Enter — while a turn runs Enter also sends: the host's service
+ *  durably enqueues the follow-up behind the running turn instead of
+ *  dropping it, so no draft is ever lost or parked locally. */
+function dispatchDraft() {
   if (!armed.value) {
     void wake();
     return;
@@ -849,14 +895,58 @@ function send() {
   syncSoon();
 }
 
-onMounted(sync);
+function send() {
+  // While a turn runs the seed is a stop button.
+  if (props.busy) {
+    emit("interrupt");
+    cue("press");
+    return;
+  }
+  dispatchDraft();
+}
+
+/** Enter while a turn runs — a plain SEND now (the service queues), never a
+ *  stop and never a local park. */
+function submitOrQueue() {
+  dispatchDraft();
+}
+
+/** Steer the draft into the RUNNING turn (the seed's stop button stays a
+ *  stop; this is the separate "send now" action beside it). */
+function steer() {
+  const draft = text.value.trim();
+  const files = attachments.value.map((a) => a.file);
+  if (!draft && !files.length) return;
+  emit("steer", draft, files.length ? files : undefined);
+  cue("success");
+  clearEditor();
+  clearAttachments();
+  syncSoon();
+}
+
+/** The chip label — the queued prompt's own words, or a compact attachment
+ *  note for attachment-only follow-ups. */
+function queuedLabel(entry: QueuedTurnEntry): string {
+  if (entry.input) return entry.input;
+  return "Queued message";
+}
+
+onMounted(() => {
+  restoreDraft();
+  sync();
+});
 onUnmounted(() => {
   window.clearTimeout(noticeTimer);
+  if (draftSaveTimer) {
+    window.clearTimeout(draftSaveTimer);
+    persistDraft();
+  }
   disposeChips();
   for (const at of attachments.value) {
     if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
   }
 });
+watch(text, scheduleDraftSave);
 watch(
   [mentionQuery, () => projectFiles.entries.value.length],
   () => {
@@ -924,6 +1014,37 @@ defineExpose({ wake, setDraft });
         @select="selectMention"
       />
     </div>
+
+    <!-- Queued follow-ups — while a turn runs, Enter sends and the host's
+         service durably queues the draft behind the running turn. The chips
+         render from the `queued` prop (the backend's turn.queued /
+         turn.promoted / turn.queued-cancelled events drive the list); the ✕
+         cancels one row (remove-queued → agent:queue-cancel). -->
+    <Transition name="queue">
+      <div v-if="queued?.length" class="queue" role="region" aria-label="Queued messages">
+        <span class="queue__head">Queued</span>
+        <div
+          v-for="item in queued"
+          :key="item.queueId"
+          class="queue__item"
+          :title="`Queued #${item.position} · ${queuedLabel(item)}`"
+        >
+          <span class="queue__pos">{{ item.position }}</span>
+          <span class="queue__text">{{ queuedLabel(item) }}</span>
+          <button
+            type="button"
+            class="queue__remove"
+            :aria-label="`Remove queued message`"
+            :title="`Remove queued message`"
+            @click.stop="emit('remove-queued', item.queueId)"
+          >
+            <svg class="queue__x" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </Transition>
 
     <!-- Controls sit beside the input, not in it. They fade in as it opens and
          ride outward on the surface's growing edge. -->
@@ -1067,6 +1188,24 @@ defineExpose({ wake, setDraft });
               @paste="onPaste"
             />
           </div>
+          <!-- Steer — while a turn runs the seed is a stop and Enter queues;
+               this is the third path: inject the draft into the LIVE turn (no
+               new boundary). The provider's steer channel delivers it when it
+               builds its next request; providers without one queue it first. -->
+          <button
+            v-if="busy && open"
+            type="button"
+            class="steer"
+            :class="{ 'steer--armed': armed }"
+            :disabled="!armed"
+            :aria-label="'Send now — steer the running turn'"
+            :title="'Send now — steer the running turn'"
+            :tabindex="open ? 0 : -1"
+            @mousedown.prevent
+            @click.stop="steer"
+          >
+            <HugeiconsIcon :icon="CornerDownRightIcon" :size="16" :stroke-width="2" />
+          </button>
           <button
             type="button"
             class="seed"
@@ -1196,6 +1335,95 @@ defineExpose({ wake, setDraft });
   left: 200px;
   bottom: calc(100% + 12px);
   pointer-events: auto;
+}
+
+/* The queued-message panel — a small card riding above the dock while a turn
+   runs. Same surface language as the chips: quiet, rounded, ink-tinted. */
+.queue {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 12px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+  max-width: 380px;
+  padding: 8px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow:
+    rgb(0 0 0 / 0.10) 0 8px 28px -6px,
+    rgb(0 0 0 / 0.06) 0 2px 8px -2px,
+    var(--btn-border) 0 0 0 1px;
+  pointer-events: auto;
+}
+.queue__head {
+  padding: 0 6px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.queue__pos {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.queue__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.queue__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--field-ink);
+}
+.queue__remove {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chip-x);
+  cursor: pointer;
+}
+.queue__remove:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--field-ink);
+}
+.queue__x {
+  display: block;
+}
+.queue-enter-active,
+.queue-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.queue-enter-from,
+.queue-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 @keyframes dock-rise {
   from {
@@ -1544,6 +1772,36 @@ defineExpose({ wake, setDraft });
 .seed:active { transform: scale(0.94); }
 .seed__arrow { width: 15px; height: 15px; }
 .surface.is-card .seed__arrow { width: 16px; height: 16px; }
+
+/* Steer — the secondary "send now" beside the seed while a turn runs. A
+   quiet round sibling: same pill language, no sheen, ink-tinted; disabled
+   (empty field) it reads as part of the rail. */
+.steer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-right: 4px;
+  border: 1px solid var(--btn-border);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  transition: box-shadow 0.3s ease, transform 0.2s ease, color 0.2s ease;
+}
+.surface.is-card .steer { align-self: flex-end; }
+.steer--armed {
+  color: var(--ink);
+  box-shadow: rgb(139 124 240 / 0.12) 0 0 0 3px;
+}
+.steer:hover:not(:disabled) { transform: scale(1.06); }
+.steer:active:not(:disabled) { transform: scale(0.94); }
+.steer:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 
 /* ── Chips ────────────────────────────────────────────────────────────────── */
 .chips {

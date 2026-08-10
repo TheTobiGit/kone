@@ -1,6 +1,8 @@
 import type MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 
+import { repairMarkdownTableDelimiters } from "~/utils/padMarkdown";
+
 // Rich rendering for the file-detail preview of Markdown files. markdown-it is
 // loaded once (module-level singleton, code-split via dynamic import) the first
 // time a preview is asked for.
@@ -59,11 +61,15 @@ export function useMarkdown() {
   async function render(src: string): Promise<string | null> {
     if (import.meta.server || src.length > MAX_RENDER) return null;
     const md = await getMd();
+    // Repair GFM delimiter rows whose cell count disagrees with their header
+    // before rendering — otherwise a malformed table renders as a run-on
+    // there is nothing to repair, so valid Markdown stays byte-identical.
+    const repaired = repairMarkdownTableDelimiters(src);
     // Fenced/indented code blocks scroll horizontally (pre { overflow-x: auto }),
     // which would make each one a focusable scroller — an extra Tab stop inside
     // the preview. The whole body scrolls by arrow key, so take them out of the
     // tab order; Tab then visits only the real controls and links.
-    return md.render(src).replaceAll("<pre>", '<pre tabindex="-1">');
+    return md.render(repaired).replaceAll("<pre>", '<pre tabindex="-1">');
   }
 
   /** Parse Markdown to markdown-it's token stream, or null on the server. The
@@ -74,7 +80,9 @@ export function useMarkdown() {
   async function parse(src: string): Promise<Token[] | null> {
     if (import.meta.server) return null;
     const md = await getMd();
-    return md.parse(src, {});
+    // Same repair as `render` — the conversation thread walks these tokens
+    // into components, so a broken delimiter row must become a table here too.
+    return md.parse(repairMarkdownTableDelimiters(src), {});
   }
 
   return { render, parse };

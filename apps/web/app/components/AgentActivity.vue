@@ -10,6 +10,12 @@
 // is exactly the lurch this component exists to prevent. Keyed by the batch's
 // first entry, and consumed once.
 const carriedHeights = new Map<string, number>();
+
+// The screen-reader announcer is shared across instances too: one turn renders
+// several AgentActivity instances (the live tail plus every settled step batch),
+// and they all see the same `running`→false transition in a single Vue flush.
+// The module-scope dedupe turns that into one announcement, not one per batch.
+const lastAnnounce: { text: string; at: number } = { text: "", at: 0 };
 </script>
 
 <script setup lang="ts">
@@ -108,6 +114,41 @@ function toggleExpanded(): void {
   expanded.value = !expanded.value;
   cue("toggle");
 }
+
+// ── Screen-reader announcements ────────────────────────────────────────────────
+// The turn's full state (running / completed / failed / interrupted) lives in
+// ConversationThread and reaches this component only as the `running` boolean,
+// so we announce on THAT prop's transitions:
+//   · the live tail batch mounts exactly when a turn starts → "kone is responding"
+//   · `running` flipping to false on a still-mounted batch means the turn settled
+//     → "kone replied", or "kone stopped" / "Response interrupted" when the batch's
+//       own items show a failure or an in-progress item cut short mid-work.
+// The message goes into a `ref` bound to a single polite live region — never the
+// streamed text — and the transition watch fires once per state change, so a
+// blind user gets one announcement per event, never one per streamed token.
+const liveText = ref("");
+function announce(text: string): void {
+  const now = Date.now();
+  if (text === lastAnnounce.text && now - lastAnnounce.at < 400) return;
+  lastAnnounce.text = text;
+  lastAnnounce.at = now;
+  liveText.value = text;
+}
+function settledMessage(): string {
+  const items = props.segments.flatMap((s) => s.items);
+  if (items.some((i) => i.status === "failed")) return "kone stopped";
+  if (items.some((i) => i.status === "in-progress")) return "Response interrupted";
+  return "kone replied";
+}
+watch(
+  () => props.running,
+  (running, was) => {
+    if (props.historical) return;
+    if (running && props.isTail === true) announce("kone is responding");
+    else if (was === true && !running) announce(settledMessage());
+  },
+  { immediate: true },
+);
 
 // The orb is the fixed head; steps live either as horizontal chips beside it or
 // as vertical rows beneath it — never both for the same step.
@@ -369,6 +410,10 @@ function stepProps(e: ActivityEntry) {
 
 <template>
   <section class="activity" aria-label="Agent activity">
+    <!-- Polite live region for screen readers: turn-start / settled announcements
+         only (see the script section), so streaming is never announced per token.
+         `sr-only` is the Tailwind utility — visually invisible, no layout. -->
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ liveText }}</span>
     <!-- Head line — the orb is the fixed anchor and always comes first. Beside it,
          inline, are the chips for compacted steps: horizontally when collapsed,
          and none at all when expanded (they've dropped into the rows below). So

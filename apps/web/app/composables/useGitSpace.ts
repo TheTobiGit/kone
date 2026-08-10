@@ -1,6 +1,7 @@
 import { computed, ref, type Ref } from "vue";
 import type { Project } from "~/composables/useProject";
 import type { useProjectGit } from "~/composables/useProjectGit";
+import { createSectionSerializer } from "~/utils/latestWins";
 import type {
   GitBranch,
   GitCommit,
@@ -113,28 +114,27 @@ export function useGitSpace(
   );
 
   // ── reads ──────────────────────────────────────────────────────────────────
-  // Each read de-dupes: a second call while one is in flight joins the first
-  // rather than firing another round-trip. Sections mount and refresh
-  // independently, so without this a single push would trigger the same log read
-  // three times over.
-  const inflight = new Map<string, Promise<void>>();
+  // Each read de-dupes: a second call for the same key joins the first rather
+  // than firing another round-trip. Sections mount and refresh independently,
+  // so without this a single push would trigger the same log read three times
+  // over. Reads are additionally serialized per section with latest-wins
+  // semantics: when a request with different parameters arrives mid-read
+  // (open → all PRs, an append-page racing a reset), the older read is
+  // superseded and the newer one runs strictly after it, so results always
+  // land in request order and a stale read can never overwrite a fresher one.
+  const serializer = createSectionSerializer();
   // Which reads have ever come back, by tag. A section with an empty list has
   // two very different meanings — "nothing here" and "still asking" — and the
   // list alone can't tell them apart. Sections draw a skeleton until their tag
   // lands here, so an unanswered read never reads as an empty repository.
   const settled = ref(new Set<string>());
   function once(key: string, run: () => Promise<void>): Promise<void> {
-    const pending = inflight.get(key);
-    if (pending) return pending;
     // `prs:open` and `commits:reset` are separate reads of one section, so the
     // tag is the part before the colon: refreshing a list doesn't un-answer it.
     const tag = key.split(":")[0]!;
-    const p = run().finally(() => {
-      inflight.delete(key);
+    return serializer.schedule(key, run).finally(() => {
       settled.value.add(tag);
     });
-    inflight.set(key, p);
-    return p;
   }
 
   /** Has this section's read ever resolved? The one input to every skeleton. */

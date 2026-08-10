@@ -172,15 +172,6 @@ function persistableThreadId(s: ThreadSession): string | null {
     }
   }
 
-  /** The stored thread id a thread pane is bound to: its live session's id
-   *  (claimed synchronously on open), or its anchor's remembered id while
-   *  dormant. Null for non-thread panes and unbound blank slots. */
-  function threadAnchorId(p: Pane): string | null {
-    if (p.kind !== "thread") return null;
-    if (p.session) return p.session.threadId.value;
-    return p.entry.anchor.kind === "thread" ? p.entry.anchor.threadId : null;
-  }
-
 export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   const { agent, terminal, scratchpad } = opts;
   let warnedMismatch = false;
@@ -261,6 +252,20 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     return sessionKeyById.value[id];
   }
 
+  /** The thread id an *entry* currently resolves to: its live session's id
+   *  (via the runtime mapping) when attached, else its anchor's remembered id
+   *  while dormant. Works on raw entries, so reconcile and open()'s in-lock
+   *  dedup can read it where the panes join may not be computed yet. */
+  function entryThreadId(e: PaneEntry): string | null {
+    if (e.kind !== "thread") return null;
+    const sk = sessionKeyById.value[e.id];
+    if (sk) {
+      const s = agent.sessions.value.find((x) => x.key === sk);
+      if (s) return s.threadId.value;
+    }
+    return e.anchor.kind === "thread" ? e.anchor.threadId : null;
+  }
+
   // ── anchor sync ───────────────────────────────────────────────────────────
   // A pane's anchor is what lets a dormant pane re-attach to the right backend,
   // and what serialize() persists. A thread adopted blank carries `threadId:
@@ -293,8 +298,12 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   // a pill is clicked, and evicts idle background threads past MAX_RESIDENT. This
   // keeps the two in sync.
   //
-  //   · ADOPT — a live session no entry claims → append an entry for it. This is
-  //     how the boot thread and pill-opened threads get on the board.
+  //   · ADOPT — a live session no entry claims: if a thread entry already
+  //     anchors its thread id (a dormant pane whose session was evicted, or a
+  //     restored pane for a thread opened outside the board), re-attach that
+  //     pane in place — one pane per conversation, however the session arrives.
+  //     Otherwise append an entry for it. This is how the boot thread and
+  //     pill-opened threads get on the board.
   //   · DORMANT — an entry whose mapped session vanished. A session disappears
   //     for two reasons and only one is a close: a board close() already removed
   //     the entry (so this never sees it), while a useAgent eviction leaves the
@@ -322,9 +331,30 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     const queueAdopt = (kind: PaneKind, key: string, anchor: PaneAnchor): void => {
       toAdopt.push({ kind, key, anchor });
     };
-    for (const s of agent.sessions.value)
-      if (!claimed.has(s.key))
-        queueAdopt("thread", s.key, { kind: "thread", threadId: persistableThreadId(s) });
+    for (const s of agent.sessions.value) {
+      if (claimed.has(s.key)) continue;
+      const tid = persistableThreadId(s);
+      if (tid) {
+        // A thread pane is the one host of its conversation. If an entry
+        // already anchors this id — a dormant pane whose session was evicted,
+        // or a restored pane for a thread opened outside the board (launcher
+        // resume, recent click, shell reveal) — re-attach it in place instead
+        // of minting a second column for the same thread. Blank threads (no
+        // persistable id) still mint, exactly as before.
+        const host = entries.value.find((e) => entryThreadId(e) === tid);
+        if (host) {
+          if (!mapping[host.id]) {
+            mapping[host.id] = s.key;
+            changed = true;
+          }
+          // A live host (or one claimed earlier in this pass) means a duplicate
+          // session for an id the board already hosts — never a second pane;
+          // the stray session just stays unclaimed.
+          continue;
+        }
+      }
+      queueAdopt("thread", s.key, { kind: "thread", threadId: tid });
+    }
     for (const s of terminal.sessions.value)
       if (!claimed.has(s.key))
         queueAdopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
@@ -477,11 +507,10 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     // focuses its pane instead of minting a second column. The side-chat join
     // path leans on this — one side chat per source thread means one pane for
     // it, however the button is reached (in-flight join, or a reopen of an
-    // existing fork).
+    // existing fork). This fast path reads pre-mutation state; the same check
+    // runs again inside the mutate lock below, which is the race-free one.
     if (kind === "thread" && o.threadId) {
-      const hosted = panes.value.find(
-        (p) => p.kind === "thread" && threadAnchorId(p) === o.threadId,
-      );
+      const hosted = entries.value.find((e) => entryThreadId(e) === o.threadId);
       if (hosted) {
         if (doFocus) focus(hosted.id);
         return hosted.id;
@@ -513,7 +542,33 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     if (kind === "thread" && o.threadId && anchor.kind === "thread") anchor.threadId = o.threadId;
     const entry: PaneEntry = { id, kind, anchor, width: 0 };
 
+    // The dedup checks above all read pre-mutation state — two concurrent opens
+    // in the same tick can both pass them (a double click on a recent row, a
+    // side-chat join racing a resume). Re-run the dedup inside the mutate lock,
+    // where no other open can interleave between the read and the insert; a
+    // loser folds into the winner's pane instead of minting a duplicate.
+    let paneId: PaneId = id;
     await mutate(async () => {
+      if (kind === "thread" && o.threadId) {
+        const hosted = entries.value.find((e) => entryThreadId(e) === o.threadId);
+        if (hosted) {
+          paneId = hosted.id;
+          return;
+        }
+      }
+      if (meta.singleton) {
+        const existing = entries.value.find((e) => e.kind === kind);
+        if (existing) {
+          paneId = existing.id;
+          return;
+        }
+      }
+      if (kind === "thread" && !o.threadId && blankThreadPane.value) {
+        const existing = blankThreadPane.value;
+        paneId = existing.id;
+        if (!sessionKeyOf(existing.id)) await attach(existing.id);
+        return;
+      }
       const list = [...entries.value];
       const insertAt = insertIndexFor(o, list);
       list.splice(insertAt, 0, entry);
@@ -521,8 +576,8 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       await attach(id);
     });
 
-    if (doFocus) focus(id);
-    return id;
+    if (doFocus) focus(paneId);
+    return paneId;
   }
 
   // ── close ──────────────────────────────────────────────────────────────────
@@ -737,6 +792,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     if (!layout || layout.version !== 1 || !Array.isArray(layout.panes)) return [];
     const seenSingleton = new Set<PaneKind>();
     const seenIds = new Set<string>();
+    const seenThreadIds = new Set<string>();
     let keptBlankThread = false;
     const kept: PaneEntry[] = [];
     for (const raw of layout.panes) {
@@ -765,6 +821,15 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
         !knownThreadIds.has(anchor.threadId)
       ) {
         continue;
+      }
+      // One conversation is hosted by exactly one pane; a layout written before
+      // that law held (the duplicate-pane bug) can carry two panes for the same
+      // thread id. Keep the leftmost, drop the rest — they would otherwise
+      // resurrect as twin columns on every relaunch. Runs after the phantom
+      // filter so a dropped phantom never consumes the slot of the real pane.
+      if (anchor.kind === "thread" && anchor.threadId) {
+        if (seenThreadIds.has(anchor.threadId)) continue;
+        seenThreadIds.add(anchor.threadId);
       }
       const meta = paneKindMeta(kind);
       if (meta.singleton) {

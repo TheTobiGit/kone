@@ -219,6 +219,52 @@ describe("useBoard — restore drops phantom thread panes", () => {
     await board.restore(layout);
     expect(board.entries.value.length).toBe(2);
   });
+
+  test("a layout with two panes for one thread keeps only the leftmost", async () => {
+    const { board } = harness();
+
+    // Written by the duplicate-pane bug: the same conversation persisted twice.
+    // The first (leftmost) pane keeps its id, width and focus; the twin is
+    // dropped so it can't resurrect as a second column on every relaunch.
+    const layout = {
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "dup-1" }, width: 2 },
+        { id: "p2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "dup-1" }, width: 0 },
+      ],
+      focusedId: "p2",
+    };
+
+    await board.restore(layout, new Set(["dup-1"]));
+
+    expect(board.entries.value.length).toBe(1);
+    expect(board.entries.value[0]!.id).toBe("p1");
+    expect(board.entries.value[0]!.width).toBe(2);
+    // Focus fell back to the surviving pane rather than pointing at a dropped one.
+    expect(board.focusedId.value).toBe("p1");
+  });
+
+  test("a phantom duplicate never shadows the real pane", async () => {
+    const { board } = harness();
+
+    // First pane's id is unknown (phantom — dropped by the known-id filter);
+    // the second pane is the real conversation. The dedup must not let the
+    // phantom consume the "seen" slot and drop the real one.
+    const layout = {
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "gone-1" }, width: 0 },
+        { id: "p2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-1" }, width: 1 },
+      ],
+      focusedId: "p2",
+    };
+
+    await board.restore(layout, new Set(["real-1"]));
+
+    expect(board.entries.value.length).toBe(1);
+    expect(board.entries.value[0]!.id).toBe("p2");
+    expect(board.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "real-1" });
+  });
 });
 
 describe("useBoard — a threadless board stays threadless", () => {
@@ -626,5 +672,153 @@ describe("useBoard — attach never conjures a second column", () => {
     expect(closedTerminalKeys).toEqual([closingKey]);
     expect(termSessions.value.length).toBe(1);
     expect(board.focusedId.value).toBe("p1");
+  });
+});
+
+describe("useBoard — one pane per thread, however it arrives", () => {
+  // The bug: agent.openThread() called from outside board.open() (recent click,
+  // shell reveal, launcher resume) spawns a session the board only knows how to
+  // adopt as a brand-new pane. A dormant pane whose anchor remembers the same
+  // threadId was invisible to ADOPT, so the board ended up with two columns for
+  // one conversation. Reconcile must re-attach the dormant pane in place.
+  test("an outside openThread for a dormant thread re-attaches its pane, no second column", async () => {
+    const { board, agentSessions } = harness();
+
+    // A real conversation lands and the board adopts it.
+    const t1 = makeThread("t1", "thread-real-id");
+    t1.blocks.value = [{ role: "user" }];
+    agentSessions.value = [t1];
+    await settle();
+    const paneId = board.entries.value[0]!.id;
+    board.setWidth(paneId, 2);
+
+    // Eviction (pruneResident) strands a dormant pane whose anchor remembers id.
+    agentSessions.value = [];
+    await settle();
+    expect(board.entries.value.length).toBe(1);
+    expect(board.panes.value[0]!.session).toBeNull();
+
+    // The recent-session click path: agent.openThread spawns a fresh session for
+    // the same threadId — reconcile must claim the dormant pane, not mint.
+    const t2 = makeThread("t2", "thread-real-id");
+    t2.blocks.value = [{ role: "user" }];
+    agentSessions.value = [t2];
+    await settle();
+
+    expect(board.entries.value.length).toBe(1);
+    expect(board.entries.value[0]!.id).toBe(paneId);
+    expect(board.entries.value[0]!.width).toBe(2);
+    const pane = board.panes.value[0]!;
+    expect(pane.session).toMatchObject({ key: "t2" });
+  });
+
+  test("a background re-attach does not steal focus from the focused pane", async () => {
+    const { board, agentSessions, termSessions } = harness();
+
+    // Thread (later evicted → dormant) + a focused terminal.
+    const t = makeThread("t1", "bg-1");
+    t.blocks.value = [{ role: "user" }];
+    agentSessions.value = [t];
+    await settle();
+    await board.open("terminal");
+    await settle();
+    const terminalId = board.entries.value[1]!.id;
+    board.focus(terminalId);
+    agentSessions.value = [];
+    await settle();
+
+    // The thread re-opens from outside the board while the terminal is focused.
+    const t2 = makeThread("t2", "bg-1");
+    t2.blocks.value = [{ role: "user" }];
+    agentSessions.value = [t2];
+    await settle();
+
+    expect(board.entries.value.length).toBe(2);
+    expect(board.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "bg-1" });
+    expect(board.panes.value[0]!.session).toMatchObject({ key: "t2" });
+    // Focus stays on the terminal — background adoptions never steal it.
+    expect(board.focusedId.value).toBe(terminalId);
+    expect(termSessions.value.length).toBe(1);
+  });
+
+  test("restore re-attaches a live unclaimed session to its stored pane", async () => {
+    const { board, agentSessions } = harness();
+
+    // The session was opened outside the board before restore (launcher resume),
+    // so it carries a real transcript and survives G6's blank-sweep.
+    const t = makeThread("live", "resume-1");
+    t.blocks.value = [{ role: "user" }];
+    agentSessions.value = [t];
+    await settle();
+
+    // The saved layout remembers the same thread as a pane; deferHeavyAttach
+    // leaves it dormant, so the trailing reconcile must re-attach the live
+    // session to it — one pane, in its saved spot.
+    await board.restore(
+      {
+        version: 1 as const,
+        panes: [
+          { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "resume-1" }, width: 3 },
+          { id: "p2", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
+        ],
+        focusedId: "p2",
+      },
+      new Set(["resume-1"]),
+      { deferHeavyAttach: true },
+    );
+    await settle();
+
+    expect(board.entries.value.length).toBe(2);
+    expect(board.entries.value[0]!.id).toBe("p1");
+    expect(board.entries.value[0]!.width).toBe(3);
+    expect(board.panes.value[0]!.session).toMatchObject({ key: "live" });
+    expect(board.focusedId.value).toBe("p2");
+  });
+
+  test("a duplicate session for an already-live thread never mints a second pane", async () => {
+    const { board, agentSessions } = harness();
+
+    const t1 = makeThread("t1", "dup-1");
+    t1.blocks.value = [{ role: "user" }];
+    agentSessions.value = [t1];
+    await settle();
+    expect(board.entries.value.length).toBe(1);
+
+    // Degenerate state (a second session claiming the same id) — the board must
+    // not render a second column for it; the pane already hosts that thread.
+    const t2 = makeThread("t2", "dup-1");
+    t2.blocks.value = [{ role: "user" }];
+    agentSessions.value = [...agentSessions.value, t2];
+    await settle();
+
+    expect(board.entries.value.length).toBe(1);
+  });
+
+  test("concurrent open(thread, { threadId }) calls fold into one pane", async () => {
+    const { board } = harness();
+
+    // Two opens in the same tick (double click, join racing resume): both pass
+    // the pre-mutation dedup, but the in-lock re-check must fold the loser into
+    // the winner's pane instead of minting a duplicate.
+    const [a, b] = await Promise.all([
+      board.open("thread", { threadId: "race-1" }),
+      board.open("thread", { threadId: "race-1" }),
+    ]);
+    await settle();
+
+    expect(a).toBe(b);
+    expect(board.entries.value.length).toBe(1);
+    expect(board.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "race-1" });
+    expect(board.focusedId.value).toBe(a);
+  });
+
+  test("concurrent blank open(thread) calls still mint one column", async () => {
+    const { board } = harness();
+
+    const [a, b] = await Promise.all([board.open("thread"), board.open("thread")]);
+    await settle();
+
+    expect(a).toBe(b);
+    expect(board.entries.value.length).toBe(1);
   });
 });

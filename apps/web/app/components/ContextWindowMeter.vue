@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { TokenUsage } from "~/types/desktop";
 
 const props = defineProps<{ usage: TokenUsage }>();
@@ -78,34 +78,106 @@ const tooltip = computed(() =>
     ? `${usageLabel.value}. Automatically compacts when needed.`
     : usageLabel.value,
 );
+
+// ── the expanded readout ──────────────────────────────────────────────────────
+// The ring is a fraction; the popover is the whole story — used %, remaining,
+// the input/output/total split the events already carry but the ring never
+// showed, and the window. Every row renders only when its number is real:
+// Cursor derives the window but its ACP transport reports no usage at all, so
+// half-empty data must not read as "nothing consumed".
+const open = ref(false);
+const popoverId = useId();
+function openPopover(): void {
+  open.value = true;
+}
+function closePopover(): void {
+  open.value = false;
+}
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === "Escape") closePopover();
+}
+onMounted(() => {
+  document.addEventListener("keydown", onKeydown);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onKeydown);
+});
+
+const rows = computed(() => {
+  const u = props.usage;
+  const out: { label: string; value: string }[] = [];
+  const m = max.value;
+  if (usedKnown.value !== undefined && m !== undefined && m > 0) {
+    out.push({ label: "Used", value: `${Math.round(percentage.value)}% · ${formatTokens(used.value)}` });
+    const remaining = m - used.value;
+    if (remaining > 0) out.push({ label: "Remaining", value: formatTokens(remaining) });
+  }
+  if (typeof u.input === "number" && Number.isFinite(u.input)) {
+    out.push({ label: "Input", value: formatTokens(u.input) });
+  }
+  if (typeof u.output === "number" && Number.isFinite(u.output)) {
+    out.push({ label: "Output", value: formatTokens(u.output) });
+  }
+  if (typeof u.total === "number" && Number.isFinite(u.total)) {
+    out.push({ label: "Total", value: formatTokens(u.total) });
+  }
+  if (m !== undefined && m > 0) out.push({ label: "Window", value: formatTokens(m) });
+  return out;
+});
+const note = computed(() =>
+  props.usage.compactsAutomatically ? "Auto-compacts when full." : "",
+);
 </script>
 
 <template>
-  <span
-    v-if="showRing"
-    class="context-meter"
-    :class="`is-${level}`"
-    role="img"
-    :aria-label="`Context window: ${usageLabel}`"
-    :title="tooltip"
-  >
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <circle class="context-meter__track" cx="10" cy="10" :r="RADIUS" :stroke-width="STROKE" />
-      <circle
-        v-if="percentage > 0"
-        class="context-meter__fill"
-        cx="10"
-        cy="10"
-        :r="RADIUS"
-        :stroke-width="STROKE"
-        :stroke-dasharray="CIRCUMFERENCE"
-        :stroke-dashoffset="dashOffset"
-      />
-    </svg>
+  <!-- Hover or focus opens the popover (touch: tapping the ring focuses it);
+       Esc closes. The wrapper owns hover so moving from the ring onto the
+       popover doesn't close it mid-read. -->
+  <span class="meter-wrap" @mouseenter="openPopover" @mouseleave="closePopover">
+    <span
+      v-if="showRing"
+      class="context-meter"
+      :class="`is-${level}`"
+      role="img"
+      tabindex="0"
+      :aria-label="`Context window: ${usageLabel}`"
+      :aria-describedby="popoverId"
+      :title="tooltip"
+      @focus="openPopover"
+      @blur="closePopover"
+    >
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <circle class="context-meter__track" cx="10" cy="10" :r="RADIUS" :stroke-width="STROKE" />
+        <circle
+          v-if="percentage > 0"
+          class="context-meter__fill"
+          cx="10"
+          cy="10"
+          :r="RADIUS"
+          :stroke-width="STROKE"
+          :stroke-dasharray="CIRCUMFERENCE"
+          :stroke-dashoffset="dashOffset"
+        />
+      </svg>
+    </span>
+
+    <Transition name="meter-pop">
+      <div v-if="open" :id="popoverId" class="meter-pop" role="tooltip">
+        <div v-for="row in rows" :key="row.label" class="meter-pop__row">
+          <span class="meter-pop__label">{{ row.label }}</span>
+          <span class="meter-pop__value">{{ row.value }}</span>
+        </div>
+        <p v-if="note" class="meter-pop__note">{{ note }}</p>
+      </div>
+    </Transition>
   </span>
 </template>
 
 <style scoped>
+.meter-wrap {
+  position: relative;
+  display: inline-flex;
+}
 .context-meter {
   display: inline-flex;
   width: 15px;
@@ -117,6 +189,13 @@ const tooltip = computed(() =>
   /* Whole-meter arrival: scale + fade in once, each time it mounts (new thread,
      or a reopened one). Pairs with the arc sweep for a single settle-in. */
   animation: context-meter-in 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* The meter is now keyboard-reachable — give it the same visible ring the
+     strip's other focusable tools wear. */
+  border-radius: 50%;
+}
+.context-meter:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 2px;
 }
 
 .context-meter svg {
@@ -152,6 +231,58 @@ const tooltip = computed(() =>
 }
 .context-meter.is-full {
   --meter-color: var(--diff-del);
+}
+
+/* The expanded readout — a quiet card under the ring, right-aligned so it can
+   never clip against the column's left edge. Hairline ring + one soft shadow,
+   the same family as the pickers. */
+.meter-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 196px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--surface, var(--ground));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
+    0 6px 24px rgba(0, 0, 0, 0.12);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  pointer-events: none;
+}
+.meter-pop__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.meter-pop__label {
+  color: var(--muted);
+}
+.meter-pop__value {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.meter-pop__note {
+  margin: 6px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.meter-pop-enter-active,
+.meter-pop-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.meter-pop-enter-from,
+.meter-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-3px);
 }
 
 @keyframes context-meter-in {

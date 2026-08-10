@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Copy01Icon, MessageAdd01Icon } from "@hugeicons/core-free-icons";
 import type { BoardIntent } from "~/types/board";
 
 const props = defineProps<{
@@ -137,6 +137,18 @@ function onScratchpad(): void {
   hide();
 }
 
+function onNewThread(): void {
+  // The board's draft-thread intent opens a fresh column beside this pane with
+  // the composer pre-filled — the caller does the quoting.
+  const draft = capturedText.value
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  emit("dispatch", { type: "draft-thread", draft, from: sourceKey.value });
+  cue("press");
+  hide();
+}
+
 const style = computed(() => ({
   top: `${coords.value.top}px`,
   left: `${coords.value.left}px`,
@@ -166,6 +178,10 @@ const style = computed(() => ({
         <button type="button" class="selection-actions__btn" @click="onScratchpad">
           <HugeiconsIcon :icon="Add01Icon" :size="12" :stroke-width="2" />
           <span>Scratchpad</span>
+        </button>
+        <button type="button" class="selection-actions__btn" @click="onNewThread">
+          <HugeiconsIcon :icon="MessageAdd01Icon" :size="12" :stroke-width="2" />
+          <span>New thread</span>
         </button>
       </motion.div>
     </AnimatePresence>

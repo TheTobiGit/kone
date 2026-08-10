@@ -28,7 +28,7 @@ import {
 } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, PencilEdit01Icon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
@@ -822,6 +822,12 @@ function onScroll(): void {
   const left = rail.value?.scrollLeft ?? 0;
   if (settleTimer) clearTimeout(settleTimer);
   settleTimer = setTimeout(() => {
+    // Re-check the programmatic-scroll guard at settle time, not just at scroll
+    // time: a focus-driven scroll that landed after the swipe (an open, a click,
+    // a re-centre) supersedes the settle. Without this, a stale settle snaps to
+    // the pre-open position and can steal focus from a column the user just
+    // opened — the board "opens but doesn't focus" race.
+    if (Date.now() - programmaticAt < 480) return;
     const key = nearestKey(left);
     lastScrollLeft = left;
     if (!key) return;
@@ -840,6 +846,15 @@ function onScroll(): void {
 watch(
   () => props.focusedId,
   (key, prev) => {
+    // A focus change means the user (or an open) is directing the strip — a
+    // swipe settle still pending must not override it and snap to a stale
+    // column. The settle's own focus emit runs the watcher only on the next
+    // tick, after its snap has already fired, so this never cancels a settle
+    // in progress.
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
     // Per-column zen: focus away collapses the outgoing column to its ladder rung
     // while the incoming one expands only if *it* is maximized. Flag both when their
     // rendered width changes so the glide doesn't snap.
@@ -950,6 +965,98 @@ function onArchive(c: Pane): void {
   if (c.kind !== "thread" || !c.session) return;
   cue("press");
   emit("archive", c.session.threadId.value, c.id);
+}
+
+// ── turn retry / resend / reload — the session's own send & open paths ───────
+// ConversationThread never touches the send path; these forward its intents to
+// the column's session, which owns send/openStored/start. `send` is the same
+// function the composer uses, so a retry lands exactly like a fresh prompt.
+function onRetryTurn(c: Pane, text: string): void {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  if (!s || !text.trim() || s.busy.value) return;
+  void s.send(text);
+}
+function onResendTurn(c: Pane, text: string): void {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  if (!s || !text.trim() || s.busy.value) return;
+  void s.send(text);
+}
+function onRetryLoad(c: Pane): void {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  const id = anchoredThreadId(c);
+  if (!s || !id) return;
+  void s.openStored(id);
+}
+function onRetrySession(c: Pane): void {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  if (!s) return;
+  void s.start();
+}
+/** Windowed stored threads page their older history on demand — forward the
+ *  thread's request to the session's loadOlder (the store read + prepend). */
+function onLoadOlder(c: Pane): void {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  if (!s || !s.hasOlder.value) return;
+  void s.loadOlder();
+}
+
+/** The stored conversation this pane is anchored to — null for a fresh blank
+ *  column. This is the discriminator ConversationThread needs: a thread whose
+ *  transcript failed to load still carries its real stored id on the anchor,
+ *  while a never-sent blank column's anchor remembers none. */
+function anchoredThreadId(c: Pane): string | null {
+  if (c.kind !== "thread") return null;
+  const anchor = c.entry.anchor;
+  return anchor.kind === "thread" ? anchor.threadId : null;
+}
+
+// ── inline thread rename ─────────────────────────────────────────────────────
+// The column title is a live ref on the session; renaming writes it
+// optimistically and reverts if the store's renameThread says no. Enter commits,
+// Esc cancels, blur commits (guarded so Enter's commit isn't double-run).
+const renamingKey = ref<string | null>(null);
+const renameDraft = ref("");
+const renameInput = ref<HTMLInputElement | null>(null);
+
+function startRename(c: Pane): void {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  if (!s || renamingKey.value === c.id) return;
+  cue("press");
+  renamingKey.value = c.id;
+  renameDraft.value = s.title.value;
+  void nextTick(() => {
+    renameInput.value?.focus();
+    renameInput.value?.select();
+  });
+}
+function cancelRename(): void {
+  renamingKey.value = null;
+  renameDraft.value = "";
+}
+async function commitRename(c: Pane): Promise<void> {
+  if (c.kind !== "thread") return;
+  const s = c.session;
+  if (!s || renamingKey.value !== c.id) return;
+  const draft = renameDraft.value.trim();
+  renamingKey.value = null;
+  if (!draft || draft === s.title.value) return;
+  const previous = s.title.value;
+  s.title.value = draft; // optimistic — the strip shows it immediately
+  if (!import.meta.client) return;
+  const api = window.koneDesktop?.agent;
+  if (!api) return; // browser dev — no store to tell; the optimistic title stands
+  try {
+    const ok = await api.renameThread(s.threadId.value, draft);
+    if (ok === false) s.title.value = previous;
+  } catch {
+    s.title.value = previous; // bridge hiccup — never keep a title the store lost
+  }
 }
 
 function onInsertColumn(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
@@ -1233,7 +1340,37 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     >
                       <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="11" :stroke-width="2" aria-hidden="true" />
                     </span>
-                    <h2 class="col__title">{{ c.session.title.value || "New thread" }}</h2>
+                    <!-- Inline rename: the title edits in place (double-click
+                         or the pencil — which is always in flow so nothing ever
+                         shifts, and lights up on hover / focus / when the column
+                         is focused). Enter commits, Esc cancels, blur commits. -->
+                    <h2
+                      v-if="renamingKey !== c.id"
+                      class="col__title"
+                      :title="c.session.title.value || 'New thread'"
+                      @dblclick="startRename(c)"
+                    >{{ c.session.title.value || "New thread" }}</h2>
+                    <input
+                      v-else
+                      ref="renameInput"
+                      v-model="renameDraft"
+                      class="col__rename-input"
+                      aria-label="Rename conversation"
+                      maxlength="120"
+                      @keydown.enter.prevent="commitRename(c)"
+                      @keydown.esc.prevent="cancelRename()"
+                      @blur="commitRename(c)"
+                    />
+                    <button
+                      v-show="renamingKey !== c.id"
+                      type="button"
+                      class="col__rename"
+                      aria-label="Rename conversation"
+                      title="Rename conversation"
+                      @click.stop="startRename(c)"
+                    >
+                      <HugeiconsIcon :icon="PencilEdit01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+                    </button>
                     <ContextWindowMeter
                       v-if="c.session.tokenUsage.value"
                       :usage="c.session.tokenUsage.value"
@@ -1321,7 +1458,19 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     :now="now"
                     :session-error="c.session.error.value"
                     :source-key="c.id"
+                    :thread-id="anchoredThreadId(c)"
+                    :loading="c.session.sessionState.value === 'starting'"
+                    :busy="c.session.busy.value"
+                    :queued="c.session.queuedTurns.value"
+                    :has-older="c.session.hasOlder.value"
+                    :loading-older="c.session.loadingOlder.value"
+                    :older-error="c.session.olderError.value"
                     @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
+                    @retry="(text) => onRetryTurn(c, text)"
+                    @resend="(text) => onResendTurn(c, text)"
+                    @retry-load="() => onRetryLoad(c)"
+                    @retry-session="() => onRetrySession(c)"
+                    @load-older="() => onLoadOlder(c)"
                   />
                 </template>
                 <template v-else-if="c.kind === 'terminal' && c.session">
@@ -1849,6 +1998,60 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
 }
 .col.is-focused .col__title {
   color: var(--ink);
+}
+
+/* Inline rename — the pencil always sits in flow (18px slot, never shifts the
+   centered title) and lights up on hover / focus-within / when its column is
+   focused. Keyboard users tab to it like any other header tool. */
+.col__rename {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.col__title-wrap:hover .col__rename,
+.col__title-wrap:focus-within .col__rename,
+.col.is-focused .col__rename {
+  opacity: 1;
+}
+.col__rename:hover,
+.col__rename:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
+}
+.col__rename:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 1px;
+}
+.col__rename-input {
+  flex: 0 1 auto;
+  min-width: 90px;
+  max-width: 220px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--hover);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  text-align: center;
+  outline: none;
+}
+.col__rename-input:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
 }
 
 /* ── side chats: the temporary look ────────────────────────────────────────────

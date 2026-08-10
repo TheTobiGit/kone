@@ -82,6 +82,23 @@ export function useBoardPersistence(projectPath: string | (() => string)) {
     // gesture — including the flush ProjectView does on unmount, which is
     // exactly the state the next visit should come back to.
     layoutCache.set(path, layout);
+    writeThrough(path, layout);
+  }
+
+  /** Synchronous write-through of the freshest layout, past any debounce — the
+   *  unload/visibility flush ProjectView calls. Callers pass the live
+   *  serialization (a gesture inside the debounce window has not reached
+   *  save() yet, so the cache alone could be a tick stale); the cache is the
+   *  fallback. The IPC send happens at call time (the promise is
+   *  fire-and-forget), so even a renderer that dies this tick has already
+   *  enqueued the message. */
+  function flush(layout?: BoardLayout): void {
+    const path = resolvePath();
+    const target = layout ?? layoutCache.get(path);
+    if (target) writeThrough(path, target);
+  }
+
+  function writeThrough(path: string, layout: BoardLayout): void {
     const api = bridge();
     if (api) {
       void api.save({ projectPath: path, layout }).catch(() => {
@@ -92,5 +109,5 @@ export function useBoardPersistence(projectPath: string | (() => string)) {
     writeLocal(path, layout);
   }
 
-  return { load, save };
+  return { load, save, flush };
 }

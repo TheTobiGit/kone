@@ -148,6 +148,10 @@ export type ModelOption = {
    *  `additionalSpeedTiers`), when it has one — most models don't. A boolean
    *  toggle in the UI; the `id` is what actually goes on the turn. */
   fastTier?: { id: string; label: string };
+  /** True when the provider's catalog names this model's `fast` tier as its
+   *  DEFAULT service tier (`ModelDescriptor.defaultServiceTier`) — the toggle
+   *  should start on rather than off when the family is first selected. */
+  fastDefault?: boolean;
   /** This family's context-window choices (Claude's 200k/1m auto-compact
    *  window), when it has more than a single fixed window. A small cycle in the
    *  UI; the chosen `id` rides each turn as `contextWindow`. */
@@ -278,14 +282,76 @@ export function describeModelId(
 /** Peel a trailing effort tier off a raw id → { core, tier }. Ids with no
  *  recognised suffix are their own core with a `base` tier. */
 function splitEffort(id: string): { core: string; tier: EffortTier } {
-  const m = id.match(/^(.*)-(none|minimal|low|medium|high|xhigh|max|ultra|thinking)$/i);
+  // Defensive: a non-string (or missing) id must never throw — it degrades to
+  // its own core with no effort axis, and the caller can skip it if it wants.
+  const m = String(id ?? "").match(/^(.*)-(none|minimal|low|medium|high|xhigh|max|ultra|thinking)$/i);
   if (m) return { core: m[1]!, tier: m[2]!.toLowerCase() as EffortTier };
-  return { core: id, tier: "base" };
+  return { core: String(id ?? ""), tier: "base" };
 }
 
 function toEffort(id: string, modelId: string, tier: EffortTier): Effort {
   const meta = effortMeta(tier);
   return { id, modelId, tier, label: meta.label, hue: meta.hue, hint: meta.hint, brains: meta.brains, glow: meta.glow };
+}
+
+// ── raw provider model-table parsing ─────────────────────────────────────────
+// Some CLIs print their catalog as a plain text table rather than JSON —
+// Antigravity's `agy models` rows are `slug<TAB>Display Label (Effort)`, and
+// instead of passing the `slug\tlabel` blob through as an invalid model id.
+// kone's live model-list calls live in the desktop adapters, which parse
+// structured JSON today; this is the defensive parser those adapters (or any
+// future text-format provider) should run raw table output through. It is
+// deliberately total: malformed rows are skipped, never thrown on.
+
+export type ParsedModelRow = { id: string; label: string };
+
+/** Header words a first line may use to name its columns. Only recognized when
+ *  EVERY cell of the first non-blank line is one, so a real model actually
+ *  named e.g. `model` still parses. */
+const MODEL_TSV_HEADER_CELLS = new Set([
+  "id",
+  "model",
+  "model id",
+  "slug",
+  "name",
+  "label",
+  "display name",
+  "model name",
+]);
+
+/** Parse a provider's plain-text model table into (id, label) rows.
+ *
+ *  Defensive by design:
+ *  - CRLF or LF line endings, and stray ANSI colour codes, are tolerated.
+ *  - A row is `slug<TAB>label` (Antigravity `agy models` style); a lone column
+ *    means the id is its own label. Cells are trimmed, so extra whitespace
+ *    around the tab is harmless.
+ *  - A leading header row is skipped when every cell is a known header word;
+ *    headerless output parses fine either way.
+ *  - Malformed rows (blank id, blank line) are skipped — never thrown on, and
+ *    never emitted as garbage entries. */
+export function parseModelTsvRows(text: string): ParsedModelRow[] {
+  const rows: ParsedModelRow[] = [];
+  const lines = String(text ?? "").replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const cells = line.split("\t").map((c) => c.trim());
+    // A header row is only ever the first non-blank line, and only when every
+    // cell is a known header word.
+    if (
+      rows.length === 0 &&
+      cells.length > 0 &&
+      cells.every((c) => MODEL_TSV_HEADER_CELLS.has(c.toLowerCase()))
+    ) {
+      continue;
+    }
+    const id = (cells[0] ?? "").trim();
+    if (!id) continue; // malformed row — nothing to key a family on
+    const label = (cells[1] ?? "").trim();
+    rows.push({ id, label: label || id });
+  }
+  return rows;
 }
 
 /** Group a provider's raw model list into family options with real efforts. */
@@ -296,6 +362,7 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
       label: string;
       efforts: Effort[];
       defaultReasoningEffort?: string;
+      defaultServiceTier?: string;
       serviceTiers?: ModelDescriptor["serviceTiers"];
       contextWindows?: ModelDescriptor["contextWindows"];
     }
@@ -303,14 +370,21 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
   const order: string[] = [];
 
   for (const m of models) {
+    // A malformed descriptor — blank id, or a non-string sneaking over IPC —
+    // can't key a family: skip it rather than emitting a garbage entry or
+    // throwing inside splitEffort.
+    if (!m || typeof m.id !== "string" || !m.id.trim()) continue;
     const { core, tier } = splitEffort(m.id);
     if (!byCore.has(core)) {
       // The id's own label (e.g. Codex's real `displayName`) IS the family
       // name — no need to re-derive one from the id.
       byCore.set(core, {
-        label: m.label,
+        // A blank label degrades to the prettified id — the adapters already
+        // default label→id at their end; this is the same fallback one layer up.
+        label: (m.label ?? "").trim() || prettifyModelId(core),
         efforts: [],
         defaultReasoningEffort: m.defaultReasoningEffort,
+        defaultServiceTier: m.defaultServiceTier,
         serviceTiers: m.serviceTiers,
         contextWindows: m.contextWindows,
       });
@@ -333,7 +407,14 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
   }
 
   return order.map((core) => {
-    const { label, efforts: bucketEfforts, defaultReasoningEffort, serviceTiers, contextWindows } = byCore.get(core)!;
+    const {
+      label,
+      efforts: bucketEfforts,
+      defaultReasoningEffort,
+      defaultServiceTier,
+      serviceTiers,
+      contextWindows,
+    } = byCore.get(core)!;
     const efforts = bucketEfforts.sort((a, b) => EFFORT_ORDER.indexOf(a.tier) - EFFORT_ORDER.indexOf(b.tier));
     // Prefer the provider's own default, else medium, else the middle rung.
     const providerDefaultIdx = defaultReasoningEffort
@@ -347,6 +428,9 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
     // surface it as a plain on/off toggle rather than a full tier picker.
     const fastEntry = serviceTiers?.find((t) => t.id.toLowerCase() === "fast");
     const fastTier = fastEntry ? { id: fastEntry.id, label: fastEntry.label } : undefined;
+    // The provider's catalog default tier (Codex `defaultServiceTier`) pre-sets
+    // the toggle — a model whose default is "fast" opens with fast mode on.
+    const fastDefault = fastTier !== undefined && defaultServiceTier?.toLowerCase() === "fast";
     return {
       key: core,
       label,
@@ -354,7 +438,7 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
       vendor,
       efforts,
       defaultEffortIndex,
-      ...(fastTier ? { fastTier } : {}),
+      ...(fastTier ? { fastTier, ...(fastDefault ? { fastDefault: true } : {}) } : {}),
       ...(contextWindows && contextWindows.length > 1 ? { contextWindows } : {}),
     };
   });

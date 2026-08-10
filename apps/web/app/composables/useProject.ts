@@ -8,12 +8,18 @@ export function useProject() {
   return useState<Project | null>("kone:project", () => null);
 }
 
-// A thread id to open the moment a project becomes active, set by the App Home
+// A thread to open the moment a project becomes active, set by the App Home
 // "recent sessions" list (which spans every project) just before it switches the
 // active project. ProjectView reads and clears it on mount, opening that thread
 // instead of rehydrating the project's latest. Null means "just open the project".
+//
+// The request is namespaced to the project it belongs to: the thread id means
+// nothing inside any other project's board, so a resume that outlives the mount
+// it was meant for (a mount torn down mid-chain, say) can never fire inside the
+// wrong project — ProjectView only honours a request whose path matches.
+export type PendingThread = { path: string; threadId: string };
 export function usePendingThread() {
-  return useState<string | null>("kone:pending-thread", () => null);
+  return useState<PendingThread | null>("kone:pending-thread", () => null);
 }
 
 // The single definition of "activate a project": record it in recents, then make
@@ -27,7 +33,7 @@ export function useOpenProject() {
   // (the App Home sessions list does this); omit it to land on the project home.
   return (project: Project, threadId?: string) => {
     remember(project);
-    pending.value = threadId ?? null;
+    pending.value = threadId ? { path: project.path, threadId } : null;
     active.value = project;
   };
 }

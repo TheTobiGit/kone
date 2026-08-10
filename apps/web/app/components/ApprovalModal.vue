@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion } from "motion-v";
 import ApprovalPrompt from "~/components/ApprovalPrompt.vue";
+import type { PendingApproval } from "~/composables/useAgent";
 import type { ApprovalDecision, ApprovalRequest } from "~/types/desktop";
 
 // The agent's request for a go-ahead before it runs something, in the same
@@ -14,14 +15,37 @@ import type { ApprovalDecision, ApprovalRequest } from "~/types/desktop";
 const props = defineProps<{
   requestId: string;
   approval: ApprovalRequest;
+  /** The full pending-approval queue this ask belongs to, when the host passes
+   *  it. Enables the "1/N" position readout and the 1–9 digit shortcuts to jump
+   *  to a queued ask. Absent → the single-ask behaviour, unchanged. */
+  queue?: PendingApproval[];
 }>();
 
 const emit = defineEmits<{
   decide: [requestId: string, decision: ApprovalDecision];
 }>();
 
+// The ask on screen — the head of the queue when one is passed, otherwise the
+// lone request. Digits 1–9 jump; Enter/Esc always act on the CURRENT ask.
+const index = ref(0);
+watch(
+  () => props.queue?.length ?? 0,
+  () => (index.value = 0),
+);
+const queueActive = computed(() => (props.queue?.length ?? 0) > 1);
+const active = computed(() => {
+  const q = props.queue;
+  if (q && q.length > 0) return q[Math.min(index.value, q.length - 1)]!;
+  return { requestId: props.requestId, approval: props.approval };
+});
+function jumpTo(n: number): void {
+  const q = props.queue;
+  if (!q || q.length <= 1) return;
+  index.value = Math.max(0, Math.min(n, q.length - 1));
+}
+
 function decide(decision: ApprovalDecision): void {
-  close(() => emit("decide", props.requestId, decision));
+  close(() => emit("decide", active.value.requestId, decision));
 }
 
 // ── shell (scrim + elastic card) — lifted from the pickers / question modal so
@@ -53,6 +77,11 @@ function onKeydown(e: KeyboardEvent) {
   } else if (e.key === "Escape") {
     e.preventDefault();
     decide("reject-once");
+  } else if (queueActive.value && /^[1-9]$/.test(e.key)) {
+    // Jump to the Nth queued ask — 1 is the head. The turn is parked on the
+    // queue, so digits are free (no text input lives in this modal).
+    e.preventDefault();
+    jumpTo(Number(e.key) - 1);
   }
 }
 
@@ -115,8 +144,12 @@ const cardSpring = {
       aria-label="The agent wants to run something"
     >
       <div ref="contentEl" class="approve-card">
+        <div v-if="queueActive" class="approve-pos">
+          <span class="approve-pos__count">{{ index + 1 }}/{{ props.queue!.length }}</span>
+          <span class="approve-pos__hint">1–9 to jump</span>
+        </div>
         <ApprovalPrompt
-          :approval="approval"
+          :approval="active.approval"
           @decide="decide"
         />
       </div>
@@ -147,5 +180,23 @@ const cardSpring = {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+/* Queue position — a slim mono header over the ask: which of N is showing, and
+   the digit hint only when there's more than one to jump between. */
+.approve-pos {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.approve-pos__count {
+  font-variant-numeric: tabular-nums;
+}
+.approve-pos__hint {
+  opacity: 0.75;
 }
 </style>

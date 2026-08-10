@@ -15,9 +15,9 @@ import { SESSION_BRAND, type SessionSummary } from "~/types/session";
 // straight off the metadata list without reconstructing every transcript. Rows
 // render the diff / token columns only when a value is present.
 
-const MAX = 8;
-// A running total that survives project switches — a pin is "keep this thread in
-// front" and isn't stored alongside the thread itself.
+// Pins now live in the DB (threads.is_pinned, v18) — this localStorage key is
+// only the browser-dev fallback and the one-time migration source for installs
+// that pinned before v18.
 const PIN_KEY = "kone:pinned-sessions";
 
 function summarize(meta: StoredThreadMeta, pinned: boolean): SessionSummary {
@@ -31,7 +31,9 @@ function summarize(meta: StoredThreadMeta, pinned: boolean): SessionSummary {
     added: meta.added,
     removed: meta.removed,
     tokens: meta.tokens,
-    updatedAt: meta.updatedAt,
+    // Recency key: last conversation activity — a background rename must not
+    // reshuffle the list (updatedAt also moves for title/archive bookkeeping).
+    updatedAt: meta.lastActivityAt ?? meta.updatedAt,
     pinned,
     // A side chat is a fork — forkContext presence is the discriminator
     // (never the `Sidechat:` title prefix).
@@ -140,7 +142,20 @@ export function useRecentSessions(cwd: () => string) {
       const path = cwd();
       const metas = await api.list(path);
       const pins = new Set(pinnedIds.value);
-      items.value = metas.slice(0, MAX).map((m) => summarize(m, pins.has(m.threadId)));
+      // One-time lift of browser-localStorage pins into the DB (pins used to
+      // live in localStorage; the DB is now the source of truth). Only cleared
+      // once every write succeeded, so a failed migration retries next load.
+      if (pinnedIds.value.length > 0) {
+        const legacy = [...pinnedIds.value];
+        const results = await Promise.all(
+          legacy.map((id) => api.setPinned(id, true).then(() => true).catch(() => false)),
+        );
+        if (results.every(Boolean)) pinnedIds.value = [];
+      }
+      // No cap before the pinned/recent split: a pinned thread outside the
+      // top-N recents must still render under PINNED (it used to silently
+      // vanish). Only the RECENT group is capped.
+      items.value = metas.map((m) => summarize(m, m.isPinned ?? pins.has(m.threadId)));
     } catch {
       // History is a convenience — never surface an error over an empty list.
       // A failed *silent* refresh keeps whatever's on screen rather than blanking it.
@@ -151,8 +166,11 @@ export function useRecentSessions(cwd: () => string) {
   }
 
   // Re-key the pinned flag reactively without a full reload — a pin toggle
-  // shouldn't re-hit the bridge.
+  // shouldn't re-hit the bridge. Only applies in browser-dev mode: with the
+  // bridge present the DB row is the source of truth, and re-keying from
+  // localStorage would wipe DB pins after the one-time migration clears it.
   watch(pinnedIds, (ids) => {
+    if (bridge()) return;
     const pins = new Set(ids);
     items.value = items.value.map((s) => ({ ...s, pinned: pins.has(s.threadId) }));
   });
@@ -160,9 +178,20 @@ export function useRecentSessions(cwd: () => string) {
   // Newest first, within each group. Pins float to their own header above.
   const byRecency = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt;
   const pinned = computed(() => items.value.filter((s) => s.pinned).sort(byRecency));
+  // The full RECENT group — RecentSessions.vue caps the on-screen list and
+  // owns the "view all" toggle, so the composable passes everything through.
   const recent = computed(() => items.value.filter((s) => !s.pinned).sort(byRecency));
 
   function togglePin(threadId: string): void {
+    const row = items.value.find((s) => s.threadId === threadId);
+    const api = bridge();
+    if (api) {
+      const next = !(row?.pinned ?? pinnedIds.value.includes(threadId));
+      void api.setPinned(threadId, next).catch(() => {});
+      if (row) row.pinned = next;
+      return;
+    }
+    // Browser-dev fallback: no DB to write to, keep the localStorage behaviour.
     const set = new Set(pinnedIds.value);
     if (set.has(threadId)) set.delete(threadId);
     else set.add(threadId);
@@ -215,7 +244,8 @@ export function useRecentSessions(cwd: () => string) {
       const row = items.value.find((s) => s.threadId === event.threadId);
       if (row) {
         row.title = event.title;
-        row.updatedAt = event.at;
+        // A rename is bookkeeping, not conversation activity — the row keeps
+        // its last-activity stamp and stays put in the list.
         return;
       }
     }

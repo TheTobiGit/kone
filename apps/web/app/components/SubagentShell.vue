@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowUpRight01Icon, Cancel01Icon, AiBrain01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Cancel01Icon, AiBrain01Icon, Clock01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/TurnOrb.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import AgentActivity from "~/components/AgentActivity.vue";
@@ -61,6 +61,9 @@ const emit = defineEmits<{
   close: [];
   /** Reveal the spawned child's own conversation (thread kind). */
   "open-thread": [];
+  /** Stop a live nested run — the parent turn keeps running. The parent hands
+   *  it to the session's stopSubagent (keyed by the run's toolUseId). */
+  "stop-subagent": [toolUseId: string];
   /** Answer an inline approval — handed straight back to the session. */
   "decide-approval": [requestId: string, decision: ApprovalDecision];
 }>();
@@ -313,6 +316,16 @@ onBeforeUnmount(() => {
             :title="run.prompt"
           >{{ run.prompt }}</span>        </span>
 
+        <button
+          v-if="kind === 'run' && runLive && run"
+          type="button"
+          class="sh__stop"
+          :aria-label="`Stop ${title}`"
+          :title="`Stop ${title}`"
+          @click="emit('stop-subagent', run.toolUseId)"
+        >
+          <HugeiconsIcon :icon="StopIcon" :size="14" :stroke-width="2" />
+        </button>
         <button
           type="button"
           class="sh__close"
@@ -642,6 +655,31 @@ onBeforeUnmount(() => {
 }
 .sh__close:hover,
 .sh__close:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
+  outline: none;
+}
+
+/* Stop — sits beside dismiss while a nested run is live: the same quiet
+   square language as the close affordance, so stopping reads as part of the
+   shell's chrome, not a row action. */
+.sh__stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin: -2px 2px 0 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.sh__stop:hover,
+.sh__stop:focus-visible {
   background: var(--hover);
   color: var(--ink);
   outline: none;

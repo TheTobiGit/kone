@@ -63,4 +63,30 @@ describe("splitComposerMentionSegments", () => {
       { type: "text", text: " now" },
     ]);
   });
+
+  test("still collects a quoted mention whose path is at the length cap", () => {
+    const path = `${"a".repeat(508)}.tsx`;
+    expect(splitComposerMentionSegments(`read @"${path}" now`)).toEqual([
+      { type: "text", text: "read " },
+      { type: "mention", path, source: `@"${path}"` },
+      { type: "text", text: " now" },
+    ]);
+  });
+
+  test("leaves a quoted mention past the cap as plain text", () => {
+    const path = `${"a".repeat(509)}.tsx`;
+    expect(splitComposerMentionSegments(`read @"${path}" now`)).toEqual([
+      { type: "text", text: `read @"${path}" now` },
+    ]);
+  });
+
+  test("stays fast on unterminated quoted mentions", () => {
+    // Unbounded, each `@"` fragment with no closing quote rescanned the rest
+    // of the text from its start: quadratic on this input.
+    const started = performance.now();
+    expect(splitComposerMentionSegments(" @\"aaa".repeat(20_000))).toEqual([
+      { type: "text", text: " @\"aaa".repeat(20_000) },
+    ]);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
 });

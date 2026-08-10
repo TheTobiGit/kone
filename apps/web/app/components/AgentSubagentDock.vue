@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowRight01Icon, ArrowUpRight01Icon, AiBrain01Icon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon, ArrowUpRight01Icon, AiBrain01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/TurnOrb.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { SESSION_BRAND } from "~/types/session";
@@ -61,6 +61,10 @@ const emit = defineEmits<{
   /** Open one delegate — a run's transcript or a spawned thread's conversation.
    *  One event; the parent decides what opening means for each kind. */
   open: [row: DelegateRow];
+  /** Stop a live provider-native nested run, leaving the parent turn running.
+   *  Only fired for run-kind rows while they're live. The parent hands it to
+   *  the session's stopSubagent (keyed by the run's toolUseId). */
+  "stop-subagent": [toolUseId: string];
 }>();
 
 const { cue } = useSound();
@@ -432,6 +436,23 @@ function rowBrand(row: DelegateRow): BrandKey {
                     </AnimatePresence>
                   </span>
 
+                  <!-- Stop a live nested run right from the dock — the parent
+                       turn keeps running. Spawned threads aren't stop-able
+                       here (their session is theirs); only provider-native
+                       runs carry the affordance, and only while live. A span
+                       (not a button): the row itself is a button. -->
+                  <span
+                    v-if="row.target.kind === 'run' && row.live"
+                    class="sub-stop"
+                    role="button"
+                    tabindex="0"
+                    :aria-label="`Stop ${row.title}`"
+                    :title="`Stop ${row.title}`"
+                    @click.stop="emit('stop-subagent', row.target.toolUseId)"
+                    @keydown.enter.prevent.stop="emit('stop-subagent', row.target.toolUseId)"
+                  >
+                    <HugeiconsIcon :icon="StopIcon" :size="13" :stroke-width="2" />
+                  </span>
                   <span class="sub-open" aria-hidden="true">
                     <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="14" :stroke-width="2" />
                   </span>
@@ -658,6 +679,33 @@ function rowBrand(row: DelegateRow): BrandKey {
 .sub-row--live .sub-open {
   opacity: 0.6;
   transform: none;
+}
+
+/* Stop affordance for a live nested run — quiet square that lifts on hover
+   like the open arrow, but shown while the run is live so stopping is
+   discoverable without hovering. */
+.sub-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border-radius: 6px;
+  color: var(--muted);
+  opacity: 0.55;
+  transition:
+    opacity 0.14s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.sub-stop:hover,
+.sub-stop:focus-visible {
+  opacity: 1;
+  background: var(--hover);
+  color: var(--ink);
 }
 
 .sub-state {

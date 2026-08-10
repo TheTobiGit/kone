@@ -7,6 +7,7 @@ import {
   ArrowTurnBackwardIcon,
   AppleFinderIcon,
   GitBranchIcon,
+  InformationSquareIcon,
 } from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
@@ -71,6 +72,7 @@ const pendingThread = usePendingThread();
 const {
   blocks,
   busy,
+  queuedTurns,
   model,
   mode,
   reasoning,
@@ -237,6 +239,12 @@ function closePane(id: string): void {
 // the in-memory registry thread, same as the recent-list archive), then closes
 // the now-empty column so it doesn't linger on the board pointing at a hidden row.
 function archivePane(threadId: string, id: string): void {
+  if (sessionBusy(threadId)) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before archiving.",
+    );
+    return;
+  }
   archiveSession(threadId);
   void board.close(id);
 }
@@ -460,20 +468,82 @@ const {
 // the in-memory agent registry — where it keeps feeding the away-from-thread
 // pill stack and stays clickable. Forget it there too so the pill can't outlive
 // the row it came from.
+
+/** A thread that must not be archived/deleted right now: a turn in flight, a
+ *  parked approval/user-input, live spawned children. Forgetting it tears the
+ *  session down mid-flight — killing the provider process and revoking its
+ *  gateway token while children may still be running — so these paths refuse
+ *  ever reaps idle sessions, never one with an active turn). */
+function sessionBusy(threadId: string): boolean {
+  const s = agent.sessions.value.find((x) => x.threadId.value === threadId);
+  if (!s) return false;
+  return (
+    s.busy.value ||
+    Boolean(s.pendingUserInput.value) ||
+    s.pendingApprovals.value.length > 0 ||
+    s.spawnedChildren.value.some((c) => !c.terminal)
+  );
+}
+
+/** Transient archive-refusal notice — auto-dismisses, like the composer's own
+ *  chip notice. No toast system exists yet; this is the smallest surface that
+ *  explains why the row didn't disappear. */
+const archiveNotice = ref("");
+let archiveNoticeTimer: number | undefined;
+function flashArchiveNotice(message: string): void {
+  archiveNotice.value = message;
+  window.clearTimeout(archiveNoticeTimer);
+  archiveNoticeTimer = window.setTimeout(() => (archiveNotice.value = ""), 3800);
+}
+
+/** Drop the board pane hosting a thread — the board hosts one pane per
+ *  conversation, and forgetting the session behind a pane would otherwise
+ *  leave the column lingering dormant pointing at a hidden row (reconcile
+ *  keeps entries whose session vanished). Works for both an attached pane
+ *  (live session) and a dormant one (anchor remembers the id). */
+function closePaneHosting(threadId: string): void {
+  const pane = panes.value.find(
+    (p) =>
+      p.kind === "thread" &&
+      ((p.session && p.session.threadId.value === threadId) ||
+        (p.entry.anchor.kind === "thread" && p.entry.anchor.threadId === threadId)),
+  );
+  if (pane) void board.close(pane.id);
+}
+
 function archiveSession(threadId: string): void {
+  if (sessionBusy(threadId)) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before archiving.",
+    );
+    return;
+  }
   archiveSessionRow(threadId);
   void agent.forgetThread(threadId);
+  closePaneHosting(threadId);
 }
 function removeSession(threadId: string): void {
+  if (sessionBusy(threadId)) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before deleting.",
+    );
+    return;
+  }
   removeSessionRow(threadId);
   void agent.forgetThread(threadId);
+  closePaneHosting(threadId);
 }
 
 // Open a stored thread and reveal the chat the instant its transcript lands —
-// openThread sets the blocks before the session subprocess finishes spawning, so
-// gating the surface flip on that grows a populated thread (no flash of the empty
-// state, no lingering on the working-tree home) with the chat-open entrance.
-// Falls through to showing chat even on an empty/failed load.
+// the board owns the pane: open() dedupes (a thread already hosted — live or
+// dormant — is focused, never duplicated), attaches and focuses the hosting
+// pane, and only resolves after the transcript loads on the mint path. The old
+// direct agent.openThread let the session be adopted as an unfocused column —
+// the board flipped to a stale focus and the strip never scrolled to the new
+// pane ("opened from nowhere"). Gating the surface flip on blocks still grows
+// a populated thread (no flash of the empty state, no lingering on the
+// working-tree home) with the chat-open entrance. Falls through to showing
+// chat even on an empty/failed load.
 async function revealThread(threadId: string): Promise<void> {
   const stop = watch(blocks, (b) => {
     if (b.length) {
@@ -482,7 +552,7 @@ async function revealThread(threadId: string): Promise<void> {
     }
   });
   try {
-    await agent.openThread(threadId);
+    await board.open("thread", { threadId });
   } finally {
     stop();
     surface.value = "board";
@@ -624,6 +694,20 @@ watch(surface, (s, prev) => {
 });
 
 onMounted(async () => {
+  // Consume a launcher resume request the instant the mount starts. Reading it
+  // after the async provider/catalog work left it sitting in the global state
+  // for the whole mount — and if that mount was torn down mid-chain (the user
+  // backs out during the probe), the stale request survived to fire on a later,
+  // unrelated open of the same project. Consuming up front scopes it to this
+  // mount; it is also namespaced to this project's path, so a request that ever
+  // leaks past its mount cannot resume inside another project.
+  const requestedThread = pendingThread.value;
+  pendingThread.value = null;
+  const resume =
+    requestedThread && requestedThread.path === props.project.path
+      ? requestedThread.threadId
+      : null;
+
   // Everything the mount needs is fetched up front and in parallel. These six
   // loads are independent of each other but each costs an IPC round-trip, and
   // awaiting them in a chain made entering a project cost the *sum* — which is
@@ -673,13 +757,6 @@ onMounted(async () => {
     : readyProviders.find((s) => s.provider === "codex")?.provider
       ?? readyProviders.find((s) => s.provider === "opencode")?.provider
       ?? readyProviders[0]?.provider;
-  // If the launcher asked to resume a specific conversation (a click on the App
-  // Home "recent sessions" list), open THAT thread directly and drop into chat —
-  // don't rehydrate + spawn the project's latest thread first only to tear it
-  // straight down. openThread loads the picked thread and spawns a single
-  // session for it; the plain-open path still lands on the project home.
-  // Consume the request so a later re-open of this project behaves normally.
-  const resume = pendingThread.value;
   // The scratchpad has to be hydrated before restore(), which eagerly attaches
   // the pad pane.
   await scratchpadReady;
@@ -694,19 +771,14 @@ onMounted(async () => {
   // IPC stuck in the loading shell (greeting with no changes/sessions).
   await board.restore(layout, knownThreadIds, { deferHeavyAttach: !resume });
   if (resume) {
-    // Launcher asked to resume a specific conversation. It's often already on the
-    // restored board (as a live or dormant thread pane) — focus it there, which
-    // attaches a dormant one on the way in. If the board doesn't know it at all,
-    // open a fresh pane bound to its id. Either way we land on the board.
-    pendingThread.value = null;
-    const onBoard = panes.value.some(
-      (p) =>
-        p.kind === "thread" &&
-        (p.session?.threadId.value === resume ||
-          (p.entry.anchor.kind === "thread" && p.entry.anchor.threadId === resume)),
-    );
-    if (onBoard) board.focusThreadById(resume);
-    else await board.open("thread", { threadId: resume });
+    // Launcher asked to resume a specific conversation. One open path for a
+    // stored thread: board.open dedupes against live AND dormant panes (the
+    // resume target is usually already restored as a pane — often the focused
+    // one), focuses the hosting pane so the strip scrolls to it, or mints a
+    // fresh pane bound to the id. The manual live/dormant check + split
+    // focusThreadById/open call duplicated that logic and could leave the
+    // board focused elsewhere. Either way we land on the board.
+    await board.open("thread", { threadId: resume });
     surface.value = "board";
   }
   // Only now let layout changes persist — past this point the board reflects the
@@ -1079,6 +1151,29 @@ function onBranchSwitched() {
 // also needs a restart — its model/effort are baked when the SDK process spawns.
 // Codex changes ride the next turn in-session, no restart.
 type ModelPick = { provider: ProviderKind; modelId: string; tier: EffortTier; fastMode: boolean; contextWindow?: string };
+
+/** Persist the active thread's committed picker selection — model, effort,
+ *  service tier, context window — so a reopened thread restores exactly what
+ *  the picker showed (useAgent's adoptStoredThread reads it back). Fire-and-
+ *  forget; the store no-ops when the thread row doesn't exist yet (a blank
+ *  thread mints its conversation id on first send; its selection lands then).
+ *  The bridge is store-owned; guarded at runtime for browser dev. */
+function persistThreadSelection(): void {
+  if (!import.meta.client) return;
+  const threadId = agent.threadId.value;
+  if (!threadId) return;
+  // The bridge is store-owned; guarded at runtime for browser dev (no bridge).
+  void window.koneDesktop?.agent?.setThreadSelection?.(threadId, {
+    model: agent.model.value,
+    effort: agent.reasoning.value,
+    serviceTier: agent.serviceTier.value,
+    contextWindow: agent.contextWindow.value,
+  })
+    .catch(() => {
+      // best-effort persistence — a failed write never disturbs the picker.
+    });
+}
+
 async function applyModelEffort(picked: ModelPick) {
   await syncComposerTarget();
   const providerChanged = picked.provider !== agent.provider.value;
@@ -1107,6 +1202,9 @@ async function applyModelEffort(picked: ModelPick) {
     if (busy.value) await agent.interrupt();
     await agent.restart();
   }
+  // Persist after any restart: a provider switch re-mints the thread id, and
+  // the selection must be recorded against the id the thread now carries.
+  persistThreadSelection();
 }
 function onModelSelect(picked: ModelPick) {
   void applyModelEffort(picked);
@@ -1121,13 +1219,20 @@ function onUpdateFastMode(on: boolean) {
   void syncComposerTarget().then(() => {
     const fam = familyForId(modelOptions.value, model.value);
     agent.setServiceTier(on ? fam?.fastTier?.id : undefined);
+    persistThreadSelection();
   });
 }
 function onComposerModelId(id: string) {
-  void syncComposerTarget().then(() => agent.setModel(id));
+  void syncComposerTarget().then(() => {
+    agent.setModel(id);
+    persistThreadSelection();
+  });
 }
 function onComposerReasoning(tier: EffortTier) {
-  void syncComposerTarget().then(() => agent.setReasoning(tier));
+  void syncComposerTarget().then(() => {
+    agent.setReasoning(tier);
+    persistThreadSelection();
+  });
 }
 function onComposerContextWindow(id: string) {
   void syncComposerTarget().then(() => agent.setContextWindow(id));
@@ -1161,6 +1266,28 @@ async function onSend(text: string, files?: File[]) {
     if (ok.length) attachments = ok;
   }
   void agent.send(text, attachments);
+}
+/** Steer the composer draft into the RUNNING turn — same shape as onSend
+ *  (settle the composer target, persist picked files, hand the turn to the
+ *  service), but routed through the steer channel: no new turn boundary, the
+ *  provider consumes the nudge when it builds its next request. */
+async function onSteer(text: string, files?: File[]) {
+  await syncComposerTarget();
+  if (surface.value === "overview") await board.open("thread");
+  surface.value = "board";
+  await syncComposerTarget();
+  let attachments: ChatAttachment[] | undefined;
+  if (files?.length) {
+    const results = await Promise.allSettled(files.map((f) => agent.uploadAttachment(f)));
+    const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    if (ok.length) attachments = ok;
+  }
+  void agent.steerTurn(text, attachments);
+}
+/** Drop one durably queued follow-up (the composer chips' ✕). The backend
+ *  emits turn.queued-cancelled; the chip clears on that event. */
+function onRemoveQueued(queueId: string) {
+  void agent.cancelQueuedTurn(queueId);
 }
 function onInterrupt() {
   void agent.interrupt();
@@ -1242,11 +1369,16 @@ onBeforeUnmount(() => {
   lockPage(false);
   // Flush the layout past the debounce — a project switch or window close must
   // not drop the last few gestures.
-  if (boardReady.value) boardStore.save(board.serialize());
+  if (boardReady.value) boardStore.flush(board.serialize());
 });
 // A hard window close (quit) skips onBeforeUnmount, so persist on beforeunload too.
 useEventListener(window, "beforeunload", () => {
-  if (boardReady.value) boardStore.save(board.serialize());
+  if (boardReady.value) boardStore.flush(board.serialize());
+});
+// pagehide covers the bfcache / webview teardown paths where beforeunload can
+// be skipped — same synchronous write-through of the last layout.
+useEventListener(window, "pagehide", () => {
+  if (boardReady.value) boardStore.flush(board.serialize());
 });
 // beforeunload is unreliable on macOS app-hide / Space switches and never fires
 // when the OS suspends the renderer. So also flush — synchronously, past the
@@ -1254,7 +1386,7 @@ useEventListener(window, "beforeunload", () => {
 // are cheap idempotent writes of the same serialized layout, so firing them
 // often (and alongside beforeunload) is harmless; missing the last gesture isn't.
 function flushBoard(): void {
-  if (boardReady.value) boardStore.save(board.serialize());
+  if (boardReady.value) boardStore.flush(board.serialize());
 }
 useEventListener(window, "blur", flushBoard);
 useEventListener(document, "visibilitychange", () => {
@@ -1493,6 +1625,17 @@ function onDiscardFile(path: string) {
     :animate="{ x: peekOpen ? -342 : 0 }"
     :transition="peekSpring"
   >
+  <!-- Transient archive-refusal notice — a thread that is still working can't
+       be archived/deleted, and the row not disappearing needs an explanation.
+       Rendered above every surface (board + overview both archive) until it
+       auto-dismisses. -->
+  <Transition name="archive-notice">
+    <div v-if="archiveNotice" class="archive-notice" role="status">
+      <HugeiconsIcon :icon="InformationSquareIcon" :size="15" :stroke-width="2" aria-hidden="true" />
+      <span>{{ archiveNotice }}</span>
+    </div>
+  </Transition>
+
   <!-- While the peek is open, tapping the shoved-aside stage closes it (and
        blocks the working tree underneath from being clicked) — the same
        gesture as the settings drawer on the launcher. The file detail never
@@ -1796,6 +1939,7 @@ function onDiscardFile(path: string) {
           ref="composerRef"
           :project-path="project.path"
           :busy="busy"
+          :queued="queuedTurns"
           :picking="modelPickerOpen"
           :models="modelOptions"
           :model-id="model"
@@ -1804,6 +1948,8 @@ function onDiscardFile(path: string) {
           :fast-mode="fastActive"
           :context-window="contextWindow"
           @send="onSend"
+          @steer="onSteer"
+          @remove-queued="onRemoveQueued"
           @interrupt="onInterrupt"
           @update:model-id="onComposerModelId"
           @update:reasoning="onComposerReasoning"
@@ -1835,6 +1981,7 @@ function onDiscardFile(path: string) {
       v-if="focusedPendingApproval && !shellSuppressesApproval"
       :request-id="focusedPendingApproval.requestId"
       :approval="focusedPendingApproval.approval"
+      :queue="focusedThread?.pendingApprovals.value"
       @decide="onRespondApproval"
     />
 
@@ -1855,6 +2002,7 @@ function onDiscardFile(path: string) {
           :rows="activeDelegates.rows"
           :streaming="activeDelegates.streaming"
           @open="onOpenDelegate"
+          @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
         />
       </AnimatePresence>
     </div>
@@ -1941,6 +2089,7 @@ function onDiscardFile(path: string) {
         @close="onCloseShell"
         @open-thread="onShellOpenThread"
         @decide-approval="onDecideShellApproval"
+        @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
       />
     </Transition>
 
@@ -2389,6 +2538,50 @@ function onDiscardFile(path: string) {
   }
   .sut-enter-active,
   .sut-leave-active {
+    transition: none;
+  }
+}
+
+/* The archive-refusal notice — a floating pill over every surface, so it works
+   from the board (column header archive) and the overview (recent rows). House
+   tokens: sunken surface, hairline, muted ink, the amber used for warnings. */
+.archive-notice {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, calc(100vw - 48px));
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: var(--surface, #1c1c1e);
+  border: 1px solid color-mix(in srgb, var(--line, #3a3a3c) 70%, transparent);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+  color: var(--ink-soft, #d4d4d8);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.archive-notice :deep(svg) {
+  flex: none;
+  color: var(--amber, #f59e0b);
+}
+.archive-notice-enter-active,
+.archive-notice-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.archive-notice-enter-from,
+.archive-notice-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -8px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .archive-notice-enter-active,
+  .archive-notice-leave-active {
     transition: none;
   }
 }

@@ -2,9 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon, CheckmarkCircle01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/TurnOrb.vue";
-import { planTaskCounts, type PlanTask } from "~/utils/planTasks";
+import { formatPlanTasks, planTaskCounts, type PlanTask } from "~/utils/planTasks";
 
 const props = defineProps<{
   tasks: PlanTask[];
@@ -29,6 +29,25 @@ const meta = computed(() => {
   if (!total) return props.streaming ? "…" : "0";
   return `${completed}/${total}`;
 });
+
+// Copy the plan out as markdown checkboxes — the same serialization
+// formatPlanTasks uses to rebuild a plan, so pasting it into a thread (or an
+// issue) round-trips. A brief ✓ swap on the button confirms the copy.
+const copied = ref(false);
+let copyTimer: ReturnType<typeof setTimeout> | null = null;
+async function copyPlan() {
+  if (!props.tasks.length) return;
+  const md = formatPlanTasks(props.tasks);
+  try {
+    await navigator.clipboard.writeText(md);
+    copied.value = true;
+    cue("press");
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied.value = false), 1400);
+  } catch {
+    // Clipboard blocked — the plan is still on screen; stay quiet.
+  }
+}
 
 const liveTask = computed(() => props.tasks.find((t) => t.status === "in-progress"));
 
@@ -77,6 +96,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", syncHeight);
   ro?.disconnect();
   if (collapseTimer) clearTimeout(collapseTimer);
+  if (copyTimer) clearTimeout(copyTimer);
 });
 
 const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
@@ -132,6 +152,26 @@ function rowDelay(index: number): number {
                 {{ taskLabel(liveTask) }}
               </motion.span>
             </AnimatePresence>
+            <!-- Copy the plan as markdown checkboxes. A span (not a button):
+                 the header itself is a button, and nesting interactive
+                 elements inside one is invalid HTML. -->
+            <span
+              v-if="props.tasks.length"
+              class="plan-copy"
+              :class="{ 'plan-copy--copied': copied }"
+              role="button"
+              tabindex="0"
+              :aria-label="copied ? 'Plan copied' : 'Copy plan as markdown'"
+              :title="copied ? 'Copied' : 'Copy plan as markdown'"
+              @click.stop="copyPlan"
+              @keydown.enter.prevent.stop="copyPlan"
+            >
+              <HugeiconsIcon
+                :icon="copied ? CheckmarkCircle01Icon : Copy01Icon"
+                :size="14"
+                :stroke-width="2"
+              />
+            </span>
             <span class="plan-meta-wrap">
               <AnimatePresence mode="wait">
                 <motion.span
@@ -337,6 +377,35 @@ function rowDelay(index: number): number {
   display: inline-flex;
   flex: none;
   opacity: 0.45;
+}
+
+/* Copy-as-markdown — a quiet icon in the header trail that lifts on hover,
+   mirroring the dock's open affordance; flips to a checkmark after a copy. */
+.plan-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: pointer;
+  transition:
+    opacity 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.plan-copy:hover,
+.plan-copy:focus-visible {
+  opacity: 1;
+  background: var(--hover);
+  color: var(--ink);
+}
+.plan-copy--copied {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .picker-header {

@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from "vue";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -11,17 +11,22 @@ import type {
   RuntimeItem,
   RuntimeItemKind,
   RuntimeSessionState,
+  SendTurnInput,
   Session,
   SpawnedThread,
+  StoredBlock,
   StoredThread,
+  StoredThreadMeta,
+  StoredThreadPage,
   SubagentRun,
   SubagentRunSnapshot,
   TokenUsage,
+  TurnStartResult,
   UserInputAnswers,
   UserInputQuestion,
 } from "~/types/desktop";
 import { peelIpcError } from "~/utils/ipcError";
-import type { EffortTier } from "~/utils/modelCatalog";
+import { EFFORT_META, type EffortTier } from "~/utils/modelCatalog";
 import {
   activePlanTask,
   formatPlanTasks,
@@ -91,6 +96,49 @@ export type PendingApproval = {
    *  landed. Absent means the ask is the parent's own, or several runs were
    *  working at once — the main modal owns those, never a shell. */
   originToolUseId?: string;
+};
+
+/** A durably queued follow-up row, as the IPC bridge reports it
+ *  (agent:queued-turns). Structural twin of the desktop QueuedTurnRow —
+ *  the KoneAgentApi mirror lands with the parallel IPC agent, so until then
+ *  this keeps the UI typed against the documented channel shape. */
+export type QueuedTurnRow = {
+  queueId: string;
+  threadId: string;
+  /** The store-journaled id of the user prompt block this turn was enqueued
+   *  for — the chip anchors to the transcript block via it. */
+  userBlockId: string;
+  dispatchMode: "queue" | "steer";
+  /** "promoting" = the backend claimed the row and handed it to the adapter. */
+  state: "queued" | "promoting";
+  /** The user's prompt text (also derivable from the anchored block; kept so
+   *  an optimistic chip can render before a block is ever matched). */
+  input: string;
+  createdAt: number;
+};
+
+/** A queued follow-up as the UI presents it — the bridge row plus the local
+ *  anchor and position the chips/badges need. */
+export type QueuedTurnEntry = QueuedTurnRow & {
+  /** The transcript block id this row anchors to — present when the row's
+   *  userBlockId matched a timeline block (rehydrated/persisted rows), or
+   *  when a live send's own block was recorded (see pendingQueueAnchors). */
+  blockId?: string;
+  /** Place in line, counting the running turn as slot 1 (so a fresh entry
+   *  reads 2). Renumbered on every add/remove so a cancellation leaves no
+   *  gaps. */
+  position: number;
+};
+
+/** The queue slice of the desktop bridge — queuedTurns / cancelQueuedTurn /
+ *  steerTurn land on KoneAgentApi with the parallel IPC agent; this local
+ *  extension keeps the UI typed against the documented channel shapes until
+ *  the mirror arrives (the methods are checked for presence at runtime, so
+ *  an older bridge simply skips the queue features). */
+type QueueBridge = {
+  queuedTurns?: (threadId: string) => Promise<QueuedTurnRow[]>;
+  cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
+  steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
 };
 
 /** The composer's reasoning-effort tier. Codex exposes this as a flag-based
@@ -325,6 +373,16 @@ type SessionCtx = {
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
+/** User prompts per windowed page (history.threadPage). This IS the
+ *  "threshold" for pagination: the store's window is user-anchored, so a
+ *  thread with at most PAGE_LIMIT prompts comes back whole (`hasMore` false)
+ *  — byte-for-byte the same transcript the full read would return, in one
+ *  round-trip — while a longer thread returns its newest window and pages the
+ *  rest on demand. No separate block-count probe is needed (probing would
+ *  require loading the full thread first, which is exactly the cost
+ *  pagination avoids); `hasMore` is the store's authoritative signal. */
+const PAGE_LIMIT = 10;
+
 // ── one thread ────────────────────────────────────────────────────────────────
 
 /** One conversation thread: its own timeline, provider session, model/config,
@@ -339,6 +397,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   const threadId = ref(uid());
   const blocks = ref<ThreadBlock[]>([]);
+  /** Keyset pagination state for a stored thread adopted windowed (see
+   *  history.threadPage): the opaque cursor for the next strictly older page,
+   *  null when the whole thread is in hand. `hasOlder` is what the load-older
+   *  affordance reads; the cursor itself never leaves the session. */
+  const olderCursor = ref<string | null>(null);
+  const loadingOlder = ref(false);
+  const olderError = ref<string | null>(null);
+  const hasOlder = computed(() => olderCursor.value !== null);
   /** True when this session hosts a side chat — a root thread forked from
    *  another thread (docs/side-chat-design.md). Set when the stored thread's
    *  forkContext is adopted; cleared on restart (a fresh thread is never a
@@ -366,6 +432,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const session = shallowRef<Session | null>(null);
   const sessionState = ref<RuntimeSessionState>("starting");
   const error = ref<string | null>(null);
+  /** A non-fatal provider warning (adapter `session.warning` — e.g. a Codex
+   *  error notification with willRetry, or a benign notice). The session keeps
+   *  running; this is a transient surface, cleared on the next state change or
+   *  turn. Never flips the session into the error state. */
+  const warning = ref<string | null>(null);
   const tokenUsage = ref<TokenUsage | null>(null);
   // A live question the agent is asking (AskUserQuestion / Codex requestUserInput).
   // Non-null while the modal is up; cleared once answered or resolved/aborted.
@@ -383,6 +454,48 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  seedSpawnedChildren). */
   const spawnedChildren = ref<SpawnedThread[]>([]);
   const pendingApproval = computed<PendingApproval | null>(() => pendingApprovals.value[0] ?? null);
+
+  /** Follow-ups durably queued behind the running turn (the AgentService queue
+   *  slice: a send while busy is enqueued, promoted on settle, cancelled on
+   *  stop). Live entries fold from turn.queued; a thread that adopts a stored
+   *  identity re-seeds by an explicit bridge query (seedQueuedTurns) — the
+   *  rows survive crashes, so a reloaded renderer has no record of them
+   *  otherwise. Kept raw (backend positions); the exported `queuedTurns`
+   *  computed renumbers for display. */
+  const queuedTurnsRaw = ref<QueuedTurnEntry[]>([]);
+  /** queueId → the renderer-minted user block id of the send that produced it.
+   *  The store journals user prompts under ITS OWN block id (recordUserBlock
+   *  mints internally), so a live optimistic block can't be matched by the
+   *  turn.queued userBlockId until a reload reconciles the timeline. The
+   *  send/steer ack carries the queue id (a busy enqueue acks with the queue
+   *  id as turnId), which is how the chip finds its own block: recorded here
+   *  on ack, consumed by the matching turn.queued, pruned at the next turn
+   *  boundary (no queue event can arrive after the turn it belongs to has
+   *  started). */
+  const pendingQueueAnchors = new Map<string, string>();
+  /** The queue as the UI reads it — entries renumbered so a cancellation
+   *  leaves no gaps (the live turn is slot 1, so a queued entry reads 2, 3,
+   *  …; with no live turn the line starts at 1). */
+  const queuedTurns = computed<QueuedTurnEntry[]>(() =>
+    queuedTurnsRaw.value.map((q, i) => ({ ...q, position: i + (busy.value ? 2 : 1) })),
+  );
+
+  /** Anchor a queue row to a transcript user block: by store id first
+   *  (rehydrated/persisted rows), else by the renderer-side block the send
+   *  ack recorded (live optimistic rows — see pendingQueueAnchors). Returns
+   *  the block id, or undefined when the row predates this renderer
+   *  (cross-window queue events) — the chip then renders from the row's own
+   *  input text. */
+  function anchorFor(userBlockId: string, queueId: string): string | undefined {
+    const byId = blocks.value.find((b) => b.role === "user" && b.id === userBlockId);
+    if (byId) return byId.id;
+    const fromAck = pendingQueueAnchors.get(queueId);
+    if (fromAck) {
+      pendingQueueAnchors.delete(queueId);
+      return fromAck;
+    }
+    return undefined;
+  }
 
   // The provider is mutable so a thread can switch engines (Codex ↔ Claude).
   // Because the two are separate CLIs with no shared conversation, a switch is a
@@ -411,6 +524,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // history never trips it, so a reloaded thread stays out of the pill stack
   // until it actually runs something.
   const everRan = ref(false);
+  /** When this thread last saw activity — any folded event, a focus, or a send.
+   *  The manager's eviction and idle reaper read it: eviction drops the
+   *  least-recently-active settled thread (never a freshly-used one), and the
+   *  reaper hibernates a started session whose process has sat idle past the
+  let lastActivityAt = Date.now();
+  function touch(): void {
+    lastActivityAt = Date.now();
+  }
 
   const bridge = ctx.bridge;
 
@@ -473,6 +594,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   /** Fold one event into this thread's state. The manager only calls this for
    *  events whose `threadId` matches ours; the guard is belt-and-braces. */
   function reduce(event: RuntimeEvent): void {
+    // Any event means this conversation is alive — keep it out of the eviction
+    // and reaping windows. Runs before the routing guard on purpose: a spawned
+    // child's traffic is routed here too, and the parent orchestrating it is
+    // very much active.
+    touch();
+    // The provider's resume cursor travels on the envelope; remember the
+    // freshest one so a hibernated session can re-stage it (Claude-only —
+    // other providers never set it).
+    if (event.refs?.resumeSessionAt) lastResumeSessionAt = event.refs.resumeSessionAt;
     // A spawned child's events bear the CHILD's id — the child is the subject,
     // and its session is never in this registry (only the parent's is; the
     // parent's dock is what these events maintain). The manager routes them to
@@ -499,7 +629,20 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     switch (event.type) {
       case "session.state.changed":
         sessionState.value = event.state;
+        // Any state change supersedes a stale warning — the turn moved on.
+        warning.value = null;
         if (event.state === "error" && event.message) error.value = event.message;
+        break;
+      case "session.warning":
+        // Non-fatal: the session keeps running. Surface the message without
+        // flipping the state (a Codex error notification with willRetry, a
+        // benign notice — the adapter decides what belongs here).
+        warning.value = event.message;
+        break;
+      case "model.rerouted":
+        // The provider moved the session onto another model mid-turn (capacity
+        // reroute). Keep the picker/UI truthful about what is actually running.
+        model.value = event.toModel;
         break;
       case "session.exited": {
         sessionState.value = "stopped";
@@ -525,6 +668,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         break;
       case "turn.started":
         everRan.value = true;
+        // Every queue event for a send arrives before the turn it belongs to
+        // starts — anything still recorded is a stale ack (a direct send, a
+        // live steer); drop it so the map can't grow unboundedly.
+        pendingQueueAnchors.clear();
         blocks.value = [
           ...blocks.value,
           {
@@ -618,6 +765,63 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           (a) => a.requestId !== event.requestId,
         );
         break;
+      case "turn.queued": {
+        // A follow-up was durably enqueued behind the running turn — park a
+        // chip. The display text comes from the anchored transcript block
+        // (via userBlockId), or the send's own recorded block, or falls back
+        // to the row input on the rehydrated path.
+        const blockId = anchorFor(event.userBlockId, event.queueId);
+        const anchorText = blockId
+          ? blocks.value.find(
+              (b): b is UserBlock => b.role === "user" && b.id === blockId,
+            )?.text ?? ""
+          : "";
+        const entry: QueuedTurnEntry = {
+          queueId: event.queueId,
+          threadId: event.threadId,
+          userBlockId: event.userBlockId,
+          dispatchMode: event.dispatchMode,
+          state: "queued",
+          input: anchorText,
+          createdAt: event.at,
+          position: event.position,
+          ...(blockId ? { blockId } : {}),
+        };
+        // A re-seed may already hold this queueId — replace, never duplicate.
+        queuedTurnsRaw.value = [
+          ...queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId),
+          entry,
+        ].sort((a, b) => a.position - b.position);
+        break;
+      }
+      case "turn.queued-cancelled":
+        // A user drop removes one chip; a stop/delete clears the whole line
+        // (the backend emits one cancellation per row on stop).
+        queuedTurnsRaw.value =
+          event.reason === "stop" ||
+          event.reason === "thread-deleted" ||
+          event.reason === "archive"
+            ? queuedTurnsRaw.value.filter((q) => q.threadId !== event.threadId)
+            : queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId);
+        break;
+      case "turn.promoted":
+        // The backend handed the row to the adapter as a real turn — the chip
+        // is consumed. (turn.promoted is the authoritative "row gone" signal:
+        // it only fires after the adapter accepted the send and the store
+        // marked the row promoted, so a failed promotion never clears the
+        // chip. The user block is already in the transcript; turn.started
+        // brings the reply.)
+        queuedTurnsRaw.value = queuedTurnsRaw.value.filter(
+          (q) => q.queueId !== event.queueId,
+        );
+        break;
+      case "turn.steered":
+        // The nudge was offered into the LIVE turn — no new boundary, no
+        // state to fold beyond the user block already pushed optimistically
+        // (a steer that fell back to the queue arrives as turn.queued
+        // instead). Keep the switch from erroring on the event.
+        pendingQueueAnchors.clear();
+        break;
       default:
         break;
     }
@@ -636,6 +840,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // a stored thread is brought on-screen so continued turns keep its full
   // context. Consumed and cleared in start() — a later fresh start never resumes.
   let pendingResumeId: string | undefined;
+  /** Claude-only resume cursor: the thread's last assistant message uuid, used
+   *  alongside the resume id (see SessionStartInput.resumeSessionAt). Staged
+   *  with the resume id on adopt/hibernate, consumed and cleared in start().
+   *  Meaningless to any other provider — never sent unless the resume id is. */
+  let pendingResumeSessionAt: string | undefined;
+  /** The freshest assistant-message uuid this session's provider reported (it
+   *  rides the event envelope's refs like conversationId). Kept so hibernate()
+   *  can re-stage a complete Claude resume cursor. */
+  let lastResumeSessionAt: string | undefined;
   // …and which provider minted it. A resume id means nothing to another CLI, so
   // start() drops the resume if the provider has moved on since it was staged.
   // This used to be implicit — the resume was consumed by the start() that
@@ -653,24 +866,48 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   function adoptStoredThread(stored: {
     provider?: ProviderKind;
     model?: string;
+    /** Claude-only resume cursor (see SessionStartInput.resumeSessionAt). */
+    resumeSessionAt?: string;
     conversationId?: string;
     tokens?: number;
     contextUsed?: number;
     contextWindow?: number;
     compactsAutomatically?: boolean;
+    /** The thread's persisted picker selection snapshot — model/effort/tier/
+     *  window the user last committed, restored so a reopened thread keeps
+     *  selection per thread; this is the kone-shaped equivalent). */
+    selection?: {
+      model?: string;
+      effort?: string;
+      serviceTier?: string;
+      contextWindow?: string;
+    };
     /** Present on a side chat — marks this session as one (forkContext
      *  presence is the discriminator, never a title prefix). */
     forkContext?: ForkContext;
   }): void {
     const providerChanged = Boolean(stored.provider) && stored.provider !== provider.value;
     if (stored.provider) provider.value = stored.provider;
-    // Carry the thread's own model; if it predates model persistence, only drop
-    // the current one when the provider changed (a stale cross-provider model id
-    // is worse than the provider default).
-    if (stored.model !== undefined) model.value = stored.model;
+    // Carry the thread's own model — the persisted selection snapshot is the
+    // fuller truth (it records what the picker last committed, model + effort +
+    // tier + window together); the bare `model` column is the pre-selection
+    // fallback. If it predates model persistence, only drop the current one
+    // when the provider changed (a stale cross-provider model id is worse than
+    // the provider default).
+    if (stored.selection?.model !== undefined) model.value = stored.selection.model;
+    else if (stored.model !== undefined) model.value = stored.model;
     else if (providerChanged) model.value = undefined;
+    // Restore the rest of the committed selection. Effort is validated against
+    // the known tier set — a tier added by a newer catalog must not wedge the
+    // composer on an unrecognised rung.
+    if (stored.selection?.effort && stored.selection.effort in EFFORT_META) {
+      reasoning.value = stored.selection.effort as ReasoningTier;
+    }
+    if (stored.selection?.serviceTier !== undefined) serviceTier.value = stored.selection.serviceTier;
+    if (stored.selection?.contextWindow !== undefined) contextWindow.value = stored.selection.contextWindow;
     pendingResumeId = stored.conversationId;
     pendingResumeProvider = provider.value;
+    pendingResumeSessionAt = stored.resumeSessionAt;
     if (stored.forkContext) {
       sideChat.value = true;
       sideChatSource.value = stored.forkContext.sourceThreadId;
@@ -721,6 +958,88 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       });
   }
 
+  /** Re-seed this session's queued follow-ups from the bridge, for a thread
+   *  that just adopted a stored identity (rehydrate / openStored) — the rows
+   *  are durable (they survive crashes), but the queue events are not
+   *  journaled, so a reloaded renderer must rebuild the chips by an explicit
+   *  query. Best-effort all the way down, exactly like seedSpawnedChildren:
+   *  a missing bridge method, a rejected query, or a thread id that moved on
+   *  while the query was in flight all leave the chips as they are. */
+  function seedQueuedTurns(api: NonNullable<ReturnType<typeof bridge>>): void {
+    const query = (api as KoneAgentApi & QueueBridge).queuedTurns;
+    if (!query) return;
+    const id = threadId.value;
+    void query(id)
+      .then((rows) => {
+        // The session may have been re-homed onto another thread while the
+        // read was out — drop the rows rather than dump another thread's
+        // queue into this timeline.
+        if (threadId.value !== id) return;
+        if (!rows || rows.length === 0) {
+          queuedTurnsRaw.value = [];
+          return;
+        }
+        const anchored = new Set(queuedTurnsRaw.value.map((q) => q.blockId).filter(Boolean));
+        const entries: QueuedTurnEntry[] = rows
+          .slice()
+          .sort((a, b) => a.createdAt - b.createdAt)
+          .map((row, i) => {
+            const byId = blocks.value.find(
+              (b) => b.role === "user" && b.id === row.userBlockId,
+            );
+            return {
+              ...row,
+              position: i + 1,
+              ...(byId && !anchored.has(byId.id) ? { blockId: byId.id } : {}),
+            };
+          });
+        queuedTurnsRaw.value = entries;
+      })
+      .catch(() => {
+        // Best-effort: live queue events will fill the chips in as they land.
+      });
+  }
+
+  /** Load the next strictly older page of a windowed stored thread and prepend
+   *  it. The page API returns each slice in ascending timeline order and the
+   *  pages are disjoint (the store's keyset cursor is exclusive), so
+   *  prepending older blocks in arrival order preserves the timeline exactly.
+   *  Best-effort all the way down: a failed page leaves the transcript as it
+   *  was and surfaces the reason on the affordance for a retry. */
+  async function loadOlder(): Promise<void> {
+    const api = bridge();
+    const cursor = olderCursor.value;
+    if (!api || !cursor || loadingOlder.value) return;
+    loadingOlder.value = true;
+    olderError.value = null;
+    const id = threadId.value;
+    try {
+      const page =
+        typeof api.history.threadPage === "function"
+          ? await api.history.threadPage(id, { cursor }).catch(() => null)
+          : null;
+      // The session may have been re-homed onto another thread while the read
+      // was out — drop the page rather than dump another thread's transcript
+      // into this timeline (the same guard the children re-seed uses).
+      if (threadId.value !== id) return;
+      if (!page || page.blocks.length === 0) {
+        // Nothing older left — the walk is complete; clear the affordance.
+        olderCursor.value = null;
+        return;
+      }
+      const known = new Set(blocks.value.map((b) => b.id));
+      const older = markHistorical(
+        (page.blocks as ThreadBlock[]).filter((b) => !known.has(b.id)),
+      );
+      if (older.length > 0) blocks.value = [...older, ...blocks.value];
+      olderCursor.value = page.nextCursor;
+    } catch (e) {
+      olderError.value = peelIpcError(e, "Could not load older turns");
+    } finally {
+      loadingOlder.value = false;
+    }
+  }
+
   /** Reload the project's last persisted thread into this timeline, adopting its
    *  id so continued turns append to the same stored thread. Best-effort: any
    *  failure just leaves a fresh, empty thread. Desktop only. */
@@ -731,10 +1050,29 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       const stored = await api.history.latest(ctx.resolveCwd());
       if (stored && stored.blocks.length > 0) {
         threadId.value = stored.threadId;
-        blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
+        // Windowed read: `latest` identifies the thread (and is the fallback),
+        // but the transcript comes from the first page when pagination is
+        // available — a very long thread then ships only its newest window and
+        // pages the rest on demand (see PAGE_LIMIT). A missing/failed page API
+        // falls back to the full transcript, byte-for-byte the old path.
+        const page =
+          typeof api.history.threadPage === "function"
+            ? await api.history.threadPage(stored.threadId, { limit: PAGE_LIMIT }).catch(
+                () => null,
+              )
+            : null;
+        if (page && page.blocks.length > 0) {
+          blocks.value = markHistorical(page.blocks as ThreadBlock[]);
+          olderCursor.value = page.nextCursor;
+        } else {
+          blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
+          olderCursor.value = null;
+        }
         title.value = stored.title?.trim() || title.value;
         adoptStoredThread(stored);
         seedSpawnedChildren();
+        // The queue rows survive crashes — rebuild the chips from the bridge.
+        seedQueuedTurns(api);
       }
     } catch {
       // History is a convenience — never block starting a session over it.
@@ -811,6 +1149,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // drop it and start clean rather than hand one CLI another's conversation.
     const staged = pendingResumeId;
     const resume = pendingResumeProvider === provider.value ? staged : undefined;
+    // Claude's resume cursor is the id + the last assistant message uuid; the
+    // uuid is meaningless without the id (and to any non-Claude provider), so
+    // it rides along only when the resume id itself is being honored.
+    const resumeSessionAt = resume ? pendingResumeSessionAt : undefined;
     if (staged && !resume) {
       console.warn(
         `[agent] dropping resume id — staged for ${pendingResumeProvider}, starting on ${provider.value}`,
@@ -818,6 +1160,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     pendingResumeId = undefined;
     pendingResumeProvider = undefined;
+    pendingResumeSessionAt = undefined;
     try {
       session.value = await api.startSession({
         threadId: threadId.value,
@@ -832,6 +1175,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         // Resume the stored thread's provider conversation so continued turns
         // keep its full context (rehydrate/openStored set this).
         ...(resume ? { resume } : {}),
+        ...(resumeSessionAt ? { resumeSessionAt } : {}),
       });
       sessionState.value = session.value.status;
     } catch (e) {
@@ -873,14 +1217,32 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       await start();
       return;
     }
-    let stored;
+    let stored: StoredThread | null = null;
+    let page: StoredThreadPage | null = null;
     try {
       // Hovering the row that opened this thread may already have started the
       // read (see prefetchThread) — take that in-flight promise rather than
-      // firing a second one.
-      stored = await (takePrefetched(id) ?? api.history.thread(id));
+      // firing a second one. A prefetched snapshot is a FULL transcript, so a
+      // windowed read is unnecessary on top of it.
+      const prefetched = takePrefetched(id);
+      if (prefetched) {
+        stored = await prefetched;
+      } else {
+        // Windowed read (see PAGE_LIMIT): the first page is the thread's
+        // newest window; older pages load on demand via loadOlder. Falls back
+        // to the full read when the page API is unavailable (older app build,
+        // partial mock) or returns nothing — identical to the old path.
+        page =
+          typeof api.history.threadPage === "function"
+            ? await api.history.threadPage(id, { limit: PAGE_LIMIT }).catch(() => null)
+            : null;
+        if (!page || page.blocks.length === 0) {
+          stored = await api.history.thread(id).catch(() => null);
+        }
+      }
     } catch {
       stored = null;
+      page = null;
     }
     // Forgotten while the history load was in flight (opened then immediately
     // archived/deleted) — bail before revealing the transcript or arming a
@@ -890,30 +1252,45 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // thread rather than an empty, session-less view. Drop the claimed id on the
     // way: keeping it would have the first send hand `startSession` the id of a
     // thread the user just deleted, and ensureThread would write the row back.
-    if (!stored) {
+    if (!stored && !page) {
       threadId.value = uid();
       deferStart();
       return;
     }
-    blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
-    title.value = stored.title?.trim() || "";
-    adoptStoredThread(stored); // also restores the persisted context-meter snapshot
+    // The page shape carries the metadata under `meta`; the full thread is
+    // flat. Normalize both to the same meta + blocks pair here.
+    const meta: StoredThreadMeta = page ? page.meta : stored!;
+    const sourceBlocks: StoredBlock[] = page ? page.blocks : stored!.blocks;
+    blocks.value = markHistorical(sourceBlocks as ThreadBlock[]);
+    olderCursor.value = page ? page.nextCursor : null;
+    title.value = meta.title?.trim() || "";
+    adoptStoredThread(meta); // also restores the persisted context-meter snapshot
     error.value = null;
     seedSpawnedChildren();
+    // The queue rows survive crashes — rebuild the chips from the bridge.
+    seedQueuedTurns(api);
     deferStart();
   }
 
   /** Send a user turn. Pushes the user block immediately; the reply streams in.
    *  `attachments` (already uploaded to disk via the bridge, so bytes-free) ride
-   *  the turn — a turn is valid with text, attachments, or both. */
+   *  the turn — a turn is valid with text, attachments, or both.
+   *
+   *  There is NO busy early-return: a send while a turn runs is durably
+   *  enqueued by the service (it emits turn.queued and acks with the queue id
+   *  as turnId). The user block is already pushed before the call, so the
+   *  queued chip anchors to it — via the ack record below (the store journals
+   *  the block under its own id, which the turn.queued event carries). */
   async function send(text: string, attachments?: ChatAttachment[]): Promise<void> {
     const trimmed = text.trim();
     const files = attachments ?? [];
-    if ((!trimmed && files.length === 0) || busy.value) return;
+    if (!trimmed && files.length === 0) return;
+    touch();
+    const blockId = uid();
     blocks.value = [
       ...blocks.value,
       {
-        id: uid(),
+        id: blockId,
         role: "user",
         text: trimmed,
         at: Date.now(),
@@ -927,6 +1304,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
     const api = bridge();
     if (!api) {
+      // Browser dev: with no live turn, stream the canned reply. While the
+      // mock turn runs a send can't start a second concurrent turn — park a
+      // chip exactly like the real queue does (the mock consumes it when the
+      // turn settles; see mockQueueFollowUp).
+      if (busy.value) {
+        mockQueueFollowUp(blockId, "queue");
+        return;
+      }
       mockTurn(trimmed || files[0]?.name || "Attachment");
       return;
     }
@@ -940,7 +1325,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // Only bail on a start we actually performed — a stale error from an
       // earlier turn must not wedge every later send.
       if (wasDeferred && !session.value) return;
-      await api.sendTurn({
+      const result = await api.sendTurn({
         threadId: threadId.value,
         input: trimmed,
         ...(files.length ? { attachments: files } : {}),
@@ -950,10 +1335,107 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         serviceTier: serviceTier.value,
         contextWindow: contextWindow.value,
       });
+      // A busy send was durably enqueued — the ack's turnId IS the queue id.
+      // Remember which local block it belongs to so the turn.queued chip can
+      // anchor to it (the store journals the block under its own id).
+      if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
       error.value = peelIpcError(e, "Could not send to the agent");
     } finally {
       dispatching.value = false;
+    }
+  }
+
+  /** Steer a mid-turn nudge into the RUNNING turn — same turn, no new
+   *  boundary. The service routes it to the provider's live-steer channel
+   *  (emitting turn.steered), or — when the provider has none — durably
+   *  queues it to run first (a steer row claims ahead of plain follow-ups).
+   *  Without a live turn the backend treats a steer as a plain send. Mirrors
+   *  send(): pushes the user block immediately (the nudge is on screen the
+   *  moment it leaves the composer) and rides the same per-turn knobs. */
+  async function steerTurn(text: string, attachments?: ChatAttachment[]): Promise<void> {
+    const trimmed = text.trim();
+    const files = attachments ?? [];
+    if (!trimmed && files.length === 0) return;
+    touch();
+    const blockId = uid();
+    blocks.value = [
+      ...blocks.value,
+      {
+        id: blockId,
+        role: "user",
+        text: trimmed,
+        at: Date.now(),
+        ...(files.length ? { attachments: files } : {}),
+      },
+    ];
+    if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
+
+    const api = bridge();
+    if (!api) {
+      // Browser dev: a steer into the mock turn falls back to the queue (the
+      // mock has no live-steer channel), exactly like the real providers
+      // without one.
+      if (busy.value) {
+        mockQueueFollowUp(blockId, "steer");
+        return;
+      }
+      mockTurn(trimmed || files[0]?.name || "Attachment");
+      return;
+    }
+    dispatching.value = true;
+    try {
+      const wasDeferred = deferred.value;
+      await ensureStarted();
+      if (wasDeferred && !session.value) return;
+      const steer = (api as KoneAgentApi & QueueBridge).steerTurn;
+      if (!steer) {
+        // Older bridge without the steer channel — fall back to a plain send
+        // (the backend's own steer-without-live-turn semantics).
+        await api.sendTurn({
+          threadId: threadId.value,
+          input: trimmed,
+          ...(files.length ? { attachments: files } : {}),
+          model: model.value,
+          mode: mode.value,
+          effort: reasoning.value,
+          serviceTier: serviceTier.value,
+          contextWindow: contextWindow.value,
+        });
+        return;
+      }
+      const result = await steer({
+        threadId: threadId.value,
+        input: trimmed,
+        ...(files.length ? { attachments: files } : {}),
+        model: model.value,
+        mode: mode.value,
+        effort: reasoning.value,
+        serviceTier: serviceTier.value,
+        contextWindow: contextWindow.value,
+      });
+      // A steer that fell back to the durable queue acks with the queue id —
+      // record the anchor so its chip finds this block (a live-steer ack is
+      // the adapter's turn id and never produces a queue event; it's pruned
+      // at the next turn boundary).
+      if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
+    } catch (e) {
+      error.value = peelIpcError(e, "Could not steer the agent");
+    } finally {
+      dispatching.value = false;
+    }
+  }
+
+  /** Cancel one queued follow-up (user-initiated drop from the chips). The
+   *  backend emits turn.queued-cancelled; the chip clears on that event. */
+  async function cancelQueuedTurn(queueId: string): Promise<void> {
+    const api = bridge();
+    const cancel = (api as KoneAgentApi & QueueBridge | undefined)?.cancelQueuedTurn;
+    if (!cancel) return;
+    try {
+      await cancel(threadId.value, queueId);
+    } catch (e) {
+      error.value = peelIpcError(e, "Could not remove queued message");
     }
   }
 
@@ -1105,6 +1587,50 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     session.value = null;
   }
 
+  /** Park a *started* session without tearing the thread down: stop the provider
+   *  process and drop the live session, but keep the thread's identity +
+   *  transcript resident so the board's pane stays and a later open re-attaches
+   *  it. The next send re-runs start(), which resumes the same provider
+   *  conversation via the re-staged conversation id — so hibernation only costs
+   *  a CLI spawn, never context. Called by the manager's idle reaper after
+   *  IDLE_HIBERNATE_MS without activity; never while busy or parked on an ask.
+   *  Unlike dispose(), this does NOT latch `forgotten` — the thread is not
+   *  ProviderSessionReaper stops idle sessions the same way; the difference is
+   *  kone's pane + transcript stay live and resume is one send away). */
+  async function hibernate(): Promise<void> {
+    stopMock();
+    const api = bridge();
+    const wasLive = Boolean(api && session.value);
+    if (api && session.value) {
+      // Stage the provider conversation id again so the next start() resumes
+      // it instead of minting a blank conversation. The provider's last
+      // assistant-message uuid rides along for Claude (resumeSessionAt), so
+      // that resume path keeps working too.
+      const cid = session.value.conversationId;
+      if (cid) {
+        pendingResumeId = cid;
+        pendingResumeProvider = provider.value;
+        // Claude resumes with the id + the last assistant message uuid; keep
+        // the freshest one we've seen so the re-staged cursor is complete.
+        if (lastResumeSessionAt) pendingResumeSessionAt = lastResumeSessionAt;
+      }
+      try {
+        await api.stopSession(threadId.value);
+      } catch {
+        // best-effort — the process may already be gone
+      }
+    }
+    session.value = null;
+    // Only a session that actually had a process demotes to stopped; a
+    // never-started (deferred) column keeps its ready state.
+    if (wasLive) sessionState.value = "stopped";
+    error.value = null;
+    // Mark startable-on-demand again: the next send/start brings the CLI back
+    // (see ensureStarted). Mirrors deferStart's contract, minus the optimistic
+    // "ready" — a hibernated thread is genuinely stopped until it wakes.
+    deferred.value = true;
+  }
+
   /** Tear the live session down and start a fresh one under a new thread id.
    *  Used when a change can't be applied to a running session — switching
    *  provider (a different CLI entirely), or changing a Claude model, whose
@@ -1132,6 +1658,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     threadId.value = uid();
     tokenUsage.value = null;
+    // The re-born thread is a fresh conversation — no stored pages to walk.
+    olderCursor.value = null;
+    loadingOlder.value = false;
+    olderError.value = null;
     sessionState.value = "starting";
     // A restart is a deliberate re-birth: the new thread is a fresh
     // conversation, never a side chat.
@@ -1140,6 +1670,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // …and it has spawned nothing yet — the old thread's children belong to
     // the old thread, not this brand-new one.
     spawnedChildren.value = [];
+    // A restart is a fresh conversation — any queue rows belonged to the old
+    // thread (the backend clears them with the session teardown).
+    queuedTurnsRaw.value = [];
+    pendingQueueAnchors.clear();
     await start();
   }
 
@@ -1158,6 +1692,22 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     mockCancel?.();
     mockCancel = null;
     mockTurnId = null;
+  }
+
+  /** Browser dev only: a send/steer while the mock turn runs parks a chip
+   *  exactly like the real durable queue (the mock can't run two concurrent
+   *  turns). The chip anchors by the local block id — the mock hands the
+   *  renderer's own id back as userBlockId, which the real store can't. */
+  function mockQueueFollowUp(blockId: string, dispatchMode: "queue" | "steer"): void {
+    reduce({
+      ...base("turn.queued"),
+      type: "turn.queued",
+      queueId: uid(),
+      userBlockId: blockId,
+      dispatchMode,
+      position: queuedTurnsRaw.value.length + 2,
+    } as RuntimeEvent);
+    sessionState.value = "running";
   }
 
   // Browser dev only. Streams a canned turn that exercises the WHOLE interleaved
@@ -1632,6 +2182,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       const contextWindow = 200_000;
       const contextUsed = Math.min(contextWindow, 14_000 + priorTurns * 26_000);
       tokenUsage.value = { total: contextUsed, contextUsed, contextWindow, compactsAutomatically: true };
+      // Consume the head of the mock queue — the real backend emits
+      // turn.promoted when it hands a row to the adapter; the mock's settle
+      // is that hand-off.
+      const nextQueued = queuedTurnsRaw.value[0];
+      if (nextQueued) {
+        reduce({
+          ...base("turn.promoted"),
+          type: "turn.promoted",
+          queueId: nextQueued.queueId,
+        } as RuntimeEvent);
+      }
       reduce({ ...base("turn.completed"), type: "turn.completed", turnId } as RuntimeEvent);
       sessionState.value = "ready";
       stopMock();
@@ -1677,11 +2238,26 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     busy,
     everRan,
     error,
+    warning,
     tokenUsage,
+    // keyset pagination: the load-older affordance reads these; loadOlder
+    // fetches the next strictly older page and prepends it.
+    hasOlder,
+    loadingOlder,
+    olderError,
+    // Activity clock: the manager's LRU eviction and idle reaper read it; the
+    // manager bumps it on focus and actions, reduce() bumps it on any event.
+    lastActivityAt,
+    touch,
     // The child threads this one has spawned. Exposed per-session, not just on
     // the active projection: the Subagents dock reads the FOCUSED thread, which
     // on a multi-column board isn't necessarily the active one.
     spawnedChildren,
+    // Durable follow-ups queued behind the running turn — the composer's
+    // chips and the thread view's per-block badges read these (the strip
+    // reads the focused session's own ref; the composer reads the manager's
+    // active projection).
+    queuedTurns,
     pendingUserInput,
     pendingApproval,
     pendingApprovals,
@@ -1698,8 +2274,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     deferStart,
     ensureStarted,
     openStored,
+    loadOlder,
     restart,
     send,
+    steerTurn,
+    cancelQueuedTurn,
     uploadAttachment,
     demo,
     interrupt,
@@ -1714,6 +2293,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     setServiceTier,
     setContextWindow,
     dispose,
+    hibernate,
   };
 }
 
@@ -1725,6 +2305,55 @@ import { isThreadSessionBlank } from "~/utils/panes";
  *  never evicted; this only bounds the settled backlog so the registry (and the
  *  pill stack) can't grow without end. */
 const MAX_RESIDENT_THREADS = 6;
+/** How long a started session may sit without any activity before the sweep
+ *  hibernates it — stops the provider process (and releases the gateway token)
+ *  while keeping the thread resident, so the pane stays and the next send
+ *  kone's board keeps the pane, so 30 min of genuinely-unused process is the
+ *  same tradeoff here. */
+const IDLE_HIBERNATE_MS = 30 * 60_000;
+/** Sweep cadence. Cheap pass (a handful of sessions); runs forever because the
+ *  registry outlives any one <ProjectView> — the sweep is what bounds process
+ *  counts while a project is away. */
+const SWEEP_INTERVAL_MS = 60_000;
+
+/** One project's live-session registry, hoisted to module scope. <ProjectView>
+  * is keyed on project.path (index.vue), so a per-instance registry would
+  * dispose every session — and with it kill every provider process, which the
+  * renderer's dispose() is the only thing tearing down — the moment the user
+  * switches projects. Keeping the registry per project path at module scope
+  * makes a project switch a swap of registries: background turns keep folding
+  * (the single event listener is also hoisted), and re-entering the project
+  * re-attaches the same live sessions — the board re-attaches dormant panes on
+  * focus, and openThreadHandle reuses resident sessions by id. Sessions are
+  * still disposed on explicit thread close; the sweep hibernates idle ones so
+  * processes don't pile up across the run. Bounded by the number of projects
+  * opened in one run, like useBoardPersistence's layoutCache. */
+type ProjectRegistry = {
+  sessions: ShallowRef<ThreadSession[]>;
+  opening: Map<string, { key: string; promise: Promise<void> }>;
+  activeKey: Ref<string>;
+  /** The registry's event listener — attached once, never detached (a project
+   *  with no <ProjectView> mounted still needs its background sessions to fold
+   *  events, or the pill state is stale the moment the user comes back). */
+  listenerAttached: boolean;
+  sweepTimer: ReturnType<typeof setInterval> | null;
+};
+const registries = new Map<string, ProjectRegistry>();
+
+function registryFor(projectPath: string): ProjectRegistry {
+  let r = registries.get(projectPath);
+  if (!r) {
+    r = {
+      sessions: shallowRef<ThreadSession[]>([]),
+      opening: new Map(),
+      activeKey: ref(""),
+      listenerAttached: false,
+      sweepTimer: null,
+    };
+    registries.set(projectPath, r);
+  }
+  return r;
+}
 
 export function useAgent(options: UseAgentOptions) {
   const ctx: SessionCtx = {
@@ -1733,17 +2362,24 @@ export function useAgent(options: UseAgentOptions) {
     resolveCwd: () => (typeof options.cwd === "function" ? options.cwd() : options.cwd),
   };
 
+  // A project's whole registry — sessions, in-flight opens, focus — lives at
+  // module scope keyed by its path (see registryFor above). Each useAgent call
+  // binds to its project's shared state instead of minting a fresh one.
+  const registry = registryFor(
+    typeof options.cwd === "function" ? options.cwd() : options.cwd,
+  );
+
   // The registry: every thread this project has open, live or backgrounded.
   // shallowRef so Vue doesn't deep-reactive-wrap the session objects (which
   // would unwrap their inner refs) — we swap the array on add/remove instead.
-  const sessions = shallowRef<ThreadSession[]>([]);
-  const activeKey = ref("");
+  const sessions = registry.sessions;
+  const activeKey = registry.activeKey;
   // In-flight openThread() calls, keyed by thread id — guards the double-open
   // race (a second open before the first has adopted the id). Carries the
   // loading session's key so a repeat open can re-activate it (the session's
   // threadId isn't adopted until openStored resolves, so it can't be found by
   // id yet).
-  const opening = new Map<string, { key: string; promise: Promise<void> }>();
+  const opening = registry.opening;
 
   function spawn(init: { rehydrate?: boolean } = {}): ThreadSession {
     const s = createThreadSession(ctx, init);
@@ -1771,29 +2407,69 @@ export function useAgent(options: UseAgentOptions) {
     to.setContextWindow(from.contextWindow.value);
   }
 
-  /** Trim settled, idle background threads down to the resident cap — oldest
-   *  first, never the active one and never anything still busy. A thread with
-   *  live spawned children is never evicted either: evicting tears down the
-   *  parent's provider session and revokes its gateway token mid-orchestration,
-   *  while its children keep running headless against a parent that can no
-   *  longer answer them. */
-  function pruneResident(): void {
-    const idle = sessions.value.filter(
-      (s) =>
-        s.key !== activeKey.value &&
-        !s.busy.value &&
-        !s.spawnedChildren.value.some((c) => !c.terminal),
+  /** A session that must never be evicted or hibernated right now: it's the
+   *  focused one, a turn is in flight, it's parked on an ask (approval or
+   *  user-input), its open is still loading, or it has live spawned children —
+   *  evicting the parent tears down the provider session and revokes its
+   *  gateway token mid-orchestration while its children keep running headless
+   *  against a parent that can no longer answer them. */
+  function untouchable(s: ThreadSession): boolean {
+    return (
+      s.key === activeKey.value ||
+      s.busy.value ||
+      Boolean(s.pendingUserInput.value) ||
+      s.pendingApprovals.value.length > 0 ||
+      s.spawnedChildren.value.some((c) => !c.terminal) ||
+      [...opening.values()].some((e) => e.key === s.key)
     );
+  }
+
+  /** Trim settled, idle background threads down to the resident cap —
+   *  least-recently-active first (a background turn you just used is never the
+   *  first to go), never the active one and never anything busy or parked on
+   *  registry order (which drag-reordering can shuffle). */
+  function pruneResident(): void {
     const overflow = sessions.value.length - MAX_RESIDENT_THREADS;
-    for (let i = 0; i < overflow && i < idle.length; i++) {
-      const s = idle[i];
+    if (overflow <= 0) return;
+    const evictable = sessions.value
+      .filter((s) => !untouchable(s))
+      .sort((a, b) => a.lastActivityAt - b.lastActivityAt);
+    for (let i = 0; i < overflow && i < evictable.length; i++) {
+      const s = evictable[i];
       if (s) void evict(s);
     }
   }
 
+  /** Low-frequency sweep: evicts past the open/new-thread paths (a settled
+   *  turn never triggers another prune behind it) and hibernates sessions
+   *  whose provider process has sat idle past IDLE_HIBERNATE_MS. One interval
+   *  per registry, started on first mount, never cleared — the registry (and
+   *  its processes) outlive the <ProjectView>. */
+  function startSweep(): void {
+    if (registry.sweepTimer !== null) return;
+    registry.sweepTimer = setInterval(() => {
+      if (sessions.value.length > MAX_RESIDENT_THREADS) pruneResident();
+      const cutoff = Date.now() - IDLE_HIBERNATE_MS;
+      for (const s of sessions.value) {
+        if (untouchable(s)) continue;
+        if (s.lastActivityAt > cutoff) continue;
+        // The pane stays; only the process goes (see hibernate).
+        void s.hibernate();
+      }
+    }, SWEEP_INTERVAL_MS);
+  }
+  startSweep();
+
   // The first thread — rehydrates the project's latest on its first start.
-  const first = spawn({ rehydrate: options.rehydrate });
-  activeKey.value = first.key;
+  // Only a genuinely first mount of this project spawns it: with the registry
+  // hoisted, a re-mount finds its sessions still resident and must not stack a
+  // fresh boot thread on top of them (the board reconciles those straight onto
+  // the strip). Focus comes back to wherever the user left it.
+  const firstMount = sessions.value.length === 0;
+  const first = firstMount
+    ? spawn({ rehydrate: options.rehydrate })
+    : (sessions.value[0] as ThreadSession);
+  if (firstMount) activeKey.value = first.key;
 
   /** The thread the conversation view currently shows. Falls back to the first
    *  resident one — and to null when the registry is empty, which is a legitimate
@@ -1809,11 +2485,15 @@ export function useAgent(options: UseAgentOptions) {
   // Replaces the old per-session "drop if not my thread" filter: a single
   // listener routes each event to the session that owns its threadId, so a
   // backgrounded thread keeps folding its turns while another is on screen.
-  let detach: (() => void) | null = null;
-  if (import.meta.client) {
+  // Attached once per project registry and never detached: the registry (and
+  // its background sessions) outlive the <ProjectView>, and a project with no
+  // view mounted still needs its turns folding — otherwise the state is stale
+  // the moment the user comes back. Re-mounts of the same project skip this.
+  if (import.meta.client && !registry.listenerAttached) {
     const api = ctx.bridge();
     if (api) {
-      detach = api.onEvent((event: RuntimeEvent) => {
+      registry.listenerAttached = true;
+      api.onEvent((event: RuntimeEvent) => {
         // A spawned child's events carry the CHILD's id — the child is the
         // event's *subject* — but its session is never in this registry (only
         // the parent's is, and the parent's dock is what these events
@@ -1874,7 +2554,7 @@ export function useAgent(options: UseAgentOptions) {
       clearInterval(clock);
       clock = null;
     }
-  });
+  }, { immediate: true });
 
   // ── active-thread projection (the public state the view binds) ───────────────
   const NO_BLOCKS: ThreadBlock[] = [];
@@ -1889,7 +2569,11 @@ export function useAgent(options: UseAgentOptions) {
     () => active.value?.sessionState.value ?? "stopped",
   );
   const busy = computed(() => active.value?.busy.value ?? false);
+  /** The active thread's queued follow-ups (display positions) — what the
+   *  composer's chips read; matches the `busy` projection it sits beside. */
+  const queuedTurns = computed<QueuedTurnEntry[]>(() => active.value?.queuedTurns.value ?? []);
   const error = computed(() => active.value?.error.value ?? null);
+  const warning = computed(() => active.value?.warning.value ?? null);
   const tokenUsage = computed(() => active.value?.tokenUsage.value ?? null);
   const pendingUserInput = computed(() => active.value?.pendingUserInput.value ?? null);
   const pendingApproval = computed(() => active.value?.pendingApproval.value ?? null);
@@ -1929,6 +2613,15 @@ export function useAgent(options: UseAgentOptions) {
   const send = async (text: string, attachments?: ChatAttachment[]) => {
     await active.value?.send(text, attachments);
   };
+  /** Steer a mid-turn nudge into the RUNNING thread's live turn (same turn,
+   *  no new boundary). No-ops when the board has no thread column at all. */
+  const steerTurn = async (text: string, attachments?: ChatAttachment[]) => {
+    await active.value?.steerTurn(text, attachments);
+  };
+  /** Cancel one durably queued follow-up (the composer chips' ✕). */
+  const cancelQueuedTurn = async (queueId: string) => {
+    await active.value?.cancelQueuedTurn(queueId);
+  };
   const uploadAttachment = (file: File): Promise<ChatAttachment> => {
     const s = active.value;
     if (!s) return Promise.reject(new Error("No thread column is open."));
@@ -1962,7 +2655,10 @@ export function useAgent(options: UseAgentOptions) {
    *  running in the background. */
   function setActiveThread(id: string): void {
     const s = sessions.value.find((x) => x.threadId.value === id);
-    if (s) activeKey.value = s.key;
+    if (s) {
+      activeKey.value = s.key;
+      s.touch();
+    }
   }
 
   /** Begin a brand-new, empty thread and make it active. The previously-active
@@ -2029,6 +2725,7 @@ export function useAgent(options: UseAgentOptions) {
     const existing = sessions.value.find((x) => x.threadId.value === id);
     if (existing) {
       activeKey.value = existing.key;
+      existing.touch();
       return { key: existing.key, ready: Promise.resolve() };
     }
     // Dedupe concurrent opens of the same thread. While an open is in flight,
@@ -2038,6 +2735,8 @@ export function useAgent(options: UseAgentOptions) {
     const inFlight = opening.get(id);
     if (inFlight) {
       activeKey.value = inFlight.key;
+      const loading = sessions.value.find((x) => x.key === inFlight.key);
+      loading?.touch();
       return { key: inFlight.key, ready: inFlight.promise };
     }
     // If the active thread is idle and never ran a live turn this session (a
@@ -2120,7 +2819,11 @@ export function useAgent(options: UseAgentOptions) {
 
   /** Focus a column by its stable registry key. */
   function focusThread(key: string): void {
-    if (sessions.value.some((s) => s.key === key)) activeKey.value = key;
+    const s = sessions.value.find((x) => x.key === key);
+    if (s) {
+      activeKey.value = key;
+      s.touch();
+    }
   }
 
   /** Step focus `delta` columns along the strip. Clamped at both ends — niri's
@@ -2131,7 +2834,10 @@ export function useAgent(options: UseAgentOptions) {
     const i = list.findIndex((s) => s.key === activeKey.value);
     if (i === -1) return;
     const next = list[Math.min(list.length - 1, Math.max(0, i + delta))];
-    if (next) activeKey.value = next.key;
+    if (next) {
+      activeKey.value = next.key;
+      next.touch();
+    }
   }
 
   /** Carry a column along the strip, focus and all (niri's move-column-left/
@@ -2147,6 +2853,7 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return;
     list.splice(j, 0, s);
     sessions.value = list;
+    s.touch();
   }
 
   /** Close one column and hand focus to a neighbour (right first, then left —
@@ -2171,10 +2878,18 @@ export function useAgent(options: UseAgentOptions) {
   }
 
   onBeforeUnmount(() => {
+    // Stop this view's own ticking clock — it restarts on re-mount if any
+    // session is still busy (the watch runs immediate).
     if (clock !== null) clearInterval(clock);
-    detach?.();
-    detach = null;
-    for (const s of sessions.value) void s.dispose();
+    clock = null;
+    // Deliberately NOT disposing sessions here. The registry is module-scoped
+    // per project path; disposing on unmount is what killed every thread of a
+    // project the moment the user switched projects — including busy
+    // background turns (the provider processes live in the main process, and
+    // the renderer's dispose() is the only thing that stops them). Sessions
+    // are torn down on explicit thread close (evict/forgetThread) and
+    // hibernated when idle (the sweep) — a project switch is a swap of
+    // registries, not a massacre.
   });
 
   return {
@@ -2188,7 +2903,9 @@ export function useAgent(options: UseAgentOptions) {
     session,
     sessionState,
     busy,
+    queuedTurns,
     error,
+    warning,
     tokenUsage,
     pendingUserInput,
     pendingApproval,
@@ -2221,6 +2938,8 @@ export function useAgent(options: UseAgentOptions) {
     openThread,
     openThreadHandle,
     send,
+    steerTurn,
+    cancelQueuedTurn,
     uploadAttachment,
     demo,
     interrupt,

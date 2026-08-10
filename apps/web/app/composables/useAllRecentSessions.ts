@@ -15,16 +15,22 @@ import { useRecentProjects } from "~/composables/useRecentProjects";
 // Pins and archive/delete work by thread id alone, so they share the exact same
 // stores and bridge calls as the in-project block — a session pinned here shows
 // pinned there, and vice versa.
+//
+// One hard rule on the open path: a row is only clickable when its stored
+// project path is one of the recents grid's paths. The fan-out reads each
+// recent project's history, but a thread's `projectPath` can trail behind the
+// grid (a project removed from recents, or a path that drifted after a rename
+// or symlink change). Clicking such a row would silently re-add a project under
+// a path the user never opened — and open the board under that path, so the
+// saved layout and known-thread set wouldn't match the project the row came
+// from. Filtering keeps the launcher list exactly "every recent project's
+// conversations", with every row's target fields consistent with the grid.
 
-const MAX = 6;
 // Shared with useRecentSessions — a pin is global "keep this thread in front",
-// independent of which project's list is showing it.
+// independent of which project's list is showing it. Pins live in the DB
+// (threads.is_pinned, v18); this key is only the browser-dev fallback and the
+// one-time migration source for pre-v18 installs.
 const PIN_KEY = "kone:pinned-sessions";
-
-function basename(path: string): string {
-  const segments = path.split("/").filter(Boolean);
-  return segments[segments.length - 1] ?? path;
-}
 
 function summarize(
   meta: StoredThreadMeta,
@@ -41,7 +47,9 @@ function summarize(
     added: meta.added,
     removed: meta.removed,
     tokens: meta.tokens,
-    updatedAt: meta.updatedAt,
+    // Recency key: last conversation activity — a background rename must not
+    // reshuffle the list (updatedAt also moves for title/archive bookkeeping).
+    updatedAt: meta.lastActivityAt ?? meta.updatedAt,
     pinned,
     projectPath: meta.projectPath,
     projectName,
@@ -161,6 +169,15 @@ export function useAllRecentSessions() {
       const projects = recents.value;
       const nameByPath = new Map(projects.map((p) => [p.path, p.name]));
       const pins = new Set(pinnedIds.value);
+      // One-time lift of browser-localStorage pins into the DB (see
+      // useRecentSessions — same key, same migration).
+      if (pinnedIds.value.length > 0) {
+        const legacy = [...pinnedIds.value];
+        const results = await Promise.all(
+          legacy.map((id) => api.setPinned(id, true).then(() => true).catch(() => false)),
+        );
+        if (results.every(Boolean)) pinnedIds.value = [];
+      }
       // One local SQLite read per project; a failed project drops to an empty
       // list rather than sinking the whole aggregate.
       const lists = await Promise.all(
@@ -170,11 +187,12 @@ export function useAllRecentSessions() {
       );
       items.value = lists
         .flat()
+        .filter((m) => nameByPath.has(m.projectPath))
         .map((m) =>
           summarize(
             m,
-            pins.has(m.threadId),
-            nameByPath.get(m.projectPath) ?? basename(m.projectPath),
+            m.isPinned ?? pins.has(m.threadId),
+            nameByPath.get(m.projectPath)!,
           ),
         );
     } catch {
@@ -185,22 +203,33 @@ export function useAllRecentSessions() {
   }
 
   // Re-key the pinned flag reactively without a full reload — a pin toggle
-  // shouldn't re-fan-out over every project's history.
+  // shouldn't re-fan-out over every project's history. Only applies in
+  // browser-dev mode: with the bridge present the DB row is the source of
+  // truth (see useRecentSessions for the migration rationale).
   watch(pinnedIds, (ids) => {
+    if (bridge()) return;
     const pins = new Set(ids);
     items.value = items.value.map((s) => ({ ...s, pinned: pins.has(s.threadId) }));
   });
 
   // Newest first, within each group. Pins float to their own header above; the
-  // RECENT group is capped so the launcher list stays a glance, not a backlog.
+  // RECENT group passes through whole — RecentSessions.vue caps the on-screen
+  // list and owns the "view all" toggle.
   const byRecency = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt;
   const pinned = computed(() => items.value.filter((s) => s.pinned).sort(byRecency));
-  const recent = computed(() =>
-    items.value.filter((s) => !s.pinned).sort(byRecency).slice(0, MAX),
-  );
+  const recent = computed(() => items.value.filter((s) => !s.pinned).sort(byRecency));
   const hasAny = computed(() => pinned.value.length > 0 || recent.value.length > 0);
 
   function togglePin(threadId: string): void {
+    const row = items.value.find((s) => s.threadId === threadId);
+    const api = bridge();
+    if (api) {
+      const next = !(row?.pinned ?? pinnedIds.value.includes(threadId));
+      void api.setPinned(threadId, next).catch(() => {});
+      if (row) row.pinned = next;
+      return;
+    }
+    // Browser-dev fallback: no DB to write to, keep the localStorage behaviour.
     const set = new Set(pinnedIds.value);
     if (set.has(threadId)) set.delete(threadId);
     else set.add(threadId);
@@ -251,7 +280,8 @@ export function useAllRecentSessions() {
       const row = items.value.find((s) => s.threadId === event.threadId);
       if (row) {
         row.title = event.title;
-        row.updatedAt = event.at;
+        // A rename is bookkeeping, not conversation activity — the row keeps
+        // its last-activity stamp and stays put in the list.
         return;
       }
     }

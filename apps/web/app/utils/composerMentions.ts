@@ -48,7 +48,17 @@ export function replaceComposerTextRange(
   return { text: nextText, cursor: start + replacement.length };
 }
 
-const COMPLETED_MENTION_REGEX = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s@"]+))(?=\s)/g;
+// The quoted body is bounded rather than `*`. Unbounded, every `@"` with no
+// closing quote makes the engine scan the rest of the text from each candidate
+// for `[label](file)` links in composerInlineTokens, #5782). A cap makes each
+// attempt constant-bounded. Only paths that need quoting are ever written by
+// formatFileMention, and no real filesystem path approaches this: the longest
+// component any common filesystem allows is 255 chars.
+const MAX_QUOTED_MENTION_LENGTH = 512;
+const COMPLETED_MENTION_REGEX = new RegExp(
+  `(^|\\s)@(?:"((?:\\\\.|[^"\\\\]){0,${MAX_QUOTED_MENTION_LENGTH}})"|([^\\s@"]+))(?=\\s)`,
+  "g",
+);
 
 /** Split completed @path tokens for the composer's visual layer. A trailing
  * delimiter is intentional: it prevents an in-progress token from turning

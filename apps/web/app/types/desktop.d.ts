@@ -673,6 +673,10 @@ export type ModelDescriptor = {
    *  list). Absent for a model with no speed-tier axis at all — most models
    *  don't have one; where it exists it's almost always just a "fast" tier. */
   serviceTiers?: { id: string; label: string; description?: string }[];
+  /** The provider's own default service tier id for this model (Codex's
+   *  `model/list` `defaultServiceTier`), when it has one configured. Lets the
+   *  picker pre-set the fast-mode toggle to the provider's default. */
+  defaultServiceTier?: string;
   /** The context-window sizes this model can run in, when it has a choice. For
    *  Claude this is the auto-compact window (compact early at 200k vs run to the
    *  full native 1M), not a raw capacity switch. Absent for a single-window
@@ -701,6 +705,12 @@ export type SessionStartInput = {
   /** Provider-native conversation id to resume when reopening a stored thread,
    *  so it continues with its full prior context. Absent starts fresh. */
   resume?: string;
+  /** The last assistant message uuid of the prior conversation (Claude only),
+   *  persisted alongside `resume` as StoredThreadMeta.resumeSessionAt. Passed to
+   *  the Claude SDK as `resumeSessionAt` to anchor the resume at the last
+   *  assistant message — the SDK can't reliably resume a conversation whose
+   *  tail is a user message. Absent for every other provider. */
+  resumeSessionAt?: string;
   /** MCP gateway connection for this session, filled main-side by
    *  AgentService.startSession when the gateway is live. The adapter injects
    *  it into the provider session's mcpServers config so the agent can call
@@ -729,6 +739,10 @@ export type Session = {
   cwd: string;
   status: RuntimeSessionState;
   conversationId?: string;
+  /** The resume id this session actually adopted, when `SessionStartInput.resume`
+   *  was honored. Absent means the process came up with an empty context — the
+   *  send path then replays the transcript as context instead. */
+  resumedFrom?: string;
   activeTurnId?: string;
   model?: string;
   /** Reasoning-effort tier the session runs at, when the adapter knows it.
@@ -780,6 +794,36 @@ export type SendTurnInput = {
 };
 
 export type TurnStartResult = { threadId: string; turnId: string };
+
+// ── durable turn queue (mirror apps/desktop/src/agent/ConversationStore.ts) ─
+/** A follow-up durably enqueued while the thread's turn ran (survives
+ *  crashes), promoted automatically when the active turn settles, and
+ *  cancelled on stop/thread-delete. `userBlockId` anchors the queued chip to
+ *  the transcript block of the user prompt it was sent after; `dispatchMode`
+ *  distinguishes a plain follow-up from a steer request that fell back to the
+ *  queue (steers claim first, so the nudge lands as the next turn the moment
+ *  the current one settles). */
+export type QueuedTurnRow = {
+  queueId: string;
+  threadId: string;
+  userBlockId: string;
+  dispatchMode: "queue" | "steer";
+  state: "queued" | "promoting";
+  /** The user's prompt text. */
+  input: string;
+  /** Files/images attached to the queued turn (metadata only; bytes on disk). */
+  attachments?: ChatAttachment[];
+  model?: string;
+  mode?: string;
+  effort?: string;
+  serviceTier?: string;
+  contextWindow?: string;
+  /** Times this turn was claimed; survives release→reclaim (the retry ledger). */
+  attemptCount: number;
+  createdAt: number;
+  updatedAt: number;
+  promotedAt?: number;
+};
 
 // ── side chat creation (mirror apps/desktop/src/agent/types.ts) ──────────────
 // A side chat is a root thread with a fork pointer back at its source: the
@@ -969,7 +1013,12 @@ export type TokenUsage = {
   compactsAutomatically?: boolean;
 };
 
-export type ProviderRefs = { conversationId?: string; providerTurnId?: string };
+export type ProviderRefs = {
+  conversationId?: string;
+  /** Last assistant message uuid (Claude only) — carried on every envelope so
+   *  the store can persist the resume anchor the moment it changes. */
+  resumeSessionAt?: string;
+};
 
 export type RuntimeEventSource =
   | "codex.rpc.notification"
@@ -1017,9 +1066,20 @@ export type RuntimeEvent =
       state: RuntimeSessionState;
       message?: string;
     })
+  // Non-fatal: the session is degraded or retrying but continues. Consumers must
+  // NOT flip the thread to an error state on this.
+  | (AgentBaseEvent & { type: "session.warning"; message: string })
   | (AgentBaseEvent & { type: "session.exited"; code: number | null })
   | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (AgentBaseEvent & { type: "thread.title.updated"; title: string })
+  // The provider rerouted the request to a different model mid-session. Update
+  // the session's model label; `reason` is the provider's own wording.
+  | (AgentBaseEvent & {
+      type: "model.rerouted";
+      fromModel: string;
+      toModel: string;
+      reason?: string;
+    })
   // A side chat fork was persisted (agent:create-side-chat). `threadId` is the
   // new side chat's id; `sourceThreadId` is the thread it was forked from.
   | (AgentBaseEvent & {
@@ -1052,6 +1112,37 @@ export type RuntimeEvent =
       writer: ScratchpadWriter | null;
     })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
+  // A follow-up message offered into a RUNNING turn: same turn, no new
+  // boundary — the provider consumes it when it builds its next request.
+  // `turnId` is the live turn the message was steered into; `message` is the
+  // trimmed prompt text (absent for attachment-only steers — the event is
+  // then not emitted at all).
+  | (AgentBaseEvent & { type: "turn.steered"; turnId: string; message: string })
+  // A follow-up was durably enqueued because the thread has a live turn.
+  // `position` is the turn's place in line, counting the live turn as slot 1
+  // (a fresh queue entry reads 2). `dispatchMode` distinguishes a plain
+  // follow-up from a steer request that fell back to the queue (steers claim
+  // first).
+  | (AgentBaseEvent & {
+      type: "turn.queued";
+      queueId: string;
+      userBlockId: string;
+      dispatchMode: "queue" | "steer";
+      position: number;
+    })
+  // A queued follow-up was cancelled before it ran — the user dropped it
+  // (`user`), the thread's session was stopped (`stop`), or the thread was
+  // deleted/archived (`thread-deleted`/`archive`). Consumers renumber the
+  // remaining chips.
+  | (AgentBaseEvent & {
+      type: "turn.queued-cancelled";
+      queueId: string;
+      reason: "user" | "stop" | "thread-deleted" | "archive";
+    })
+  // A queued follow-up was handed to the adapter as a real turn (the queue row
+  // is gone). `turnId` is the adapter's turn id when sendTurn returned one —
+  // omitted when the adapter doesn't name the turn until its turn.started.
+  | (AgentBaseEvent & { type: "turn.promoted"; queueId: string; turnId?: string })
   | (AgentBaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (AgentBaseEvent & {
       type: "turn.aborted";
@@ -1126,6 +1217,27 @@ export type StoredThreadMeta = {
   /** Tokens spent on the thread — cumulative for providers that report a running
    *  total (Codex), summed across turns for per-turn reporters (Claude). */
   tokens?: number;
+  /** The user's chosen per-thread knobs, persisted so a reopened thread restores
+   *  the picker exactly where the user left it. Each knob is a ModelDescriptor
+   *  axis id — the same values SendTurnInput carries. */
+  selection?: {
+    effort?: string;
+    serviceTier?: string;
+    /** The chosen context-window id (ModelDescriptor.contextWindows[].id).
+     *  Named distinctly from the token-meter `contextWindow` number below —
+     *  that one is a last-reported usage snapshot, this is a user choice. */
+    contextWindow?: string;
+  };
+  /** The last assistant message uuid of the conversation (Claude only), for
+   *  reliable resume — see SessionStartInput.resumeSessionAt. */
+  resumeSessionAt?: string;
+  /** Pins live in the DB (v18), not browser localStorage — a pinned thread
+   *  follows the thread across profiles. */
+  isPinned?: boolean;
+  /** Recency ordering key (v18): last conversation activity, distinct from
+   *  `updatedAt` which title/archive bookkeeping also bumps. Backfilled from
+   *  updatedAt for pre-v18 rows. */
+  lastActivityAt?: number;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -1285,11 +1397,33 @@ export type StoredBlock =
 
 export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
 
+/** One windowed page of a stored thread (keyset-paginated, user-anchored):
+ *  metadata plus the page's blocks in ascending timeline order, and the
+ *  opaque cursor for the next strictly older page. `nextCursor` is null (and
+ *  `hasMore` false) when the whole thread is in hand. */
+export type StoredThreadPage = {
+  threadId: string;
+  meta: StoredThreadMeta;
+  blocks: StoredBlock[];
+  /** Cursor for the next strictly older page; null when the walk is complete.
+   *  Opaque — consumers echo it back verbatim. */
+  nextCursor: string | null;
+  /** Whether older blocks exist beyond this page. */
+  hasMore: boolean;
+};
+
 export type KoneAgentHistoryApi = {
   /** The project's most recently active thread, fully reconstructed — or null. */
   latest: (projectPath: string) => Promise<StoredThread | null>;
   /** One stored thread by id, fully reconstructed — or null. */
   thread: (threadId: string) => Promise<StoredThread | null>;
+  /** One windowed page of a stored thread, newest window first: first page
+   *  when no cursor is given, then the next strictly older page per cursor.
+   *  Null when the thread is missing. */
+  threadPage: (
+    threadId: string,
+    options?: { limit?: number; cursor?: string },
+  ) => Promise<StoredThreadPage | null>;
   /** Every stored thread for a project (metadata only), newest first. Excludes
    *  archived threads. */
   list: (projectPath: string) => Promise<StoredThreadMeta[]>;
@@ -1297,6 +1431,22 @@ export type KoneAgentHistoryApi = {
   archive: (threadId: string, archived: boolean) => Promise<void>;
   /** Permanently delete a thread and its transcript. Irreversible. */
   remove: (threadId: string) => Promise<void>;
+  /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
+   *  across browser profiles. */
+  setPinned: (threadId: string, pinned: boolean) => Promise<void>;
+};
+
+/** The user's per-thread picker knobs, persisted via agent:set-thread-selection
+ *  so a reopened thread restores the picker exactly where it was left. Each
+ *  knob is a ModelDescriptor axis id — the same values SendTurnInput carries;
+ *  `model` lands on the thread's model column, the rest on the stored
+ *  selection. Absent fields are left untouched. */
+export type ThreadSelectionUpdate = {
+  model?: string;
+  effort?: string;
+  serviceTier?: string;
+  /** The chosen context-window id (ModelDescriptor.contextWindows[].id). */
+  contextWindow?: string;
 };
 
 /** The main process's disk-backed snapshot of the last known provider surface.
@@ -1337,6 +1487,16 @@ export type KoneAgentApi = {
   updateProvider: (provider: ProviderKind) => Promise<ProviderUpdateResult>;
   /** Persisted conversation history (read-only). */
   history: KoneAgentHistoryApi;
+  /** Persist the user's per-thread picker selection (model/effort/serviceTier/
+   *  contextWindow) so a reopened thread restores it exactly. */
+  setThreadSelection: (
+    threadId: string,
+    selection: ThreadSelectionUpdate,
+  ) => Promise<void>;
+  /** Rename a thread (user-initiated). Resolves true when the title changed.
+   *  Does not touch recency ordering; the title.updated event follows on the
+   *  runtime stream. */
+  renameThread: (threadId: string, title: string) => Promise<boolean>;
   /** Start a thread; resolves once the session is ready. */
   startSession: (input: SessionStartInput) => Promise<Session>;
   /** Persist an attachment's bytes to disk; resolves to the bytes-free
@@ -1369,6 +1529,17 @@ export type KoneAgentApi = {
   /** Queue a mid-task message for a running nested subagent. Delivered on the
    *  child's next tool call. */
   steerSubagent: (threadId: string, toolUseId: string, message: string) => Promise<void>;
+  /** The thread's durably enqueued follow-ups, in execution order (steers
+   *  first, then FIFO) — the queue UI reads this to render its chips. */
+  queuedTurns: (threadId: string) => Promise<QueuedTurnRow[]>;
+  /** Drop one queued follow-up (cancels with reason "user"). Resolves false
+   *  when no such row exists. */
+  cancelQueuedTurn: (threadId: string, queueId: string) => Promise<boolean>;
+  /** Deliver a mid-turn message without starting a new turn boundary: routes
+   *  to the live turn when the provider has a live-steer channel, else
+   *  enqueues it as a steer (claiming first) — or sends normally when there
+   *  is no live turn to steer. */
+  steerTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
   /** The child threads this thread has spawned, projected fresh from the store.
    *  The spawn events aren't journaled, so a reloaded renderer has no record of
    *  them — this is how the Subagents dock repopulates after a reload. */

@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { motion } from "motion-v";
+import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
   ArrowUp01Icon,
+  Cancel01Icon,
   Copy01Icon,
-  Tick02Icon,
   Note01Icon,
+  PencilEdit01Icon,
+  RefreshIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
+import type { AssistantBlock, QueuedTurnEntry, ThreadBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
@@ -50,10 +53,42 @@ const props = defineProps<{
   sessionError?: string | null;
   /** Strip column key — forwarded with scratchpad captures. */
   sourceKey?: string;
+  /** The provider thread id, when this column is anchored to a stored
+   *  conversation. Its presence is what distinguishes "transcript didn't load"
+   *  from a fresh blank thread (which carries no id yet). */
+  threadId?: string | null;
+  /** The session is still starting / rehydrating — no retry while it is. */
+  loading?: boolean;
+  /** A turn is in flight — retry / resend are disabled while one is. */
+  busy?: boolean;
+  /** Follow-ups durably queued behind the running turn (useAgent's
+   *  queuedTurns). User blocks whose id is in the queue get a small queued
+   *  badge so a parked follow-up reads as waiting, not delivered. */
+  queued?: QueuedTurnEntry[];
+  /** A stored thread adopted windowed (keyset pagination): the store holds an
+   *  older page beyond the window in hand. Absent for a full load / fresh
+   *  thread. */
+  hasOlder?: boolean;
+  /** A load-older request is in flight. */
+  loadingOlder?: boolean;
+  /** The last load-older attempt failed — the affordance shows a retry. */
+  olderError?: string | null;
 }>();
 
 const emit = defineEmits<{
   "to-scratchpad": [text: string];
+  /** Re-send the user request that precedes a failed turn. The host owns the
+   *  send path (ThreadStrip forwards this to the session's `send`). */
+  retry: [text: string];
+  /** Edit-and-resend: send the edited text as a NEW user turn. */
+  resend: [text: string];
+  /** A stored conversation failed to load its transcript — re-run the open. */
+  "retry-load": [];
+  /** The session start failed — re-run the session start. */
+  "retry-session": [];
+  /** Load the next older page of a windowed stored thread and prepend it. The
+   *  host owns the fetch (session.loadOlder); the thread only asks. */
+  "load-older": [];
 }>();
 
 const { cue } = useSound();
@@ -230,6 +265,131 @@ function addToScratchpad(block: AssistantBlock) {
   cue("press");
 }
 
+// ── retry / edit-and-resend / load-failure ────────────────────────────────────
+// All of these reach the session through the host (ThreadStrip forwards them):
+// `retry` re-sends the user request that precedes a failed turn, `resend` ships
+// the edited text as a NEW user turn (the failed reply stays in the transcript —
+// rolling it back needs store support and is out of scope), and the two
+// retry-load paths re-run the open or the session start. The buttons here are
+// pure intent — this component never touches the send path itself.
+const dismissedTurnErrors = reactive<Record<string, boolean>>({});
+const sessionErrorDismissed = ref(false);
+const showSessionError = computed(() => Boolean(props.sessionError) && !sessionErrorDismissed.value);
+const copiedError = ref(false);
+async function copySessionError(): Promise<void> {
+  if (!props.sessionError || !import.meta.client) return;
+  try {
+    await navigator.clipboard.writeText(props.sessionError);
+    copiedError.value = true;
+    window.setTimeout(() => (copiedError.value = false), 1600);
+  } catch {
+    // Clipboard blocked — nothing to do.
+  }
+}
+function retrySession(): void {
+  sessionErrorDismissed.value = false;
+  cue("press");
+  emit("retry-session");
+}
+/** The user request this assistant turn answers — the nearest user block above
+ *  it. Retry re-sends that, so a failed turn gets exactly its own prompt back. */
+function userRequestFor(block: AssistantBlock): string {
+  for (let i = props.blocks.indexOf(block) - 1; i >= 0; i--) {
+    const b = props.blocks[i];
+    if (b && b.role === "user") return b.text;
+  }
+  return "";
+}
+function retryTurn(block: AssistantBlock): void {
+  const text = userRequestFor(block);
+  if (!text.trim() || props.busy) return;
+  cue("press");
+  emit("retry", text);
+}
+function dismissTurnError(block: AssistantBlock): void {
+  dismissedTurnErrors[block.id] = true;
+  cue("toggle");
+}
+
+// ── edit-and-resend (last user turn only) ─────────────────────────────────────
+// The edit affordance lives on the LAST user turn — the one a follow-up edit
+// could still plausibly replace. Saving ships the text through the host's send
+// path as a new turn; the transcript keeps the original and the reply after it.
+const editingUser = ref<string | null>(null);
+const editDraft = ref("");
+const editInput = ref<HTMLTextAreaElement | null>(null);
+const lastUserBlockId = computed(() => lastUserBlock()?.id ?? null);
+/** userBlockId/anchored blockId → queue entry. The queued badge reads this:
+ *  a user block whose prompt is waiting behind the running turn (rather than
+ *  answered) carries its queue entry, so the transcript shows what is queued
+ *  and where it sits in line. */
+const queuedByBlockId = computed(() => {
+  const map = new Map<string, QueuedTurnEntry>();
+  for (const q of props.queued ?? []) {
+    if (q.blockId) map.set(q.blockId, q);
+    else map.set(q.userBlockId, q);
+  }
+  return map;
+});
+function startEditUser(block: Extract<ThreadBlock, { role: "user" }>): void {
+  editingUser.value = block.id;
+  editDraft.value = block.text;
+  cue("toggle");
+  void nextTick(() => {
+    editInput.value?.focus();
+    editInput.value?.select();
+    sizeEdit();
+  });
+}
+// Seamless auto-grow: the field never scrolls or shows a resize grabber — it
+// takes exactly the height of its text, so the bubble simply grows with it.
+function sizeEdit(): void {
+  const el = editInput.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+function autoGrowEdit(): void {
+  sizeEdit();
+}
+function cancelEditUser(): void {
+  editingUser.value = null;
+  editDraft.value = "";
+}
+function saveEditUser(): void {
+  const text = editDraft.value.trim();
+  if (!text || props.busy) return;
+  editingUser.value = null;
+  editDraft.value = "";
+  cue("press");
+  emit("resend", text);
+}
+
+// ── a stored conversation whose transcript never arrived ─────────────────────
+// threadId present + no blocks + nothing loading/running = the open failed
+// (or the stored thread vanished mid-read). A fresh blank thread carries no
+// threadId, so it can never hit this state. Dismiss is presentational — the
+// banner comes back on the next reopen, which is honest: nothing was fixed.
+const loadDismissed = ref(false);
+const failedLoad = computed(
+  () =>
+    Boolean(props.threadId) &&
+    !props.loading &&
+    !props.busy &&
+    props.blocks.length === 0 &&
+    !props.sessionError &&
+    !loadDismissed.value,
+);
+function retryLoad(): void {
+  loadDismissed.value = false;
+  cue("press");
+  emit("retry-load");
+}
+function dismissLoad(): void {
+  loadDismissed.value = true;
+  cue("toggle");
+}
+
 // ── auto-scroll ────────────────────────────────────────────────────────────────
 const root = ref<HTMLElement | null>(null);
 function tailSignature(): string {
@@ -262,9 +422,30 @@ function tailSignature(): string {
 const TOP_PAD = 14;
 const tailSpacer = ref(0);
 const tailSpacerEl = ref<HTMLElement | null>(null);
-let scrollQueued = false;
+let reflowQueued = false;
 let anchoredUserId: string | null = null;
 let anchorAt = 0;
+// The reserve lives *inside* `root`, which the ResizeObserver watches — so every
+// time reflow trims it we'd re-trigger the observer, and reflow→resize→reflow
+// spins a frame forever (the freeze). Route every reserve write through here so
+// the observer can recognise and skip its own mutations.
+let programmaticResize = false;
+function setTailSpacer(px: number): void {
+  const v = Math.max(0, Math.round(px));
+  if (tailSpacer.value === v) return;
+  programmaticResize = true;
+  tailSpacer.value = v;
+}
+// `detached` = the reader has moved away from the live tail — scrolled up, arrow
+// keys, an upward touch-swipe, or a text selection. While set we never yank the
+// view; it re-arms only when the reader is back at the live edge (see onScroll).
+const detached = ref(false);
+function isLiveTail(): boolean {
+  const last = props.blocks[props.blocks.length - 1];
+  if (!last) return false;
+  if (last.role === "user") return true;
+  return last.role === "assistant" && last.state === "running";
+}
 
 function lastUserBlock(): ThreadBlock | null {
   for (let i = props.blocks.length - 1; i >= 0; i--) {
@@ -289,54 +470,59 @@ function neededSpacer(sc: HTMLElement, userEl: HTMLElement): number {
   return Math.max(0, userTop - TOP_PAD + sc.clientHeight - base);
 }
 
-watch(tailSignature, () => {
-  if (!import.meta.client || scrollQueued) return;
-  scrollQueued = true;
+// One pass per frame: the content-signature watch and the ResizeObserver (async
+// image / code-fence growth that changes height AFTER the signature ticked) both
+// funnel through here, so reflow never runs twice in the same frame.
+function queueReflow(): void {
+  if (!import.meta.client || reflowQueued) return;
+  reflowQueued = true;
   requestAnimationFrame(() => {
-    scrollQueued = false;
-    const sc = scroller();
-    if (!sc) return;
-    const lu = lastUserBlock();
-
-    // A brand-new request — lift it to the top with a screen of room below.
-    if (lu && lu.id !== anchoredUserId) {
-      anchoredUserId = lu.id;
-      const last = props.blocks[props.blocks.length - 1];
-      const live =
-        last?.role === "user" ||
-        (last?.role === "assistant" && last.state === "running");
-      if (!live) return; // opening a settled thread — adopt the id, don't yank
-      anchorAt = performance.now();
-      tailSpacer.value = sc.clientHeight; // reserve first, so the row can reach the top
-      requestAnimationFrame(() => {
-        const el = turnEl(lu.id);
-        if (!el) return;
-        const target =
-          sc.scrollTop + (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - TOP_PAD;
-        sc.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-      });
-      return;
-    }
-
-    // Let the lift settle before we start trimming, so we don't fight the smooth
-    // scroll toward the top with per-frame reserve changes.
-    if (performance.now() - anchorAt < 450) return;
-
-    // Mid-stream: hold the request at the top by trimming the reserve.
-    const el = lu ? turnEl(lu.id) : null;
-    const needed = el ? neededSpacer(sc, el) : 0;
-    if (needed > 0) {
-      tailSpacer.value = needed;
-      return;
-    }
-    // Reply outgrew the screen — release the reserve and calmly follow the tail.
-    tailSpacer.value = 0;
-    const gap = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
-    if (gap > 260) return; // scrolled away to read — don't yank them back
-    if (gap <= 1) return; // already pinned
-    sc.scrollTop = sc.scrollHeight;
+    reflowQueued = false;
+    reflow();
   });
-});
+}
+function reflow(): void {
+  const sc = scroller();
+  if (!sc) return;
+  const lu = lastUserBlock();
+
+  // A brand-new request — lift it to the top with a screen of room below.
+  if (lu && lu.id !== anchoredUserId) {
+    anchoredUserId = lu.id;
+    if (!isLiveTail()) return; // opening a settled thread — adopt the id, don't yank
+    detached.value = false; // a fresh request — the reader wants to watch its reply
+    anchorAt = performance.now();
+    setTailSpacer(sc.clientHeight); // reserve first, so the row can reach the top
+    requestAnimationFrame(() => {
+      const el = turnEl(lu.id);
+      if (!el) return;
+      const target =
+        sc.scrollTop + (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - TOP_PAD;
+      sc.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    });
+    return;
+  }
+
+  // Let the lift settle before we start trimming, so we don't fight the smooth
+  // scroll toward the top with per-frame reserve changes.
+  if (performance.now() - anchorAt < 450) return;
+
+  // Mid-stream: hold the request at the top by trimming the reserve.
+  const el = lu ? turnEl(lu.id) : null;
+  const needed = el ? neededSpacer(sc, el) : 0;
+  if (needed > 0) {
+    setTailSpacer(needed);
+    return;
+  }
+  // Reply outgrew the screen — release the reserve and calmly follow the tail.
+  setTailSpacer(0);
+  const gap = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+  if (gap > 260) return; // scrolled away to read — don't yank them back
+  if (gap <= 1) return; // already pinned
+  if (detached.value) return; // reading elsewhere — don't yank either
+  sc.scrollTop = sc.scrollHeight;
+}
+watch(tailSignature, queueReflow);
 function scroller(): HTMLElement | null {
   let el = root.value?.parentElement ?? null;
   while (el) {
@@ -377,13 +563,82 @@ function queueStuck(): void {
     measureStuck();
   });
 }
+// Interaction = intent: any of these means the reader is looking at something
+// other than the live tail, so auto-follow hands over control (see `detached`).
+let touchStartY = 0;
+let touchUpward = false;
+function onScroll(): void {
+  if (!detached.value) return;
+  const sc = scrollHost;
+  if (!sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight > 8) return;
+  detached.value = false; // back at the live edge — re-arm the follow
+}
+function onWheel(e: WheelEvent): void {
+  if (e.deltaY < 0) detached.value = true;
+}
+function onKeydown(e: KeyboardEvent): void {
+  const k = e.key;
+  if (k !== "ArrowUp" && k !== "PageUp" && k !== "Home") return;
+  if (scrollHost?.contains(e.target as Node)) detached.value = true;
+}
+function onTouchStart(e: TouchEvent): void {
+  touchUpward = false;
+  const t = e.touches[0] ?? e.changedTouches[0];
+  if (t) touchStartY = t.clientY;
+}
+function onTouchMove(e: TouchEvent): void {
+  if (touchUpward) return;
+  const t = e.touches[0] ?? e.changedTouches[0];
+  if (t && t.clientY < touchStartY) {
+    touchUpward = true;
+    detached.value = true;
+  }
+}
+function onSelectionChange(): void {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const node = sel.anchorNode;
+  if (node && root.value?.contains(node)) detached.value = true;
+}
 let scrollHost: HTMLElement | null = null;
+let resizeObserver: ResizeObserver | null = null;
 onMounted(() => {
   scrollHost = scroller();
   scrollHost?.addEventListener("scroll", queueStuck, { passive: true });
+  scrollHost?.addEventListener("scroll", onScroll, { passive: true });
+  scrollHost?.addEventListener("wheel", onWheel, { passive: true });
+  scrollHost?.addEventListener("keydown", onKeydown, { passive: true });
+  scrollHost?.addEventListener("touchstart", onTouchStart, { passive: true });
+  scrollHost?.addEventListener("touchmove", onTouchMove, { passive: true });
+  document.addEventListener("selectionchange", onSelectionChange, { passive: true });
+  // Content can change height long after a stream tick — images, code fences —
+  // which would drift the pinned request. Only a live tail needs re-pinning, so
+  // a settled transcript never re-enters the trim/follow path from here.
+  if (root.value) {
+    resizeObserver = new ResizeObserver(() => {
+      // Ignore the resize our own reserve write just caused — otherwise
+      // reflow→resize→reflow spins forever (the freeze).
+      if (programmaticResize) {
+        programmaticResize = false;
+        return;
+      }
+      // Only re-pin a live tail, and never while the reader has scrolled away.
+      if (isLiveTail() && !detached.value) queueReflow();
+    });
+    resizeObserver.observe(root.value);
+  }
   queueStuck();
 });
-onBeforeUnmount(() => scrollHost?.removeEventListener("scroll", queueStuck));
+onBeforeUnmount(() => {
+  scrollHost?.removeEventListener("scroll", queueStuck);
+  scrollHost?.removeEventListener("scroll", onScroll);
+  scrollHost?.removeEventListener("wheel", onWheel);
+  scrollHost?.removeEventListener("keydown", onKeydown);
+  scrollHost?.removeEventListener("touchstart", onTouchStart);
+  scrollHost?.removeEventListener("touchmove", onTouchMove);
+  document.removeEventListener("selectionchange", onSelectionChange);
+  resizeObserver?.disconnect();
+});
 // The reply growing under a held request changes the answer too, not just the
 // scroll position.
 watch(tailSignature, queueStuck);
@@ -408,6 +663,22 @@ const allExchanges = computed(() => {
     return { ...g, live: running || awaiting };
   });
 });
+
+// ── jump to latest ────────────────────────────────────────────────────────────
+// A quiet pill that appears only while the live exchange is streaming/awaiting
+// AND the reader has detached — i.e. the reply they want is somewhere below the
+// fold. Clicking it drops the reader back on the live edge.
+const liveNow = computed(() => {
+  const g = allExchanges.value[allExchanges.value.length - 1];
+  return g ? g.live : false;
+});
+const showJumpPill = computed(() => liveNow.value && detached.value);
+function jumpToLatest(): void {
+  cue("toggle");
+  detached.value = false;
+  const sc = scroller();
+  sc?.scrollTo({ top: sc.scrollHeight, behavior: "smooth" });
+}
 
 // ── the open window ────────────────────────────────────────────────────────────
 // Reopening a long conversation used to mount every exchange it ever had: every
@@ -448,11 +719,87 @@ async function revealEarlier(): Promise<void> {
   await nextTick();
   sc.scrollTop = sc.scrollHeight - fromBottom;
 }
+
+// ── paging older history in (store-side window, useAgent's loadOlder) ────────
+// A loaded older page lands ABOVE the viewport, so pin the distance to the
+// bottom and let the scroll offset absorb the new content — the same
+// ground-pinning idiom as revealEarlier. The trigger is a *prepend*: the
+// first block id changed while the previous first block is still in the list.
+// (A thread switch replaces the whole list; a live append touches the tail.)
+// The newly fetched exchanges are also revealed: the OPEN_WINDOW is a
+// mount-time cost guard, not a paging policy — the user asked for this
+// history, so mount it.
+let prependAnchor: number | null = null;
+watch(
+  () => props.blocks[0]?.id ?? null,
+  (first, prev) => {
+    if (!prev || first === prev) return;
+    if (!props.blocks.slice(1).some((b) => b.id === prev)) return; // not a prepend
+    const sc = import.meta.client ? scroller() : null;
+    prependAnchor = sc ? sc.scrollHeight - sc.scrollTop : null;
+    showAllExchanges.value = true;
+    if (prependAnchor === null) return;
+    // The watcher runs before the DOM patch, so the captured height is the
+    // pre-prepend one; re-pin once the new content is in.
+    void nextTick(() => {
+      const s = scroller();
+      if (s && prependAnchor !== null) s.scrollTop = s.scrollHeight - prependAnchor;
+      prependAnchor = null;
+    });
+  },
+);
+
+/** Ask the host to fetch the next older page (session.loadOlder). The fetch
+ *  and the prepend are the session's; this is the affordance for it. */
+function requestOlder(): void {
+  if (props.loadingOlder) return;
+  cue("toggle");
+  emit("load-older");
+}
 </script>
 
 <template>
   <div ref="root" class="thread" :class="{ 'thread--empty': !hasBlocks }">
-    <p v-if="sessionError" class="body body--error thread__error">{{ sessionError }}</p>
+    <!-- Session-start failure (or a crashed process): a soft red card with the
+         error, plus copy / retry / dismiss. Retry re-runs the session start;
+         dismiss hides the card until the next session error arrives. -->
+    <div v-if="showSessionError" class="thread__error" role="alert">
+      <p class="body body--error">{{ sessionError }}</p>
+      <div class="thread__error-actions">
+        <button type="button" class="error-act" aria-label="Copy error" @click="copySessionError()">
+          <HugeiconsIcon :icon="copiedError ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
+          <span>{{ copiedError ? "Copied" : "Copy" }}</span>
+        </button>
+        <button type="button" class="error-act" @click="retrySession()">
+          <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
+          <span>Retry</span>
+        </button>
+        <button type="button" class="error-act" @click="sessionErrorDismissed = true">
+          <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" />
+          <span>Dismiss</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- A stored conversation whose transcript never arrived — threadId known,
+         nothing loading, no blocks, no session error. Retry re-runs the open;
+         dismiss hides the card for this session. -->
+    <div v-if="failedLoad" class="thread__error" role="alert">
+      <p class="body body--error">
+        This conversation didn't load — its transcript may have been removed or
+        moved.
+      </p>
+      <div class="thread__error-actions">
+        <button type="button" class="error-act" @click="retryLoad()">
+          <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
+          <span>Retry</span>
+        </button>
+        <button type="button" class="error-act" @click="dismissLoad()">
+          <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" />
+          <span>Dismiss</span>
+        </button>
+      </div>
+    </div>
 
     <!-- Background generative art in the empty state -->
     <CodeGolfArt v-if="!hasBlocks" class="thread__art" />
@@ -465,6 +812,33 @@ async function revealEarlier(): Promise<void> {
          block for the request. Grouping this way is what lets each new request
          push the previous one up and out of the sticky spot, instead of two
          sticky headers piling on top of each other. -->
+    <!-- A stored thread adopted windowed (keyset pagination): the store holds
+         older blocks than the window in hand — fetch the next page and prepend
+         it above (session.loadOlder). Distinct from the "N earlier exchanges"
+         reveal below, which mounts blocks already in hand. -->
+    <button
+      v-if="hasOlder"
+      type="button"
+      class="load-older"
+      :class="{ 'is-loading': loadingOlder }"
+      :disabled="loadingOlder"
+      :title="olderError ?? undefined"
+      @click="requestOlder"
+    >
+      <HugeiconsIcon
+        :icon="loadingOlder ? RefreshIcon : ArrowUp01Icon"
+        :size="13"
+        :stroke-width="2"
+        aria-hidden="true"
+      />
+      <span>{{
+        loadingOlder
+          ? "Loading older turns…"
+          : olderError
+            ? "Older turns failed — retry"
+            : "Load older turns"
+      }}</span>
+    </button>
     <button
       v-if="earlierCount > 0"
       type="button"
@@ -494,7 +868,23 @@ async function revealEarlier(): Promise<void> {
     >
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
       <template v-if="block.role === 'user'">
-         <div v-if="block.text" class="body body--you selectable" :class="{ 'body--you-expanded': expandedUserRequests[block.id] }">
+         <!-- Edit-and-resend: the request bubble stays the bubble — its text
+              becomes a seamless auto-growing field (Enter saves, Shift+Enter
+              newlines, Esc cancels). The actions live in the one footer below,
+              not inside the bubble. Saving ships a NEW user turn. -->
+         <div v-if="block.id === editingUser" class="body body--you edit-box">
+           <textarea
+             ref="editInput"
+             v-model="editDraft"
+             class="edit-input you-text"
+             aria-label="Edit request"
+             rows="1"
+             @input="autoGrowEdit"
+             @keydown.enter.exact.prevent="saveEditUser()"
+             @keydown.esc.prevent="cancelEditUser()"
+           ></textarea>
+         </div>
+         <div v-else-if="block.text" class="body body--you selectable" :class="{ 'body--you-expanded': expandedUserRequests[block.id] }">
            <p class="you-text">{{ userRequestText(block) }}</p>
            <button
              v-if="isLongUserRequest(block)"
@@ -522,25 +912,62 @@ async function revealEarlier(): Promise<void> {
             :title="`${att.name} · ${att.mimeType}`"
           />
         </div>
+        <!-- Queued — this prompt is durably queued behind the running turn,
+             not yet answered. The badge is driven by the host's queue state
+             (turn.queued / turn.promoted / turn.queued-cancelled); the number
+             is its place in line (the running turn is slot 1). -->
+        <div v-if="queuedByBlockId.get(block.id)" class="you-queued" role="status">
+          <span class="you-queued__dot" aria-hidden="true" />
+          <span>Queued · #{{ queuedByBlockId.get(block.id)?.position }}</span>
+        </div>
         <div v-if="block.text" class="you-foot">
-          <button
-            type="button"
-            class="foot__copy"
-            :aria-label="copied === block.id ? 'Copied' : 'Copy request'"
-            @click="copyUserRequest(block)"
-          >
-            <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
-            <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
-          </button>
-          <button
-            type="button"
-            class="foot__copy"
-            aria-label="Add request to scratchpad"
-            @click="addUserRequestToScratchpad(block)"
-          >
-            <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
-            <span>Scratchpad</span>
-          </button>
+          <!-- While editing this turn the footer is the edit's controls; otherwise
+               it's the quiet Edit / Copy / Scratchpad row. One footer, never two. -->
+          <template v-if="block.id === editingUser">
+            <button type="button" class="foot__copy" @click="cancelEditUser()">
+              <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" />
+              <span>Cancel</span>
+            </button>
+            <button
+              type="button"
+              class="foot__copy foot__copy--primary"
+              :disabled="!editDraft.trim() || busy"
+              @click="saveEditUser()"
+            >
+              <HugeiconsIcon :icon="Tick02Icon" :size="13" :stroke-width="2" />
+              <span>Save &amp; resend</span>
+            </button>
+          </template>
+          <template v-else>
+            <button
+              v-if="block.id === lastUserBlockId"
+              type="button"
+              class="foot__copy"
+              aria-label="Edit request"
+              @click="startEditUser(block)"
+            >
+              <HugeiconsIcon :icon="PencilEdit01Icon" :size="13" :stroke-width="2" />
+              <span>Edit</span>
+            </button>
+            <button
+              type="button"
+              class="foot__copy"
+              :aria-label="copied === block.id ? 'Copied' : 'Copy request'"
+              @click="copyUserRequest(block)"
+            >
+              <HugeiconsIcon :icon="copied === block.id ? Tick02Icon : Copy01Icon" :size="13" :stroke-width="2" />
+              <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
+            </button>
+            <button
+              type="button"
+              class="foot__copy"
+              aria-label="Add request to scratchpad"
+              @click="addUserRequestToScratchpad(block)"
+            >
+              <HugeiconsIcon :icon="Note01Icon" :size="13" :stroke-width="2" />
+              <span>Scratchpad</span>
+            </button>
+          </template>
         </div>
       </template>
 
@@ -587,10 +1014,25 @@ async function revealEarlier(): Promise<void> {
             :historical="block.historical"
           />
 
-          <!-- Failure note. -->
-          <p v-if="block.state === 'failed' && block.error" class="body body--error">
-            {{ block.error }}
-          </p>
+          <!-- Failure note — the error plus Retry (re-sends the request that
+               preceded it) and Dismiss (presentational: the block stays failed
+               in the transcript, this just stops showing the red note). -->
+          <div
+            v-if="block.state === 'failed' && block.error && !dismissedTurnErrors[block.id]"
+            class="turn-fail"
+          >
+            <p class="body body--error">{{ block.error }}</p>
+            <div class="turn-fail__actions">
+              <button type="button" class="foot__copy" :disabled="busy" @click="retryTurn(block)">
+                <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" />
+                <span>Retry</span>
+              </button>
+              <button type="button" class="foot__copy" @click="dismissTurnError(block)">
+                <HugeiconsIcon :icon="Cancel01Icon" :size="13" :stroke-width="2" />
+                <span>Dismiss</span>
+              </button>
+            </div>
+          </div>
 
           <!-- Turn footer — an editorial dotted-leader meta line, quiet until the
                turn settles / you hover it. Hidden entirely while running (the live
@@ -635,6 +1077,28 @@ async function revealEarlier(): Promise<void> {
       :style="{ height: `${tailSpacer}px` }"
       aria-hidden="true"
     />
+
+    <!-- Jump to latest — floats at the bottom-centre of the column while the live
+         reply is out of view, so a reader who scrolled up gets back in one tap. -->
+    <div class="jump">
+      <AnimatePresence>
+        <motion.button
+          v-if="showJumpPill"
+          key="jump-to-latest"
+          type="button"
+          class="jump__btn"
+          aria-label="Jump to latest reply"
+          :initial="{ opacity: 0, y: 8 }"
+          :animate="{ opacity: 1, y: 0 }"
+          :exit="{ opacity: 0, y: 8 }"
+          :transition="{ type: 'spring', stiffness: 320, damping: 30, mass: 0.8 }"
+          @click="jumpToLatest"
+        >
+          <HugeiconsIcon :icon="ArrowDown01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
+          <span>Jump to latest</span>
+        </motion.button>
+      </AnimatePresence>
+    </div>
   </div>
 </template>
 
@@ -719,6 +1183,80 @@ async function revealEarlier(): Promise<void> {
   background: var(--hover);
   color: var(--ink);
 }
+/* Fetching more of a windowed stored thread. Same quiet pill language as
+   .earlier, with the agent accent held for the loading beat — and a warmer
+   tint when the last attempt failed, so the retry reads as one. */
+.load-older {
+  display: inline-flex;
+  align-self: center;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.load-older:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+.load-older.is-loading {
+  color: color-mix(in oklab, var(--accent) 75%, var(--muted));
+  cursor: default;
+}
+.load-older.is-loading svg {
+  animation: load-older-spin 0.9s linear infinite;
+}
+.load-older:disabled {
+  opacity: 0.75;
+}
+@keyframes load-older-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Jump to latest — floats at the bottom-centre of the column while the live reply
+   is below the fold and the reader has detached. Deliberately quiet, like .earlier:
+   no border, a whisper of the agent accent over the panel surface, one soft shadow.
+   The 200px bottom clears the column's bottom smoke (a 176px fade over a 208px
+   pad — see .col__body in ThreadStrip) so the pill is never masked. */
+.jump {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 200px;
+  z-index: 20;
+}
+.jump__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent) 9%, var(--ground));
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.jump__btn:hover {
+  background: color-mix(in oklab, var(--accent) 15%, var(--ground));
+  color: var(--ink);
+}
+.jump__btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 2px;
+}
 
 /* An exchange = one request + its response. It's the sticky containing block for
    the request: the request sticks to the top only while its own exchange is on
@@ -756,19 +1294,19 @@ async function revealEarlier(): Promise<void> {
   position: absolute;
   z-index: -1;
   top: -1200px; /* cover everything above — clipped by the scroller */
-  bottom: -6px;
+  /* The sheet is solid all the way to the request's bottom edge and then fades
+     over a skirt that sits ENTIRELY below the request — so the reply is hidden
+     the instant it passes under the request and only emerges (softly) in the gap
+     beneath it. The bottom offset must equal the skirt height in the mask below;
+     opaque region = top → (100% − skirt) lands exactly on the request's bottom. */
+  bottom: -30px;
   left: -50vw;
   right: -50vw;
-  background: linear-gradient(
-    to bottom,
-    var(--ground) 0%,
-    var(--ground) calc(100% - 26px),
-    transparent 100%
-  );
+  background: var(--ground);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
-  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 26px), transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 26px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 30px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 30px), transparent 100%);
   pointer-events: none;
 }
 
@@ -860,13 +1398,127 @@ async function revealEarlier(): Promise<void> {
     transform: none;
   }
 }
+/* Queued badge — a follow-up parked behind the running turn. A quiet,
+   right-aligned pill in the same ink-tinted language as the footer actions:
+   the dot carries the "waiting" note, the number is the place in line. */
+.you-queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--btn-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.you-queued__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 70%, var(--muted));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
 .body--error {
   color: var(--diff-del);
   font-size: 14px;
   line-height: 1.55;
 }
+/* Session-start / transcript-load failure banner — a soft red card with a
+   hairline ring (no heavy shadow), the error text and a quiet mono action row.
+   Red is earned here: something actually failed, and this is the only red card
+   the thread knows. */
 .thread__error {
   align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--diff-del) 5%, var(--ground));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--diff-del) 22%, transparent);
+}
+.thread__error-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.error-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.error-act:hover,
+.error-act:focus-visible {
+  background: color-mix(in srgb, var(--diff-del) 10%, transparent);
+  color: var(--diff-del);
+}
+.error-act:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--diff-del) 40%, transparent);
+  outline-offset: 1px;
+}
+
+/* Failed turn — the red note plus its action row, mirroring the turn footer's
+   quiet mono actions. */
+.turn-fail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 42rem;
+}
+.turn-fail__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Edit-and-resend — the request bubble stays the bubble; only its text becomes
+   editable. The field is seamless: no inner box, no border, no ring, no resize
+   grabber — it inherits the bubble's type and auto-grows to its content, so the
+   whole thing reads as the same request, now editable. Controls live in the one
+   footer below (see .you-foot), never inside the bubble. */
+.edit-box {
+  /* Keep the request roomy enough to edit even when the original was one word,
+     but never wider than the bubble's own cap. */
+  min-width: min(28rem, 60vw);
+}
+.edit-input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit; /* the bubble's own type — .body / .you-text */
+  resize: none;
+  overflow: hidden;
+  outline: none;
+}
+.foot__copy:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.foot__copy--primary {
+  color: var(--ink-soft);
+}
+.foot__copy--primary:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--ink);
 }
 
 /* The settled rich answer — capped to a comfortable measure (~66ch) so long

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ModelDescriptor } from "~/types/desktop";
-import { buildModelCatalog } from "./modelCatalog";
+import { buildModelCatalog, parseModelTsvRows } from "./modelCatalog";
 
 /** One descriptor per raw slug, labelled the way OpenCode's `models --verbose`
  *  labels them (the `name` field), so we exercise the real catalog path. */
@@ -64,5 +64,91 @@ describe("brandOf — OpenCode is a house of providers", () => {
       "opencode-go/minimax-m2.7",
     );
     expect(catalog.map((o) => o.brand)).toEqual(["deepseek", "zai", "kimi", "minimax"]);
+  });
+});
+
+describe("parseModelTsvRows — defensive provider model-table parsing", () => {
+  test("collapses slug<TAB>label rows (Antigravity `agy models` style)", () => {
+    expect(
+      parseModelTsvRows([
+        "gemini-3.6-flash-high\tGemini 3.6 Flash (High)",
+        "gemini-3.6-flash-low\tGemini 3.6 Flash (Low)",
+        "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
+      ].join("\n")),
+    ).toEqual([
+      { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
+      { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+    ]);
+  });
+
+  test("tolerates CRLF endings and stray ANSI colour codes", () => {
+    expect(
+      parseModelTsvRows("\x1b[32mgemini-3.6-flash\tGemini 3.6 Flash\r\nclaude-sonnet-4-6\tClaude Sonnet 4.6\r\n"),
+    ).toEqual([
+      { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    ]);
+  });
+
+  test("tolerates a blank label column and extra whitespace around cells", () => {
+    expect(
+      parseModelTsvRows([
+        "  gemini-3.6-flash  \t  Gemini 3.6 Flash  ",
+        "claude-sonnet-4-6\t",
+        "gemini-3.1-pro\t",
+      ].join("\n")),
+    ).toEqual([
+      { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+      { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+      { id: "gemini-3.1-pro", label: "gemini-3.1-pro" },
+    ]);
+  });
+
+  test("parses headerless single-column output (id is its own label)", () => {
+    expect(parseModelTsvRows("gemini-3.6-flash\nclaude-sonnet-4-6\n")).toEqual([
+      { id: "gemini-3.6-flash", label: "gemini-3.6-flash" },
+      { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+    ]);
+  });
+
+  test("skips a leading header row but not a model actually named like one", () => {
+    expect(parseModelTsvRows("slug\tname\ngemini-3.6-flash\tGemini 3.6 Flash\n")).toEqual([
+      { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+    ]);
+    expect(parseModelTsvRows("model\tGemini 3.6 Flash\n")).toEqual([
+      { id: "model", label: "Gemini 3.6 Flash" },
+    ]);
+  });
+
+  test("skips malformed rows and blank lines instead of throwing", () => {
+    expect(
+      parseModelTsvRows("gemini-3.6-flash\tGemini 3.6 Flash\n\n\t\n   \n\t\t\nclaude-sonnet-4-6\n"),
+    ).toEqual([
+      { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+      { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+    ]);
+    expect(parseModelTsvRows("")).toEqual([]);
+    expect(parseModelTsvRows("   \n\t\n")).toEqual([]);
+  });
+});
+
+describe("buildModelCatalog — malformed descriptors never become garbage entries", () => {
+  test("skips descriptors with a blank or non-string id", () => {
+    const models = [
+      { id: "", label: "Empty id" },
+      { id: "   ", label: "Whitespace id" },
+      { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    ] as unknown as ModelDescriptor[];
+    expect(buildModelCatalog(models).map((o) => o.key)).toEqual(["gpt-5.6-terra"]);
+  });
+
+  test("falls back to the prettified id when the label is blank", () => {
+    const models = [
+      { id: "gemini-3.6-flash", label: "" },
+      { id: "claude-sonnet-4-6", label: "   " },
+    ] as unknown as ModelDescriptor[];
+    const catalog = buildModelCatalog(models);
+    expect(catalog.map((o) => o.label)).toEqual(["Gemini 3.6 Flash", "Claude Sonnet 4.6"]);
   });
 });

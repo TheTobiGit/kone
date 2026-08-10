@@ -4,7 +4,7 @@ import { useStorage } from "@vueuse/core";
 import { motion } from "motion-v";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon, Search01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { EFFORT_META, type BrandKey, type EffortTier, type PickerProvider } from "~/utils/modelCatalog";
 import type { ProviderKind } from "~/types/desktop";
 
@@ -78,6 +78,10 @@ type MModel = {
   defaultEffortIndex: number;
   /** This model's real "fast" service tier, when it has one. */
   fastTier?: { id: string; label: string };
+  /** True when the provider's catalog names this model's `fast` tier as its
+   *  DEFAULT service tier — a first-time selection of this model should start
+   *  with the fast toggle on rather than off. */
+  fastDefault?: boolean;
   /** This model's context-window choices (Claude's 200k/1m auto-compact
    *  window), when it exposes more than one. */
   contextWindows?: { id: string; label: string; tokens: number; isDefault?: boolean }[];
@@ -121,10 +125,84 @@ const realProviders = computed<MProvider[]>(() =>
       defaultEffortIndex: o.defaultEffortIndex,
       providerId: p.id,
       ...(o.fastTier ? { fastTier: o.fastTier } : {}),
+      ...(o.fastDefault ? { fastDefault: o.fastDefault } : {}),
       ...(o.contextWindows ? { contextWindows: o.contextWindows } : {}),
     })),
   })),
 );
+
+// ── search ──────────────────────────────────────────────────────────────────
+// A client-side filter over every provider's models. While a query is up the
+// list swaps to ranked results across all providers: favorites first, then
+// match quality (exact label, label prefix, label/vendor/raw-id/provider
+// containment), then label order. The rail stays put — a result row carries
+// its own provider (`providerId`/`origin`), so selecting one from another
+// provider switches engines exactly like browsing its tab would.
+const query = ref("");
+const searching = computed(() => query.value.trim().length > 0);
+
+function scoreModel(m: MModel, provider: MProvider, q: string): number {
+  const label = m.label.toLowerCase();
+  if (label === q) return 0;
+  if (label.startsWith(q)) return 1;
+  if (label.includes(q)) return 2;
+  if (m.vendor.toLowerCase().includes(q)) return 3;
+  if (m.key.toLowerCase().includes(q)) return 4;
+  if (m.efforts.some((e) => e.modelId.toLowerCase().includes(q))) return 4;
+  if (provider.label.toLowerCase().includes(q)) return 5;
+  return -1;
+}
+
+type SearchHit = { model: MModel; score: number };
+
+const searchResults = computed<SearchHit[]>(() => {
+  const q = query.value.trim().toLowerCase();
+  if (!q) return [];
+  const hits: SearchHit[] = [];
+  const seen = new Set<string>();
+  for (const p of realProviders.value) {
+    for (const m of p.models) {
+      if (seen.has(m.key)) continue;
+      const score = scoreModel(m, p, q);
+      if (score >= 0) {
+        seen.add(m.key);
+        hits.push({ model: m, score });
+      }
+    }
+  }
+  // Favorites ride along, deduped by key — a starred model's real row usually
+  // already scored above; this catches anything only reachable through its
+  // starred origin. Favorites are ranked first by the sort below.
+  for (const m of favorites.value.models) {
+    if (seen.has(m.key)) continue;
+    const score = scoreModel(m, favorites.value, q);
+    if (score >= 0) {
+      seen.add(m.key);
+      hits.push({ model: m, score });
+    }
+  }
+  hits.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    const af = isFavorited(a.model.key) ? 0 : 1;
+    const bf = isFavorited(b.model.key) ? 0 : 1;
+    if (af !== bf) return af - bf;
+    return a.model.label.localeCompare(b.model.label);
+  });
+  return hits;
+});
+
+// The rows shown in the list well: ranked search results while a query is up,
+// else the open provider tab's models. One list, one row markup.
+const displayModels = computed<MModel[]>(() =>
+  searching.value ? searchResults.value.map((h) => h.model) : (provider.value?.models ?? []),
+);
+
+function onSearchEsc() {
+  // Esc in the search field clears the query first; a second Esc closes the
+  // whole picker (the root handler would have done that had we not stopped it).
+  if (query.value) query.value = "";
+  else cancel();
+}
 
 // ── Favorites ───────────────────────────────────────────────────────────────
 // A live shelf of the models the user has starred, drawn from every installed
@@ -189,10 +267,11 @@ function matchEffort(m: MModel): MEffort | undefined {
 }
 
 // Fast mode only carries over from the session for the model it's actually
-// active on — any other row starts from off, same as effort falls back to the
+// active on — any other row starts from its catalog default (`fastDefault`,
+// the provider's own default service tier), same as effort falls back to the
 // family default rather than a stale tier.
 function matchFastMode(m: MModel): boolean {
-  return isCurrentModel(m) ? (props.fastMode ?? false) : false;
+  return isCurrentModel(m) ? (props.fastMode ?? false) : (m.fastDefault ?? false);
 }
 
 // The context window a model resolves to: the session value for the active model
@@ -539,15 +618,49 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
 
           <!-- The model list is the dark content well inside the lighter shell. -->
           <div class="mp-content relative">
+            <!-- Search — filters every provider's models by name / id / vendor.
+                 With a query up, the list becomes ranked results across all
+                 providers (favorites first, then match quality). -->
+            <div class="mp-search">
+              <HugeiconsIcon
+                :icon="Search01Icon"
+                :size="14"
+                :stroke-width="2"
+                class="mp-search__icon"
+                aria-hidden="true"
+              />
+              <input
+                v-model="query"
+                class="mp-search__input"
+                type="text"
+                placeholder="Search models…"
+                aria-label="Search models"
+                spellcheck="false"
+                autocomplete="off"
+                @keydown.esc.stop="onSearchEsc"
+              />
+              <button
+                v-if="query"
+                type="button"
+                class="mp-search__clear"
+                aria-label="Clear search"
+                title="Clear search"
+                @click.stop="query = ''"
+              >
+                <HugeiconsIcon :icon="Cancel01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+              </button>
+            </div>
             <Transition name="mp-swap" mode="out-in">
-              <div v-if="provider" :key="provider.id" class="mp-scroll">
-                <p v-if="!provider.models.length" class="mp-empty">
-                  {{ provider.id === 'favorites'
-                    ? 'No favorites yet — star a model to keep it here.'
-                    : 'No models available.' }}
+              <div v-if="provider" :key="searching ? 'search' : provider.id" class="mp-scroll">
+                <p v-if="!displayModels.length" class="mp-empty">
+                  {{ searching
+                    ? `No models match “${query.trim()}”.`
+                    : provider.id === 'favorites'
+                      ? 'No favorites yet — star a model to keep it here.'
+                      : 'No models available.' }}
                 </p>
                 <button
-                  v-for="m in provider.models"
+                  v-for="m in displayModels"
                   :key="m.key"
                   type="button"
                   class="mp-row group"
@@ -779,7 +892,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
 .mp-scroll {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -789,6 +902,51 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
 }
 .mp-scroll::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Search — a quiet field across the top of the content well. The list below
+   it flexes to share the well, so a query never clips the rows. */
+.mp-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin: 10px 10px 0;
+  padding: 7px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--muted);
+}
+.mp-search__icon {
+  flex: none;
+  opacity: 0.7;
+}
+.mp-search__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.mp-search__input::placeholder {
+  color: var(--muted);
+}
+.mp-search__clear {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mp-search__clear:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
 
 .mp-row {
   display: flex;

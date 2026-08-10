@@ -9,7 +9,7 @@ import {
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { Magnet } from "~/components/ui/magnet";
@@ -72,6 +72,26 @@ const sections = computed(() => {
 
 const hasContent = computed(() => props.pinned.length > 0 || props.recent.length > 0);
 
+// ── "view all" ────────────────────────────────────────────────────────────────
+// The component renders every row it is handed; the RECENT group is capped for
+// display (8) with a toggle to reveal the rest the host passed. Pinned rows are
+// deliberate and never capped. The cap is display-only — nothing here touches
+// the composable's own limit.
+const RECENT_CAP = 8;
+const expandedRecent = ref(false);
+const { cue } = useSound();
+const recentOvershoot = computed(() => Math.max(0, props.recent.length - RECENT_CAP));
+function visibleRows(section: { kind: "pinned" | "recent"; rows: SessionSummary[] }): SessionSummary[] {
+  if (section.kind === "recent" && !expandedRecent.value) {
+    return section.rows.slice(0, RECENT_CAP);
+  }
+  return section.rows;
+}
+function toggleRecent(): void {
+  expandedRecent.value = !expandedRecent.value;
+  cue("toggle");
+}
+
 // 3_200_000 → "3.2M", 480_000 → "480K". Trims trailing zeros so 1.9M / 1.24M
 // both read cleanly.
 function formatTokens(n: number): string {
@@ -124,7 +144,7 @@ function hasDiff(s: SessionSummary): boolean {
 
       <ul class="rs__list">
         <li
-          v-for="(s, ri) in section.rows"
+          v-for="(s, ri) in visibleRows(section)"
           :key="s.threadId"
           class="rs__row"
           :style="{ '--i': section.start + ri }"
@@ -236,6 +256,16 @@ function hasDiff(s: SessionSummary): boolean {
           </div>
         </li>
       </ul>
+
+      <button
+        v-if="section.kind === 'recent' && recentOvershoot > 0"
+        type="button"
+        class="rs__more"
+        :aria-expanded="expandedRecent ? 'true' : 'false'"
+        @click="toggleRecent"
+      >
+        {{ expandedRecent ? "Show fewer" : `View all ${props.recent.length} conversations` }}
+      </button>
     </div>
   </section>
 </template>
@@ -319,6 +349,31 @@ function hasDiff(s: SessionSummary): boolean {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+/* "View all" — the quietest thing on the page, like the thread's "N earlier
+   exchanges" button: mono, transparent, appears only when the host passed more
+   rows than the display cap. */
+.rs__more {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rs-muted, #a1a1aa);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.rs__more:hover,
+.rs__more:focus-visible {
+  background: color-mix(in srgb, var(--rs-muted, #a1a1aa) 12%, transparent);
+  color: var(--ink, #1c1c1f);
+}
+.rs__more:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink, #1c1c1f) 30%, transparent);
 }
 .rs__row {
   display: flex;
