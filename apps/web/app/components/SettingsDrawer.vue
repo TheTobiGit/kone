@@ -252,7 +252,7 @@ defineExpose({ cancelCapture });
 <template>
   <aside
     class="settings-scroll fixed inset-y-0 left-0 z-0 flex flex-col bg-sunken"
-    :class="isPage ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-16 pb-7'"
+    :class="isPage ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-5 pb-7'"
     :style="{ width: `${revealWidth}px` }"
     :aria-hidden="!open"
     role="dialog"

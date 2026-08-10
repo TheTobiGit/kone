@@ -28,6 +28,12 @@ const emit = defineEmits<{
 
 const { summaries, watchVisible } = useProjectSummaries();
 
+// The signed-in machine user — its initial rides the far-right of the top bar
+// as a profile chip. Resolved once (shared state); shown only once a name
+// comes back.
+const { displayName, initial, resolve: resolveUser } = useUser();
+onMounted(resolveUser);
+
 // The cross-project "recent sessions" list below the grid — every recent
 // project's pinned + recent conversations pooled into one recency-ranked stream.
 // Pin/archive/delete act through the composable directly (they key on thread id);
@@ -126,7 +132,7 @@ function onSideAction(
 
 <template>
   <main
-    class="relative flex h-screen flex-col overflow-hidden bg-ground px-16 pt-[52px] pb-16"
+    class="relative flex h-screen flex-col overflow-hidden bg-ground px-16 pt-5 pb-16"
   >
     <h1 class="sr-only">Your projects</h1>
 
@@ -176,6 +182,18 @@ function onSideAction(
               aria-hidden="true"
             />
           </button>
+
+          <!-- The signed-in user's profile chip, closing the top bar at the
+               far right — same ink-dot initial as the in-project corner and the
+               Home greeting. Only shown once a machine name resolves. -->
+          <div
+            v-if="displayName"
+            class="ml-0.5 inline-flex size-[30px] shrink-0 select-none items-center justify-center rounded-full bg-ink text-[13px] leading-none text-ground transition-transform duration-300 ease-out hover:scale-105"
+            :title="displayName"
+            :aria-label="`Signed in as ${displayName}`"
+          >
+            {{ initial }}
+          </div>
         </div>
       </template>
     </HomeHeader>

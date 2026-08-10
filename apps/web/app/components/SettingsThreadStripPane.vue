@@ -557,7 +557,7 @@ function offsetStyle(mode: CenterMode) {
      measure. Rows can then take their hover wash right out to the gutter without
      negative margins — which is what was overflowing the scroller and hanging a
      stray horizontal scrollbar under the page. */
-  padding: 4.5rem 1.5rem 1.25rem;
+  padding: 1.25rem 1.5rem 1.25rem;
   overflow: hidden;
 }
 

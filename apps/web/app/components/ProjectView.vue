@@ -52,6 +52,11 @@ const space = useGitSpace(toRef(props, "project"), g);
 const { cue } = useSound();
 const { warm } = useHighlighter();
 
+// The signed-in machine user — its initial rides the far-right corner of the
+// top row as a profile chip, mirroring the back arrow at the left. Resolved
+// once (shared state); the chip only appears once a name comes back.
+const { displayName, initial, resolve: resolveUser } = useUser();
+
 // ── the live agent session ────────────────────────────────────────────────────
 // One provider session, scoped to this project. The composer feeds it turns and
 // the thread renders them — the same normalized event stream drives both, so
@@ -692,6 +697,7 @@ watch(surface, (s, prev) => {
   if (id) void board.attach(id);
 });
 
+onMounted(resolveUser);
 onMounted(async () => {
   // Consume a launcher resume request the instant the mount starts. Reading it
   // after the async provider/catalog work left it sitting in the global state
@@ -1721,6 +1727,22 @@ function onDiscardFile(path: string) {
       </button>
     </nav>
 
+    <!-- The far-right end of that same top row: the signed-in user's profile
+         chip, mirroring the back arrow across the page. It rides the same fixed
+         top line and steps aside with the rest of the chrome whenever a
+         sub-surface takes over. Only shown once a machine name resolves — when
+         nobody's signed in there's nothing to draw. -->
+    <Transition name="project-avatar">
+      <div
+        v-if="displayName && !backIsAway && surface !== 'board'"
+        class="project-avatar"
+        :title="displayName"
+        :aria-label="`Signed in as ${displayName}`"
+      >
+        <span class="project-avatar__chip">{{ initial }}</span>
+      </div>
+    </Transition>
+
     <!-- BOARD · the thread strip. Every live thread in this project is a column
          on one horizontally scrollable rail (niri-style scrollable tiling), the
          focused one held at centre with its neighbours peeking in. The page
@@ -2249,6 +2271,51 @@ function onDiscardFile(path: string) {
 /* Turn the return arrow upside down, then mirror it left-to-right. */
 .back-glyph {
   transform: rotate(180deg) scaleX(-1);
+}
+
+/* ── The corner profile chip ──────────────────────────────────────────────── */
+/* Pinned to the same fixed top line as the back arrow, mirrored to the right
+   edge. Borderless like the rest of the app: just the signed-in user's initial
+   on an ink dot, matching the Home greeting's avatar chip. */
+.project-avatar {
+  position: fixed;
+  top: 1.25rem;
+  right: 2rem;
+  z-index: 40;
+  display: inline-flex;
+}
+.project-avatar__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background-color: var(--ink);
+  color: var(--ground);
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
+  cursor: default;
+  transition:
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.3s ease;
+}
+.project-avatar:hover .project-avatar__chip {
+  transform: scale(1.06);
+}
+/* Fades and lifts away with the rest of the top chrome. */
+.project-avatar-enter-active,
+.project-avatar-leave-active {
+  transition:
+    opacity 0.3s ease,
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.project-avatar-enter-from,
+.project-avatar-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 /* ── The centre nav ───────────────────────────────────────────────────────── */

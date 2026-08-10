@@ -778,7 +778,7 @@ async function copy(text: string) {
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 4.5rem 2.5rem 2rem;
+  padding: 1.25rem 2.5rem 2rem;
   overflow: hidden;
 }
 
