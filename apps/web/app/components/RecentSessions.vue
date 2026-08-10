@@ -3,6 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Archive02Icon,
   BubbleChatTemporaryIcon,
+  Clock01Icon,
   Delete02Icon,
   Folder01Icon,
   GitBranchIcon,
@@ -187,9 +188,9 @@ function hasDiff(s: SessionSummary): boolean {
     <div v-for="section in sections" :key="section.kind" class="rs__group">
       <div class="rs__head" :style="{ '--i': section.start }">
         <HugeiconsIcon
-          v-if="section.kind === 'pinned'"
-          class="rs__pin"
-          :icon="PinIcon"
+          class="rs__hicon"
+          :class="section.kind === 'pinned' ? 'rs__pin' : 'rs__clock'"
+          :icon="section.kind === 'pinned' ? PinIcon : Clock01Icon"
           :size="11"
           :stroke-width="1.8"
           aria-hidden="true"
@@ -358,7 +359,9 @@ function hasDiff(s: SessionSummary): boolean {
 .rs {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  /* Extra air between the PINNED and RECENT groups so the two sections read as
+     distinct, not one continuous run of rows. */
+  gap: 40px;
   width: 100%;
 }
 .rs__group {
@@ -405,13 +408,20 @@ function hasDiff(s: SessionSummary): boolean {
   /* Lead the group's first row by the same 50ms the lane head leads its tiles. */
   animation-delay: calc(var(--proj-enter-sessions, 0ms) + min(var(--i, 0) * 30ms, 360ms));
 }
-.rs__pin {
+.rs__hicon {
   flex-shrink: 0;
   fill: none;
-  stroke: var(--pin-ink, #a57c2b);
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+/* Pin warms to gold — the deliberate group. */
+.rs__pin {
+  stroke: var(--pin-ink, #a57c2b);
+}
+/* The recent clock stays quiet, tinted to match its label. */
+.rs__clock {
+  stroke: var(--rs-label, #b0afaa);
 }
 .rs__label {
   font-family: var(--font-mono);
