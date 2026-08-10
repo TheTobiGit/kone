@@ -4,17 +4,33 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, net, protocol, shell } from "electron";
 
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
+import { setUserDataDir } from "./agent/userDataDir.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
 import { registerBoardIpc } from "./board/index.js";
 import { registerScratchpadIpc } from "./scratchpad/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./terminal/index.js";
-import { getInitialWindowState, manageWindowState } from "./windowState.js";
+import {
+  createRendererRecoveryGate,
+  getInitialWindowState,
+  manageWindowState,
+  RENDERER_RECOVERY_MAX_ATTEMPTS,
+  RENDERER_RECOVERY_RELOAD_DELAY_MS,
+  RENDERER_RECOVERY_WINDOW_MS,
+} from "./windowState.js";
+
+// The agent layer takes its state directory by injection rather than importing
+// electron itself, so main resolves it once here — before any store is touched.
+// (`userData` is available pre-`whenReady`.)
+setUserDataDir(app.getPath("userData"));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.KONE_DEV === "1";
 const devServerUrl = process.env.KONE_DEV_SERVER_URL ?? "http://localhost:3001";
+/** Upper bound for the quit teardown (agent CLIs, terminals, …). If a provider
+ *  child refuses to die in time, the app quits anyway — escalation, in the
+const QUIT_TEARDOWN_TIMEOUT_MS = 3_000;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -54,6 +70,17 @@ function registerAppProtocol() {
     const filePath = path.join(getRendererPath(), pathname);
     return net.fetch(pathToFileURL(filePath).toString());
   });
+}
+
+// One kone at a time. A second launch must not open a fresh process: every
+// fresh process runs the conversation store's recovery pass on its first DB
+// open, which seals the first instance's live turns as orphaned
+// (ConversationStore.handle → sealOrphanedTurns) — the second window would
+// quietly kill the first's sessions. The loser quits immediately; the winner
+// focuses the existing window instead (second-instance below).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
 }
 
 function registerIpc() {
@@ -107,6 +134,42 @@ async function createWindow() {
   }
   manageWindowState(mainWindow);
 
+  // Renderer crash (usually V8 OOM on long sessions) recovery: reload after a
+  // short delay, bounded to 3 attempts per rolling 60s window (gate in
+  // windowState.ts) so a renderer that dies on boot cannot reload-loop. The
+  // agent layer and terminal PTYs live in this process and survive the
+  // renderer's death, so a reload rehydrates the UI from state that never
+  // died — no user action needed.
+  const win = mainWindow;
+  const rendererRecovery = createRendererRecoveryGate();
+  win.webContents.on("render-process-gone", (_event, details) => {
+    const recoverable =
+      details.reason === "crashed" ||
+      details.reason === "oom" ||
+      details.reason === "abnormal-exit";
+    const recovering =
+      recoverable &&
+      !win.isDestroyed() &&
+      rendererRecovery.requestRecovery(Date.now());
+
+    console.warn(
+      `[main] renderer process gone (reason: ${details.reason}, exitCode: ${details.exitCode})` +
+        (recovering
+          ? ` — reloading in ${RENDERER_RECOVERY_RELOAD_DELAY_MS}ms` +
+            ` (at most ${RENDERER_RECOVERY_MAX_ATTEMPTS} attempts per ${RENDERER_RECOVERY_WINDOW_MS}ms)`
+          : recoverable
+            ? " — recovery exhausted for this window, not reloading"
+            : " — not a recoverable crash"),
+    );
+    if (!recovering) return;
+
+    setTimeout(() => {
+      if (!win.isDestroyed()) {
+        void win.webContents.reload();
+      }
+    }, RENDERER_RECOVERY_RELOAD_DELAY_MS);
+  });
+
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
 
@@ -141,35 +204,60 @@ async function createWindow() {
   await mainWindow.loadURL("app://./");
 }
 
-app.whenReady().then(async () => {
-  if (!isDev) {
-    registerAppProtocol();
-  }
-
-  registerIpc();
-  await createWindow();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+if (gotSingleInstanceLock) {
+  // A second launch (or dock click on macOS while running) focuses the
+  // existing window instead of starting a second instance.
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    } else {
+      // All windows closed but the app still running (macOS convention) — the
+      // launcher asked us to open again, so recreate the window.
       void createWindow();
     }
   });
-});
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
+  app.whenReady().then(async () => {
+    if (!isDev) {
+      registerAppProtocol();
+    }
 
-// Don't leave a `git clone` running (and a half-written folder behind) if the
-// app quits mid-clone, and don't orphan any agent CLI subprocesses or terminal
-// PTY shells.
-app.on("before-quit", () => {
-  cancelClone();
-  void shutdownAgents();
-  void shutdownTerminals();
-});
+    registerIpc();
+    await createWindow();
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        void createWindow();
+      }
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
+    }
+  });
+
+  // Quit path: don't leave a `git clone` running (and a half-written folder
+  // behind), and don't orphan agent CLI subprocesses or terminal PTY shells.
+  // before-quit is the only hook that can await: preventDefault, run the
+  // teardown, then quit again. A hard timeout stops the app even if a
+  // provider child refuses to die. Re-entry guard: the app.quit() below fires
+  // before-quit again, which must pass straight through.
+  let teardownStarted = false;
+  app.on("before-quit", (event) => {
+    if (teardownStarted) return;
+    event.preventDefault();
+    teardownStarted = true;
+    cancelClone();
+    const teardown = Promise.allSettled([shutdownAgents(), shutdownTerminals()]);
+    const hardStop = new Promise<void>((resolve) =>
+      setTimeout(resolve, QUIT_TEARDOWN_TIMEOUT_MS),
+    );
+    void Promise.race([teardown, hardStop]).finally(() => app.quit());
+  });
+}
 
 console.log(
   isDev

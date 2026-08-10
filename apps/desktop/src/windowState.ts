@@ -144,3 +144,45 @@ export function manageWindowState(win: BrowserWindow) {
     persist();
   });
 }
+
+// ── Renderer crash recovery gate ─────────────────────────────────────────────
+// Long sessions can OOM the Electron renderer at V8's heap ceiling, leaving a
+// dead white window while agent CLIs and terminal PTYs (which live in this
+// process) keep running. Recovery = reload after a short delay; the gate below
+// bounds those reloads (MAX_ATTEMPTS per rolling WINDOW_MS) so a renderer that
+// dies immediately on boot cannot reload-loop forever. Pure on purpose — the
+// window lifecycle wiring lives in main.ts, this stays unit-testable.
+
+/** Delay before reloading a crashed renderer, letting the process fully exit. */
+export const RENDERER_RECOVERY_RELOAD_DELAY_MS = 500;
+/** Max reloads per rolling window (a boot-crash must not reload-loop). */
+export const RENDERER_RECOVERY_MAX_ATTEMPTS = 3;
+/** Rolling window over which reload attempts are counted. */
+export const RENDERER_RECOVERY_WINDOW_MS = 60_000;
+
+export type RendererRecoveryGate = {
+  /**
+   * Prunes expired attempts, then reports whether another reload is allowed
+   * within the rolling window — recording the attempt when it is. False once
+   * MAX_ATTEMPTS reloads have happened in WINDOW_MS; true again once the
+   * earliest attempt ages out of the window.
+   */
+  requestRecovery(now: number): boolean;
+};
+
+/** Bounded reload gate for `render-process-gone` recovery. One per window. */
+export function createRendererRecoveryGate(
+  maxAttempts = RENDERER_RECOVERY_MAX_ATTEMPTS,
+  windowMs = RENDERER_RECOVERY_WINDOW_MS,
+): RendererRecoveryGate {
+  let attempts: number[] = [];
+
+  return {
+    requestRecovery(now: number): boolean {
+      attempts = attempts.filter((timestamp) => now - timestamp < windowMs);
+      if (attempts.length >= maxAttempts) return false;
+      attempts.push(now);
+      return true;
+    },
+  };
+}

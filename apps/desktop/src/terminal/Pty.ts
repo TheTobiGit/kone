@@ -2,7 +2,9 @@
 // A thin wrapper around node-pty: resolves the user's shell, builds a sane env
 // (login-shell PATH, like the agent layer), and exposes the small surface the
 // TerminalManager drives. kone runs on Electron's Node (not Bun), so node-pty
-// is the only adapter.
+// is the only adapter — including on Windows, where node-pty's ConPTY binding
+// is loaded directly (there is no Bun runtime path in the Electron main
+// not apply here).
 
 import { existsSync } from "node:fs";
 
