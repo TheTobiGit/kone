@@ -27,7 +27,7 @@ export {
 } from "./mutations.js";
 export { fetch, pull, push } from "./sync.js";
 export { stashes, stashApply, stashDrop, stashPush } from "./stash.js";
-export { remotes, repoState } from "./state.js";
+export { remoteExists, remotes, repoState } from "./state.js";
 export { contributors, identity, logo, readme } from "./about.js";
 export * as github from "./github.js";
 export { cancelClone, clone } from "./clone.js";

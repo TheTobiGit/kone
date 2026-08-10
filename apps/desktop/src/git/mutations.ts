@@ -157,7 +157,17 @@ export async function commit(dir: string, opts: GitCommitOptions): Promise<void>
 
 // ── branch operations ────────────────────────────────────────────────────────
 
-/** Create a local branch, optionally from a start point and/or switching to it. */
+/** Create a local branch, optionally from a start point and/or switching to it.
+ *
+ * The switch is the risky step (it refuses when the working tree has changes
+ * that would be clobbered), and the branch is created before it — the same
+ * the switch fails, the branch is rolled back (`git branch -D`) so the
+ * create+switch unit is atomic: a failed "create and switch" must not leave a
+ * silently-created branch behind that the UI never shows and that blocks a
+ * later retry. `git branch <name>` above would already have failed if the
+ * branch existed, so the rollback can only remove the branch this call made —
+ * force is safe (nothing can have been committed to it) and required, since
+ * `from` may be an unmerged ref. */
 export async function createBranch(
   dir: string,
   name: string,
@@ -165,10 +175,20 @@ export async function createBranch(
 ): Promise<void> {
   const root = await repoRoot(dir);
   if (!root || !name.trim()) return;
-  const args = ["branch", name.trim()];
+  const branch = name.trim();
+  const args = ["branch", branch];
   if (opts?.from?.trim()) args.push(opts.from.trim());
   await git(root, args);
-  if (opts?.checkout) await git(root, ["checkout", name.trim()]);
+  if (!opts?.checkout) return;
+  try {
+    await git(root, ["checkout", branch]);
+  } catch (error) {
+    await git(root, ["branch", "-D", branch]).catch(() => {
+      // The rollback itself failed (repo vanished mid-call, …) — the original
+      // checkout error is the one the caller needs.
+    });
+    throw error;
+  }
 }
 
 /** Delete a local branch (safe `-d` unless forced) or, with `remote`, a

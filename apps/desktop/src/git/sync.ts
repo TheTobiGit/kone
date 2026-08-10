@@ -1,4 +1,5 @@
 import { GitError, git, repoRoot } from "./core.js";
+import { remoteExists } from "./state.js";
 import type { GitPullOptions, GitPushOptions } from "./types.js";
 
 // Network operations behind the Git Space masthead. Two behaviours matter
@@ -29,10 +30,14 @@ function networkError(error: unknown, remote: string): GitError {
 }
 
 /** Fetch from a remote, pruning refs deleted upstream so dead remote branches
- *  disappear from the Branches section instead of lingering. */
+ *  disappear from the Branches section instead of lingering. A repo with no
+ *  such remote has nothing to fetch: the fetch is skipped rather than run, so
+ *  a repo without an origin doesn't surface git's "does not appear to be a
+ *  git repository" error for an operation that could never have succeeded. */
 export async function fetch(dir: string, remote = "origin"): Promise<void> {
   const root = await repoRoot(dir);
   if (!root) return;
+  if (!(await remoteExists(dir, remote))) return;
   try {
     await git(root, ["fetch", "--prune", remote]);
   } catch (error) {

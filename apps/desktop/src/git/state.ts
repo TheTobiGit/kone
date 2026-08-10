@@ -66,6 +66,24 @@ export async function remotes(dir: string): Promise<GitRemote[]> {
   return result.sort((a, b) => (a.name === "origin" ? -1 : b.name === "origin" ? 1 : 0));
 }
 
+/** Whether `remote` is configured on the repo. A repo with no such remote has
+ *  nothing to fetch — callers guard doomed network commands with this instead
+ *  of running them and surfacing git's "does not appear to be a git
+ *  repository" noise. */
+export async function remoteExists(dir: string, remote: string): Promise<boolean> {
+  const root = await repoRoot(dir);
+  if (!root || !remote.trim()) return false;
+  try {
+    const out = (await git(root, ["remote"])).trim();
+    return out
+      .split("\n")
+      .map((line) => line.trim())
+      .includes(remote.trim());
+  } catch {
+    return false;
+  }
+}
+
 /** Repo-relative paths with unresolved conflict entries in the index. */
 async function unmergedPaths(root: string): Promise<string[]> {
   try {
