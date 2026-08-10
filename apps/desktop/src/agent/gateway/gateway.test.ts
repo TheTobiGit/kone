@@ -3,24 +3,30 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { setUserDataDir } from "../userDataDir.js";
+
 import { Database } from "bun:sqlite";
 
 // The store imports node:sqlite, an Electron-runtime built-in this bun can't
 // load — stand it in for bun:sqlite, whose API surface (exec / prepare().get /
-// run / all) matches the store's usage. electron's app.getPath is pointed at
-// a throwaway temp dir per test. ConversationStore is imported *dynamically*
+// run / all) matches the store's usage. The agent layer's state dir is pointed
+// at a throwaway temp dir per test. ConversationStore is imported *dynamically*
 // below so the stub is in place first (static imports hoist above mock.module,
 // defeating it — the same pattern sidechat.test.ts uses).
 mock.module("node:sqlite", () => ({
   DatabaseSync: Database,
 }));
-mock.module("electron", () => ({
-  app: { getPath: () => testUserDataDir },
-}));
 
 import type { RuntimeEvent } from "../types.js";
 
-let testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-gateway-test-"));
+let testUserDataDir = "";
+/** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
+function useUserDataDir(dir: string): string {
+  testUserDataDir = dir;
+  setUserDataDir(dir);
+  return dir;
+}
+useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-gateway-test-")));
 
 type ConversationStoreType = import("../ConversationStore.js").ConversationStore;
 type GatewayHandleType = import("./index.js").GatewayHandle;
@@ -28,7 +34,7 @@ let ConversationStoreCtor: typeof import("../ConversationStore.js").Conversation
 let createGateway: typeof import("./index.js").createGateway;
 
 function freshStore(): ConversationStoreType {
-  testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-gateway-test-"));
+  useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-gateway-test-")));
   return new ConversationStoreCtor();
 }
 
@@ -119,7 +125,7 @@ describe("gateway integration (real store + HTTP)", () => {
     legacy.close();
 
     // Old userData path → new store migrates it on open.
-    testUserDataDir = dir;
+    useUserDataDir(dir);
     const store = new ConversationStoreCtor();
     const pad = store.getScratchpad("pad-legacy");
     expect(pad).not.toBeNull();

@@ -13,6 +13,7 @@ import {
 } from "../cursorHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
 import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
+import { isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
@@ -787,7 +788,12 @@ export class CursorAdapter implements ProviderAdapter {
           );
           session.conversationId = input.resume;
           session.resumedFrom = input.resume;
-        } catch {
+        } catch (error) {
+          // Only a refusal-class failure (session gone from Cursor's store)
+          // deserves the fresh-session fallback — a transport or protocol
+          // error must surface, or the thread would reopen blank for no
+          // reason. Same gate CodexAdapter now applies to `thread/resume`.
+          if (!isResumeRefusalError(error)) throw error;
           response = undefined;
         }
       }
@@ -839,8 +845,8 @@ export class CursorAdapter implements ProviderAdapter {
 
     // Imported at call time, and only when there's something to attach, like
     // OpenCodeAdapter does: promptAttachments reaches the attachment store,
-    // which pulls in electron and node:sqlite — statically importing it would
-    // make this module unloadable outside the packaged app.
+    // which pulls in node:sqlite — statically importing it would make this
+    // module unloadable outside the Electron runtime.
     let imageBlocks: CursorImageBlock[] = [];
     let promptText = input.input.trim();
     if (input.attachments?.length) {
@@ -896,7 +902,7 @@ export class CursorAdapter implements ProviderAdapter {
         PROMPT_TIMEOUT_MS,
       )
       .then(
-        (response) => this.completeTurn(session, turnId, readString(response, "stopReason")),
+        (response) => this.completeTurn(session, turnId, response),
         (error: unknown) => this.failTurn(session, turnId, error),
       );
 
@@ -938,6 +944,10 @@ export class CursorAdapter implements ProviderAdapter {
   async stopAll(): Promise<void> {
     for (const session of this.sessions.values()) {
       this.drainApprovals(session);
+      // Seal a still-live turn as `interrupted` BEFORE the kill: the child's
+      // exit only seals as 'failed', and a deliberate stop is an interrupt,
+      // not a failure. Same guard stopSession's kill path relies on.
+      this.abortLiveTurn(session);
       session.rpc.kill();
     }
     this.sessions.clear();
@@ -1351,8 +1361,42 @@ export class CursorAdapter implements ProviderAdapter {
     session.activeTurnId = undefined;
   }
 
-  private completeTurn(session: CursorSession, turnId: string, stopReason: string | undefined): void {
+  private completeTurn(session: CursorSession, turnId: string, response: Record<string, unknown>): void {
+    // The result only speaks for the turn it was requested under — a settled
+    // turn means a newer prompt already superseded this one, and its usage
+    // must not clobber the newer turn's meter.
     if (session.activeTurnId !== turnId) return;
+    const stopReason = readString(response, "stopReason");
+    // ACP doesn't define usage on the prompt result, but a future Cursor build
+    // (or a provider routed through it) may carry a usage bag here or in the
+    // through when present; otherwise the turn-end disk fallback below is the
+    // honest source.
+    const meta = asRecord(response._meta);
+    const resultUsage = asRecord(response.usage) ?? asRecord(meta?.usage);
+    if (resultUsage) {
+      const input = readNumber(resultUsage, "inputTokens") ?? readNumber(resultUsage, "input_tokens");
+      const output = readNumber(resultUsage, "outputTokens") ?? readNumber(resultUsage, "output_tokens");
+      const cacheRead = readNumber(resultUsage, "cacheReadTokens") ?? readNumber(resultUsage, "cache_read_tokens");
+      const cacheWrite = readNumber(resultUsage, "cacheWriteTokens") ?? readNumber(resultUsage, "cache_write_tokens");
+      const total =
+        readNumber(resultUsage, "totalTokens") ??
+        readNumber(resultUsage, "total_tokens") ??
+        (input !== undefined && output !== undefined
+          ? input + output + (cacheRead ?? 0) + (cacheWrite ?? 0)
+          : undefined);
+      if (input !== undefined || output !== undefined || total !== undefined) {
+        session.usageReported = true;
+        this.emit({
+          ...this.base(session),
+          type: "thread.token-usage.updated",
+          usage: {
+            ...(input !== undefined ? { input } : {}),
+            ...(output !== undefined ? { output } : {}),
+            ...(total !== undefined ? { total } : {}),
+          },
+        });
+      }
+    }
     const aborted = session.interrupting || stopReason === "cancelled" || stopReason === "refusal" || stopReason === "max_tokens";
     this.endTurn(session, turnId, aborted ? "failed" : "completed");
     // Not awaited — the disk read is a beat behind the terminal event and must

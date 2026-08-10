@@ -11,6 +11,7 @@ import {
 } from "../droidHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
 import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
+import { isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
@@ -135,6 +136,16 @@ const CONFIG_REFRESH_TIMEOUT_MS = 5_000;
  *  the remaining models are still listed, just without an effort ladder — the
  *  same degradation an org-blocked model already gets. */
 const CATALOG_PROBE_BUDGET_MS = 45_000;
+/** How long stopSession waits for the old child to actually exit before a
+ *  DroidSessionTeardownGate, commit 9a329d367) exists because both the old
+ *  `droid exec` child and the replacement's config writes touch droid's single
+ *  sqlite store — spawning the new child while the old one still holds the
+ *  store lock can fail the new session's open. Bounded: a child that ignores
+ *  SIGTERM must not hang the user's stop. */
+const DROID_TEARDOWN_GRACE_MS = 5_000;
+/** Timeout for the per-session `droid mcp remove` cleanup probe. Bounded so a
+ *  hung local CLI can't stall stopSession (and with it app quit) for long. */
+const DROID_CLEANUP_TIMEOUT_MS = 5_000;
 
 /** The config-option ids droid exposes (session/new `configOptions`), by kone
  *  axis. The mode/autonomy select carries `category: "mode"`. */
@@ -214,6 +225,10 @@ type DroidSession = {
    *  requestId. The RPC handler awaits `promise`; respondToRequest resolves it
    *  (or we drain on interrupt/stop) — the decision selects the reply option. */
   pendingApprovals: Map<string, PendingApproval>;
+  /** Resolves once the child process has actually exited (fires on the RPC
+   *  client's close). stopSession awaits this — bounded — so a replacement
+   *  session never spawns while the predecessor still runs. */
+  exited: Promise<void>;
 };
 
 /** A parked ACP permission request: the ask we surfaced and the resolver the
@@ -251,6 +266,24 @@ function readNumber(value: unknown, ...path: string[]): number | undefined {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+/** Resolve with the value, or `undefined` after `ms` — used to bound the
+ *  teardown gate so a stuck child can't hang stopSession. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
 }
 
 /** Normalize an ACP `session/request_permission` payload into the neutral ask
@@ -671,6 +704,10 @@ export class DroidAdapter implements ProviderAdapter {
       cwd: input.cwd,
       env,
     });
+    // The teardown gate's completion signal: resolves when this child's
+    // process actually closes, so a replacement session can await the
+    // predecessor's real exit before spawning.
+    const exited = new Promise<void>((resolve) => rpc.onExit(() => resolve()));
     const mode: InteractionMode = input.mode ?? "accept-edits";
 
     const session: DroidSession = {
@@ -688,6 +725,7 @@ export class DroidAdapter implements ProviderAdapter {
       segmentCount: 0,
       openItemIds: new Set(),
       pendingApprovals: new Map(),
+      exited,
     };
     this.wireNotifications(session);
     this.wireRequests(session);
@@ -778,7 +816,12 @@ export class DroidAdapter implements ProviderAdapter {
             );
             session.conversationId = input.resume;
             session.resumedFrom = input.resume;
-          } catch {
+          } catch (error) {
+            // Only a refusal-class failure (session gone/pruned) deserves the
+            // fresh-session fallback — a transport or protocol error must
+            // surface, or the thread would reopen blank for no reason. Same
+            // gate CodexAdapter now applies to `thread/resume`.
+            if (!isResumeRefusalError(error)) throw error;
             response = undefined;
           }
         }
@@ -851,8 +894,8 @@ export class DroidAdapter implements ProviderAdapter {
 
     // Imported at call time, and only when there's something to attach, like
     // CursorAdapter does: promptAttachments reaches the attachment store,
-    // which pulls in electron and node:sqlite — statically importing it would
-    // make this module unloadable outside the packaged app. droid advertises
+    // which pulls in node:sqlite — statically importing it would make this
+    // module unloadable outside the Electron runtime. droid advertises
     // `promptCapabilities.image`, so images ride as the same native ACP blocks
     // Cursor sends; other files become an `<attached_files>` path block.
     let imageBlocks: CursorImageBlock[] = [];
@@ -887,6 +930,9 @@ export class DroidAdapter implements ProviderAdapter {
     session.mode = mode;
     if (input.model && input.model !== session.model) await this.applyModel(session, input.model);
     if (input.effort) await this.applyConfigOption(session, EFFORT_CONFIG_IDS, input.effort);
+    // `serviceTier` / `contextWindow` are deliberately not applied: droid's
+    // model surface advertises no fast/context axes, so the picker never
+    // offers them — a per-turn value could only arrive from a stale selection.
 
     // kone mints the turn id: droid's ACP has no turn identity (a turn is one
     // `session/prompt` round-trip), and a per-session counter would collide
@@ -930,9 +976,17 @@ export class DroidAdapter implements ProviderAdapter {
     session.rpc.kill();
     this.sessions.delete(threadId);
     // Drop the per-session kone MCP entry from droid's persistent config so a
-    // revoked token never lingers. Best-effort and fire-and-forget.
+    // revoked token never lingers. Best-effort.
     const name = koneMcpServerName(threadId);
-    void probe(this.binary, ["mcp", "remove", name], process.env, 10_000);
+    const cleanup = probe(this.binary, ["mcp", "remove", name], process.env, DROID_CLEANUP_TIMEOUT_MS);
+    // Teardown gate: startSession replaces this session the moment stopSession
+    // returns, and the replacement's own `droid mcp remove`/`add`
+    // (registerGatewayMcp) plus its fresh child both touch droid's single
+    // sqlite store. If they interleave with this in-flight cleanup — or the
+    // new child spawns while the old one still holds the store lock — the new
+    // session can lose its gateway tools or fail to open. Wait (bounded) for
+    // the old child's actual exit and the cleanup to settle first.
+    await Promise.allSettled([cleanup, withTimeout(session.exited, DROID_TEARDOWN_GRACE_MS)]);
   }
 
   /** Register the kone gateway in droid's persistent MCP config (the ACP
@@ -974,11 +1028,10 @@ export class DroidAdapter implements ProviderAdapter {
   }
 
   async stopAll(): Promise<void> {
-    for (const session of this.sessions.values()) {
-      this.drainApprovals(session);
-      session.rpc.kill();
-    }
-    this.sessions.clear();
+    // Delegates to stopSession so every session gets the same drain → seal →
+    // kill → teardown-gate sequence (including the MCP cleanup, which the old
+    // loop skipped).
+    await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId)));
   }
 
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {

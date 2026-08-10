@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import path from "node:path";
-
-import { app } from "electron";
 
 import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.js";
+import { userDataPath } from "./userDataDir.js";
 
 // Persists the user's per-provider install settings (a custom CLI binary path,
 // today) so the agent adapters can be pointed at a non-default install between
@@ -18,7 +16,7 @@ const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cu
 
 let cachedPath: string | null = null;
 function settingsFilePath(): string {
-  cachedPath ??= path.join(app.getPath("userData"), "provider-settings.json");
+  cachedPath ??= userDataPath("provider-settings.json");
   return cachedPath;
 }
 

@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 
+import { setUserDataDir } from "./userDataDir.js";
+
 // sidechat.ts imports the store, which imports node:sqlite (an Electron-runtime
 // built-in this bun can't load) — stub it, then import the module under test
 // dynamically so the stub is in place first. The pure functions under test
@@ -12,9 +14,7 @@ mock.module("node:sqlite", () => ({
     }
   },
 }));
-mock.module("electron", () => ({
-  app: { getPath: () => "/tmp" },
-}));
+setUserDataDir("/tmp");
 
 const {
   assembleSidechatPreamble,

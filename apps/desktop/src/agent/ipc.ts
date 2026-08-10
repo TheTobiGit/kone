@@ -3,11 +3,17 @@ import { ipcMain, type WebContents } from "electron";
 
 import { AgentService } from "./AgentService.js";
 import { getAttachmentStore } from "./AttachmentStore.js";
-import { getConversationStore } from "./ConversationStore.js";
+import {
+  getConversationStore,
+  projectRuntimeEventForIpc,
+  projectStoredBlocksForIpc,
+  projectStoredThreadForIpc,
+} from "./ConversationStore.js";
 import { initThreadDispatcher } from "./dispatch.js";
 import { createGateway, type GatewayHandle } from "./gateway/index.js";
 import { createSidechatThread } from "./sidechat.js";
 import { getSpawnEngine, initSpawnEngine } from "./threadSpawn.js";
+import { truncateThreadTitle } from "./threadTitle.js";
 import type {
   ApprovalDecision,
   CreateSideChatInput,
@@ -45,6 +51,12 @@ export function registerAgentIpc(): void {
   const svc = getAgentService();
   const store = getConversationStore();
   const attachments = getAttachmentStore();
+
+  // Startup GC pass for orphaned attachment bytes (a crash between the
+  // temp-write and the registry insert, or a row dropped after a failed
+  // unlink, leaves files nothing references). Best-effort and off the hot
+  // path — a failure just leaves the orphans for the next launch.
+  void attachments.sweepOrphans();
 
   // Session lifecycle is main-process logic now (docs/thread-spawning-design.md
   // §5.1) — the spawn engine drives child threads headlessly through the same
@@ -97,8 +109,11 @@ export function registerAgentIpc(): void {
               : {}),
           };
     if (journal) store.applyEvent(stamped);
+    // Slim before the wire: the journal keeps the FULL payload; the renderer
+    // copy gets bounded tool-call bodies (see projectRuntimeEventForIpc).
+    const wire = projectRuntimeEventForIpc(stamped);
     for (const wc of subscribers) {
-      if (!wc.isDestroyed()) wc.send("agent:event", stamped);
+      if (!wc.isDestroyed()) wc.send("agent:event", wire);
     }
   }
 
@@ -167,6 +182,33 @@ export function registerAgentIpc(): void {
     if (subscribers.has(wc)) return;
     subscribers.add(wc);
     wc.once("destroyed", () => subscribers.delete(wc));
+    // Reload recovery: approvals/user-inputs are live round-trips and are
+    // deliberately not journaled, so a re-subscribing renderer (⌘R, crash
+    // reload) would otherwise never learn about an ask its turn is still
+    // parked on — the modal stays gone and the turn stays blocked. Replay the
+    // CURRENT parked asks to THIS subscriber only, as fresh emissions of the
+    // same live ask (fresh envelope ids; sent outside broadcast so they are
+    // never journaled). A second pass a beat later covers asks whose thread
+    // session the reloading renderer hasn't hydrated yet — the renderer's
+    // fan-out drops events aimed at a session object that doesn't exist — and
+    // only still-parked, not-yet-sent asks ride the second pass, so a
+    // delivered prompt is never duplicated.
+    const sent = new Set<string>();
+    const replayPending = () => {
+      if (wc.isDestroyed()) return;
+      for (const pending of svc.pendingInteractions()) {
+        const key = `${pending.threadId}::${pending.requestId}`;
+        if (sent.has(key)) continue;
+        sent.add(key);
+        wc.send("agent:event", {
+          ...pending.event,
+          eventId: randomUUID(),
+          parentTurnId: dispatcher.spawnParentTurnId(pending.threadId),
+        });
+      }
+    };
+    replayPending();
+    setTimeout(replayPending, 800);
   });
   ipcMain.handle("agent:unsubscribe", (event) => {
     subscribers.delete(event.sender);
@@ -236,6 +278,23 @@ export function registerAgentIpc(): void {
     (_event, threadId: string, toolUseId: string, message: string) =>
       svc.steerSubagent(threadId, toolUseId, message),
   );
+
+  // Durable turn queue + steering (the busy-intercept follow-up path). A
+  // follow-up sent while a turn runs is durably enqueued and auto-promoted
+  // when the turn settles; `queued-turns` lists the thread's active rows,
+  // `queue-cancel` drops one (cancels with reason "user"), and `steer-turn`
+  // routes a mid-turn message to the live turn when the provider has a
+  // live-steer channel, else enqueues it as a steer. All three resolve once
+  // accepted; the resulting events flow through agent:event.
+  ipcMain.handle("agent:queued-turns", (_event, threadId: string) =>
+    svc.listQueuedTurns(threadId),
+  );
+  ipcMain.handle("agent:queue-cancel", (_event, threadId: string, queueId: string) =>
+    svc.cancelQueuedTurn(threadId, queueId),
+  );
+  ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) =>
+    svc.steerTurn(input),
+  );
   ipcMain.handle("agent:list-sessions", () => svc.listSessions());
   // Read a parent thread's spawned children, projected fresh from the store.
   // The spawn events aren't journaled (derived state), so a reloaded renderer
@@ -247,25 +306,119 @@ export function registerAgentIpc(): void {
   // Persisted conversation history. Reads rehydrate a project's last thread on
   // open and back the "recent conversations" block; the two mutations let a row
   // be archived (hidden, recoverable) or deleted (gone).
-  ipcMain.handle("agent:history-latest", (_event, projectPath: string) =>
-    store.latestThread(projectPath),
-  );
-  ipcMain.handle("agent:history-thread", (_event, threadId: string) =>
-    store.loadThread(threadId),
+  // History reads return the same shapes but with tool-call bodies bounded for
+  // the wire — the store keeps the full payloads (projectStoredThreadForIpc).
+  ipcMain.handle("agent:history-latest", (_event, projectPath: string) => {
+    const thread = store.latestThread(projectPath);
+    return thread ? projectStoredThreadForIpc(thread) : null;
+  });
+  ipcMain.handle("agent:history-thread", (_event, threadId: string) => {
+    const thread = store.loadThread(threadId);
+    return thread ? projectStoredThreadForIpc(thread) : null;
+  });
+  // Windowed thread read (user-anchored keyset pages): first page when no
+  // cursor is given, then the next strictly older page per cursor. The
+  // renderer treats `nextCursor` as opaque and echoes it back. (Renderer
+  // integration is pending the bridge type + load-older UI; see the store's
+  // loadThreadPage doc.)
+  ipcMain.handle(
+    "agent:history-thread-page",
+    (_event, threadId: string, options?: { limit?: number; cursor?: string }) => {
+      const page = store.loadThreadPage(threadId, options);
+      if (!page) return null;
+      return { ...page, blocks: projectStoredBlocksForIpc(page.blocks) };
+    },
   );
   ipcMain.handle("agent:history-list", (_event, projectPath: string) =>
     store.listThreads(projectPath),
   );
-  ipcMain.handle(
-    "agent:history-archive",
-    (_event, threadId: string, archived: boolean) => store.setArchived(threadId, archived),
-  );
+  ipcMain.handle("agent:history-archive", (_event, threadId: string, archived: boolean) => {
+    const result = store.setArchived(threadId, archived);
+    if (!result.ok) {
+      console.warn(
+        `[ipc] archive ${archived ? "refused" : "failed"} for ${threadId}: ${result.reason}`,
+      );
+    }
+  });
   ipcMain.handle("agent:history-delete", async (_event, threadId: string) => {
+    // Pre-flight busy guard BEFORE touching files: a spawned child mid-turn
+    // must not be destroyed under its parent, and refusing must leave every
+    // byte and row untouched.
+    const guard = store.canDeleteThread(threadId);
+    if (!guard.ok) {
+      console.warn(`[ipc] delete refused for ${threadId}: ${guard.reason}`);
+      return;
+    }
+    // Flip the thread's queued + promoting rows and surface one
+    // turn.queued-cancelled (reason "thread-deleted") per row BEFORE the
+    // thread is dropped: a deleted thread's follow-ups must never survive to
+    // resurrect (deleteThread removes the rows outright), and every renderer
+    // must learn its chips are gone. The service owns the stop-path reason
+    // ("stop"); this delete path emits its own reason through the same
+    // broadcast every service event crosses.
+    const meta = store.threadMeta(threadId);
+    const cancelledQueueIds = store.cancelQueuedTurnsForThread(threadId);
+    if (meta) {
+      for (const queueId of cancelledQueueIds) {
+        broadcast({
+          type: "turn.queued-cancelled",
+          threadId,
+          provider: meta.provider,
+          queueId,
+          reason: "thread-deleted",
+          at: Date.now(),
+          source: "kone.store",
+        });
+      }
+    }
     // Unlink the thread's attachment files first (best-effort), then drop every
     // row — otherwise the bytes on disk would outlive the conversation.
     await attachments.deleteThreadFiles(threadId);
     store.deleteThread(threadId);
     dispatcher.forgetThread(threadId);
+  });
+  // Pin state lives in the DB (v18), so a pinned thread follows the thread
+  // across browser profiles — the Project Home / launcher pin toggles call
+  // this instead of writing browser localStorage.
+  ipcMain.handle("agent:set-pinned", (_event, threadId: string, pinned: boolean) =>
+    store.setPinned(threadId, pinned),
+  );
+  // Persist the user's per-thread picker selection (model / effort /
+  // serviceTier / contextWindow) so a reopened thread restores the picker
+  // exactly where it was left.
+  ipcMain.handle(
+    "agent:set-thread-selection",
+    (
+      _event,
+      threadId: string,
+      selection: { model?: string; effort?: string; serviceTier?: string; contextWindow?: string },
+    ) => store.setThreadSelection(threadId, selection),
+  );
+  // User-initiated rename (the strip-header / recents-row rename). Sets the
+  // title WITHOUT touching recency ordering (a rename is bookkeeping, not
+  // conversation activity), and broadcasts the same thread.title.updated
+  // event the agent-generated rename path uses, so every renderer's live
+  // row/tab label updates. Resolves true when the title actually changed.
+  ipcMain.handle("agent:rename-thread", (_event, threadId: string, title: string) => {
+    const cleaned = truncateThreadTitle(String(title ?? "").trim());
+    const changed = store.renameThread(threadId, cleaned);
+    if (changed) {
+      const meta = store.threadMeta(threadId);
+      if (meta) {
+        broadcast(
+          {
+            type: "thread.title.updated",
+            threadId,
+            provider: meta.provider,
+            at: Date.now(),
+            source: "kone.store",
+            title: cleaned,
+          },
+          false,
+        );
+      }
+    }
+    return changed;
   });
 }
 

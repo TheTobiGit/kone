@@ -125,6 +125,17 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       model: input.model,
     });
     const session = await this.service.startSession(input);
+    // The provider conversation exists the moment startSession resolves.
+    // Capture its id NOW — durably — rather than waiting for the session.started
+    // fold (which also captures it): a crash in the window between the CLI
+    // minting the conversation and that event landing would otherwise abandon
+    // the provider-side conversation, leaving the thread unable to resume it.
+    // No-op when the adapter hasn't named an id yet (some providers only know
+    // it after the first turn — their session.started/turn.completed capture
+    // path covers that).
+    if (session.conversationId) {
+      this.store.captureConversationId(input.threadId, session.conversationId);
+    }
     // Record where the repo stood as this conversation begins, so its settled
     // diffstat measures only what the conversation changes (no-op if the thread
     // already has a baseline — a resumed session keeps its original one).

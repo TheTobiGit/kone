@@ -12,20 +12,20 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+import { setUserDataDir } from "./userDataDir.js";
 import { Database } from "bun:sqlite";
 
 // The adapter transitively imports ConversationStore (via AttachmentStore),
 // which loads node:sqlite — an Electron-runtime builtin this bun can't load.
-// Stand it in with bun:sqlite and point electron at a throwaway dir, the same
-// pattern gateway.test.ts uses; ClaudeAdapter itself is imported dynamically
+// Stand it in with bun:sqlite and point the agent layer's state dir at a
+// throwaway dir, the same pattern gateway.test.ts uses; ClaudeAdapter itself is imported dynamically
 // below so the stubs are in place first.
 const testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-claude-gateway-"));
 mock.module("node:sqlite", () => ({
   DatabaseSync: Database,
 }));
-mock.module("electron", () => ({
-  app: { getPath: () => testUserDataDir },
-}));
+setUserDataDir(testUserDataDir);
 
 import { KONE_HOST_CONTEXT_MARKER } from "./gateway/appContext.js";
 import { CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND } from "./claudeSubagents.js";

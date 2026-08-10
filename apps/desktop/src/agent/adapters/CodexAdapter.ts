@@ -29,6 +29,10 @@ import type {
   UserInputQuestion,
   UserInputQuestionOption,
 } from "../types.js";
+import {
+  isNonFatalCodexError,
+  isRecoverableCodexResumeError,
+} from "./errors.js";
 import { buildCodexTurnCollaborationMode } from "../gateway/appContext.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks } from "../planTasks.js";
 import {
@@ -79,8 +83,6 @@ const CODEX_INITIALIZE_PARAMS = {
   clientInfo: { name: "kone", title: "kone", version: "0.1.0" },
   capabilities: { experimentalApi: true },
 } as const;
-
-const NON_FATAL_CODEX_ERROR_SNIPPETS = ["write_stdin failed: stdin is closed for this session"];
 
 type CodexItemBuffer = {
   itemId: string;
@@ -144,11 +146,6 @@ function readString(value: unknown, ...path: string[]): string | undefined {
 
 function numberOrUndefined(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
-}
-
-function isNonFatalCodexError(message: string): boolean {
-  const lower = message.trim().toLowerCase();
-  return NON_FATAL_CODEX_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
 }
 
 /** Normalize one Codex `requestApproval` payload into the neutral ask the
@@ -326,15 +323,27 @@ function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultNa
   return null; // review_entered, context_compaction, error, unknown
 }
 
+/** Join a multi-part string array (Codex sometimes sends `summary`/`content`
+export function joinedText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 /** Scavenges a human-readable blob out of an item's many possible shapes —
  *  Codex item payloads vary too much for a per-type field map. */
-function itemDetail(item: Record<string, unknown> | undefined): string | undefined {
+export function itemDetail(item: Record<string, unknown> | undefined): string | undefined {
   if (!item) return undefined;
   const nestedResult = asRecord(item.result);
   const candidates = [
     item.command,
     item.title,
     item.summary,
+    joinedText(item.summary),
+    joinedText(item.content),
     item.text,
     item.path,
     item.file_path,
@@ -345,6 +354,29 @@ function itemDetail(item: Record<string, unknown> | undefined): string | undefin
     if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
   }
   return undefined;
+}
+
+/** Map a Codex item/completed `status` onto kone's terminal item states.
+ *  `declined` (the user declined the action). kone's RuntimeItemStatus has no
+ *  declined state, so a declined item folds into `failed` — the closest
+ *  terminal state — instead of masquerading as a successful completion. */
+export function mapCodexItemStatus(status: string | undefined, hasError: boolean): "completed" | "failed" {
+  return status === "failed" || status === "declined" || hasError ? "failed" : "completed";
+}
+
+/** Surface an "already has an active writer" thread/resume refusal as a human
+ *  message instead of a raw protocol error. The thread is genuinely open in
+ *  another Codex client, so this is NOT a recoverable refusal — a fresh
+ *  start would abandon the original thread and the user would never know why
+export function formatCodexThreadResumeError(error: unknown, threadId: string): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.toLowerCase().includes("already has an active writer")) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  return new Error(
+    `Codex thread ${threadId} is open in another Codex client. Close that client before continuing the original thread, or start a new thread instead.`,
+    { cause: error },
+  );
 }
 
 /** The richer body for a tool call's expandable `detail` — a diff, a before/
@@ -431,12 +463,18 @@ function parseModelListResponse(response: Record<string, unknown> | undefined): 
         if (typeof tierId === "string") serviceTiers.push({ id: tierId, label: tierId === "fast" ? "Fast" : tierId });
       }
     }
+    // Real `model/list` models carry the catalog's default speed tier
+    // (`defaultServiceTier`, e.g. "fast") so the picker can pre-set the
+    // fast-mode toggle to the provider's default instead of guessing.
+    const defaultServiceTier =
+      typeof record.defaultServiceTier === "string" ? record.defaultServiceTier : undefined;
     models.push({
       id,
       label: label ?? id,
       ...(reasoningEfforts.length ? { reasoningEfforts } : {}),
       ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
       ...(serviceTiers.length ? { serviceTiers } : {}),
+      ...(defaultServiceTier ? { defaultServiceTier } : {}),
     });
   }
   return models;
@@ -629,7 +667,17 @@ export class CodexAdapter implements ProviderAdapter {
             ...overrides,
             threadId: input.resume,
           });
-        } catch {
+        } catch (error) {
+          // Only a refusal-class failure (thread pruned/expired/foreign, or a
+          // dead app-server) deserves the fresh-start fallback. A transport or
+          // protocol error must surface — silently starting fresh would reopen
+          // the thread on a blank conversation and the user would never know
+          // isRecoverableThreadResumeError gate. An "already has an active
+          // writer" refusal is non-recoverable too, but it gets a human
+          // message (the thread is open elsewhere) instead of the raw error.
+          if (!isRecoverableCodexResumeError(error)) {
+            throw formatCodexThreadResumeError(error, input.resume);
+          }
           openMethod = "thread/start";
           response = undefined;
         }
@@ -697,11 +745,21 @@ export class CodexAdapter implements ProviderAdapter {
       ...(session.model ? { model: session.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+      // `contextWindow` is deliberately not sent: the app-server's turn/start
+      // protocol has no context-window axis (verified against the generated
+      // schema — only model/effort/serviceTier ride a turn). The model's
+      // window is fixed by the catalog, so a per-turn value could only be a
+      // stale selection.
       ...(collaborationMode ? { collaborationMode } : {}),
     });
     const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
     if (!turnId) throw new Error("turn/start response did not include a turn id.");
-    session.activeTurnId = turnId;
+    // Codex accepts queued follow-ups while the current turn is still
+    // running: the turn/start response carries the queued turn id, but
+    // turn/interrupt only accepts the id of the turn that's active right
+    // now. Keep the active id; the queued turn's own `turn/started`
+    // CodexSessionRuntime fix (#5762).
+    session.activeTurnId = session.activeTurnId ?? turnId;
     return { threadId: input.threadId, turnId };
   }
 
@@ -744,6 +802,10 @@ export class CodexAdapter implements ProviderAdapter {
     for (const session of this.sessions.values()) {
       this.drainUserInputs(session);
       this.drainApprovals(session);
+      // Seal a still-live turn as `interrupted` BEFORE the kill: the child's
+      // exit only seals as 'failed', and a deliberate stop is an interrupt,
+      // not a failure. Same guard stopSession's kill path relies on.
+      this.abortLiveTurn(session);
       session.rpc.kill();
     }
     this.sessions.clear();
@@ -911,9 +973,55 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     rpc.onNotification("error", (params) => {
-      const message = readString(params, "message") ?? "Codex reported an error.";
-      if (isNonFatalCodexError(message)) return;
-      this.emit({ ...this.base(session), type: "session.state.changed", state: "error", message });
+      // Real app-server shape: `{ error: { message, additionalDetails,
+      // codexErrorInfo }, threadId, turnId, willRetry }` — the message is
+      // ServerNotification__ErrorNotification / __TurnError). Reading a flat
+      // `params.message` always missed it, so every real Codex error surfaced
+      // as the generic "Codex reported an error."
+      const errorRecord = asRecord(params)?.error;
+      const message =
+        readString(errorRecord, "message") ??
+        readString(params, "message") ??
+        "Codex reported an error.";
+      const additionalDetails = readString(errorRecord, "additionalDetails");
+      const fullMessage = additionalDetails ? `${message}\n${additionalDetails}` : message;
+      // `willRetry` (schema: `error.willRetry`) means the app-server is going
+      // to retry the turn itself — the session continues, so this is a warning,
+      // `runtime.warning`). The notification's own `turnId` (schema:
+      // `error.turnId`) is the turn in trouble — consume it instead of
+      // guessing from activeTurnId, and seal that turn when the error is fatal.
+      const willRetry = asRecord(params)?.willRetry === true;
+      const turnId = readString(params, "turnId") ?? session.activeTurnId;
+      if (willRetry || isNonFatalCodexError(fullMessage)) {
+        this.emit({ ...this.base(session), type: "session.warning", message: fullMessage });
+        return;
+      }
+      // Fatal: seal the turn the notification names (still live → failed), then
+      // flip the session to error so the renderer surfaces it and the composer
+      // stops pretending a turn is running.
+      if (turnId && session.activeTurnId === turnId) {
+        session.activeTurnId = undefined;
+        this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "failed", message: fullMessage });
+      }
+      this.emit({ ...this.base(session), type: "session.state.changed", state: "error", message: fullMessage });
+    });
+
+    rpc.onNotification("model/rerouted", (params) => {
+      // The app-server swapped the request to a different model mid-session
+      // (e.g. an unavailable model falling back to the catalog default).
+      // Surface it so the UI stops showing a stale model label.
+      const fromModel = readString(params, "fromModel") ?? "unknown";
+      const toModel = readString(params, "toModel") ?? "unknown";
+      const reason = readString(params, "reason");
+      if (session.model === toModel) return;
+      session.model = toModel;
+      this.emit({
+        ...this.base(session),
+        type: "model.rerouted",
+        fromModel,
+        toModel,
+        ...(reason ? { reason } : {}),
+      });
     });
   }
 
@@ -1080,8 +1188,12 @@ export class CodexAdapter implements ProviderAdapter {
       detail: existing?.detail && existing.detail.length > 0 ? existing.detail : (body ?? existing?.detail ?? ""),
     };
     session.items.set(itemId, buffer);
-    const failed = readString(raw, "status") === "failed" || Boolean(asRecord(raw.error));
-    this.emitItem(session, "item.completed", buffer, failed ? "failed" : "completed");
+    this.emitItem(
+      session,
+      "item.completed",
+      buffer,
+      mapCodexItemStatus(readString(raw, "status"), Boolean(asRecord(raw.error))),
+    );
   }
 
   private handleDelta(session: CodexSession, params: unknown): void {

@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
 import { DroidAdapter } from "./adapters/DroidAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
+import { getConversationStore } from "./ConversationStore.js";
 import { buildAgentEnv } from "./processEnv.js";
 import {
   cacheModels,
@@ -16,6 +18,7 @@ import { sidechatBootstrapForTurn } from "./sidechat.js";
 import type { GatewayHandle } from "./gateway/index.js";
 import type {
   ApprovalDecision,
+  ChatAttachment,
   EmitEvent,
   ModelDescriptor,
   ProviderAdapter,
@@ -25,6 +28,8 @@ import type {
   ProviderSettingsMap,
   ProviderStatus,
   ProviderUpdateResult,
+  QueuedTurnRow,
+  QueuedTurnStore,
   RuntimeEvent,
   Session,
   SendTurnInput,
@@ -32,6 +37,44 @@ import type {
   TurnStartResult,
   UserInputAnswers,
 } from "./types.js";
+
+/** How often the wedge watchdog sweeps live sessions (module constants so the
+ *  tuning lives with the mechanism it tunes). */
+const WEDGE_SWEEP_MS = 60_000;
+/** A live turn that has emitted NO event for this long is presumed wedged —
+ *  the provider process is alive but the turn will never advance on its own
+ *  (a JSON-RPC call already timed out and rejected, but nothing killed the
+ *  child or sealed the turn). The cost of a false positive is a reset instead
+ *  of a finish, so this deliberately errs long enough that a genuinely
+ *  streaming turn — token-usage events fire continuously while a provider
+ *  works — is never mistaken for a dead one. */
+const WEDGE_SILENCE_MS = 5 * 60_000;
+
+/** A parked provider ask (tool approval / user-input question) that a renderer
+ *  reload would otherwise lose: approvals and user-input questions are live
+ *  round-trips and are deliberately never journaled, so a re-subscribing
+ *  renderer can only re-present them from this snapshot. */
+export type PendingInteraction = {
+  threadId: string;
+  requestId: string;
+  kind: "approval" | "user-input";
+  /** The exact `approval.requested` / `user-input.requested` event to re-emit. */
+  event: RuntimeEvent;
+};
+
+/** Constructor tuning for the wedge watchdog — both default to the module
+ *  constants above; tests shrink them to exercise the sweep without waiting. */
+export type AgentServiceOptions = {
+  wedgeSweepMs?: number;
+  wedgeSilenceMs?: number;
+  /** The conversation store's queue surface, injected by tests. Defaults to
+   *  the app-wide store (getConversationStore) when absent. */
+  store?: QueuedTurnStore;
+  /** Adapters to register instead of the five real ones, handed the service's
+   *  emit closure exactly like the real construction path. Injected by tests
+   *  so no CLI is ever spawned. */
+  adapters?: (emit: EmitEvent) => ProviderAdapter[];
+};
 
 // The cross-provider facade that lives in the Electron main process. It owns
 // the adapter registry, routes thread-scoped calls to the adapter that owns the
@@ -55,16 +98,41 @@ export class AgentService {
    *  revokes it — agents reach kone tools over loopback. */
   private gateway: GatewayHandle | null = null;
   private warming: Promise<void> | null = null;
+  /** Parked asks per thread (requestId → ask). Approvals/user-inputs are live
+   *  round-trips and are never journaled, so this map is the only record a
+   *  re-subscribing renderer can be replayed from (reload recovery), and the
+   *  precise "waiting on the human" signal the wedge watchdog must respect. */
+  private readonly parkedByThread = new Map<string, Map<string, PendingInteraction>>();
+  /** Last event arrival per thread — the wedge watchdog's heartbeat. */
+  private readonly lastActivity = new Map<string, number>();
+  /** Turns currently live per thread (turnId) — the wedge watchdog's scope. */
+  private readonly activeTurns = new Map<string, string>();
+  /** Threads with a queue-drain already in flight — one drain per thread at a
+   *  time, so two settlement events can't double-claim the next row. */
+  private readonly promotingThreads = new Set<string>();
+  /** In-memory mirror of how many rows are queued per thread — the fallback
+   *  for `turn.queued` positions when the store read fails. Drift from the
+   *  store (crash recovery) self-corrects on the next successful read. */
+  private readonly queuedByThread = new Map<string, number>();
+  private queueUnavailableWarned = false;
+  /** The wedge sweep timer — lazily started on first session, cleared on stopAll. */
+  private wedgeTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor() {
-    const emit: EmitEvent = (event) => {
-      for (const listener of this.listeners) listener(event);
-    };
-    this.register(new CodexAdapter(emit));
-    this.register(new ClaudeAdapter(emit));
-    this.register(new OpenCodeAdapter(emit));
-    this.register(new CursorAdapter(emit));
-    this.register(new DroidAdapter(emit));
+  constructor(private readonly options: AgentServiceOptions = {}) {
+    const emit: EmitEvent = (event) => this.dispatch(event);
+    // Recovery bookkeeping listener: watches the merged stream to keep the
+    // parked-ask snapshot, per-thread heartbeat, and live-turn map current.
+    // Registered before any adapter, so nothing a provider emits escapes it.
+    this.listeners.add((event) => this.trackEvent(event));
+    if (options.adapters) {
+      for (const adapter of options.adapters(emit)) this.register(adapter);
+    } else {
+      this.register(new CodexAdapter(emit));
+      this.register(new ClaudeAdapter(emit));
+      this.register(new OpenCodeAdapter(emit));
+      this.register(new CursorAdapter(emit));
+      this.register(new DroidAdapter(emit));
+    }
     // Point each adapter at the user's persisted install settings (custom binary
     // path, …) before anything probes or spawns. Unset providers keep their
     // built-in default, so a fresh install behaves exactly as before.
@@ -91,6 +159,27 @@ export class AgentService {
     const provider = this.routing.get(threadId);
     if (!provider) throw new Error(`No agent session for thread ${threadId}`);
     return this.adapter(provider);
+  }
+
+  /** The conversation store's queue surface, or null when the store slice
+   *  hasn't landed yet (ConversationStore.ts is owned by the store agent and
+   *  lands in parallel; the queue contract's method set is its landing
+   *  signal). Every queue path degrades to the pre-queue behavior on null —
+   *  a busy send goes straight to the adapter again, and promotion/cancel
+   *  paths no-op — instead of crashing the main process mid-tree. */
+  private get queueStore(): QueuedTurnStore | null {
+    const store = this.options.store ?? (getConversationStore() as unknown);
+    if (store && typeof (store as QueuedTurnStore).enqueueQueuedTurn === "function") {
+      return store as QueuedTurnStore;
+    }
+    if (!this.queueUnavailableWarned) {
+      this.queueUnavailableWarned = true;
+      console.warn(
+        "[agent] durable turn queue unavailable (store slice not landed) — " +
+          "busy sends fall back to direct dispatch",
+      );
+    }
+    return null;
   }
 
   /** Subscribe to the merged runtime event stream. Returns an unsubscribe fn. */
@@ -340,6 +429,12 @@ export class AgentService {
       gatewayConnection,
     });
     this.routing.set(input.threadId, input.provider);
+    this.ensureWedgeWatchdog();
+    // Crash-recovery drain: queued rows survive a quit, so when the thread
+    // reopens and a session comes up, any rows still waiting are promoted
+    // into it (boot itself has no sessions, so there is nothing to drain
+    // until a session actually exists for the thread).
+    this.promoteQueuedTurns(input.threadId);
     return session;
   }
 
@@ -354,11 +449,22 @@ export class AgentService {
     // `<latest_user_message>`. Null for every other turn/thread. Overlong
     // turns (imported context + message > send cap) reject here, up front.
     const sidechatInput = sidechatBootstrapForTurn(input.threadId, input.input);
-    const next = sidechatInput ? { ...input, input: sidechatInput } : input;
+    // dispatchMode is the service's own routing hint — strip it before
+    // anything reaches an adapter (adapters don't know the queue exists).
+    const { dispatchMode, ...base } = input;
+    const next = sidechatInput ? { ...base, input: sidechatInput } : base;
     if (!provider) return this.adapterForThread(input.threadId).sendTurn(next);
     const model = this.validModelFor(provider, next.model);
     const effort = this.validEffortFor(provider, model, next.effort);
-    return this.adapterForThread(input.threadId).sendTurn({ ...next, model, effort });
+    const routed = { ...next, model, effort };
+    // Busy-intercept: a live turn means this follow-up is durably enqueued
+    // rather than racing the live turn (sending straight to the adapter would
+    // start a second concurrent turn on the same session). `steer` requests
+    // that reach sendTurn go through the same queue — steers claim first.
+    if (this.activeTurns.has(input.threadId)) {
+      return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
+    }
+    return this.adapterForThread(input.threadId).sendTurn(routed);
   }
 
   async interruptTurn(threadId: string): Promise<void> {
@@ -368,10 +474,172 @@ export class AgentService {
   async stopSession(threadId: string): Promise<void> {
     const provider = this.routing.get(threadId);
     if (!provider) return;
+    // Cancel queued follow-ups BEFORE the teardown: a row must never promote
+    // into a session that is being torn down (a drain racing the stop could
+    // otherwise claim one and hand it to a dead session).
+    await this.cancelQueuedForStop(threadId, provider);
     await this.adapter(provider).stopSession(threadId);
     this.routing.delete(threadId);
+    // The adapter's stop already drained parked asks and sealed the live turn
+    // (their events clear this state); this is the belt-and-braces pass for
+    // any adapter whose drain doesn't emit per-ask resolution events.
+    this.forgetThreadState(threadId);
     // The session is gone — its gateway credential must 401 from here on.
     this.gateway?.revokeThread(threadId);
+  }
+
+  /** Fan one event out to every listener — the single emit path, shared by the
+   *  adapters' closure and the service's own synthesized events (the wedge
+   *  watchdog's reset announcement). */
+  private dispatch(event: RuntimeEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+
+  /** Snapshot of every currently parked ask across live sessions — the
+   *  reload-recovery replay set. Approvals/user-inputs are live round-trips
+   *  (never journaled), so this snapshot is the only way a fresh renderer can
+   *  re-present a prompt the turn is still parked on. */
+  pendingInteractions(): PendingInteraction[] {
+    const out: PendingInteraction[] = [];
+    for (const byThread of this.parkedByThread.values()) {
+      for (const pending of byThread.values()) out.push(pending);
+    }
+    return out;
+  }
+
+  // ── recovery bookkeeping + wedge watchdog ─────────────────────────────────
+
+  /** Keep the recovery snapshot and watchdog state current off the merged
+   *  event stream. Runs for EVERY event, so the heartbeat counts all activity
+   *  (token-usage updates included) and a genuinely streaming turn is never
+   *  mistaken for a wedged one. */
+  private trackEvent(event: RuntimeEvent): void {
+    const { threadId } = event;
+    this.lastActivity.set(threadId, Date.now());
+    switch (event.type) {
+      case "approval.requested":
+      case "user-input.requested":
+        this.setParked(event);
+        break;
+      case "approval.resolved":
+      case "user-input.resolved":
+        this.dropParked(threadId, event.requestId);
+        break;
+      case "turn.started":
+        this.activeTurns.set(threadId, event.turnId);
+        break;
+      case "turn.completed":
+      case "turn.aborted":
+        this.activeTurns.delete(threadId);
+        // A turn settling frees the one-live-turn slot: promote the next
+        // queued follow-up (fire-and-forget; drain is serialized per thread
+        // and sends at most one turn, so the next settlement drains again).
+        this.promoteQueuedTurns(threadId);
+        break;
+      case "session.state.changed":
+        if (event.state === "stopped" || event.state === "error") {
+          this.activeTurns.delete(threadId);
+          this.dropAllParked(threadId);
+        }
+        break;
+      case "session.exited":
+        this.activeTurns.delete(threadId);
+        this.dropAllParked(threadId);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private setParked(
+    event: Extract<RuntimeEvent, { type: "approval.requested" | "user-input.requested" }>,
+  ): void {
+    const { threadId, requestId } = event;
+    let byThread = this.parkedByThread.get(threadId);
+    if (!byThread) {
+      byThread = new Map();
+      this.parkedByThread.set(threadId, byThread);
+    }
+    byThread.set(requestId, {
+      threadId,
+      requestId,
+      kind: event.type === "approval.requested" ? "approval" : "user-input",
+      event,
+    });
+  }
+
+  private dropParked(threadId: string, requestId: string): void {
+    const byThread = this.parkedByThread.get(threadId);
+    if (!byThread) return;
+    byThread.delete(requestId);
+    if (byThread.size === 0) this.parkedByThread.delete(threadId);
+  }
+
+  private dropAllParked(threadId: string): void {
+    this.parkedByThread.delete(threadId);
+  }
+
+  private forgetThreadState(threadId: string): void {
+    this.parkedByThread.delete(threadId);
+    this.activeTurns.delete(threadId);
+    this.lastActivity.delete(threadId);
+  }
+
+  /** The wedge watchdog: a live turn whose provider has gone silent. A JSON-RPC
+   *  timeout already rejected the in-flight promise (jsonRpc.ts), but nothing
+   *  kills the child or seals the turn — without this sweep a wedged provider
+   *  leaves its block `running` forever and the composer disabled. Resets via
+   *  stopSession: the adapters' stop drains parked asks, seals the live turn
+   *  as interrupted, and kills the child. Sessions parked on a human answer
+   *  are never touched — the parked-ask map is the precise waiting signal. */
+  private sweepWedgedSessions(): void {
+    const now = Date.now();
+    for (const threadId of [...this.activeTurns.keys()]) {
+      // Waiting on the user is not wedged — the silence is the point.
+      if (this.parkedByThread.get(threadId)?.size) continue;
+      const last = this.lastActivity.get(threadId);
+      const silenceMs = this.options.wedgeSilenceMs ?? WEDGE_SILENCE_MS;
+      if (last !== undefined && now - last < silenceMs) continue;
+      const provider = this.routing.get(threadId);
+      if (!provider) {
+        // Session already gone — drop the stale live-turn entry.
+        this.activeTurns.delete(threadId);
+        continue;
+      }
+      const silentFor =
+        last === undefined ? "unknown" : `${Math.max(0, Math.round((now - last) / 1000))}s`;
+      console.warn(
+        `[agent] wedge watchdog: ${provider} session ${threadId} silent ${silentFor} with live turn ${this.activeTurns.get(threadId)} — resetting`,
+      );
+      // Best-effort: a failed stop leaves the state in place for the next sweep.
+      void this.stopSession(threadId).catch(() => {});
+      // The adapters do not announce their stop path, so name it here — the
+      // renderer must not keep showing a live thread that is being reset.
+      this.dispatch({
+        type: "session.state.changed",
+        threadId,
+        provider,
+        at: now,
+        source: "kone.store",
+        state: "error",
+        message: "wedged — session reset",
+      });
+    }
+  }
+
+  private ensureWedgeWatchdog(): void {
+    if (this.wedgeTimer) return;
+    const timer = setInterval(() => {
+      try {
+        this.sweepWedgedSessions();
+      } catch (err) {
+        console.warn("[agent] wedge watchdog sweep failed:", err);
+      }
+    }, this.options.wedgeSweepMs ?? WEDGE_SWEEP_MS);
+    // Never hold the process open on the watchdog's account — clean quit is
+    // handled by the before-quit teardown, which clears this timer via stopAll.
+    timer.unref?.();
+    this.wedgeTimer = timer;
   }
 
   async respondToRequest(
@@ -388,6 +656,306 @@ export class AgentService {
     answers: UserInputAnswers,
   ): Promise<void> {
     return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
+  }
+
+  // ── durable turn queue + steering ─────────────────────────────────────────
+  // A follow-up sent while a turn runs is durably enqueued (survives crashes),
+  // promoted automatically when the active turn settles, cancelled on
+  // stop/thread-delete, and steerable mid-turn. The store owns persistence
+  // (ConversationStore, parallel slice); this class owns the dispatch side.
+
+  /** Deliver a mid-turn message without starting a new turn boundary. With a
+   *  live turn: route to the adapter's live-steer channel when the provider
+   *  has one (turn.steered on delivery), else fall back to the durable queue
+   *  with dispatchMode "steer" — steer rows claim first, so the nudge lands
+   *  as the next turn the moment the current one settles. Without a live turn
+   *  there is nothing to steer — a steer is just a send. */
+  async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const threadId = input.threadId;
+    if (this.activeTurns.has(threadId)) {
+      const adapter = this.adapterForThread(threadId);
+      if (adapter.steerTurn) {
+        const liveTurnId = this.activeTurns.get(threadId);
+        const result = await adapter.steerTurn(input);
+        const provider = this.routing.get(threadId);
+        if (liveTurnId && provider) {
+          this.dispatch({
+            type: "turn.steered",
+            threadId,
+            provider,
+            turnId: liveTurnId,
+            message: input.input,
+            at: Date.now(),
+            source: "kone.store",
+          });
+        }
+        return result;
+      }
+      const provider = this.routing.get(threadId);
+      if (provider) return this.enqueueTurn(input, "steer", provider);
+    }
+    return this.sendTurn(input);
+  }
+
+  /** Cancel one queued follow-up (user-initiated drop). Emits
+   *  turn.queued-cancelled (reason "user") when a row was actually cancelled;
+   *  returns false when no such row exists. */
+  async cancelQueuedTurn(threadId: string, queueId: string): Promise<boolean> {
+    const store = this.queueStore;
+    if (!store) return false;
+    const cancelled = await store.cancelQueuedTurn(queueId);
+    if (cancelled) {
+      this.dropQueuedCount(threadId);
+      const provider = this.routing.get(threadId);
+      if (provider) {
+        this.dispatch({
+          type: "turn.queued-cancelled",
+          threadId,
+          provider,
+          queueId,
+          reason: "user",
+          at: Date.now(),
+          source: "kone.store",
+        });
+      }
+    }
+    return cancelled;
+  }
+
+  /** The thread's queued follow-ups, as the store keeps them — the passthrough
+   *  the IPC agent's queued-turns channel reads. */
+  async listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]> {
+    const store = this.queueStore;
+    if (!store) return [];
+    return store.listQueuedTurns(threadId);
+  }
+
+  /** The busy-path enqueue shared by sendTurn and steerTurn: persist a durable
+   *  row, emit turn.queued, and ack with the queue id as the turn id (the
+   *  renderer correlates the ack with the eventual turn.promoted by queueId). */
+  private async enqueueTurn(
+    input: SendTurnInput,
+    dispatchMode: "queue" | "steer",
+    provider: ProviderKind,
+  ): Promise<TurnStartResult> {
+    const store = this.queueStore;
+    if (!store) return this.adapterForThread(input.threadId).sendTurn(input);
+    const queueId = randomUUID();
+    const userBlockId = this.latestUserBlockId(input.threadId) ?? randomUUID();
+    const now = Date.now();
+    const row: QueuedTurnRow = {
+      queueId,
+      threadId: input.threadId,
+      userBlockId,
+      dispatchMode,
+      state: "queued",
+      input: input.input,
+      attachmentsJson: input.attachments?.length ? JSON.stringify(input.attachments) : null,
+      model: input.model ?? null,
+      mode: input.mode ?? null,
+      effort: input.effort ?? null,
+      serviceTier: input.serviceTier ?? null,
+      contextWindow: input.contextWindow ?? null,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      promotedAt: null,
+    };
+    try {
+      const accepted = await store.enqueueQueuedTurn(row);
+      if (!accepted) {
+        // A row with this (thread_id, user_block_id) is already active — an
+        // idempotent replay of this exact follow-up. Ack with the existing
+        // row's queue id so the caller correlates with the original chip.
+        const existing = await store.listQueuedTurns(input.threadId);
+        return {
+          threadId: input.threadId,
+          turnId: existing.find((r) => r.userBlockId === userBlockId)?.queueId ?? queueId,
+        };
+      }
+    } catch (err) {
+      console.error("[agent] enqueueQueuedTurn failed — falling back to direct send:", err);
+      return this.adapterForThread(input.threadId).sendTurn(input);
+    }
+    this.queuedByThread.set(input.threadId, (this.queuedByThread.get(input.threadId) ?? 0) + 1);
+    this.dispatch({
+      type: "turn.queued",
+      threadId: input.threadId,
+      provider,
+      queueId,
+      userBlockId,
+      dispatchMode,
+      position: await this.queuePosition(input.threadId),
+      at: Date.now(),
+      source: "kone.store",
+    });
+    return { threadId: input.threadId, turnId: queueId };
+  }
+
+  /** The new turn's place in line: the live turn is slot 1 and each already
+   *  queued row is another slot, so a fresh queue entry on an idle-but-busy
+   *  thread reads 2. Read from the store (positions then survive crash
+   *  recovery); the in-memory mirror is the fallback when the read fails. */
+  private async queuePosition(threadId: string): Promise<number> {
+    const store = this.queueStore;
+    if (store) {
+      try {
+        const queued = await store.listQueuedTurns(threadId);
+        return queued.length + 1;
+      } catch {
+        // fall through to the in-memory mirror
+      }
+    }
+    return (this.queuedByThread.get(threadId) ?? 0) + 1;
+  }
+
+  /** The store block id of the user prompt dispatch just journaled for this
+   *  thread — the LAST user block. dispatch.recordUserBlock mints the id
+   *  internally and doesn't return it, so the queue path derives it by reading
+   *  the transcript back, synchronously, before any await (no other send can
+   *  interleave). The queue row's userBlockId must match the transcript block
+   *  so the renderer's queued chip anchors to the same block and replayed
+   *  enqueues dedupe. Falls back to a fresh uuid when the store has no blocks
+   *  (e.g. a send that never journaled). */
+  private latestUserBlockId(threadId: string): string | null {
+    const store = this.queueStore;
+    if (!store) return null;
+    try {
+      const thread = store.loadThread(threadId);
+      if (!thread) return null;
+      for (let i = thread.blocks.length - 1; i >= 0; i--) {
+        const block = thread.blocks[i];
+        if (block && block.role === "user") return block.id;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Kick the queue drain for `threadId` (fire-and-forget, serialized per
+   *  thread). Called when a turn settles (trackEvent) and when a session
+   *  starts — the crash-recovery path: rows survive a quit and drain when the
+   *  thread reopens. */
+  private promoteQueuedTurns(threadId: string): void {
+    if (this.promotingThreads.has(threadId)) return;
+    const store = this.queueStore;
+    if (!store) return;
+    this.promotingThreads.add(threadId);
+    void this.drainQueuedTurns(threadId, store).finally(() => {
+      this.promotingThreads.delete(threadId);
+    });
+  }
+
+  /** Claim and dispatch at most ONE queued turn per drain. Exactly one turn
+   *  may be live per thread, so a drain that sent a turn stops there — the
+   *  next turn.completed (or next startSession) triggers the next drain. A
+   *  send failure releases the row (promoting→queued) so a later drain retries
+   *  it, and says so on the event stream. */
+  private async drainQueuedTurns(threadId: string, store: QueuedTurnStore): Promise<void> {
+    const provider = this.routing.get(threadId);
+    try {
+      if (this.activeTurns.has(threadId)) return;
+      const row = await store.claimNextQueuedTurn(threadId);
+      if (!row) return;
+      try {
+        const result = await this.adapterForThread(threadId).sendTurn(
+          this.turnInputFromQueuedRow(row),
+        );
+        const claimed = await store.markQueuedTurnPromoted(row.queueId);
+        // Lost the claim (the row was cancelled mid-flight by a stop/delete) —
+        // stop; the cancel path already announced it.
+        if (!claimed) return;
+        this.dropQueuedCount(threadId);
+        if (provider) {
+          this.dispatch({
+            type: "turn.promoted",
+            threadId,
+            provider,
+            queueId: row.queueId,
+            ...(result?.turnId ? { turnId: result.turnId } : {}),
+            at: Date.now(),
+            source: "kone.store",
+          });
+        }
+      } catch (err) {
+        // The turn was not accepted — put the row back for a later drain and
+        // tell the renderer the queue stalled on this entry.
+        await store.releaseQueuedTurn(row.queueId).catch(() => {});
+        console.warn(`[agent] promotion of queued turn ${row.queueId} failed — released:`, err);
+        if (provider) {
+          this.dispatch({
+            type: "session.warning",
+            threadId,
+            provider,
+            at: Date.now(),
+            source: "kone.store",
+            message: "A queued turn didn't start — it stays queued and will retry.",
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`[agent] queue drain for ${threadId} failed:`, err);
+    }
+  }
+
+  /** Rebuild a SendTurnInput from a claimed queue row — the prompt,
+   *  attachments (deserialized from the JSON column), and every per-turn
+   *  override the user chose when they sent it. */
+  private turnInputFromQueuedRow(row: QueuedTurnRow): SendTurnInput {
+    let attachments: ChatAttachment[] | undefined;
+    if (row.attachmentsJson) {
+      try {
+        const parsed = JSON.parse(row.attachmentsJson) as unknown;
+        if (Array.isArray(parsed)) attachments = parsed as ChatAttachment[];
+      } catch {
+        // Corrupt attachments JSON — send the prompt without attachments
+        // rather than dropping the whole queued turn.
+      }
+    }
+    return {
+      threadId: row.threadId,
+      input: row.input,
+      ...(attachments?.length ? { attachments } : {}),
+      ...(row.model ? { model: row.model } : {}),
+      ...(row.mode ? { mode: row.mode } : {}),
+      ...(row.effort ? { effort: row.effort } : {}),
+      ...(row.serviceTier ? { serviceTier: row.serviceTier } : {}),
+      ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
+    };
+  }
+
+  /** Cancel every queued/promoting row for a thread whose session is stopping,
+   *  emitting one turn.queued-cancelled (reason "stop") per row. Runs BEFORE
+   *  the adapter teardown so no drain can claim into a dying session. */
+  private async cancelQueuedForStop(threadId: string, provider: ProviderKind): Promise<void> {
+    const store = this.queueStore;
+    if (!store) return;
+    try {
+      const queueIds = await store.cancelQueuedTurnsForThread(threadId);
+      if (queueIds.length) this.dropQueuedCount(threadId, queueIds.length);
+      for (const queueId of queueIds) {
+        this.dispatch({
+          type: "turn.queued-cancelled",
+          threadId,
+          provider,
+          queueId,
+          reason: "stop",
+          at: Date.now(),
+          source: "kone.store",
+        });
+      }
+    } catch (err) {
+      console.error(`[agent] cancelQueuedTurnsForThread(${threadId}) failed:`, err);
+    }
+  }
+
+  /** Decrement the in-memory queued-count mirror (position fallback only). */
+  private dropQueuedCount(threadId: string, by = 1): void {
+    const current = this.queuedByThread.get(threadId) ?? 0;
+    const next = Math.max(0, current - by);
+    if (next === 0) this.queuedByThread.delete(threadId);
+    else this.queuedByThread.set(threadId, next);
   }
 
   // ── subagents (routed; no-op on providers without a nested-agent surface) ──
@@ -409,7 +977,19 @@ export class AgentService {
 
   /** Tear down everything — called on app quit so no agent subprocess is left. */
   async stopAll(): Promise<void> {
+    if (this.wedgeTimer) {
+      clearInterval(this.wedgeTimer);
+      this.wedgeTimer = null;
+    }
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();
+    this.parkedByThread.clear();
+    this.activeTurns.clear();
+    // Queued ROWS are deliberately NOT cleared on quit — durability is the
+    // point of the queue; the next startSession drains them. Only the
+    // in-memory mirrors reset.
+    this.promotingThreads.clear();
+    this.queuedByThread.clear();
+    this.lastActivity.clear();
   }
 }

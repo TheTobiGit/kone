@@ -3,30 +3,36 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { setUserDataDir } from "./userDataDir.js";
+
 import { Database } from "bun:sqlite";
 
 import type { RuntimeEvent, RuntimeItemKind, ThreadLineage } from "./types.js";
 
 // The store imports node:sqlite, an Electron-runtime built-in this bun can't
 // load — stand it in for bun:sqlite, whose API surface (exec / prepare().get /
-// run / all) matches the store's usage. electron's app.getPath is pointed at
-// a throwaway temp dir per test. ConversationStore is imported *dynamically*
+// run / all) matches the store's usage. The agent layer's state dir is pointed
+// at a throwaway temp dir per test. ConversationStore is imported *dynamically*
 // below so the stub is in place first (static imports hoist above mock.module,
 // defeating it — the same pattern gateway/gateway.test.ts uses).
-let testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-spawn-store-"));
+let testUserDataDir = "";
+/** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
+function useUserDataDir(dir: string): string {
+  testUserDataDir = dir;
+  setUserDataDir(dir);
+  return dir;
+}
+useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-spawn-store-")));
 
 mock.module("node:sqlite", () => ({
   DatabaseSync: Database,
-}));
-mock.module("electron", () => ({
-  app: { getPath: () => testUserDataDir },
 }));
 
 type ConversationStoreType = import("./ConversationStore.js").ConversationStore;
 let ConversationStoreCtor: typeof import("./ConversationStore.js").ConversationStore;
 
 function freshStore(): ConversationStoreType {
-  testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-spawn-store-"));
+  useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-spawn-store-")));
   return new ConversationStoreCtor();
 }
 
@@ -140,7 +146,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     legacy.close();
 
     // Old userData path → new store migrates it on open.
-    testUserDataDir = dir;
+    useUserDataDir(dir);
     const store = new ConversationStoreCtor();
 
     const ok = store.writeSpawnedThread({
@@ -155,12 +161,12 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.threadLineage("child-1")).toEqual(spawnedLineage("parent-1", "root-1"));
     expect(store.spawnedChildren("parent-1").map((t) => t.threadId)).toEqual(["child-1"]);
 
-    // The v16 + v17 steps landed: version bumped, the parent index exists, and
+    // The v16 → v20 steps landed: version bumped, the parent index exists, and
     // the gateway_ops dispatched bit (the spawn crash-recovery ledger, F8) is
     // in place.
     const raw = new Database(dbPath());
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(17);
+    expect(version.user_version).toBe(20);
     const idx = raw
       .prepare(
         `SELECT 1 FROM sqlite_master
@@ -210,7 +216,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
 
   test("boot recovery seals an undispatched spawned child as failed (F8)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-seal-"));
-    testUserDataDir = dir;
+    useUserDataDir(dir);
     const store = new ConversationStoreCtor();
 
     // The exact half-created shape: the child row exists, its spawn op is
@@ -246,7 +252,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
 
     // Boot: reopening the same DB runs sealUndispatchedSpawns — the child now
     // reads failed with the reason, so a parent wait settles on it.
-    testUserDataDir = dir;
+    useUserDataDir(dir);
     const reopened = new ConversationStoreCtor();
     const span = reopened.threadTurnSpan(childId);
     expect(span?.lastState).toBe("failed");
@@ -254,7 +260,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
 
     // Idempotent: the seal marks the op dispatched, so a second boot does not
     // double-write (the block persists, still failed).
-    testUserDataDir = dir;
+    useUserDataDir(dir);
     const reopenedAgain = new ConversationStoreCtor();
     expect(reopenedAgain.threadTurnSpan(childId)?.lastState).toBe("failed");
   });

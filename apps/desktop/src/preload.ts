@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { ScratchpadRecord, StoredBoardLayout } from "./agent/ConversationStore.js";
+import type {
+  QueuedTurnRow,
+  ScratchpadRecord,
+  StoredBoardLayout,
+  StoredThreadPage,
+} from "./agent/ConversationStore.js";
 import type { BoardLoadInput, BoardSaveInput } from "./board/index.js";
 import type {
   ApprovalDecision,
@@ -304,6 +309,17 @@ const api = {
       ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
     steerSubagent: (threadId: string, toolUseId: string, message: string): Promise<void> =>
       ipcRenderer.invoke("agent:steer-subagent", threadId, toolUseId, message),
+    // Durable turn queue + steering: a follow-up sent while a turn runs is
+    // durably enqueued and auto-promoted on settlement. List the thread's
+    // active queue, drop one entry (cancels with reason "user"), or steer a
+    // mid-turn message into the live turn (falls back to the queue when the
+    // provider has no live-steer channel).
+    queuedTurns: (threadId: string): Promise<QueuedTurnRow[]> =>
+      ipcRenderer.invoke("agent:queued-turns", threadId),
+    cancelQueuedTurn: (threadId: string, queueId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:queue-cancel", threadId, queueId),
+    steerTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
+      ipcRenderer.invoke("agent:steer-turn", input),
     spawnChildren: (threadId: string): Promise<SpawnedThread[]> =>
       ipcRenderer.invoke("agent:spawn-children", threadId),
     listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
@@ -314,6 +330,15 @@ const api = {
         ipcRenderer.invoke("agent:history-latest", projectPath),
       thread: (threadId: string): Promise<StoredThread | null> =>
         ipcRenderer.invoke("agent:history-thread", threadId),
+      // Windowed thread read (user-anchored keyset pages): first page when no
+      // cursor is given; pass `nextCursor` back verbatim for the next strictly
+      // older page. Null when the thread is missing. The renderer treats the
+      // cursor as opaque.
+      threadPage: (
+        threadId: string,
+        options?: { limit?: number; cursor?: string },
+      ): Promise<StoredThreadPage | null> =>
+        ipcRenderer.invoke("agent:history-thread-page", threadId, options),
       list: (projectPath: string): Promise<StoredThreadMeta[]> =>
         ipcRenderer.invoke("agent:history-list", projectPath),
       // Hide a thread from the recent list (recoverable), or destroy it outright.
@@ -321,7 +346,21 @@ const api = {
         ipcRenderer.invoke("agent:history-archive", threadId, archived),
       remove: (threadId: string): Promise<void> =>
         ipcRenderer.invoke("agent:history-delete", threadId),
+      // Pin state lives in the DB (not browser localStorage) — a pinned thread
+      // follows the thread across profiles.
+      setPinned: (threadId: string, pinned: boolean): Promise<void> =>
+        ipcRenderer.invoke("agent:set-pinned", threadId, pinned),
     },
+    // Persist the user's per-thread picker selection (model/effort/serviceTier/
+    // contextWindow) so a reopened thread restores the picker exactly.
+    setThreadSelection: (
+      threadId: string,
+      selection: { model?: string; effort?: string; serviceTier?: string; contextWindow?: string },
+    ): Promise<void> => ipcRenderer.invoke("agent:set-thread-selection", threadId, selection),
+    // User-initiated rename. Resolves true when the title changed. Does not
+    // touch recency ordering; the title.updated event follows on the stream.
+    renameThread: (threadId: string, title: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:rename-thread", threadId, title),
     // The ONE runtime event stream. Subscribing registers this renderer in the
     // main process; the returned fn unsubscribes and detaches the listener.
     onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {

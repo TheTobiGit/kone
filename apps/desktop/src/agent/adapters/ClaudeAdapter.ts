@@ -127,6 +127,12 @@ import {
 
 const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
 
+// Bounds for stop-path provider calls: a wedged CLI must never hang Stop. The
+// SDK's stopTask/interrupt promises have no timeout of their own, so a hung
+// fix-thread-kill-handling bounds the same calls).
+const STOP_TASK_TIMEOUT_MS = 3_000;
+const INTERRUPT_TIMEOUT_MS = 5_000;
+
 // The one speed tier Claude exposes, surfaced as a plain on/off toggle (the
 // composer renders any family whose descriptor carries a `fast` serviceTier).
 // Only models that report `supportsFastMode` advertise it.
@@ -259,6 +265,13 @@ type ClaudeSession = {
   sessionId?: string;
   /** The resume id this process actually adopted, when one was honored. */
   resumedFrom?: string;
+  /** The uuid of the most recent main-conversation assistant message — the
+   *  resume anchor the SDK's `resumeSessionAt` option wants (see
+   *  startFreshSession). The SDK can't reliably resume a conversation whose
+   *  tail is a user message, so this anchors the resume at the last assistant
+   *  message instead. Carried on every event envelope via refs so the store
+   *  persists it live. */
+  lastAssistantUuid?: string;
   activeTurnId?: string;
   /** The main conversation's projection scope. */
   main: ClaudeScope;
@@ -588,6 +601,11 @@ class MessageQueue {
 
   close(): void {
     this.closed = true;
+    // Unconsumed prompts (queued steers) are dropped on shutdown: after
+    // close() nothing may ever be delivered again, not even items that were
+    // pushed but never pulled — the reference contract is that a stop
+    // same way).
+    this.items.length = 0;
     let waiter: ((result: IteratorResult<SDKUserMessage>) => void) | undefined;
     while ((waiter = this.waiters.shift())) waiter({ value: undefined as never, done: true });
   }
@@ -805,6 +823,13 @@ export class ClaudeAdapter implements ProviderAdapter {
       // system/init, which refreshes the stored conversationId on the next
       // turn.completed.
       ...(input.resume ? { resume: input.resume } : {}),
+      // Anchor the resume at the last assistant message: the SDK cannot
+      // passes the same `resumeSessionAt: lastAssistantUuid` pair). The anchor
+      // is the persisted StoredThreadMeta.resumeSessionAt, refreshed live from
+      // assistant messages (see handleMessage).
+      ...(input.resume && input.resumeSessionAt
+        ? { resumeSessionAt: input.resumeSessionAt }
+        : {}),
       permissionMode,
       ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
       // Session-bound so the callback knows which thread asked — a shared arrow
@@ -858,6 +883,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       model: input.model,
       effort,
       mode,
+      lastAssistantUuid: input.resumeSessionAt,
       query: q,
       prompt,
       abort,
@@ -1077,15 +1103,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
-  async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
-    const session = this.requireSession(input.threadId);
-
+  /** Build the SDK user message for a turn/steer: the prompt text — with
+   *  non-image / unsupported-image files folded in as an <attached_files>
+   *  path block — plus native image blocks for gif/jpeg/png/webp (reads any
+   *  attachment bytes off disk). An attachment-only turn is valid; we just
+   *  skip text. Shared by sendTurn and steerTurn so a steer's message is
+   *  byte-for-byte what a turn's would be. */
+  private async buildUserMessage(input: SendTurnInput): Promise<SDKUserMessage> {
     const text = input.input.trim();
-
-    // Build the user message's content up front (reads any attachment bytes off
-    // disk): the prompt text — with non-image / unsupported-image files folded
-    // in as an <attached_files> path block — plus native image blocks for
-    // gif/jpeg/png/webp. An attachment-only turn is valid; we just skip text.
     const { imageBlocks, fileBlock } = await buildClaudeAttachmentContent(input.attachments);
     const promptText = composePromptText(text, fileBlock);
     const content: Array<{ type: "text"; text: string } | ClaudeImageBlock> = [];
@@ -1094,7 +1119,18 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (content.length === 0) {
       throw new Error("Turn input must include text or an attachment.");
     }
+    return {
+      type: "user",
+      parent_tool_use_id: null,
+      message: { role: "user", content },
+    };
+  }
 
+  /** The live session Settings a turn — or a steer, which has no new turn
+   *  boundary to hang them on — may change in place: permission mode, fast
+   *  mode, and the auto-compact window. Model and effort are spawn-fixed and
+   *  change via a session restart instead. */
+  private async applyLiveSettings(session: ClaudeSession, input: SendTurnInput): Promise<void> {
     // Permission mode is the one selection the SDK lets us change live; model
     // and effort are spawn-fixed and change via a session restart instead.
     const mode = input.mode ?? session.mode;
@@ -1121,12 +1157,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
     }
 
-    // Context window is the other live session Setting: the auto-compact budget
-    // Claude Code compacts the transcript at. Like fast mode it's carried as a
-    // persistent per-session Setting toggled via applyFlagSettings. The
-    // composer only sends a
-    // contextWindow for models that advertise the choice, and an unknown id
-    // resolves to undefined here — meaning "leave the window where it is".
+    // Context window is the other live session Setting: the auto-compact
+    // budget Claude Code compacts the transcript at. Like fast mode it's
+    // carried as a persistent per-session Setting toggled via
+    // applyFlagSettings. The composer only sends a contextWindow for models
+    // that advertise the choice, and an unknown id resolves to undefined here
+    // — meaning "leave the window where it is".
     const wantWindow = contextWindowTokens(input.contextWindow);
     if (wantWindow !== undefined && wantWindow !== session.autoCompactWindow) {
       try {
@@ -1137,6 +1173,12 @@ export class ClaudeAdapter implements ProviderAdapter {
         // leave state as-is; the turn still runs at the current window.
       }
     }
+  }
+
+  async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const session = this.requireSession(input.threadId);
+    const userMessage = await this.buildUserMessage(input);
+    await this.applyLiveSettings(session, input);
 
     // Globally-unique turn id (a UUID, matching Codex's app-server ids and both
     // collides across threads in the shared store. See assistantBlockId.
@@ -1151,13 +1193,37 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.taskPlanStarted = false;
     this.emit({ ...this.base(session), type: "turn.started", turnId });
 
-    const userMessage: SDKUserMessage = {
-      type: "user",
-      parent_tool_use_id: null,
-      message: { role: "user", content },
-    };
     session.prompt.push(userMessage);
 
+    return { threadId: input.threadId, turnId };
+  }
+
+  /** Deliver a follow-up message into a RUNNING turn — the reference semantics
+   *  is offered into the session's prompt queue, the SDK consumes it when it
+   *  builds the next API request — no interrupt, no new turn boundary — the
+   *  turn id is REUSED, and no turn.started is emitted. Only a real live turn
+   *  can be steered; with no session or no active turn this falls back to
+   *  sendTurn. (kone does not track synthetic turns — the only "not a real
+   *  turn" state is the absence of activeTurnId.) This converts the old
+   *  mid-turn sendTurn behavior (a phantom second "running" block that stole
+   *  the activeTurnId and re-pointed interrupt at a turn the SDK never ran)
+   *  into a real steer. */
+  async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const session = this.sessions.get(input.threadId);
+    const turnId = session?.activeTurnId;
+    if (!session || !turnId) return this.sendTurn(input);
+
+    const userMessage = await this.buildUserMessage(input);
+    await this.applyLiveSettings(session, input);
+    // No UUID, no turn.started, no activeTurnId overwrite, no scope resets:
+    // the work continues as the same turn. On session stop the queue is
+    // shutdown, so a steer still parked here is dropped with it.
+    session.prompt.push(userMessage);
+
+    const steerText = input.input.trim();
+    if (steerText) {
+      this.emit({ ...this.base(session), type: "turn.steered", turnId, message: steerText });
+    }
     return { threadId: input.threadId, turnId };
   }
 
@@ -1167,8 +1233,30 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.interrupting = true;
     // Unblock any parked AskUserQuestion so the interrupt can land cleanly.
     this.drainUserInputs(session);
+    // interrupt() alone only ends the parent turn — live subagent tasks keep
+    // "users reach for Stop precisely when a fleet ran away"). Stop each live
+    // task best-effort, bounded per task so one wedged child can't block the
+    // interrupt itself; an acknowledged stop is settled synthetically so no
+    // run renders as forever-running if the notification loses the race.
+    for (const run of [...session.subagentRuns.values()]) {
+      const taskId = run.snapshot.taskId;
+      if (!taskId) continue;
+      const acknowledged = await Promise.race([
+        session.query.stopTask(taskId).then(() => true as const),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), STOP_TASK_TIMEOUT_MS)),
+      ]).catch(() => false);
+      if (acknowledged && session.subagentRuns.has(run.snapshot.toolUseId)) {
+        this.settleSubagent(session, run, "stopped");
+      }
+    }
     try {
-      await session.query.interrupt();
+      // Bounded: a wedged CLI can leave interrupt() pending forever, and the
+      // Stop button must never hang on it (the wedge watchdog still sweeps a
+      // session that stays silent afterwards).
+      await Promise.race([
+        session.query.interrupt(),
+        new Promise<void>((resolve) => setTimeout(resolve, INTERRUPT_TIMEOUT_MS)),
+      ]);
     } catch {
       // The query may already be settling; the result event still lands.
     }
@@ -1178,34 +1266,57 @@ export class ClaudeAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session) return;
     session.disposed = true;
+    // Schedule process termination BEFORE any cleanup that could wait on the
+    // subprocess down, and doing it first also shrinks the window where late
+    // stream events could race past the terminal emit below. Everything after
+    // is synchronous bookkeeping that must never block on the provider.
+    session.prompt.close();
+    session.abort.abort();
     this.settleLiveSubagents(session, "stopped");
     this.drainUserInputs(session);
     this.drainApprovals(session);
-    // Seal a turn that's still live. `disposed` gates the `session.exited` emit
-    // in consume()'s finally, so a deliberate stop otherwise emits nothing
-    // terminal at all — the journaled assistant block would stay 'running'
-    // forever and the thread would reopen permanently busy. Must run after
-    // settleLiveSubagents, which reads activeTurnId while it's still set.
-    const turnId = session.activeTurnId;
-    if (turnId) {
-      session.activeTurnId = undefined;
-      this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
-    }
-    session.prompt.close();
-    session.abort.abort();
-    this.sessions.delete(threadId);
+    this.sealLiveTurn(session);
+    // Identity-guarded eviction: a stale close (consume()'s finally, or a
+    // replacement session for this thread) must never evict a session it
+    // doesn't own.
+    if (this.sessions.get(session.threadId) === session) this.sessions.delete(session.threadId);
+    // Deliberate stop = the one stop-lifecycle contract every adapter now
+    // shares: a terminal `session.exited` with code null (Codex/Cursor/Droid
+    // already emit it on their kill paths). `disposed` gates consume()'s
+    // finally, so this is the single emit — no double-exit.
+    this.emit({ ...this.base(session, "claude.sdk.lifecycle"), type: "session.exited", code: null });
   }
 
   async stopAll(): Promise<void> {
     for (const session of this.sessions.values()) {
       session.disposed = true;
+      // Termination first, then synchronous bookkeeping — same contract as
+      session.prompt.close();
+      session.abort.abort();
       this.settleLiveSubagents(session, "stopped");
       this.drainUserInputs(session);
       this.drainApprovals(session);
-      session.prompt.close();
-      session.abort.abort();
+      // stopSession seals a live turn as `interrupted`; stopAll must too, or a
+      // quit while a turn is running journals it as a failure (the consume
+      // finally only emits `session.exited`, which seals as 'failed' — and only
+      // when not disposed). Same contract as stopSession.
+      this.sealLiveTurn(session);
+      this.emit({ ...this.base(session, "claude.sdk.lifecycle"), type: "session.exited", code: null });
     }
     this.sessions.clear();
+  }
+
+  /** Seal a turn that's still live as we tear the session down. `disposed`
+   *  gates the `session.exited` emit in consume()'s finally, so a deliberate
+   *  stop otherwise emits nothing terminal at all — the journaled assistant
+   *  block would stay 'running' forever and the thread would reopen
+   *  permanently busy. Must run after settleLiveSubagents, which reads
+   *  activeTurnId while it's still set. */
+  private sealLiveTurn(session: ClaudeSession): void {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    session.activeTurnId = undefined;
+    this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
   }
 
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
@@ -1290,6 +1401,13 @@ export class ClaudeAdapter implements ProviderAdapter {
           if (!session.model) session.model = message.model;
           return;
         }
+        // The primary model refused and the SDK retried the turn on a fallback
+        // model (safeguard reroute). Surface it as model.rerouted so the UI
+        // doesn't keep showing the model that actually refused.
+        if (message.subtype === "model_refusal_fallback") {
+          this.handleModelRefusalFallback(session, message);
+          return;
+        }
         this.handleTaskMessage(session, message);
         return;
       case "stream_event":
@@ -1301,12 +1419,46 @@ export class ClaudeAdapter implements ProviderAdapter {
       case "result":
         this.handleResult(session, message);
         return;
+      case "assistant":
+        // Main conversation: the stream_event deltas are authoritative for
+        // rendering, so the settled message isn't re-projected here — but its
+        // uuid IS the resume anchor (`resumeSessionAt`). Capture it so the
+        // thread can always resume at the last assistant message, even when a
+        // turn dies mid-flight (subagent-scoped messages were routed above and
+        // never reach this switch).
+        if (typeof message.uuid === "string" && message.uuid.length > 0) {
+          session.lastAssistantUuid = message.uuid;
+        }
+        return;
       default:
-        // assistant/status/tool_progress/etc. — for the main conversation the
-        // stream_event deltas are authoritative for rendering, so we don't
-        // double-handle them (subagent scopes, which get no partials, do).
+        // status/tool_progress/etc. — for the main conversation the stream_event
+        // deltas are authoritative for rendering, so we don't double-handle them
+        // (subagent scopes, which get no partials, do).
         return;
     }
+  }
+
+  /** A `model_refusal_fallback` system message: the primary model refused and
+   *  the SDK retried on a fallback model, with the swap persistent for the
+   *  session. Emit model.rerouted and track the fallback so the session's model
+   *  label matches what's actually running. */
+  private handleModelRefusalFallback(
+    session: ClaudeSession,
+    message: Extract<SDKMessage, { type: "system"; subtype: "model_refusal_fallback" }>,
+  ): void {
+    const fromModel = readString(message, "original_model") ?? readString(message, "originalModel");
+    const toModel = readString(message, "fallback_model") ?? readString(message, "fallbackModel");
+    if (!fromModel || !toModel) return;
+    if (session.model === toModel) return;
+    session.model = toModel;
+    const content = readString(message, "content")?.trim();
+    this.emit({
+      ...this.base(session),
+      type: "model.rerouted",
+      fromModel,
+      toModel,
+      ...(content ? { reason: content } : {}),
+    });
   }
 
   private handleStreamEvent(session: ClaudeSession, scope: ClaudeScope, rawEvent: unknown): void {
@@ -1653,7 +1805,24 @@ export class ClaudeAdapter implements ProviderAdapter {
       message.subtype === "success" && !message.is_error ? "completed" : "stopped",
     );
     session.activeTurnId = undefined;
-    if (!turnId) return;
+    if (!turnId) {
+      // A result with no local turn is never a turn this adapter started: the
+      // resume handshake (system/init + result(num_turns: 0)), a late result
+      // for a turn already completed/aborted locally, or a stream failure with
+      // no turn in flight. An untargeted turn.completed here would carry no
+      // turnId, so no consumer could attribute it — and it would flip the
+      // still folded in above; the lifecycle event is dropped. Tripwire so the
+      // upstream trigger stays measurable in the field.
+      console.warn("[claude] turn result with no active turn", {
+        status: message.subtype,
+        numTurns: readNumber(message, "num_turns"),
+        hasUsage: usage !== undefined,
+        ...("errors" in message && Array.isArray(message.errors) && message.errors.length > 0
+          ? { errors: message.errors }
+          : {}),
+      });
+      return;
+    }
 
     const interrupting = session.interrupting;
     session.interrupting = false;
@@ -1927,10 +2096,17 @@ export class ClaudeAdapter implements ProviderAdapter {
       session.pendingSubagentStops.add(toolUseId);
       return;
     }
-    try {
-      await session.query.stopTask(taskId);
-    } catch {
-      // Already finished or gone — the task notification settles the run.
+    // fix-thread-kill-handling), and the caller must not hang on it.
+    const acknowledged = await Promise.race([
+      session.query.stopTask(taskId).then(() => true as const),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), STOP_TASK_TIMEOUT_MS)),
+    ]).catch(() => false);
+    // stopTask only acknowledges the control request; its task_notification
+    // can lose the race (the child never reports back), so the acknowledged
+    // stop is authoritative for the UI: settle the run now — idempotent if
+    // the notification does land later.
+    if (acknowledged && session.subagentRuns.has(toolUseId)) {
+      this.settleSubagent(session, run, "stopped");
     }
   }
 
@@ -2025,8 +2201,20 @@ export class ClaudeAdapter implements ProviderAdapter {
       // Carry the Claude session id on every envelope so the store can persist
       // the thread's resume id as soon as system/init reports it, instead of
       // waiting for turn.completed — a turn killed mid-flight used to leave the
-      // thread with no resume id at all.
-      ...(session.sessionId ? { refs: { conversationId: session.sessionId } } : {}),
+      // thread with no resume id at all. The resume anchor rides alongside it:
+      // the store persists refs.resumeSessionAt exactly like conversationId,
+      // so a thread always has the anchor it needs to resume reliably at the
+      // last assistant message — even when the latest turn never completed.
+      ...(session.sessionId || session.lastAssistantUuid
+        ? {
+            refs: {
+              ...(session.sessionId ? { conversationId: session.sessionId } : {}),
+              ...(session.lastAssistantUuid
+                ? { resumeSessionAt: session.lastAssistantUuid }
+                : {}),
+            },
+          }
+        : {}),
     };
   }
 

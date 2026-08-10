@@ -13,14 +13,23 @@ import { killTree } from "./spawn.js";
 type JsonRpcId = number | string;
 
 type JsonRpcRequest = { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: unknown };
-type JsonRpcNotification = { jsonrpc: "2.0"; method: string; params?: unknown };
-type JsonRpcSuccess = { jsonrpc: "2.0"; id: JsonRpcId; result: unknown };
-type JsonRpcFailure = {
-  jsonrpc: "2.0";
-  id: JsonRpcId;
-  error: { code: number; message: string; data?: unknown };
-};
-type JsonRpcInbound = JsonRpcRequest | JsonRpcNotification | JsonRpcSuccess | JsonRpcFailure;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+/** A usable inbound frame must be a JSON-RPC-shaped envelope: a request or
+ *  notification carrying a `method`, or a response carrying `id` plus
+ *  `result`/`error`. Anything else is leaked subprocess/hook output that
+ *  merely parses as JSON — the child's tool subprocesses share its stdout
+function isJsonRpcEnvelope(value: Record<string, unknown>): boolean {
+  if (typeof value.method === "string") return true;
+  return (
+    Object.prototype.hasOwnProperty.call(value, "id") &&
+    (Object.prototype.hasOwnProperty.call(value, "result") ||
+      Object.prototype.hasOwnProperty.call(value, "error"))
+  );
+}
 
 export class JsonRpcError extends Error {
   constructor(
@@ -85,30 +94,60 @@ export class JsonRpcClient {
 
   private handleLine(line: string): void {
     if (!line.trim()) return;
-    let msg: JsonRpcInbound;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(line);
+      parsed = JSON.parse(line);
     } catch {
-      // Not a protocol line. app-server writes only JSON-RPC on stdout, but be
-      // defensive rather than crash the session on a stray line.
+      // Not a protocol line. The child's tool subprocesses and hooks leak
+      // arbitrary output (including fragments that begin like JSON-RPC) onto
+      // the same stdout pipe — an unparseable line cannot be a usable frame.
+      // Log and ignore it: any request that was waiting on it fails through
+      // its normal timeout instead of poisoning the session.
+      console.warn("[jsonrpc] ignoring non-protocol stdout line (invalid JSON):", {
+        preview: line.slice(0, 160),
+        length: line.length,
+      });
       return;
     }
 
-    if ("method" in msg && "id" in msg) {
-      void this.handleIncomingRequest(msg);
+    const msg = asRecord(parsed);
+    if (!msg || !isJsonRpcEnvelope(msg)) {
+      // Valid JSON but not a JSON-RPC-shaped envelope (`{}`, `[]`, `null`,
+      // bare strings and numbers — command output can be any of these). Only
+      // app-server frames belong on this pipe; ignore the rest.
+      console.warn("[jsonrpc] ignoring non-protocol stdout line (not a JSON-RPC envelope):", {
+        preview: line.slice(0, 160),
+        length: line.length,
+      });
       return;
     }
-    if ("method" in msg) {
+
+    if (typeof msg.method === "string") {
+      if ("id" in msg) {
+        void this.handleIncomingRequest(msg as unknown as JsonRpcRequest);
+        return;
+      }
       const handlers = this.notificationHandlers.get(msg.method);
       if (handlers) for (const handler of handlers) handler(msg.params);
       return;
     }
     if ("id" in msg) {
-      const pending = this.pending.get(msg.id);
+      const id = msg.id as JsonRpcId;
+      const pending = this.pending.get(id);
       if (!pending) return;
-      this.pending.delete(msg.id);
-      if ("error" in msg) pending.reject(new JsonRpcError(msg.error.message, msg.error.code, msg.error.data));
-      else pending.resolve(msg.result);
+      this.pending.delete(id);
+      if ("error" in msg) {
+        const rawError = asRecord(msg.error);
+        pending.reject(
+          new JsonRpcError(
+            rawError && typeof rawError.message === "string" ? rawError.message : "Unknown JSON-RPC error",
+            rawError && typeof rawError.code === "number" ? rawError.code : -32000,
+            rawError?.data,
+          ),
+        );
+      } else {
+        pending.resolve(msg.result);
+      }
     }
   }
 

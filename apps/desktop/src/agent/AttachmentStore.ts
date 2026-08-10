@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-
-import { app } from "electron";
 
 import { getConversationStore, type StoredAttachment } from "./ConversationStore.js";
 import {
@@ -13,6 +11,7 @@ import {
   type ChatAttachment,
   type UploadAttachmentInput,
 } from "./types.js";
+import { getUserDataDir } from "./userDataDir.js";
 
 // Filesystem side of prompt attachments. The renderer uploads a file's bytes
 // once (base64 over IPC); we validate, decode, and write them to a per-user
@@ -71,10 +70,14 @@ function cleanName(name: string): string {
 export class AttachmentStore {
   private dirPath: string | null = null;
 
+  /** @param userDataDir per-user state dir; defaults to the one the host
+   *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
+  constructor(private readonly userDataDir?: string) {}
+
   /** The attachments directory under the per-user state dir, created once. */
   private dir(): string {
     if (this.dirPath) return this.dirPath;
-    const dir = path.join(app.getPath("userData"), "attachments");
+    const dir = path.join(this.userDataDir ?? getUserDataDir(), "attachments");
     mkdirSync(dir, { recursive: true });
     this.dirPath = dir;
     return dir;
@@ -147,7 +150,11 @@ export class AttachmentStore {
   }
 
   /** Unlink every on-disk file for a thread — call before deleting the thread
-   *  so no orphaned bytes are left behind. Best-effort per file. */
+   *  so no orphaned bytes are left behind. Best-effort per file: one retry on
+   *  a transient failure; if the file still won't go (locked/in-use), the
+   *  registry row is dropped anyway so the file becomes orphan-eligible for
+   *  {@link sweepOrphans} instead of being claimed forever by a thread that no
+   *  longer exists. */
   async deleteThreadFiles(threadId: string): Promise<void> {
     const rows = getConversationStore().listThreadAttachments(threadId);
     const dir = this.dir();
@@ -155,13 +162,55 @@ export class AttachmentStore {
       rows.map(async (row) => {
         const abs = path.resolve(dir, row.relPath);
         if (abs !== dir && !abs.startsWith(dir + path.sep)) return;
-        try {
-          await unlink(abs);
-        } catch {
-          /* already gone — fine */
+        let unlinked = false;
+        for (let attempt = 0; attempt < 2 && !unlinked; attempt++) {
+          try {
+            await unlink(abs);
+            unlinked = true;
+          } catch {
+            /* transient failure (locked, EMFILE…) — retry once, then give up */
+          }
         }
+        if (!unlinked) getConversationStore().forgetAttachment(row.id);
       }),
     );
+  }
+
+  /** Startup sweep: delete files under the attachments dir that no registry
+   *  row references — a crash between the temp-write and registerAttachment,
+   *  a failed thread deletion, or a forgotten row all leave orphaned bytes.
+   *  Run once at IPC registration, best-effort, never on the hot path. A
+   *  `.part` file is an in-flight upload's temp file: only swept when it is
+   *  old enough to be a crash remnant, never mid-write. */
+  async sweepOrphans(): Promise<void> {
+    const dir = this.dir();
+    try {
+      const referenced = new Set(
+        getConversationStore().listAllAttachments().map((a) => a.relPath),
+      );
+      const entries = await readdir(dir, { withFileTypes: true });
+      const now = Date.now();
+      const PART_MAX_AGE_MS = 60 * 60 * 1000;
+      await Promise.all(
+        entries.map(async (entry) => {
+          if (!entry.isFile()) return;
+          const name = entry.name;
+          if (referenced.has(name)) return;
+          try {
+            if (name.endsWith(".part")) {
+              const info = await stat(path.join(dir, name));
+              if (now - info.mtimeMs < PART_MAX_AGE_MS) return;
+            }
+            await unlink(path.join(dir, name));
+          } catch (err) {
+            // Already gone, or a race with an upload — never fail the sweep.
+            console.error(`[attachment-store] sweep could not remove ${name}:`, err);
+          }
+        }),
+      );
+    } catch (err) {
+      console.error("[attachment-store] orphan sweep failed:", err);
+    }
   }
 }
 

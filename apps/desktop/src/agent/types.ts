@@ -61,6 +61,11 @@ export type ModelDescriptor = {
    *  list). Absent for a model with no speed-tier axis at all — most models
    *  don't have one; where it exists it's almost always just a "fast" tier. */
   serviceTiers?: { id: string; label: string; description?: string }[];
+  /** The provider's own default service tier id for this model (Codex's
+   *  `model/list` `defaultServiceTier`), when it has one configured. Lets the
+   *  picker pre-set the fast-mode toggle to the provider's default instead of
+   *  guessing. */
+  defaultServiceTier?: string;
   /** The context-window sizes this model can run in, when it has a choice.
    *  For Claude this is the *auto-compact window* — the token budget Claude
    *  Code compacts the conversation at — not a raw model-capacity switch:
@@ -108,6 +113,13 @@ export type SessionStartInput = {
    *  Claude passes it as the SDK `resume` option. Absent starts a fresh session.
    * Only meaningful when the provider matches the one that produced the id. */
   resume?: string;
+  /** The last assistant message uuid of the prior conversation (Claude only),
+   *  persisted alongside `resume` as StoredThreadMeta.resumeSessionAt. Claude's
+   *  SDK cannot reliably resume a conversation whose tail is a user message, so
+   *  the adapter passes `resumeSessionAt` (the SDK option) to anchor the resume
+   *  at the last assistant message instead. Absent for every other provider and
+   *  for Claude conversations that never produced an assistant message. */
+  resumeSessionAt?: string;
   /** MCP gateway connection for this session, filled main-side by
    *  AgentService.startSession when the gateway is live. The adapter injects
    *  it into the provider session's mcpServers config so the agent can call
@@ -202,6 +214,11 @@ export type SendTurnInput = {
   /** The user's prompt text for this turn. Can be empty when `attachments`
    *  carries at least one file — an attachment-only turn is valid. */
   input: string;
+  /** How this turn should be handled when the thread already has a live turn:
+   *  `"queue"` = durable FIFO follow-up (the default), `"steer"` = steer the
+   *  live turn when the provider supports it, else jump the queue. Absent on
+   *  every path that predates the queue (and on promoted turns). */
+  dispatchMode?: "queue" | "steer";
   /** Files/images attached to this turn (metadata only; bytes live on disk). */
   attachments?: ChatAttachment[];
   /** Override the session model for this turn. */
@@ -370,6 +387,30 @@ export type StoredThreadMeta = {
   /** Tokens spent on the thread — cumulative for providers that report a running
    *  total (Codex), summed across turns for per-turn reporters (Claude). */
   tokens?: number;
+  /** The user's chosen per-thread knobs, persisted so a reopened thread restores
+   *  the picker exactly where the user left it (a thread whose last turn ran at
+   *  max effort / fast tier reopens with those selections instead of boot
+   *  defaults). Absent on threads that predate selection persistence. Each knob
+   *  is a ModelDescriptor axis id — the same values SendTurnInput carries. */
+  selection?: {
+    effort?: string;
+    serviceTier?: string;
+    /** The chosen context-window id (ModelDescriptor.contextWindows[].id).
+     *  Named distinctly from the token-meter `contextWindow` number below —
+     *  that one is a last-reported usage snapshot, this is a user choice. */
+    contextWindow?: string;
+  };
+  /** The last assistant message uuid of the conversation (Claude only), for
+   *  reliable resume — see SessionStartInput.resumeSessionAt. Persisted live
+   *  from ProviderRefs.resumeSessionAt like conversationId. */
+  resumeSessionAt?: string;
+  /** Pins live in the DB (v18), not browser localStorage — a pinned thread
+   *  follows the thread across profiles. */
+  isPinned?: boolean;
+  /** Recency ordering key (v18): last conversation activity, distinct from
+   *  `updatedAt` which title/archive bookkeeping also bumps. Backfilled from
+   *  updated_at for pre-v18 rows. */
+  lastActivityAt?: number;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -416,6 +457,55 @@ export type StoredBlock =
 
 /** A thread reloaded from disk: metadata plus its blocks in arrival order. */
 export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
+
+// ── durable turn queue ──────────────────────────────────────────────────────
+// A user follow-up sent while a turn runs is durably enqueued (survives
+// crashes), promoted automatically when the active turn settles, cancelled on
+// stop/thread-delete, and steerable mid-turn. The store slice (owned by
+// ConversationStore.ts) persists rows and owns claim/cancel semantics;
+// AgentService owns the dispatch side — enqueueing on the busy intercept,
+// promoting on settlement, cancelling on stop.
+
+/** A queued follow-up for one thread. `userBlockId` is the store block id of
+ *  the user prompt that was journaled for this turn, so the renderer can
+ *  anchor its queued chip to the transcript block and the store can dedupe
+ *  replayed enqueues on (thread_id, user_block_id). */
+export type QueuedTurnRow = {
+  queueId: string;
+  threadId: string;
+  userBlockId: string;
+  dispatchMode: "queue" | "steer";
+  state: "queued" | "promoting";
+  /** The user's prompt text. */
+  input: string;
+  /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
+  attachmentsJson: string | null;
+  model: string | null;
+  mode: InteractionMode | null;
+  effort: string | null;
+  serviceTier: string | null;
+  contextWindow: string | null;
+  attemptCount: number;
+  createdAt: number;
+  updatedAt: number;
+  promotedAt: number | null;
+};
+
+/** The store surface AgentService's queue slice drives. Implemented by
+ *  ConversationStore (the store agent owns that class and its schema); the
+ *  service is typed against this narrow contract so the two slices can land in
+ *  parallel. `loadThread` is the one pre-existing store read the queue path
+ *  needs (deriving the user block id for the row). */
+export type QueuedTurnStore = {
+  enqueueQueuedTurn(row: QueuedTurnRow): Promise<boolean>;
+  claimNextQueuedTurn(threadId: string): Promise<QueuedTurnRow | null>;
+  markQueuedTurnPromoted(queueId: string): Promise<boolean>;
+  releaseQueuedTurn(queueId: string): Promise<void>;
+  cancelQueuedTurn(queueId: string): Promise<boolean>;
+  cancelQueuedTurnsForThread(threadId: string): Promise<string[]>;
+  listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]>;
+  loadThread(threadId: string): StoredThread | null;
+};
 
 // ── thread lineage & fork context (side chats) ───────────────────────────────
 // A side chat is a user-initiated child conversation forked from a parent
@@ -755,10 +845,15 @@ export type TokenUsage = {
   compactsAutomatically?: boolean;
 };
 
-/** Maps kone ids to the provider's native ids — needed for resume/interrupt. */
+/** Maps kone ids to the provider's native ids — needed for resume/interrupt.
+ *  `providerTurnId` was removed: nothing ever read it, and for the only
+ *  provider with a native turn id (Codex) kone's turnId IS the provider's. */
 export type ProviderRefs = {
   conversationId?: string;
-  providerTurnId?: string;
+  /** Last assistant message uuid (Claude only) — carried on every envelope like
+   *  `conversationId` so the store can persist the resume anchor the moment it
+   *  changes, even for a turn that never completes. */
+  resumeSessionAt?: string;
 };
 
 /** Which agent session wrote a pad — carried by kone_scratchpad_write results
@@ -827,9 +922,24 @@ type BaseEvent = {
 export type RuntimeEvent =
   | (BaseEvent & { type: "session.started" })
   | (BaseEvent & { type: "session.state.changed"; state: RuntimeSessionState; message?: string })
+  // Non-fatal: the session is degraded or retrying but continues. Distinct from
+  // `session.state.changed state:"error"` — consumers must NOT flip the thread
+  // to an error state on this (e.g. Codex `error` notifications with
+  // `willRetry: true`, or a benign/known-nonfatal error message).
+  | (BaseEvent & { type: "session.warning"; message: string })
   | (BaseEvent & { type: "session.exited"; code: number | null })
   | (BaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (BaseEvent & { type: "thread.title.updated"; title: string })
+  // The provider rerouted the request to a different model mid-session (Codex
+  // `model/rerouted`, Claude safeguard refusals falling back to another model).
+  // Consumers update the session's model label; `reason` is the provider's own
+  // wording when it gave one.
+  | (BaseEvent & {
+      type: "model.rerouted";
+      fromModel: string;
+      toModel: string;
+      reason?: string;
+    })
   // A side chat fork was persisted (agent:create-side-chat). `threadId` is the
   // new side chat's id; `sourceThreadId` is the thread it was forked from.
   | (BaseEvent & {
@@ -863,6 +973,41 @@ export type RuntimeEvent =
       writer: ScratchpadWriter | null;
     })
   | (BaseEvent & { type: "turn.started"; turnId: string })
+  // A follow-up message offered into a RUNNING turn: same turn, no new
+  // boundary — the provider consumes it when it builds its next request.
+  // `turnId` is the live turn the message was steered into; `message` is the
+  // trimmed prompt text (absent for attachment-only steers — the event is
+  // then not emitted at all).
+  | (BaseEvent & { type: "turn.steered"; turnId: string; message: string })
+  // The durable turn-queue slice (AgentService): a follow-up was durably
+  // enqueued because the thread has a live turn. `position` is the turn's
+  // place in line, counting the live turn as slot 1 (so a fresh queue entry
+  // reads 2). `dispatchMode` distinguishes a plain follow-up from a steer
+  // request that fell back to the queue (steers claim first).
+  | (BaseEvent & {
+      type: "turn.queued";
+      queueId: string;
+      userBlockId: string;
+      dispatchMode: "queue" | "steer";
+      position: number;
+    })
+  // A queued follow-up was cancelled before it ran — the user dropped it
+  // (`user`), the thread's session was stopped (`stop`), or the thread was
+  // deleted/archived (the delete path emits those reasons). Consumers renumber
+  // the remaining chips.
+  | (BaseEvent & {
+      type: "turn.queued-cancelled";
+      queueId: string;
+      reason: "user" | "stop" | "thread-deleted" | "archive";
+    })
+  // A queued follow-up was handed to the adapter as a real turn (the queue row
+  // is gone). `turnId` is the adapter's turn id when sendTurn returned one —
+  // omitted when the adapter doesn't name the turn until its turn.started.
+  | (BaseEvent & {
+      type: "turn.promoted";
+      queueId: string;
+      turnId?: string;
+    })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: RuntimeTurnState; message?: string })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
@@ -982,6 +1127,13 @@ export interface ProviderAdapter {
    *  SDK channel that reaches a live subagent).
    *  Optional; a no-op resolve when the run already finished. */
   steerSubagent?(threadId: string, toolUseId: string, message: string): Promise<void>;
+
+  /** Deliver a mid-task message into a *running turn* — a steer that does not
+   *  start a new turn boundary (Claude: injected as additional context on the
+   *  "no new turn" semantic). Returns the turn ack like sendTurn. Optional:
+   *  providers without a live-steer channel fall back to the service's queue
+   *  (a steer row that claims first and runs as the next turn). */
+  steerTurn?(input: SendTurnInput): Promise<TurnStartResult>;
 
   // introspection
   listSessions(): Promise<Session[]>;

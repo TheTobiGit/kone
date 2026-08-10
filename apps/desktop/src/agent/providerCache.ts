@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import path from "node:path";
-
-import { app } from "electron";
 
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "./types.js";
+import { userDataPath } from "./userDataDir.js";
 
 // A disk-backed snapshot of the last known provider surface: which CLIs were
 // installed + logged in, and each one's model catalog.
@@ -35,7 +33,7 @@ function emptySnapshot(): ProviderCacheSnapshot {
 
 let cachedPath: string | null = null;
 function cacheFilePath(): string {
-  cachedPath ??= path.join(app.getPath("userData"), "provider-cache.json");
+  cachedPath ??= userDataPath("provider-cache.json");
   return cachedPath;
 }
 

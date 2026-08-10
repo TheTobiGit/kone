@@ -1,0 +1,104 @@
+// CodexAdapter.toSessionError and codexAppServerManager.isRecoverableThreadResumeError).
+// One classifier so every adapter makes the same recovery decisions: which
+// failures mean "the session/thread is gone, fall back to a fresh
+// conversation", which mean "auth is broken, don't pretend", and which are
+// benign enough that only a warning is owed.
+
+/** What a provider failure actually means, once the raw message is classified. */
+export type ProviderErrorClass = "session-closed" | "auth" | "unknown";
+
+/** Classify a provider error message. `session-closed` = the session/thread is
+ *  SessionNotFoundError + SessionClosedError); `auth` = a credential/login
+ *  problem (never mask it with a "fresh start"); `unknown` = everything else. */
+export function classifyProviderError(message: string): ProviderErrorClass {
+  const normalized = message.trim().toLowerCase();
+  if (
+    normalized.includes("unknown session") ||
+    normalized.includes("unknown provider session")
+  ) {
+    return "session-closed";
+  }
+  // A closed stdin is the transport-level signature of a dead app-server
+  // process; treat it as a closed session so callers recover via resume
+  // instead of surfacing a raw request failure.
+  if (
+    normalized.includes("session is closed") ||
+    normalized.includes("stdin closed") ||
+    normalized.includes("stdin is closed")
+  ) {
+    return "session-closed";
+  }
+  if (
+    normalized.includes("not authenticated") ||
+    normalized.includes("authentication failed") ||
+    normalized.includes("authentication required") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("login required") ||
+    normalized.includes(" 401") ||
+    normalized.startsWith("401")
+  ) {
+    return "auth";
+  }
+  return "unknown";
+}
+
+/** Can a Codex `thread/resume` failure be recovered by falling back to a fresh
+ *  `thread/start`? Only refusal-class errors — the stored thread is gone,
+ *  pruned, or foreign — deserve the fallback; a transport, auth or protocol
+ *  failure must surface, not be silently masked by starting fresh (the thread
+ *  would reopen on a blank conversation and the user would never know why).
+ *  session-closed classifiers, where the process is dead and a fresh start is
+ *  genuinely the only option). */
+export function isRecoverableCodexResumeError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (!message.includes("thread/resume")) return false;
+  return [
+    "not found",
+    "missing thread",
+    "no such thread",
+    "unknown thread",
+    "does not exist",
+    "unknown session",
+    "unknown provider session",
+    "session is closed",
+    "stdin closed",
+  ].some((snippet) => message.includes(snippet));
+}
+
+/** Can a session resume/load failure be recovered by starting fresh? Only
+ *  refusal-class errors — the stored session is gone, pruned, or foreign —
+ *  deserve the fallback; a transport, auth or protocol failure must surface
+ *  (silently starting fresh would reopen the thread on a blank conversation
+ *  and the user would never know why). Shared by the ACP adapters (Cursor
+ *  `session/load`, Droid `session/resume`/`session/load`); Codex uses the
+ *  method-scoped isRecoverableCodexResumeError above. */
+export function isResumeRefusalError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return [
+    "not found",
+    "does not exist",
+    "unknown session",
+    "unknown provider session",
+    "missing session",
+    "no such session",
+    "missing thread",
+    "no such thread",
+    "unknown thread",
+    "session is closed",
+    "stdin closed",
+    "stdin is closed",
+  ].some((snippet) => message.includes(snippet));
+}
+
+/** Known-benign Codex error-notification messages — the session continues, only
+ *  a warning is owed. (`write_stdin failed: stdin is closed for this session`
+ *  is Codex complaining it lost its own stdin while tearing down — noise, not
+ *  news.) */
+const NON_FATAL_CODEX_ERROR_SNIPPETS = [
+  "write_stdin failed: stdin is closed for this session",
+];
+
+export function isNonFatalCodexError(message: string): boolean {
+  const lower = message.trim().toLowerCase();
+  return NON_FATAL_CODEX_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
+}

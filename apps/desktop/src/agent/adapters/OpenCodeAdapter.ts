@@ -437,7 +437,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const mode = input.mode ?? "accept-edits"; const env = await buildOpenCodeEnv(); const server = await startOpenCodeServer({ cwd: input.cwd, env, binary: this.binary });
     const client = makeClient(server.baseUrl); let sessionId: string | undefined;
     const resume = input.resume?.trim();
-    if (resume && /^ses_/.test(resume)) {
+    // Attempt resume for ANY non-empty stored id, not just `ses_`-prefixed
+    // ones: a foreign id is rejected by the server with a 404, which is the
+    // only path that should fall through to a fresh session. (The old prefix
+    // gate silently skipped non-`ses_` ids even when the server could have
+    // adopted them — leaving the thread to reopen blank for no reason.)
+    if (resume) {
       try {
         const found = responseData(await client.request("GET", `/session/${encodeURIComponent(resume)}`));
         sessionId = found?.id ?? resume;
@@ -524,18 +529,41 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (!prompt && !files.length) throw new Error("Turn input must include text or an attachment.");
     if (input.model) { session.model = input.model; session.contextWindow = this.modelContextWindows.get(input.model); }
     const model = modelSlug(input.model ?? session.model); if (!model) throw new Error("OpenCode model selection must use the 'provider/model' format.");
+    // `serviceTier` / `contextWindow` are deliberately not applied: opencode's
+    // model surface advertises no fast/context axes, so the picker never
+    // offers them — a per-turn value could only arrive from a stale selection.
     const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { session.activeTurnId = turnId; session.lastEmittedTokenUsageKey = undefined; this.emit({ ...base(session), type: "turn.started", turnId }); }
     try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/prompt_async`, { model, ...(input.effort || session.variant ? { variant: input.effort ?? session.variant } : {}), parts: [...(prompt ? [{ type: "text", text: prompt }] : []), ...files] }); }
     catch (error) { if (!steering) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "failed", message: errorMessage(error) }); } throw error; }
     return { threadId: input.threadId, turnId };
   }
 
+  /** Deliver a follow-up into a RUNNING opencode turn: prompt_async already
+   *  appends into the live session and sendTurn already reuses the active
+   *  turn id (no turn.started) when one is live — so a steer is exactly that
+   *  path plus the turn.steered announcement. With no live turn this falls
+   *  back to a normal sendTurn. */
+  async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const session = this.sessions.get(input.threadId);
+    if (!session?.activeTurnId) return this.sendTurn(input);
+    const result = await this.sendTurn(input);
+    const steerText = input.input.trim();
+    if (steerText) {
+      this.emit({ ...base(session), type: "turn.steered", turnId: result.turnId, message: steerText });
+    }
+    return result;
+  }
+
   async interruptTurn(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session?.activeTurnId) return; this.drain(session); session.interrupting = true; await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); }
-  // `disposed` gates unexpectedExit, so a deliberate stop emits nothing terminal on its
-  // own — seal a still-live turn here or the journaled assistant block stays 'running'
-  // forever and the thread reopens permanently busy. After settleLiveSubagents, which
-  // reads activeTurnId while it's still set.
-  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); }
+  // Deliberate stop = the one stop-lifecycle contract every adapter shares: a
+  // terminal `session.exited` with code null (the sibling ACP/JSON-RPC
+  // adapters emit it on their kill paths; Claude now emits it explicitly too).
+  // `disposed` gates unexpectedExit, so this is the single terminal emit.
+  // stopAll delegates here, so it inherits the contract (and the live-turn
+  // sealing in abortLiveTurn) for every session. The turn is sealed as
+  // `interrupted` first (abortLiveTurn) or the journaled assistant block would
+  // stay 'running' forever and the thread would reopen permanently busy.
+  async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); this.resolveApproval(session, requestId, decision); /* "Reject and stop" — the permission already gets its `reject` reply (toOpenCodeReply), and aborting the session turns that into an interrupted turn instead of a continued one. */ if (decision === "reject-and-stop") void this.interruptTurn(threadId); }
   async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> { const session = this.require(threadId); const pending = session.pendingUserInputs.get(requestId); if (!pending) return; session.pendingUserInputs.delete(requestId); pending.resolve(answers); }

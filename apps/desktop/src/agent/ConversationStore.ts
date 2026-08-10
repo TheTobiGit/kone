@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { copyFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-
-import { app } from "electron";
 
 import type {
   ChatAttachment,
@@ -16,6 +15,7 @@ import type {
   SubagentRun,
   ThreadLineage,
 } from "./types.js";
+import { getUserDataDir } from "./userDataDir.js";
 
 // Durable conversation persistence for the agent layer. Threads, turns, and the
 // ordered parts inside a turn are written to a small SQLite database as they
@@ -33,15 +33,80 @@ import type {
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 20;
+
+/** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
+ *  partially-applied migration — a crash between statements — re-runs
+ *  idempotently instead of failing on a duplicate column. */
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return rows.some((r) => r.name === column);
+  } catch {
+    // Unknown table / unreadable schema — assume present so the ladder fails
+    // loudly on a real problem rather than double-adding a column.
+    return true;
+  }
+}
+
+/** Add a column unless it already exists. */
+function addColumn(db: DatabaseSync, table: string, column: string, ddl: string): void {
+  if (!hasColumn(db, table, column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+/** Run `fn` inside a transaction, rolling back and rethrowing on failure. */
+function withTransaction(db: DatabaseSync, fn: () => void): void {
+  db.exec("BEGIN");
+  try {
+    fn();
+    db.exec("COMMIT");
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* no active transaction */
+    }
+    throw err;
+  }
+}
+
+/** Snapshot the database file before a destructive migration step (the v2/v5
+  *  transcript wipes) — the same "never upgrade without a restorable copy"
+  *  but doesn't abort the upgrade, because refusing to migrate would leave the
+  *  app stuck on an old schema instead of just degraded. */
+function backupBeforeDestructiveStep(dbFile: string): void {
+  try {
+    copyFileSync(dbFile, `${dbFile}.bak-${Date.now()}`);
+  } catch (err) {
+    console.error(
+      "[conversation-store] could not back up the database before a destructive migration:",
+      err,
+    );
+  }
+}
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
  *  rather than rewriting existing tables (the versioning lesson from both
  *  reference stores). */
-function migrate(db: DatabaseSync): void {
+function migrate(db: DatabaseSync, dbFile: string): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   let version = row?.user_version ?? 0;
+
+  // A database written by a NEWER app build must never be rewound: downgrading
+  // the schema would silently drop rows the older code doesn't know about.
+  // Refuse loudly instead — handle() catches this and disables persistence for
+  // the process (the app keeps running, just without disk history), the same
+  // degraded mode a corrupt DB already lands in.
+  if (version > SCHEMA_VERSION) {
+    throw new Error(
+      `[conversation-store] database schema v${version} is newer than this build supports ` +
+        `(v${SCHEMA_VERSION}); refusing to migrate. Upgrade the app, or remove the database ` +
+        "to start fresh.",
+    );
+  }
 
   if (version < 1) {
     db.exec(`
@@ -98,15 +163,29 @@ function migrate(db: DatabaseSync): void {
     // block shows: the branch it ran on, its diffstat, and its token spend.
     // Clear the old conversations on the way up — they predate these columns
     // and would render as blank rows, so we start the richer history fresh.
-    db.exec(`
-      DELETE FROM items;
-      DELETE FROM blocks;
-      DELETE FROM threads;
-      ALTER TABLE threads ADD COLUMN branch  TEXT;
-      ALTER TABLE threads ADD COLUMN added   INTEGER;
-      ALTER TABLE threads ADD COLUMN removed INTEGER;
-      ALTER TABLE threads ADD COLUMN tokens  INTEGER;
-    `);
+    // Destructive: snapshot the file first (only when there's actually data to
+    // lose), and run the wipe + column adds atomically so a crash mid-step
+    // can't leave a half-migrated DB.
+    const hasRows = db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() !== undefined;
+    if (hasRows) {
+      try {
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        /* checkpoint is best-effort — the backup below still captures the main file */
+      }
+      backupBeforeDestructiveStep(dbFile);
+    }
+    withTransaction(db, () => {
+      db.exec(`
+        DELETE FROM items;
+        DELETE FROM blocks;
+        DELETE FROM threads;
+      `);
+      addColumn(db, "threads", "branch", "TEXT");
+      addColumn(db, "threads", "added", "INTEGER");
+      addColumn(db, "threads", "removed", "INTEGER");
+      addColumn(db, "threads", "tokens", "INTEGER");
+    });
     version = 2;
   }
 
@@ -114,7 +193,7 @@ function migrate(db: DatabaseSync): void {
     // v3 lets a thread be hidden from the "recent conversations" block without
     // being destroyed — `archived` is a timestamp (NULL = active). Kept as a
     // nullable column so existing rows read as active with no backfill.
-    db.exec(`ALTER TABLE threads ADD COLUMN archived INTEGER;`);
+    addColumn(db, "threads", "archived", "INTEGER");
     version = 3;
   }
 
@@ -125,7 +204,7 @@ function migrate(db: DatabaseSync): void {
     // at read time. Backfill existing rows
     // from their first user prompt (word-capped) so upgraded installs don't
     // flash "Untitled session" for every prior conversation.
-    db.exec(`ALTER TABLE threads ADD COLUMN title TEXT;`);
+    addColumn(db, "threads", "title", "TEXT");
     db.exec(`
       UPDATE threads
       SET title = (
@@ -152,12 +231,23 @@ function migrate(db: DatabaseSync): void {
     // archived alike) and start the corrected, per-conversation history fresh.
     // `base_tree` holds the working-tree snapshot taken when a thread starts;
     // the settled diff is measured against it, not against HEAD.
-    db.exec(`
-      DELETE FROM items;
-      DELETE FROM blocks;
-      DELETE FROM threads;
-      ALTER TABLE threads ADD COLUMN base_tree TEXT;
-    `);
+    const hasRows = db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() !== undefined;
+    if (hasRows) {
+      try {
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        /* best-effort */
+      }
+      backupBeforeDestructiveStep(dbFile);
+    }
+    withTransaction(db, () => {
+      db.exec(`
+        DELETE FROM items;
+        DELETE FROM blocks;
+        DELETE FROM threads;
+      `);
+      addColumn(db, "threads", "base_tree", "TEXT");
+    });
     version = 5;
   }
 
@@ -175,7 +265,7 @@ function migrate(db: DatabaseSync): void {
   }
 
   if (version < 7) {
-    db.exec(`ALTER TABLE items ADD COLUMN tasks_json TEXT;`);
+    addColumn(db, "items", "tasks_json", "TEXT");
     version = 7;
   }
 
@@ -198,8 +288,8 @@ function migrate(db: DatabaseSync): void {
         created_at    INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_attachments_thread ON attachments (thread_id);
-      ALTER TABLE blocks ADD COLUMN attachments_json TEXT;
     `);
+    addColumn(db, "blocks", "attachments_json", "TEXT");
     version = 8;
   }
 
@@ -242,11 +332,9 @@ function migrate(db: DatabaseSync): void {
     // conversation restores its meter fill straight away, rather than showing an
     // empty ring until the next turn re-reports usage. Unlike `tokens` (a spend
     // tally), these are a live snapshot — overwritten each token-usage event.
-    db.exec(`
-      ALTER TABLE threads ADD COLUMN context_used   INTEGER;
-      ALTER TABLE threads ADD COLUMN context_window INTEGER;
-      ALTER TABLE threads ADD COLUMN compacts_auto  INTEGER;
-    `);
+    addColumn(db, "threads", "context_used", "INTEGER");
+    addColumn(db, "threads", "context_window", "INTEGER");
+    addColumn(db, "threads", "compacts_auto", "INTEGER");
     version = 11;
   }
 
@@ -259,8 +347,6 @@ function migrate(db: DatabaseSync): void {
     // than derived, because a streamed tool call's item id is positional
     // (`turn:msg:index`) and isn't recoverable from the tool-use id.
     db.exec(`
-      ALTER TABLE items ADD COLUMN subagent_tool_use_id TEXT;
-
       CREATE TABLE IF NOT EXISTS subagents (
         seq            INTEGER PRIMARY KEY AUTOINCREMENT,
         tool_use_id    TEXT NOT NULL,
@@ -285,6 +371,7 @@ function migrate(db: DatabaseSync): void {
       );
       CREATE INDEX IF NOT EXISTS idx_subagents_turn ON subagents (thread_id, turn_id, seq);
     `);
+    addColumn(db, "items", "subagent_tool_use_id", "TEXT");
     version = 12;
   }
 
@@ -299,13 +386,11 @@ function migrate(db: DatabaseSync): void {
     // key. Blocks gain a `source` column ('native' | 'fork-import') so
     // imported rows render as history rather than activity: they keep their
     // original `at` and never refresh a thread's updated_at.
-    db.exec(`
-      ALTER TABLE threads ADD COLUMN source_thread_id TEXT;
-      ALTER TABLE threads ADD COLUMN fork_context_json TEXT;
-      ALTER TABLE threads ADD COLUMN lineage_json TEXT;
-      ALTER TABLE threads ADD COLUMN request_id TEXT;
-      ALTER TABLE blocks ADD COLUMN source TEXT NOT NULL DEFAULT 'native';
-    `);
+    addColumn(db, "threads", "source_thread_id", "TEXT");
+    addColumn(db, "threads", "fork_context_json", "TEXT");
+    addColumn(db, "threads", "lineage_json", "TEXT");
+    addColumn(db, "threads", "request_id", "TEXT");
+    addColumn(db, "blocks", "source", "TEXT NOT NULL DEFAULT 'native'");
     version = 13;
   }
 
@@ -350,8 +435,6 @@ function migrate(db: DatabaseSync): void {
     // all future gateway tools (kind = "scratchpad.write" today): agent-side
     // write retries replay the stored result instead of re-applying.
     db.exec(`
-      ALTER TABLE scratchpads ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
-
       CREATE TABLE IF NOT EXISTS gateway_ops (
         thread_id   TEXT NOT NULL,
         turn_id     TEXT NOT NULL,
@@ -365,6 +448,7 @@ function migrate(db: DatabaseSync): void {
       CREATE INDEX IF NOT EXISTS idx_gateway_ops_kind
         ON gateway_ops (kind, created_at);
     `);
+    addColumn(db, "scratchpads", "revision", "INTEGER NOT NULL DEFAULT 1");
     version = 15;
   }
 
@@ -376,8 +460,8 @@ function migrate(db: DatabaseSync): void {
     // JSON scan of every thread row. No backfill: no thread has ever carried a
     // `subagent` lineage (side chats are roots, parentThreadId null), so the
     // column ships empty, written only by the feature that owns it.
+    addColumn(db, "threads", "parent_thread_id", "TEXT");
     db.exec(`
-      ALTER TABLE threads ADD COLUMN parent_thread_id TEXT;
       CREATE INDEX IF NOT EXISTS idx_threads_parent
         ON threads (parent_thread_id, created_at);
     `);
@@ -393,16 +477,216 @@ function migrate(db: DatabaseSync): void {
     // reads terminal instead of projecting idle forever. No backfill: rows
     // written before this migration predate the crash window's meaning, and
     // sealing them would mislabel already-recovered children.
+    addColumn(db, "gateway_ops", "dispatched", "INTEGER NOT NULL DEFAULT 0");
     db.exec(`
-      ALTER TABLE gateway_ops ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0;
       CREATE INDEX IF NOT EXISTS idx_gateway_ops_undispatched
         ON gateway_ops (kind, dispatched);
     `);
     version = 17;
   }
 
-  if (version !== SCHEMA_VERSION) version = SCHEMA_VERSION;
-  db.exec(`PRAGMA user_version = ${version}`);
+  if (version < 18) {
+    // v18 — the persistence-findings sweep (docs/thread-conversation-audit):
+    //  - `is_pinned` moves pins out of browser localStorage into the DB, so a
+    //    pinned thread follows the thread across browser profiles and shows in
+    //  - `model_selection_json` persists the user's per-thread picker knobs
+    //    (effort / serviceTier / contextWindow — the same axes SendTurnInput
+    //    carries; `model` rides the existing column), so a reopened thread
+    //    restores the picker instead of boot defaults.
+    //  - `resume_session_at` stores Claude's last assistant message uuid for
+    //    reliable resume (fix_adapters contract; captured live like
+    //    conversationId).
+    //  - `last_activity_at` separates "when the conversation was last active"
+    //    from `updated_at` — title renames and archive stamps also bump the
+    //    latter, so recency ordering previously reshuffled under a background
+    //    rename. Backfilled from updated_at; every turn event touches it
+    //  - `turn_usage` keeps a per-turn token audit trail (input/output/total)
+    //    that survives restart; the thread-level `tokens` scalar stays as the
+    //    rollup.
+    //  - a partial unique index on `threads.request_id` (the side chat's
+    //    GLOBAL idempotency key — threadIdForRequestId queries it with no
+    //    thread scope) closes the gap where a lax round could mint two
+    //    threads for one request key. Existing duplicates are deduped first,
+    //    keeping the OLDEST row (the idempotency authority) and nulling the
+    //    newer ones.
+    addColumn(db, "threads", "is_pinned", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "threads", "model_selection_json", "TEXT");
+    addColumn(db, "threads", "resume_session_at", "TEXT");
+    addColumn(db, "threads", "last_activity_at", "INTEGER");
+    db.exec(`
+      UPDATE threads SET last_activity_at = updated_at WHERE last_activity_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_threads_recency
+        ON threads (project_path, last_activity_at DESC);
+      CREATE TABLE IF NOT EXISTS turn_usage (
+        thread_id     TEXT NOT NULL,
+        turn_id       TEXT NOT NULL,
+        input_tokens  INTEGER,
+        output_tokens INTEGER,
+        total_tokens  INTEGER,
+        at            INTEGER NOT NULL,
+        PRIMARY KEY (thread_id, turn_id)
+      );
+    `);
+    withTransaction(db, () => {
+      // Dedupe first: for every request_id, only the row that is oldest by
+      // (created_at, thread_id) keeps the key; newer duplicates lose it.
+      db.exec(`
+        UPDATE threads
+           SET request_id = NULL
+         WHERE request_id IS NOT NULL
+           AND thread_id NOT IN (
+             SELECT t.thread_id FROM threads t
+              WHERE t.request_id IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM threads t2
+                   WHERE t2.request_id = t.request_id
+                     AND (t2.created_at < t.created_at
+                       OR (t2.created_at = t.created_at AND t2.thread_id < t.thread_id))
+                )
+           )
+      `);
+      try {
+        db.exec(
+          `CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_request_id
+             ON threads (request_id) WHERE request_id IS NOT NULL`,
+        );
+      } catch (err) {
+        // A duplicate that slipped past the dedupe must not brick the upgrade —
+        // the app-level join in createSidechatThread still applies, same
+        // posture as the v14 side chat index.
+        console.warn(
+          "[conversation-store] could not create the request_id unique index:",
+          err,
+        );
+      }
+    });
+    version = 18;
+  }
+
+  if (version < 19) {
+    // behind loadThreadPage's user-anchored windows. Pagination orders blocks
+    // by the stable keyset (at, block_id); the pre-existing
+    // (thread_id, seq) index cannot serve that order, forcing a temp B-tree
+    // over all of a thread's blocks before the page LIMIT applies. With this
+    // index the candidates scan is genuinely bounded by the page size.
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_blocks_keyset
+        ON blocks (thread_id, at, block_id);
+    `);
+    version = 19;
+  }
+
+  if (version < 20) {
+    // while a turn runs is enqueued here instead of being dropped, promoted
+    // when the live turn settles, and cancelled when the thread goes away.
+    // `user_block_id` is the journaled user-prompt block UUID (recordUserBlock
+    // mints it), so the queued prompt is a pointer into the conversation —
+    // never a second copy that could diverge. `dispatch_mode` is the
+    // queue/steer axis ('steer' jumps the line, newest steer first, then FIFO);
+    // `attempt_count` survives release→reclaim so a poison turn's retries are
+    // visible; the nullable knobs (model/mode/effort/service_tier/
+    // context_window) are replayed onto the promoted send exactly as the user
+    // picked them. The partial unique index on (thread_id, user_block_id) over
+    // the ACTIVE states is the replay-safety guard: a replayed enqueue of the
+    // same prompt is a no-op, and a row that has settled (promoted/cancelled)
+    // no longer blocks anything.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS queued_turns (
+        queue_id         TEXT PRIMARY KEY,
+        thread_id        TEXT NOT NULL,
+        user_block_id    TEXT NOT NULL,
+        dispatch_mode    TEXT NOT NULL DEFAULT 'queue'
+                         CHECK (dispatch_mode IN ('queue', 'steer')),
+        state            TEXT NOT NULL
+                         CHECK (state IN ('queued', 'promoting', 'promoted', 'cancelled')),
+        input            TEXT NOT NULL,
+        attachments_json TEXT,
+        model            TEXT,
+        mode             TEXT,
+        effort           TEXT,
+        service_tier     TEXT,
+        context_window   TEXT,
+        attempt_count    INTEGER NOT NULL DEFAULT 0,
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        promoted_at      INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_queued_turns_thread_state
+        ON queued_turns (thread_id, state, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_turns_active_user_block
+        ON queued_turns (thread_id, user_block_id)
+        WHERE state IN ('queued', 'promoting');
+    `);
+    version = 20;
+  }
+
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
+// ── windowed thread reads (user-anchored keyset cursor) ───────────────────────
+// kone's block model: blocks are the turn analog, the anchor is a block's
+// `at` (the user-visible timestamp — the analog of requested_at/started_at),
+// and the tiebreak is the content-derived `block_id` string — deliberately NOT
+// `seq`, the row_id analog (see loadThreadPage).
+
+/** User blocks (user prompts) per page — each page's window ends at the
+ *  limit-th newest prompt, mirroring the reference's userTurnLimit. */
+const PAGE_DEFAULT_USER_BLOCKS = 10;
+/** Ceiling multiplier over the user-block limit that bounds pathological
+ *  fan-out (one prompt answered by dozens of turns) before the LIMIT applies
+ *  — the reference's maxRawTurns. */
+const PAGE_RAW_FANOUT = 8;
+
+/** Opaque, exclusive cursor for windowed thread reads. Encodes the thread id
+ *  and the keyset boundary of an already-delivered page: the boundary block's
+ *  anchor timestamp (`at`) and block id. Passing it back requests the adjacent
+ *  disjoint slice of strictly older blocks under (at, block_id) ordering. */
+export type ThreadPageCursor = {
+  threadId: string;
+  /** The boundary block's `at` — the user-anchored timestamp. */
+  beforeAnchorAt: number;
+  /** The boundary block's id; the string tiebreak (never the row id). */
+  beforeBlockId: string;
+};
+
+/** One windowed page of a thread: metadata plus the slice's blocks in
+ *  ascending timeline order, and the cursor for the next older page. */
+export type StoredThreadPage = {
+  threadId: string;
+  meta: StoredThreadMeta;
+  blocks: StoredBlock[];
+  /** Cursor for the next strictly older page; null when the walk is complete.
+   *  Opaque — consumers echo it back verbatim. */
+  nextCursor: string | null;
+  /** Whether older blocks exist beyond this page. */
+  hasMore: boolean;
+};
+
+export function encodeThreadPageCursor(cursor: ThreadPageCursor): string {
+  return Buffer.from(
+    JSON.stringify({ t: cursor.threadId, a: cursor.beforeAnchorAt, i: cursor.beforeBlockId }),
+  ).toString("base64url");
+}
+
+/** Returns null for anything that is not a well-formed cursor. Callers degrade
+ *  a malformed or foreign-thread cursor to a first-page request. */
+export function decodeThreadPageCursor(encoded: string): ThreadPageCursor | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.t !== "string" || record.t.length === 0) return null;
+  if (typeof record.a !== "number" || !Number.isFinite(record.a)) return null;
+  if (typeof record.i !== "string" || record.i.length === 0) return null;
+  return {
+    threadId: record.t,
+    beforeAnchorAt: record.a,
+    beforeBlockId: record.i,
+  };
 }
 
 /** Storage id for an assistant turn's block. `block_id` is globally UNIQUE, but
@@ -516,6 +800,10 @@ function backfillOrphanedTurns(db: DatabaseSync): void {
 
 export class ConversationStore {
   private db: DatabaseSync | null = null;
+
+  /** @param userDataDir per-user state dir; defaults to the one the host
+   *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
+  constructor(private readonly userDataDir?: string) {}
   /** threadId → the provider conversation id already written for it. Events carry
    *  the id on every envelope (see ProviderRefs), including one per streamed text
    *  delta, so this memo keeps the capture to a single write per session instead
@@ -528,7 +816,7 @@ export class ConversationStore {
   private handle(): DatabaseSync | null {
     if (this.db) return this.db;
     try {
-      const file = path.join(app.getPath("userData"), "conversations.sqlite");
+      const file = path.join(this.userDataDir ?? getUserDataDir(), "conversations.sqlite");
       const db = new DatabaseSync(file);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA busy_timeout = 2000");
@@ -541,7 +829,7 @@ export class ConversationStore {
       // conversation can't be reconstructed without are committed through
       // `durably()` below, and the per-delta churn stays at NORMAL.
       db.exec("PRAGMA synchronous = NORMAL");
-      migrate(db);
+      migrate(db, file);
       this.db = db;
       // Recovery: this is the first DB open of a fresh process, so no session is
       // live — any assistant block still 'running' belongs to a turn whose
@@ -558,6 +846,10 @@ export class ConversationStore {
       // never dispatched (a crash between the row write and startThread) reads
       // terminal now, not "idle forever" (F8).
       this.sealUndispatchedSpawns(db);
+      // Third pass: a queued turn stranded in 'promoting' (a crash between
+      // claim and promote/release) belongs to no live process — release it
+      // back to 'queued' so the next drain retries instead of skipping it.
+      this.releaseOrphanedClaims(db);
       return db;
     } catch (err) {
       console.error("[conversation-store] could not open database:", err);
@@ -701,6 +993,26 @@ export class ConversationStore {
     }
   }
 
+  /** Release every queued turn stranded in 'promoting'. Safe to run only at
+   *  first DB open (no live session yet): after startup a 'promoting' row is a
+   *  genuinely claimed turn, so this must never run against a live drain. A
+   *  claim is a store-side state flip (attempt_count bump, no owner/expiry
+   *  columns — the service layer owns those semantics), so a process killed
+   *  between claim and promote/release leaves the row promotable-by-no-one;
+   *  returning it to 'queued' (attempt_count preserved, exactly like
+   *  releaseQueuedTurn) lets the next drain claim it again. */
+  private releaseOrphanedClaims(db: DatabaseSync): void {
+    try {
+      const now = Date.now();
+      db.prepare(
+        `UPDATE queued_turns SET state = 'queued', updated_at = ?
+          WHERE state = 'promoting'`,
+      ).run(now);
+    } catch (err) {
+      console.error("[conversation-store] could not release orphaned claims:", err);
+    }
+  }
+
   /** Record (or refresh) the thread a session belongs to. Called when a session
    *  starts, so the project/provider/model association exists before any turn
    *  streams in. */
@@ -715,14 +1027,16 @@ export class ConversationStore {
     try {
       const now = Date.now();
       db.prepare(
-        `INSERT INTO threads (thread_id, project_path, provider, model, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO threads (
+           thread_id, project_path, provider, model, created_at, updated_at, last_activity_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(thread_id) DO UPDATE SET
            project_path = excluded.project_path,
            provider     = excluded.provider,
            model        = COALESCE(excluded.model, threads.model),
-           updated_at   = excluded.updated_at`,
-      ).run(input.threadId, input.projectPath, input.provider, input.model ?? null, now, now);
+           updated_at   = excluded.updated_at,
+           last_activity_at = excluded.last_activity_at`,
+      ).run(input.threadId, input.projectPath, input.provider, input.model ?? null, now, now, now);
     } catch (err) {
       console.error("[conversation-store] ensureThread failed:", err);
     }
@@ -853,18 +1167,88 @@ export class ConversationStore {
   }
 
   /** Persist a working title. Used for the first-turn word fallback and the
-   *  subsequent agent-generated rename. */
+   *  subsequent agent-generated rename. Deliberately does NOT touch
+   *  `updated_at` / `last_activity_at`: a rename is bookkeeping, not
+   *  conversation activity, and must not reshuffle the recents list. */
   setTitle(threadId: string, title: string): void {
     const db = this.handle();
     if (!db) return;
     try {
-      db.prepare(`UPDATE threads SET title = ?, updated_at = ? WHERE thread_id = ?`).run(
-        title,
-        Date.now(),
+      db.prepare(`UPDATE threads SET title = ? WHERE thread_id = ?`).run(title, threadId);
+    } catch (err) {
+      console.error("[conversation-store] setTitle failed:", err);
+    }
+  }
+
+  /** User-initiated rename (agent:rename-thread). Same title-only semantics as
+   *  setTitle — recency ordering is untouched, and an unchanged title is a
+   *  no-op. Returns whether the title actually changed, so the IPC layer only
+   *  broadcasts when something user-visible happened. */
+  renameThread(threadId: string, title: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const current = db
+        .prepare(`SELECT title FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { title: string | null } | undefined;
+      if (!current) return false;
+      if (current.title === title) return false;
+      db.prepare(`UPDATE threads SET title = ? WHERE thread_id = ?`).run(title, threadId);
+      return true;
+    } catch (err) {
+      console.error("[conversation-store] renameThread failed:", err);
+      return false;
+    }
+  }
+
+  /** Pin (or unpin) a thread. Pins live in the DB — not browser localStorage —
+   *  so a pinned thread follows the thread across browser profiles and shows
+  setPinned(threadId: string, pinned: boolean): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET is_pinned = ? WHERE thread_id = ?`).run(
+        pinned ? 1 : 0,
         threadId,
       );
     } catch (err) {
-      console.error("[conversation-store] setTitle failed:", err);
+      console.error("[conversation-store] setPinned failed:", err);
+    }
+  }
+
+  /** Persist the user's per-thread picker selection so a reopened thread
+   *  restores it exactly (agent:set-thread-selection; fix_registry contract).
+   *  `model` lands on the existing threads.model column (the display model);
+   *  effort / serviceTier / contextWindow ride `model_selection_json` — the
+   *  same axes SendTurnInput carries. Absent fields are left untouched. */
+  setThreadSelection(
+    threadId: string,
+    selection: { model?: string; effort?: string; serviceTier?: string; contextWindow?: string },
+  ): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      // Merge over the stored knobs: a partial update (the picker commits one
+      // axis at a time) must never wipe the knobs it didn't touch.
+      const row = db
+        .prepare(`SELECT model_selection_json FROM threads WHERE thread_id = ?`)
+        .get(threadId) as { model_selection_json: string | null } | undefined;
+      const knobs: { effort?: string; serviceTier?: string; contextWindow?: string } =
+        parseJsonObject<{ effort?: string; serviceTier?: string; contextWindow?: string }>(
+          row?.model_selection_json ?? null,
+        ) ?? {};
+      if (selection.effort !== undefined) knobs.effort = selection.effort;
+      if (selection.serviceTier !== undefined) knobs.serviceTier = selection.serviceTier;
+      if (selection.contextWindow !== undefined) knobs.contextWindow = selection.contextWindow;
+      const json = Object.keys(knobs).length ? JSON.stringify(knobs) : null;
+      db.prepare(
+        `UPDATE threads
+           SET model = COALESCE(?, model),
+               model_selection_json = COALESCE(?, model_selection_json)
+         WHERE thread_id = ?`,
+      ).run(selection.model ?? null, json, threadId);
+    } catch (err) {
+      console.error("[conversation-store] setThreadSelection failed:", err);
     }
   }
 
@@ -892,24 +1276,69 @@ export class ConversationStore {
    *  attempt matches no row. Memoizing that would drop the id for the entire
    *  session, which is the very bug this method exists to fix; instead it retries
    *  on the next event, by which time the row exists. */
-  private captureConversationId(db: DatabaseSync, event: RuntimeEvent): void {
-    const conversationId =
-      event.refs?.conversationId ??
-      (event.type === "turn.completed" ? event.conversationId : undefined);
-    if (!conversationId) return;
-    if (this.knownConversationIds.get(event.threadId) === conversationId) return;
-    // `item.updated` is the per-delta type — thousands per turn. Every turn also
-    // produces item.started and turn.completed, so the id lands from those
-    // without hanging a write attempt (and an fsync) off every token.
-    if (event.type === "item.updated") return;
+  /** Public entry for the session lifecycle layer (dispatch.startThread):
+   *  persist the provider conversation id the moment startSession resolves —
+   *  the crash window before the session.started fold — so a thread killed
+   *  between session start and first event still reopens resumable. Same
+   *  memoized, durable-write discipline as the event path. */
+  captureConversationId(threadId: string, conversationId: string): void {
+    const db = this.handle();
+    if (!db || !conversationId) return;
+    if (this.knownConversationIds.get(threadId) === conversationId) return;
     let written = false;
     this.durably(db, () => {
       const result = db
         .prepare(`UPDATE threads SET conversation_id = ? WHERE thread_id = ?`)
-        .run(conversationId, event.threadId);
+        .run(conversationId, threadId);
       written = Number(result.changes) > 0;
     });
-    if (written) this.knownConversationIds.set(event.threadId, conversationId);
+    if (written) this.knownConversationIds.set(threadId, conversationId);
+  }
+
+  private captureConversationIdFromEvent(db: DatabaseSync, event: RuntimeEvent): void {
+    const conversationId =
+      event.refs?.conversationId ??
+      (event.type === "turn.completed" ? event.conversationId : undefined);
+    // `item.updated` is the per-delta type — thousands per turn. Every turn also
+    // produces item.started and turn.completed, so the id lands from those
+    // without hanging a write attempt (and an fsync) off every token.
+    if (event.type === "item.updated") return;
+    if (conversationId) this.captureConversationId(event.threadId, conversationId);
+    this.captureResumeSessionAtFromEvent(db, event);
+  }
+
+  /** Claude's last assistant message uuid, captured live off every envelope's
+   *  `refs.resumeSessionAt` — the anchor Claude's SDK needs for a reliable
+   *  resume (fix_adapters contract). Same discipline as conversationId:
+   *  memoized per thread, written durably, never off an item.updated delta.
+   *  Cleared on `session.started` when the anchor is absent — a fresh session,
+   *  or a resume the provider refused (the adapter stops carrying the anchor,
+   *  so the stored one is stale). */
+  private readonly knownResumeAnchors = new Map<string, string | null>();
+
+  private captureResumeSessionAtFromEvent(db: DatabaseSync, event: RuntimeEvent): void {
+    const anchor = event.refs?.resumeSessionAt ?? null;
+    if (event.type === "item.updated") return;
+    if (event.type === "session.started" && !anchor) {
+      // Fresh session (or a refused resume): the stored anchor is stale.
+      if (this.knownResumeAnchors.get(event.threadId) === null) return;
+      this.durably(db, () => {
+        db.prepare(`UPDATE threads SET resume_session_at = NULL WHERE thread_id = ?`).run(
+          event.threadId,
+        );
+      });
+      this.knownResumeAnchors.set(event.threadId, null);
+      return;
+    }
+    if (!anchor) return;
+    if (this.knownResumeAnchors.get(event.threadId) === anchor) return;
+    this.durably(db, () => {
+      db.prepare(`UPDATE threads SET resume_session_at = ? WHERE thread_id = ?`).run(
+        anchor,
+        event.threadId,
+      );
+    });
+    this.knownResumeAnchors.set(event.threadId, anchor);
   }
 
   /** Fold one normalized runtime event into the stored read model — the write
@@ -920,7 +1349,7 @@ export class ConversationStore {
     try {
       // Before the per-type fold: any envelope may be the one that first names
       // the provider conversation, and the id must not wait for a turn to settle.
-      this.captureConversationId(db, event);
+      this.captureConversationIdFromEvent(db, event);
       switch (event.type) {
         case "turn.started": {
           // Durable: the block is what anchors every item in the turn, so losing
@@ -1025,14 +1454,19 @@ export class ConversationStore {
           // it no longer waits for this event, which is the whole point of the
           // crash fix.
           this.durably(db, () => {
-            db.prepare(
-              `UPDATE blocks SET state = 'completed', ended_at = ?
-               WHERE block_id = ?`,
-            ).run(event.at, assistantBlockId(event.threadId, event.turnId));
-            // A side chat's first turn settling consumes the one-shot
-            // `<sidechat_context>` bootstrap — the imported transcript has
-            // reached the model, so it is never injected again.
-            this.completeSidechatBootstrap(db, event.threadId);
+            // One transaction: the block settle and the side chat bootstrap
+            // consumption must land together — a crash between them would
+            // re-inject `<sidechat_context>` into the next turn.
+            withTransaction(db, () => {
+              db.prepare(
+                `UPDATE blocks SET state = 'completed', ended_at = ?
+                 WHERE block_id = ?`,
+              ).run(event.at, assistantBlockId(event.threadId, event.turnId));
+              // A side chat's first turn settling consumes the one-shot
+              // `<sidechat_context>` bootstrap — the imported transcript has
+              // reached the model, so it is never injected again.
+              this.completeSidechatBootstrap(db, event.threadId);
+            });
           });
           this.touch(db, event.threadId, event.at);
           break;
@@ -1054,49 +1488,86 @@ export class ConversationStore {
           break;
         }
         case "thread.token-usage.updated": {
-          const total = event.usage.total;
-          if (typeof total === "number" && Number.isFinite(total)) {
-            // Codex, OpenCode and Cursor report running thread totals (keep the
-            // max); Claude reports per-turn spend (accumulate).
-            const isRunningTotal =
-              event.provider === "codex" ||
-              event.provider === "opencode" ||
-              event.provider === "cursor";
-            const sql = isRunningTotal
-                ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`
-                : `UPDATE threads SET tokens = COALESCE(tokens, 0) + ? WHERE thread_id = ?`;
-            db.prepare(sql).run(Math.round(total), event.threadId);
-          }
-          // Snapshot the live context-window fill (overwrite, not accumulate) so
-          // a reopened thread restores its meter without waiting for a turn. A
-          // provider may report only part of the picture (a fresh fill without
-          // the window, or a window change without a fill), so each column is
-          // overwritten only when that field is present — a partial payload must
-          // never blank a value the thread already knew.
-          const { contextUsed, contextWindow, compactsAutomatically } = event.usage;
-          if (
-            (typeof contextWindow === "number" && Number.isFinite(contextWindow)) ||
-            (typeof contextUsed === "number" && Number.isFinite(contextUsed))
-          ) {
-            const compacts =
-              compactsAutomatically === undefined ? null : compactsAutomatically ? 1 : 0;
-            db.prepare(
-              `UPDATE threads
-                 SET context_used   = COALESCE(?, context_used),
-                     context_window = COALESCE(?, context_window),
-                     compacts_auto  = COALESCE(?, compacts_auto)
-               WHERE thread_id = ?`,
-            ).run(
-              typeof contextUsed === "number" && Number.isFinite(contextUsed)
-                ? Math.round(contextUsed)
-                : null,
-              typeof contextWindow === "number" && Number.isFinite(contextWindow)
-                ? Math.round(contextWindow)
-                : null,
-              compacts,
-              event.threadId,
-            );
-          }
+          // The rollup update, the context snapshot and the per-turn audit row
+          // are one fold — wrap them so a crash can't leave a half-written
+          // usage state.
+          withTransaction(db, () => {
+            const total = event.usage.total;
+            if (typeof total === "number" && Number.isFinite(total)) {
+              // Codex, OpenCode and Cursor report running thread totals (keep the
+              // max); Claude reports per-turn spend (accumulate).
+              const isRunningTotal =
+                event.provider === "codex" ||
+                event.provider === "opencode" ||
+                event.provider === "cursor";
+              const sql = isRunningTotal
+                  ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`
+                  : `UPDATE threads SET tokens = COALESCE(tokens, 0) + ? WHERE thread_id = ?`;
+              db.prepare(sql).run(Math.round(total), event.threadId);
+            }
+            // Snapshot the live context-window fill (overwrite, not accumulate)
+            // so a reopened thread restores its meter without waiting for a
+            // turn. A provider may report only part of the picture (a fresh
+            // fill without the window, or a window change without a fill), so
+            // each column is overwritten only when that field is present — a
+            // partial payload must never blank a value the thread already knew.
+            const { contextUsed, contextWindow, compactsAutomatically } = event.usage;
+            if (
+              (typeof contextWindow === "number" && Number.isFinite(contextWindow)) ||
+              (typeof contextUsed === "number" && Number.isFinite(contextUsed))
+            ) {
+              const compacts =
+                compactsAutomatically === undefined ? null : compactsAutomatically ? 1 : 0;
+              db.prepare(
+                `UPDATE threads
+                   SET context_used   = COALESCE(?, context_used),
+                       context_window = COALESCE(?, context_window),
+                       compacts_auto  = COALESCE(?, compacts_auto)
+                 WHERE thread_id = ?`,
+              ).run(
+                typeof contextUsed === "number" && Number.isFinite(contextUsed)
+                  ? Math.round(contextUsed)
+                  : null,
+                typeof contextWindow === "number" && Number.isFinite(contextWindow)
+                  ? Math.round(contextWindow)
+                  : null,
+                compacts,
+                event.threadId,
+              );
+            }
+            // Per-turn audit trail (v18): keep the input/output/total split for
+            // the turn currently streaming — keyed by the latest assistant
+            // block, which is the turn these numbers belong to. Survives
+            // restart even though the thread-level `tokens` scalar only keeps
+            // the rollup.
+            const turnRow = db
+              .prepare(
+                `SELECT turn_id FROM blocks
+                  WHERE thread_id = ? AND role = 'assistant'
+                  ORDER BY seq DESC LIMIT 1`,
+              )
+              .get(event.threadId) as { turn_id: string | null } | undefined;
+            if (turnRow?.turn_id) {
+              const { input, output } = event.usage;
+              db.prepare(
+                `INSERT INTO turn_usage
+                   (thread_id, turn_id, input_tokens, output_tokens, total_tokens, at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(thread_id, turn_id) DO UPDATE SET
+                   input_tokens  = excluded.input_tokens,
+                   output_tokens = excluded.output_tokens,
+                   total_tokens  = excluded.total_tokens,
+                   at            = excluded.at`,
+              ).run(
+                event.threadId,
+                turnRow.turn_id,
+                typeof input === "number" && Number.isFinite(input) ? Math.round(input) : null,
+                typeof output === "number" && Number.isFinite(output) ? Math.round(output) : null,
+                typeof total === "number" && Number.isFinite(total) ? Math.round(total) : null,
+                event.at,
+              );
+            }
+          });
           break;
         }
         case "session.exited": {
@@ -1117,7 +1588,12 @@ export class ConversationStore {
   }
 
   private touch(db: DatabaseSync, threadId: string, at: number): void {
-    db.prepare(`UPDATE threads SET updated_at = ? WHERE thread_id = ?`).run(at, threadId);
+    // Bumps both clocks: `updated_at` is the generic "row changed" stamp,
+    // `last_activity_at` is the recency ordering key (title/archive bookkeeping
+    // touches only the former — see renameThread).
+    db.prepare(
+      `UPDATE threads SET updated_at = ?, last_activity_at = ? WHERE thread_id = ?`,
+    ).run(at, at, threadId);
   }
 
   /** Snapshot the project's branch + working-tree diffstat onto the thread.
@@ -1182,41 +1658,384 @@ export class ConversationStore {
     }
   }
 
-  /** Hide (or restore) a thread from the recent list without destroying it.
-   *  `archived` is a timestamp so a future "archived" view can order by it. */
-  setArchived(threadId: string, archived: boolean): void {
+  // A follow-up sent while a turn runs is durably enqueued here, claimed by
+  // the service layer when the live turn settles, and cancelled when the
+  // thread is deleted. Lifecycle: 'queued' → 'promoting' → 'promoted'
+  // (claim → promote), 'promoting' → 'queued' (claim → release: the drain
+  // failed and the turn must not be lost), and any active state → 'cancelled'
+  // (stop/delete). Only the ACTIVE states count as pending: a settled row
+  // (promoted/cancelled) is inert history, and a later releaseClaim must never
+  // match a cancelled row — that resurrection bug is why cancel flips BOTH
+
+  /** Durably enqueue a turn for `threadId`. The partial unique index on
+   *  (thread_id, user_block_id) over the active states makes a replayed
+   *  enqueue — the same prompt delivered twice by a retrying caller — a
+   *  no-op. Returns whether a row was actually inserted. */
+  enqueueQueuedTurn(input: QueuedTurnEnqueueInput): boolean {
     const db = this.handle();
-    if (!db) return;
+    if (!db) return false;
+    const now = input.at ?? Date.now();
+    let inserted = false;
+    this.durably(db, () => {
+      const result = db
+        .prepare(
+          `INSERT INTO queued_turns (
+             queue_id, thread_id, user_block_id, dispatch_mode, state, input,
+             attachments_json, model, mode, effort, service_tier, context_window,
+             attempt_count, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           ON CONFLICT (thread_id, user_block_id)
+             WHERE state IN ('queued', 'promoting') DO NOTHING`,
+        )
+        .run(
+          input.queueId,
+          input.threadId,
+          input.userBlockId,
+          input.dispatchMode ?? "queue",
+          input.input,
+          input.attachments?.length ? JSON.stringify(input.attachments) : null,
+          input.model ?? null,
+          input.mode ?? null,
+          input.effort ?? null,
+          input.serviceTier ?? null,
+          input.contextWindow ?? null,
+          now,
+          now,
+        );
+      inserted = Number(result.changes) > 0;
+    });
+    return inserted;
+  }
+
+  /** Claim the next queued turn for `threadId` (atomically — one statement:
+   *  the candidate subquery and the state flip share the statement's write
+   *  lock, so two racing drains serialize and the loser sees no 'queued'
+   *  candidate). Steer rows jump the line, most recent steer first, then plain
+   *  FIFO by created_at — the reference's
+   *  `CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END, steer seq DESC,
+   *  seq ASC`, with queue_id as the final deterministic tiebreak. Returns the
+   *  row now in 'promoting' (attempt_count already bumped), or null when the
+   *  thread has nothing active to claim. */
+  claimNextQueuedTurn(threadId: string): QueuedTurnRow | null {
+    const db = this.handle();
+    if (!db) return null;
     try {
-      db.prepare(`UPDATE threads SET archived = ? WHERE thread_id = ?`).run(
-        archived ? Date.now() : null,
-        threadId,
-      );
+      const now = Date.now();
+      const row = db
+        .prepare(
+          `UPDATE queued_turns
+              SET state = 'promoting',
+                  attempt_count = attempt_count + 1,
+                  updated_at = ?
+            WHERE queue_id = (
+              SELECT queue_id FROM queued_turns
+               WHERE thread_id = ? AND state = 'queued'
+               ORDER BY
+                 CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
+                 CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
+                 created_at ASC,
+                 queue_id ASC
+               LIMIT 1
+            )
+           RETURNING *`,
+        )
+        .get(now, threadId) as QueuedTurnDbRow | undefined;
+      return row ? rowToQueuedTurn(row) : null;
     } catch (err) {
-      console.error("[conversation-store] setArchived failed:", err);
+      console.error("[conversation-store] claimNextQueuedTurn failed:", err);
+      return null;
     }
   }
 
-  /** Permanently remove a thread and everything under it. Irreversible — the
-   *  renderer confirms before calling. */
-  deleteThread(threadId: string): void {
+  /** Settle a claimed turn: 'promoting' → 'promoted'. WHERE state='promoting'
+   *  makes a lost claim fail loudly — promoting a row nobody claimed would
+   *  silently drop a queued turn's retry (return false and the service layer
+   *  falls back to release/reclaim). */
+  markQueuedTurnPromoted(queueId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const now = Date.now();
+      const result = db
+        .prepare(
+          `UPDATE queued_turns
+              SET state = 'promoted', promoted_at = ?, updated_at = ?
+            WHERE queue_id = ? AND state = 'promoting'`,
+        )
+        .run(now, now, queueId);
+      return Number(result.changes) > 0;
+    } catch (err) {
+      console.error("[conversation-store] markQueuedTurnPromoted failed:", err);
+      return false;
+    }
+  }
+
+  /** Give a claimed turn back: 'promoting' → 'queued' so the next drain
+   *  retries it. attempt_count is preserved (the retry ledger stays honest).
+   *  Returns false when the row is not in 'promoting' — the cancelled-row
+   *  resurrection guard: cancelQueuedTurnsForThread flips 'promoting' rows to
+   *  'cancelled' first, so a drain's late release can no longer match. */
+  releaseQueuedTurn(queueId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const result = db
+        .prepare(
+          `UPDATE queued_turns SET state = 'queued', updated_at = ?
+            WHERE queue_id = ? AND state = 'promoting'`,
+        )
+        .run(Date.now(), queueId);
+      return Number(result.changes) > 0;
+    } catch (err) {
+      console.error("[conversation-store] releaseQueuedTurn failed:", err);
+      return false;
+    }
+  }
+
+  /** Cancel ONE queued turn (the UI's per-item cancel). Only active rows can
+   *  flip — a promoted turn already started, so claiming it was cancelled
+   *  would be a lie. Returns whether a row flipped. */
+  cancelQueuedTurn(queueId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const result = db
+        .prepare(
+          `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+            WHERE queue_id = ? AND state IN ('queued', 'promoting')`,
+        )
+        .run(Date.now(), queueId);
+      return Number(result.changes) > 0;
+    } catch (err) {
+      console.error("[conversation-store] cancelQueuedTurn failed:", err);
+      return false;
+    }
+  }
+
+  /** Cancel every active queued turn for a thread (stop/delete path). Flips
+   *  racing the cancellation may hold a row in 'promoting'; if only 'queued'
+   *  flipped, that drain's error path could `releaseQueuedTurn` the row back
+   *  to 'queued', resurrecting a turn the user cancelled. Returns the
+   *  cancelled queue ids. */
+  cancelQueuedTurnsForThread(threadId: string): string[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(
+          `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+            WHERE thread_id = ? AND state IN ('queued', 'promoting')
+           RETURNING queue_id`,
+        )
+        .all(Date.now(), threadId) as Array<{ queue_id: string }>;
+      return rows.map((r) => r.queue_id);
+    } catch (err) {
+      console.error("[conversation-store] cancelQueuedTurnsForThread failed:", err);
+      return [];
+    }
+  }
+
+  /** Active queued turns for a thread, in execution order — the same steer-
+   *  first (newest steer first) then FIFO ordering claimNext uses, so the UI
+   *  shows exactly what will run next. Settled rows (promoted/cancelled) are
+   *  excluded: they are history, not queue. */
+  listQueuedTurns(threadId: string): QueuedTurnRow[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(
+          `SELECT * FROM queued_turns
+            WHERE thread_id = ? AND state IN ('queued', 'promoting')
+            ORDER BY
+              CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
+              CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
+              created_at ASC,
+              queue_id ASC`,
+        )
+        .all(threadId) as QueuedTurnDbRow[];
+      return rows.map(rowToQueuedTurn);
+    } catch (err) {
+      console.error("[conversation-store] listQueuedTurns failed:", err);
+      return [];
+    }
+  }
+
+  /** The thread and every spawned descendant (subtree), in stable
+   *  ancestor-first order — archive/delete operate on the whole subtree
+  private subtreeIds(db: DatabaseSync, threadId: string): string[] {
+    const out: string[] = [threadId];
+    const childOf = db.prepare(`SELECT thread_id FROM threads WHERE parent_thread_id = ?`);
+    let frontier = [threadId];
+    while (frontier.length > 0) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const r of childOf.all(id) as Array<{ thread_id: string }>) {
+          // Cycle-guarded: a corrupted parent pointer must not loop forever.
+          if (!out.includes(r.thread_id)) {
+            out.push(r.thread_id);
+            next.push(r.thread_id);
+          }
+        }
+      }
+      frontier = next;
+    }
+    return out;
+  }
+
+  /** Whether any thread in the set has a live turn — a running assistant
+   *  block, or a subagent still starting/running. The busy guard for
+   *  archive/delete: a spawned child mid-turn must never be archived or
+  private subtreeBusy(db: DatabaseSync, threadIds: string[]): boolean {
+    if (threadIds.length === 0) return false;
+    const placeholders = threadIds.map(() => "?").join(",");
+    const runningBlock = db
+      .prepare(
+        `SELECT 1 FROM blocks
+          WHERE thread_id IN (${placeholders}) AND role = 'assistant' AND state = 'running'
+          LIMIT 1`,
+      )
+      .get(...threadIds);
+    if (runningBlock) return true;
+    const runningSubagent = db
+      .prepare(
+        `SELECT 1 FROM subagents
+          WHERE thread_id IN (${placeholders}) AND status IN ('starting', 'running')
+          LIMIT 1`,
+      )
+      .get(...threadIds);
+    // `null` means "no row" — `!== undefined` would wrongly treat it as busy.
+    return Boolean(runningSubagent);
+  }
+
+  /** Pre-flight guard for the destructive IPC path: the ipc layer checks this
+   *  BEFORE unlinking attachment files (which must happen before the rows go,
+   *  so the registry can resolve the paths). */
+  canDeleteThread(threadId: string): { ok: true } | { ok: false; reason: "missing" | "busy" } {
+    const db = this.handle();
+    if (!db) return { ok: false, reason: "missing" };
+    try {
+      const exists = db
+        .prepare(`SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1`)
+        .get(threadId);
+      if (!exists) return { ok: false, reason: "missing" };
+      return this.subtreeBusy(db, this.subtreeIds(db, threadId))
+        ? { ok: false, reason: "busy" }
+        : { ok: true };
+    } catch (err) {
+      console.error("[conversation-store] canDeleteThread failed:", err);
+      return { ok: false, reason: "missing" };
+    }
+  }
+
+  /** Hide (or restore) a thread and its spawned subtree from the recent list
+   *  without destroying them. `archived` is a timestamp so a future "archived"
+   *  view can order by it. Refuses (and returns the reason) when a spawned
+   *  descendant is mid-turn. */
+  setArchived(
+    threadId: string,
+    archived: boolean,
+  ): { ok: true } | { ok: false; reason: "missing" | "busy" | "error" } {
+    const db = this.handle();
+    if (!db) return { ok: false, reason: "missing" };
+    try {
+      const ids = this.subtreeIds(db, threadId);
+      const exists = db
+        .prepare(`SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1`)
+        .get(threadId);
+      if (!exists) return { ok: false, reason: "missing" };
+      if (archived && this.subtreeBusy(db, ids)) {
+        console.warn(
+          `[conversation-store] refusing to archive ${threadId}: a spawned descendant is mid-turn`,
+        );
+        return { ok: false, reason: "busy" };
+      }
+      // Queued turns deliberately SURVIVE archive: kone's archive is a
+      // reversible hide/reveal toggle — it never stops a session and nothing
+      // gates sends on `archived`, so a restored thread's queue is still
+      // thread.archived STOPS the provider session; kone has no such stop.
+      // Queued rows are cancelled on deleteThread only (the durable-queue
+      // contract: a deleted thread's turns can never resurrect).
+      const stamp = archived ? Date.now() : null;
+      const placeholders = ids.map(() => "?").join(",");
+      db.prepare(`UPDATE threads SET archived = ? WHERE thread_id IN (${placeholders})`).run(
+        stamp,
+        ...ids,
+      );
+      return { ok: true };
+    } catch (err) {
+      console.error("[conversation-store] setArchived failed:", err);
+      return { ok: false, reason: "error" };
+    }
+  }
+
+  /** Permanently remove a thread, its spawned subtree, and everything under
+   *  them. Irreversible — the renderer confirms before calling. Refuses (and
+   *  returns the reason) when a spawned descendant is mid-turn. */
+  deleteThread(
+    threadId: string,
+  ): { ok: true } | { ok: false; reason: "missing" | "busy" | "error" } {
+    const db = this.handle();
+    if (!db) return { ok: false, reason: "missing" };
+    try {
+      const ids = this.subtreeIds(db, threadId);
+      const exists = db
+        .prepare(`SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1`)
+        .get(threadId);
+      if (!exists) return { ok: false, reason: "missing" };
+      if (this.subtreeBusy(db, ids)) {
+        console.warn(
+          `[conversation-store] refusing to delete ${threadId}: a spawned descendant is mid-turn`,
+        );
+        return { ok: false, reason: "busy" };
+      }
+      const placeholders = ids.map(() => "?").join(",");
+      withTransaction(db, () => {
+        db.prepare(`DELETE FROM items       WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM blocks      WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM attachments WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM subagents   WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM gateway_ops WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM turn_usage  WHERE thread_id IN (${placeholders})`).run(...ids);
+        // Queued turns die with the thread: a deleted thread's follow-ups must
+        // never survive to resurrect (same contract as cancelQueuedTurnsForThread
+        // on the stop path — the rows are gone either way, so no in-flight
+        // release can bring them back).
+        db.prepare(`DELETE FROM queued_turns WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM threads     WHERE thread_id IN (${placeholders})`).run(...ids);
+      });
+      for (const id of ids) this.knownConversationIds.delete(id);
+      return { ok: true };
+    } catch (err) {
+      console.error("[conversation-store] deleteThread failed:", err);
+      return { ok: false, reason: "error" };
+    }
+  }
+
+  /** Every attachment row in the registry, across all threads — the GC sweep's
+   *  "referenced set" (orphaned on-disk files are anything NOT in this set). */
+  listAllAttachments(): StoredAttachment[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const rows = db.prepare(`SELECT * FROM attachments`).all() as AttachmentRow[];
+      return rows.map(rowToAttachment);
+    } catch (err) {
+      console.error("[conversation-store] listAllAttachments failed:", err);
+      return [];
+    }
+  }
+
+  /** Drop one attachment's registry row. Used by AttachmentStore when unlinking
+   *  its bytes failed — the row must not keep claiming a file that GC will
+   *  otherwise sweep (the file becomes orphan-eligible instead of owned). */
+  forgetAttachment(attachmentId: string): void {
     const db = this.handle();
     if (!db) return;
     try {
-      db.exec("BEGIN");
-      db.prepare(`DELETE FROM items       WHERE thread_id = ?`).run(threadId);
-      db.prepare(`DELETE FROM blocks      WHERE thread_id = ?`).run(threadId);
-      db.prepare(`DELETE FROM attachments WHERE thread_id = ?`).run(threadId);
-      db.prepare(`DELETE FROM threads     WHERE thread_id = ?`).run(threadId);
-      db.exec("COMMIT");
-      this.knownConversationIds.delete(threadId);
+      db.prepare(`DELETE FROM attachments WHERE attachment_id = ?`).run(attachmentId);
     } catch (err) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* no active transaction */
-      }
-      console.error("[conversation-store] deleteThread failed:", err);
+      console.error("[conversation-store] forgetAttachment failed:", err);
     }
   }
 
@@ -1263,7 +2082,7 @@ export class ConversationStore {
       const row = db
         .prepare(
           `SELECT * FROM threads WHERE project_path = ? AND archived IS NULL
-           ORDER BY updated_at DESC LIMIT 1`,
+           ORDER BY COALESCE(last_activity_at, updated_at) DESC LIMIT 1`,
         )
         .get(projectPath) as ThreadRow | undefined;
       return row ? rowToMeta(row) : null;
@@ -1295,79 +2114,159 @@ export class ConversationStore {
       const blockRows = db
         .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY seq`)
         .all(threadId) as BlockRow[];
-      const itemRows = db
-        .prepare(`SELECT * FROM items WHERE thread_id = ? ORDER BY turn_id, seq`)
-        .all(threadId) as ItemRow[];
+      const items = this.loadTurnParts(db, threadId);
 
-      const subagentRows = db
-        .prepare(`SELECT * FROM subagents WHERE thread_id = ? ORDER BY turn_id, seq`)
-        .all(threadId) as SubagentRow[];
-
-      // Rebuild the nested runs first: each run is a snapshot plus the items its
-      // child emitted, keyed per turn by the spawning tool-use id.
-      const runsByTurn = new Map<string, Map<string, SubagentRun>>();
-      for (const r of subagentRows) {
-        const perTurn = runsByTurn.get(r.turn_id) ?? new Map<string, SubagentRun>();
-        perTurn.set(r.tool_use_id, rowToSubagent(r));
-        runsByTurn.set(r.turn_id, perTurn);
-      }
-
-      // Group items by turn once, then attach — avoids a query per assistant
-      // block. Items tagged with a run's tool-use id go into that run instead of
-      // the turn body, and the run is hung off its parent tool_call item below.
-      const itemsByTurn = new Map<string, RuntimeItem[]>();
-      const itemsById = new Map<string, RuntimeItem>();
-      for (const r of itemRows) {
-        const item = rowToItem(r);
-        const run = r.subagent_tool_use_id
-          ? runsByTurn.get(r.turn_id)?.get(r.subagent_tool_use_id)
-          : undefined;
-        if (run) {
-          run.items.push(item);
-          continue;
-        }
-        itemsById.set(`${r.turn_id} ${r.item_id}`, item);
-        const list = itemsByTurn.get(r.turn_id) ?? [];
-        list.push(item);
-        itemsByTurn.set(r.turn_id, list);
-      }
-
-      for (const [turnId, perTurn] of runsByTurn) {
-        for (const run of perTurn.values()) {
-          if (!run.parentItemId) continue;
-          const parent = itemsById.get(`${turnId} ${run.parentItemId}`);
-          if (parent) parent.subagent = run;
-        }
-      }
-
-      const blocks: StoredBlock[] = blockRows.map((b) =>
-        b.role === "user"
-          ? {
-              id: b.block_id,
-              role: "user",
-              text: b.text ?? "",
-              at: b.at,
-              ...(parseAttachments(b.attachments_json)?.length
-                ? { attachments: parseAttachments(b.attachments_json) }
-                : {}),
-              ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
-            }
-          : {
-              id: b.block_id,
-              role: "assistant",
-              turnId: b.turn_id ?? b.block_id,
-              items: itemsByTurn.get(b.turn_id ?? "") ?? [],
-              state: (b.state as StoredAssistantState | null) ?? "completed",
-              error: b.error ?? undefined,
-              at: b.at,
-              endedAt: b.ended_at ?? undefined,
-              ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
-            },
-      );
-
-      return { ...rowToMeta(threadRow), blocks };
+      return {
+        ...rowToMeta(threadRow),
+        blocks: assembleBlocks(blockRows, items.itemRows, items.subagentRows),
+      };
     } catch (err) {
       console.error("[conversation-store] loadThread failed:", err);
+      return null;
+    }
+  }
+
+  /** Load a thread's items + subagent rows (the "parts" inside its turns).
+   *  Shared by the full read and the windowed page read, which slices blocks
+   *  first and then fetches parts only for the turns the slice covers. */
+  private loadTurnParts(
+    db: DatabaseSync,
+    threadId: string,
+    turnIds?: string[],
+  ): { itemRows: ItemRow[]; subagentRows: SubagentRow[] } {
+    if (turnIds && turnIds.length === 0) {
+      return { itemRows: [], subagentRows: [] };
+    }
+    const itemRows = turnIds
+      ? (db
+          .prepare(
+            `SELECT * FROM items WHERE thread_id = ? AND turn_id IN (${turnIds.map(() => "?").join(",")})
+             ORDER BY turn_id, seq`,
+          )
+          .all(threadId, ...turnIds) as ItemRow[])
+      : (db
+          .prepare(`SELECT * FROM items WHERE thread_id = ? ORDER BY turn_id, seq`)
+          .all(threadId) as ItemRow[]);
+    const subagentRows = turnIds
+      ? (db
+          .prepare(
+            `SELECT * FROM subagents WHERE thread_id = ? AND turn_id IN (${turnIds.map(() => "?").join(",")})
+             ORDER BY turn_id, seq`,
+          )
+          .all(threadId, ...turnIds) as SubagentRow[])
+      : (db
+          .prepare(`SELECT * FROM subagents WHERE thread_id = ? ORDER BY turn_id, seq`)
+          .all(threadId) as SubagentRow[]);
+    return { itemRows, subagentRows };
+  }
+
+   *  kone's blocks are the turn analog). Loads the newest page of blocks whose
+   *  window ends at the `limit`-th newest user prompt (the user-anchored
+   *  boundary), walking back from the exclusive keyset cursor when one is
+   *  given. Blocks come back in ascending timeline order, each assistant turn
+   *  carrying its ordered items, plus the opaque cursor for the next older
+   *  page (null when the thread has no older blocks).
+   *
+   * The cursor deliberately encodes (at, block_id) — NOT `seq`, the row-id
+   * analog: seq is renumbered by the delete+reinsert of fork-import copying
+   * and any future compaction/rebuild, which would silently invalidate every
+   * persisted cursor. `at` and `block_id` are event-derived content, so
+   * cursors survive rewrites, and the thread id rides inside the cursor so it
+   * can never be replayed against a different thread (a foreign or malformed
+   * cursor degrades to a first-page request, exactly like the reference). */
+  loadThreadPage(
+    threadId: string,
+    options?: { limit?: number; maxRaw?: number; cursor?: string },
+  ): StoredThreadPage | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const threadRow = db
+        .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
+        .get(threadId) as ThreadRow | undefined;
+      if (!threadRow) return null;
+
+      const limit = Math.max(1, Math.min(options?.limit ?? PAGE_DEFAULT_USER_BLOCKS, 200));
+      const maxRaw = Math.max(limit, options?.maxRaw ?? limit * PAGE_RAW_FANOUT);
+      const cursor = options?.cursor
+        ? decodeThreadPageCursor(options.cursor)
+        : null;
+      // A cursor minted for a different thread must not walk this one — treat
+      // it as a first-page request (the reference's degrade rule).
+      const boundary = cursor && cursor.threadId === threadId ? cursor : null;
+
+      const candidates = (
+        boundary
+          ? db
+              .prepare(
+                `SELECT * FROM blocks
+                  WHERE thread_id = ?
+                    AND (at < ? OR (at = ? AND block_id < ?))
+                  ORDER BY at DESC, block_id DESC
+                  LIMIT ?`,
+              )
+              .all(threadId, boundary.beforeAnchorAt, boundary.beforeAnchorAt, boundary.beforeBlockId, maxRaw)
+          : db
+              .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY at DESC, block_id DESC LIMIT ?`)
+              .all(threadId, maxRaw)
+      ) as BlockRow[];
+
+      // Walk newest → oldest until the limit-th user prompt is included (the
+      // user-anchored window boundary; a fan-out run of assistant blocks
+      // between prompts rides along). The maxRaw ceiling bounds pathological
+      // fan-out — a walk cut by it simply pages an unanchored slice and keeps
+      // going, exactly like the reference's maxRawTurns.
+      const kept: BlockRow[] = [];
+      let userSeen = 0;
+      for (const row of candidates) {
+        kept.push(row);
+        if (row.role === "user") {
+          userSeen += 1;
+          if (userSeen >= limit) break;
+        }
+      }
+      if (kept.length === 0) {
+        return {
+          threadId,
+          meta: rowToMeta(threadRow),
+          blocks: [],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+
+      const oldest = kept[kept.length - 1]!;
+      const hasMore =
+        db
+          .prepare(
+            `SELECT 1 FROM blocks
+              WHERE thread_id = ? AND (at < ? OR (at = ? AND block_id < ?))
+              LIMIT 1`,
+          )
+          .get(threadId, oldest.at, oldest.at, oldest.block_id) != null;
+
+      const turnIds = [...new Set(kept.map((b) => b.turn_id).filter((t): t is string => Boolean(t)))];
+      const parts = this.loadTurnParts(db, threadId, turnIds);
+      // Oldest-first, the renderer timeline order. Reversing the DESC walk is
+      // exactly (at, block_id) ASC — deterministic across pages, so a cursor
+      // walk can never skip or repeat a block.
+      const blocks = assembleBlocks(kept.reverse(), parts.itemRows, parts.subagentRows);
+
+      return {
+        threadId,
+        meta: rowToMeta(threadRow),
+        blocks,
+        nextCursor: hasMore
+          ? encodeThreadPageCursor({
+              threadId,
+              beforeAnchorAt: oldest.at,
+              beforeBlockId: oldest.block_id,
+            })
+          : null,
+        hasMore,
+      };
+    } catch (err) {
+      console.error("[conversation-store] loadThreadPage failed:", err);
       return null;
     }
   }
@@ -1388,7 +2287,7 @@ export class ConversationStore {
                SELECT 1 FROM blocks b
                WHERE b.thread_id = t.thread_id AND b.role = 'user'
              )
-           ORDER BY t.updated_at DESC`,
+           ORDER BY COALESCE(t.last_activity_at, t.updated_at) DESC`,
         )
         .all(projectPath) as ThreadRow[];
       return rows.map(rowToMeta);
@@ -1559,37 +2458,47 @@ export class ConversationStore {
          VALUES (?, ?, ?, 'assistant_text', 'completed', ?)`,
       );
       this.durably(db, () => {
-        const now = input.createdAt;
-        insertThread.run(
-          input.threadId,
-          input.projectPath,
-          input.provider,
-          input.model ?? null,
-          now,
-          now,
-          input.title ?? null,
-          input.sourceThreadId,
-          JSON.stringify(input.forkContext),
-          JSON.stringify(input.lineage),
-          input.requestId ?? null,
-        );
-        for (const block of input.importedBlocks) {
-          const turnId = block.role === "assistant" ? `fork-import:${block.id}` : null;
-          insertBlock.run(
-            block.id,
+        // One transaction: the thread row, every imported block and every
+        // narrative item must land together — a crash mid-fork would leave a
+        // half-imported side chat.
+        withTransaction(db, () => {
+          const now = input.createdAt;
+          insertThread.run(
             input.threadId,
-            block.role,
-            turnId,
-            block.text,
-            block.role === "assistant" ? "completed" : null,
-            block.at,
-            block.role === "assistant" ? block.at : null,
-            block.attachments?.length ? JSON.stringify(block.attachments) : null,
+            input.projectPath,
+            input.provider,
+            input.model ?? null,
+            now,
+            now,
+            input.title ?? null,
+            input.sourceThreadId,
+            JSON.stringify(input.forkContext),
+            JSON.stringify(input.lineage),
+            input.requestId ?? null,
           );
-          if (turnId) {
-            insertNarrativeItem.run(`${block.id}:narrative`, input.threadId, turnId, block.text);
+          for (const block of input.importedBlocks) {
+            const turnId = block.role === "assistant" ? `fork-import:${block.id}` : null;
+            insertBlock.run(
+              block.id,
+              input.threadId,
+              block.role,
+              turnId,
+              block.text,
+              block.role === "assistant" ? "completed" : null,
+              block.at,
+              block.role === "assistant" ? block.at : null,
+              block.attachments?.length ? JSON.stringify(block.attachments) : null,
+            );
+            if (turnId) {
+              insertNarrativeItem.run(
+                `${block.id}:narrative`,
+                input.threadId,
+                turnId,
+                block.text,
+              );
+            }
           }
-        }
+        });
       });
       return true;
     } catch (err) {
@@ -1659,13 +2568,14 @@ export class ConversationStore {
         db.prepare(
           `INSERT INTO threads (
              thread_id, project_path, provider, model, created_at, updated_at,
-             title, lineage_json, parent_thread_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             last_activity_at, title, lineage_json, parent_thread_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           input.threadId,
           input.projectPath,
           input.provider,
           input.model ?? null,
+          input.createdAt,
           input.createdAt,
           input.createdAt,
           input.title,
@@ -1724,8 +2634,9 @@ export class ConversationStore {
    *  Walks `parent_thread_id` upward and is deliberately cycle-guarded: a
    *  corrupted row (a pointer loop) must return a large finite depth that the
    *  guard refuses, never hang the store. A missing parent terminates the
-   *  walk — children survive their parent's deletion on purpose, and a
-   *  deleted parent just means the chain stops there. */
+   *  walk — deleteThread now cascades to the whole subtree in one transaction,
+   *  so an orphaned parent pointer only appears if a row was lost another way,
+   *  and the chain simply stops there. */
   spawnDepth(threadId: string): number {
     const db = this.handle();
     if (!db) return 0;
@@ -2224,6 +3135,10 @@ type ThreadRow = {
   lineage_json: string | null;
   request_id: string | null;
   parent_thread_id: string | null;
+  is_pinned: number;
+  model_selection_json: string | null;
+  resume_session_at: string | null;
+  last_activity_at: number | null;
 };
 
 type BlockRow = {
@@ -2284,6 +3199,105 @@ function parseAttachments(json: string | null): ChatAttachment[] | undefined {
   }
 }
 
+// ── durable turn queue (v20) ─────────────────────────────────────────────────
+
+/** How a queued follow-up runs when the live turn settles: 'queue' joins the
+ *  FIFO line, 'steer' jumps it (most recent steer first). */
+export type QueuedTurnDispatchMode = "queue" | "steer";
+
+/** Lifecycle of a queued turn: 'queued' → 'promoting' (claimed) → 'promoted'
+ *  (ran), 'promoting' → 'queued' (released after a failed drain), and either
+ *  active state → 'cancelled' (stop/delete). Only the active states are
+ *  pending; promoted/cancelled rows are inert history. */
+export type QueuedTurnState = "queued" | "promoting" | "promoted" | "cancelled";
+
+/** The enqueue payload the service layer hands the store. `userBlockId` is the
+ *  journaled user-prompt block UUID (recordUserBlock mints it) — the replay
+ *  idempotency key: the same prompt re-delivered by a retrying caller is a
+ *  no-op, not a duplicate. The nullable knobs are replayed onto the promoted
+ *  send exactly as the user picked them. */
+export type QueuedTurnEnqueueInput = {
+  /** kone-minted UUID (randomUUID). */
+  queueId: string;
+  threadId: string;
+  userBlockId: string;
+  dispatchMode?: QueuedTurnDispatchMode;
+  /** The final prompt text (already merged with any prior prompt edits). */
+  input: string;
+  /** File/image metadata (bytes live on disk; JSON-serialized on the row). */
+  attachments?: ChatAttachment[];
+  /** Enqueue timestamp; defaults to now (callers pass it for ordering tests). */
+  at?: number;
+  model?: string;
+  mode?: string;
+  effort?: string;
+  serviceTier?: string;
+  contextWindow?: string;
+};
+
+/** A queued turn as read back from the store — the shape the service layer
+ *  promotes (claim returns it) and the UI lists. */
+export type QueuedTurnRow = {
+  queueId: string;
+  threadId: string;
+  userBlockId: string;
+  dispatchMode: QueuedTurnDispatchMode;
+  state: QueuedTurnState;
+  input: string;
+  attachments?: ChatAttachment[];
+  model?: string;
+  mode?: string;
+  effort?: string;
+  serviceTier?: string;
+  contextWindow?: string;
+  /** Times this turn was claimed; survives release→reclaim (the retry ledger). */
+  attemptCount: number;
+  createdAt: number;
+  updatedAt: number;
+  promotedAt?: number;
+};
+
+type QueuedTurnDbRow = {
+  queue_id: string;
+  thread_id: string;
+  user_block_id: string;
+  dispatch_mode: QueuedTurnDispatchMode;
+  state: QueuedTurnState;
+  input: string;
+  attachments_json: string | null;
+  model: string | null;
+  mode: string | null;
+  effort: string | null;
+  service_tier: string | null;
+  context_window: string | null;
+  attempt_count: number;
+  created_at: number;
+  updated_at: number;
+  promoted_at: number | null;
+};
+
+function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
+  const attachments = parseAttachments(row.attachments_json);
+  return {
+    queueId: row.queue_id,
+    threadId: row.thread_id,
+    userBlockId: row.user_block_id,
+    dispatchMode: row.dispatch_mode,
+    state: row.state,
+    input: row.input,
+    ...(attachments?.length ? { attachments } : {}),
+    ...(row.model ? { model: row.model } : {}),
+    ...(row.mode ? { mode: row.mode } : {}),
+    ...(row.effort ? { effort: row.effort } : {}),
+    ...(row.service_tier ? { serviceTier: row.service_tier } : {}),
+    ...(row.context_window ? { contextWindow: row.context_window } : {}),
+    attemptCount: row.attempt_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.promoted_at !== null ? { promotedAt: row.promoted_at } : {}),
+  };
+}
+
 type ItemRow = {
   item_id: string;
   turn_id: string;
@@ -2317,6 +3331,9 @@ type SubagentRow = {
 };
 
 function rowToMeta(row: ThreadRow): StoredThreadMeta {
+  const selection = parseJsonObject<{ effort?: string; serviceTier?: string; contextWindow?: string }>(
+    row.model_selection_json,
+  );
   return {
     threadId: row.thread_id,
     projectPath: row.project_path,
@@ -2333,6 +3350,14 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
     contextWindow: row.context_window ?? undefined,
     compactsAutomatically: row.compacts_auto ? true : undefined,
     title: row.title ?? undefined,
+    /** Pins live in the DB (v18) so they follow the thread across profiles. */
+    isPinned: row.is_pinned === 1,
+    /** Recency ordering key (v18): last conversation activity, distinct from
+     *  `updatedAt` which title/archive bookkeeping also bumps. Backfilled from
+     *  updated_at for pre-v18 rows. */
+    lastActivityAt: row.last_activity_at ?? row.updated_at,
+    resumeSessionAt: row.resume_session_at ?? undefined,
+    ...(selection ? { selection } : {}),
     ...(parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json)
       ? { forkContext: parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json) }
       : {}),
@@ -2375,6 +3400,80 @@ function rowToItem(row: ItemRow): RuntimeItem {
   };
 }
 
+// ── IPC wire projection ───────────────────────────────────────────────────────
+// payload projection): a tool_call's expandable body (`detail`) can carry the
+// provider's FULL tool result — MBs of stdout/stderr/diff on Codex's MCP and
+// shell calls — and it dominates wire size on tool-heavy threads. The store
+// keeps the full payload (persistence is the source of truth); only the copy
+// crossing IPC is bounded. The three text kinds are NEVER touched: their
+// `text` is the streamed reply and must arrive byte-identical.
+//
+// The superseded-update half of the reference (b7d1981b5 dropping
+// tool.updated rows a completion supersedes) has no kone equivalent: kone's
+// store upserts one row per item per turn and the renderer replaces items by
+// itemId in place, so an in-flight tool call never accumulates rows anywhere —
+// there is no history of updates to drop (verified in conversationStore.test.ts
+// and the renderer's upsertItem). Live updates still stream, slimmed, matching
+// the reference's "live events are untouched".
+
+/** Wire cap for a tool_call's expandable body. Bounded, but generous enough
+ *  that the expandable row still shows real content (kone renders `detail`
+export const TOOL_DETAIL_WIRE_CAP = 8_000;
+
+function capDetail(detail: string | undefined): string | undefined {
+  if (!detail || detail.length <= TOOL_DETAIL_WIRE_CAP) return detail;
+  return (
+    detail.slice(0, TOOL_DETAIL_WIRE_CAP) +
+    "\n\n… (output truncated; the full result stays in this thread's local history)"
+  );
+}
+
+/** Project one item for the wire. Returns the same object when nothing
+ *  changes, so the hot streaming path allocates nothing per event. */
+export function projectRuntimeItemForIpc(item: RuntimeItem): RuntimeItem {
+  if (item.kind !== "tool_call") return item;
+  const detail = capDetail(item.detail);
+  let subagent = item.subagent;
+  if (subagent) {
+    const items = subagent.items.map(projectRuntimeItemForIpc);
+    if (items.some((it, index) => it !== subagent?.items[index])) {
+      subagent = { ...subagent, items };
+    }
+  }
+  if (detail === item.detail && subagent === item.subagent) return item;
+  return { ...item, ...(detail !== item.detail ? { detail } : {}), ...(subagent ? { subagent } : {}) };
+}
+
+/** Project a runtime event for the wire. Only the item-carrying events can
+ *  hold tool bodies; everything else crosses unchanged (same object). */
+export function projectRuntimeEventForIpc(event: RuntimeEvent): RuntimeEvent {
+  if (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed") {
+    return event;
+  }
+  const item = projectRuntimeItemForIpc(event.item);
+  return item === event.item ? event : { ...event, item };
+}
+
+/** Project a stored thread's blocks for the wire (history reads — the renderer
+ *  rehydrates from these, so a reloaded thread lands with bounded bodies too). */
+export function projectStoredBlocksForIpc(blocks: StoredBlock[]): StoredBlock[] {
+  let changed = false;
+  const projected = blocks.map((b) => {
+    if (b.role !== "assistant") return b;
+    const items = b.items.map((it) => projectRuntimeItemForIpc(it));
+    const blockChanged = items.some((it, index) => it !== b.items[index]);
+    if (!blockChanged) return b;
+    changed = true;
+    return { ...b, items };
+  });
+  return changed ? projected : blocks;
+}
+
+export function projectStoredThreadForIpc(thread: StoredThread): StoredThread {
+  const blocks = projectStoredBlocksForIpc(thread.blocks);
+  return blocks === thread.blocks ? thread : { ...thread, blocks };
+}
+
 function rowToSubagent(row: SubagentRow): SubagentRun {
   return {
     toolUseId: row.tool_use_id,
@@ -2395,6 +3494,74 @@ function rowToSubagent(row: SubagentRow): SubagentRun {
     endedAt: row.ended_at ?? undefined,
     items: [],
   };
+}
+
+/** Rebuild the nested runs first: each run is a snapshot plus the items its
+ *  child emitted, keyed per turn by the spawning tool-use id. */
+function assembleBlocks(
+  blockRows: BlockRow[],
+  itemRows: ItemRow[],
+  subagentRows: SubagentRow[],
+): StoredBlock[] {
+  const runsByTurn = new Map<string, Map<string, SubagentRun>>();
+  for (const r of subagentRows) {
+    const perTurn = runsByTurn.get(r.turn_id) ?? new Map<string, SubagentRun>();
+    perTurn.set(r.tool_use_id, rowToSubagent(r));
+    runsByTurn.set(r.turn_id, perTurn);
+  }
+
+  // Group items by turn once, then attach — avoids a query per assistant
+  // block. Items tagged with a run's tool-use id go into that run instead of
+  // the turn body, and the run is hung off its parent tool_call item below.
+  const itemsByTurn = new Map<string, RuntimeItem[]>();
+  const itemsById = new Map<string, RuntimeItem>();
+  for (const r of itemRows) {
+    const item = rowToItem(r);
+    const run = r.subagent_tool_use_id
+      ? runsByTurn.get(r.turn_id)?.get(r.subagent_tool_use_id)
+      : undefined;
+    if (run) {
+      run.items.push(item);
+      continue;
+    }
+    itemsById.set(`${r.turn_id}\u0000${r.item_id}`, item);
+    const list = itemsByTurn.get(r.turn_id) ?? [];
+    list.push(item);
+    itemsByTurn.set(r.turn_id, list);
+  }
+
+  for (const [turnId, perTurn] of runsByTurn) {
+    for (const run of perTurn.values()) {
+      if (!run.parentItemId) continue;
+      const parent = itemsById.get(`${turnId}\u0000${run.parentItemId}`);
+      if (parent) parent.subagent = run;
+    }
+  }
+
+  return blockRows.map((b) =>
+    b.role === "user"
+      ? {
+          id: b.block_id,
+          role: "user",
+          text: b.text ?? "",
+          at: b.at,
+          ...(parseAttachments(b.attachments_json)?.length
+            ? { attachments: parseAttachments(b.attachments_json) }
+            : {}),
+          ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
+        }
+      : {
+          id: b.block_id,
+          role: "assistant",
+          turnId: b.turn_id ?? b.block_id,
+          items: itemsByTurn.get(b.turn_id ?? "") ?? [],
+          state: (b.state as StoredAssistantState | null) ?? "completed",
+          error: b.error ?? undefined,
+          at: b.at,
+          endedAt: b.ended_at ?? undefined,
+          ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
+        },
+  );
 }
 
 // ── singleton ────────────────────────────────────────────────────────────────
