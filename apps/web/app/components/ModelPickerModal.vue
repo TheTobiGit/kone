@@ -4,7 +4,7 @@ import { useStorage } from "@vueuse/core";
 import { motion } from "motion-v";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon, Search01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon, Search01Icon, Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
 import { EFFORT_META, type BrandKey, type EffortTier, type PickerProvider } from "~/utils/modelCatalog";
 import type { ProviderKind } from "~/types/desktop";
 
@@ -229,11 +229,40 @@ const favorites = computed<MProvider>(() => {
   };
 });
 
-// Favorites leads the rail — but only once something's been starred. With an
-// empty shelf the tab would go nowhere, so it stays hidden until it has content.
-const providers = computed<MProvider[]>(() =>
-  favorites.value.models.length ? [favorites.value, ...realProviders.value] : realProviders.value,
-);
+// ── Recent ────────────────────────────────────────────────────────────────
+// A live shelf of the models the user last selected, most-recent first, drawn
+// from every installed provider. Mirrors Favorites: only real rows land here
+// (we only record on a committed select), and each keeps a handle on its origin
+// so picking one works exactly as it would in that provider's own list. Order
+// follows `recentKeys` (an ordered list), not catalog order.
+const recent = computed<MProvider>(() => {
+  const byKey = new Map<string, { m: MModel; label: string; ready: boolean }>();
+  for (const p of realProviders.value) {
+    for (const m of p.models) byKey.set(m.key, { m, label: p.label, ready: p.ready });
+  }
+  const picks: MModel[] = [];
+  for (const key of recentKeys.value) {
+    const hit = byKey.get(key);
+    if (hit) picks.push({ ...hit.m, origin: { label: hit.label, ready: hit.ready } });
+  }
+  return {
+    id: "recent",
+    label: "Recent",
+    sub: "Recently used",
+    brand: "codex",
+    ready: false,
+    models: picks,
+  };
+});
+
+// Favorites and Recent lead the rail — but each only once it has content. With
+// an empty shelf the tab would go nowhere, so it stays hidden until then.
+const providers = computed<MProvider[]>(() => {
+  const leading: MProvider[] = [];
+  if (favorites.value.models.length) leading.push(favorites.value);
+  if (recent.value.models.length) leading.push(recent.value);
+  return [...leading, ...realProviders.value];
+});
 
 // ── navigation ──────────────────────────────────────────────────────────────
 const provider = ref<MProvider | null>(null);
@@ -343,6 +372,7 @@ function selectModel(m: MModel) {
   const fastMode = isPendingModel ? pending.value!.fastMode : matchFastMode(m);
   const contextWindow = isPendingModel ? pending.value!.contextWindow : matchContextWindow(m);
   if (!provider.value || !e) return;
+  recordRecent(m.key);
   close(() => emit("select", { provider: m.providerId, modelId: e.modelId, tier: e.tier, fastMode, contextWindow }));
 }
 
@@ -391,10 +421,21 @@ const favoritedKeys = useStorage<Set<string>>(
     },
   },
 );
+// The recently-selected model keys, most-recent first. Persisted to localStorage
+// so the Recent shelf survives the modal closing (it unmounts) and an app
+// restart. Capped so the tab stays a shortlist, not a full history.
+const RECENT_CAP = 8;
+const recentKeys = useStorage<string[]>("kone:recent-models", []);
+
 const activeSettingsModelKey = ref<string | null>(null);
 
 function isFavorited(key: string): boolean {
   return favoritedKeys.value.has(key);
+}
+
+// Record a committed pick at the head of the Recent shelf (deduped, capped).
+function recordRecent(key: string) {
+  recentKeys.value = [key, ...recentKeys.value.filter((k) => k !== key)].slice(0, RECENT_CAP);
 }
 
 // Star / unstar — ready models only. Reassign the Set so the Favorites
@@ -531,13 +572,14 @@ watch(provider, () => {
   activeSettingsModelKey.value = null;
   void nextTick(syncHeight);
 });
-// Unstarring the last favourite hides its tab — step off it if it's open.
+// A leading tab (Favorites / Recent) can lose its last row — step off it onto a
+// real provider if it's the one open, so the list never strands on a dead tab.
 watch(
-  () => favorites.value.models.length,
-  (n) => {
-    if (n === 0 && provider.value?.id === "favorites") {
-      provider.value = realProviders.value[0] ?? null;
-    }
+  () => [favorites.value.models.length, recent.value.models.length] as const,
+  ([favN, recN]) => {
+    const open = provider.value?.id;
+    if (open === "favorites" && favN === 0) provider.value = realProviders.value[0] ?? null;
+    else if (open === "recent" && recN === 0) provider.value = realProviders.value[0] ?? null;
   },
 );
 
@@ -612,6 +654,13 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
                   stroke-linejoin="round"
                 />
               </svg>
+              <HugeiconsIcon
+                v-else-if="p.id === 'recent'"
+                :icon="Clock01Icon"
+                :size="19"
+                :stroke-width="1.6"
+                class="mp-clock"
+              />
               <ProviderLogo v-else :brand="p.brand" :size="20" />
             </button>
           </aside>
@@ -657,7 +706,9 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
                     ? `No models match “${query.trim()}”.`
                     : provider.id === 'favorites'
                       ? 'No favorites yet — star a model to keep it here.'
-                      : 'No models available.' }}
+                      : provider.id === 'recent'
+                        ? 'No recent models yet — pick one to see it here.'
+                        : 'No models available.' }}
                 </p>
                 <button
                   v-for="m in displayModels"
@@ -874,6 +925,9 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   width: 20px;
   height: 20px;
   color: var(--accent);
+}
+.mp-clock {
+  color: var(--ink);
 }
 
 /* ── List ─────────────────────────────────────────────────────────────────── */
