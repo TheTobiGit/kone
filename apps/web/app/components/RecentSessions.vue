@@ -9,7 +9,7 @@ import {
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { Magnet } from "~/components/ui/magnet";
@@ -72,25 +72,80 @@ const sections = computed(() => {
 
 const hasContent = computed(() => props.pinned.length > 0 || props.recent.length > 0);
 
-// ── "view all" ────────────────────────────────────────────────────────────────
-// The component renders every row it is handed; the RECENT group is capped for
-// display (8) with a toggle to reveal the rest the host passed. Pinned rows are
+// ── lazy reveal ─────────────────────────────────────────────────────────────
+// The component renders every row it is handed; the RECENT group starts capped
+// (8) and grows a batch at a time as the sentinel below the list scrolls into
+// view — no "view all" button, the list just keeps unrolling. Pinned rows are
 // deliberate and never capped. The cap is display-only — nothing here touches
 // the composable's own limit.
-const RECENT_CAP = 8;
-const expandedRecent = ref(false);
-const { cue } = useSound();
-const recentOvershoot = computed(() => Math.max(0, props.recent.length - RECENT_CAP));
+const RECENT_INITIAL = 8;
+const RECENT_STEP = 8;
+// Two counters drive the reveal. `recentLimit` is how many rows are mounted —
+// the batch of real rows lands immediately, so its content is already there.
+// `recentReady` is how many of those have had their skeleton overlay lifted.
+// A row between the two is real underneath, masked by a shimmering skeleton on
+// top; the mask fades out (skeleton leaves last) so content replaces it in
+// place with no empty gap.
+const recentLimit = ref(RECENT_INITIAL);
+const recentReady = ref(RECENT_INITIAL);
+const recentOvershoot = computed(() => Math.max(0, props.recent.length - recentLimit.value));
 function visibleRows(section: { kind: "pinned" | "recent"; rows: SessionSummary[] }): SessionSummary[] {
-  if (section.kind === "recent" && !expandedRecent.value) {
-    return section.rows.slice(0, RECENT_CAP);
+  if (section.kind === "recent") {
+    return section.rows.slice(0, recentLimit.value);
   }
   return section.rows;
 }
-function toggleRecent(): void {
-  expandedRecent.value = !expandedRecent.value;
-  cue("toggle");
+// A recent row is still masked while it sits past the ready mark. Pinned rows
+// are always real.
+function isLoading(section: { kind: "pinned" | "recent" }, ri: number): boolean {
+  return section.kind === "recent" && ri >= recentReady.value;
 }
+
+// The observer watches a probe below the list: as it nears the viewport we mount
+// the next batch (real content, behind skeleton masks), let the masks shimmer
+// for a beat, then lift them. The rows are all in memory, so the delay is purely
+// to let the skeleton register before the content settles in.
+const REVEAL_DELAY = 460;
+let observer: IntersectionObserver | null = null;
+let revealTimer: number | undefined;
+const revealing = ref(false);
+
+function revealMore(): void {
+  if (revealing.value || recentOvershoot.value === 0) return;
+  revealing.value = true;
+  // Mount the next batch now (real rows appear, masked); lift the masks after a
+  // beat so the skeleton is what fades, never a hole in the list.
+  recentLimit.value = Math.min(recentLimit.value + RECENT_STEP, props.recent.length);
+  revealTimer = window.setTimeout(() => {
+    recentReady.value = recentLimit.value;
+    revealing.value = false;
+  }, REVEAL_DELAY);
+}
+// Template (function) ref: the probe mounts and unmounts with the overshoot, so
+// (re)wire the observer whenever the element itself changes.
+function setSentinel(el: Element | null | any): void {
+  observer?.disconnect();
+  observer = null;
+  if (!el || typeof IntersectionObserver === "undefined") return;
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) revealMore();
+    },
+    { rootMargin: "0px 0px 240px 0px" },
+  );
+  observer.observe(el as Element);
+}
+watch(
+  () => props.recent.length,
+  (len) => {
+    if (recentLimit.value > len) recentLimit.value = Math.max(RECENT_INITIAL, len);
+    if (recentReady.value > recentLimit.value) recentReady.value = recentLimit.value;
+  },
+);
+onBeforeUnmount(() => {
+  observer?.disconnect();
+  window.clearTimeout(revealTimer);
+});
 
 // 3_200_000 → "3.2M", 480_000 → "480K". Trims trailing zeros so 1.9M / 1.24M
 // both read cleanly.
@@ -147,15 +202,44 @@ function hasDiff(s: SessionSummary): boolean {
           v-for="(s, ri) in visibleRows(section)"
           :key="s.threadId"
           class="rs__row"
+          :class="{
+            'rs__row--loading': isLoading(section, ri),
+            'rs__row--lazy': section.kind === 'recent' && ri >= RECENT_INITIAL,
+          }"
           :style="{ '--i': section.start + ri }"
-          role="button"
-          tabindex="0"
-          @click="emit('open', s.threadId)"
-          @keydown.enter.prevent="emit('open', s.threadId)"
-          @keydown.space.prevent="emit('open', s.threadId)"
-          @pointerenter="prefetchThread(s.threadId)"
-          @focus="prefetchThread(s.threadId)"
+          :role="isLoading(section, ri) ? undefined : 'button'"
+          :tabindex="isLoading(section, ri) ? -1 : 0"
+          :aria-hidden="isLoading(section, ri) ? 'true' : undefined"
+          @click="!isLoading(section, ri) && emit('open', s.threadId)"
+          @keydown.enter.prevent="!isLoading(section, ri) && emit('open', s.threadId)"
+          @keydown.space.prevent="!isLoading(section, ri) && emit('open', s.threadId)"
+          @pointerenter="!isLoading(section, ri) && prefetchThread(s.threadId)"
+          @focus="!isLoading(section, ri) && prefetchThread(s.threadId)"
         >
+          <!-- Skeleton mask: the real row is already mounted underneath; this
+               shimmering cover sits on top until the row is marked ready, then
+               fades out — so the placeholder is what leaves, revealing content
+               already in place rather than snapping a fresh row in. -->
+          <Transition name="rs-mask">
+            <div v-if="isLoading(section, ri)" class="rs__mask" aria-hidden="true">
+              <div class="rs__skel-main">
+                <div class="rs__skel-title">
+                  <span class="rs__skel-dot rs__shimmer" />
+                  <span
+                    class="rs__skel-name rs__shimmer"
+                    :style="{ width: 42 + ((ri * 13) % 34) + '%' }"
+                  />
+                </div>
+                <div class="rs__skel-meta">
+                  <span class="rs__skel-chip rs__shimmer" style="width: 68px" />
+                  <span class="rs__skel-chip rs__shimmer" style="width: 40px" />
+                  <span class="rs__skel-chip rs__shimmer" style="width: 52px" />
+                </div>
+              </div>
+              <span class="rs__skel-tokens rs__shimmer" />
+            </div>
+          </Transition>
+
           <div class="rs__main">
             <div class="rs__title">
               <ProviderLogo :brand="sessionBrand(s.provider, s.brand, s.model)" :size="16" />
@@ -257,15 +341,15 @@ function hasDiff(s: SessionSummary): boolean {
         </li>
       </ul>
 
-      <button
+      <!-- Reveal-on-scroll probe: while more recents remain uncapped, this thin
+           element sits below the list; when it nears view the next batch mounts
+           (already-loaded rows behind skeleton masks) and the masks then lift. -->
+      <div
         v-if="section.kind === 'recent' && recentOvershoot > 0"
-        type="button"
-        class="rs__more"
-        :aria-expanded="expandedRecent ? 'true' : 'false'"
-        @click="toggleRecent"
-      >
-        {{ expandedRecent ? "Show fewer" : `View all ${props.recent.length} conversations` }}
-      </button>
+        :ref="setSentinel"
+        class="rs__probe"
+        aria-hidden="true"
+      />
     </div>
   </section>
 </template>
@@ -350,32 +434,118 @@ function hasDiff(s: SessionSummary): boolean {
   padding: 0;
   list-style: none;
 }
-/* "View all" — the quietest thing on the page, like the thread's "N earlier
-   exchanges" button: mono, transparent, appears only when the host passed more
-   rows than the display cap. */
-.rs__more {
-  align-self: flex-start;
-  margin-top: 2px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--rs-muted, #a1a1aa);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+/* Reveal-on-scroll probe — a thin element below the RECENT list the observer
+   watches; when it nears view the next batch mounts. Takes almost no space. */
+.rs__probe {
+  height: 8px;
+  margin-top: 14px;
+  pointer-events: none;
 }
-.rs__more:hover,
-.rs__more:focus-visible {
-  background: color-mix(in srgb, var(--rs-muted, #a1a1aa) 12%, transparent);
-  color: var(--ink, #1c1c1f);
+
+/* Skeleton mask — mirrors the real row's geometry (dot + name over a mono meta
+   line, token block on the right) and sits over the already-mounted row until
+   it's marked ready. Ground-filled so the real content behind never shows
+   through early; it fades out (leave transition below), so the placeholder is
+   what leaves and the content is already there. */
+.rs__mask {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  background: var(--ground);
+  pointer-events: auto;
 }
-.rs__more:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink, #1c1c1f) 30%, transparent);
+.rs-mask-leave-active {
+  transition: opacity 440ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs-mask-leave-to {
+  opacity: 0;
+}
+.rs__skel-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.rs__skel-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.rs__skel-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  flex: none;
+}
+.rs__skel-name {
+  height: 14px;
+  border-radius: 5px;
+  max-width: 320px;
+}
+.rs__skel-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rs__skel-chip {
+  height: 9px;
+  border-radius: 4px;
+}
+.rs__skel-tokens {
+  width: 54px;
+  height: 24px;
+  border-radius: 6px;
+  flex: none;
+}
+/* The shimmer itself — a soft sweep across a low-contrast fill, house-calm (no
+   hard highlight). Honors reduced-motion by holding a static fill. */
+.rs__shimmer {
+  display: inline-block;
+  background:
+    linear-gradient(
+      100deg,
+      transparent 20%,
+      color-mix(in srgb, var(--ink, #1c1c1f) 6%, transparent) 40%,
+      color-mix(in srgb, var(--ink, #1c1c1f) 10%, transparent) 50%,
+      color-mix(in srgb, var(--ink, #1c1c1f) 6%, transparent) 60%,
+      transparent 80%
+    ),
+    color-mix(in srgb, var(--ink, #1c1c1f) 5%, transparent);
+  background-size: 220% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  animation: rs-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes rs-shimmer {
+  from { background-position: 180% 0, 0 0; }
+  to { background-position: -80% 0, 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rs__shimmer { animation: none; }
+  .rs-mask-leave-active { transition: opacity 160ms ease; }
+}
+@media (prefers-color-scheme: dark) {
+  .rs__shimmer {
+    background:
+      linear-gradient(
+        100deg,
+        transparent 20%,
+        color-mix(in srgb, #fff 8%, transparent) 40%,
+        color-mix(in srgb, #fff 13%, transparent) 50%,
+        color-mix(in srgb, #fff 8%, transparent) 60%,
+        transparent 80%
+      ),
+      color-mix(in srgb, #fff 6%, transparent);
+    background-size: 220% 100%, 100% 100%;
+    background-repeat: no-repeat;
+  }
 }
 .rs__row {
+  position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -405,6 +575,20 @@ function hasDiff(s: SessionSummary): boolean {
 .rs__row:focus-visible,
 .rs__row:focus-within {
   transform: scale(1.009);
+}
+/* Lazily-revealed rows land already settled — no entrance rise, since they wake
+   up behind the skeleton mask and the mask's fade is the reveal. */
+.rs__row--lazy {
+  animation: none;
+}
+/* A masked row is inert: the mask blocks pointer input, and the hover lift is
+   suppressed so nothing stirs behind the placeholder. */
+.rs__row--loading {
+  cursor: default;
+}
+.rs__row--loading:hover,
+.rs__row--loading:focus-within {
+  transform: none;
 }
 /* Borderless row — the whole row opens the thread; on hover the title lights
    up (ink-soft → ink, same as lane / file-detail actions) and the trailing
