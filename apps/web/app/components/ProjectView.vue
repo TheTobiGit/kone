@@ -39,7 +39,7 @@ import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat } from "~/composables/useSideChats";
 
 const props = defineProps<{ project: Project }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; profile: [] }>();
 
 // One reactive git model drives the whole page; every surface below reads from
 // its derived counts, and the action handlers edit it in place so a change
@@ -602,12 +602,13 @@ watch(
 // The active provider's catalog feeds the composer's own model name + effort dial.
 const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 
-// A model change on a provider that bakes model/effort at spawn (Claude) can't
+// A model change on a provider that bakes model/effort at spawn (Claude,
+// OpenCode, Antigravity — the effort rides the print `--model` label) can't
 // apply to a running session — it needs a fresh one. Codex takes model/effort
 // per turn, so it changes in place. Mirrors each adapter's `sessionModelSwitch`.
-const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent", "opencode"]);
-const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode", droid: "Factory" };
-const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode", droid: "droid" };
+const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent", "opencode", "antigravity"]);
+const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode", droid: "Factory", antigravity: "Google" };
+const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode", droid: "droid", antigravity: "antigravity" };
 
 // The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
 // "last used" choice that every project opens with (not per-project). The
@@ -625,22 +626,28 @@ const enabledReady = computed(() =>
   providers.ready.value.filter((s) => providerSettings.isEnabled(s.provider)),
 );
 
-// The provider rail the model picker shows — one ready, enabled provider per catalog.
-const pickerProviders = computed<PickerProvider[]>(() =>
-  enabledReady.value.map((s) => ({
-    id: s.provider,
-    label: s.label,
-    sub: `${PROVIDER_VENDOR[s.provider]} · ${catalogs.value[s.provider]?.length ?? 0} models`,
-    brand: PROVIDER_BRAND[s.provider],
-    ready: s.readiness === "ready",
-    models: catalogs.value[s.provider] ?? [],
-  })),
-);
+// The provider rail the model picker shows — one ready, enabled provider per
+// catalog. Each catalog is filtered through the same model-visibility rule the
+// providers pane's per-model toggles write, so hiding a model there drops it here.
+const pickerProviders = computed<PickerProvider[]>(() => {
+  const visible = providerSettings.modelVisiblePredicate.value;
+  return enabledReady.value.map((s) => {
+    const models = (catalogs.value[s.provider] ?? []).filter((m) => visible(s.provider, m.key));
+    return {
+      id: s.provider,
+      label: s.label,
+      sub: `${PROVIDER_VENDOR[s.provider]} · ${models.length} model${models.length === 1 ? "" : "s"}`,
+      brand: PROVIDER_BRAND[s.provider],
+      ready: s.readiness === "ready",
+      models,
+    };
+  });
+});
 
 // Three views over the same page: the working tree ("overview"), the
 // conversation ("board"), and the repository ("git"). Sending the first turn
 // flips to the board; the corner glyphs move between overview and git.
-const surface = ref<"overview" | "board" | "git">("overview");
+const surface = ref<"overview" | "board" | "git" | "agents">("overview");
 
 /** Point agent.activeKey at the thread the composer is editing so setModel and
  *  friends land on the session the next send will use. No-ops until the board
@@ -1096,7 +1103,7 @@ function toLauncher() {
 // return glyph — the file detail, a commit, a pull request — so it never has to
 // answer for a layer it can't see.
 function onBack() {
-  if (surface.value === "board" || surface.value === "git") {
+  if (surface.value === "board" || surface.value === "git" || surface.value === "agents") {
     surface.value = "overview";
     return;
   }
@@ -1120,13 +1127,28 @@ function openGitSpace() {
   void space.load();
 }
 
+// ── the agents surface ────────────────────────────────────────────────────────
+// The repository space's sibling, and mounted on the same terms: nothing about
+// what the agents have spent or what they can reach belongs on project open, but
+// once it has been opened its report and its inventory scan are worth keeping
+// across a step back to the working tree.
+const agentsMounted = ref(false);
+function openAgentSpace() {
+  cue("press");
+  agentsMounted.value = true;
+  surface.value = "agents";
+}
+
 // ── the centre nav ──────────────────────────────────────────────────────────
 // The one row the back arrow and the branch glyph already bookend gains a middle:
-// three names for the three layers this project has — its working tree, the board
-// of threads, and the repository. It rides the same fixed top line and steps out
+// a name per space this project has — its working tree, the agents working in it,
+// and the repository underneath. It rides the same fixed top line and steps out
 // of the way (like the back arrow) whenever a sub-surface draws its own chrome.
+// Agents sits in the middle deliberately: it reads between the code as it stands
+// and the history of how it got there.
 const NAV = [
   { id: "overview", label: "Project" },
+  { id: "agents", label: "Agents" },
   { id: "git", label: "Git" },
 ] as const;
 const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
@@ -1134,6 +1156,10 @@ function goSurface(target: (typeof NAV)[number]["id"]) {
   if (target === surface.value) return;
   if (target === "git") {
     openGitSpace();
+    return;
+  }
+  if (target === "agents") {
+    openAgentSpace();
     return;
   }
   cue("press");
@@ -1733,14 +1759,16 @@ function onDiscardFile(path: string) {
          sub-surface takes over. Only shown once a machine name resolves — when
          nobody's signed in there's nothing to draw. -->
     <Transition name="project-avatar">
-      <div
+      <button
         v-if="displayName && !backIsAway && surface !== 'board'"
+        type="button"
         class="project-avatar"
         :title="displayName"
-        :aria-label="`Signed in as ${displayName}`"
+        :aria-label="`Open profile — ${displayName}`"
+        @click="emit('profile')"
       >
         <span class="project-avatar__chip">{{ initial }}</span>
-      </div>
+      </button>
     </Transition>
 
     <!-- BOARD · the thread strip. Every live thread in this project is a column
@@ -1821,6 +1849,7 @@ function onDiscardFile(path: string) {
             :behind="g.behind.value"
             switchable
             @switch="switcherOpen = !switcherOpen"
+            @profile="emit('profile')"
           />
           <AnimatePresence>
             <ProjectSwitcher
@@ -1884,6 +1913,19 @@ function onDiscardFile(path: string) {
         @open-file="onOpenFileFromGit"
         @detail-depth="gitDepth = $event"
       />
+    </div>
+
+    <!-- AGENTS · what the agents have spent, what they're allowed, and what they
+         can reach. Mounted on the same terms as the repository: on first entry,
+         then kept, so a usage report and an inventory scan survive a step back. -->
+    <div
+      v-if="agentsMounted"
+      class="surface-layer surface-layer--git"
+      :class="{ 'surface-layer--hidden': surface !== 'agents' }"
+      :inert="surface !== 'agents' || Boolean(activeFile)"
+      :aria-hidden="surface !== 'agents' ? 'true' : undefined"
+    >
+      <AgentSpace :project="project" />
     </div>
 
     <!-- The folder settles into the corner last — rising into place with a soft
@@ -2283,6 +2325,13 @@ function onDiscardFile(path: string) {
   right: 2rem;
   z-index: 40;
   display: inline-flex;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.project-avatar:focus-visible {
+  outline: none;
 }
 .project-avatar__chip {
   display: inline-flex;
@@ -2297,10 +2346,13 @@ function onDiscardFile(path: string) {
   font-size: 13px;
   line-height: 1;
   user-select: none;
-  cursor: default;
   transition:
     transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.3s ease;
+}
+.project-avatar:focus-visible .project-avatar__chip {
+  outline: 2px solid color-mix(in srgb, var(--ink) 26%, transparent);
+  outline-offset: 2px;
 }
 .project-avatar:hover .project-avatar__chip {
   transform: scale(1.06);
@@ -2332,6 +2384,22 @@ function onDiscardFile(path: string) {
   transition:
     opacity 0.3s ease,
     transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  /* The top row is one gesture: the nav drops into its perch on the same beat
+     as the back arrow and the profile chip (--proj-enter-back), settling from
+     a hair above. Its --away state rides the same transform family, so the
+     entrance animation and the step-aside never fight. */
+  animation: nav-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: var(--proj-enter-back, 0ms);
+}
+@keyframes nav-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 .project-nav--away {
   opacity: 0;
@@ -2384,6 +2452,9 @@ function onDiscardFile(path: string) {
   .project-nav__mark {
     transition: none;
   }
+  .project-nav {
+    animation: none;
+  }
 }
 
 /* ── Surfaces ─────────────────────────────────────────────────────────────── */
@@ -2402,10 +2473,14 @@ function onDiscardFile(path: string) {
      <motion.main>); only the corner curve eases in CSS, alongside it. */
   transition: border-radius 0.4s cubic-bezier(0.22, 1, 0.36, 1);
   /* Project-home entrance cascade — read top → bottom, corner accents last.
-     Child blocks (greeting, changes, sessions, composer) inherit these via
-     --proj-enter-* and layer their own internal stagger on top. Defined on the
-     mount root (not a per-surface class) so the docked composer keeps its delay
-     regardless of which surface owns the viewport. */
+     The fixed top row enters first as one beat: back arrow, centre nav and the
+     profile chip all ride --proj-enter-back. Then the working tree reads in —
+     greeting → changes → sessions, where the sessions slot is held by the
+     RECENT skeleton until the first history read lands (its shimmer rows
+     inherit this same var) — and finally the corner folder. Child blocks
+     inherit these via --proj-enter-* and layer their own internal stagger on
+     top. Defined on the mount root (not a per-surface class) so the docked
+     composer keeps its delay regardless of which surface owns the viewport. */
    --proj-enter-back: 0ms;
    --proj-enter-greet: 30ms;
    --proj-enter-changes: 130ms;
@@ -2480,6 +2555,28 @@ function onDiscardFile(path: string) {
     transition-duration: 0.01s;
   }
   .surface-layer--board.surface-layer--hidden {
+    transform: none;
+  }
+}
+
+/* The repository is the board's peer on the centre nav, so it arrives the same
+   way — the whole space easing up into place on entry, snapping back on leave
+   (same hidden state carries no transition). */
+.surface-layer--git:not(.surface-layer--hidden) {
+  transition:
+    opacity 0.42s ease,
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: 50% 22%;
+  will-change: opacity, transform;
+}
+.surface-layer--git.surface-layer--hidden {
+  transform: translateY(10px) scale(0.985);
+}
+@media (prefers-reduced-motion: reduce) {
+  .surface-layer--git:not(.surface-layer--hidden) {
+    transition-duration: 0.01s;
+  }
+  .surface-layer--git.surface-layer--hidden {
     transform: none;
   }
 }

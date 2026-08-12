@@ -40,7 +40,7 @@ const props = defineProps<{
   switchable?: boolean;
 }>();
 
-const emit = defineEmits<{ switch: [] }>();
+const emit = defineEmits<{ switch: []; profile: [] }>();
 
 // Only the leading segment (the project name) is the switcher trigger.
 const isTrigger = (i: number) => props.switchable && i === 0;
@@ -196,10 +196,16 @@ const body = computed<Seg[]>(() => {
          flex row so the avatar chip aligns to the text, not the baseline. -->
     <p class="line line--hey">
       <span class="t-muted">Hey,</span>
-      <template v-if="displayName">
+      <button
+        v-if="displayName"
+        type="button"
+        class="who"
+        :aria-label="`Open settings for ${displayName}`"
+        @click="emit('profile')"
+      >
         <span class="chip">{{ initial }}</span>
         <span class="t-ink">{{ displayName }}</span>
-      </template>
+      </button>
       <span v-else class="t-ink">there</span>
     </p>
 
@@ -391,6 +397,34 @@ const body = computed<Seg[]>(() => {
 }
 .t-num {
   color: var(--ink);
+}
+
+/* The user is a button: chip + name in one lane, reading as touchable. A soft
+   pill warms in on hover — the same borderless treatment the project-name
+   switcher uses — but the margins are pulled back so it keeps its place beside
+   "Hey," rather than shifting the line. */
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: -3px -7px;
+  padding: 3px 7px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.18s ease;
+}
+.who:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 26%, transparent);
+  outline-offset: 1px;
+}
+.who .chip {
+  transition: transform 0.18s ease;
+}
+.who:hover .chip {
+  transform: scale(1.06);
 }
 
 /* Avatar chip — ink on ground, inverted. */

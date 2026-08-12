@@ -90,6 +90,15 @@ const RECENT_STEP = 8;
 const recentLimit = ref(RECENT_INITIAL);
 const recentReady = ref(RECENT_INITIAL);
 const recentOvershoot = computed(() => Math.max(0, props.recent.length - recentLimit.value));
+
+// ── initial-load skeleton ───────────────────────────────────────────────────
+// While the first history read is in flight the block isn't a hole in the page:
+// a skeleton of shimmering rows (the same geometry as the lazy-reveal masks)
+// holds the RECENT group's place, staggered in on the project-home entrance
+// cascade (--proj-enter-sessions) like every other block. When the data arrives
+// the overlay dissolves in place — the real rows are already cascading in
+// underneath, so the placeholder is what leaves.
+const SKELETON_ROWS = 6;
 function visibleRows(section: { kind: "pinned" | "recent"; rows: SessionSummary[] }): SessionSummary[] {
   if (section.kind === "recent") {
     return section.rows.slice(0, recentLimit.value);
@@ -183,9 +192,13 @@ function hasDiff(s: SessionSummary): boolean {
 
 <template>
   <!-- Hold until the first read resolves, and stay out of the layout entirely
-       when there's nothing to show — no empty header, no reserved gap. -->
-  <section v-if="!loading && hasContent" class="rs">
-    <div v-for="section in sections" :key="section.kind" class="rs__group">
+       when there's nothing to show — no empty header, no reserved gap. The
+       loading skeleton sits over the same slot (see rs__skeleton below) and the
+       whole block fades away if the read comes back empty. -->
+  <Transition name="rs-out">
+    <section v-if="loading || hasContent" class="rs">
+      <template v-if="hasContent">
+        <div v-for="section in sections" :key="section.kind" class="rs__group">
       <div class="rs__head" :style="{ '--i': section.start }">
         <HugeiconsIcon
           class="rs__hicon"
@@ -352,11 +365,59 @@ function hasDiff(s: SessionSummary): boolean {
         aria-hidden="true"
       />
     </div>
-  </section>
+      </template>
+
+      <!-- Initial-load skeleton: while the first read is still in flight this
+           ground-filled overlay holds the RECENT group's place — header + six
+           shimmering rows, entering on the same cascade slot as the real rows
+           (--proj-enter-sessions). When the data lands it dissolves in place:
+           the real block is already rising in underneath, so the placeholder is
+           what leaves, exactly like the lazy-reveal masks. -->
+      <Transition name="rs-loading">
+        <div v-if="loading" class="rs__skeleton" role="status" aria-label="Loading conversations">
+          <div class="rs__head" style="--i: 0">
+            <HugeiconsIcon
+              class="rs__hicon rs__clock"
+              :icon="Clock01Icon"
+              :size="11"
+              :stroke-width="1.8"
+              aria-hidden="true"
+            />
+            <span class="rs__label">RECENT</span>
+          </div>
+          <div class="rs__skel-list">
+            <div
+              v-for="n in SKELETON_ROWS"
+              :key="n"
+              class="rs__skel-row"
+              :style="{ '--i': n }"
+            >
+              <div class="rs__skel-main">
+                <div class="rs__skel-title">
+                  <span class="rs__skel-dot rs__shimmer" />
+                  <span
+                    class="rs__skel-name rs__shimmer"
+                    :style="{ width: 42 + ((n * 13) % 34) + '%' }"
+                  />
+                </div>
+                <div class="rs__skel-meta">
+                  <span class="rs__skel-chip rs__shimmer" style="width: 68px" />
+                  <span class="rs__skel-chip rs__shimmer" style="width: 40px" />
+                  <span class="rs__skel-chip rs__shimmer" style="width: 52px" />
+                </div>
+              </div>
+              <span class="rs__skel-tokens rs__shimmer" />
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </section>
+  </Transition>
 </template>
 
 <style scoped>
 .rs {
+  position: relative;
   display: flex;
   flex-direction: column;
   /* Extra air between the PINNED and RECENT groups so the two sections read as
@@ -452,6 +513,52 @@ function hasDiff(s: SessionSummary): boolean {
   pointer-events: none;
 }
 
+/* ── initial-load skeleton ──────────────────────────────────────────────── */
+/* The overlay covers the whole block slot while the first read is in flight,
+   ground-filled so no real row can flash through early. It sits above the
+   groups (z-3, same as the lazy masks) and leaves with a fade, so when data
+   lands the placeholder dissolves over the real rows already rising in. */
+.rs__skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: var(--ground);
+}
+/* Skeleton rows mirror the real row's geometry and share its entrance cadence
+   (soft rise + settle, staggered down the list from --proj-enter-sessions), so
+   the placeholder builds the same way the block will. */
+.rs__skel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.rs__skel-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  animation: rs-row-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(var(--proj-enter-sessions, 0ms) + 50ms + min(var(--i, 0) * 30ms, 360ms));
+}
+/* The overlay's own departure — the same unhurried dissolve the lazy masks
+   use, so the two skeleton systems share one feel. */
+.rs-loading-leave-active {
+  transition: opacity 440ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs-loading-leave-to {
+  opacity: 0;
+}
+/* An empty read closes the whole block with a quiet fade instead of the page
+   snapping shut. */
+.rs-out-leave-active {
+  transition: opacity 0.28s ease;
+}
+.rs-out-leave-to {
+  opacity: 0;
+}
+
 /* Skeleton mask — mirrors the real row's geometry (dot + name over a mono meta
    line, token block on the right) and sits over the already-mounted row until
    it's marked ready. Ground-filled so the real content behind never shows
@@ -537,6 +644,9 @@ function hasDiff(s: SessionSummary): boolean {
 @media (prefers-reduced-motion: reduce) {
   .rs__shimmer { animation: none; }
   .rs-mask-leave-active { transition: opacity 160ms ease; }
+  .rs-loading-leave-active,
+  .rs-out-leave-active { transition: opacity 160ms ease; }
+  .rs__skel-row { animation: none; }
 }
 @media (prefers-color-scheme: dark) {
   .rs__shimmer {

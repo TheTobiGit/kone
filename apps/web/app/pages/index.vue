@@ -123,7 +123,7 @@ const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
 // edge — the X account-drawer gesture. A straight translate, no scale: the page
 // keeps its full size and just shifts right by the reveal width.
 //
-// That width isn't a constant: a settings pane that's a *page* (Agent providers)
+// That width isn't a constant: a settings pane that's a *page* (Providers)
 // widens the panel, and the stage moves further to uncover it — so the same
 // gesture reads as "step aside" for a list and "make room" for a page. The
 // number comes from useSettingsSurface so the drawer and the stage can't drift.
@@ -134,7 +134,13 @@ const stageSpring = {
   mass: 0.8,
 } as const;
 
-const { revealWidth: settingsWidth } = useSettingsSurface();
+const { revealWidth: settingsWidth, openPane } = useSettingsSurface();
+
+function onOpenProfile() {
+  cue("press");
+  settingsOpen.value = true;
+  openPane("profile");
+}
 
 // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the
 // same keystroke opens and closes it (Escape also closes, via the drawer). The
@@ -178,7 +184,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       :transition="stageSpring"
     >
       <div class="h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
-        <ProjectView v-if="project" :key="project.path" :project="project" @close="project = null" />
+        <ProjectView
+          v-if="project"
+          :key="project.path"
+          :project="project"
+          @close="project = null"
+          @profile="onOpenProfile"
+        />
         <AppHomeRecent
           v-else-if="showRecent"
           :recents="recents"
@@ -190,6 +202,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           @forget="forget"
           @open-session="onOpenSession"
           @settings="settingsOpen = true"
+          @profile="onOpenProfile"
         />
         <AppHomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />
       </div>

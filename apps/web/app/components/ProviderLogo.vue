@@ -170,6 +170,22 @@ const mono = computed(() => props.tone === "mono");
       />
     </svg>
 
+    <!-- ── Antigravity — the four-point starburst glyph (official mark) ──── -->
+    <svg
+      v-else-if="brand === 'antigravity'"
+      x="4"
+      y="4.5"
+      width="16"
+      height="15"
+      viewBox="0 0 16 15"
+      overflow="visible"
+    >
+      <path
+        :fill="mono ? '#ffffff' : 'currentColor'"
+        d="M14.08 13.98C14.95 14.63 16.25 14.2 15.05 13.01C11.48 9.54 12.23 0 7.79 0C3.35 0 4.1 9.54 0.53 13.01C-0.77 14.31 0.64 14.63 1.5 13.98C4.86 11.71 4.65 7.7 7.79 7.7C10.93 7.7 10.72 11.71 14.08 13.98Z"
+      />
+    </svg>
+
     <!-- ── Unknown provider — a calm dot ─────────────────────────────────── -->
     <circle v-else cx="12" cy="12" r="4.5" :fill="mono ? '#ffffff' : 'currentColor'" />
   </svg>

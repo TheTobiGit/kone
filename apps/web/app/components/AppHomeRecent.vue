@@ -23,6 +23,7 @@ const emit = defineEmits<{
   reveal: [path: string];
   forget: [path: string];
   settings: [];
+  profile: [];
   openSession: [target: { path: string; name: string; threadId: string }];
 }>();
 
@@ -186,14 +187,16 @@ function onSideAction(
           <!-- The signed-in user's profile chip, closing the top bar at the
                far right — same ink-dot initial as the in-project corner and the
                Home greeting. Only shown once a machine name resolves. -->
-          <div
+          <button
             v-if="displayName"
-            class="ml-0.5 inline-flex size-[30px] shrink-0 select-none items-center justify-center rounded-full bg-ink text-[13px] leading-none text-ground transition-transform duration-300 ease-out hover:scale-105"
+            type="button"
+            class="ml-0.5 inline-flex size-[30px] shrink-0 cursor-pointer select-none items-center justify-center rounded-full bg-ink text-[13px] leading-none text-ground transition-transform duration-300 ease-out hover:scale-105 focus-visible:outline-none"
             :title="displayName"
-            :aria-label="`Signed in as ${displayName}`"
+            :aria-label="`Open profile — ${displayName}`"
+            @click="emit('profile')"
           >
             {{ initial }}
-          </div>
+          </button>
         </div>
       </template>
     </HomeHeader>
