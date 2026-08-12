@@ -1,6 +1,6 @@
 // Serialize work per key without retaining one lock for every key ever seen.
 //
-// commit 8bacc7475) — same semantics, promise-based instead of Effect-based:
+// Same semantics, promise-based instead of Effect-based:
 // callers for the same key run strictly one at a time, callers for different
 // keys run concurrently, and each key's entry is deleted once the last holder
 // or queued waiter has left (the user count includes queued callers, so

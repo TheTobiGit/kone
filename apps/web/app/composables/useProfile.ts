@@ -2,6 +2,7 @@ import { computed } from "vue";
 import { useStorage } from "@vueuse/core";
 
 // The local, editable identity behind the profile board and the avatar chips.
+// kone has no cloud account — the name/handle/avatar are derived
 // from the machine user (useUser) and then overridable locally, persisted in
 // localStorage. Nothing here leaves the device.
 //
@@ -16,6 +17,7 @@ const COLOR_KEY = "kone:profile:avatarColor:v1";
 const IMAGE_KEY = "kone:profile:avatarImage:v1";
 
 // A small, restrained palette — the empty default keeps the inverted ink chip
+// kone already uses; the rest are quiet accents.
 export const AVATAR_COLORS = [
   { id: "", label: "Ink", value: "" },
   { id: "iris", label: "Iris", value: "#6a63f0" },

@@ -213,7 +213,6 @@ const empty = computed(() => loaded.value && (!stats.value || stats.value.totals
 
 // ── editing ───────────────────────────────────────────────────────────────
 // The edit UI lifts into the same scrim + elastic card the app's other modals
-// use (lifted from the pickers). `editing` mounts it; `editShown` drives the
 // enter/exit spring so a close fades out before the node unmounts.
 const editing = ref(false);
 const editShown = ref(false);

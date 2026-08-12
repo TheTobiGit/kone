@@ -246,7 +246,6 @@ describe("gateway integration (real store + HTTP)", () => {
     // The pad persisted in the real store.
     expect(store.getScratchpad(event.padId)!.body).toBe("agent note one");
 
-    // Append merges server-side.
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note two", append: true } } });
     expect((res.json as any).result.structuredContent).toMatchObject({ revision: 2 });
     expect((res.json as any).result.structuredContent.pad.body).toBe("agent note one\n\nagent note two");

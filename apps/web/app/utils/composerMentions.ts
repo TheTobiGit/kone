@@ -50,7 +50,7 @@ export function replaceComposerTextRange(
 
 // The quoted body is bounded rather than `*`. Unbounded, every `@"` with no
 // closing quote makes the engine scan the rest of the text from each candidate
-// for `[label](file)` links in composerInlineTokens, #5782). A cap makes each
+// for `[label](file)` links in composerInlineTokens. A cap makes each
 // attempt constant-bounded. Only paths that need quoting are ever written by
 // formatFileMention, and no real filesystem path approaches this: the longest
 // component any common filesystem allows is 255 chars.

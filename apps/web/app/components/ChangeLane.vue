@@ -297,7 +297,7 @@ const bundleCards: BundleCard[] = [
 }
 
 /* +N bundle: a fanned stack of real file cards, count pill overlapping the
-   bottom edge (Paper "+9 more"). */
+   bottom edge. */
 .bundle {
   display: flex;
   align-items: center;

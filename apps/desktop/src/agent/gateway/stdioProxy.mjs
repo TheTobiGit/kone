@@ -1,7 +1,6 @@
 // kone agent gateway stdio→HTTP MCP proxy (docs/mcp-gateway-design.md §3/§4).
 //
 // The ACP fallback for Cursor/Droid sessions whose agent does not advertise
-// agentGateway/stdioProxyScript.ts — mechanics borrowed verbatim, branded for
 // kone). The provider CLI spawns this script as an MCP stdio server; every
 // newline-delimited JSON-RPC message on stdin is POSTed to the loopback HTTP
 // gateway, and the JSON response is written back as one NDJSON line.

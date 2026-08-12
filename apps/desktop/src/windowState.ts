@@ -120,7 +120,6 @@ export function manageWindowState(win: BrowserWindow) {
       2,
     );
 
-    // Skip the disk write when nothing actually changed (e.g. a resize event
     // that ended at the same bounds, or close after an already-saved resize).
     if (serialized === lastWritten) return;
 

@@ -201,7 +201,6 @@ const api = {
         ipcRenderer.invoke("github:pr-diff", dir, number),
       commitAuthors: (dir: string): Promise<GitCommitAuthors | null> =>
         ipcRenderer.invoke("github:commit-authors", dir),
-      /** Open a URL in the user's real browser. */
       open: (url: string): Promise<void> => ipcRenderer.invoke("github:open", url),
     },
     clone: (url: string, dest: string): Promise<CloneResult> =>

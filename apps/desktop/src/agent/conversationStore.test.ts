@@ -946,7 +946,6 @@ describe("durable turn queue", () => {
     enq(store, "q-queue-2", "t-1", "ub-3", "plain 2", 3);
     enq(store, "q-steer-2", "t-1", "ub-4", "steer 2", 4, { dispatchMode: "steer" });
 
-    // Newest steer first.
     let claimed = store.claimNextQueuedTurn("t-1");
     expect(claimed?.queueId).toBe("q-steer-2");
     expect(claimed?.state).toBe("promoting");
@@ -1041,7 +1040,6 @@ describe("durable turn queue", () => {
     store.claimNextQueuedTurn("t-1"); // q-1 → promoting; q-2/q-3 stay queued
     const cancelled = store.cancelQueuedTurnsForThread("t-1");
     expect(cancelled.sort()).toEqual(["q-1", "q-2", "q-3"]);
-    // The drain's late release must not resurrect a cancelled claim (a10e96595).
     expect(store.releaseQueuedTurn("q-1")).toBe(false);
     expect(store.listQueuedTurns("t-1")).toEqual([]);
     const raw = rawDb();

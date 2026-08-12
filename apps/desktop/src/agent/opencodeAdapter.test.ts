@@ -350,7 +350,6 @@ describe("OpenCode steerTurn", () => {
       input: "keep going",
     });
 
-    // Same turn id, no new turn boundary.
     expect(result.turnId).toBe(first.turnId);
     expect(events.filter((e) => e.type === "turn.started")).toHaveLength(1);
 

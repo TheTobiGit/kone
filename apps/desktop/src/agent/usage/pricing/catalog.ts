@@ -1,4 +1,3 @@
-// Lookup semantics for one pricing table (LiteLLM or models.dev), ported from
 // Real provider log/CLI model ids rarely match a catalog key exactly — a
 // gateway prefixes them (`opencode-go/deepseek-v4-flash`), a turn parameter
 // gets appended (`claude-opus-5[thinking=true]`), or the id is simply dated

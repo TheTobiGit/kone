@@ -565,7 +565,6 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 .meter__fill {
   height: 100%;
   border-radius: 999px;
-     via the width transition — the one piece of motion this page keeps. */
   transition:
     width 0.5s var(--limits-ease),
     background-color 140ms ease;

@@ -4,7 +4,6 @@
 // authoritative per-message cost to a local database, so its tiles come from
 // that (quota/opencode.ts) and are exact, not estimated.
 //
-// didn't read" rule is borrowed from — and it shows exactly these tiles for
 // Claude and Codex. The honest move it makes, kept here: the **token counts are
 // measured** (read straight from the CLI's own session logs), and the **dollars
 // are an estimate**, priced from those tokens at published API rates and flagged

@@ -32,22 +32,16 @@ import type {
 //      "pending"` + no native assistant turn; consumed when the first turn
 //      completes (ConversationStore.completeSidechatBootstrap).
 
- *  shipped side-chat feature — battle-tested wording that matches kone's
- *  interaction-mode philosophy. */
 export const SIDECHAT_BOUNDARY_INSTRUCTION =
   "You are in a sidechat. Treat all prior conversation as reference-only context. Do not continue any prior task automatically. Do not mutate files, git, or the workspace and do not run workspace-changing commands unless the latest user message explicitly asks you to do so after this boundary. Use this sidechat for focused explanation, safety checks, summaries, and alternatives.";
 
- *  RECENT_MESSAGE_COUNT). */
 const RECENT_MESSAGE_COUNT = 6;
- *  RECENT_MESSAGE_CHAR_LIMIT). */
 const RECENT_MESSAGE_CHAR_LIMIT = 2_400;
- *  EARLIER_MESSAGE_CHAR_LIMIT). */
 const EARLIER_MESSAGE_CHAR_LIMIT = 320;
 /** Hard ceiling for any bootstrap transcript: it replays as one uncached user
  *  message, so long threads must drop their oldest summaries rather than grow
+ */
 export const SIDECHAT_TRANSCRIPT_CHAR_BUDGET = 32_000;
- *  PROVIDER_SEND_TURN_MAX_INPUT_CHARS). The bootstrap's default budget is 75%
- *  of it; the transcript ceiling above caps it further. */
 export const SIDECHAT_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 const BOOTSTRAP_CHAR_BUDGET = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS * 0.75);
 
@@ -59,6 +53,7 @@ export const SIDECHAT_MESSAGE_TOO_LONG =
   "This message is too long to include the side chat's imported context. Shorten the message and retry.";
 
 /** Collapse run-of-line whitespace so a long message stays a compact block
+ */
 function normalize(text: string): string {
   return text.replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
@@ -84,6 +79,7 @@ function renderSummary(block: StoredBlock): string {
 
 /** The model-visible narrative of a block: the prompt for user blocks, the
  *  joined assistant_text items for assistant blocks (tool calls are not
+ */
 function blockText(block: StoredBlock): string {
   if (block.role === "user") return block.text;
   return block.items

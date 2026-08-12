@@ -22,6 +22,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  *  notification carrying a `method`, or a response carrying `id` plus
  *  `result`/`error`. Anything else is leaked subprocess/hook output that
  *  merely parses as JSON — the child's tool subprocesses share its stdout
+ */
 function isJsonRpcEnvelope(value: Record<string, unknown>): boolean {
   if (typeof value.method === "string") return true;
   return (

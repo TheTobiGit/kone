@@ -950,7 +950,6 @@ export async function createPr(
     }
     const out = await gh(root, args);
     const url = out.trim();
-    // gh prints the PR URL; the number rides along in it.
     const m = /\/pull\/(\d+)/.exec(url);
     return { number: m ? Number(m[1]) : null, url };
   } finally {

@@ -1266,6 +1266,7 @@ export class ConversationStore {
 
   /** Pin (or unpin) a thread. Pins live in the DB — not browser localStorage —
    *  so a pinned thread follows the thread across browser profiles and shows
+ */
   setPinned(threadId: string, pinned: boolean): void {
     const db = this.handle();
     if (!db) return;
@@ -1975,6 +1976,7 @@ export class ConversationStore {
 
   /** The thread and every spawned descendant (subtree), in stable
    *  ancestor-first order — archive/delete operate on the whole subtree
+ */
   private subtreeIds(db: DatabaseSync, threadId: string): string[] {
     const out: string[] = [threadId];
     const childOf = db.prepare(`SELECT thread_id FROM threads WHERE parent_thread_id = ?`);
@@ -1998,6 +2000,7 @@ export class ConversationStore {
   /** Whether any thread in the set has a live turn — a running assistant
    *  block, or a subagent still starting/running. The busy guard for
    *  archive/delete: a spawned child mid-turn must never be archived or
+ */
   private subtreeBusy(db: DatabaseSync, threadIds: string[]): boolean {
     if (threadIds.length === 0) return false;
     const placeholders = threadIds.map(() => "?").join(",");
@@ -2272,7 +2275,7 @@ export class ConversationStore {
     return { itemRows, subagentRows };
   }
 
-   *  kone's blocks are the turn analog). Loads the newest page of blocks whose
+  /** Windowed thread read — kone's blocks are the turn analog. Loads the newest page of blocks whose
    *  window ends at the `limit`-th newest user prompt (the user-anchored
    *  boundary), walking back from the exclusive keyset cursor when one is
    *  given. Blocks come back in ascending timeline order, each assistant turn
@@ -2648,6 +2651,7 @@ export class ConversationStore {
    *  assistant blocks are the source's history, not the side chat's own
    *  activity — only a native assistant block means the child has actually
    *  answered. This is the one-shot gate for the `<sidechat_context>` bootstrap
+ */
   hasNativeAssistantTurn(threadId: string): boolean {
     const db = this.handle();
     if (!db) return false;
@@ -3282,7 +3286,6 @@ export class ConversationStore {
     }
   }
 
-
   // ── project board layout ────────────────────────────────────────────────────
 
   /** Read a project's persisted board layout. Never throws: a corrupt JSON blob
@@ -3334,7 +3337,6 @@ export class ConversationStore {
 }
 
 /** The board document as it lives in the store — a serialisable layout blob.
- *  Kept structural (not imported from the renderer's `~/types/board`) so the
  *  desktop package stays free of a web-package dependency; the renderer owns the
  *  canonical `BoardLayout` type and the hard pane validation. */
 export type StoredBoardLayout = {
@@ -3681,8 +3683,8 @@ function rowToItem(row: ItemRow): RuntimeItem {
 // crossing IPC is bounded. The three text kinds are NEVER touched: their
 // `text` is the streamed reply and must arrive byte-identical.
 //
-// The superseded-update half of the reference (b7d1981b5 dropping
-// tool.updated rows a completion supersedes) has no kone equivalent: kone's
+// The superseded-update half of the reference — dropping tool.updated rows a
+// completion supersedes — has no kone equivalent: kone's
 // store upserts one row per item per turn and the renderer replaces items by
 // itemId in place, so an in-flight tool call never accumulates rows anywhere —
 // there is no history of updates to drop (verified in conversationStore.test.ts
@@ -3691,6 +3693,7 @@ function rowToItem(row: ItemRow): RuntimeItem {
 
 /** Wire cap for a tool_call's expandable body. Bounded, but generous enough
  *  that the expandable row still shows real content (kone renders `detail`
+ */
 export const TOOL_DETAIL_WIRE_CAP = 8_000;
 
 function capDetail(detail: string | undefined): string | undefined {

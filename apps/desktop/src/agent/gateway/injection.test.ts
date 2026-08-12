@@ -2,6 +2,7 @@
 //
 // The ACP builder is the Phase B surface: cursor/droid sessions get a direct
 // loopback HTTP entry when their agent advertises mcpCapabilities.http, else
+// the stdio proxy fallback — ACP headers and env are arrays of { name,
 // value }, never records.
 
 import { describe, expect, test } from "bun:test";

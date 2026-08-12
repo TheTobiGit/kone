@@ -55,8 +55,8 @@ import type {
 //     Outside kone-managed sessions (no KONE_ANTIGRAVITY_EVENTS) the hook
 //     wrapper must answer `{"decision":"ask"}` on PreToolUse — an empty object
 //     is treated as a denial with an empty reason and blocks every tool call
-//     (#490). Stop hooks stay `{}`: `{"decision":"stop"}` is not a valid stop
-//     decision and can hang the print process after the reply (#465).
+//     Stop hooks stay `{}`: `{"decision":"stop"}` is not a valid stop
+//     decision and can hang the print process after the reply.
 //  4. The mcp_config.json in the plugin is secret-free: it references
 //     `$KONE_GATEWAY_URL` / `$KONE_GATEWAY_BOOTSTRAP_TOKEN` env placeholders
 //     the CLI process env supplies per turn, and the spawned stdio proxy
@@ -73,7 +73,6 @@ const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const PLUGIN_INSTALL_TIMEOUT_MS = 30_000;
 const HELPER_OUTPUT_MAX_CHARS = 128 * 1024;
 const WINDOWS_PROMPT_MAX_CHARS = 24_000;
- *  — the CLI predating it lacks the print flags this adapter relies on). */
 const MIN_ANTIGRAVITY_CLI_VERSION = "1.0.12";
 
 /** The capture-plugin env vars. KONE_ANTIGRAVITY_EVENTS is the per-turn hook
@@ -895,7 +894,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     // Prefer process close for settlement so hooks/stdout still drain (the
     // close handler settles with state "interrupted"). If the teardown cannot
     // prove exit within a bounded window, force-settle so Cancel never no-ops
-    // (#465) — the close handler is idempotent-guarded either way.
+    // — the close handler is idempotent-guarded either way.
     await withTimeout(session.exited, 5_000);
     if (!session.turnTerminalEmitted && session.activeTurnId !== undefined) {
       this.settleActiveTurn(session, { state: "interrupted" });
@@ -1090,7 +1089,7 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   /** Poll the hook event file: pre/post-tool lifecycle becomes tool items, the
    *  conversation id + transcript path are learned here, and a stop hook tears
-   *  the lingering print process down (#465). */
+   *  the lingering print process down. */
   private async pollHookFile(session: AntigravitySession): Promise<void> {
     if (session.stopped) return;
     if (!session.eventFile) return;
@@ -1149,7 +1148,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         }
       }
       // Agent finished: if the print process lingers, tear it down so the
-      // close handler can settle the turn (#465).
+      // close handler can settle the turn.
       if (eventName === "stop" && session.activeProcess && !session.turnTerminalEmitted) {
         const child = session.activeProcess;
         killTree(child.pid);

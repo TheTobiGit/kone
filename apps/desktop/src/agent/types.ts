@@ -644,6 +644,7 @@ export type SpawnTarget = {
 export type SpawnThreadInput = {
   /** The thread doing the spawning. Server-derived from the caller's gateway
    *  credential — never agent-supplied, so a child's parentage cannot be
+ */
   parentThreadId: string;
   /** The parent's running turn, for idempotency scoping. */
   parentTurnId: string;

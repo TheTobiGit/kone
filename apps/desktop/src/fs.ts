@@ -12,7 +12,6 @@ import { ipcMain } from "electron";
  *  browser, so files never appear. */
 export type DirEntry = {
   name: string;
-  /** Absolute path. */
   path: string;
   /** True when this directory is a git repository root (holds a `.git`). */
   repo: boolean;
@@ -96,7 +95,6 @@ export async function listDir(dir: string): Promise<DirListing> {
   };
 }
 
-/** The user's home directory — where the picker opens. */
 export function homeDir(): string {
   return os.homedir();
 }

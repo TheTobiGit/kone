@@ -22,10 +22,10 @@
 // never promise tools the agent doesn't have.
 
 /** Versioned marker so a host-context block in a transcript can be dated —
+ */
 export const KONE_HOST_CONTEXT_VERSION = "2026-08-08.2";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
- *  identity first, then the gateway tools and when to use them. */
 export function renderKoneHostContext(gatewayControlAvailable: boolean): string {
   if (!gatewayControlAvailable) {
     return [
@@ -125,6 +125,7 @@ export function prependKoneHostContext(prompt: string): string {
 }
 
 /** Phase B helper: fire the first-prompt channel once per session, on the
+ */
 export function koneHostContextForFirstRun(input: {
   prompt: string;
   runOrdinal: number;

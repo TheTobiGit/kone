@@ -30,6 +30,7 @@ const isDev = process.env.KONE_DEV === "1";
 const devServerUrl = process.env.KONE_DEV_SERVER_URL ?? "http://localhost:3001";
 /** Upper bound for the quit teardown (agent CLIs, terminals, …). If a provider
  *  child refuses to die in time, the app quits anyway — escalation, in the
+ */
 const QUIT_TEARDOWN_TIMEOUT_MS = 3_000;
 
 let mainWindow: BrowserWindow | null = null;

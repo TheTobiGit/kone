@@ -19,7 +19,7 @@ onMounted(() => (mounted.value = true));
 const showRecent = computed(() => mounted.value && recents.value.length > 0);
 
 const pending = ref<"create" | "open" | "clone" | null>(null);
-const pickerOpen = ref(false); // open-a-project browser
+const pickerOpen = ref(false);
 const cloneOpen = ref(false); // clone-from-github modal
 const createOpen = ref(false); // create-new-project modal
 const settingsOpen = ref(false); // settings / personalization drawer

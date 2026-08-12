@@ -60,6 +60,7 @@ export function koneCapturePluginDir(): string {
 }
 
 /** Where the CLI writes one conversation's transcript — the turn-rendering
+ */
 export function antigravityTranscriptPath(conversationId: string): string {
   return path.join(
     antigravityHomeDir(),

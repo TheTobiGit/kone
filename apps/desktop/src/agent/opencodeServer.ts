@@ -10,8 +10,7 @@ export type OpenCodeServer = {
   dispose: () => Promise<void>;
 };
 
-/** Bounded retry delays for a transient opencode/kilo server startup failure
- *  KILO_CREDENTIAL_STARTUP_RETRY_DELAYS_MS (commit d7b6fdf1b). */
+/** Bounded retry delays for a transient opencode/kilo server startup failure. */
 export const OPENCODE_SERVER_RETRY_DELAYS_MS = [500, 1_500] as const;
 
 /** Matches the failure class that is safe to retry: kilo's credential

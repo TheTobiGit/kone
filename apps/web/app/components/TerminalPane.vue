@@ -90,6 +90,7 @@ function buildTheme(): ITheme {
 
 /** Fit to the container, but only once it actually has a size, and clamp the
  *  result — a fit before fonts/layout settle can otherwise produce a wild
+ */
 function fitSafely(): void {
   if (!term || !fitAddon || !container.value) return;
   const { clientWidth, clientHeight } = container.value;

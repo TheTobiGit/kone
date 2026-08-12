@@ -213,7 +213,6 @@ describe("Claude stop paths", () => {
     );
     expect((done[0] as Extract<RuntimeEvent, { type: "subagent.completed" }>).turnId).toBe(turnId);
 
-    // Live turn sealed as interrupted.
     const aborted = events.filter(
       (e) => e.type === "turn.aborted" && e.turnId === turnId && e.reason === "interrupted",
     );
@@ -313,7 +312,6 @@ describe("Claude steerTurn", () => {
     expect(result.turnId).toBe(turnId);
     // No new turn boundary.
     expect(events.filter((e) => e.type === "turn.started")).toHaveLength(1);
-    // activeTurnId untouched.
     const sessions = await adapter.listSessions();
     expect(sessions[0]?.activeTurnId).toBe(turnId);
 

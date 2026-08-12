@@ -608,8 +608,6 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
 </template>
 
 <style scoped>
-/* Scrim + card + bands lifted from GitHubCloneModal so the two read as the same
-   surface — a soft dim, an elastic card anchored bottom-right, recessed bands. */
 .modal-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }

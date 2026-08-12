@@ -10,7 +10,6 @@ import type { QuotaProviderReport, QuotaWindow, QuotaWindowState } from "./types
 // print its own /usage output. kone never talks to this until the user opts
 // the Claude provider into the Agents quota page; the credential is Claude
 // Code's own `.credentials.json`, never anything kone minted. Endpoint,
-// header set and decode ported from
 
 const ENDPOINT = "https://api.anthropic.com/api/oauth/usage";
 const KEYCHAIN_SERVICE = "Claude Code-credentials";

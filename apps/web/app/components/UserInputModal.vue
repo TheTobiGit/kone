@@ -41,7 +41,6 @@ function isPicked(q: UserInputQuestion, label: string): boolean {
 }
 
 // Single-select latches one option (and clears any custom answer); multi-select
-// toggles membership.
 function toggle(q: UserInputQuestion, label: string): void {
   const current = picks[q.id] ?? [];
   if (q.multiSelect) {
@@ -107,7 +106,6 @@ function cancel(): void {
   close(() => emit("cancel", props.requestId));
 }
 
-// ── shell (scrim + elastic card) — lifted from the pickers so it reads as one
 // surface, but bottom-centre over the composer's spot ───────────────────────────
 const shown = ref(false);
 const closing = ref(false);
@@ -305,9 +303,6 @@ const cardSpring = {
 </template>
 
 <style scoped>
-/* Scrim + card lifted from the pickers so the surfaces read as one family — a
-   soft dim, a hairline ring instead of a heavy shadow, an elastic height. This
-   one anchors bottom-centre, in the agent composer's spot. */
 .modal-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }

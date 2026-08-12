@@ -9,9 +9,6 @@ import { promisify } from "node:util";
 // The one real problem we must solve is PATH. When kone is launched from the
 // Dock/Finder (not a terminal), Electron inherits a minimal PATH that omits
 // ~/.local/bin, ~/.bun/bin, etc. — exactly where agent CLIs install. So on
-// macOS/Linux we recover the login shell's PATH once and merge it in. On
-// Windows there is no login shell to probe; instead we merge the known
-// the ground truth for the list — see their commit c8ad4b813).
 
 const execFileAsync = promisify(execFile);
 

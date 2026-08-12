@@ -70,7 +70,6 @@ async function choose(b: GitBranch) {
   close(() => emit("switched", b.name));
 }
 
-// ── shell (scrim + elastic card) — lifted from FolderPickerModal so the pickers
 // read as one surface ─────────────────────────────────────────────────────────
 const shown = ref(false);
 const closing = ref(false);
@@ -213,9 +212,6 @@ const cardSpring = {
 </template>
 
 <style scoped>
-/* Scrim + card lifted from FolderPickerModal so the pickers read as one surface —
-   a soft dim, an elastic card anchored bottom-right, a hairline ring instead of
-   a heavy shadow. */
 .modal-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }

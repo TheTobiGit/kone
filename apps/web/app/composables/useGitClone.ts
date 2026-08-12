@@ -27,7 +27,7 @@ const homePath = ref("");
 
 const phase = ref<ClonePhase>("idle");
 const progress = ref(0); // 0..1
-const stage = ref(""); // human caption for the current clone phase
+const stage = ref("");
 const cloneError = ref<string | null>(null);
 
 let raf: number | null = null;

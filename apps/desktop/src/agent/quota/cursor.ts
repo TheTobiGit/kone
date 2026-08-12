@@ -266,6 +266,7 @@ async function fetchCreditGrants(accessToken: string, deps: CursorDeps, signal?:
  *  Exported for tests — the window shape is worth locking down independent
  *  of the network. Field names below (`planUsage.totalPercentUsed`,
  *  `spendLimitUsage.individualLimit`, …) are ported straight from
+ */
 export function decodeCursorUsage(body: unknown, planName: string | null, credits: CreditGrants | null): QuotaProviderReport {
   const data = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   // `enabled` is only "usage tracking is off for this account" when

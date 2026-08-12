@@ -138,7 +138,7 @@ const CONFIG_REFRESH_TIMEOUT_MS = 5_000;
  *  same degradation an org-blocked model already gets. */
 const CATALOG_PROBE_BUDGET_MS = 45_000;
 /** How long stopSession waits for the old child to actually exit before a
- *  DroidSessionTeardownGate, commit 9a329d367) exists because both the old
+ *  teardown gate exists because both the old
  *  `droid exec` child and the replacement's config writes touch droid's single
  *  sqlite store — spawning the new child while the old one still holds the
  *  store lock can fail the new session's open. Bounded: a child that ignores
@@ -1097,7 +1097,8 @@ export class DroidAdapter implements ProviderAdapter {
       );
       await this.waitForConfigValue(session, MODE_CONFIG_IDS[0], modeId);
     } catch {
-      // Older Droid builds exposed the autonomy selector without a modes block
+      // Older Droid builds exposed the autonomy selector without a modes block;
+      // applyConfigOption degrades-and-warns itself.
       await this.applyConfigOption(session, MODE_CONFIG_IDS, modeId).catch(() => {});
     }
   }

@@ -48,7 +48,6 @@ function decide(decision: ApprovalDecision): void {
   close(() => emit("decide", active.value.requestId, decision));
 }
 
-// ── shell (scrim + elastic card) — lifted from the pickers / question modal so
 // it reads as one surface, but bottom-centre over the composer's spot ──────────
 const shown = ref(false);
 const closing = ref(false);
@@ -158,9 +157,6 @@ const cardSpring = {
 </template>
 
 <style scoped>
-/* Scrim + card lifted from the pickers so the surfaces read as one family — a
-   soft dim, a hairline ring instead of a heavy shadow, an elastic height. This
-   one anchors bottom-centre, in the agent composer's spot. */
 .modal-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }

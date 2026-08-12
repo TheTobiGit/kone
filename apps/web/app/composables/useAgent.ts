@@ -528,6 +528,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  The manager's eviction and idle reaper read it: eviction drops the
    *  least-recently-active settled thread (never a freshly-used one), and the
    *  reaper hibernates a started session whose process has sat idle past the
+ */
   let lastActivityAt = Date.now();
   function touch(): void {
     lastActivityAt = Date.now();

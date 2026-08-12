@@ -326,6 +326,7 @@ function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultNa
 }
 
 /** Join a multi-part string array (Codex sometimes sends `summary`/`content`
+ */
 export function joinedText(value: unknown): string | undefined {
   if (!Array.isArray(value)) return undefined;
   const parts = value
@@ -370,6 +371,7 @@ export function mapCodexItemStatus(status: string | undefined, hasError: boolean
  *  message instead of a raw protocol error. The thread is genuinely open in
  *  another Codex client, so this is NOT a recoverable refusal — a fresh
  *  start would abandon the original thread and the user would never know why
+ */
 export function formatCodexThreadResumeError(error: unknown, threadId: string): Error {
   const message = error instanceof Error ? error.message : String(error);
   if (!message.toLowerCase().includes("already has an active writer")) {
@@ -760,7 +762,7 @@ export class CodexAdapter implements ProviderAdapter {
     // running: the turn/start response carries the queued turn id, but
     // turn/interrupt only accepts the id of the turn that's active right
     // now. Keep the active id; the queued turn's own `turn/started`
-    // CodexSessionRuntime fix (#5762).
+    // CodexSessionRuntime fix.
     session.activeTurnId = session.activeTurnId ?? turnId;
     return { threadId: input.threadId, turnId };
   }

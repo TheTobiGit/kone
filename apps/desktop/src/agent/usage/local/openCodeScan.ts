@@ -165,7 +165,6 @@ export async function scanOpenCodeUsage(options: {
         records.push(record);
         messagesFromFiles += 1;
       } catch {
-        // Skip unreadable legacy file.
       }
     }
 

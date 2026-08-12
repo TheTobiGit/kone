@@ -56,6 +56,7 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 /** The loopback language server: CSRF token + candidate ports. The CSRF token
  *  is optional — the `agy` CLI hosts the same RPC in its own process without
+ */
 export type AntigravityLanguageServer = {
   csrfToken?: string;
   /** Candidate listening ports, from `--https_server_port` /
@@ -198,8 +199,6 @@ async function runCommand(command: string, args: string[]): Promise<string | nul
   }
 }
 
- *  app's `language_server` process first (richest — csrf + explicit ports),
- *  then the bare `agy` process (in-process RPC, ports via lsof). */
 async function discoverLanguageServer(): Promise<AntigravityLanguageServer | null> {
   if (process.platform === "win32") {
     const script = [

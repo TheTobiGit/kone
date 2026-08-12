@@ -4,7 +4,6 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 
 // "Project Home" boards). Three lines: a constant "Hey, {you}" welcome, then a
-// headline + subline that adapt to the repo's state. The Paper active board
 // leans on agents + token counts we haven't built yet, so lines 2–3 here are
 // rebuilt entirely from the git signals we already read for the folder + rail.
 //

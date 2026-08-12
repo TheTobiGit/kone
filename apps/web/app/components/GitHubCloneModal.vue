@@ -467,9 +467,6 @@ const viewMorph = {
 </template>
 
 <style scoped>
-/* Scrim + card lifted from FolderPickerModal so the two modals read as the same
-   surface — a soft dim, an elastic card anchored bottom-right, a hairline ring
-   instead of a heavy shadow. */
 .modal-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }

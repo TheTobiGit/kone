@@ -395,7 +395,7 @@ function discardUnstaged() {
 }
 
 /* Three-sheet folder glyph: two fanned back sheets + a centred front sheet,
-   topped by a check badge. Matches the Paper "No changes" board. */
+ */
 .empty__glyph {
   position: relative;
   width: 180px;

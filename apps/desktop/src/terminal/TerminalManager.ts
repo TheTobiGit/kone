@@ -227,7 +227,6 @@ export class TerminalManager {
     this.fire({ terminalId: input.terminalId, type: "closed" });
   }
 
-   *  kill-escalation so a stubborn shell (vim holding the TTY) still dies. */
   private async killSession(s: TerminalSession): Promise<void> {
     s.process.kill(
       process.platform === "win32" ? undefined : "SIGTERM",

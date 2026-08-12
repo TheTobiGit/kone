@@ -28,6 +28,7 @@ export const MAX_THREAD_TITLE_WORDS = 6;
 const MAX_THREAD_TITLE_LENGTH = 60;
 
 /** Small/fast models for the side-channel rename — same defaults the
+ */
 const CODEX_TITLE_MODEL = "gpt-5.4-mini";
 const CLAUDE_TITLE_MODEL = "claude-haiku-4-5";
 const OPENCODE_TITLE_MODEL = "opencode-go/deepseek-v4-flash";

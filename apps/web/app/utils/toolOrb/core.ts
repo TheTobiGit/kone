@@ -1,4 +1,3 @@
-// Shared primitives for the dotted 3D thought-orbs, ported from
 // rotated, depth-shaded, z-sorted. Depth is carried by dot size and ink
 // weight alone, and every dot is tinted by the turn's family hue. Plain
 // 2D canvas fills only: no ctx.filter, no SVG filters, so every mode

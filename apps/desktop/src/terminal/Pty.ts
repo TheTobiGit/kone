@@ -57,6 +57,7 @@ export type PtySpawnInput = {
 };
 
 /** Shell candidates in fallback order — the user's $SHELL first, then common
+ */
 function shellCandidates(): string[] {
   if (process.platform === "win32") {
     return ["pwsh.exe", "powershell.exe", "cmd.exe"];
@@ -68,6 +69,7 @@ function shellCandidates(): string[] {
 
 /** Login args for a resolved shell. zsh gets `nopromptsp` so it doesn't emit the
  *  partial-line save/restore sequence that corrupts xterm's first prompt line
+ */
 function shellArgs(shell: string): string[] {
   const name = shell.toLowerCase();
   if (name.endsWith("cmd.exe")) return [];
