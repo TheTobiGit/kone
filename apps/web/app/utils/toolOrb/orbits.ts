@@ -39,7 +39,6 @@ export const drawOrbits: ModeDraw = (ctx, size, t, dark, hueDeg, o) => {
     const vz = nx * uy - ny * ux;
     const speed = (0.25 + 0.55 * h3) * (h3 > 0.5 ? 1 : -1);
 
-    // ghost path
     for (let k = 0; k < ghostN; k++) {
       const a = (k / ghostN) * 2 * Math.PI;
       const [px, py, z] = pt(

@@ -9,7 +9,6 @@ export async function waitForUrl(
       const response = await fetch(url, { method: "GET" });
       if (response.ok) return;
     } catch {
-      // retry
     }
 
     await Bun.sleep(intervalMs);

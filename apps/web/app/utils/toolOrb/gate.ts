@@ -89,7 +89,6 @@ export const drawGate: ModeDraw = (ctx, size, t, dark, hueDeg, o) => {
       });
     }
   }
-  // the apex
   const [apx, apy, az] = pt(ax, 0, 0.32);
   dots.push({
     x: apx,

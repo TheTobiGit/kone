@@ -12,6 +12,12 @@
       "sourceType": "github",
       "skillPath": "skills/better-typography/SKILL.md",
       "computedHash": "84642a2f7ad030fdcef18bf654c3cbf9e63347259a2229bc3b2e6bd9540eca27"
+    },
+    "remove-dumb-comments": {
+      "source": "lukeberrypi/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remove-dumb-comments/SKILL.md",
+      "computedHash": "c6a8fe806448e0e5b88819bc32cb608114e6edd45e5b6736176a84a97bafef48"
     }
   }
 }

@@ -65,7 +65,6 @@ const elements = computed(() => {
   }));
 });
 
-// Global character index across all words of the current phrase.
 function globalCharIndex(wi: number, ci: number): number {
   return (
     elements.value.slice(0, wi).reduce((s, w) => s + w.characters.length, 0) + ci

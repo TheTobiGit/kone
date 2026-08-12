@@ -124,7 +124,6 @@ async function submit() {
   if (folder) close(() => emit("clone", folder));
 }
 
-// Progress as a whole-number percent for the caption.
 const percent = computed(() => Math.round(progress.value * 100));
 
 // ── keyboard ────────────────────────────────────────────────────────────────

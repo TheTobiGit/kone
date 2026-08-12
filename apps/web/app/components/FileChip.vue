@@ -15,7 +15,6 @@ const props = defineProps<{ path: string; title?: string; folder?: boolean }>();
 
 const iconPath = computed(() => fileBaseForIcon(props.path));
 
-// Split into a dimmed directory prefix and an emphasised basename.
 const parts = computed(() => {
   const clean = props.path.replace(/\/+$/, "");
   const slash = clean.lastIndexOf("/");

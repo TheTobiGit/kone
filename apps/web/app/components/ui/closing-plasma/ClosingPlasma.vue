@@ -270,7 +270,6 @@ void main(){
       uniforms[n] = loc;
     }
 
-    // Set static color uniforms
     const dA = hexToRgb(props.darkColorA, DA);
     const dB = hexToRgb(props.darkColorB, DB);
     const dC = hexToRgb(props.darkColorC, DC);

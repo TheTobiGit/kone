@@ -423,12 +423,10 @@ export function useFolderPicker() {
     // layout
     childIndent,
     rowIndent,
-    // scroll-edge fades
     scrollEl,
     maskImage,
     measure,
     settle,
-    // transition constants
     enter,
     itemHidden,
     itemShown,
