@@ -1180,7 +1180,8 @@ export interface ProviderAdapter {
 
   /** Deliver a mid-task message into a *running turn* — a steer that does not
    *  start a new turn boundary (Claude: injected as additional context on the
-   *  "no new turn" semantic). Returns the turn ack like sendTurn. Optional:
+   *  next request the model builds — the "no new turn" semantic). Returns the
+   *  turn ack like sendTurn. Optional:
    *  providers without a live-steer channel fall back to the service's queue
    *  (a steer row that claims first and runs as the next turn). */
   steerTurn?(input: SendTurnInput): Promise<TurnStartResult>;

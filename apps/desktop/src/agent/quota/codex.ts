@@ -168,8 +168,7 @@ function planLabel(value: unknown): string | null {
 function spendControlWindow(data: Record<string, any>): QuotaWindow | null {
   // `find`/`num` per alias, not `??`: a non-null garbage value would stop `??`
   // and mask a valid alias further down. Object-shaped garbage still wins the
-  // position — matching the reference behavior, which likewise commits to the
-  // first candidate that decodes.
+  // position — commit to the first candidate that decodes.
   const row = [
     data.spend_control?.individual_limit,
     data.spend_control?.individualLimit,

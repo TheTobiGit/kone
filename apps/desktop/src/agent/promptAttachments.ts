@@ -4,8 +4,8 @@ import { CLAUDE_NATIVE_IMAGE_MIME_TYPES, type ChatAttachment } from "./types.js"
 
 // Turns the bytes-free ChatAttachment metadata that rides a turn into the
 // per-provider prompt payload each adapter needs — reading the actual bytes
-// back off disk (AttachmentStore) at dispatch. This is the seam both reference
-// repos use: images go to vision-capable providers as native blocks (a Codex
+// back off disk (AttachmentStore) at dispatch. Images go to vision-capable
+// providers as native blocks (a Codex
 // data-URL item / a Claude base64 block), while every other file — and any
 // image a provider can't render — is handed over as an <attached_files> text
 // block naming its on-disk path, which the agent reads with its own tools.

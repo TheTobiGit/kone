@@ -605,8 +605,7 @@ class MessageQueue {
     this.closed = true;
     // Unconsumed prompts (queued steers) are dropped on shutdown: after
     // close() nothing may ever be delivered again, not even items that were
-    // pushed but never pulled — the reference contract is that a stop
-    // same way).
+    // pushed but never pulled — a stop discards pending input.
     this.items.length = 0;
     let waiter: ((result: IteratorResult<SDKUserMessage>) => void) | undefined;
     while ((waiter = this.waiters.shift())) waiter({ value: undefined as never, done: true });
@@ -1182,7 +1181,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     const userMessage = await this.buildUserMessage(input);
     await this.applyLiveSettings(session, input);
 
-    // Globally-unique turn id (a UUID, matching Codex's app-server ids and both
+    // Globally-unique turn id (a UUID) — never a per-session counter like
+    // "turn_1", which
     // collides across threads in the shared store. See assistantBlockId.
     const turnId = randomUUID();
     session.activeTurnId = turnId;
@@ -1200,8 +1200,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     return { threadId: input.threadId, turnId };
   }
 
-  /** Deliver a follow-up message into a RUNNING turn — the reference semantics
-   *  is offered into the session's prompt queue, the SDK consumes it when it
+  /** Deliver a follow-up message into a RUNNING turn — the message is offered
+   *  into the session's prompt queue, the SDK consumes it when it
    *  builds the next API request — no interrupt, no new turn boundary — the
    *  turn id is REUSED, and no turn.started is emitted. Only a real live turn
    *  can be steered; with no session or no active turn this falls back to
@@ -2254,6 +2254,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 }
 
 /** A Claude turn `result` is an interruption (not a hard failure) when the CLI
+ *  reports an abort. */
 function isInterruptedResult(
   message: Extract<SDKMessage, { type: "result" }>,
   errors: string[],

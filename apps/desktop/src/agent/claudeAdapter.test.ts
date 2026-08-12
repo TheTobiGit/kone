@@ -166,7 +166,6 @@ describe("Claude result handler", () => {
     // ...but no untargeted lifecycle event for a turn that never ran.
     expect(events.filter((e) => e.type === "turn.completed")).toHaveLength(0);
     expect(events.filter((e) => e.type === "turn.aborted")).toHaveLength(0);
-    // And the tripwire names the trigger with the reference's fields.
     expect(warnCalls.length).toBe(1);
     const payload = warnCalls[0][1] as { status?: string; numTurns?: number; hasUsage?: boolean };
     expect(payload.status).toBe("success");

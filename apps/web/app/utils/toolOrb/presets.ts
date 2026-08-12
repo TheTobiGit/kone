@@ -23,7 +23,7 @@ export type ModeKey =
 // reference mode is used: working = particles on tilted orbits, searching
 // = a scan meridian sweeping a dotted globe, solving = bands scrambling
 // back to solved, connecting = a constellation wiring itself, and the
-// reference's own "Thinking…" ring for kone's quiet thinking beat. The
+// own "Thinking…" ring for kone's quiet thinking beat. The
 // tool families with no reference counterpart (read / write / run / agent /
 // del / neutral) are their own modes at the same quality.
 export const STATE_TO_MODE: Record<TurnOrbState, ModeKey> = {

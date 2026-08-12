@@ -93,8 +93,7 @@ function backupBeforeDestructiveStep(dbFile: string): void {
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
  *  step moves user_version forward by one, so future changes append a case
- *  rather than rewriting existing tables (the versioning lesson from both
- *  reference stores). */
+ *  rather than rewriting existing tables. */
 function migrate(db: DatabaseSync, dbFile: string): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   let version = row?.user_version ?? 0;
@@ -658,11 +657,11 @@ function migrate(db: DatabaseSync, dbFile: string): void {
 // `seq`, the row_id analog (see loadThreadPage).
 
 /** User blocks (user prompts) per page — each page's window ends at the
- *  limit-th newest prompt, mirroring the reference's userTurnLimit. */
+ *  limit-th newest prompt. */
 const PAGE_DEFAULT_USER_BLOCKS = 10;
 /** Ceiling multiplier over the user-block limit that bounds pathological
  *  fan-out (one prompt answered by dozens of turns) before the LIMIT applies
- *  — the reference's maxRawTurns. */
+ *  — the raw fanout cap. */
 const PAGE_RAW_FANOUT = 8;
 
 /** Opaque, exclusive cursor for windowed thread reads. Encodes the thread id
@@ -1330,9 +1329,8 @@ export class ConversationStore {
    *
    *  Memoized per thread so one write covers a whole session rather than one per
    *  event. Only ever moves the value forward — a resumed session reports its own
-   *  new id, and never blanks a known one. Mirrors how the reference server
-   *  advances its resume cursor as soon as a durable provider message names a
-   *  session.
+   *  new id, and never blanks a known one. The resume cursor advances as soon
+   *  as a durable provider message names a session.
    *
    *  The memo is only set once a row has actually been updated. Adapters emit
    *  `session.started` — which carries the id — from inside startSession, i.e.
@@ -1824,7 +1822,7 @@ export class ConversationStore {
    *  the candidate subquery and the state flip share the statement's write
    *  lock, so two racing drains serialize and the loser sees no 'queued'
    *  candidate). Steer rows jump the line, most recent steer first, then plain
-   *  FIFO by created_at — the reference's
+   *  FIFO by created_at
    *  `CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END, steer seq DESC,
    *  seq ASC`, with queue_id as the final deterministic tiebreak. Returns the
    *  row now in 'promoting' (attempt_count already bumped), or null when the
@@ -2288,7 +2286,7 @@ export class ConversationStore {
    * persisted cursor. `at` and `block_id` are event-derived content, so
    * cursors survive rewrites, and the thread id rides inside the cursor so it
    * can never be replayed against a different thread (a foreign or malformed
-   * cursor degrades to a first-page request, exactly like the reference). */
+   * cursor degrades to a first-page request). */
   loadThreadPage(
     threadId: string,
     options?: { limit?: number; maxRaw?: number; cursor?: string },
@@ -2307,7 +2305,7 @@ export class ConversationStore {
         ? decodeThreadPageCursor(options.cursor)
         : null;
       // A cursor minted for a different thread must not walk this one — treat
-      // it as a first-page request (the reference's degrade rule).
+      // it as a first-page request.
       const boundary = cursor && cursor.threadId === threadId ? cursor : null;
 
       const candidates = (
@@ -2330,7 +2328,7 @@ export class ConversationStore {
       // user-anchored window boundary; a fan-out run of assistant blocks
       // between prompts rides along). The maxRaw ceiling bounds pathological
       // fan-out — a walk cut by it simply pages an unanchored slice and keeps
-      // going, exactly like the reference's maxRawTurns.
+      // going, capped by the raw fanout limit.
       const kept: BlockRow[] = [];
       let userSeen = 0;
       for (const row of candidates) {
@@ -3683,13 +3681,12 @@ function rowToItem(row: ItemRow): RuntimeItem {
 // crossing IPC is bounded. The three text kinds are NEVER touched: their
 // `text` is the streamed reply and must arrive byte-identical.
 //
-// The superseded-update half of the reference — dropping tool.updated rows a
+// The superseded-update half of that model — dropping tool.updated rows a
 // completion supersedes — has no kone equivalent: kone's
 // store upserts one row per item per turn and the renderer replaces items by
 // itemId in place, so an in-flight tool call never accumulates rows anywhere —
 // there is no history of updates to drop (verified in conversationStore.test.ts
 // and the renderer's upsertItem). Live updates still stream, slimmed, matching
-// the reference's "live events are untouched".
 
 /** Wire cap for a tool_call's expandable body. Bounded, but generous enough
  *  that the expandable row still shows real content (kone renders `detail`

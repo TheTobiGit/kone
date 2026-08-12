@@ -15,7 +15,7 @@ import { buildAgentEnv } from "./processEnv.js";
 /** Where Claude Code keeps its config/credentials. `CLAUDE_CONFIG_DIR` wins;
  *  otherwise ~/.claude. Note: to isolate a Claude session you set
  *  CLAUDE_CONFIG_DIR, never HOME — overriding HOME breaks the macOS keychain
- *  OAuth lookup (confirmed from both reference implementations). */
+ *  OAuth lookup. */
 export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLAUDE_CONFIG_DIR?.trim() || path.join(homedir(), ".claude");
 }
@@ -97,6 +97,7 @@ export async function buildClaudeEnv(base: NodeJS.ProcessEnv = process.env): Pro
   if (hasLocalOAuthLogin(env) && !hasExternalAuthOverride(env)) {
     for (const key of DIRECT_CREDENTIAL_KEYS) delete env[key];
   }
+  // Identify kone in the SDK's User-Agent.
   env.CLAUDE_AGENT_SDK_CLIENT_APP = "kone/0.1.0";
   return env;
 }

@@ -4,7 +4,7 @@
 // per conversation under ~/.gemini/antigravity{,-cli,-ide}/: a `gen_metadata`
 // table whose rows carry the model's per-request usage (input/output/thinking
 // tokens) as an encoded protobuf message. The field layout below was
-// repos are ground truth for provider work) with a hand-rolled protobuf
+// reverse-engineered from the agy CLI's own usage read with a hand-rolled protobuf
 // provider because the .pb format is opaque *without* this schema.
 //
 // Only the `.db` (SQLite) files are parsed here — they hold the authoritative

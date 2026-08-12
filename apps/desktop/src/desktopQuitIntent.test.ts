@@ -6,9 +6,8 @@ import {
 } from "./desktopQuitIntent.js";
 
 // The coordinator is pure state — these tests drive it exactly the way
-// main.ts would around an updater-owned shutdown, and mirror the reference
-// proven: first intent wins, replay happens exactly once, repeated failure
-// signals can't chain extra quit cycles.
+// main.ts would around an updater-owned shutdown: first intent wins, replay
+// happens exactly once, repeated failure signals can't chain extra quit cycles.
 
 function makeRecoveryHarness() {
   const quitReasons: string[] = [];
