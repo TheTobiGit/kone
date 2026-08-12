@@ -1,0 +1,66 @@
+{
+  "$comment": "kone's own hand-maintained pricing layer — the highest-precedence source (see resolver.ts). It exists for exactly the models neither LiteLLM nor models.dev carries at all: Cursor's own model lineup (`auto`, `composer-*`, `github_bugbot`) is never published to a third-party rate card because Cursor bills through its own subscription, not a metered API, and Cursor's `-fast` service tier for xAI's Grok isn't a uniform per-bucket multiplier (its output rate scales 3x while input/cache scale 2x), so it can't be expressed as a `fastMultiplier` the way Anthropic's and OpenAI's fast/priority tiers can (those resolve straight through LiteLLM's `provider_specific_entry.fast` / `_priority` fields — see litellmCodec.ts — and need no entry here at all).",
+  "updated_at": "2026-08-11",
+  "pricing": {
+    "auto": {
+      "$comment": "Cursor Router's own blended model, billed by Cursor directly. Source: https://cursor.com/docs/models-and-pricing.md, fetched 2026-08-11.",
+      "input_per_million": 1.25,
+      "cache_write_per_million": 1.25,
+      "cache_read_per_million": 0.25,
+      "output_per_million": 6.0
+    },
+    "composer-1": {
+      "input_per_million": 1.25,
+      "cache_write_per_million": 1.25,
+      "cache_read_per_million": 0.125,
+      "output_per_million": 10.0
+    },
+    "composer-1.5": {
+      "input_per_million": 3.5,
+      "cache_write_per_million": 3.5,
+      "cache_read_per_million": 0.35,
+      "output_per_million": 17.5
+    },
+    "composer-2": {
+      "input_per_million": 0.5,
+      "cache_write_per_million": 0.5,
+      "cache_read_per_million": 0.2,
+      "output_per_million": 2.5
+    },
+    "composer-2-fast": {
+      "input_per_million": 1.5,
+      "cache_write_per_million": 1.5,
+      "cache_read_per_million": 0.35,
+      "output_per_million": 7.5
+    },
+    "composer-2.5": {
+      "input_per_million": 0.5,
+      "cache_write_per_million": 0.5,
+      "cache_read_per_million": 0.2,
+      "output_per_million": 2.5
+    },
+    "composer-2.5-fast": {
+      "input_per_million": 3.0,
+      "cache_write_per_million": 3.0,
+      "cache_read_per_million": 0.5,
+      "output_per_million": 15.0
+    },
+    "github_bugbot": {
+      "input_per_million": 5.0,
+      "cache_write_per_million": 5.0,
+      "cache_read_per_million": 0.5,
+      "output_per_million": 30.0
+    },
+    "grok-4.5-fast": {
+      "$comment": "Cursor's Grok 4.5 fast-mode rate. Not expressible as a scalar fastMultiplier over the xai/grok-4.5 LiteLLM entry: input/cache scale 2x but output scales 3x, so this is its own entry rather than a multiplier on the base model.",
+      "input_per_million": 4.0,
+      "cache_write_per_million": 4.0,
+      "cache_read_per_million": 1.0,
+      "output_per_million": 18.0
+    }
+  },
+  "fast_multipliers": {},
+  "alias_rules": [
+    { "pattern": "^default$", "canonical": "auto" }
+  ]
+}
