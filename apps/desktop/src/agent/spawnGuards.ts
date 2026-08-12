@@ -300,5 +300,20 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
   }
   const mode = requestedMode ?? input.parentMode;
 
+  // 9. Provider mode floor — a provider whose print mode cannot pause for
+  //    interactive approvals (Antigravity) can only run a child at
+  //    full-access. The child's mode is capped at the parent's, so this is a
+  //    refusal rather than an adjustment: the parent must raise its own mode
+  //    first, and a silent promotion would escalate privilege across the
+  //    spawn (the exact thing rung 8 refuses to do).
+  if (input.target.provider === "antigravity" && mode !== "full-access") {
+    return {
+      ok: false,
+      code: "capability_denied",
+      message: `Antigravity CLI print mode cannot pause for interactive approvals, so an Antigravity child must run at full access — but this thread's mode is "${mode}", and a spawned child can never be less restrictive than its parent. Raise this thread's mode to full access before spawning an Antigravity child, or spawn on a different provider.`,
+      details: { provider: input.target.provider, mode, parentMode: input.parentMode },
+    };
+  }
+
   return { ok: true, model, effort, mode, adjustments };
 }

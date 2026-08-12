@@ -11,9 +11,18 @@ import {
 } from "./ConversationStore.js";
 import { initThreadDispatcher } from "./dispatch.js";
 import { createGateway, type GatewayHandle } from "./gateway/index.js";
+import { scanAgentInventory } from "./inventory/index.js";
+import {
+  detectProviderCredential,
+  fetchProviderQuota,
+  type QuotaCapableProvider,
+} from "./quota/index.js";
+import { localSpendForProvider } from "./quota/localSpend.js";
 import { createSidechatThread } from "./sidechat.js";
 import { getSpawnEngine, initSpawnEngine } from "./threadSpawn.js";
 import { truncateThreadTitle } from "./threadTitle.js";
+import type { UsageRange } from "./usage/report.js";
+import { buildAgentUsageReport } from "./usage/buildUsageReport.js";
 import type {
   ApprovalDecision,
   CreateSideChatInput,
@@ -331,6 +340,60 @@ export function registerAgentIpc(): void {
   );
   ipcMain.handle("agent:history-list", (_event, projectPath: string) =>
     store.listThreads(projectPath),
+  );
+  // Lifetime, fully-local profile stats — aggregated in SQL across every
+  // project's threads for the standalone profile board.
+  ipcMain.handle("agent:profile-stats", () => store.profileStats());
+
+  // ── the Agents space ──────────────────────────────────────────────────────
+  // Usage scans Claude/Codex CLI transcripts (overall spend) and merges kone-
+  // Claude/Codex from CLI transcripts; Cursor from dashboard CSV when signed in;
+  // OpenCode/Droid/Antigravity from store rows for providers without transcript
+  // scanning.
+  ipcMain.handle(
+    "agent:usage-report",
+    async (
+      _event,
+      options: { range: UsageRange; projectPath?: string | null; forceRefresh?: boolean },
+    ) => buildAgentUsageReport(store, options),
+  );
+  // Offline presence check only — this decides whether the row offers to
+  // connect, so it must never touch the network. It may probe the keychain
+  // (Claude Code and the Cursor CLI keep their login there), but only through
+  // the short-timeout presence probe, never the full 90s read a fetch uses.
+  ipcMain.handle("agent:quota-detect", (_event, provider: QuotaCapableProvider) =>
+    detectProviderCredential(provider),
+  );
+  // Reaches the provider's own usage API with the token its CLI already stored.
+  // `allowKeychain` arrives true only from a user-initiated connect/refresh.
+  //
+  // The provider's own endpoint reports rate-limit windows but no per-day spend
+  // for Claude/Codex/Cursor (only OpenCode carries its own cost). So a connected
+  // report gets its Today/Yesterday/30-day tiles + trend folded in here from the
+  // local usage scan — the same numbers the Usage tab shows, filtered to the one
+  // provider. Kept out of quota/index.ts so that layer stays free of the store;
+  // enrichment is best-effort and never blocks or fails the quota read, and it
+  // returns a copy rather than mutating the cached report.
+  ipcMain.handle(
+    "agent:quota-fetch",
+    async (_event, provider: QuotaCapableProvider, options?: { allowKeychain?: boolean; force?: boolean }) => {
+      const report = await fetchProviderQuota(provider, options ?? {});
+      if (report.connection !== "connected" || provider === "opencode") return report;
+      if (report.spend.length > 0 || report.trend.length > 0) return report;
+      try {
+        const { spend, trend } = await localSpendForProvider(store, provider, {
+          forceRefresh: options?.force,
+        });
+        if (spend.length === 0 && trend.length === 0) return report;
+        return { ...report, spend, trend };
+      } catch (error) {
+        console.warn(`Local spend enrichment failed for ${provider}: ${String(error)}`);
+        return report;
+      }
+    },
+  );
+  ipcMain.handle("agent:inventory-scan", (_event, projectPath: string | null) =>
+    scanAgentInventory(projectPath),
   );
   ipcMain.handle("agent:history-archive", (_event, threadId: string, archived: boolean) => {
     const result = store.setArchived(threadId, archived);

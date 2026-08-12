@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   ChatAttachment,
   ForkContext,
+  ProfileStats,
   ProviderKind,
   RuntimeEvent,
   RuntimeItem,
@@ -14,7 +15,10 @@ import type {
   StoredThreadMeta,
   SubagentRun,
   ThreadLineage,
+  TokenUsage,
 } from "./types.js";
+import type { TokenUsageSplits, UsageRange } from "./usage/report.js";
+import { usageReportFromStore } from "./usage/storeUsage.js";
 import { getUserDataDir } from "./userDataDir.js";
 
 // Durable conversation persistence for the agent layer. Threads, turns, and the
@@ -33,7 +37,7 @@ import { getUserDataDir } from "./userDataDir.js";
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 
 /** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
  *  partially-applied migration — a crash between statements — re-runs
@@ -620,6 +624,30 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     version = 20;
   }
 
+  if (version < 21) {
+    // v21 — the cache/reasoning split of turn_usage's audit trail. Every
+    // provider adapter already parses `input`/`output`/`total` off a richer
+    // usage payload that also carries cache-read, cache-creation and
+    // reasoning token counts (Claude's `cache_read_input_tokens` /
+    // `cache_creation_input_tokens`, OpenCode's `tokens.cache.{read,write}` /
+    // `tokens.reasoning`, Codex's `cachedInputTokens` /
+    // `reasoningOutputTokens`), and until now those counts were folded into
+    // input/output and thrown away at the exact moment they reached this
+    // table. Cache reads dominate an agentic turn's real prompt cost, so
+    // losing that split made every cost figure derived from this table
+    // shallower than it needed to be. `ADD COLUMN ... DEFAULT 0` backfills
+    // every existing row with 0 for free (SQLite applies the default to
+    // history in place, no rewrite pass, no risk to rows already written) —
+    // those turns genuinely have no recorded split, so 0 is the honest value
+    // rather than NULL standing in for "unknown". Going forward every insert
+    // supplies a real count where the provider has one and an explicit 0
+    // (never a guess) where it doesn't.
+    addColumn(db, "turn_usage", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "turn_usage", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "turn_usage", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0");
+    version = 21;
+  }
+
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 
@@ -699,6 +727,41 @@ export function decodeThreadPageCursor(encoded: string): ThreadPageCursor | null
  *  unique, so this is a no-op collision-wise for it — just a stable rename. */
 function assistantBlockId(threadId: string, turnId: string): string {
   return `${threadId}::${turnId}`;
+}
+
+/** Current + longest run of consecutive local days from a sorted-ascending set
+ *  of `YYYY-MM-DD` date strings. "Current" counts back from today; a gap of one
+ *  day (activity yesterday but not today) still counts as live, so the streak
+ *  doesn't reset the instant a new day begins before the first prompt. Days are
+ *  compared as UTC-midnight epochs of the local date label, which sidesteps DST
+ *  arithmetic (we only ever step by whole days). */
+function computeStreaks(datesAsc: string[]): { current: number; longest: number } {
+  if (datesAsc.length === 0) return { current: 0, longest: 0 };
+  const DAY = 86_400_000;
+  const toDay = (d: string) => Date.parse(`${d}T00:00:00Z`) / DAY;
+  const days = datesAsc.map(toDay);
+
+  let longest = 1;
+  let run = 1;
+  for (let i = 1; i < days.length; i++) {
+    run = days[i]! - days[i - 1]! === 1 ? run + 1 : 1;
+    if (run > longest) longest = run;
+  }
+
+  // Walk back from the most recent active day, but only if it's today or
+  // yesterday in the machine's local calendar.
+  const todayLabel = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local
+  const today = toDay(todayLabel);
+  const last = days[days.length - 1]!;
+  let current = 0;
+  if (today - last <= 1) {
+    current = 1;
+    for (let i = days.length - 1; i > 0; i--) {
+      if (days[i]! - days[i - 1]! === 1) current++;
+      else break;
+    }
+  }
+  return { current, longest };
 }
 
 /** One-time recovery for threads whose assistant blocks were dropped by the
@@ -1549,23 +1612,23 @@ export class ConversationStore {
               .get(event.threadId) as { turn_id: string | null } | undefined;
             if (turnRow?.turn_id) {
               const { input, output } = event.usage;
-              db.prepare(
-                `INSERT INTO turn_usage
-                   (thread_id, turn_id, input_tokens, output_tokens, total_tokens, at)
-                 VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(thread_id, turn_id) DO UPDATE SET
-                   input_tokens  = excluded.input_tokens,
-                   output_tokens = excluded.output_tokens,
-                   total_tokens  = excluded.total_tokens,
-                   at            = excluded.at`,
-              ).run(
-                event.threadId,
-                turnRow.turn_id,
-                typeof input === "number" && Number.isFinite(input) ? Math.round(input) : null,
-                typeof output === "number" && Number.isFinite(output) ? Math.round(output) : null,
-                typeof total === "number" && Number.isFinite(total) ? Math.round(total) : null,
-                event.at,
-              );
+              // The cache/reasoning split rides on `event.usage` as extra
+              // properties beyond TokenUsage's declared shape (see
+              // TokenUsageSplits in usage/report.ts for why it isn't a
+              // first-class field on that type yet) — every adapter now
+              // attaches it, defaulting to 0 itself where it has no such
+              // count, but this read defaults again so a payload from an
+              // adapter this store doesn't recognise (or a test) still
+              // records real zeros instead of throwing.
+              const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
+              this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, {
+                input,
+                output,
+                total,
+                cacheReadTokens: splits.cacheReadTokens ?? 0,
+                cacheCreationTokens: splits.cacheCreationTokens ?? 0,
+                reasoningTokens: splits.reasoningTokens ?? 0,
+              });
             }
           });
           break;
@@ -1585,6 +1648,55 @@ export class ConversationStore {
     } catch (err) {
       console.error("[conversation-store] applyEvent failed:", err);
     }
+  }
+
+  /** Upsert one turn's usage audit row (v18's input/output/total, v21's
+   *  cache/reasoning split) — a full replacement of the row's numbers, never
+   *  an accumulation, because `thread.token-usage.updated` always carries the
+   *  turn's latest known totals rather than a delta. The three split counts
+   *  default to 0 rather than staying `undefined`/NULL: a provider that
+   *  hasn't reported one yet and a provider that structurally never will
+   *  should look identical in this table (both "no cache tokens for this
+   *  turn"), so SUM() over the column is always correct without a COALESCE
+   *  at every read site. */
+  private recordTurnUsage(
+    db: DatabaseSync,
+    threadId: string,
+    turnId: string,
+    at: number,
+    usage: {
+      input?: number;
+      output?: number;
+      total?: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      reasoningTokens?: number;
+    },
+  ): void {
+    db.prepare(
+      `INSERT INTO turn_usage
+         (thread_id, turn_id, input_tokens, output_tokens, total_tokens,
+          cache_read_tokens, cache_creation_tokens, reasoning_tokens, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(thread_id, turn_id) DO UPDATE SET
+         input_tokens          = excluded.input_tokens,
+         output_tokens         = excluded.output_tokens,
+         total_tokens          = excluded.total_tokens,
+         cache_read_tokens     = excluded.cache_read_tokens,
+         cache_creation_tokens = excluded.cache_creation_tokens,
+         reasoning_tokens      = excluded.reasoning_tokens,
+         at                    = excluded.at`,
+    ).run(
+      threadId,
+      turnId,
+      typeof usage.input === "number" && Number.isFinite(usage.input) ? Math.round(usage.input) : null,
+      typeof usage.output === "number" && Number.isFinite(usage.output) ? Math.round(usage.output) : null,
+      typeof usage.total === "number" && Number.isFinite(usage.total) ? Math.round(usage.total) : null,
+      Math.round(usage.cacheReadTokens ?? 0),
+      Math.round(usage.cacheCreationTokens ?? 0),
+      Math.round(usage.reasoningTokens ?? 0),
+      at,
+    );
   }
 
   private touch(db: DatabaseSync, threadId: string, at: number): void {
@@ -2295,6 +2407,167 @@ export class ConversationStore {
       console.error("[conversation-store] listThreads failed:", err);
       return [];
     }
+  }
+
+  /** Lifetime, fully-local usage stats for the profile board. Every figure is
+   *  aggregated in SQL across *all* projects (no project filter) — a handful of
+   *  grouped scans over the existing indexes, so it stays cheap even on a large
+   *  store. Day/hour buckets use SQLite's `localtime` modifier so the heatmap
+   *  and "most active hour" read in the user's own timezone. A "prompt" is one
+   *  user block; only threads that carry at least one user prompt are counted,
+   *  matching listThreads (archived threads are kept — they are still history). */
+  profileStats(): ProfileStats {
+    const empty: ProfileStats = {
+      generatedAt: Date.now(),
+      totals: { threads: 0, prompts: 0, tokens: 0, inputTokens: 0, outputTokens: 0, projects: 0 },
+      streak: { current: 0, longest: 0, peakDay: null },
+      activity: [],
+      hours: [],
+      mostActiveHour: null,
+      providers: [],
+      models: [],
+      reasoning: [],
+      projects: [],
+    };
+    const db = this.handle();
+    if (!db) return empty;
+    try {
+      // Threads with a real user turn — the population every count below rides.
+      const REAL = `SELECT thread_id, project_path, provider, model, model_selection_json
+        FROM threads t WHERE EXISTS (
+          SELECT 1 FROM blocks b WHERE b.thread_id = t.thread_id AND b.role = 'user'
+        )`;
+
+      const totalsRow = db
+        .prepare(
+          `SELECT COUNT(*) AS threads, COUNT(DISTINCT project_path) AS projects
+           FROM (${REAL})`,
+        )
+        .get() as { threads: number; projects: number };
+
+      const prompts = (
+        db.prepare(`SELECT COUNT(*) AS n FROM blocks WHERE role = 'user'`).get() as { n: number }
+      ).n;
+
+      // Tokens: prefer the per-turn audit trail; fall back to the threads'
+      // cumulative scalar when no turn_usage rows exist yet (older stores).
+      const usage = db
+        .prepare(
+          `SELECT COALESCE(SUM(total_tokens), 0) AS total,
+                  COALESCE(SUM(input_tokens), 0) AS input,
+                  COALESCE(SUM(output_tokens), 0) AS output
+           FROM turn_usage`,
+        )
+        .get() as { total: number; input: number; output: number };
+      let totalTokens = usage.total;
+      if (totalTokens === 0) {
+        totalTokens = (
+          db.prepare(`SELECT COALESCE(SUM(tokens), 0) AS n FROM threads`).get() as { n: number }
+        ).n;
+      }
+
+      // Activity + hours by local calendar (user blocks carry the timestamp).
+      const activity = db
+        .prepare(
+          `SELECT strftime('%Y-%m-%d', at / 1000, 'unixepoch', 'localtime') AS date,
+                  COUNT(*) AS count
+           FROM blocks WHERE role = 'user'
+           GROUP BY date ORDER BY date ASC`,
+        )
+        .all() as Array<{ date: string; count: number }>;
+
+      const hours = db
+        .prepare(
+          `SELECT CAST(strftime('%H', at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+                  COUNT(*) AS count
+           FROM blocks WHERE role = 'user'
+           GROUP BY hour ORDER BY count DESC`,
+        )
+        .all() as Array<{ hour: number; count: number }>;
+
+      const providers = db
+        .prepare(
+          `SELECT provider, COUNT(*) AS count FROM (${REAL})
+           GROUP BY provider ORDER BY count DESC`,
+        )
+        .all() as ProfileStats["providers"];
+
+      const models = db
+        .prepare(
+          `SELECT model, provider, COUNT(*) AS count FROM (${REAL})
+           WHERE model IS NOT NULL AND model <> ''
+           GROUP BY model, provider ORDER BY count DESC`,
+        )
+        .all() as ProfileStats["models"];
+
+      const reasoning = db
+        .prepare(
+          `SELECT json_extract(model_selection_json, '$.effort') AS effort, COUNT(*) AS count
+           FROM (${REAL})
+           WHERE effort IS NOT NULL AND effort <> ''
+           GROUP BY effort ORDER BY count DESC`,
+        )
+        .all() as ProfileStats["reasoning"];
+
+      const projectRows = db
+        .prepare(
+          `SELECT t.project_path AS path, COUNT(*) AS prompts
+           FROM blocks b JOIN threads t ON t.thread_id = b.thread_id
+           WHERE b.role = 'user'
+           GROUP BY t.project_path ORDER BY prompts DESC LIMIT 8`,
+        )
+        .all() as Array<{ path: string; prompts: number }>;
+      const projects = projectRows.map((r) => ({
+        path: r.path,
+        name: r.path.split("/").filter(Boolean).pop() ?? r.path,
+        prompts: r.prompts,
+      }));
+
+      // Streaks + peak day, walked over the ascending activity dates.
+      const peakDay =
+        activity.length > 0
+          ? activity.reduce((a, b) => (b.count > a.count ? b : a))
+          : null;
+      const { current, longest } = computeStreaks(activity.map((a) => a.date));
+
+      return {
+        generatedAt: Date.now(),
+        totals: {
+          threads: totalsRow.threads,
+          prompts,
+          tokens: totalTokens,
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+          projects: totalsRow.projects,
+        },
+        streak: {
+          current,
+          longest,
+          peakDay: peakDay ? { date: peakDay.date, count: peakDay.count } : null,
+        },
+        activity,
+        hours,
+        mostActiveHour: hours.length > 0 ? hours[0]!.hour : null,
+        providers,
+        models,
+        reasoning,
+        projects,
+      };
+    } catch (err) {
+      console.error("[conversation-store] profileStats failed:", err);
+      return empty;
+    }
+  }
+
+  /** Store-backed usage rows — supplement for providers without CLI transcript
+   *  scanning. Called from buildAgentUsageReport, not the IPC surface directly. */
+  readStoreUsageReport(options: {
+    range: UsageRange;
+    projectPath?: string | null;
+    excludeProviders?: string[];
+    onlyProviders?: readonly string[];
+  }) {
+    return usageReportFromStore(this.handle(), options);
   }
 
   /** Whether this thread has ever had a user turn — i.e. whether there is a

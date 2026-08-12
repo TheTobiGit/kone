@@ -15,6 +15,7 @@ import { extractBearerToken } from "./mcpTransport.js";
 import type { GatewayCredentials } from "./credentials.js";
 
 export const AGENT_GATEWAY_MCP_PATH = "/mcp";
+export const AGENT_GATEWAY_BOOTSTRAP_PATH = "/bootstrap";
 const MCP_MAX_BODY_BYTES = 1024 * 1024;
 
 export interface GatewayHttpServer {
@@ -78,6 +79,28 @@ async function handleRequest(
   res: ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+  if (url.pathname === AGENT_GATEWAY_BOOTSTRAP_PATH) {
+    // proxy spawned by a provider whose plugin config must be secret-free on
+    // disk (Antigravity) redeems its env-carried single-use token here for the
+    // real session bearer. The session token itself never enters the provider
+    // process env, and the bootstrap dies after one exchange.
+    if (req.method !== "POST") {
+      res.writeHead(405, { Allow: "POST" });
+      res.end();
+      return;
+    }
+    const bootstrap = extractBearerToken(req.headers.authorization);
+    const sessionToken =
+      bootstrap === null ? null : credentials.exchangeStdioBootstrapToken(bootstrap);
+    if (sessionToken === null) {
+      unauthorized(res);
+      return;
+    }
+    sendJson(res, 200, { bearerToken: sessionToken });
+    return;
+  }
+
   if (url.pathname !== AGENT_GATEWAY_MCP_PATH) {
     sendJson(res, 404, {
       jsonrpc: "2.0",

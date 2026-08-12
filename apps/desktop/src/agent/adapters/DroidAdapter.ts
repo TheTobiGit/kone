@@ -39,6 +39,7 @@ import type {
   TurnStartResult,
   UserInputAnswers,
 } from "../types.js";
+import type { TokenUsageSplits } from "../usage/report.js";
 
 // Droid adapter — drives Factory's `droid exec --output-format acp`, a
 // persistent JSON-RPC-over-stdio child per thread speaking ACP (the Agent
@@ -1374,10 +1375,17 @@ export class DroidAdapter implements ProviderAdapter {
     const used = readNumber(update, "used");
     const size = readNumber(update, "size");
     if (used === undefined && size === undefined) return;
-    const usage: TokenUsage = {
+    // The ACP `usage_update` shape is only ever `used`/`size` — no
+    // input/output split, so no cache/reasoning split either. droid's
+    // on-disk `tokenUsage` (fact 2) is always zeros too, so there is no
+    // other source to fall back to for this provider.
+    const usage: TokenUsage & TokenUsageSplits = {
       ...(used === undefined ? {} : { contextUsed: used, total: used }),
       ...(size === undefined ? {} : { contextWindow: size }),
       compactsAutomatically: true,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
     };
     this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
   }

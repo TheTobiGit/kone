@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
@@ -132,6 +133,14 @@ export class AgentService {
       this.register(new OpenCodeAdapter(emit));
       this.register(new CursorAdapter(emit));
       this.register(new DroidAdapter(emit));
+      // Antigravity's plugin MCP path needs one-shot gateway bootstraps (its
+      // plugin config must stay secret-free on disk) — minted from the session
+      // credential through the gateway handle once it's attached.
+      this.register(
+        new AntigravityAdapter(emit, (sessionToken) =>
+          this.gateway?.issueBootstrapToken(sessionToken) ?? null,
+        ),
+      );
     }
     // Point each adapter at the user's persisted install settings (custom binary
     // path, …) before anything probes or spawns. Unset providers keep their

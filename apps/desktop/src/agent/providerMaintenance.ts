@@ -154,6 +154,16 @@ const DEFINITIONS: Record<ProviderKind, MaintenanceDefinition> = {
     homebrew: null,
     native: { args: () => ["update"], strategy: "always" },
   },
+  antigravity: {
+    provider: "antigravity",
+    binary: "agy",
+    // Antigravity is distributed as a native binary and owns its update
+    // channel (publishes to no registry kone can read).
+    npmPackage: null,
+    homebrew: null,
+    latestSource: null,
+    native: { args: () => ["update"], strategy: "always" },
+  },
 };
 
 // ── versions ──────────────────────────────────────────────────────────────────

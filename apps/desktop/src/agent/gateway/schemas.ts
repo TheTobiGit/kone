@@ -123,9 +123,9 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA: Record<string, unknown> = {
 // args; the hand-written JSON schemas are what tools/list advertises, so the
 // enum literals are repeated there — the client never sees zod.
 
-/** The five provider kinds as a literal tuple — ProviderKind is a plain union,
+/** The six provider kinds as a literal tuple — ProviderKind is a plain union,
  *  and zod needs a runtime value for its enum. */
-const PROVIDER_KINDS = ["codex", "claudeAgent", "opencode", "cursor", "droid"] as const;
+const PROVIDER_KINDS = ["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"] as const;
 
 /** The three interaction modes, same deal. */
 const INTERACTION_MODES = ["ask", "accept-edits", "full-access"] as const;

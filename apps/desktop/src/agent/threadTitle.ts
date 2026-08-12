@@ -7,6 +7,7 @@ import path from "node:path";
 import { buildClaudeEnv } from "./claudeHome.js";
 import { buildCursorEnv } from "./cursorHome.js";
 import { buildDroidEnv, DROID_BINARY } from "./droidHome.js";
+import { ANTGRAVITY_BINARY } from "./antigravityHome.js";
 import { buildOpenCodeEnv } from "./opencodeHome.js";
 import { buildAgentEnv } from "./processEnv.js";
 import type { ProviderKind } from "./types.js";
@@ -156,7 +157,9 @@ export async function generateThreadTitle(input: {
             ? await generateWithCursor({ cwd: input.cwd, prompt })
             : input.provider === "droid"
               ? await generateWithDroid({ cwd: input.cwd, prompt })
-              : await generateWithCodex({ cwd: input.cwd, prompt });
+              : input.provider === "antigravity"
+                ? await generateWithAntigravity({ cwd: input.cwd, prompt })
+                : await generateWithCodex({ cwd: input.cwd, prompt });
     if (!raw) return null;
     const title = extractTitle(raw);
     if (!title?.trim()) return null;
@@ -287,6 +290,33 @@ async function generateWithDroid(input: { cwd: string; prompt: string }): Promis
   return runCli({
     command: DROID_BINARY,
     args: ["exec", "--output-format", "text", "--cwd", input.cwd, input.prompt],
+    cwd: input.cwd,
+    env,
+    stdin: "",
+    timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+  });
+}
+
+/** One-shot `agy -p` print call at the CLI's default model. The prompt rides
+ *  `-p` as a direct spawn arg (no shell quoting involved); the print call runs
+ *  with permissions skipped so the one-shot can't block on a terminal, and the
+ *  capture plugin's hooks stay inactive (no KONE_ANTIGRAVITY_EVENTS) so the
+ *  call behaves exactly like any other terminal `agy -p`. */
+async function generateWithAntigravity(input: {
+  cwd: string;
+  prompt: string;
+}): Promise<string | null> {
+  const env = await buildAgentEnv();
+  return runCli({
+    command: ANTGRAVITY_BINARY,
+    args: [
+      "-p",
+      "--dangerously-skip-permissions",
+      "--new-project",
+      "--print-timeout",
+      "5m",
+      input.prompt,
+    ],
     cwd: input.cwd,
     env,
     stdin: "",

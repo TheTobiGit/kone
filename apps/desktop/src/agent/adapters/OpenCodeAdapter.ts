@@ -9,6 +9,7 @@ import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { buildOpenCodeMcpServer } from "../gateway/injection.js";
 import type { ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import type { TokenUsageSplits } from "../usage/report.js";
 
 type RecordLike = Record<string, any>;
 type OpenCodeEvent = { type: string; properties?: RecordLike };
@@ -181,7 +182,10 @@ function openCodeTaskSummary(output: unknown): string | undefined {
 }
 
 /** OpenCode reports cumulative session totals on assistant messages and step ends. */
-export function normalizeOpenCodeTokenUsage(tokens: unknown, contextWindow?: number): TokenUsage | undefined {
+export function normalizeOpenCodeTokenUsage(
+  tokens: unknown,
+  contextWindow?: number,
+): (TokenUsage & TokenUsageSplits) | undefined {
   const tokenRecord = record(tokens);
   if (!tokenRecord) return undefined;
   const inputTokens = nonNegativeInteger(tokenRecord.input);
@@ -212,6 +216,14 @@ export function normalizeOpenCodeTokenUsage(tokens: unknown, contextWindow?: num
     total,
     contextUsed,
     ...(normalizedContextWindow !== undefined ? { contextWindow: normalizedContextWindow } : {}),
+    // Unlike Claude (which only ever reports the combined input total),
+    // OpenCode's `tokens` payload already carries the prompt-cache split and
+    // the reasoning-token count as their own fields on every usage update —
+    // pass them straight through instead of only folding them into
+    // input/output above.
+    cacheReadTokens,
+    cacheCreationTokens: cacheWriteTokens,
+    reasoningTokens: reasoningOutputTokens,
   };
 }
 

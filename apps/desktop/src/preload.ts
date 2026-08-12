@@ -6,6 +6,10 @@ import type {
   StoredBoardLayout,
   StoredThreadPage,
 } from "./agent/ConversationStore.js";
+import type { AgentInventory } from "./agent/inventory/types.js";
+import type { QuotaCapableProvider } from "./agent/quota/index.js";
+import type { QuotaProviderReport } from "./agent/quota/types.js";
+import type { AgentUsageReport, UsageRange } from "./agent/usage/report.js";
 import type { BoardLoadInput, BoardSaveInput } from "./board/index.js";
 import type {
   ApprovalDecision,
@@ -13,6 +17,7 @@ import type {
   CreateSideChatInput,
   CreateSideChatResult,
   ModelDescriptor,
+  ProfileStats,
   ProviderCacheSnapshot,
   ProviderConfig,
   ProviderKind,
@@ -350,6 +355,35 @@ const api = {
       // follows the thread across profiles.
       setPinned: (threadId: string, pinned: boolean): Promise<void> =>
         ipcRenderer.invoke("agent:set-pinned", threadId, pinned),
+      // Lifetime, fully-local usage stats aggregated across every project, for
+      // the standalone profile board.
+      profileStats: (): Promise<ProfileStats> =>
+        ipcRenderer.invoke("agent:profile-stats"),
+    },
+    // The Agents space's three reads. Usage is local SQL over the same per-turn
+    // rows history is built from, bounded to a window and optionally to one
+    // project. Quota reaches a provider's own usage API — only for a provider
+    // the user connected, and `allowKeychain` only on a user-initiated action.
+    // Inventory is a read-only walk of the CLIs' config roots.
+    usage: {
+      report: (options: {
+        range: UsageRange;
+        projectPath?: string | null;
+        forceRefresh?: boolean;
+      }): Promise<AgentUsageReport> => ipcRenderer.invoke("agent:usage-report", options),
+    },
+    quota: {
+      detect: (provider: QuotaCapableProvider): Promise<boolean> =>
+        ipcRenderer.invoke("agent:quota-detect", provider),
+      fetch: (
+        provider: QuotaCapableProvider,
+        options?: { allowKeychain?: boolean; force?: boolean },
+      ): Promise<QuotaProviderReport> =>
+        ipcRenderer.invoke("agent:quota-fetch", provider, options),
+    },
+    inventory: {
+      scan: (projectPath: string | null): Promise<AgentInventory> =>
+        ipcRenderer.invoke("agent:inventory-scan", projectPath),
     },
     // Persist the user's per-thread picker selection (model/effort/serviceTier/
     // contextWindow) so a reopened thread restores the picker exactly.

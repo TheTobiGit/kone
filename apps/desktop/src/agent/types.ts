@@ -12,9 +12,10 @@
 /** A supported agent provider. `claudeAgent` drives Claude Code through the
  *  `@anthropic-ai/claude-agent-sdk` (which runs the user's own Claude login);
  *  `codex` drives `codex app-server`; `cursor` drives `cursor-agent acp`;
- *  `droid` drives Factory's `droid exec --output-format acp`.
+ *  `droid` drives Factory's `droid exec --output-format acp`; `antigravity`
+ *  drives Google's `agy` CLI in print mode (transcript + capture-hook polling).
  *  Grows as adapters land. */
-export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "droid";
+export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "droid" | "antigravity";
 
 // ── Discovery / health ───────────────────────────────────────────────────────
 
@@ -458,6 +459,48 @@ export type StoredBlock =
 /** A thread reloaded from disk: metadata plus its blocks in arrival order. */
 export type StoredThread = StoredThreadMeta & { blocks: StoredBlock[] };
 
+/** Lifetime, fully-local usage stats for the profile board — aggregated in SQL
+ *  across every project's threads (never a cloud call). A prompt is one user
+ *  block; day/hour buckets are the machine's local calendar (SQLite `localtime`).
+ *  Ranked lists come newest-first-count already sorted, so the renderer just
+ *  slices. */
+export type ProfileStats = {
+  generatedAt: number;
+  totals: {
+    /** Threads that carry at least one user prompt (archived included). */
+    threads: number;
+    /** User blocks — the count of turns the user has sent. */
+    prompts: number;
+    /** Summed per-turn totals; falls back to the threads' cumulative scalar
+     *  when no per-turn audit rows exist yet. */
+    tokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    /** Distinct project paths touched. */
+    projects: number;
+  };
+  streak: {
+    /** Consecutive local days with activity ending today (or yesterday). */
+    current: number;
+    longest: number;
+    /** The single most active local day by prompt count. */
+    peakDay: { date: string; count: number } | null;
+  };
+  /** One entry per active local day, ascending by date (YYYY-MM-DD). */
+  activity: Array<{ date: string; count: number }>;
+  /** Prompts binned by local hour 0–23 (only non-empty hours). */
+  hours: Array<{ hour: number; count: number }>;
+  mostActiveHour: number | null;
+  /** Threads grouped by provider, most-used first. */
+  providers: Array<{ provider: ProviderKind; count: number }>;
+  /** Threads grouped by model (+ its provider), most-used first. */
+  models: Array<{ model: string; provider: ProviderKind; count: number }>;
+  /** Threads grouped by chosen reasoning effort, most-used first. */
+  reasoning: Array<{ effort: string; count: number }>;
+  /** Projects ranked by prompts sent within them, most-worked first. */
+  projects: Array<{ path: string; name: string; prompts: number }>;
+};
+
 // ── durable turn queue ──────────────────────────────────────────────────────
 // A user follow-up sent while a turn runs is durably enqueued (survives
 // crashes), promoted automatically when the active turn settles, cancelled on
@@ -899,6 +942,12 @@ export type RuntimeEventSource =
   | "droid.acp.notification"
   | "droid.acp.stderr"
   | "droid.acp.lifecycle"
+  // Antigravity drives `agy -p` print mode: `event` = transcript/hook-derived
+  // turn events, `stderr` = the CLI's stderr line, `lifecycle` = session
+  // start/exit.
+  | "antigravity.cli.event"
+  | "antigravity.cli.stderr"
+  | "antigravity.cli.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 

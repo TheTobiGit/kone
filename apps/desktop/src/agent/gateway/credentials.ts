@@ -37,6 +37,14 @@ export class GatewayCredentials {
   private readonly tokens = new Map<string, GatewaySessionIdentity>();
   private readonly tokensByThread = new Map<string, Set<string>>();
   private readonly authorities = new Map<string, GatewayWriteAuthority>();
+  /** One-shot stdio bootstrap tokens → the session token they resolve to.
+   *  Used by providers whose MCP config must be secret-free on disk
+   *  (Antigravity's globally-installed plugin mcp_config.json): the CLI's
+   *  process env carries only a single-use bootstrap, which the spawned MCP
+   *  proxy exchanges at POST /bootstrap for the real session token — so the
+   *  session credential never enters the provider process env (or its
+   *  exec-tool descendants), and a stolen bootstrap is spent after one use. */
+  private readonly bootstrapTokens = new Map<string, string>();
 
   private port = 0;
 
@@ -120,6 +128,11 @@ export class GatewayCredentials {
   revokeSessionToken(token: string): void {
     this.tokens.delete(token);
     this.authorities.delete(token);
+    // Any bootstrap minted against a revoked session is dead too — a turn
+    // racing the stop must not exchange its way into a ghost credential.
+    for (const [bootstrap, sessionToken] of [...this.bootstrapTokens]) {
+      if (sessionToken === token) this.bootstrapTokens.delete(bootstrap);
+    }
   }
 
   /** Revoke every credential a thread owns. */
@@ -134,5 +147,27 @@ export class GatewayCredentials {
    *  turn settles. */
   tokensForThread(threadId: string): string[] {
     return [...(this.tokensByThread.get(threadId) ?? [])];
+  }
+
+  /** Mint a one-shot bootstrap token for one session token. The bootstrap is
+   *  single-use (exchangeStdioBootstrapToken deletes it) and short-lived by
+   *  construction: each Antigravity print turn is a fresh process that needs
+   *  exactly one exchange, so the token dies with the turn even if it leaks.
+   *  Null when the session token is no longer live. */
+  issueStdioBootstrapToken(sessionToken: string): string | null {
+    if (!this.tokens.has(sessionToken)) return null;
+    const bootstrap = `kone_boot_${randomUUID()}`;
+    this.bootstrapTokens.set(bootstrap, sessionToken);
+    return bootstrap;
+  }
+
+  /** Redeem a bootstrap token for its session token. Single-use: the mapping
+   *  is deleted on the first successful exchange, so a reused or stolen
+   *  bootstrap cannot mint a second credential. */
+  exchangeStdioBootstrapToken(bootstrap: string): string | null {
+    const sessionToken = this.bootstrapTokens.get(bootstrap);
+    if (sessionToken === undefined) return null;
+    this.bootstrapTokens.delete(bootstrap);
+    return this.tokens.has(sessionToken) ? sessionToken : null;
   }
 }

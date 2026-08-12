@@ -88,7 +88,14 @@ function turnCompleted(threadId: string, turnId: string, at: number): RuntimeEve
 function tokenUsage(
   threadId: string,
   at: number,
-  usage: { input?: number; output?: number; total?: number },
+  usage: {
+    input?: number;
+    output?: number;
+    total?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    reasoningTokens?: number;
+  },
   provider: RuntimeEvent["provider"] = "opencode",
 ): RuntimeEvent {
   return {
@@ -225,12 +232,12 @@ const V17_THREADS = `
 `;
 
 describe("v18 migration", () => {
-  test("fresh DB opens at the current schema (v20) with the new columns, table and indexes", () => {
+  test("fresh DB opens at the current schema (v21) with the new columns, table and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(20);
+    expect(version.user_version).toBe(21);
 
     const threads = columnNames(raw, "threads");
     for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
@@ -526,12 +533,12 @@ describe("live capture contracts", () => {
 });
 
 describe("v19 keyset index migration", () => {
-  test("fresh DB opens at v20 with the blocks keyset index", () => {
+  test("fresh DB opens at the current schema with the blocks keyset index", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(20);
+    expect(version.user_version).toBe(21);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -539,7 +546,7 @@ describe("v19 keyset index migration", () => {
     raw.close();
   });
 
-  test("a v17 legacy DB upgrades through v18 to v20 and gains the index", () => {
+  test("a v17 legacy DB upgrades through v18-v20 to the current schema and gains the index", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-v19-"));
     const legacy = new Database(path.join(dir, "conversations.sqlite"));
     legacy.exec(V17_THREADS);
@@ -551,7 +558,7 @@ describe("v19 keyset index migration", () => {
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(20);
+    expect(version.user_version).toBe(21);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -820,12 +827,12 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
 // ── v20 durable turn queue ────────────────────────────────────────────────────
 
 describe("v20 queued turns migration", () => {
-  test("fresh DB opens at v20 with the queued_turns table, thread index and active partial unique index", () => {
+  test("fresh DB opens at the current schema with the queued_turns table, thread index and active partial unique index", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(20);
+    expect(version.user_version).toBe(21);
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
     }>).map((r) => r.name);
@@ -847,7 +854,7 @@ describe("v20 queued turns migration", () => {
     raw.close();
   });
 
-  test("a v17 legacy DB upgrades through v20 and re-opening the ladder is idempotent", () => {
+  test("a v17 legacy DB upgrades through v20 to the current schema and re-opening the ladder is idempotent", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-v20-"));
     const legacy = new Database(path.join(dir, "conversations.sqlite"));
     legacy.exec(V17_THREADS);
@@ -859,13 +866,13 @@ describe("v20 queued turns migration", () => {
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(20);
+    expect(version.user_version).toBe(21);
     // A re-open (a second process) runs the ladder again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version2.user_version).toBe(20);
+    expect(version2.user_version).toBe(21);
     raw.close();
   });
 

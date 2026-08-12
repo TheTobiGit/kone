@@ -24,11 +24,13 @@ import type {
   Session,
   SendTurnInput,
   SessionStartInput,
+  TokenUsage,
   TurnStartResult,
   UserInputAnswers,
   UserInputQuestion,
   UserInputQuestionOption,
 } from "../types.js";
+import type { TokenUsageSplits } from "../usage/report.js";
 import {
   isNonFatalCodexError,
   isRecoverableCodexResumeError,
@@ -937,23 +939,40 @@ export class CodexAdapter implements ProviderAdapter {
         numberOrUndefined(breakdown.totalTokens) ??
         numberOrUndefined(breakdown.total_tokens) ??
         numberOrUndefined(breakdown.total);
+      // The same breakdown already carries the prompt-cache and reasoning
+      // splits Codex's Responses-API usage reports — `cachedInputTokens` /
+      // `reasoningOutputTokens` (or their snake_case wire form on older
+      // builds) — which this adapter previously never read at all. Codex has
+      // no separate "cache write" bucket distinct from the cached-read count
+      // (unlike Anthropic's two-sided cache accounting), so cache-creation is
+      // always 0 for this provider.
+      const cacheReadTokens =
+        numberOrUndefined(breakdown.cachedInputTokens) ??
+        numberOrUndefined(breakdown.cached_input_tokens);
+      const reasoningTokens =
+        numberOrUndefined(breakdown.reasoningOutputTokens) ??
+        numberOrUndefined(breakdown.reasoning_output_tokens);
+      const usageWithSplits: TokenUsage & TokenUsageSplits = {
+        input:
+          numberOrUndefined(breakdown.inputTokens) ??
+          numberOrUndefined(breakdown.input_tokens) ??
+          numberOrUndefined(breakdown.input),
+        output:
+          numberOrUndefined(breakdown.outputTokens) ??
+          numberOrUndefined(breakdown.output_tokens) ??
+          numberOrUndefined(breakdown.output),
+        total,
+        ...(contextUsed !== undefined ? { contextUsed } : {}),
+        ...(contextWindow !== undefined ? { contextWindow } : {}),
+        ...(contextWindow !== undefined ? { compactsAutomatically: true } : {}),
+        cacheReadTokens: cacheReadTokens ?? 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: reasoningTokens ?? 0,
+      };
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
-        usage: {
-          input:
-            numberOrUndefined(breakdown.inputTokens) ??
-            numberOrUndefined(breakdown.input_tokens) ??
-            numberOrUndefined(breakdown.input),
-          output:
-            numberOrUndefined(breakdown.outputTokens) ??
-            numberOrUndefined(breakdown.output_tokens) ??
-            numberOrUndefined(breakdown.output),
-          total,
-          ...(contextUsed !== undefined ? { contextUsed } : {}),
-          ...(contextWindow !== undefined ? { contextWindow } : {}),
-          ...(contextWindow !== undefined ? { compactsAutomatically: true } : {}),
-        },
+        usage: usageWithSplits,
       });
     });
 

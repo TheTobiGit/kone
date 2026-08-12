@@ -11,8 +11,16 @@
 // proxy's own spawn env (the ACP `mcpServers[].env` array). kone's provider
 // env builders (buildCursorEnv / buildDroidEnv) never include it, so the CLI
 // process env — and therefore every exec-tool subprocess the agent spawns —
-// never sees the token. The proxy holds it in memory only. A bootstrap-token
-// must be secret-free on disk; ACP's per-child env array is not that case.
+// never sees the token. The proxy holds it in memory only.
+//
+// which the comment below anticipated): Antigravity's MCP config lives in a
+// GLOBAL plugin on disk, so it must be secret-free — no token anywhere in the
+// plugin file. Instead the CLI's process env carries `KONE_GATEWAY_URL` plus
+// a single-use `KONE_GATEWAY_BOOTSTRAP_TOKEN`, and the plugin spawns this
+// proxy with those two; the proxy exchanges the bootstrap at
+// `POST <url>/bootstrap` for the real session token, which exists only in
+// this process's memory. A bootstrap leaked to an exec-tool subprocess is
+// spent after exactly one exchange.
 //
 // Self-bootstrap for packaged builds: the ACP entry's `command` is
 // `process.execPath` — a packaged Electron binary in production. Electron
@@ -23,7 +31,7 @@
 // script instead of the entry.
 //
 // Dependency-free (fetch / AbortController / URL / setTimeout().unref()), so
-// it runs on whichever node/bun/electron runtime backs `process.execPath`.
+// it runs on whichever node/bun/runtime backs `process.execPath`.
 
 import { spawn } from "node:child_process";
 
@@ -37,13 +45,62 @@ if (process.versions.electron && process.env.ELECTRON_RUN_AS_NODE !== "1") {
 }
 
 const url = process.env.KONE_GATEWAY_URL;
-const token = process.env.KONE_GATEWAY_TOKEN;
-const active = Boolean(url && token);
+let token = process.env.KONE_GATEWAY_TOKEN;
+const bootstrapToken = process.env.KONE_GATEWAY_BOOTSTRAP_TOKEN;
+const active = Boolean(url && (token || bootstrapToken));
 
+const BOOTSTRAP_TIMEOUT_MS = 5000;
+let tokenResolution;
+let bootstrapController;
+let bootstrapTimeout;
 const activeRequests = new Map();
 const activeControllers = new Set();
 const inFlight = new Set();
 let outputQueue = Promise.resolve();
+
+async function resolveToken() {
+  if (token) return token;
+  if (!url || !bootstrapToken) return null;
+  if (!tokenResolution) {
+    const controller = new AbortController();
+    bootstrapController = controller;
+    bootstrapTimeout = setTimeout(() => controller.abort(), BOOTSTRAP_TIMEOUT_MS);
+    bootstrapTimeout.unref?.();
+    tokenResolution = (async () => {
+      const bootstrapUrl = new URL(url);
+      bootstrapUrl.pathname = bootstrapUrl.pathname.replace(/\/$/, "") + "/bootstrap";
+      bootstrapUrl.search = "";
+      bootstrapUrl.hash = "";
+      const response = await fetch(bootstrapUrl, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + bootstrapToken },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error("kone gateway bootstrap failed with HTTP " + response.status);
+      }
+      const payload = await response.json();
+      if (!isRecord(payload) || typeof payload.bearerToken !== "string") {
+        throw new Error("kone gateway bootstrap returned an invalid response");
+      }
+      token = payload.bearerToken;
+      return token;
+    })().finally(() => {
+      if (bootstrapController === controller) bootstrapController = undefined;
+      if (bootstrapTimeout) clearTimeout(bootstrapTimeout);
+      bootstrapTimeout = undefined;
+    });
+    // Begin the exchange before the provider can process a prompt or launch
+    // command descendants. Keep the rejection observed even if no JSON-RPC
+    // request has arrived yet; the first request receives the same failure.
+    tokenResolution.catch(() => undefined);
+  }
+  return tokenResolution;
+}
+
+if (active && !token && bootstrapToken) {
+  void resolveToken().catch(() => undefined);
+}
 
 function writeMessage(message) {
   outputQueue = outputQueue.then(() => {
@@ -119,12 +176,14 @@ async function forwardMessage(message, controller) {
     return localInactiveResponse(message);
   }
   try {
+    const resolvedToken = await resolveToken();
+    if (!resolvedToken) return localInactiveResponse(message);
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json, text/event-stream",
-        Authorization: "Bearer " + token,
+        Authorization: "Bearer " + resolvedToken,
       },
       body: JSON.stringify(message),
       signal: controller.signal,
@@ -227,6 +286,7 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", async () => {
   // Give short responses one event-loop turn to reach the gateway, then abort
   // anything still hung.
+  bootstrapController?.abort();
   await Promise.race([
     Promise.allSettled(Array.from(inFlight)),
     new Promise((resolve) => setTimeout(resolve, 100)),

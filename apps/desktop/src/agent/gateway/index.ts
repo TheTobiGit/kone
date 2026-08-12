@@ -34,6 +34,10 @@ export interface GatewayHandle {
   /** Mint (and revoke any prior) session credential for a thread. Called from
    *  AgentService.startSession so the adapter can inject the connection. */
   connectionForThread(threadId: string, provider: ProviderKind, model?: string): GatewayConnection;
+  /** Mint a one-shot stdio bootstrap token for one session credential
+   *  (Antigravity's secret-free plugin MCP path — see GatewayCredentials).
+   *  Null when the session token is no longer live. */
+  issueBootstrapToken(sessionToken: string): string | null;
   /** Revoke every credential a thread owns (AgentService.stopSession). */
   revokeThread(threadId: string): void;
   /** The resolved endpoint, valid once the server is listening. */
@@ -101,6 +105,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   return {
     connectionForThread: (threadId, provider, model) =>
       credentials.connectionForThread(threadId, provider, model),
+    issueBootstrapToken: (sessionToken) => credentials.issueStdioBootstrapToken(sessionToken),
     revokeThread: (threadId) => credentials.revokeThread(threadId),
     mcpEndpointUrl: () => credentials.mcpEndpointUrl(),
     ready: server.ready,

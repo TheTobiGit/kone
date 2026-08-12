@@ -41,6 +41,7 @@ import type {
   TurnStartResult,
   UserInputAnswers,
 } from "../types.js";
+import type { TokenUsageSplits } from "../usage/report.js";
 
 // Cursor adapter — drives `cursor-agent acp`, a persistent JSON-RPC-over-stdio
 // child per thread speaking ACP (the Agent Client Protocol), reusing the same
@@ -1271,7 +1272,10 @@ export class CursorAdapter implements ProviderAdapter {
 
     const stored = await this.readStoredContext(session.conversationId);
     if (stored) {
-      const usage: TokenUsage = {
+      // The on-disk record (parseStoredCursorContext) is a flat
+      // {used, window} pair — Cursor doesn't persist a cache/reasoning split
+      // anywhere kone can read, so those three counts are always 0 here.
+      const usage: TokenUsage & TokenUsageSplits = {
         contextUsed: stored.used,
         // The disk number is the session's running context fill, which grows
         // turn to turn — the store's "Cursor keeps the max" running-total
@@ -1279,6 +1283,9 @@ export class CursorAdapter implements ProviderAdapter {
         total: stored.used,
         contextWindow: stored.window,
         compactsAutomatically: true,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
       };
       this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
       return;
@@ -1286,7 +1293,10 @@ export class CursorAdapter implements ProviderAdapter {
 
     // Give the one-time model catalog a chance to load before deciding there's
     // no window to report — a fast (e.g. blocked) turn can outrun the startSession
-    // warm-up. Cheap when the cache is already warm.
+    // warm-up. Cheap when the cache is already warm. `buildContextWindowFallback`
+    // deliberately reports the window alone (see its own doc comment) — no
+    // input/output/total, so no cache/reasoning split either; the store
+    // defaults those three to 0 when a usage payload omits them.
     await this.listModels().catch(() => {});
     const usage = buildContextWindowFallback(session.configOptions, this.modelContextWindows, session.model);
     if (!usage) return;
@@ -1336,10 +1346,15 @@ export class CursorAdapter implements ProviderAdapter {
     const size = readNumber(update, "size");
     if (used === undefined && size === undefined) return;
     session.usageReported = true;
-    const usage: TokenUsage = {
+    // The ACP `usage_update` shape is only ever `used`/`size` — no
+    // input/output split, so no cache/reasoning split either.
+    const usage: TokenUsage & TokenUsageSplits = {
       ...(used === undefined ? {} : { contextUsed: used, total: used }),
       ...(size === undefined ? {} : { contextWindow: size }),
       compactsAutomatically: true,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
     };
     this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
   }
@@ -1378,6 +1393,7 @@ export class CursorAdapter implements ProviderAdapter {
       const output = readNumber(resultUsage, "outputTokens") ?? readNumber(resultUsage, "output_tokens");
       const cacheRead = readNumber(resultUsage, "cacheReadTokens") ?? readNumber(resultUsage, "cache_read_tokens");
       const cacheWrite = readNumber(resultUsage, "cacheWriteTokens") ?? readNumber(resultUsage, "cache_write_tokens");
+      const reasoning = readNumber(resultUsage, "reasoningTokens") ?? readNumber(resultUsage, "reasoning_tokens");
       const total =
         readNumber(resultUsage, "totalTokens") ??
         readNumber(resultUsage, "total_tokens") ??
@@ -1386,14 +1402,22 @@ export class CursorAdapter implements ProviderAdapter {
           : undefined);
       if (input !== undefined || output !== undefined || total !== undefined) {
         session.usageReported = true;
+        // `cacheRead`/`cacheWrite` were already parsed above (to complete the
+        // `total` fallback) and used to be dropped right here instead of
+        // reaching the store — pass the whole split through, still 0 when this
+        // speculative `result.usage` bag doesn't carry a given count.
+        const usage: TokenUsage & TokenUsageSplits = {
+          ...(input !== undefined ? { input } : {}),
+          ...(output !== undefined ? { output } : {}),
+          ...(total !== undefined ? { total } : {}),
+          cacheReadTokens: cacheRead ?? 0,
+          cacheCreationTokens: cacheWrite ?? 0,
+          reasoningTokens: reasoning ?? 0,
+        };
         this.emit({
           ...this.base(session),
           type: "thread.token-usage.updated",
-          usage: {
-            ...(input !== undefined ? { input } : {}),
-            ...(output !== undefined ? { output } : {}),
-            ...(total !== undefined ? { total } : {}),
-          },
+          usage,
         });
       }
     }

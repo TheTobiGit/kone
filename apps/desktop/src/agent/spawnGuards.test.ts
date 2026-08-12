@@ -240,6 +240,32 @@ describe("checkSpawn", () => {
     }
   });
 
+  test("an Antigravity child below full access is refused (print mode floor)", () => {
+    // The child's mode is capped at the parent's, so a parent at accept-edits
+    // (or ask) simply cannot host an Antigravity child — refusing beats
+    // silently promoting, which would escalate privilege across the spawn.
+    for (const parentMode of ["ask", "accept-edits"] as const) {
+      const result = checkSpawn(
+        base({ target: { provider: "antigravity" }, requestedMode: undefined, parentMode }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        code: "capability_denied",
+        details: { provider: "antigravity", mode: parentMode },
+      });
+    }
+    // An explicit full-access request from a full-access parent is fine.
+    const ok = checkSpawn(
+      base({
+        target: { provider: "antigravity" },
+        requestedMode: "full-access",
+        parentMode: "full-access",
+      }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.mode).toBe("full-access");
+  });
+
   test("depth wins over breadth in the check order", () => {
     const result = checkSpawn(
       base({

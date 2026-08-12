@@ -46,11 +46,13 @@ import type {
   SessionStartInput,
   SubagentRunSnapshot,
   SubagentStatus,
+  TokenUsage,
   TurnStartResult,
   UserInputAnswers,
   UserInputQuestion,
   UserInputQuestionOption,
 } from "../types.js";
+import type { TokenUsageSplits } from "../usage/report.js";
 import {
   buildClaudeSubagentDefinitions,
   claudeSubagentEffort,
@@ -1782,16 +1784,27 @@ export class ClaudeAdapter implements ProviderAdapter {
         total !== undefined && contextWindow !== undefined
           ? Math.min(total, contextWindow)
           : total;
+      // The cache split computed above for `input` used to be discarded the
+      // moment it was folded in — pass it through instead so the store's
+      // per-turn audit trail (turn_usage) keeps the real cache-read vs.
+      // cache-creation breakdown, which is most of an agentic turn's actual
+      // cost. Anthropic's usage object has no reasoning-token bucket distinct
+      // from output (extended thinking bills as ordinary output tokens), so
+      // that count is always 0 for this provider.
+      const usageWithSplits: TokenUsage & TokenUsageSplits = {
+        input,
+        output,
+        total,
+        ...(contextUsed !== undefined ? { contextUsed } : {}),
+        ...(contextWindow !== undefined ? { contextWindow, compactsAutomatically: true } : {}),
+        cacheReadTokens: cacheRead ?? 0,
+        cacheCreationTokens: cacheCreation ?? 0,
+        reasoningTokens: 0,
+      };
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
-        usage: {
-          input,
-          output,
-          total,
-          ...(contextUsed !== undefined ? { contextUsed } : {}),
-          ...(contextWindow !== undefined ? { contextWindow, compactsAutomatically: true } : {}),
-        },
+        usage: usageWithSplits,
       });
     }
 
