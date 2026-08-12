@@ -10,9 +10,8 @@ import type { QuotaProviderReport, QuotaWindow, SpendTile, TrendPoint } from "./
 // OpenCode's own usage, read straight off the local SQLite log OpenCode's CLI
 // already writes (~/.local/share/opencode/opencode*.db) — no network call,
 // no credential, nothing to opt into beyond "does this machine have the
-// file". Ported from
-// (OpenCodePaths, OpenCodeGoWindows, OpenCodeUsageMapper, OpenCodeUsageScanner)
-// but flattened to kone's simpler needs: one aggregate "hosted usage" read
+// file". The read is flattened to kone's simpler needs: one aggregate
+// "hosted usage" read
 // for its Zen pay-as-you-go plan; kone's Agents page only cares about the Go
 // subscription caps, so both hosted providerIDs feed every figure below).
 
