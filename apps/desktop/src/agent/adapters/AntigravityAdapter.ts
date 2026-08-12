@@ -1,0 +1,1266 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import {
+  ANTGRAVITY_BINARY,
+  antigravityTranscriptPath,
+  buildAntigravityEnv,
+  buildAntigravityProbeEnv,
+  parseAntigravityVersion,
+  resolveAntigravityBinary,
+} from "../antigravityHome.js";
+import { koneHostContextForFirstRun } from "../gateway/appContext.js";
+import { STDIO_PROXY_PATH } from "../gateway/injection.js";
+import { probe, killTree } from "../spawn.js";
+import type {
+  AdapterCapabilities,
+  EmitEvent,
+  GatewayConnection,
+  InteractionMode,
+  ModelDescriptor,
+  ProviderAdapter,
+  ProviderConfig,
+  ProviderStatus,
+  RuntimeItem,
+  RuntimeItemKind,
+  Session,
+  SendTurnInput,
+  SessionStartInput,
+  TurnStartResult,
+} from "../types.js";
+
+// Antigravity adapter — drives Google's `agy` CLI in print mode: one fresh
+// process per turn (`agy -p`), the transcript it writes under
+// ~/.gemini/antigravity-cli/brain/<conversationId>/ as the turn-rendering
+// source, and a globally-installed "kone-capture" plugin whose hooks stream
+// tool lifecycle + conversation identity to a per-turn file the adapter polls.
+//
+// for provider/process work — see AGENTS.md), rewritten in kone's plain-TS
+// main-process style. All protocol facts below were verified there against the
+// live CLI:
+//
+//  1. Print mode cannot pause for interactive approvals. `agy -p` either runs
+//     with `--dangerously-skip-permissions` (full access) or asks at the
+//     terminal — which a kone child has none of. So the session REQUIRES
+//     full-access; the mode validation rejects everything else (same wording
+//  2. `agy models` prints one row per (model, effort) combination — either
+//     `Display Name (Effort)` or, on newer builds, `slug<TAB>Display Name
+//     (Effort)`. kone collapses those rows into base models with an effort
+//     ladder and rebuilds the exact `--model` label at dispatch
+//     (resolveAntigravityCliModelLabel).
+//  3. The capture plugin's hooks fire for EVERY agy session (global install).
+//     Outside kone-managed sessions (no KONE_ANTIGRAVITY_EVENTS) the hook
+//     wrapper must answer `{"decision":"ask"}` on PreToolUse — an empty object
+//     is treated as a denial with an empty reason and blocks every tool call
+//     (#490). Stop hooks stay `{}`: `{"decision":"stop"}` is not a valid stop
+//     decision and can hang the print process after the reply (#465).
+//  4. The mcp_config.json in the plugin is secret-free: it references
+//     `$KONE_GATEWAY_URL` / `$KONE_GATEWAY_BOOTSTRAP_TOKEN` env placeholders
+//     the CLI process env supplies per turn, and the spawned stdio proxy
+//     exchanges the single-use bootstrap at POST /bootstrap for the real
+//     session token — which never enters the CLI process env, so exec-tool
+//     descendants can't inherit it (see gateway/stdioProxy.mjs).
+//  5. Windows: the prompt rides `-p` as a command-line argument, so it is
+
+const PROVIDER = "antigravity" as const;
+const DEFAULT_MODEL = "Gemini 3.5 Flash";
+const PRINT_TIMEOUT = "30m";
+const POLL_INTERVAL_MS = 75;
+const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+const PLUGIN_INSTALL_TIMEOUT_MS = 30_000;
+const HELPER_OUTPUT_MAX_CHARS = 128 * 1024;
+const WINDOWS_PROMPT_MAX_CHARS = 24_000;
+ *  — the CLI predating it lacks the print flags this adapter relies on). */
+const MIN_ANTIGRAVITY_CLI_VERSION = "1.0.12";
+
+/** The capture-plugin env vars. KONE_ANTIGRAVITY_EVENTS is the per-turn hook
+ *  stream the shell wrapper + capture script append to; the decision var makes
+ *  every PreToolUse hook answer "allow" (the turn already runs full-access). */
+const HOOK_EVENTS_ENV = "KONE_ANTIGRAVITY_EVENTS";
+const HOOK_DECISION_ENV = "KONE_ANTIGRAVITY_HOOK_DECISION";
+/** The gateway bootstrap env the CLI process env carries per turn — see the
+ *  stdio proxy's bootstrap exchange (gateway/stdioProxy.mjs). */
+export const KONE_AGENT_GATEWAY_URL_ENV = "KONE_GATEWAY_URL";
+export const KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV = "KONE_GATEWAY_BOOTSTRAP_TOKEN";
+
+/** One transcript step from the conversation's transcript.jsonl (the CLI's own
+ *  brain log). */
+type TranscriptStep = {
+  step_index?: number;
+  type?: string;
+  status?: string;
+  content?: string;
+  tool_calls?: ReadonlyArray<{ name?: string; args?: Record<string, unknown> }> | null;
+  [key: string]: unknown;
+};
+
+/** A tool call the hooks reported started but not yet finished. */
+type PendingTool = {
+  stepIndex: number;
+  itemId: string;
+  name: string;
+};
+
+type AntigravitySession = {
+  threadId: string;
+  cwd: string;
+  model: string;
+  mode: InteractionMode;
+  /** Provider-native conversation id — learned from the hooks mid-turn,
+   *  seeded from SessionStartInput.resume. */
+  conversationId?: string;
+  /** Set when `SessionStartInput.resume` was actually adopted. */
+  resumedFrom?: string;
+  /** The kone gateway connection minted at startSession — the plugin's MCP
+   *  config routes the agent's kone tools to it (bootstrap-exchanged). */
+  gatewayConnection?: GatewayConnection;
+  /** The user's configured per-session effort (modelOptions.reasoningEffort). */
+  modelOptions?: { reasoningEffort?: string };
+  /** The CLI executable to spawn. */
+  binary: string;
+  activeTurnId?: string;
+  activeProcess?: ChildProcess;
+  eventFile?: string;
+  transcriptPath?: string;
+  processedHookBytes: number;
+  processedTranscriptBytes: number;
+  processedTranscriptPath?: string;
+  processedSteps: Set<number>;
+  pendingTools: PendingTool[];
+  nextToolSequence: number;
+  sawAssistant: boolean;
+  interrupted: boolean;
+  stopped: boolean;
+  /** Guards against double turn settlement (process close + interrupt/stop). */
+  turnTerminalEmitted: boolean;
+  /** Resolves when the active child has actually exited — stopSession awaits
+   *  it (bounded) so a replacement turn never spawns while the predecessor
+   *  still runs. */
+  exited?: Promise<void>;
+};
+
+// ── small helpers ────────────────────────────────────────────────────────────
+
+function trim(value: string | null | undefined): string | undefined {
+  const result = value?.trim();
+  return result ? result : undefined;
+}
+
+function resumeConversationId(value: unknown): string | undefined {
+  if (typeof value === "string") return trim(value);
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ["conversationId", "providerThreadId", "id"]) {
+    if (typeof record[key] === "string" && record[key].trim()) return record[key].trim();
+  }
+  return undefined;
+}
+
+function shellQuote(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return `"${value.replaceAll('"', '\\"')}"`;
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Hook output when capture is inactive (the session is not kone-managed).
+ *  Antigravity requires PreToolUse output to carry a `decision`: an empty
+ *  object is treated as a denial with an empty reason, which blocks every tool
+ *  call because the hook is installed globally with `matcher: "*"`. "ask"
+ *  preserves the permission flow the user would have without the hook. `{}`
+ *  stays correct for the other hook points, including Stop, where an inactive
+ *  hook must not force a decision over Antigravity's default. */
+function inactiveHookOutput(event: string): string {
+  return event === "pre-tool" ? '{"decision":"ask"}' : "{}";
+}
+
+
+const DEFAULT_EFFORT_BY_MODEL: Readonly<Record<string, string>> = {
+  "Gemini 3.6 Flash": "medium",
+  "Gemini 3.5 Flash": "medium",
+  "Gemini 3.1 Pro": "low",
+  "Claude Sonnet 4.6": "thinking",
+  "Claude Opus 4.6": "thinking",
+  "GPT-OSS 120B": "medium",
+};
+
+const EFFORT_ORDER = ["low", "medium", "high", "thinking"] as const;
+
+function effortLabel(value: string): string {
+  return value
+    .split(/[-_\s]+/u)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+/** Parse one `agy models` row into a base model + effort. Handles both the
+ *  display-label form (`Gemini 3.5 Flash (High)`) and the newer
+ *  `slug<TAB>Display Name (Effort)` rows; the display column wins so a
+ *  `slug\tName` row is never treated as a single model id at dispatch. */
+export function parseAntigravityCliModelLabel(
+  value: string,
+): { model: string; effort?: string } | null {
+  const stripped = value.replace(/\x1b\[[0-9;]*m/g, "").trim();
+  if (!stripped) return null;
+
+  const tabIndex = stripped.indexOf("\t");
+  const labelColumn =
+    tabIndex >= 0 ? stripped.slice(tabIndex + 1).trim() : stripped.replace(/^(?:[*•-]\s+)+/u, "");
+  const trimmed = labelColumn.replace(/^(?:[*•-]\s+)+/u, "").trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(/^(.*?)\s+\(([^()]+)\)$/u);
+  if (!match?.[1] || !match[2]) return { model: trimmed };
+  return {
+    model: match[1].trim(),
+    effort: match[2].trim().toLowerCase(),
+  };
+}
+
+/** Collapse `agy models` output into base models with effort ladders, in
+ *  effort order. A future CLI model needs no static catalog update — whatever
+ *  the CLI prints is exactly what kone offers. */
+export function parseAntigravityModelLines(output: string): ModelDescriptor[] {
+  const groups = new Map<string, string[]>();
+  for (const line of output.split(/\r?\n/g)) {
+    const parsed = parseAntigravityCliModelLabel(line);
+    if (!parsed) continue;
+    const efforts = groups.get(parsed.model) ?? [];
+    if (parsed.effort && !efforts.includes(parsed.effort)) efforts.push(parsed.effort);
+    groups.set(parsed.model, efforts);
+  }
+  return [...groups.entries()].map(([model, discoveredEfforts]) => {
+    const efforts = discoveredEfforts.toSorted((left, right) => {
+      const leftIndex = EFFORT_ORDER.indexOf(left as (typeof EFFORT_ORDER)[number]);
+      const rightIndex = EFFORT_ORDER.indexOf(right as (typeof EFFORT_ORDER)[number]);
+      return (
+        (leftIndex < 0 ? EFFORT_ORDER.length : leftIndex) -
+        (rightIndex < 0 ? EFFORT_ORDER.length : rightIndex)
+      );
+    });
+    const defaultEffort = DEFAULT_EFFORT_BY_MODEL[model] ?? efforts[0];
+    return {
+      id: model,
+      label: model,
+      ...(efforts.length > 0
+        ? {
+            reasoningEfforts: efforts,
+            ...(defaultEffort ? { defaultReasoningEffort: defaultEffort } : {}),
+          }
+        : {}),
+    };
+  });
+}
+
+/** Rebuild the exact CLI `--model` label for one dispatch: the base model plus
+ *  the effort to bake in (the turn's own request, else the discovered default,
+ *  else the static default). Returning the raw input would preserve corrupted
+ *  `slug\tName (Effort)` rows from older discovery parsing. */
+export function resolveAntigravityCliModelLabel(
+  model: string,
+  options?: { reasoningEffort?: string },
+  discoveredDefaultEffort?: string,
+): string {
+  const parsed = parseAntigravityCliModelLabel(model);
+  if (!parsed) return model;
+  const effort =
+    parsed.effort ??
+    options?.reasoningEffort?.trim().toLowerCase() ??
+    discoveredDefaultEffort?.trim().toLowerCase() ??
+    DEFAULT_EFFORT_BY_MODEL[parsed.model];
+  return effort ? `${parsed.model} (${effortLabel(effort)})` : parsed.model;
+}
+
+/** Windows: prompts ride `-p` as a command-line argument, so overlong prompts
+ *  would blow the command line before the CLI ever sees them. Returns a
+ *  user-facing issue, or null when the prompt is fine. */
+export function antigravityPromptCommandLineIssue(
+  prompt: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "win32" || prompt.length <= WINDOWS_PROMPT_MAX_CHARS) {
+    return null;
+  }
+  return `Antigravity prompts on Windows are limited to ${WINDOWS_PROMPT_MAX_CHARS.toLocaleString("en-US")} characters because the CLI accepts print-mode prompts as command-line arguments. Shorten the prompt or attach the content as files.`;
+}
+
+/** Canonical kone tool keyword for one antigravity tool name — the same
+ *  vocabulary the thread UI's tool-family table understands. The hooks only
+ *  carry the tool name (arguments are sanitized out), so the raw name doubles
+ *  as the item's inline target text. */
+const TOOL_ITEM_NAMES: Record<string, string> = {
+  run_command: "run",
+  write_to_file: "edit_file",
+  replace_file_content: "edit_file",
+  multi_replace_file_content: "edit_file",
+  search_web: "web_search",
+};
+
+
+/** The shell wrapper for one hook point. Inactive when
+ *  KONE_ANTIGRAVITY_EVENTS is unset (a session outside kone): drain stdin and
+ *  answer the neutral payload. Active: run the capture script as Node. */
+export function buildKoneCaptureCommand(
+  executablePath: string,
+  scriptPath: string,
+  event: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const invocation = `${shellQuote(executablePath, platform)} ${shellQuote(scriptPath, platform)} ${shellQuote(event, platform)}`;
+  const fallback = inactiveHookOutput(event);
+  if (platform === "win32") {
+    return `if not defined ${HOOK_EVENTS_ENV} (more >nul 2>nul & echo ${fallback}) else (set "ELECTRON_RUN_AS_NODE=1" && ${invocation})`;
+  }
+  return `if [ -z "\${${HOOK_EVENTS_ENV}:-}" ]; then cat >/dev/null 2>&1 || :; printf '%s\\n' '${fallback}'; else ELECTRON_RUN_AS_NODE=1 ${invocation}; fi`;
+}
+
+/** The capture script itself — appends sanitized hook payloads to the event
+ *  file and answers the hook with the decision. Tool-call arguments are
+ *  stripped so secrets (command lines, file contents) never touch the event
+ *  file. */
+export function hookScriptSource(): string {
+  return `const fs = require("node:fs");
+const event = process.argv[2] || "unknown";
+let payload = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { payload += chunk; });
+process.stdin.on("end", () => {
+  const target = process.env.${HOOK_EVENTS_ENV};
+  if (!target) {
+    process.stdout.write((event === "pre-tool" ? '{"decision":"ask"}' : "{}") + "\\n");
+    return;
+  }
+  let capturedPayload = payload.trim();
+  if (event === "pre-tool" || event === "post-tool") {
+    try {
+      const input = JSON.parse(capturedPayload);
+      const sanitized = {};
+      for (const key of ["conversationId", "transcriptPath", "modelName"]) {
+        if (typeof input[key] === "string" && input[key].trim()) sanitized[key] = input[key];
+      }
+      if (Number.isInteger(input.stepIdx) && input.stepIdx >= 0) sanitized.stepIdx = input.stepIdx;
+      if (event === "pre-tool") {
+        const name = input.toolCall && typeof input.toolCall.name === "string"
+          ? input.toolCall.name.trim()
+          : "";
+        if (name) sanitized.toolCall = { name };
+      } else {
+        sanitized.failed = typeof input.error === "string" && input.error.trim().length > 0;
+      }
+      capturedPayload = JSON.stringify(sanitized);
+    } catch {
+      capturedPayload = "{}";
+    }
+  }
+  fs.appendFileSync(target, event + "\\t" + capturedPayload + "\\n");
+  if (event === "pre-tool") {
+    const decision = process.env.${HOOK_DECISION_ENV} === "allow" ? "allow" : "ask";
+    process.stdout.write(JSON.stringify({ decision }) + "\\n");
+  } else {
+    process.stdout.write("{}\\n");
+  }
+});
+`;
+}
+
+/** The plugin's hooks.json — every generated hook is a command hook. */
+export function buildKoneHookConfig(
+  command: (event: string) => string,
+): Record<string, unknown> {
+  const hook = (event: string) => ({ type: "command", command: command(event) });
+  return {
+    "kone-capture": {
+      PreToolUse: [{ matcher: "*", hooks: [hook("pre-tool")] }],
+      PostToolUse: [{ matcher: "*", hooks: [hook("post-tool")] }],
+      PreInvocation: [hook("pre-invocation")],
+      PostInvocation: [hook("post-invocation")],
+      Stop: [hook("stop")],
+    },
+  };
+}
+
+/** Run a short agy helper (plugin install / models) to completion. */
+export async function runAntigravityHelperProcess(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeoutMs = options.timeoutMs ?? MODEL_DISCOVERY_TIMEOUT_MS;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() =>
+        reject(new Error(`Antigravity helper timed out after ${timeoutMs}ms: ${command} ${args.join(" ")}`)),
+      );
+    }, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (stdout = appendBounded(stdout, chunk)));
+    child.stderr.on("data", (chunk) => (stderr = appendBounded(stderr, chunk)));
+    child.once("error", (cause) => finish(() => reject(cause)));
+    child.once("close", (code) => finish(() => resolve({ stdout, stderr, code: code ?? 1 })));
+  });
+}
+
+function appendBounded(current: string, chunk: unknown): string {
+  const next = current + String(chunk);
+  return next.length > HELPER_OUTPUT_MAX_CHARS ? next.slice(-HELPER_OUTPUT_MAX_CHARS) : next;
+}
+
+/** Read complete newline-terminated JSONL records from `offset` — a partial
+  *  trailing record is left for the next read. */
+export async function readCompleteAntigravityLines(
+  filePath: string,
+  offset: number,
+): Promise<{ lines: string[]; nextOffset: number }> {
+  const file = await fs.open(filePath, "r");
+  try {
+    const stats = await file.stat();
+    const start = offset <= stats.size ? offset : 0;
+    const remaining = stats.size - start;
+    if (remaining === 0) return { lines: [], nextOffset: start };
+    const buffer = Buffer.allocUnsafe(remaining);
+    const { bytesRead } = await file.read(buffer, 0, remaining, start);
+    const contents = buffer.subarray(0, bytesRead);
+    const lastNewline = contents.lastIndexOf(0x0a);
+    if (lastNewline < 0) return { lines: [], nextOffset: start };
+    return {
+      lines: contents
+        .subarray(0, lastNewline + 1)
+        .toString("utf8")
+        .split(/\r?\n/g)
+        .filter(Boolean),
+      nextOffset: start + lastNewline + 1,
+    };
+  } finally {
+    await file.close();
+  }
+}
+
+/** Install (or refresh) the global kone-capture plugin: hooks.json +
+ *  capture.cjs + a secret-free mcp_config.json pointing at the kone stdio
+ *  proxy when a gateway connection exists (removed otherwise). Idempotent;
+ *  also refreshes on every startSession so a moved binary path or proxy
+ *  script takes effect. */
+export async function ensureCapturePlugin(
+  binaryPath: string,
+  stdioProxy?: { command: string; args: string[] },
+  options: { homeDir?: string; runHelper?: typeof runAntigravityHelperProcess } = {},
+): Promise<void> {
+  const pluginDir = path.join(options.homeDir ?? os.homedir(), ".gemini", "antigravity-cli", "plugins", "kone-capture");
+  const scriptPath = path.join(pluginDir, "capture.cjs");
+  await fs.mkdir(pluginDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pluginDir, "plugin.json"),
+    `${JSON.stringify(
+      {
+        $schema: "https://antigravity.google/schemas/v1/plugin.json",
+        name: "kone-capture",
+        description: "Streams Antigravity CLI lifecycle events to kone when requested.",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await fs.writeFile(scriptPath, hookScriptSource(), { mode: 0o700 });
+  const command = (event: string) => buildKoneCaptureCommand(process.execPath, scriptPath, event);
+  await fs.writeFile(
+    path.join(pluginDir, "hooks.json"),
+    `${JSON.stringify(buildKoneHookConfig(command), null, 2)}\n`,
+  );
+  // The plugin's MCP config is GLOBAL on disk, so it must be secret-free: the
+  // env block references variables the CLI process env supplies per turn, and
+  // the stdio proxy exchanges the one-shot bootstrap for the session token.
+  const mcpConfigPath = path.join(pluginDir, "mcp_config.json");
+  if (stdioProxy) {
+    await fs.writeFile(
+      mcpConfigPath,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            kone: {
+              command: stdioProxy.command,
+              args: [...stdioProxy.args],
+              env: {
+                [KONE_AGENT_GATEWAY_URL_ENV]: `$${KONE_AGENT_GATEWAY_URL_ENV}`,
+                [KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV]: `$${KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV}`,
+                ELECTRON_RUN_AS_NODE: "1",
+              },
+              disabled: false,
+              disabledTools: [],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    await fs.rm(mcpConfigPath, { force: true });
+  }
+  const installed = await (options.runHelper ?? runAntigravityHelperProcess)(
+    binaryPath,
+    ["plugin", "install", pluginDir],
+    {
+      // The agent env (PATH recovery) so a Dock-launched kone can reach the
+      // CLI and its install dir the same way every other probe does.
+      env: await buildAntigravityProbeEnv(),
+      timeoutMs: PLUGIN_INSTALL_TIMEOUT_MS,
+    },
+  );
+  if (installed.code !== 0) {
+    throw new Error(installed.stderr.trim() || installed.stdout.trim() || "Plugin install failed.");
+  }
+}
+
+export class AntigravityAdapter implements ProviderAdapter {
+  readonly provider: typeof PROVIDER = PROVIDER;
+  readonly capabilities: AdapterCapabilities = {
+    // The model/effort is baked into each `agy -p` invocation's --model label;
+    // switching means the next turn runs under a new label, so a mid-thread
+    sessionModelSwitch: "restart-session",
+    // Transcript steps arrive as whole blobs, not incremental deltas.
+    streamsText: false,
+    supportsToolEvents: true,
+    supportsResume: true,
+    supportsModelList: true,
+    // Print mode has no nested-agent surface kone can attribute.
+    supportsSubagents: false,
+  };
+
+  private readonly emit: EmitEvent;
+  private readonly sessions = new Map<string, AntigravitySession>();
+  private modelsCache: Promise<ModelDescriptor[]> | null = null;
+  private binary: string;
+  /** Effort defaults discovered from `agy models`, keyed by base model —
+   *  refreshed at every listModels, consulted at dispatch. */
+  private readonly defaultEffortByModel = new Map(Object.entries(DEFAULT_EFFORT_BY_MODEL));
+
+  /** Mints a per-turn stdio bootstrap token for a session credential — wired
+   *  by AgentService to the gateway handle (the plugin's secret-free MCP path).
+   *  Null until the gateway is attached. */
+  private readonly issueBootstrapToken: (sessionToken: string) => string | null;
+  /** Plugin install dir root — the real home in production; tests point this
+   *  at a temp dir so the machine's ~/.gemini is never touched. */
+  private readonly homeDir?: string;
+
+  constructor(
+    emit: EmitEvent,
+    issueBootstrapToken?: (sessionToken: string) => string | null,
+    options: { homeDir?: string } = {},
+  ) {
+    this.emit = emit;
+    this.binary = ANTGRAVITY_BINARY;
+    this.issueBootstrapToken = issueBootstrapToken ?? (() => null);
+    this.homeDir = options.homeDir;
+  }
+
+  setConfig(config: ProviderConfig): void {
+    const next = resolveAntigravityBinary(config.binaryPath);
+    if (next === this.binary) return;
+    this.binary = next;
+    this.modelsCache = null;
+  }
+
+  // ── discovery ─────────────────────────────────────────────────────────────
+
+  async discover(): Promise<ProviderStatus> {
+    const env = await buildAntigravityProbeEnv();
+    const versionOutput = await probe(this.binary, ["--version"], env, 5_000);
+    if (versionOutput === null) {
+      return {
+        provider: this.provider,
+        label: "Antigravity",
+        available: false,
+        authStatus: "unknown",
+        readiness: "not-installed",
+        message: "Antigravity CLI (`agy`) not found. Install it from https://antigravity.google, then sign in.",
+      };
+    }
+
+    const version = parseAntigravityVersion(versionOutput);
+    if (version !== undefined && !this.versionAtLeast(version, MIN_ANTIGRAVITY_CLI_VERSION)) {
+      return {
+        provider: this.provider,
+        label: "Antigravity",
+        available: true,
+        authStatus: "unknown",
+        readiness: "error",
+        version,
+        message: `Antigravity CLI ${version} is too old — upgrade to ${MIN_ANTIGRAVITY_CLI_VERSION} or newer.`,
+      };
+    }
+
+    // The CLI ships no auth subcommand; a non-empty `agy models` list is the
+    const models = await probe(this.binary, ["models"], env, MODEL_DISCOVERY_TIMEOUT_MS);
+    if (models === null || models.trim().length === 0) {
+      return {
+        provider: this.provider,
+        label: "Antigravity",
+        available: true,
+        authStatus: "unauthenticated",
+        readiness: "needs-login",
+        version,
+        message: "Run `agy` once to sign in.",
+      };
+    }
+
+    return {
+      provider: this.provider,
+      label: "Antigravity",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+      version,
+    };
+  }
+
+  async listModels(): Promise<ModelDescriptor[]> {
+    if (!this.modelsCache) {
+      this.modelsCache = this.fetchModels().catch((error: unknown) => {
+        this.modelsCache = null;
+        throw error;
+      });
+    }
+    return this.modelsCache;
+  }
+
+  private async fetchModels(): Promise<ModelDescriptor[]> {
+    const env = await buildAntigravityProbeEnv();
+    const result = await runAntigravityHelperProcess(this.binary, ["models"], {
+      env,
+      timeoutMs: MODEL_DISCOVERY_TIMEOUT_MS,
+    }).catch(() => ({ stdout: "", stderr: "", code: 1 }));
+    if (result.code !== 0) return [];
+    const models = parseAntigravityModelLines(result.stdout);
+    for (const model of models) {
+      if (model.defaultReasoningEffort) {
+        this.defaultEffortByModel.set(model.id, model.defaultReasoningEffort);
+      }
+    }
+    return models;
+  }
+
+  // ── lifecycle ─────────────────────────────────────────────────────────────
+
+  async startSession(input: SessionStartInput): Promise<Session> {
+    // Print mode cannot pause for interactive approvals — the CLI either skips
+    // permissions or asks at a terminal kone's child doesn't have.
+    if ((input.mode ?? "accept-edits") !== "full-access") {
+      throw new Error(
+        "Antigravity CLI print mode cannot pause for interactive approvals. Select Full access to use this provider.",
+      );
+    }
+    if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
+
+    // The capture plugin is global and secret-free; (re)install it so its
+    // hooks + MCP config reflect this session's gateway connection.
+    try {
+      await ensureCapturePlugin(
+        this.binary,
+        {
+          command: process.execPath,
+          args: [STDIO_PROXY_PATH],
+        },
+        { homeDir: this.homeDir },
+      );
+    } catch (error) {
+      console.error(
+        "[antigravity] capture plugin install failed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    const conversationId = resumeConversationId(input.resume);
+    const session: AntigravitySession = {
+      threadId: input.threadId,
+      cwd: input.cwd,
+      model: input.model ?? DEFAULT_MODEL,
+      mode: "full-access",
+      ...(conversationId ? { conversationId, resumedFrom: conversationId } : {}),
+      gatewayConnection: input.gatewayConnection,
+      ...(input.effort ? { modelOptions: { reasoningEffort: input.effort } } : {}),
+      binary: this.binary,
+      processedHookBytes: 0,
+      processedTranscriptBytes: 0,
+      processedSteps: new Set(),
+      pendingTools: [],
+      nextToolSequence: 0,
+      sawAssistant: false,
+      interrupted: false,
+      stopped: false,
+      turnTerminalEmitted: false,
+      ...(conversationId ? { transcriptPath: antigravityTranscriptPath(conversationId) } : {}),
+    };
+    this.sessions.set(input.threadId, session);
+    this.emit({ ...this.base(session), source: "antigravity.cli.lifecycle", type: "session.started" });
+    return this.toSession(session);
+  }
+
+  async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const session = this.requireSession(input.threadId);
+    if (session.activeProcess) {
+      throw new Error("An Antigravity turn is already active for this thread.");
+    }
+
+    let promptText = input.input.trim();
+    if (input.attachments?.length) {
+      // Imported at call time, and only when there's something to attach:
+      // promptAttachments reaches the attachment store, which pulls in
+      // node:sqlite — statically importing it would make this module
+      // unloadable outside the Electron runtime (same pattern as
+      // CursorAdapter/DroidAdapter). Images can't ride a print-mode prompt
+      // string, so only the on-disk path block is attached.
+      const attachments = await import("../promptAttachments.js");
+      const built = await attachments.buildCursorAttachmentInput(input.attachments);
+      promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
+    }
+    if (!promptText) {
+      throw new Error("A prompt or file attachment is required.");
+    }
+    // First-prompt host-context channel (no system-instruction surface in
+    // print mode) — tells the agent the kone gateway tools exist.
+    promptText = koneHostContextForFirstRun({
+      prompt: promptText,
+      runOrdinal: 1,
+      gatewayControlAvailable: session.gatewayConnection !== undefined,
+    });
+
+    const promptIssue = antigravityPromptCommandLineIssue(promptText);
+    if (promptIssue) throw new Error(promptIssue);
+
+    const turnId = `antigravity-turn-${randomUUID()}`;
+    // Model/effort are baked into this invocation's --model label, so a
+    // per-turn override applies here (the session's knobs update to match, so
+    // listSessions reports what actually ran).
+    const turnModel = input.model ?? session.model;
+    const turnEffort = input.effort ?? session.modelOptions?.reasoningEffort;
+    const cliModel = resolveAntigravityCliModelLabel(
+      turnModel,
+      turnEffort ? { reasoningEffort: turnEffort } : undefined,
+      this.defaultEffortByModel.get(turnModel),
+    );
+    session.model = turnModel;
+    if (turnEffort) session.modelOptions = { reasoningEffort: turnEffort };
+
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "kone-antigravity-"));
+    const eventFile = path.join(runDir, "hooks.ndjson");
+    const logFile = path.join(runDir, "agy.log");
+    await fs.writeFile(eventFile, "");
+
+    // The gateway bootstrap: each print turn is a fresh process (and fresh
+    // proxy), so each turn mints its own single-use bootstrap from the session
+    // credential. The session token itself never enters the CLI env.
+    const bootstrapToken = session.gatewayConnection
+      ? this.issueBootstrapToken(session.gatewayConnection.bearerToken)
+      : undefined;
+
+    session.activeTurnId = turnId;
+    session.eventFile = eventFile;
+    session.processedHookBytes = 0;
+    session.processedSteps.clear();
+    session.pendingTools = [];
+    session.nextToolSequence = 0;
+    session.sawAssistant = false;
+    session.interrupted = false;
+    session.turnTerminalEmitted = false;
+    // A resumed conversation's transcript already holds prior turns — mark it
+    // processed so only this turn's steps render (the resume-scope seam).
+    await this.markExistingTranscriptStepsProcessed(session);
+
+    this.emit({ ...this.base(session), type: "turn.started", turnId });
+
+    const conversationId = session.conversationId;
+    const args: string[] = [
+      ...(conversationId ? ["--conversation", conversationId] : ["--new-project"]),
+      "--dangerously-skip-permissions",
+      "--model",
+      cliModel,
+      "--log-file",
+      logFile,
+      "--print-timeout",
+      PRINT_TIMEOUT,
+      "-p",
+      promptText,
+    ];
+
+    let child: ChildProcess;
+    try {
+      child = spawn(session.binary, args, {
+        cwd: session.cwd,
+        env: await buildAntigravityTurnEnvironment(session, eventFile, bootstrapToken),
+        // Own process group on POSIX so killTree can reap the tool subprocesses.
+        detached: process.platform !== "win32",
+        // stdin closed: print mode must never block on an interactive prompt.
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+      this.failTurn(session, turnId, error, "Failed to launch Antigravity CLI.");
+      return { threadId: input.threadId, turnId };
+    }
+    session.activeProcess = child;
+    const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    session.exited = exited;
+
+    let stdout = "";
+    let stderr = "";
+    // stdio is piped for both, so these are never null in practice.
+    const out = child.stdout!;
+    const err = child.stderr!;
+    out.setEncoding("utf8");
+    err.setEncoding("utf8");
+    out.on("data", (chunk) => (stdout += String(chunk)));
+    err.on("data", (chunk) => (stderr += String(chunk)));
+
+    const timer = setInterval(() => {
+      if (this.ownsTurn(session, child, turnId)) void this.pollHookFile(session);
+    }, POLL_INTERVAL_MS);
+
+    child.once("error", (cause) => {
+      clearInterval(timer);
+      if (!this.ownsTurn(session, child, turnId)) return;
+      this.emit({
+        ...this.base(session),
+        source: "antigravity.cli.stderr",
+        type: "session.state.changed",
+        state: "running",
+        message: messageFromCause(cause, "Failed to launch Antigravity CLI."),
+      });
+    });
+
+    child.once("close", (code, signal) => {
+      clearInterval(timer);
+      void (async () => {
+        if (!this.ownsTurn(session, child, turnId)) return;
+        // Drain hooks/transcript before deciding — the stop hook may have
+        // landed just before the process exited.
+        await this.pollHookFile(session).catch(() => {});
+        if (!this.ownsTurn(session, child, turnId)) return;
+        if (!session.sawAssistant && stdout.trim()) {
+          this.emitTranscriptItem(session, {
+            step_index: Number.MAX_SAFE_INTEGER,
+            type: "PRINT_OUTPUT",
+            content: stdout.trim(),
+          }, "assistant_text");
+        }
+        if (session.turnTerminalEmitted) {
+          if (session.activeProcess === child) delete session.activeProcess;
+          await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+          return;
+        }
+        const interrupted = session.interrupted || signal !== null;
+        const failed = !interrupted && (code ?? 1) !== 0;
+        if (failed && stderr.trim()) {
+          this.emit({
+            ...this.base(session),
+            source: "antigravity.cli.stderr",
+            type: "session.state.changed",
+            state: "error",
+            message: stderr.trim(),
+          });
+        }
+        this.settleActiveTurn(session, {
+          state: interrupted ? "interrupted" : failed ? "failed" : "completed",
+          message: failed ? stderr.trim() || `Antigravity CLI exited with code ${code ?? 1}.` : undefined,
+        });
+        await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+      })();
+    });
+
+    return { threadId: input.threadId, turnId };
+  }
+
+  async interruptTurn(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session?.activeProcess || !session.activeTurnId) return;
+    session.interrupted = true;
+    killTree(session.activeProcess.pid);
+    // Prefer process close for settlement so hooks/stdout still drain (the
+    // close handler settles with state "interrupted"). If the teardown cannot
+    // prove exit within a bounded window, force-settle so Cancel never no-ops
+    // (#465) — the close handler is idempotent-guarded either way.
+    await withTimeout(session.exited, 5_000);
+    if (!session.turnTerminalEmitted && session.activeTurnId !== undefined) {
+      this.settleActiveTurn(session, { state: "interrupted" });
+    }
+  }
+
+  async stopSession(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    session.stopped = true;
+    session.interrupted = true;
+    if (session.activeProcess) {
+      killTree(session.activeProcess.pid);
+      if (session.activeTurnId && !session.turnTerminalEmitted) {
+        this.settleActiveTurn(session, { state: "interrupted" });
+      }
+    }
+    this.sessions.delete(threadId);
+    this.emit({
+      ...this.base(session),
+      source: "antigravity.cli.lifecycle",
+      type: "session.exited",
+      code: null,
+    });
+  }
+
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId)));
+  }
+
+  async respondToRequest(): Promise<void> {
+    // Print mode never surfaces interactive requests (full-access only).
+  }
+
+  async respondToUserInput(): Promise<void> {
+    // Print mode never surfaces mid-turn questions.
+  }
+
+  async listSessions(): Promise<Session[]> {
+    return [...this.sessions.values()].map((session) => this.toSession(session));
+  }
+
+  async hasSession(threadId: string): Promise<boolean> {
+    return this.sessions.has(threadId);
+  }
+
+  // ── turn rendering ────────────────────────────────────────────────────────
+
+  private ownsTurn(
+    session: AntigravitySession,
+    child: ChildProcess,
+    turnId: string,
+  ): boolean {
+    return (
+      this.sessions.get(session.threadId) === session &&
+      session.activeProcess === child &&
+      session.activeTurnId === turnId
+    );
+  }
+
+  /** Settle the active turn exactly once — process close, interrupt and stop
+   *  can all race, and the guard makes the first one win. */
+  private settleActiveTurn(
+    session: AntigravitySession,
+    input: { state: "completed" | "interrupted" | "failed"; message?: string },
+  ): void {
+    if (session.turnTerminalEmitted || session.activeTurnId === undefined) return;
+    const turnId = session.activeTurnId;
+    session.turnTerminalEmitted = true;
+    delete session.activeProcess;
+    delete session.activeTurnId;
+    if (input.state === "completed") {
+      this.emit({
+        ...this.base(session),
+        type: "turn.completed",
+        turnId,
+        conversationId: session.conversationId,
+      });
+    } else {
+      this.emit({
+        ...this.base(session),
+        type: "turn.aborted",
+        turnId,
+        reason: input.state === "interrupted" ? "interrupted" : "failed",
+        ...(input.message ? { message: input.message } : {}),
+      });
+    }
+  }
+
+  private failTurn(
+    session: AntigravitySession,
+    turnId: string,
+    error: unknown,
+    fallback: string,
+  ): void {
+    if (session.turnTerminalEmitted || session.activeTurnId !== turnId) return;
+    session.turnTerminalEmitted = true;
+    delete session.activeTurnId;
+    const message = messageFromCause(error, fallback);
+    this.emit({
+      ...this.base(session),
+      source: "antigravity.cli.lifecycle",
+      type: "turn.aborted",
+      turnId,
+      reason: session.interrupted ? "interrupted" : "failed",
+      message,
+    });
+  }
+
+  /** Read the transcript tail and render new steps as items. Only
+   *  PLANNER_RESPONSE steps render: with tool_calls they are the agent's
+   *  reasoning before an action, without they are the assistant's reply. */
+  private async readTranscript(session: AntigravitySession): Promise<void> {
+    if (!session.transcriptPath || !session.activeTurnId) return;
+    const isInitialRead = session.processedTranscriptPath !== session.transcriptPath;
+    if (isInitialRead) session.processedTranscriptBytes = 0;
+    let batch: Awaited<ReturnType<typeof readCompleteAntigravityLines>>;
+    try {
+      batch = await readCompleteAntigravityLines(session.transcriptPath, session.processedTranscriptBytes);
+    } catch {
+      return;
+    }
+    session.processedTranscriptBytes = batch.nextOffset;
+    session.processedTranscriptPath = session.transcriptPath;
+    const steps = batch.lines.flatMap((line) => {
+      try {
+        return [JSON.parse(line) as TranscriptStep];
+      } catch {
+        return [];
+      }
+    });
+    // On the first read of a resumed conversation, everything up to the latest
+    // user input is history — only steps after it belong to this turn.
+    const latestUserIndex = isInitialRead
+      ? steps.reduce(
+          (latest, step) =>
+            step.type === "USER_INPUT" && typeof step.step_index === "number"
+              ? Math.max(latest, step.step_index)
+              : latest,
+          -1,
+        )
+      : -1;
+    for (const step of steps) {
+      if (typeof step.step_index === "number" && step.step_index > latestUserIndex) {
+        this.processTranscriptStep(session, step);
+      }
+    }
+  }
+
+  /** Mark the whole existing transcript as processed without rendering — the
+   *  resume-scope seam: a resumed turn must not replay prior turns. */
+  private async markExistingTranscriptStepsProcessed(session: AntigravitySession): Promise<void> {
+    if (!session.transcriptPath) return;
+    try {
+      const batch = await readCompleteAntigravityLines(session.transcriptPath, 0);
+      session.processedTranscriptBytes = batch.nextOffset;
+      session.processedTranscriptPath = session.transcriptPath;
+    } catch {
+      return;
+    }
+  }
+
+  private processTranscriptStep(session: AntigravitySession, step: TranscriptStep): void {
+    const stepIndex = step.step_index;
+    if (typeof stepIndex !== "number" || session.processedSteps.has(stepIndex)) return;
+    session.processedSteps.add(stepIndex);
+
+    if (step.type === "PLANNER_RESPONSE") {
+      const calls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+      if (calls.length > 0) {
+        this.emitTranscriptItem(session, step, "reasoning_text");
+      } else {
+        this.emitTranscriptItem(session, step, "assistant_text");
+      }
+    }
+  }
+
+  private emitTranscriptItem(
+    session: AntigravitySession,
+    step: TranscriptStep,
+    kind: RuntimeItemKind,
+  ): void {
+    const content = trim(step.content);
+    const turnId = session.activeTurnId;
+    if (!content || !turnId) return;
+    const itemId = `antigravity-${turnId}-${step.step_index ?? randomUUID()}-${kind}`;
+    const item: RuntimeItem = { itemId, kind, status: "completed", text: content };
+    this.emit({ ...this.base(session), type: "item.started", turnId, item });
+    this.emit({ ...this.base(session), type: "item.completed", turnId, item });
+    if (kind === "assistant_text") session.sawAssistant = true;
+  }
+
+  /** Poll the hook event file: pre/post-tool lifecycle becomes tool items, the
+   *  conversation id + transcript path are learned here, and a stop hook tears
+   *  the lingering print process down (#465). */
+  private async pollHookFile(session: AntigravitySession): Promise<void> {
+    if (session.stopped) return;
+    if (!session.eventFile) return;
+    let batch: Awaited<ReturnType<typeof readCompleteAntigravityLines>>;
+    try {
+      batch = await readCompleteAntigravityLines(session.eventFile, session.processedHookBytes);
+    } catch {
+      return;
+    }
+    session.processedHookBytes = batch.nextOffset;
+    for (const line of batch.lines) {
+      const tab = line.indexOf("\t");
+      if (tab < 0) continue;
+      const eventName = line.slice(0, tab);
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(line.slice(tab + 1)) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const conversationId =
+        typeof payload.conversationId === "string" ? payload.conversationId : undefined;
+      const transcriptPath =
+        typeof payload.transcriptPath === "string" ? payload.transcriptPath : undefined;
+      if (conversationId) session.conversationId = conversationId;
+      if (transcriptPath && transcriptPath !== session.transcriptPath) {
+        session.transcriptPath = transcriptPath;
+        session.processedTranscriptBytes = 0;
+        delete session.processedTranscriptPath;
+      }
+      const stepIndex =
+        typeof payload.stepIdx === "number" &&
+        Number.isInteger(payload.stepIdx) &&
+        payload.stepIdx >= 0
+          ? payload.stepIdx
+          : undefined;
+      if (eventName === "pre-tool" && stepIndex !== undefined && session.activeTurnId) {
+        const toolCall =
+          payload.toolCall && typeof payload.toolCall === "object"
+            ? (payload.toolCall as Record<string, unknown>)
+            : undefined;
+        const name = typeof toolCall?.name === "string" ? trim(toolCall.name) : undefined;
+        if (name) {
+          const itemId = `antigravity-${session.activeTurnId}-tool-${session.nextToolSequence++}`;
+          session.pendingTools.push({ stepIndex, itemId, name });
+          this.emitToolItem(session, itemId, name, "in-progress");
+        }
+      } else if (eventName === "post-tool" && stepIndex !== undefined) {
+        const pendingIndex = session.pendingTools.findIndex((pending) => pending.stepIndex === stepIndex);
+        const pending = pendingIndex >= 0 ? session.pendingTools.splice(pendingIndex, 1)[0] : undefined;
+        if (pending) {
+          const failed =
+            payload.failed === true ||
+            (typeof payload.error === "string" && payload.error.trim().length > 0);
+          this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed");
+        }
+      }
+      // Agent finished: if the print process lingers, tear it down so the
+      // close handler can settle the turn (#465).
+      if (eventName === "stop" && session.activeProcess && !session.turnTerminalEmitted) {
+        const child = session.activeProcess;
+        killTree(child.pid);
+      }
+    }
+    await this.readTranscript(session);
+  }
+
+  private emitToolItem(
+    session: AntigravitySession,
+    itemId: string,
+    name: string,
+    status: "in-progress" | "completed" | "failed",
+  ): void {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    const item: RuntimeItem = {
+      itemId,
+      kind: "tool_call",
+      status,
+      text: name,
+      name: TOOL_ITEM_NAMES[name] ?? "tool",
+    };
+    const type = status === "in-progress" ? "item.started" : "item.completed";
+    this.emit({ ...this.base(session), type, turnId, item });
+  }
+
+  // ── shared helpers ────────────────────────────────────────────────────────
+
+  private base(session: AntigravitySession) {
+    return {
+      threadId: session.threadId,
+      provider: this.provider,
+      at: Date.now(),
+      source: "antigravity.cli.event" as const,
+      // The resume id rides every envelope so a turn that never completes
+      // still leaves the thread resumable.
+      ...(session.conversationId
+        ? { refs: { conversationId: session.conversationId } }
+        : {}),
+    };
+  }
+
+  private toSession(session: AntigravitySession): Session {
+    return {
+      threadId: session.threadId,
+      provider: this.provider,
+      cwd: session.cwd,
+      status: session.activeTurnId ? "running" : "ready",
+      conversationId: session.conversationId,
+      resumedFrom: session.resumedFrom,
+      activeTurnId: session.activeTurnId,
+      model: session.model,
+      ...(session.modelOptions?.reasoningEffort ? { effort: session.modelOptions.reasoningEffort } : {}),
+      mode: session.mode,
+    };
+  }
+
+  private requireSession(threadId: string): AntigravitySession {
+    const session = this.sessions.get(threadId);
+    if (!session) throw new Error(`No Antigravity session for thread ${threadId}`);
+    return session;
+  }
+
+  private versionAtLeast(version: string, minimum: string): boolean {
+    const parse = (value: string) =>
+      value.split(".").map((segment) => Number.parseInt(segment, 10) || 0);
+    const left = parse(version);
+    const right = parse(minimum);
+    for (let i = 0; i < 3; i++) {
+      if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) > (right[i] ?? 0);
+    }
+    return true;
+  }
+}
+
+/** The turn child's environment: the agent env plus the per-turn hook stream,
+ *  and — when a gateway connection exists — the URL + one-shot bootstrap the
+ *  plugin's MCP config expands (see ensureCapturePlugin + stdioProxy.mjs). */
+async function buildAntigravityTurnEnvironment(
+  session: AntigravitySession,
+  eventFile: string,
+  bootstrapToken: string | null | undefined,
+): Promise<NodeJS.ProcessEnv> {
+  const env = await buildAntigravityEnv(eventFile);
+  if (session.gatewayConnection && bootstrapToken) {
+    env[KONE_AGENT_GATEWAY_URL_ENV] = session.gatewayConnection.url;
+    env[KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV] = bootstrapToken;
+  }
+  return env;
+}
+
+function messageFromCause(cause: unknown, fallback: string): string {
+  return cause instanceof Error && cause.message.trim() ? cause.message : fallback;
+}
+
+/** Resolve with the value, or `undefined` after `ms` — bounds the interrupt
+ *  teardown gate so a stuck child can't hang Cancel. */
+function withTimeout<T>(promise: Promise<T> | undefined, ms: number): Promise<T | undefined> {
+  if (!promise) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
+}
