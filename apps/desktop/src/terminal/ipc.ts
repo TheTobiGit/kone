@@ -2,10 +2,12 @@ import { ipcMain, type WebContents } from "electron";
 
 import { getTerminalManager } from "./TerminalManager.js";
 import type {
+  TerminalAckInput,
   TerminalCloseInput,
   TerminalEvent,
   TerminalOpenInput,
   TerminalResizeInput,
+  TerminalRestartInput,
   TerminalWriteInput,
 } from "./types.js";
 
@@ -47,6 +49,14 @@ export function registerTerminalIpc(): void {
   );
   ipcMain.handle("terminal:close", (_event, input: TerminalCloseInput) =>
     mgr.close(input),
+  );
+  ipcMain.handle("terminal:restart", (_event, input: TerminalRestartInput) =>
+    mgr.restart(input),
+  );
+  // Renderer flow-control: acked output bytes let the manager pause/resume the
+  // PTY when the renderer falls behind (see ACK watermarks in the manager).
+  ipcMain.handle("terminal:ack", (_event, input: TerminalAckInput) =>
+    mgr.ack(input),
   );
 
   // Subscribe/unsubscribe the calling renderer to the event stream.

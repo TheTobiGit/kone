@@ -28,7 +28,7 @@ import {
 } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, PencilEdit01Icon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, PencilEdit01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
@@ -89,12 +89,15 @@ const emit = defineEmits<{
   /** Insert a blank thread to the right of seam `seamIndex`. */
   "insert-column": [seamIndex: number, kind: "thread" | "terminal" | "scratchpad"];
   /** Write terminal input data. Keyed by the terminal *session* key, not the pane
-   *  id: these two go straight to useTerminal, which keys its registry by session.
-   *  Every other emit here carries a pane id, so the mismatch is easy to reintroduce
-   *  — the strip has the session in hand (`c.session.key`), so it passes that. */
+   *  id: these three go straight to useTerminal, which keys its registry by
+   *  session. Every other emit here carries a pane id, so the mismatch is easy
+   *  to reintroduce — the strip has the session in hand (`c.session.key`), so it
+   *  passes that. */
   "terminal-write": [sessionKey: string, data: string];
   /** Resize terminal PTY. Session-keyed, same as `terminal-write`. */
   "terminal-resize": [sessionKey: string, cols: number, rows: number];
+  /** Restart terminal PTY in place. Session-keyed, same as `terminal-write`. */
+  "terminal-restart": [sessionKey: string];
   /** Append assistant reply markdown to a scratchpad. */
   "to-scratchpad": [text: string, sourceKey: string];
   "scratchpad-flush": [key: string];
@@ -955,6 +958,10 @@ function onTerminalResize(pane: Pane, cols: number, rows: number): void {
   if (pane.kind !== "terminal" || !pane.session) return;
   emit("terminal-resize", pane.session.key, cols, rows);
 }
+function onTerminalRestart(pane: Pane): void {
+  if (pane.kind !== "terminal" || !pane.session) return;
+  emit("terminal-restart", pane.session.key);
+}
 
 function onClose(key: string): void {
   cue("press");
@@ -1379,6 +1386,17 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                   <template v-else>
                     <HugeiconsIcon :icon="paneKindMeta(c.kind).icon" :size="15" :stroke-width="2" class="text-muted" />
                     <h2 class="col__title">{{ columnLabel(c) }}</h2>
+                    <!-- A terminal's live subprocess (vim, `npm run dev`): one
+                         quiet dot + dim command name. Deliberately tiny and
+                         muted — it must not fight the terminal for attention. -->
+                    <span
+                      v-if="c.kind === 'terminal' && c.session?.hasRunningSubprocess"
+                      class="col__busy"
+                      :title="c.session.childCommandLabel ? `Running: ${c.session.childCommandLabel}` : 'Running a command'"
+                    >
+                      <span class="col__busy-dot" aria-hidden="true" />
+                      <span v-if="c.session.childCommandLabel" class="col__busy-label">{{ c.session.childCommandLabel }}</span>
+                    </span>
                   </template>
                 </div>
                 <div class="col__tools">
@@ -1392,6 +1410,16 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     @click.stop="cycleWidth(c.id)"
                   >
                     {{ presetFor(c.id).label }}
+                  </button>
+                  <button
+                    v-if="c.kind === 'terminal' && c.session"
+                    type="button"
+                    class="col__tool"
+                    aria-label="Restart terminal"
+                    title="Restart terminal"
+                    @click.stop="onTerminalRestart(c)"
+                  >
+                    <HugeiconsIcon :icon="RefreshIcon" :size="13" :stroke-width="2" aria-hidden="true" />
                   </button>
                   <button
                     v-if="c.id === focusedId && !isSideChatPane(c.id)"
@@ -2147,6 +2175,37 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
   font-weight: 650;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+}
+
+/* A terminal's busy pill — the subprocess dot + command name in the column
+   header. Quiet by design: a soft tinted capsule, a plain muted dot (no pulse,
+   no glow), and the label clamped so a long command can't shove the title. */
+.col__busy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  max-width: 8rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.col__busy-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.col__busy-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.01em;
+  color: var(--muted);
 }
 
 .col__body {

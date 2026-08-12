@@ -56,20 +56,56 @@ export type TerminalSessionSnapshot = {
   rows: number;
   cwd: string;
   status: TerminalStatus;
-  /** Accumulated raw output (ANSI intact) capped to a byte ceiling, replayed
-   *  into xterm on attach so the terminal shows its prior scrollback. */
+  /** Replay payload: a mode-restoring preamble followed by the sanitized,
+   *  accumulated output (queries stripped, ANSI styling intact) capped to a
+   *  byte ceiling. Safe to feed xterm verbatim — it can't re-trigger a reply
+   *  the shell would echo as junk. */
   history: string;
+  /** Monotonic per-session event counter at snapshot time. Renderers use it to
+   *  drop a stale re-seed (the manager re-emits `started` on re-attach). */
+  sequence: number;
+  exitCode: number | null;
+  exitSignal: number | null;
+  /** True while a non-shell subprocess (vim, `npm run dev`) is alive under the
+   *  PTY. Drives the strip's busy state. */
+  hasRunningSubprocess: boolean;
+  /** Normalized command name of that subprocess, when known. */
+  childCommandLabel: string | null;
 };
 
 /** One terminal event pushed on the "terminal:event" channel. */
 export type TerminalEvent =
-  | { terminalId: TerminalId; type: "started"; snapshot: TerminalSessionSnapshot }
-  | { terminalId: TerminalId; type: "output"; data: string }
-  | { terminalId: TerminalId; type: "exited"; exitCode: number | null; signal?: number }
-  | { terminalId: TerminalId; type: "error"; message: string }
-  | { terminalId: TerminalId; type: "cleared" }
-  | { terminalId: TerminalId; type: "restarted"; snapshot: TerminalSessionSnapshot }
-  | { terminalId: TerminalId; type: "closed" };
+  | { terminalId: TerminalId; type: "started"; sequence: number; snapshot: TerminalSessionSnapshot }
+  | { terminalId: TerminalId; type: "output"; sequence: number; data: string }
+  | { terminalId: TerminalId; type: "exited"; sequence: number; exitCode: number | null; signal?: number }
+  | { terminalId: TerminalId; type: "error"; sequence: number; message: string }
+  | { terminalId: TerminalId; type: "cleared"; sequence: number }
+  | { terminalId: TerminalId; type: "restarted"; sequence: number; snapshot: TerminalSessionSnapshot }
+  | { terminalId: TerminalId; type: "closed"; sequence: number }
+  | {
+      terminalId: TerminalId;
+      type: "activity";
+      sequence: number;
+      hasRunningSubprocess: boolean;
+      childCommandLabel: string | null;
+    };
+
+/** Restart a terminal in place: tree-kill the current process, reset history,
+ *  spawn a fresh shell. `cwd`/`cols`/`rows` fall back to the session's own. */
+export type TerminalRestartInput = {
+  terminalId: TerminalId;
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+};
+
+/** Renderer flow-control ack: the renderer consumed `byteCount` bytes of an
+ *  `output` event. Lets the manager pause/resume the PTY when the renderer
+ *  falls behind (backpressure). */
+export type TerminalAckInput = {
+  terminalId: TerminalId;
+  byteCount: number;
+};
 
 /** Sink the manager pushes events into; the IPC layer fans them to renderers. */
 export type EmitTerminalEvent = (event: TerminalEvent) => void;

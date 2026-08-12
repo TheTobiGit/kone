@@ -12,13 +12,17 @@ import * as nodePty from "node-pty";
 
 import { buildAgentEnv } from "../agent/processEnv.js";
 
-/** Env keys carrying the *host* terminal's identity. We inherit the user's full
- *  environment (PATH, toolchains) but must scrub these, then pin our own — the
- *  embedded shell is talking to xterm.js, not to iTerm/Ghostty/VS Code. An
- *  inherited `TERM=xterm-ghostty` makes curses apps bail with "unknown terminal
- *  type" and redraw as garbage, and an inherited `NO_COLOR`/`FORCE_COLOR` from a
- *  harness shell breaks colour. */
-const HOST_TERMINAL_ENV_BLOCKLIST = [
+/** Env keys carrying the *host* terminal's identity, plus Electron/dev-server
+ *  runtime vars. We inherit the user's full environment (PATH, toolchains) but
+ *  must scrub these, then pin our own — the embedded shell is talking to
+ *  xterm.js, not to iTerm/Ghostty/VS Code. An inherited `TERM=xterm-ghostty`
+ *  makes curses apps bail with "unknown terminal type" and redraw as garbage,
+ *  and an inherited `NO_COLOR`/`FORCE_COLOR` from a harness shell breaks
+ *  colour. Electron runtime vars and the dev server's `PORT` must not leak
+ *  into the shell either: a shell inheriting `ELECTRON_RUN_AS_NODE` can
+ *  misbehave (it flips any Electron binary it spawns into Node mode), and
+ *  `ELECTRON_RENDERER_PORT`/`PORT` would collide with the dev server. */
+const HOST_TERMINAL_ENV_BLOCKLIST: ReadonlySet<string> = new Set([
   "TERM",
   "TERMINFO",
   "TERMINFO_DIRS",
@@ -36,7 +40,11 @@ const HOST_TERMINAL_ENV_BLOCKLIST = [
   "ALACRITTY_WINDOW_ID",
   "GHOSTTY_RESOURCES_DIR",
   "VTE_VERSION",
-] as const;
+  "ELECTRON_RUN_AS_NODE",
+  "ELECTRON_RENDERER_PORT",
+  "ELECTRON_NO_ATTACH_CONSOLE",
+  "PORT",
+]);
 
 export type PtyProcess = {
   readonly pid: number;
@@ -45,6 +53,10 @@ export type PtyProcess = {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(signal?: string): void;
+  /** Pause the child's data flow — node-pty stops emitting onData until
+   *  resume() is called. Used for backpressure. */
+  pause(): void;
+  resume(): void;
   onData(cb: (data: string) => void): () => void;
   onExit(cb: (ev: { exitCode: number; signal?: number }) => void): () => void;
 };
@@ -93,16 +105,36 @@ async function resolveShell(): Promise<{ shell: string; args: string[] }> {
   return { shell: fallback, args: shellArgs(fallback) };
 }
 
+/** Build the env for the embedded shell: scrub the host terminal's identity
+ *  and Electron/dev-server runtime vars from `baseEnv`, let `extra` (caller
+ *  env) win, then pin our own TERM/COLORTERM so curses apps (vim, top) and
+ *  colour output match the embedded xterm.js — see the blocklist note. Pure
+ *  so the pipeline is testable without spawning a real shell. */
+export function buildPtyEnv(
+  baseEnv: Record<string, string | undefined>,
+  extra?: Record<string, string> | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value === undefined) continue;
+    if (HOST_TERMINAL_ENV_BLOCKLIST.has(key)) continue;
+    env[key] = value;
+  }
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) env[key] = value;
+  }
+  // node-pty only writes `name` into the child's TERM on the Unix path; the
+  // ConPTY path leaves the environment untouched, so Windows children inherit
+  // a missing or 16-color TERM unless it is set here.
+  env.TERM = "xterm-256color";
+  env.COLORTERM = "truecolor";
+  return env;
+}
+
 /** Spawn a login PTY shell in `cwd` with the recovered login-shell PATH. */
 export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
   const { shell, args } = await resolveShell();
-  const baseEnv = await buildAgentEnv();
-  const env: Record<string, string | undefined> = { ...baseEnv, ...input.env };
-  // Scrub the host terminal's identity, then pin our own so curses apps (vim,
-  // top) and colour output match the embedded xterm.js — see the blocklist note.
-  for (const key of HOST_TERMINAL_ENV_BLOCKLIST) delete env[key];
-  env.TERM = "xterm-256color";
-  env.COLORTERM = "truecolor";
+  const env = buildPtyEnv(await buildAgentEnv(), input.env);
 
   const pty = nodePty.spawn(shell, args, {
     cwd: input.cwd,
@@ -111,7 +143,7 @@ export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
     env,
     // String encoding so onData delivers strings (xterm writes strings).
     encoding: "utf8",
-    name: process.platform === "win32" ? "xterm-color" : "xterm-256color",
+    name: "xterm-256color",
   });
 
   let dataDisposer: nodePty.IDisposable | null = null;
@@ -130,6 +162,8 @@ export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
         // Already dead — nothing to do.
       }
     },
+    pause: () => pty.pause(),
+    resume: () => pty.resume(),
     onData: (cb) => {
       dataDisposer = pty.onData(cb);
       return () => dataDisposer?.dispose();

@@ -1804,6 +1804,7 @@ function onDiscardFile(path: string) {
         @insert-column="insertPane"
         @terminal-write="terminal.write"
         @terminal-resize="terminal.resize"
+        @terminal-restart="terminal.restart"
         @to-scratchpad="captureToScratchpad"
         @scratchpad-flush="() => scratchpad.flush()"
         @width="setPaneWidth"
