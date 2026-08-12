@@ -17,6 +17,7 @@ export const SESSION_BRAND: Record<ProviderKind, BrandKey> = {
   cursor: "cursor",
   opencode: "opencode",
   droid: "droid",
+  antigravity: "antigravity",
 };
 
 export type SessionSummary = {

@@ -3,27 +3,23 @@ import { computed, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AlertCircleIcon,
-  ArrowTurnBackwardIcon,
-  CheckmarkCircle02Icon,
   Copy01Icon,
   LinkSquare02Icon,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
-import type { BrandKey } from "~/utils/modelCatalog";
+import SettingsPageShell from "~/components/SettingsPageShell.vue";
+import { useEdgeFade } from "~/composables/useEdgeFade";
+import { buildModelCatalog, type BrandKey } from "~/utils/modelCatalog";
 import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/desktop";
 
 // The agent-provider surface, as a place rather than a drawer pane.
 //
 // It sits inside the settings drawer, but the drawer widens for it (see
-// useSettingsSurface) precisely so this can be laid out as a page: a masthead
-// that speaks for the whole surface, a rail of the providers kone can drive, and
-// one panel that is that provider's own page. Nothing here is a card and nothing
-// is boxed — the same borderless, low-contrast surface the rest of the app uses.
-//
-// Three things live on a provider's page, in the order someone actually needs
-// them: is it usable (readiness + sign-in), is it current (version, channel, the
-// one command that updates it), and how does kone reach it (executable path,
-// whether it's offered in the picker).
+// useSettingsSurface) precisely so this can be laid out as a page. The selector
+// is a deck of brand-tinted cards — one open, the rest folded to a spine — so the
+// provider you're on *is* the hero, its logomark ghosted large across its own
+// gradient. The old side-rail and the models readout are gone; what's left is the
+// state that actually changes: is it usable, is it current, how does kone reach it.
 //
 // "Bring your own subscription" still governs everything: no credential ever
 // passes through here. The most this page does is name the command the user
@@ -33,19 +29,28 @@ import type { ProviderKind, ProviderMaintenance, ProviderStatus } from "~/types/
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
 
+// The detail beneath the deck scrolls; it carries the shared edge-fade smoke
+// rather than a visible bar (see useEdgeFade). It's keyed per provider, so the
+// composable re-attaches when the element is replaced.
+const scroller = ref<HTMLElement>();
+const { measure, maskStyle } = useEdgeFade(scroller);
+
 const { cue } = useSound();
 const providers = useAgentProviders();
 const providerSettings = useProviderSettings();
 const upkeep = useProviderMaintenance();
 
 // Static per-provider facts no probe carries: what to call it, whose it is, its
-// logomark, the command that signs it in, and where its own docs live. The
-// sign-in commands match the adapters' own not-ready messages verbatim — two
-// places telling the user two different commands is worse than one place.
+// logomark, the gradient its card wears, the command that signs it in, and where
+// its own docs live. The sign-in commands match the adapters' own not-ready
+// messages verbatim — two places telling the user two different commands is worse
+// than one place.
 type ProviderMeta = {
   label: string;
   vendor: string;
   brand: BrandKey;
+  /** The two-stop wash the provider's card wears, brand-hued. */
+  grad: string;
   /** One line on what this provider actually is. */
   blurb: string;
   /** External CLI the user installs, or null when kone bundles the runtime. */
@@ -59,6 +64,7 @@ const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
     label: "Codex",
     vendor: "OpenAI",
     brand: "codex",
+    grad: "linear-gradient(152deg, #14b98d 0%, #0c8a68 100%)",
     blurb: "OpenAI's coding agent, driven through its app-server protocol.",
     binary: "codex",
     signIn: "codex login",
@@ -68,6 +74,7 @@ const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
     label: "Claude",
     vendor: "Anthropic",
     brand: "claude",
+    grad: "linear-gradient(152deg, #e79269 0%, #cf6238 100%)",
     blurb: "Claude Code, driven through the Agent SDK kone ships.",
     binary: null,
     signIn: "claude login",
@@ -80,6 +87,7 @@ const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
     label: "Cursor",
     vendor: "Cursor",
     brand: "cursor",
+    grad: "linear-gradient(152deg, #4c4c55 0%, #191920 100%)",
     blurb: "Cursor's agent CLI, driven over ACP.",
     binary: "cursor-agent",
     signIn: "cursor-agent login",
@@ -89,6 +97,7 @@ const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
     label: "OpenCode",
     vendor: "OpenCode",
     brand: "opencode",
+    grad: "linear-gradient(152deg, #8b7cf6 0%, #5942d6 100%)",
     blurb: "A house of providers — one gateway onto many model vendors.",
     binary: "opencode",
     signIn: "opencode auth login",
@@ -98,19 +107,39 @@ const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
     label: "Factory Droid",
     vendor: "Factory",
     brand: "droid",
+    grad: "linear-gradient(152deg, #f3a259 0%, #e2653f 100%)",
     blurb: "Factory's Droid CLI, driven over ACP.",
     binary: "droid",
     // Droid pairs a device on first run rather than taking a login subcommand.
     signIn: null,
     docs: null,
   },
+  antigravity: {
+    label: "Antigravity",
+    vendor: "Google",
+    brand: "antigravity",
+    grad: "linear-gradient(152deg, #6ea8fe 0%, #4285f4 100%)",
+    blurb: "Google's agent CLI, driven in print mode with capture hooks.",
+    binary: "agy",
+    signIn: "agy login",
+    docs: { href: "https://antigravity.google", label: "Antigravity" },
+  },
 };
 
-const ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid"];
+const ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity"];
 
-// ── the rail ──────────────────────────────────────────────────────────────────
+// ── the deck ────────────────────────────────────────────────────────────────
 
 const selected = ref<ProviderKind>("codex");
+
+// The one mark a folded spine may wear. Colour carries the meaning, the shape
+// stays constant — a calm dot, never a glyph — so the deck reads at a glance
+// without turning into a row of competing icons.
+//  • problem   — installed but broken/unavailable: red, the only one that alarms.
+//  • attention — installed, not signed in: amber, an ask rather than a fault.
+//  • update    — a newer, knowable version is out for an install that's here.
+type SpineTone = "problem" | "attention" | "update";
+type SpineSignal = { tone: SpineTone; label: string };
 
 type Row = {
   provider: ProviderKind;
@@ -118,44 +147,33 @@ type Row = {
   status: ProviderStatus | null;
   upkeep: ProviderMaintenance | null;
   enabled: boolean;
+  /** What this provider's spine is asking for, or null when it's quiet. */
+  signal: SpineSignal | null;
 };
 
 const rows = computed<Row[]>(() =>
-  ORDER.map((provider) => ({
-    provider,
-    meta: PROVIDER_META[provider],
-    status: providers.statuses.value.find((s) => s.provider === provider) ?? null,
-    upkeep: upkeep.forProvider(provider),
-    enabled: providerSettings.isEnabled(provider),
-  })),
+  ORDER.map((provider) => {
+    const status = providers.statuses.value.find((s) => s.provider === provider) ?? null;
+    const maint = upkeep.forProvider(provider);
+    return {
+      provider,
+      meta: PROVIDER_META[provider],
+      status,
+      upkeep: maint,
+      enabled: providerSettings.isEnabled(provider),
+      signal: spineSignal(status, maint),
+    };
+  }),
 );
 
 const current = computed<Row>(
   () => rows.value.find((r) => r.provider === selected.value) ?? (rows.value[0] as Row),
 );
 
-const activeIndex = computed(() => Math.max(0, ORDER.indexOf(selected.value)));
-
 function select(provider: ProviderKind) {
   if (selected.value === provider) return;
   selected.value = provider;
   cue("toggle");
-}
-
-/** The one word a rail row owes the user: what this provider needs from them.
- *  A ready, current provider says nothing at all — the calm default. */
-function railHint(row: Row): { text: string; tone: "bad" | "ink" | "muted" } | null {
-  if (!row.status) return { text: "checking", tone: "muted" };
-  if (row.status.readiness === "needs-login") return { text: "sign in", tone: "bad" };
-  if (row.status.readiness === "not-installed") return { text: "missing", tone: "muted" };
-  if (row.status.readiness === "error") return { text: "unavailable", tone: "bad" };
-  const run = upkeep.runFor(row.provider);
-  if (run?.running) return { text: "updating", tone: "ink" };
-  if (row.upkeep?.standing === "behind" && row.upkeep.latestKnowable) {
-    return { text: "update", tone: "ink" };
-  }
-  if (!row.enabled) return { text: "hidden", tone: "muted" };
-  return null;
 }
 
 // ── the masthead ──────────────────────────────────────────────────────────────
@@ -166,6 +184,14 @@ const readyCount = computed(
 
 /** Providers kone can honestly call out of date (see useProviderMaintenance). */
 const behind = computed(() => upkeep.outdated.value.length);
+
+/** How many installed providers are asking for something the user can act on:
+ *  a sign-in that's missing, or a CLI that's here but unreachable. Counted off
+ *  the same signal the folded spines wear, so the masthead's summary and the
+ *  dots never disagree. */
+const attention = computed(
+  () => rows.value.filter((r) => r.signal && r.signal.tone !== "update").length,
+);
 
 const busy = computed(
   () =>
@@ -189,9 +215,12 @@ const checkedLabel = computed(() => {
 
 const note = computed(() => {
   const parts: string[] = [];
+  if (attention.value) {
+    parts.push(`${attention.value} need${attention.value === 1 ? "s" : ""} attention`);
+  }
   if (behind.value) {
     parts.push(`${behind.value} update${behind.value === 1 ? "" : "s"} available`);
-  } else if (upkeep.checkedAt.value) parts.push("all current");
+  } else if (!attention.value && upkeep.checkedAt.value) parts.push("all current");
   if (checkedLabel.value) parts.push(checkedLabel.value);
   return parts.join(" · ");
 });
@@ -281,15 +310,6 @@ const standingLine = computed<{ text: string; tone: "ink" | "muted" }>(() => {
 
 const run = computed(() => upkeep.runFor(current.value.provider));
 
-/** The update button's own label, which doubles as the state readout — a button
- *  that says "Update to 0.52.1" needs no separate sentence next to it. */
-const updateLabel = computed(() => {
-  const m = current.value.upkeep;
-  if (run.value?.running) return "Updating…";
-  if (m?.standing === "behind" && m.latestVersion) return `Update to ${m.latestVersion}`;
-  return "Update";
-});
-
 const canUpdate = computed(
   () => Boolean(current.value.upkeep?.canUpdate) && !run.value?.running && !busy.value,
 );
@@ -322,6 +342,82 @@ const runLine = computed(() => {
   };
 });
 
+// ── the card's single action ──────────────────────────────────────────────────
+// The open card carries one pill, at the foot on the right — the inspo's
+// Disconnect/Switch slot. It resolves to the one thing this provider is actually
+// asking for: an update it's behind on, a sign-in it's missing, a way to reach a
+// CLI that isn't here yet — and, when none of those, the picker-visibility toggle
+// (kone's parallel to "connected": a ready provider offered in the picker).
+type HeroAction =
+  | { kind: "update"; label: string }
+  | { kind: "signin"; label: string; copy: string }
+  | { kind: "docs"; label: string; href: string }
+  | { kind: "toggle"; label: string }
+  | { kind: "busy" | "idle"; label: string };
+
+const heroAction = computed<HeroAction>(() => {
+  const row = current.value;
+  const m = row.upkeep;
+  if (run.value?.running) return { kind: "busy", label: "Updating…" };
+  if (canUpdate.value && row.status?.available && m?.standing === "behind" && m.latestKnowable) {
+    return { kind: "update", label: m.latestVersion ? `Update to ${m.latestVersion}` : "Update" };
+  }
+  if (row.status?.readiness === "needs-login" && row.meta.signIn) {
+    return { kind: "signin", label: "Sign in", copy: row.meta.signIn };
+  }
+  if (row.status?.readiness === "not-installed") {
+    return row.meta.docs
+      ? { kind: "docs", label: `Get ${row.meta.label}`, href: row.meta.docs.href }
+      : { kind: "idle", label: "Not installed" };
+  }
+  return row.enabled
+    ? { kind: "toggle", label: "Hide from picker" }
+    : { kind: "toggle", label: "Offer in picker" };
+});
+
+/** Whether an honest, knowable newer version is out for an install that's here. */
+function hasUpdate(status: ProviderStatus | null, m: ProviderMaintenance | null): boolean {
+  return Boolean(m?.standing === "behind" && m.latestKnowable && status?.available);
+}
+
+/** The single mark a provider's folded spine wears, resolved once per row (see
+ *  Row.signal). Priority runs problem → attention → update: a provider that's
+ *  both unreachable and behind is asking to be reached first, and one that needs
+ *  signing in wants that before it wants a newer version. Not-installed is
+ *  deliberately silent — the card can't act on it, and a dot on every CLI the
+ *  user simply hasn't got would be noise, not signal. The open card never wears a
+ *  pip; it says all of this in full through its foot pill and status line. */
+function spineSignal(
+  status: ProviderStatus | null,
+  m: ProviderMaintenance | null,
+): SpineSignal | null {
+  if (status) {
+    if (status.readiness === "needs-login") {
+      return { tone: "attention", label: "not signed in" };
+    }
+    if (status.readiness !== "ready" && status.readiness !== "not-installed") {
+      return { tone: "problem", label: "unavailable" };
+    }
+  }
+  if (hasUpdate(status, m)) return { tone: "update", label: "update available" };
+  return null;
+}
+
+/** The line under the name on the open card: where this provider stands, plus a
+ *  note when it's ready but the user has folded it out of the picker. */
+const heroStatus = computed(() => {
+  const r = readinessLine(current.value);
+  if (r.ready && !current.value.enabled) return `${r.text} · hidden from the picker`;
+  return r.text;
+});
+
+function heroClick() {
+  const a = heroAction.value;
+  if (a.kind === "update") return void update();
+  if (a.kind === "signin") return void copy(a.copy);
+  if (a.kind === "toggle") return toggleEnabled();
+}
+
 // ── the executable ────────────────────────────────────────────────────────────
 // A local draft so typing doesn't write through on every keystroke; committed on
 // blur / Enter, which is when the adapter gets re-pointed.
@@ -350,16 +446,104 @@ function toggleEnabled() {
   cue("toggle");
 }
 
+// ── models ────────────────────────────────────────────────────────────────────
+// The right column of the detail: every model family the open provider offers,
+// each with its own show/hide toggle. Hiding one writes the same visibility rule
+// ProjectView filters the picker through (useProviderSettings.setModelHidden), so
+// a model switched off here vanishes from the picker without touching the CLI.
+//
+// The families are grouped exactly the way the picker groups them — buildModelCatalog
+// over the shared modelCache — so a toggle keyed by family core lines up on both
+// sides. We ask the catalog for the open provider on entry and on every switch;
+// modelCache is a module-scoped singleton, so a list already probed elsewhere is
+// served instantly and only a cold provider actually spawns a lookup.
+watch(
+  [() => props.open, () => current.value.provider],
+  ([open]) => {
+    if (open) void providers.models(current.value.provider);
+  },
+  { immediate: true },
+);
+
+type ModelRow = {
+  key: string;
+  label: string;
+  brand: BrandKey;
+  vendor: string;
+  meta: string;
+  hidden: boolean;
+};
+
+/** Turn a native context capacity into a compact badge — "200K", "1M". */
+function contextLabel(tokens: number | undefined): string | null {
+  if (!tokens || tokens <= 0) return null;
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M context`;
+  }
+  return `${Math.round(tokens / 1000)}K context`;
+}
+
+/** The model families of the open provider, each with a one-line summary of what
+ *  it can do and whether it's currently shown in the picker. */
+const modelRows = computed<ModelRow[]>(() => {
+  const provider = current.value.provider;
+  const descriptors = providers.modelCache.value[provider] ?? [];
+  const byId = new Map(descriptors.map((d) => [d.id, d]));
+  return buildModelCatalog(descriptors).map((fam) => {
+    const rep = fam.efforts[0]?.modelId ? byId.get(fam.efforts[0].modelId) : undefined;
+    const tokens =
+      fam.contextWindows?.find((w) => w.isDefault)?.tokens ??
+      fam.contextWindows?.[0]?.tokens ??
+      rep?.contextWindowTokens;
+
+    const bits: string[] = [];
+    const ctx = contextLabel(tokens);
+    if (ctx) bits.push(ctx);
+    // Reasoning breadth as a span — "low → max" — rather than a rung count.
+    const real = fam.efforts.filter((e) => e.tier !== "base");
+    if (real.length > 1) {
+      bits.push(`${real[0]!.label} → ${real[real.length - 1]!.label} reasoning`);
+    } else if (real.length === 1) {
+      bits.push(`${real[0]!.label} reasoning`);
+    }
+    if (fam.fastTier) bits.push("fast tier");
+
+    return {
+      key: fam.key,
+      label: fam.label,
+      brand: fam.brand,
+      vendor: fam.vendor,
+      meta: bits.join(" · "),
+      hidden: providerSettings.isModelHidden(provider, fam.key),
+    };
+  });
+});
+
+const hiddenCount = computed(() =>
+  providerSettings.hiddenModelCount(
+    current.value.provider,
+    modelRows.value.map((r) => r.key),
+  ),
+);
+
+/** Whether the open provider's brand is a harness (opencode/cursor) — then a
+ *  model's own vendor is worth naming, since the catalog spans many vendors. */
+const showVendor = computed(() =>
+  current.value.provider === "opencode" || current.value.provider === "cursor",
+);
+
+function toggleModel(key: string) {
+  const provider = current.value.provider;
+  providerSettings.setModelHidden(provider, key, !providerSettings.isModelHidden(provider, key));
+  cue("toggle");
+}
+
 function toggleUpdateChecks() {
   providerSettings.updateChecks.value = !providerSettings.updateChecks.value;
   cue("toggle");
   if (providerSettings.updateChecks.value) void upkeep.check({ force: true });
 }
-
-// ── models ────────────────────────────────────────────────────────────────────
-// Read from the catalog the picker already uses, never re-fetched here: this is a
-// settings page reporting on state, not a second place that spawns CLIs.
-const models = computed(() => providers.modelCache.value[current.value.provider] ?? []);
 
 // ── copying a command ─────────────────────────────────────────────────────────
 // Every command this page names is also copyable, because the honest answer to
@@ -384,38 +568,18 @@ async function copy(text: string) {
 </script>
 
 <template>
-  <section class="pp" aria-label="Agent providers">
-    <!-- ── masthead ─────────────────────────────────────────────────────────── -->
-    <header class="pp__mast">
-      <div class="pp__identity">
-        <p class="pp__eyebrow">
-          <button
-            type="button"
-            class="pp__back"
-            :tabindex="open ? 0 : -1"
-            aria-label="Back to settings"
-            @click="emit('back')"
-          >
-            <HugeiconsIcon
-              :icon="ArrowTurnBackwardIcon"
-              :size="13"
-              :stroke-width="2"
-              aria-hidden="true"
-            />
-          </button>
-          AGENT PROVIDERS
-        </p>
-        <h1 class="pp__title">{{ readyCount }} of {{ ORDER.length }} ready</h1>
-        <p class="pp__note">
-          <template v-if="note">{{ note }}</template>
-          <template v-else>kone drives the agent CLIs you've already signed into.</template>
-        </p>
-      </div>
-
-      <div class="pp__actions">
-        <!-- Never the primary: when something is behind, the action worth
-             promoting is the update on the provider's own page, and two filled
-             buttons on one screen means neither of them is the answer. -->
+  <SettingsPageShell
+    :open="open"
+    breadcrumb="Agents / Providers"
+    label="Providers settings"
+    :scroll="false"
+    @back="emit('back')"
+  >
+    <template #actions>
+      <!-- Never the primary: when something is behind, the action worth promoting
+           is the update on the provider's own card, and two filled buttons on one
+           screen means neither of them is the answer. -->
+      <div class="pp__act">
         <button
           type="button"
           class="pp__btn"
@@ -433,232 +597,167 @@ async function copy(text: string) {
           {{ busy ? "Checking…" : "Check again" }}
         </button>
       </div>
-    </header>
+    </template>
 
     <!-- A running probe or update reads as a thread of light under the masthead,
          the same as the git space — never a spinner over the content. -->
-    <div class="pp__progress" :class="{ 'pp__progress--on': busy }" aria-hidden="true">
-      <i class="pp__progress-run" />
-    </div>
+    <template #lede>
+      <div class="pp__lede">
+        <div class="pp__progress" :class="{ 'pp__progress--on': busy }" aria-hidden="true">
+          <i class="pp__progress-run" />
+        </div>
 
-    <p v-if="upkeep.error.value" class="pp__error" role="alert">
-      <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
-      {{ upkeep.error.value }}
-    </p>
+        <p v-if="upkeep.error.value" class="pp__error" role="alert">
+          <HugeiconsIcon :icon="AlertCircleIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          {{ upkeep.error.value }}
+        </p>
+      </div>
+    </template>
 
     <!-- ── body ─────────────────────────────────────────────────────────────── -->
     <div class="pp__body">
-      <nav class="pp__rail" aria-label="Providers">
-        <div class="pp__railrows">
-          <i class="pp__railmark" :style="{ '--at': activeIndex }" aria-hidden="true" />
-          <button
-            v-for="row in rows"
-            :key="row.provider"
-            type="button"
-            class="pp__railrow"
-            :class="{
-              'pp__railrow--on': selected === row.provider,
-              'pp__railrow--off': !row.enabled,
-            }"
-            :aria-current="selected === row.provider ? 'true' : undefined"
-            :tabindex="open ? 0 : -1"
-            @click="select(row.provider)"
-          >
-            <ProviderLogo :brand="row.meta.brand" :size="15" class="pp__raillogo" />
-            <span class="pp__raillabel">{{ row.meta.label }}</span>
-            <span
-              v-if="railHint(row)"
-              class="pp__railhint"
-              :class="`pp__railhint--${railHint(row)!.tone}`"
-            >
-              {{ railHint(row)!.text }}
-            </span>
-          </button>
-        </div>
+      <!-- The deck: one card open, the rest folded to a brand-hued spine. -->
+      <div class="pp__deck" role="tablist" aria-label="Providers">
+        <div
+          v-for="row in rows"
+          :key="row.provider"
+          class="pp__card"
+          :class="{ 'pp__card--on': selected === row.provider, 'pp__card--off': !row.enabled }"
+          :style="{ '--grad': row.meta.grad }"
+          role="tab"
+          :aria-selected="selected === row.provider ? 'true' : 'false'"
+          :aria-label="row.signal ? `${row.meta.label} — ${row.signal.label}` : row.meta.label"
+          :tabindex="open ? 0 : -1"
+          @click="select(row.provider)"
+          @keydown.enter.prevent="select(row.provider)"
+          @keydown.space.prevent="select(row.provider)"
+        >
+          <!-- The logomark, ghosted large across the card's own gradient. -->
+          <ProviderLogo :brand="row.meta.brand" tone="mono" :size="228" class="pp__ghost" />
 
-        <!-- The foot of the rail carries the one setting that isn't about a
-             single provider: whether this page may look versions up at all. -->
-        <div class="pp__railfoot">
-          <button
-            type="button"
-            role="switch"
-            class="pp__checkrow"
-            :aria-checked="providerSettings.updateChecks.value"
-            :tabindex="open ? 0 : -1"
-            @click="toggleUpdateChecks"
-          >
-            <span class="pp__checkbody">
-              <span class="pp__checklabel">Check for updates</span>
-              <span class="pp__checkhint">Ask registries when this page opens.</span>
-            </span>
-            <span
-              class="pp__switch"
-              :class="{ 'pp__switch--on': providerSettings.updateChecks.value }"
-            >
-              <i class="pp__knob" />
-            </span>
-          </button>
-        </div>
-      </nav>
+          <!-- The spine mark, shown while the card is folded. -->
+          <ProviderLogo :brand="row.meta.brand" tone="mono" :size="19" class="pp__spinemark" />
 
-      <!-- The selected provider's own page. Keyed so switching providers
-           re-runs the entrance rather than swapping text under a settled view. -->
-      <div :key="current.provider" class="pp__panel">
-        <header class="pp__head">
-          <ProviderLogo :brand="current.meta.brand" :size="26" class="pp__headlogo" />
-          <div class="pp__headtext">
-            <h2 class="pp__name">{{ current.meta.label }}</h2>
-            <p class="pp__vendor">{{ current.meta.vendor }}</p>
-          </div>
+          <!-- Signal pip: a folded provider that needs something still gets to
+               ask — a fault, a sign-in, or an update — the tone carrying which.
+               The card's aria-label already speaks it, so the dot is decorative. -->
+          <span
+            v-if="row.signal"
+            class="pp__pip"
+            :class="[`pp__pip--${row.signal.tone}`, { 'pp__pip--show': selected !== row.provider }]"
+            aria-hidden="true"
+          />
 
-          <!-- Whether the picker offers this provider at all. The one switch on
-               the page, so it doesn't need a label explaining which switch. -->
-          <button
-            type="button"
-            role="switch"
-            class="pp__enable"
-            :aria-label="`Offer ${current.meta.label} in the model picker`"
-            :aria-checked="current.enabled"
-            :tabindex="open ? 0 : -1"
-            @click="toggleEnabled"
-          >
-            <span class="pp__enablelabel">
-              {{ current.enabled ? "Offered in the picker" : "Hidden from the picker" }}
-            </span>
-            <span class="pp__switch" :class="{ 'pp__switch--on': current.enabled }">
-              <i class="pp__knob" />
-            </span>
-          </button>
-        </header>
+          <!-- The open card's foot: name + standing on the left, one pill right. -->
+          <div class="pp__foot">
+            <div class="pp__ident">
+              <ProviderLogo :brand="row.meta.brand" tone="mono" :size="19" class="pp__identmark" />
+              <span class="pp__identtext">
+                <span class="pp__cardname">{{ row.meta.label }}</span>
+                <span class="pp__cardstatus">{{ heroStatus }}</span>
+              </span>
+            </div>
 
-        <p class="pp__blurb">{{ current.meta.blurb }}</p>
-
-        <!-- Two columns once there's room for two: what the provider's state is
-             on the left, how kone reaches it on the right. They collapse to one
-             column on a narrow window, so the page never sets a 30ch measure. -->
-        <div class="pp__cols">
-        <div class="pp__col">
-
-        <!-- ── standing ─────────────────────────────────────────────────────── -->
-        <section class="pp__block" aria-label="Status">
-          <p class="pp__label">Status</p>
-          <p
-            class="pp__status"
-            :class="{
-              'pp__status--ready': readinessLine(current).ready,
-              'pp__status--bad': readinessLine(current).bad,
-            }"
-          >
-            <HugeiconsIcon
-              :icon="readinessLine(current).ready ? CheckmarkCircle02Icon : AlertCircleIcon"
-              :size="13"
-              :stroke-width="1.9"
-              aria-hidden="true"
-            />
-            {{ readinessLine(current).text }}
-          </p>
-          <p
-            v-if="current.status?.message && current.status.readiness !== 'ready'"
-            class="pp__hint"
-          >
-            {{ current.status.message }}
-          </p>
-
-          <!-- The sign-in command, shown only while it's the thing standing in
-               the way. kone never runs it: a login is interactive and
-               credential-bearing, so it belongs in the user's own terminal. -->
-          <div
-            v-if="current.meta.signIn && current.status?.readiness !== 'ready'"
-            class="pp__cmd"
-          >
-            <code class="pp__cmdtext">{{ current.meta.signIn }}</code>
-            <button
-              type="button"
-              class="pp__copy"
+            <a
+              v-if="heroAction.kind === 'docs'"
+              class="pp__pill"
+              :href="heroAction.href"
+              target="_blank"
+              rel="noreferrer"
               :tabindex="open ? 0 : -1"
-              :aria-label="`Copy ${current.meta.signIn}`"
-              @click="copy(current.meta.signIn!)"
+              @click.stop
             >
-              <HugeiconsIcon :icon="Copy01Icon" :size="12" :stroke-width="1.9" aria-hidden="true" />
-              {{ copied === current.meta.signIn ? "Copied" : "Copy" }}
-            </button>
-          </div>
-
-          <a
-            v-if="current.meta.docs"
-            class="pp__link"
-            :href="current.meta.docs.href"
-            target="_blank"
-            rel="noreferrer"
-            :tabindex="open ? 0 : -1"
-          >
-            {{ current.meta.docs.label }}
-            <HugeiconsIcon
-              :icon="LinkSquare02Icon"
-              :size="11"
-              :stroke-width="1.9"
-              aria-hidden="true"
-            />
-          </a>
-        </section>
-
-        <!-- ── version ──────────────────────────────────────────────────────── -->
-        <section class="pp__block" aria-label="Version">
-          <p class="pp__label">Version</p>
-
-          <dl class="pp__def">
-            <dt>Current</dt>
-            <dd>{{ current.upkeep?.currentVersion ?? current.status?.version ?? "—" }}</dd>
-
-            <template v-if="current.upkeep?.latestKnowable">
-              <dt>Latest</dt>
-              <dd>{{ current.upkeep?.latestVersion ?? "—" }}</dd>
-            </template>
-
-            <dt>Channel</dt>
-            <dd>{{ INSTALL_SOURCE_LABEL[current.upkeep?.installSource ?? "unknown"] }}</dd>
-
-            <template v-if="current.upkeep?.packageName">
-              <dt>Package</dt>
-              <dd>{{ current.upkeep.packageName }}</dd>
-            </template>
-          </dl>
-
-          <p class="pp__standing" :class="`pp__standing--${standingLine.tone}`">
-            {{ standingLine.text }}
-          </p>
-
-          <!-- Nothing to update when there's nothing installed: the row would
-               offer a command that can only fail. -->
-          <div
-            v-if="current.upkeep?.canUpdate && current.status?.available"
-            class="pp__update"
-          >
+              {{ heroAction.label }}
+              <HugeiconsIcon :icon="LinkSquare02Icon" :size="12" :stroke-width="2" aria-hidden="true" />
+            </a>
             <button
+              v-else
               type="button"
-              class="pp__btn"
-              :class="{
-                'pp__btn--primary':
-                  current.upkeep.standing === 'behind' && current.upkeep.latestKnowable,
-              }"
-              :disabled="!canUpdate"
+              class="pp__pill"
+              :class="{ 'pp__pill--busy': heroAction.kind === 'busy' }"
+              :disabled="heroAction.kind === 'busy' || heroAction.kind === 'idle'"
               :tabindex="open ? 0 : -1"
-              @click="update"
+              @click.stop="heroClick"
             >
               <HugeiconsIcon
+                v-if="heroAction.kind === 'busy'"
                 :icon="RefreshIcon"
-                :size="13"
-                :stroke-width="1.8"
-                :class="{ 'pp__spin': run?.running }"
+                :size="12"
+                :stroke-width="2"
+                class="pp__spin"
                 aria-hidden="true"
               />
-              {{ updateLabel }}
+              {{
+                heroAction.kind === "signin" && copied === heroAction.copy
+                  ? "Copied"
+                  : heroAction.label
+              }}
             </button>
+          </div>
+        </div>
+      </div>
 
-            <!-- The exact command kone would run. Shown before it runs, not
-                 after it fails: an update through the wrong package manager is
-                 the classic way to end up with two installs. -->
-            <div v-if="current.upkeep.updateCommand" class="pp__cmd pp__cmd--inline">
+      <!-- The one setting that isn't about a single provider: whether this page
+           may look versions up at all. -->
+      <div class="pp__deckfoot">
+        <button
+          type="button"
+          role="switch"
+          class="pp__checkrow"
+          :aria-checked="providerSettings.updateChecks.value"
+          :tabindex="open ? 0 : -1"
+          @click="toggleUpdateChecks"
+        >
+          <span class="pp__checklabel">Check registries for updates when this page opens</span>
+          <span
+            class="pp__switch"
+            :class="{ 'pp__switch--on': providerSettings.updateChecks.value }"
+          >
+            <i class="pp__knob" />
+          </span>
+        </button>
+      </div>
+
+      <!-- The open provider's detail. Keyed so switching re-runs the entrance
+           rather than swapping text under a settled view. -->
+      <div :key="current.provider" class="pp__detail">
+        <div class="pp__cols">
+          <!-- Left: the executable and its standing. -->
+          <div class="pp__side">
+          <!-- ── version ──────────────────────────────────────────────────── -->
+          <section class="pp__block" aria-label="Version">
+            <p class="pp__blocklabel">Version</p>
+
+            <dl class="pp__def">
+              <dt>Current</dt>
+              <dd>{{ current.upkeep?.currentVersion ?? current.status?.version ?? "—" }}</dd>
+
+              <template v-if="current.upkeep?.latestKnowable">
+                <dt>Latest</dt>
+                <dd>{{ current.upkeep?.latestVersion ?? "—" }}</dd>
+              </template>
+
+              <dt>Channel</dt>
+              <dd>{{ INSTALL_SOURCE_LABEL[current.upkeep?.installSource ?? "unknown"] }}</dd>
+
+              <template v-if="current.upkeep?.packageName">
+                <dt>Package</dt>
+                <dd>{{ current.upkeep.packageName }}</dd>
+              </template>
+            </dl>
+
+            <p class="pp__standing" :class="`pp__standing--${standingLine.tone}`">
+              {{ standingLine.text }}
+            </p>
+
+            <!-- The exact command kone would run for the card's Update pill,
+                 shown before it runs, not after it fails: an update through the
+                 wrong package manager is the classic way to end up with two
+                 installs. -->
+            <div
+              v-if="current.upkeep?.canUpdate && current.status?.available && current.upkeep.updateCommand"
+              class="pp__cmd pp__cmd--inline"
+            >
               <code class="pp__cmdtext">{{ current.upkeep.updateCommand }}</code>
               <button
                 type="button"
@@ -667,119 +766,155 @@ async function copy(text: string) {
                 aria-label="Copy the update command"
                 @click="copy(current.upkeep.updateCommand!)"
               >
-                <HugeiconsIcon
-                  :icon="Copy01Icon"
-                  :size="12"
-                  :stroke-width="1.9"
-                  aria-hidden="true"
-                />
+                <HugeiconsIcon :icon="Copy01Icon" :size="12" :stroke-width="1.9" aria-hidden="true" />
                 {{ copied === current.upkeep.updateCommand ? "Copied" : "Copy" }}
               </button>
             </div>
-          </div>
 
-          <div v-if="runLine" class="pp__result">
-            <p class="pp__resulttext" :class="{ 'pp__resulttext--bad': runLine.bad }">
-              {{ runLine.text }}
-              <button
-                type="button"
-                class="pp__dismiss"
+            <div v-if="runLine" class="pp__result">
+              <p class="pp__resulttext" :class="{ 'pp__resulttext--bad': runLine.bad }">
+                {{ runLine.text }}
+                <button
+                  type="button"
+                  class="pp__dismiss"
+                  :tabindex="open ? 0 : -1"
+                  @click="upkeep.dismissRun(current.provider)"
+                >
+                  Dismiss
+                </button>
+              </p>
+              <pre v-if="runLine.output" class="pp__output">{{ runLine.output }}</pre>
+            </div>
+          </section>
+
+          <!-- ── executable ───────────────────────────────────────────────── -->
+          <section class="pp__block" aria-label="Executable">
+            <p class="pp__blocklabel">Executable</p>
+
+            <template v-if="current.meta.binary">
+              <input
+                :id="`pp-bin-${current.provider}`"
+                v-model="binaryDraft"
+                type="text"
+                spellcheck="false"
+                autocapitalize="off"
+                autocorrect="off"
+                :placeholder="current.meta.binary"
                 :tabindex="open ? 0 : -1"
-                @click="upkeep.dismissRun(current.provider)"
-              >
-                Dismiss
-              </button>
+                class="pp__input"
+                :aria-label="`${current.meta.label} CLI path`"
+                @change="commitBinary"
+                @blur="commitBinary"
+                @keydown.enter.prevent="commitBinary"
+              />
+              <p class="pp__hint">
+                Leave blank to use <code>{{ current.meta.binary }}</code> from your PATH.
+              </p>
+
+              <dl v-if="current.upkeep?.resolvedPath" class="pp__def">
+                <dt>Resolved</dt>
+                <dd>{{ current.upkeep.resolvedPath }}</dd>
+                <template v-if="current.upkeep.realPath">
+                  <dt>Points at</dt>
+                  <dd>{{ current.upkeep.realPath }}</dd>
+                </template>
+              </dl>
+            </template>
+
+            <p v-else class="pp__hint">
+              kone runs the Claude Code CLI bundled with the Agent SDK, so there's no path to
+              set and nothing on your machine to keep current.
             </p>
-            <pre v-if="runLine.output" class="pp__output">{{ runLine.output }}</pre>
+          </section>
           </div>
-        </section>
 
-        </div>
-        <div class="pp__col">
+          <!-- Right: every model this provider offers, each with its own switch
+               for whether the picker shows it. -->
+          <section class="pp__models" aria-label="Models">
+            <div class="pp__modelshead">
+              <p class="pp__blocklabel">Models</p>
+              <p v-if="modelRows.length" class="pp__modelscount">
+                {{ modelRows.length }} offered<template v-if="hiddenCount">
+                  · {{ hiddenCount }} hidden</template
+                >
+              </p>
+            </div>
 
-        <!-- ── executable ───────────────────────────────────────────────────── -->
-        <section class="pp__block" aria-label="Executable">
-          <p class="pp__label">Executable</p>
+            <ul
+              v-if="modelRows.length"
+              ref="scroller"
+              class="pp__modellist"
+              :style="maskStyle"
+              @scroll.passive="measure"
+            >
+              <li v-for="row in modelRows" :key="row.key" class="pp__model" :class="{ 'pp__model--off': row.hidden }">
+                <ProviderLogo :brand="row.brand" :size="16" class="pp__modelmark" />
+                <span class="pp__modeltext">
+                  <span class="pp__modelname">{{ row.label }}</span>
+                  <span v-if="row.meta || showVendor" class="pp__modelmeta">
+                    <template v-if="showVendor && row.vendor">{{ row.vendor }}</template
+                    ><template v-if="showVendor && row.vendor && row.meta"> · </template
+                    >{{ row.meta }}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  class="pp__switch pp__modelswitch"
+                  :class="{ 'pp__switch--on': !row.hidden }"
+                  :aria-checked="!row.hidden"
+                  :aria-label="`Show ${row.label} in the picker`"
+                  :tabindex="open ? 0 : -1"
+                  @click="toggleModel(row.key)"
+                >
+                  <i class="pp__knob" />
+                </button>
+              </li>
+            </ul>
 
-          <template v-if="current.meta.binary">
-            <input
-              :id="`pp-bin-${current.provider}`"
-              v-model="binaryDraft"
-              type="text"
-              spellcheck="false"
-              autocapitalize="off"
-              autocorrect="off"
-              :placeholder="current.meta.binary"
-              :tabindex="open ? 0 : -1"
-              class="pp__input"
-              :aria-label="`${current.meta.label} CLI path`"
-              @change="commitBinary"
-              @blur="commitBinary"
-              @keydown.enter.prevent="commitBinary"
-            />
-            <p class="pp__hint">
-              Leave blank to use <code>{{ current.meta.binary }}</code> from your PATH.
+            <p v-else class="pp__hint">
+              {{
+                current.status?.readiness === "ready"
+                  ? "No models to list — this provider reported none."
+                  : "Sign this provider in to read the models it offers."
+              }}
             </p>
-
-            <dl v-if="current.upkeep?.resolvedPath" class="pp__def">
-              <dt>Resolved</dt>
-              <dd>{{ current.upkeep.resolvedPath }}</dd>
-              <template v-if="current.upkeep.realPath">
-                <dt>Points at</dt>
-                <dd>{{ current.upkeep.realPath }}</dd>
-              </template>
-            </dl>
-          </template>
-
-          <p v-else class="pp__hint">
-            kone runs the Claude Code CLI bundled with the Agent SDK, so there's no path to
-            set and nothing on your machine to keep current.
-          </p>
-        </section>
-
-        <!-- ── models ───────────────────────────────────────────────────────── -->
-        <section v-if="models.length" class="pp__block" aria-label="Models">
-          <p class="pp__label">Models</p>
-          <p class="pp__count">
-            {{ models.length }} model{{ models.length === 1 ? "" : "s" }} offered
-          </p>
-          <p class="pp__models">
-            {{ models.slice(0, 8).map((m) => m.label).join(" · ")
-            }}<template v-if="models.length > 8"> · +{{ models.length - 8 }} more</template>
-          </p>
-        </section>
-
+          </section>
         </div>
-        </div>
-
-        <!-- The standing rule this whole surface rests on, said once at the foot
-             of the page rather than repeated as a reassurance on every block. -->
-        <p class="pp__foot">
-          kone never stores provider credentials. It drives the CLI you already
-          signed into, with your own subscription.
-        </p>
       </div>
     </div>
-  </section>
+
+    <!-- The standing rule this whole surface rests on, said once at the foot of
+         the page rather than repeated as a reassurance on every block — the
+         masthead's state line and note folded in beside it. -->
+    <template #foot>
+      {{ readyCount }} of {{ ORDER.length }} ready<template v-if="note"> · {{ note }}</template> —
+      kone drives the agent CLIs you've already signed into, with your own subscription, and never
+      stores your credentials.
+    </template>
+  </SettingsPageShell>
 </template>
 
 <style scoped>
 /* One motion vocabulary for the page, the same shape the git space uses: things
    that arrive decelerate, things that move in place ease at both ends. */
-.pp {
+.pp__act,
+.pp__lede,
+.pp__body {
   --pp-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --pp-ease-move: cubic-bezier(0.65, 0, 0.35, 1);
   --pp-t-micro: 140ms;
   --pp-t-small: 220ms;
   --pp-t-enter: 320ms;
+  --pp-t-fold: 460ms;
   --pp-t-sweep: 1100ms;
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  padding: 1.25rem 2.5rem 2rem;
-  overflow: hidden;
+}
+/* Thin wrappers that only carry the tokens (and, for the lede, the progress
+   thread + error line) — display:contents so their children sit directly in the
+   shell's masthead-action slot and its flow beneath the masthead. */
+.pp__act,
+.pp__lede {
+  display: contents;
 }
 
 @keyframes pp-in {
@@ -793,82 +928,6 @@ async function copy(text: string) {
   }
 }
 
-/* ── masthead ─────────────────────────────────────────────────────────────── */
-.pp__mast {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  flex-shrink: 0;
-  animation: pp-in var(--pp-t-enter) var(--pp-ease) backwards;
-}
-.pp__identity {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  min-width: 0;
-}
-/* A category label, so it keeps the uppercase micro-label treatment (unlike the
-   identifiers further down the page, which are mono in their natural case). */
-.pp__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-/* The same corner-return glyph the drawer's other panes use: the return arrow
-   turned upside down, then mirrored. */
-.pp__back {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-left: -4px;
-  border-radius: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    background-color var(--pp-t-micro) ease,
-    color var(--pp-t-micro) ease;
-}
-.pp__back:hover {
-  background-color: var(--hover);
-  color: var(--ink);
-}
-.pp__back:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.pp__back :deep(svg) {
-  transform: rotate(180deg) scaleX(-1);
-}
-.pp__title {
-  font-size: 28px;
-  letter-spacing: -0.5px;
-  line-height: 1.1;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.pp__note {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.3;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-
-.pp__actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  padding-top: 4px;
-}
 /* The app's one button recipe: bare until hovered, then a soft pill. */
 .pp__btn {
   display: inline-flex;
@@ -895,14 +954,6 @@ async function copy(text: string) {
 .pp__btn:disabled {
   opacity: 0.5;
   cursor: default;
-}
-.pp__btn--primary {
-  background-color: var(--ink);
-  color: var(--ground);
-}
-.pp__btn--primary:hover:not(:disabled) {
-  background-color: var(--ink);
-  opacity: 0.88;
 }
 .pp__spin {
   animation: pp-spin 900ms linear infinite;
@@ -963,107 +1014,221 @@ async function copy(text: string) {
 /* ── body ─────────────────────────────────────────────────────────────────── */
 .pp__body {
   display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  margin-top: 30px;
+  padding-inline: 1rem;
 }
 
-.pp__rail {
+/* ── the deck ───────────────────────────────────────────────────────────────
+   A row of cards: the open one grows to fill, the rest fold to a spine. The fold
+   is a flex-grow transition — Chromium (this is Electron) animates it — so the
+   cards ease open and shut rather than jumping. */
+.pp__deck {
   display: flex;
-  flex-direction: column;
-  width: 210px;
+  gap: 10px;
+  height: 196px;
   flex-shrink: 0;
-  animation: pp-in var(--pp-t-enter) var(--pp-ease) 60ms backwards;
+  animation: pp-in var(--pp-t-enter) var(--pp-ease) 40ms backwards;
 }
-.pp__railrows {
+.pp__card {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-grow: 0;
+  flex-basis: 64px;
+  min-width: 64px;
+  border-radius: 20px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--grad);
+  transition:
+    flex-grow var(--pp-t-fold) var(--pp-ease),
+    filter var(--pp-t-micro) ease;
+  will-change: flex-grow;
 }
-/* One pill that slides between rows, rather than a wash that appears on the row
-   you picked. The rail is a fixed ladder — 34px rows on a 2px gap — so its
-   position is arithmetic and can't fall out of step on a resize. */
-.pp__railmark {
+.pp__card--on {
+  flex-grow: 1;
+  cursor: default;
+}
+.pp__card:not(.pp__card--on):hover {
+  filter: brightness(1.06);
+}
+.pp__card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 45%, transparent);
+}
+/* A folded provider the user has hidden from the picker still keeps its place —
+   it just reads quieter. */
+.pp__card--off:not(.pp__card--on) {
+  filter: saturate(0.55) brightness(0.92);
+}
+
+/* The oversized logomark, bled off the card's trailing edge. */
+.pp__ghost {
   position: absolute;
-  inset-inline: 0;
-  top: 0;
-  height: 34px;
-  border-radius: 8px;
-  background-color: color-mix(in srgb, var(--ink) 6.5%, transparent);
-  transform: translateY(calc(var(--at, 0) * 36px));
-  transition: transform var(--pp-t-small) var(--pp-ease-move);
+  top: 50%;
+  right: -34px;
+  transform: translateY(-50%);
+  opacity: 0;
+  color: #fff;
+  pointer-events: none;
+  transition: opacity var(--pp-t-fold) var(--pp-ease);
+}
+.pp__card--on .pp__ghost {
+  opacity: 0.14;
+}
+
+/* The spine mark, centred low while the card is folded; it fades as the card
+   opens and its own foot mark takes over. */
+.pp__spinemark {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  color: #fff;
+  opacity: 0.94;
+  transition: opacity var(--pp-t-small) ease;
   pointer-events: none;
 }
-.pp__railrow {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  height: 34px;
-  padding-inline: 10px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  letter-spacing: -0.1px;
-  color: var(--muted);
-  cursor: pointer;
-  text-align: left;
-  transition:
-    background-color var(--pp-t-micro) ease,
-    color var(--pp-t-micro) ease,
-    opacity var(--pp-t-micro) ease;
-}
-.pp__railrow:not(.pp__railrow--on):hover {
-  background-color: var(--hover);
-}
-.pp__railrow:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.pp__railrow--on {
-  color: var(--ink);
-}
-/* A provider the user has hidden from the picker still belongs on the rail —
-   it just stops asking for attention. */
-.pp__railrow--off {
-  opacity: 0.55;
-}
-.pp__raillogo {
-  flex-shrink: 0;
-}
-.pp__raillabel {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pp__railhint {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--muted);
-}
-.pp__railhint--ink {
-  color: var(--ink);
-}
-.pp__railhint--bad {
-  color: var(--diff-del);
+.pp__card--on .pp__spinemark {
+  opacity: 0;
 }
 
-.pp__railfoot {
-  margin-top: auto;
-  padding-top: 16px;
+/* Signal pip: a single quiet dot near the top of a folded spine — no motion, no
+   halo, just a mark that's there when you look. Colour carries the meaning; a
+   hairline ring keeps that colour legible on any brand gradient without a heavy
+   shadow. It fades out as its card opens (the open card speaks in full). */
+.pp__pip {
+  position: absolute;
+  top: 15px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity var(--pp-t-small) ease;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #000 22%, transparent);
+}
+.pp__pip--show {
+  opacity: 1;
+}
+/* An update is neutral news — the same light the open card's pill wears. */
+.pp__pip--update {
+  background-color: rgba(255, 255, 255, 0.95);
+}
+/* A sign-in is an ask, not a fault — a warm amber that reads on every wash. */
+.pp__pip--attention {
+  background-color: #f5c15a;
+}
+/* Unreachable is the one state that alarms — the app's own delete/red. */
+.pp__pip--problem {
+  background-color: #f0685a;
+}
+
+.pp__foot {
+  position: absolute;
+  inset: auto 20px 18px 20px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity var(--pp-t-small) var(--pp-ease),
+    transform var(--pp-t-small) var(--pp-ease);
+  /* The folded card is 64px wide — its foot must not reflow while collapsed. */
+  pointer-events: none;
+}
+.pp__card--on .pp__foot {
+  opacity: 1;
+  transform: none;
+  transition-delay: 120ms;
+  pointer-events: auto;
+}
+.pp__ident {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.pp__identmark {
+  flex-shrink: 0;
+  color: #fff;
+}
+.pp__identtext {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.pp__cardname {
+  font-size: 14px;
+  letter-spacing: -0.2px;
+  line-height: 1.1;
+  color: #fff;
+  white-space: nowrap;
+}
+.pp__cardstatus {
+  font-size: 11.5px;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The card's one pill: a solid light chip, dark ink — the Disconnect/Switch
+   slot from the inspo, doubling as the state readout. */
+.pp__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 32px;
+  padding-inline: 15px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.94);
+  color: #17171a;
+  font-size: 12px;
+  letter-spacing: -0.1px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color var(--pp-t-micro) ease,
+    transform var(--pp-t-micro) var(--pp-ease-move);
+}
+.pp__pill:hover:not(:disabled) {
+  background-color: #fff;
+  transform: translateY(-1px);
+}
+.pp__pill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7);
+}
+.pp__pill:disabled {
+  cursor: default;
+}
+.pp__pill--busy {
+  background-color: rgba(255, 255, 255, 0.78);
+}
+
+/* ── the check-for-updates setting ──────────────────────────────────────────── */
+.pp__deckfoot {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  margin-top: 12px;
 }
 .pp__checkrow {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 10px;
-  border-radius: 8px;
-  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 999px;
   cursor: pointer;
   transition: background-color var(--pp-t-micro) ease;
 }
@@ -1074,20 +1239,9 @@ async function copy(text: string) {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
-.pp__checkbody {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
 .pp__checklabel {
   font-size: 11.5px;
   line-height: 1.2;
-  color: var(--ink-soft);
-}
-.pp__checkhint {
-  font-size: 10.5px;
-  line-height: 1.35;
   color: var(--muted);
 }
 
@@ -1099,7 +1253,6 @@ async function copy(text: string) {
   align-items: center;
   width: 34px;
   height: 20px;
-  margin-top: 1px;
   border-radius: 999px;
   background-color: color-mix(in srgb, var(--ink) 14%, transparent);
   transition: background-color var(--pp-t-small) ease;
@@ -1122,119 +1275,55 @@ async function copy(text: string) {
   transform: translateX(16px);
 }
 
-/* ── the provider's page ──────────────────────────────────────────────────── */
-.pp__panel {
-  /* A query container, so the two-column split below responds to the panel's own
-     width rather than the window's — the drawer's width is derived from the
-     window but isn't the window, and a media query would get it wrong. */
+/* ── the open provider's detail ─────────────────────────────────────────────── */
+.pp__detail {
+  /* A query container so the two columns respond to the panel's own width, not
+     the window's — the drawer is derived from the window but isn't it. */
   container-type: inline-size;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  padding-left: 40px;
-  padding-right: 6px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ink) 14%, transparent) transparent;
-  animation: pp-in var(--pp-t-small) var(--pp-ease) backwards;
-}
-.pp__panel::-webkit-scrollbar {
-  width: 4px;
-}
-.pp__panel::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--ink) 16%, transparent);
-  border-radius: 999px;
-}
-
-.pp__head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.pp__headlogo {
-  flex-shrink: 0;
-}
-.pp__headtext {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  min-width: 0;
   flex: 1 1 auto;
-}
-.pp__name {
-  font-size: 19px;
-  letter-spacing: -0.3px;
-  line-height: 1.1;
-  color: var(--ink);
-}
-.pp__vendor {
-  font-size: 11px;
-  line-height: 1;
-  color: var(--muted);
-}
-.pp__enable {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex-shrink: 0;
-  padding: 5px 6px 5px 9px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background-color var(--pp-t-micro) ease;
-}
-.pp__enable:hover {
-  background-color: var(--hover);
-}
-.pp__enable:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.pp__enablelabel {
-  font-size: 11px;
-  line-height: 1;
-  color: var(--muted);
-  white-space: nowrap;
+  min-height: 0;
+  margin-top: 22px;
+  /* The detail itself doesn't scroll — the left column is pinned and the model
+     roster carries its own scroll (below), so the executable never drifts. */
+  overflow: hidden;
+  animation: pp-in var(--pp-t-small) var(--pp-ease) backwards;
 }
 
-.pp__blurb {
-  margin-top: 10px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--ink-soft);
-  max-width: 54ch;
-}
-
-/* The columns are the page's measure. Each holds its own stack of blocks, and
-   the gutter between them is wide enough that the two read as separate columns
-   rather than one wrapped one. */
+/* Two columns once there's room: the executable and its standing on the left,
+   the model roster on the right. They stack on a narrow panel. The cols fill the
+   detail's height so the roster column has a height to scroll within. */
 .pp__cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0 56px;
-  align-items: start;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 34px 56px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
 }
-@container (min-width: 700px) {
+@container (min-width: 660px) {
   .pp__cols {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
 }
-.pp__col {
+.pp__side {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  gap: 30px;
   min-width: 0;
+  min-height: 0;
 }
-
 .pp__block {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-  margin-top: 28px;
-  width: 100%;
+  min-width: 0;
 }
-.pp__label {
+.pp__blocklabel {
   font-size: 10px;
   letter-spacing: 0.08em;
   line-height: 1;
@@ -1242,24 +1331,108 @@ async function copy(text: string) {
   color: var(--muted);
 }
 
-.pp__status {
+/* ── the model roster ───────────────────────────────────────────────────────── */
+.pp__models {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  line-height: 1.3;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+.pp__modelshead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.pp__modelscount {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
-.pp__status--ready {
+.pp__modellist {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  /* Its own scroll, independent of the pinned left column. The edge-fade smoke
+     (bound from useEdgeFade) stands in for a visible bar. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 8px 0 0;
+  scrollbar-width: none;
+}
+.pp__modellist::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.pp__model {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 4px;
+  min-width: 0;
+  /* A hairline divider, not a boxed row — the same low-contrast register the
+     rest of the app keeps to. */
+  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.pp__model:first-child {
+  border-top: none;
+}
+.pp__modelmark {
+  flex-shrink: 0;
+  transition: opacity var(--pp-t-micro) ease;
+}
+.pp__modeltext {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.pp__modelname {
+  font-size: 12.5px;
+  line-height: 1.25;
+  letter-spacing: -0.1px;
   color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.pp__status--bad {
-  color: var(--diff-del);
+.pp__modelmeta {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.pp__modelswitch {
+  cursor: pointer;
+}
+.pp__modelswitch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+/* A hidden model reads back but doesn't shout — its mark and name dim, the switch
+   stays fully legible so the way back is obvious. */
+.pp__model--off .pp__modelmark {
+  opacity: 0.4;
+}
+.pp__model--off .pp__modelname {
+  color: var(--muted);
+}
+
 .pp__hint {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);
+  text-wrap: pretty;
 }
 .pp__hint code {
   font-family: var(--font-mono);
@@ -1270,7 +1443,7 @@ async function copy(text: string) {
    natural case, set as a two-column definition list so the values align. */
 .pp__def {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: 78px minmax(0, 1fr);
   gap: 5px 16px;
   width: 100%;
 }
@@ -1299,14 +1472,6 @@ async function copy(text: string) {
   color: var(--muted);
 }
 
-.pp__update {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 2px;
-}
-
 /* A command, on the surface rather than in a box: a soft fill, the text mono in
    its own case, and a copy affordance that only colours up on hover. */
 .pp__cmd {
@@ -1333,7 +1498,7 @@ async function copy(text: string) {
   height: 22px;
   padding-inline: 7px;
   border-radius: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1;
   color: var(--muted);
   cursor: pointer;
@@ -1348,24 +1513,6 @@ async function copy(text: string) {
 .pp__copy:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-
-.pp__link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  line-height: 1;
-  color: var(--muted);
-  text-decoration: none;
-  transition: color var(--pp-t-micro) ease;
-}
-.pp__link:hover {
-  color: var(--ink);
-}
-.pp__link:focus-visible {
-  outline: none;
-  color: var(--ink);
 }
 
 .pp__result {
@@ -1386,7 +1533,7 @@ async function copy(text: string) {
   color: var(--diff-del);
 }
 .pp__dismiss {
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1;
   color: var(--muted);
   cursor: pointer;
@@ -1431,39 +1578,18 @@ async function copy(text: string) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 22%, transparent);
 }
 
-.pp__foot {
-  margin-top: 44px;
-  padding-bottom: 8px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--muted);
-  opacity: 0.8;
-  max-width: 52ch;
-}
-
-.pp__count {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.3;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-soft);
-}
-.pp__models {
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .pp__mast,
-  .pp__rail,
-  .pp__panel {
+  .pp__deck,
+  .pp__detail {
     animation: none;
   }
-  .pp__railmark,
+  .pp__card,
+  .pp__ghost,
+  .pp__spinemark,
+  .pp__foot,
   .pp__knob,
   .pp__btn,
-  .pp__railrow,
+  .pp__pill,
   .pp__progress {
     transition: none;
   }

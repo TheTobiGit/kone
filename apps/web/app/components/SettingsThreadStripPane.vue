@@ -6,13 +6,9 @@ import {
   useWindowSize,
 } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import {
-  ArrowTurnBackwardIcon,
-  PauseIcon,
-  PlayIcon,
-  ReplayIcon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { PauseIcon, PlayIcon, ReplayIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import SettingsPageShell from "~/components/SettingsPageShell.vue";
+import { useEdgeFade } from "~/composables/useEdgeFade";
 import {
   CENTER_MODES,
   JOINT_PX,
@@ -65,6 +61,11 @@ import {
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
+
+// The preview scroller carries the shared edge-fade smoke, not a visible bar, so
+// it matches every other settings page (see useEdgeFade).
+const scroller = ref<HTMLElement>();
+const { measure, maskStyle } = useEdgeFade(scroller);
 
 const { cue } = useSound();
 const { centerMode } = useStripPrefs();
@@ -366,35 +367,25 @@ function offsetStyle(mode: CenterMode) {
 </script>
 
 <template>
-  <section class="pp" aria-label="Thread strip settings">
-    <header class="pp__mast">
-      <p class="pp__eyebrow">
-        <button
-          type="button"
-          class="pp__back"
-          :tabindex="open ? 0 : -1"
-          aria-label="Back to settings"
-          @click="emit('back')"
-        >
-          <HugeiconsIcon
-            :icon="ArrowTurnBackwardIcon"
-            :size="13"
-            :stroke-width="2"
-            aria-hidden="true"
-          />
-        </button>
-        Thread strip
-      </p>
-      <h1 class="pp__title">Center focused column</h1>
-      <p class="pp__deck">{{ deck }}</p>
-    </header>
-
-    <!-- Auto margins rather than `justify-content`: the three rows sit optically
-         centred in whatever height the drawer has, and when there isn't enough the
-         margins resolve to nothing and it scrolls from the top instead of clipping
-         its first row out of reach. -->
-    <div class="pp__scroll">
-      <div class="pp__opts" role="radiogroup" aria-label="Center focused column">
+  <SettingsPageShell
+    :open="open"
+    breadcrumb="Personalization / Thread strip"
+    label="Thread strip settings"
+    :scroll="false"
+    @back="emit('back')"
+  >
+    <div class="ts">
+      <!-- Auto margins rather than `justify-content`: the three rows sit optically
+           centred in whatever height the drawer has, and when there isn't enough the
+           margins resolve to nothing and it scrolls from the top instead of clipping
+           its first row out of reach. -->
+      <div
+        ref="scroller"
+        class="pp__scroll"
+        :style="maskStyle"
+        @scroll.passive="measure"
+      >
+        <div class="pp__opts" role="radiogroup" aria-label="Center focused column">
         <div
           v-for="(opt, i) in CENTER_MODES"
           :key="opt.value"
@@ -531,13 +522,22 @@ function offsetStyle(mode: CenterMode) {
         </button>
       </div>
     </footer>
-  </section>
+    </div>
+
+    <!-- The page's one line of prose, at the foot where the measured fact lives —
+         the setting's name, then what this window can actually show. -->
+    <template #foot>Center focused column — {{ deck }}</template>
+  </SettingsPageShell>
 </template>
 
 <style scoped>
 /* Same motion vocabulary as the providers page and the git space: things that
    arrive decelerate, things that move in place ease at both ends. */
-.pp {
+/* Every child pads itself back out to the page's measure, so rows can take their
+   hover wash right out to the gutter (the shell supplies the 1.5rem outer). The
+   token vocabulary the interior draws on lives here — the same shape the git space
+   and the providers page use. */
+.ts {
   --pp-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --pp-ease-move: cubic-bezier(0.65, 0, 0.35, 1);
   --pp-t-micro: 140ms;
@@ -550,15 +550,8 @@ function offsetStyle(mode: CenterMode) {
   --pp-slab-live: color-mix(in srgb, var(--accent) 22%, transparent);
   display: flex;
   flex-direction: column;
-  width: 100%;
-  height: 100%;
+  flex: 1;
   min-height: 0;
-  /* Narrow outer padding, and every child pads itself back out to the page's
-     measure. Rows can then take their hover wash right out to the gutter without
-     negative margins — which is what was overflowing the scroller and hanging a
-     stray horizontal scrollbar under the page. */
-  padding: 1.25rem 1.5rem 1.25rem;
-  overflow: hidden;
 }
 
 @keyframes pp-in {
@@ -572,73 +565,9 @@ function offsetStyle(mode: CenterMode) {
   }
 }
 
-/* ── masthead ─────────────────────────────────────────────────────────────── */
-.pp__mast {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  flex-shrink: 0;
-  padding-inline: 1rem;
-  animation: pp-in var(--pp-t-enter) var(--pp-ease) backwards;
-}
-/* A category label, so it takes the uppercase micro-label treatment — set in
-   natural case in the markup and transformed here. */
-.pp__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-/* The corner-return glyph the drawer's other panes use: the return arrow turned
-   upside down, then mirrored. */
-.pp__back {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-inline-start: -4px;
-  border-radius: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    background-color var(--pp-t-micro) ease,
-    color var(--pp-t-micro) ease;
-}
-.pp__back:hover {
-  background-color: var(--hover);
-  color: var(--ink);
-}
-.pp__back:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.pp__back :deep(svg) {
-  transform: rotate(180deg) scaleX(-1);
-}
-.pp__title {
-  font-size: 28px;
-  letter-spacing: -0.5px;
-  line-height: 1.1;
-  color: var(--ink);
-}
-/* Measured, not written — and it changes as the window does, so the figures are
-   tabular to stop the line shuffling under a drag-resize. */
-.pp__deck {
-  max-width: 64ch;
-  margin-top: 3px;
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.5;
-  text-wrap: pretty;
-  color: var(--muted);
-}
-
 /* ── the three rows ───────────────────────────────────────────────────────── */
+/* No visible bar — the edge-fade smoke (bound from useEdgeFade) stands in for it,
+   the same as every other settings page. */
 .pp__scroll {
   display: flex;
   flex-direction: column;
@@ -646,10 +575,11 @@ function offsetStyle(mode: CenterMode) {
   min-height: 0;
   overflow-y: auto;
   overflow-x: clip;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ink) 16%, transparent) transparent;
-  animation: pp-in var(--pp-t-enter) var(--pp-ease) backwards;
-  animation-delay: 40ms;
+  scrollbar-width: none;
+}
+.pp__scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 .pp__opts {
   display: flex;
@@ -926,8 +856,6 @@ function offsetStyle(mode: CenterMode) {
 /* The walk is opt-in under a reduced-motion preference (it starts paused), but if
    it's switched on, let the steps cut rather than glide. */
 @media (prefers-reduced-motion: reduce) {
-  .pp__mast,
-  .pp__scroll,
   .pp__transport {
     animation: none;
   }

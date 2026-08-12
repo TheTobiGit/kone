@@ -19,7 +19,7 @@ import type { ProviderKind, ProviderSettingsMap } from "~/types/desktop";
 // Module-scope state so every surface (the drawer, ProjectView's rail) reads one
 // reactive source and a change in one is seen everywhere without a reload.
 
-const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid"];
+const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity"];
 
 // Where the dev (no-bridge) fallback stashes binary paths, mirroring the shape
 // the desktop store persists. Kept separate from `enabled` so the two axes never
@@ -35,6 +35,18 @@ let loaded = false;
 // a fresh install shows every detected provider. Synced across windows.
 const enabledMap = useStorage<Partial<Record<ProviderKind, boolean>>>(
   "kone.providers.enabled",
+  {},
+  undefined,
+  { listenToStorageChanges: true },
+);
+
+// Which individual models are hidden from the picker, keyed by provider then by
+// model *family* key (ModelOption.key — the same core the picker groups by). Like
+// enabledMap this is opt-out: a family absent from its provider's list is shown,
+// so a fresh install and every newly-detected model default to visible. A pure
+// renderer-side view filter, so localStorage (synced across windows) is enough.
+const hiddenModels = useStorage<Partial<Record<ProviderKind, string[]>>>(
+  "kone.models.hidden",
   {},
   undefined,
   { listenToStorageChanges: true },
@@ -144,9 +156,44 @@ export function useProviderSettings() {
     () => (provider: ProviderKind) => enabledMap.value[provider] !== false,
   );
 
+  /** Whether a model family may appear in the picker (default: yes). Keyed by
+   *  the family core (ModelOption.key), which is what both the pane's toggle and
+   *  the picker's catalog group by. */
+  function isModelHidden(provider: ProviderKind, key: string): boolean {
+    return hiddenModels.value[provider]?.includes(key) ?? false;
+  }
+
+  function setModelHidden(provider: ProviderKind, key: string, hidden: boolean): void {
+    const current = hiddenModels.value[provider] ?? [];
+    const next = hidden
+      ? current.includes(key)
+        ? current
+        : [...current, key]
+      : current.filter((k) => k !== key);
+    hiddenModels.value = { ...hiddenModels.value, [provider]: next };
+  }
+
+  /** How many of a provider's families the user has hidden — for the pane's
+   *  count line. Counts only keys still present in the live catalog it's given,
+   *  so a model that's since disappeared doesn't inflate the tally. */
+  function hiddenModelCount(provider: ProviderKind, liveKeys: string[]): number {
+    const hidden = hiddenModels.value[provider];
+    if (!hidden?.length) return 0;
+    const live = new Set(liveKeys);
+    return hidden.filter((k) => live.has(k)).length;
+  }
+
+  /** Predicate ProjectView filters its picker catalog through, so the pane's
+   *  toggles and the picker share one rule (mirrors enabledPredicate). */
+  const modelVisiblePredicate = computed(
+    () => (provider: ProviderKind, key: string) =>
+      !(hiddenModels.value[provider]?.includes(key) ?? false),
+  );
+
   return {
     binaryPaths,
     enabledMap,
+    hiddenModels,
     updateChecks,
     load,
     binaryPath,
@@ -154,5 +201,9 @@ export function useProviderSettings() {
     isEnabled,
     setEnabled,
     enabledPredicate,
+    isModelHidden,
+    setModelHidden,
+    hiddenModelCount,
+    modelVisiblePredicate,
   };
 }

@@ -41,17 +41,19 @@ export type BrandKey =
   | "nvidia"
   | "zai"
   | "droid"
+  | "antigravity"
   | "generic";
 
 /** Provider kinds that are *harnesses* — a house of upstream providers, so one
  *  provider's catalog spans many real vendors (opencode → deepseek, openai,
  *  qwen, …; cursor re-sells claude, gpt, gemini, grok, kimi plus its own
- *  `composer-*` family). For these, a model row shows the harness's own mark
- *  with the model's true vendor badge on its corner, instead of the vendor mark
- *  alone. */
+ *  `composer-*` family; antigravity re-sells Gemini, Claude and GPT-OSS). For
+ *  these, a model row shows the harness's own mark with the model's true vendor
+ *  badge on its corner, instead of the vendor mark alone. */
 export const HARNESS_PROVIDERS: ReadonlySet<ProviderKind> = new Set([
   "opencode",
   "cursor",
+  "antigravity",
 ]);
 
 /** The reasoning-effort tiers we know how to style, whether baked into an id
@@ -197,6 +199,7 @@ const GATEWAY_VENDORS: [RegExp, BrandKey, string][] = [
   // nor a named upstream matched, i.e. it really is a harness-native model.
   [/^opencode/, "opencode", "OpenCode"],
   [/^cursor/, "cursor", "Cursor"],
+  [/^agy/, "antigravity", "Antigravity"],
 ];
 
 /** The logomark and vendor name for a catalog entry.

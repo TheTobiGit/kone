@@ -12,7 +12,14 @@ import { useWindowSize } from "@vueuse/core";
 // Module-scope state, like useStripPrefs — one source, read by the drawer and the
 // stage without threading a prop between them.
 
-export type SettingsPane = "root" | "shortcuts" | "motion" | "providers";
+export type SettingsPane =
+  | "root"
+  | "profile"
+  | "shortcuts"
+  | "motion"
+  | "providers"
+  | "agentsUsage"
+  | "providerLimits";
 
 /** The drawer as a list: a column beside the launcher, which stays the subject. */
 const COLUMN_WIDTH = 320;
@@ -26,7 +33,7 @@ const PAGE_MAX = 1040;
 const pane = ref<SettingsPane>("root");
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
-const PAGE_PANES: SettingsPane[] = ["providers", "motion"];
+const PAGE_PANES: SettingsPane[] = ["providers", "motion", "profile", "agentsUsage", "providerLimits"];
 
 export function useSettingsSurface() {
   const { width } = useWindowSize();
@@ -48,5 +55,9 @@ export function useSettingsSurface() {
     return Math.round(Math.min(PAGE_MAX, Math.max(COLUMN_WIDTH, width.value - STAGE_REMAINDER)));
   });
 
-  return { pane, isPage, revealWidth, COLUMN_WIDTH };
+  function openPane(target: SettingsPane) {
+    pane.value = target;
+  }
+
+  return { pane, isPage, revealWidth, COLUMN_WIDTH, openPane };
 }

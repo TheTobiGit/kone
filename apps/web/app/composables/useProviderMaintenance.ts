@@ -125,6 +125,21 @@ const MOCK: Record<ProviderKind, ProviderMaintenance> = {
     canUpdate: true,
     checkedAt: Date.now(),
   },
+  antigravity: {
+    provider: "antigravity",
+    installSource: "unknown",
+    binary: "agy",
+    resolvedPath: "~/.local/bin/agy",
+    realPath: null,
+    packageName: null,
+    currentVersion: "1.0.12",
+    latestVersion: null,
+    latestKnowable: false,
+    standing: "unknown",
+    updateCommand: "agy update",
+    canUpdate: true,
+    checkedAt: Date.now(),
+  },
 };
 
 export function useProviderMaintenance() {

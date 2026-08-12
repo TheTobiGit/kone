@@ -5,11 +5,14 @@ import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiChipIcon,
+  Analytics01Icon,
   ArrowTurnBackwardIcon,
   DistributeHorizontalCenterIcon,
+  GaugeIcon,
   KeyboardIcon,
   RefreshIcon,
   UndoIcon,
+  UserIcon,
   VolumeHighIcon,
   VolumeMute01Icon,
 } from "@hugeicons/core-free-icons";
@@ -44,6 +47,7 @@ const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
 const { muted, toggleMuted, cue } = useSound();
+const { name: profileName, resolve: resolveProfile } = useProfile();
 const {
   personalizableGroups,
   hasOverrides,
@@ -68,7 +72,7 @@ const currentCenterOption = computed(
   () => CENTER_MODES.find((o) => o.value === centerMode.value)?.label ?? "",
 );
 
-// ── agent providers ───────────────────────────────────────────────────────────
+// ── providers ────────────────────────────────────────────────────────────────
 // The row only summarises; the surface itself is SettingsProvidersPane, which the
 // drawer widens for (see useSettingsSurface) because a provider's install,
 // version, channel and executable don't belong in a 320px column.
@@ -109,10 +113,24 @@ function onSoundToggle() {
 // rebind capture.
 //
 // The pane lives in useSettingsSurface rather than here because the launcher
-// slides aside by exactly this drawer's width, and one pane (Agent providers) is
+// slides aside by exactly this drawer's width, and one pane (Providers) is
 // a page rather than a column — so the stage upstream has to know which pane is
 // open to know how far to move.
 const { pane, isPage, revealWidth } = useSettingsSurface();
+
+// The narrow column (root list + Shortcuts) scrolls the aside itself. It smokes
+// its top/bottom edges exactly like the pages do rather than showing a scrollbar,
+// so the one long list in the drawer (Shortcuts) fades out of view instead of
+// hard-cutting. Pages manage their own inner smoke and are overflow-hidden here,
+// so the mask only rides the column state.
+const drawerScroll = ref<HTMLElement>();
+const { measure, maskStyle } = useEdgeFade(drawerScroll);
+const asideStyle = computed(() => ({
+  width: `${revealWidth.value}px`,
+  ...(isPage.value ? {} : maskStyle.value),
+}));
+// Root ↔ Shortcuts swaps the scrolling content, so re-measure once it's laid out.
+watch(pane, () => void nextTick(measure));
 
 function openShortcuts() {
   pane.value = "shortcuts";
@@ -124,8 +142,23 @@ function openMotion() {
   cue("press");
 }
 
+function openProfile() {
+  pane.value = "profile";
+  cue("press");
+}
+
 function openProviders() {
   pane.value = "providers";
+  cue("press");
+}
+
+function openAgentsUsage() {
+  pane.value = "agentsUsage";
+  cue("press");
+}
+
+function openProviderLimits() {
+  pane.value = "providerLimits";
   cue("press");
 }
 
@@ -216,7 +249,10 @@ function onKeydown(e: KeyboardEvent) {
   }
   emit("close");
 }
-onMounted(() => window.addEventListener("keydown", onKeydown));
+onMounted(() => {
+  resolveProfile();
+  window.addEventListener("keydown", onKeydown);
+});
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 
@@ -251,19 +287,27 @@ defineExpose({ cancelCapture });
 
 <template>
   <aside
+    ref="drawerScroll"
     class="settings-scroll fixed inset-y-0 left-0 z-0 flex flex-col bg-sunken"
     :class="isPage ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-5 pb-7'"
-    :style="{ width: `${revealWidth}px` }"
+    :style="asideStyle"
     :aria-hidden="!open"
+    @scroll.passive="measure"
     role="dialog"
     aria-label="Settings and personalization"
   >
-    <!-- Agent providers is a page, not a column: it takes the whole widened
+    <!-- Providers is a page, not a column: it takes the whole widened
          aside and lays itself out (masthead, rail, panel). The width change is
          deliberately not animated here — the stage sliding over the top of this
          panel is what uncovers it, so animating both would be two springs
          racing to describe one movement. -->
+    <SettingsProfilePane v-if="pane === 'profile'" :open="open" @back="backToRoot" />
+
     <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
+
+    <SettingsAgentsUsagePane v-if="pane === 'agentsUsage'" :open="open" @back="backToRoot" />
+
+    <SettingsProviderLimitsPane v-if="pane === 'providerLimits'" :open="open" @back="backToRoot" />
 
     <!-- Both panes stack in one grid cell so the push transition overlaps them;
          the active pane is keyed and slides in over the outgoing one. -->
@@ -281,6 +325,44 @@ defineExpose({ cancelCapture });
         :animate="{ opacity: 1, x: 0 }"
         :transition="paneSpring"
       >
+        <!-- General -->
+        <div class="flex flex-col gap-1.5">
+          <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+            General
+          </p>
+          <Magnet
+            class="block"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <button
+              type="button"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              :tabindex="open ? 0 : -1"
+              aria-label="Open profile settings"
+              @click="openProfile"
+            >
+              <HugeiconsIcon
+                :icon="UserIcon"
+                :size="17"
+                :stroke-width="1.7"
+                class="shrink-0 text-muted transition-colors group-hover:text-ink"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Profile</span>
+              <span
+                v-if="profileName"
+                class="shrink-0 max-w-[40%] truncate text-[12px] leading-tight text-muted"
+              >
+                {{ profileName }}
+              </span>
+            </button>
+          </Magnet>
+        </div>
+
         <!-- Personalization -->
         <div class="flex flex-col gap-1.5">
           <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
@@ -296,7 +378,7 @@ defineExpose({ cancelCapture });
           >
             <button
               type="button"
-              class="group flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
               :tabindex="open ? 0 : -1"
               aria-label="Open keyboard shortcuts settings"
               @click="openShortcuts"
@@ -328,7 +410,7 @@ defineExpose({ cancelCapture });
           >
             <button
               type="button"
-              class="group flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
               :tabindex="open ? 0 : -1"
               aria-label="Open thread strip settings"
               @click="openMotion"
@@ -348,8 +430,15 @@ defineExpose({ cancelCapture });
               </span>
             </button>
           </Magnet>
+        </div>
 
-          <!-- Agent providers — opens the widened provider page (each CLI kone
+        <!-- Agents -->
+        <div class="flex flex-col gap-1.5">
+          <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+            Agents
+          </p>
+
+          <!-- Providers — opens the widened provider page (each CLI kone
                can drive: status, version, install channel, executable, whether
                it's offered in the picker). The trailing summary is the picker's
                real reach right now, or the updates waiting if there are any. -->
@@ -363,9 +452,9 @@ defineExpose({ cancelCapture });
           >
             <button
               type="button"
-              class="group flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
               :tabindex="open ? 0 : -1"
-              aria-label="Open agent provider settings"
+              aria-label="Open providers settings"
               @click="openProviders"
             >
               <HugeiconsIcon
@@ -376,13 +465,70 @@ defineExpose({ cancelCapture });
                 aria-hidden="true"
               />
               <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
-                Agent providers
+                Providers
               </span>
               <span
                 v-if="providerSummary"
                 class="shrink-0 text-[12px] leading-tight text-muted"
               >
                 {{ providerSummary }}
+              </span>
+            </button>
+          </Magnet>
+
+          <Magnet
+            class="block"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <button
+              type="button"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              :tabindex="open ? 0 : -1"
+              aria-label="Open agent usage settings"
+              @click="openAgentsUsage"
+            >
+              <HugeiconsIcon
+                :icon="Analytics01Icon"
+                :size="17"
+                :stroke-width="1.7"
+                class="shrink-0 text-muted transition-colors group-hover:text-ink"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Usage</span>
+            </button>
+          </Magnet>
+
+          <!-- Provider limits — the widened limits page: what each provider's
+               own accounting says you have left. Same global read as the Agents
+               space's Limits section. -->
+          <Magnet
+            class="block"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <button
+              type="button"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              :tabindex="open ? 0 : -1"
+              aria-label="Open provider limits settings"
+              @click="openProviderLimits"
+            >
+              <HugeiconsIcon
+                :icon="GaugeIcon"
+                :size="17"
+                :stroke-width="1.7"
+                class="shrink-0 text-muted transition-colors group-hover:text-ink"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+                Provider limits
               </span>
             </button>
           </Magnet>
@@ -405,14 +551,14 @@ defineExpose({ cancelCapture });
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="back-glyph flex size-6 items-center justify-center text-muted transition-colors hover:text-ink focus-visible:text-ink focus-visible:outline-none"
+              class="back-glyph flex size-5 items-center justify-center text-muted focus-visible:outline-none"
               :tabindex="open ? 0 : -1"
               aria-label="Back to settings"
               @click="backToRoot"
             >
               <HugeiconsIcon
                 :icon="ArrowTurnBackwardIcon"
-                :size="16"
+                :size="13"
                 :stroke-width="2"
                 aria-hidden="true"
               />
@@ -425,7 +571,7 @@ defineExpose({ cancelCapture });
             v-if="anyCustomized"
             type="button"
             :tabindex="open ? 0 : -1"
-            class="flex items-center gap-1 rounded-[7px] px-1.5 py-1 text-[11px] leading-none text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
+            class="flex cursor-pointer items-center gap-1 rounded-[8px] px-1.5 py-1 text-[11px] leading-none text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
             @click="resetAll"
           >
             <HugeiconsIcon
@@ -460,7 +606,7 @@ defineExpose({ cancelCapture });
                     </span>
                     <span
                       v-if="a.description ?? a.hint"
-                      class="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted"
+                      class="mt-0.5 line-clamp-2 text-pretty text-[11px] leading-snug text-muted"
                     >
                       {{ a.description ?? a.hint }}
                     </span>
@@ -500,7 +646,7 @@ defineExpose({ cancelCapture });
                       v-if="isCustomized(a.id)"
                       type="button"
                       :tabindex="open ? 0 : -1"
-                      class="flex size-6 items-center justify-center rounded-[7px] text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
+                      class="flex size-6 items-center justify-center rounded-[8px] text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
                       :aria-label="`Reset ${a.label} to its default`"
                       title="Reset shortcut"
                       @click="reset(a.id)"
@@ -557,7 +703,7 @@ defineExpose({ cancelCapture });
         aria-label="Interaction sounds"
         :aria-checked="!muted"
         :tabindex="open ? 0 : -1"
-        class="switch relative inline-flex h-[24px] w-[42px] shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus-visible:outline-none"
+        class="switch relative inline-flex h-[20px] w-[34px] shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus-visible:outline-none"
         :style="{
           backgroundColor: muted
             ? 'color-mix(in srgb, var(--ink) 14%, transparent)'
@@ -566,8 +712,8 @@ defineExpose({ cancelCapture });
         @click="onSoundToggle"
       >
         <span
-          class="knob absolute size-[20px] rounded-full bg-ground transition-transform duration-200 ease-out"
-          :class="muted ? 'translate-x-[2px]' : 'translate-x-[20px]'"
+          class="knob absolute size-[16px] rounded-full bg-ground transition-transform duration-200 ease-out"
+          :class="muted ? 'translate-x-[2px]' : 'translate-x-[16px]'"
         />
       </button>
     </div>
@@ -575,25 +721,15 @@ defineExpose({ cancelCapture });
 </template>
 
 <style scoped>
-/* A slim scrollbar for the drawer — thin and quiet, lifting a touch on hover.
-   Matches the app's picker-scroll idiom but narrower. */
+/* No visible bar — the drawer column smokes its top/bottom edges (mask bound from
+   useEdgeFade) exactly like the settings pages, so the one long list here
+   (Shortcuts) fades out of view instead of hard-cutting under a scrollbar. */
 .settings-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ink) 16%, transparent) transparent;
+  scrollbar-width: none;
 }
 .settings-scroll::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-.settings-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.settings-scroll::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--ink) 16%, transparent);
-  border-radius: 999px;
-}
-.settings-scroll:hover::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--ink) 28%, transparent);
+  width: 0;
+  height: 0;
 }
 
 /* The thread-strip options fade colour and hover-wash at the same soft pace the
@@ -610,9 +746,37 @@ defineExpose({ cancelCapture });
 .switch .knob {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent);
 }
+/* Keyboard focus gets the same ring the pages use — the switch's hit target is
+   small, so a pointer user leans on the fill, a keyboard user on this. */
+.switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+
+/* The root list rows navigate on click; the magnet pull answers the pointer, but
+   a keyboard user needs a ring — the same one the pages and shortcut chips wear. */
+.nav-row:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
 
 /* The pane's back button wears the same glyph as the app's corner return:
-   the return arrow turned upside down, then mirrored left-to-right. */
+   the return arrow turned upside down, then mirrored left-to-right — and the
+   same 20px/6px/wash+ring recipe as every page's back, not a bigger one. */
+.back-glyph {
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+.back-glyph:hover {
+  background-color: var(--hover);
+  color: var(--ink);
+}
+.back-glyph:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
 .back-glyph :deep(svg) {
   transform: rotate(180deg) scaleX(-1);
 }

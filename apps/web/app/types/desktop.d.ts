@@ -576,7 +576,7 @@ export type KoneSystemApi = {
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
-export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode" | "droid";
+export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode" | "droid" | "antigravity";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
 
@@ -1042,6 +1042,11 @@ export type RuntimeEventSource =
   | "droid.acp.notification"
   | "droid.acp.stderr"
   | "droid.acp.lifecycle"
+  // Antigravity `agy -p` print mode: `event` = transcript/hook-derived turn
+  // events, `stderr` = the CLI's stderr line, `lifecycle` = session start/exit.
+  | "antigravity.cli.event"
+  | "antigravity.cli.stderr"
+  | "antigravity.cli.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
@@ -1434,6 +1439,324 @@ export type KoneAgentHistoryApi = {
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;
+  /** Lifetime, fully-local usage stats aggregated across every project, for the
+   *  standalone profile board. */
+  profileStats: () => Promise<ProfileStats>;
+};
+
+/** Lifetime, fully-local usage stats for the profile board — every figure is
+ *  aggregated in SQL across all projects (never a cloud call). A prompt is one
+ *  user block; day/hour buckets follow the machine's local calendar. Ranked
+ *  lists arrive already sorted most-used first. */
+export type ProfileStats = {
+  generatedAt: number;
+  totals: {
+    threads: number;
+    prompts: number;
+    tokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    projects: number;
+  };
+  streak: {
+    current: number;
+    longest: number;
+    peakDay: { date: string; count: number } | null;
+  };
+  /** One entry per active local day, ascending by date (YYYY-MM-DD). */
+  activity: Array<{ date: string; count: number }>;
+  /** Prompts binned by local hour 0–23 (only non-empty hours). */
+  hours: Array<{ hour: number; count: number }>;
+  mostActiveHour: number | null;
+  providers: Array<{ provider: ProviderKind; count: number }>;
+  models: Array<{ model: string; provider: ProviderKind; count: number }>;
+  reasoning: Array<{ effort: string; count: number }>;
+  projects: Array<{ path: string; name: string; prompts: number }>;
+};
+
+// ── Agents page: usage ──────────────────────────────────────────────────────
+// The same local SQL story as ProfileStats, but bounded to a window and,
+// optionally, to one project — and carrying an estimated cost. Nothing here
+// is a bill: the money figure is tokens priced against a static published
+// rate table, and the UI is required to say so.
+
+/** The windows the usage report can be asked for. */
+export type UsageRange = "7d" | "30d" | "all";
+
+export type UsageTotals = {
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  prompts: number;
+  threads: number;
+  costUsd: number;
+};
+
+export type UsageDayProvider = {
+  provider: string;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  costUsd: number;
+};
+
+/** One local calendar day. The report is dense across the whole range —
+ *  including days with no activity — so a chart never has to invent gaps. */
+export type UsageDay = {
+  /** YYYY-MM-DD, local calendar. */
+  date: string;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  prompts: number;
+  costUsd: number;
+  byProvider: UsageDayProvider[];
+};
+
+/** A ranked slice of usage by model, provider or project. `key` is the stable
+ *  identity to render by; `label` is already display-ready. */
+export type UsageBySlice = {
+  key: string;
+  label: string;
+  provider?: string;
+  tokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
+  prompts: number;
+  costUsd: number;
+};
+
+export type AgentUsageReport = {
+  generatedAt: number;
+  range: UsageRange;
+  scope: "project" | "global";
+  projectPath: string | null;
+  totals: UsageTotals;
+  /** Ascending, one entry per day in range (zero days included). */
+  days: UsageDay[];
+  /** Descending by tokens. */
+  models: UsageBySlice[];
+  providers: UsageBySlice[];
+  projects: UsageBySlice[];
+};
+
+export type KoneAgentUsageApi = {
+  /** Aggregate the per-turn token rows over a window. Pass a `projectPath` to
+   *  scope it to one project, or null for every project on the machine. */
+  report: (options: {
+    range: UsageRange;
+    projectPath?: string | null;
+    forceRefresh?: boolean;
+  }) => Promise<AgentUsageReport>;
+};
+
+// ── Agents page: provider quota ─────────────────────────────────────────────
+// Bring-your-own-subscription, extended from "can this CLI run" to "how much
+// of your plan is left". For most providers kone reads the OAuth token that
+// provider's own CLI already wrote to this machine and calls that provider's
+// own usage endpoint with it; for OpenCode there is no network call at all,
+// because OpenCode records authoritative per-message cost to a local database.
+// Nothing is read or sent until the user opts that provider in, and no
+// credential is ever stored or forwarded anywhere by kone.
+//
+// Mirrors apps/desktop/src/agent/quota/types.ts — keep the two in step.
+
+/** Providers kone can report a quota card for. Factory Droid is absent
+ *  because it publishes nothing to read. */
+export type QuotaCapableProvider = "claudeAgent" | "codex" | "opencode" | "cursor" | "antigravity";
+
+/** What a number *is*, so the UI can format it without a per-provider special
+ *  case: a share of a window, an amount of money, or a plain tally. */
+export type MetricKind = "percent" | "dollars" | "count";
+
+/** One number kone is prepared to put on screen.
+ *
+ *  `number: null` means **"no data"** — not zero. Rendering `$0.00` when a read
+ *  simply failed is a lie that reads as good news, so a null renders as
+ *  "No data" and nothing else. */
+export type MetricValue = {
+  number: number | null;
+  kind: MetricKind;
+  /** Short unit suffix for `count` values ("credits"); unused for the rest. */
+  suffix?: string;
+  /** True when kone computed this rather than the provider reporting it —
+   *  surfaces as a "~" and a footnote. */
+  estimated?: boolean;
+};
+
+/** Whether a rolling window is actually running. `notStarted` matters: a
+ *  rolling window with no usage in it has no reset time, and inventing a
+ *  countdown for it would be fabrication. */
+export type QuotaWindowState = "active" | "notStarted" | "unknown";
+
+/** One usage window in a provider's report. */
+export type QuotaWindow = {
+  id: string;
+  label: string;
+  used: MetricValue;
+  /** The cap, when the provider publishes one; null for an uncapped meter. */
+  limit: MetricValue | null;
+  /** 0..1 fraction consumed, or null when unknowable (no cap, or no data).
+   *  A null draws no bar rather than an empty one. */
+  percent: number | null;
+  state: QuotaWindowState;
+  resetsAt: string | null;
+};
+
+/** A spend figure for a fixed calendar span — "Today · $4.08 · 1.2M". Money
+ *  and tokens are separately nullable; a provider can report one without the
+ *  other. */
+export type SpendTile = {
+  id: string;
+  label: string;
+  dollars: number | null;
+  tokens: number | null;
+  estimated: boolean;
+};
+
+/** One day on a provider card's trend sparkline. Days with no usage are
+ *  present with `dollars: 0` — for a daily series the zero is the true claim. */
+export type TrendPoint = {
+  /** `YYYY-MM-DD`, local time. */
+  date: string;
+  dollars: number;
+  tokens: number;
+};
+
+/** How a provider's report resolved. `disconnected` = no credential found;
+ *  `accessDenied` = the OS refused to hand one over; `stale` = a cached
+ *  report while a fresh read is in flight or backed off; `transientFailure` =
+ *  retryable; `terminalFailure` = a rejection retrying won't fix. */
+export type QuotaConnection =
+  | "connected"
+  | "disconnected"
+  | "accessDenied"
+  | "stale"
+  | "transientFailure"
+  | "terminalFailure";
+
+export type QuotaProviderReport = {
+  provider: QuotaCapableProvider;
+  connection: QuotaConnection;
+  /** The single most representative window — what a compact row shows when
+   *  there is room for only one number. */
+  primary: QuotaWindow | null;
+  /** Every window reported, `primary` included. */
+  windows: QuotaWindow[];
+  /** Today / Yesterday / Last 30 days, where the provider's data supports it. */
+  spend: SpendTile[];
+  /** Daily series for the card's sparkline, oldest first. Empty when unknown. */
+  trend: TrendPoint[];
+  /** The plan/tier label when the provider names one, e.g. "Max 20x". */
+  planLabel: string | null;
+  /** Models whose cost kone could not price, and therefore left *out* of the
+   *  dollar figures above. Pricing an unknown model at zero would understate
+   *  spend with no way for the user to find out; naming them is what makes the
+   *  exclusion honest. */
+  excludedModels: string[];
+  /** True when the report reflects a 429 backoff rather than a fresh read, so
+   *  the UI can say the figures may be stale instead of a vague "waiting". */
+  rateLimited?: boolean;
+  fetchedAt: number;
+  /** Why, when `connection` isn't "connected" — rendered as the row's line. */
+  message?: string;
+};
+
+export type KoneAgentQuotaApi = {
+  /** Is there a credential on disk we could read? Local, offline, and never a
+   *  network call — this only decides whether "Connect" is offered. */
+  detect: (provider: QuotaCapableProvider) => Promise<boolean>;
+  /** Read the provider's live usage. Only ever called for a provider the user
+   *  connected. `allowKeychain` must be true only on a user-initiated action —
+   *  a background read must not risk a surprise OS credential prompt. */
+  fetch: (
+    provider: QuotaCapableProvider,
+    options?: { allowKeychain?: boolean; force?: boolean },
+  ) => Promise<QuotaProviderReport>;
+};
+
+// ── Agents page: inventory ──────────────────────────────────────────────────
+// A read-only snapshot of what the agent CLIs on this machine can reach:
+// skills, MCP servers, and the instruction files in scope. kone scans and
+// reports; it never writes to any of them.
+
+/** One discovered skill (a directory holding a SKILL.md). `origin` names the
+ *  CLI root it was found under — a plain string, not a union, so a new origin
+ *  can't break the contract. Today: claude | codex | opencode | cursor |
+ *  agents | kone. */
+export type SkillEntry = {
+  name: string;
+  description: string | null;
+  /** Absolute SKILL.md path. */
+  path: string;
+  directory: string;
+  origin: string;
+  scope: "user" | "project" | "plugin" | "system";
+  displayName: string | null;
+  shortDescription: string | null;
+};
+
+/** How an MCP server is reached. `unknown` is a real, expected value — many
+ *  on-disk configs omit an explicit type and give nothing to infer from. */
+export type McpTransport = "stdio" | "http" | "sse" | "ws" | "unknown";
+
+export type McpServerEntry = {
+  name: string;
+  transport: McpTransport;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  /** Env var KEY NAMES the config declares — never the values, which may be
+   *  API keys. The UI is required to say so. */
+  envKeys: string[];
+  sourcePath: string;
+  /** Human label for the source, e.g. "Claude Code · project". */
+  sourceLabel: string;
+  scope: "user" | "project";
+  /** Null when the source has no enable/disable concept at all — distinct
+   *  from a server the source explicitly turned off. */
+  enabled: boolean | null;
+};
+
+/** One CLAUDE.md / AGENTS.md in scope. */
+export type InstructionFile = {
+  path: string;
+  kind: "AGENTS.md" | "CLAUDE.md" | "other";
+  scope: "user" | "project" | "nested";
+  bytes: number;
+  modifiedAt: number;
+  /** The opening prose, frontmatter and heading marks stripped. */
+  excerpt: string;
+};
+
+/** One scan-step failure, carried alongside the partial result rather than
+ *  failing the whole inventory — a short list for an unreadable reason is a
+ *  lie, so the UI shows these. */
+export type InventoryError = { source: string; message: string };
+
+export type AgentInventory = {
+  scannedAt: number;
+  projectPath: string | null;
+  skills: SkillEntry[];
+  mcpServers: McpServerEntry[];
+  instructions: InstructionFile[];
+  errors: InventoryError[];
+};
+
+export type KoneAgentInventoryApi = {
+  /** Scan every discovery root, plus the given project's own config. Never
+   *  throws: an unreadable root lands in `errors`. */
+  scan: (projectPath: string | null) => Promise<AgentInventory>;
 };
 
 /** The user's per-thread picker knobs, persisted via agent:set-thread-selection
@@ -1487,6 +1810,14 @@ export type KoneAgentApi = {
   updateProvider: (provider: ProviderKind) => Promise<ProviderUpdateResult>;
   /** Persisted conversation history (read-only). */
   history: KoneAgentHistoryApi;
+  /** Ranged token/cost accounting over the same per-turn rows history is built
+   *  from — the Agents page's usage report. */
+  usage: KoneAgentUsageApi;
+  /** Live provider quota, strictly opt-in per provider. */
+  quota: KoneAgentQuotaApi;
+  /** Read-only scan of the skills, MCP servers and instruction files this
+   *  machine's agent CLIs can reach. */
+  inventory: KoneAgentInventoryApi;
   /** Persist the user's per-thread picker selection (model/effort/serviceTier/
    *  contextWindow) so a reopened thread restores it exactly. */
   setThreadSelection: (

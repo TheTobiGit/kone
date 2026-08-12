@@ -75,6 +75,15 @@ const MOCK_STATUSES: ProviderStatus[] = [
     readiness: "ready",
     authLabel: "Factory account",
   },
+  {
+    provider: "antigravity",
+    label: "Antigravity",
+    available: true,
+    authStatus: "authenticated",
+    readiness: "ready",
+    version: "1.0.12",
+    authLabel: "Google Sign-In",
+  },
 ];
 
 // Real ids + display names + reasoning efforts, captured live from
@@ -268,6 +277,30 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
       label: "Custom (default)",
       reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "medium",
+    },
+  ],
+  // Antigravity's catalog is discovered live from `agy models` (one row per
+  // model/effort combination, collapsed to base models — see the desktop
+  // adapter's parseAntigravityModelLines). The entries below mirror that shape
+  // as a browser-dev stand-in: display-label ids with real effort ladders.
+  antigravity: [
+    {
+      id: "Gemini 3.5 Flash",
+      label: "Gemini 3.5 Flash",
+      reasoningEfforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      id: "Gemini 3.1 Pro",
+      label: "Gemini 3.1 Pro",
+      reasoningEfforts: ["low", "high"],
+      defaultReasoningEffort: "low",
+    },
+    {
+      id: "Claude Sonnet 4.6",
+      label: "Claude Sonnet 4.6",
+      reasoningEfforts: ["thinking"],
+      defaultReasoningEffort: "thinking",
     },
   ],
 };
