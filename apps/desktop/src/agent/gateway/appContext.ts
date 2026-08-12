@@ -74,6 +74,7 @@ export interface CodexTurnCollaborationMode {
 /** The turn/start `collaborationMode` envelope carrying the app context.
  *  kone has no plan/build interaction-mode axis (the CodexAdapter comment on
  *  that axis), so the block always opens a Default collaboration mode, exactly
+ *  like the default-mode developer instructions. Undefined when
  *  the session has no gateway connection. */
 export function buildCodexTurnCollaborationMode(input: {
   model?: string;

@@ -7,8 +7,8 @@ import { promisify } from "node:util";
 // Shared hardening for the quota module: reading a provider CLI's own OAuth
 // credential file off disk, an optional macOS Keychain fallback, and an
 // atomic write-back for the one case (Codex) where kone rotates a token.
-// symlink/permission refusals and the keychain hex-decode quirk are hard-won
-// and kept as-is.
+// The symlink/permission refusals and the keychain hex-decode quirk are
+// hard-won and kept as-is.
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const execFileAsync = promisify(execFile);
@@ -124,6 +124,7 @@ function assertSafeMode(stats: Stats, filePath: string): void {
   }
 }
 
+/** Reads a local credential file with suspicion:
  *  refuses a symlink (no following into an attacker-controlled target),
  *  refuses a world/group-readable file, caps the read size, and re-checks
  *  identity + mode after opening (a TOCTOU swap between the lstat and the
@@ -155,6 +156,7 @@ export async function readSecureFile(filePath: string, maxBytes = 64 * 1024): Pr
   }
 }
 
+/** Writes a credential file carefully: create the
  *  parent dir 0700, write to a sibling temp file at mode 0600 (never a
  *  world-readable window), fsync, then rename into place. A rotated token is
  *  the only thing this module ever persists — and only for the one source

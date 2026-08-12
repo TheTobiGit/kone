@@ -8,7 +8,8 @@
 // subscription" stance as the rest of apps/desktop/src/agent, extended from
 // "can this CLI run" to "how much quota does it have left".
 //
-// not a bare percentage. That distinction is the whole reason this model was
+// A window carries *values* with a unit, not a bare percentage. That
+// distinction is the whole reason this model was
 // rewritten — Claude bills a percentage of a rolling window, OpenCode bills
 // dollars against a dollar cap, and Cursor bills credits. A single `percent`
 // field could only ever tell one of those three stories honestly.

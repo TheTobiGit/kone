@@ -12,7 +12,7 @@ import type { QuotaProviderReport, QuotaWindow, QuotaWindowState } from "./types
 // the read-only com.openai.codex App Support copy, and ONLY if it holds a
 // plaintext access_token — a Safe-Storage-encrypted copy has none, and this
 // module must never attempt to decrypt one. Endpoint, refresh flow and decode
-// equivalent).
+// are ported minus the keychain source, which has no kone equivalent.
 
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";

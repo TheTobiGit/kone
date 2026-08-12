@@ -38,6 +38,7 @@ const {
 } = await import("./antigravityScan.js");
 
 // ── protobuf fixture helpers ─────────────────────────────────────────────────
+// A tiny encoder for the reverse-engineered gen_metadata row shape:
 // root { chatModel(#1) } → chatModel { usage(#4), chatStartMetadata(#9),
 // model(#19), display_name(#21), attributes(#20) } → usage { input(#1/#2),
 // totalOutput(#3), response(#9), thinking(#10), responseId(#11) }.

@@ -29,6 +29,7 @@ export type AntigravityScanStats = {
   conversations: number;
 };
 
+/** The five conversation roots the scan covers, in order. */
 type AntigravityConversationRoot = {
   dir: string;
   extensions: readonly string[];
@@ -200,8 +201,8 @@ function metadataAttributes(rowData: Uint8Array): Map<string, string> {
   return attributes;
 }
 
-/** Map a display label to the canonical slug the pricing catalog understands —
-  *  gemini-3.5-flash-high). */
+/** Map a display label to the canonical slug the pricing catalog understands
+  *  (Gemini 3.5 Flash (High) → gemini-3.5-flash-high). */
 export function canonicalAntigravityModelId(
   rawModel: string,
   displayName: string | undefined,
