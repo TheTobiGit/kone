@@ -12,6 +12,7 @@ import {
 import { initThreadDispatcher } from "./dispatch.js";
 import { createGateway, type GatewayHandle } from "./gateway/index.js";
 import { scanAgentInventory } from "./inventory/index.js";
+import { readSkillDetail } from "./inventory/skillDetail.js";
 import {
   detectProviderCredential,
   fetchProviderQuota,
@@ -395,6 +396,7 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:inventory-scan", (_event, projectPath: string | null) =>
     scanAgentInventory(projectPath),
   );
+  ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
   ipcMain.handle("agent:history-archive", (_event, threadId: string, archived: boolean) => {
     const result = store.setArchived(threadId, archived);
     if (!result.ok) {

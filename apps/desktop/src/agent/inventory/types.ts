@@ -5,6 +5,10 @@
 // Spec: docs/skills-mcp-research.md §2 (MCP config sources), §3 (skills
 // discovery roots + SKILL.md frontmatter), §4 (data models this mirrors).
 
+/** One on-disk copy of a skill: enough to name where it is and who would
+ *  have offered it, never the file's contents. */
+export type SkillCopy = { origin: string; scope: SkillEntry["scope"]; path: string };
+
 /** One discovered skill (a directory containing a SKILL.md). `origin` names
  *  which CLI's root the skill was found under — kept as a plain string
  *  (rather than a literal union) so a new origin never breaks this contract;
@@ -20,6 +24,13 @@ export type SkillEntry = {
   scope: "user" | "project" | "plugin" | "system";
   displayName: string | null;
   shortDescription: string | null;
+  /** Copies of this same skill name that lost the precedence contest, nearest
+   *  loser first. Empty for the overwhelming majority of skills. */
+  shadowedBy: SkillCopy[];
+  /** True when the SKILL.md asks not to be invoked automatically
+   *  (`disable-model-invocation: true`) — the skill is still there, but the
+   *  model won't reach for it on its own. */
+  manualOnly: boolean;
 };
 
 /** How an MCP server is reached. `unknown` is a real, expected value — plenty

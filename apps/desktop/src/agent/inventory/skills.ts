@@ -3,7 +3,10 @@
 // every known "skills" root — five user/global home-dir roots plus the
 // project's ancestor chain — for directories that directly contain a
 // SKILL.md, parses their frontmatter, and dedupes by name so the page shows
-// one merged list instead of five per-CLI ones.
+// one merged list instead of five per-CLI ones. The copies that lose the
+// dedupe contest are not dropped: each is recorded on the winner as
+// `shadowedBy`, so a name that exists in several places is visible and
+// removable rather than silently dead.
 // skillsCatalog.ts (SKILL_ORIGIN_ROOTS multi-origin scan, BFS-to-depth-2 skill
 // detection, alias-tolerant frontmatter reads, origin-preference dedup, the
 // Claude-plugin realpath containment check) — see docs/skills-mcp-research.md
@@ -18,10 +21,13 @@ import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 import type { InventoryError, SkillEntry } from "./types.js";
 
-const MAX_FILE_BYTES = 256 * 1024;
+export const MAX_FILE_BYTES = 256 * 1024;
 const MAX_ENTRIES_PER_DIR = 500;
 const MAX_BFS_DEPTH = 2;
 const MAX_PROJECT_ANCESTORS = 25;
+// A pathological number of same-named copies must not make the payload
+// unbounded — eight is more than any real skill has ever had.
+const MAX_SHADOWED_COPIES = 8;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -161,6 +167,10 @@ async function readSkillEntry(
   const name = frontmatter.name?.trim() || path.basename(directory);
   const description = frontmatter.description?.trim() || null;
 
+  // Frontmatter parses to strings only (frontmatter.ts's contract) — the
+  // boolean coercion happens here, and only "true" counts.
+  const manualInvocation = readAliasField(frontmatter, ["disable-model-invocation", "disableModelInvocation"]);
+
   return {
     name,
     description,
@@ -170,6 +180,8 @@ async function readSkillEntry(
     scope,
     displayName: readAliasField(frontmatter, ["display-name", "displayName", "title"]),
     shortDescription: readAliasField(frontmatter, ["short-description", "shortDescription", "summary"]),
+    shadowedBy: [],
+    manualOnly: manualInvocation?.toLowerCase() === "true",
   };
 }
 
@@ -282,6 +294,11 @@ async function readClaudePluginSkills(home: string): Promise<SkillEntry[]> {
  *  repo-committed `.claude/skills/x` can never silently shadow something the
  *  user already keeps for themselves in `~/.claude/skills/x`.
  *
+ *  A copy that loses the contest is still a real, findable path — it is
+ *  recorded on the winner's `shadowedBy` (encounter order, nearest loser
+ *  first, capped) rather than dropped, so the UI can show every place a name
+ *  lives and offer to clean the shadowed ones up.
+ *
  *  Every individual root's failure (missing dir, EACCES, ...) is caught into
  *  `errors` — this function never rejects. */
 export async function discoverSkills(projectPath: string | null): Promise<{
@@ -307,7 +324,19 @@ export async function discoverSkills(projectPath: string | null): Promise<{
   const byName = new Map<string, SkillEntry>();
   for (const skill of ordered) {
     const key = skill.name.toLowerCase();
-    if (!byName.has(key)) byName.set(key, skill);
+    const winner = byName.get(key);
+    if (!winner) {
+      byName.set(key, skill);
+      continue;
+    }
+    // The loser is recorded on the winner in encounter order — nearest loser
+    // first, since project roots walk nearest-ancestor first — so the UI can
+    // point at exactly which copy lost. A copy at the winner's own path *is*
+    // the winner (a root can legitimately resolve to it twice), so it never
+    // shadows itself.
+    if (winner.shadowedBy.length < MAX_SHADOWED_COPIES && skill.path !== winner.path) {
+      winner.shadowedBy.push({ origin: skill.origin, scope: skill.scope, path: skill.path });
+    }
   }
 
   return { skills: [...byName.values()], errors };
