@@ -68,8 +68,10 @@ export type AntigravityLanguageServer = {
 
 const execFileAsync = promisify(execFile);
 
+/** A usable CSRF token is any non-empty one — the app writes tokens of varied
+ *  shapes. */
 function isLikelyCsrfToken(value: string): boolean {
-  return value.length >= 16 && /^[A-Za-z0-9._~:/+=-]+$/.test(value);
+  return value.trim().length > 0;
 }
 
 /** Split a command line into tokens, honoring quoted values (`--flag "a b"`). */
@@ -108,9 +110,10 @@ function parseIntFlag(value: string | null): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : undefined;
 }
 
-/** Extract the app language server's CSRF token + port flags from one process
- *  command line, when it is one (contains `language_server` and an
- *  antigravity marker). Export for tests. */
+/** Extract the app language server's pid + CSRF token + port flags from one
+ *  process command line, when it is one (contains `language_server` and an
+ *  antigravity marker). Ports may be empty — newer app builds pass neither
+ *  port flag, and discovery fills them from lsof on the pid. Export for tests. */
 export function parseAntigravityLanguageServerLine(
   line: string,
 ): AntigravityLanguageServer | null {
@@ -130,8 +133,13 @@ export function parseAntigravityLanguageServerLine(
     parseIntFlag(cliFlagValue(line, "--https_server_port")),
     parseIntFlag(cliFlagValue(line, "--extension_server_port")),
   ].filter((port): port is number => port !== undefined);
-  if (ports.length === 0) return null;
-  return { csrfToken, ports };
+  const match = line.trim().match(/^(\d+)\s+(.+)$/);
+  const pid = match ? Number(match[1]) : undefined;
+  return {
+    csrfToken,
+    ports,
+    ...(pid !== undefined && Number.isInteger(pid) && pid > 0 ? { pid } : {}),
+  };
 }
 
 /** Parse `ps` output into the first matching app language server. */
@@ -157,19 +165,31 @@ function processExecutableName(command: string): string {
   return token.split("/").pop() ?? token;
 }
 
-/** Find the bare `agy` CLI process — it hosts the same language-server RPC
+/** The Antigravity CLI process names that host the language-server RPC
+ *  in-process with no CSRF token. */
+const CLI_PROCESS_NAMES = new Set(["agy", "agy.exe", "antigravity-cli", "antigravity_cli"]);
+
+/** Find a bare Antigravity CLI process (`agy` / `antigravity-cli`) — it hosts
+ *  the same language-server RPC in its own process, with no CSRF token and no
  *  port flags; the listening ports come from lsof on the pid. */
 function findAgyProcess(lines: readonly string[]): { pid: number; command: string } | null {
   for (const line of lines) {
     const match = line.trim().match(/^(\d+)\s+(.+)$/);
     if (!match) continue;
     const name = processExecutableName(match[2]!).toLowerCase();
-    if (name === "agy" || name.endsWith("/agy") || name === "agy.exe") {
+    if (CLI_PROCESS_NAMES.has(name) || name.endsWith("/agy")) {
       const pid = Number(match[1]);
       if (Number.isInteger(pid) && pid > 0) return { pid, command: match[2]! };
     }
   }
   return null;
+}
+
+/** The TCP ports one pid is listening on, via lsof. Empty when the pid has
+ *  none (or lsof is missing). */
+async function listeningPortsForPid(pid: number): Promise<number[]> {
+  const lsof = await runCommand("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", String(pid)]);
+  return lsof === null ? [] : parseListeningPorts(lsof);
 }
 
 /** Parse `lsof -nP -iTCP -sTCP:LISTEN` output into listening ports. */
@@ -199,36 +219,45 @@ async function runCommand(command: string, args: string[]): Promise<string | nul
   }
 }
 
+/** The loopback server to ask. Order matters: the app's `language_server`
+ *  processes first (richest — csrf + explicit ports), then the bare
+ *  Antigravity CLI process (in-process RPC, ports via lsof). Every candidate's
+ *  ports are resolved from its argv flags when present, falling back to lsof
+ *  on its pid — newer app builds pass neither port flag, so the listening
+ *  ports are read from the pid rather than trusting argv. The first candidate
+ *  with a CSRF token and at least one listening port wins; a tokenless match
+ *  is skipped so a later valid server can still be found. */
 async function discoverLanguageServer(): Promise<AntigravityLanguageServer | null> {
   if (process.platform === "win32") {
     const script = [
       "$ErrorActionPreference = 'SilentlyContinue'",
       '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and ($_.CommandLine -like '*antigravity*' -or $_.CommandLine -like '*agy*') } | ForEach-Object { $_.CommandLine }",
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and ($_.CommandLine -like '*antigravity*' -or $_.CommandLine -like '*agy*') } | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }",
     ].join("; ");
     const output = await runCommand("powershell.exe", [
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script,
     ]);
-    const ls = parseAntigravityLanguageServerLines(output?.split(/\r?\n/) ?? []);
-    if (ls) return ls;
-    // Windows agy: name-query for the process, then its listening ports.
-    const agyScript = [
+    for (const line of output?.split(/\r?\n/) ?? []) {
+      const ls = parseAntigravityLanguageServerLine(line);
+      if (!ls) continue;
+      let ports = ls.ports;
+      if (ports.length === 0 && ls.pid !== undefined) {
+        ports = await windowsPortsForPid(ls.pid);
+      }
+      if (ports.length === 0) continue;
+      return { csrfToken: ls.csrfToken, ports, pid: ls.pid };
+    }
+    // Windows CLI: name-query for the process, then its listening ports.
+    const cliScript = [
       "$ErrorActionPreference = 'SilentlyContinue'",
-      "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'agy.exe' -or $_.Name -eq 'agy' } | ForEach-Object { $_.ProcessId }",
+      "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'agy.exe' -or $_.Name -eq 'agy' -or $_.Name -eq 'antigravity-cli.exe' -or $_.Name -eq 'antigravity_cli.exe' } | ForEach-Object { $_.ProcessId }",
     ].join("; ");
-    const agyOutput = await runCommand("powershell.exe", [
-      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", agyScript,
+    const cliOutput = await runCommand("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", cliScript,
     ]);
-    const pid = Number(agyOutput?.trim().split(/\r?\n/)[0] ?? "");
+    const pid = Number(cliOutput?.trim().split(/\r?\n/)[0] ?? "");
     if (Number.isInteger(pid) && pid > 0) {
-      const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${pid} | Select-Object -ExpandProperty LocalPort`;
-      const portsOutput = await runCommand("powershell.exe", [
-        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", portScript,
-      ]);
-      const ports = (portsOutput ?? "")
-        .split(/\r?\n/)
-        .map((line) => Number(line.trim()))
-        .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535);
+      const ports = await windowsPortsForPid(pid);
       if (ports.length > 0) return { ports, pid };
     }
     return null;
@@ -238,15 +267,36 @@ async function discoverLanguageServer(): Promise<AntigravityLanguageServer | nul
   if (psOutput === null) return null;
   const lines = psOutput.split("\n");
 
-  const ls = parseAntigravityLanguageServerLines(lines);
-  if (ls) return ls;
+  for (const line of lines) {
+    const ls = parseAntigravityLanguageServerLine(line);
+    if (!ls) continue;
+    let ports = ls.ports;
+    if (ports.length === 0 && ls.pid !== undefined) {
+      ports = await listeningPortsForPid(ls.pid);
+    }
+    if (ports.length === 0) continue;
+    return { csrfToken: ls.csrfToken, ports, pid: ls.pid };
+  }
 
-  const agy = findAgyProcess(lines);
-  if (!agy) return null;
-  const lsof = await runCommand("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", String(agy.pid)]);
-  const ports = lsof === null ? [] : parseListeningPorts(lsof);
-  if (ports.length === 0) return null;
-  return { ports, pid: agy.pid };
+  const cli = findAgyProcess(lines);
+  if (cli) {
+    const ports = await listeningPortsForPid(cli.pid);
+    if (ports.length > 0) return { ports, pid: cli.pid };
+  }
+  return null;
+}
+
+/** The TCP ports one pid is listening on, via PowerShell (Windows lsof
+ *  equivalent). Empty when the pid has none. */
+async function windowsPortsForPid(pid: number): Promise<number[]> {
+  const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${pid} | Select-Object -ExpandProperty LocalPort`;
+  const portsOutput = await runCommand("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", portScript,
+  ]);
+  return (portsOutput ?? "")
+    .split(/\r?\n/)
+    .map((line) => Number(line.trim()))
+    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535);
 }
 
 // ── the quota RPC ────────────────────────────────────────────────────────────
@@ -369,8 +419,13 @@ export function formatAntigravityPlan(raw: string | null | undefined): string | 
 
 /** `RetrieveUserQuotaSummary` body → the four pool windows. Accepts both the
  *  LS envelope (`{"response": {"groups": …}}`) and the bare remote payload
- *  (`{"groups": …}`). Nil means "not a summary" — the caller reports failure
- *  rather than fabricating. */
+ *  (`{"groups": …}`).
+ *
+ *  Nil means "not a summary" (no `groups` anywhere) — the caller falls back
+ *  to the legacy per-model endpoints. An **empty array** is different and
+ *  load-bearing: groups existed but none carried a usable, known bucket — a
+ *  *parsed* summary, authoritative, and never to be replaced by the legacy
+ *  chain's fabricated "fully used" numbers. */
 export function parseAntigravityQuotaSummary(body: unknown): QuotaWindow[] | null {
   const envelope = asRecord(body);
   const groups = envelope ? (asArray(envelope.groups).length > 0 ? asArray(envelope.groups) : asArray(asRecord(envelope.response)?.groups)) : [];
@@ -427,6 +482,116 @@ export function parseAntigravityUserStatus(body: unknown): string | null {
   return formatAntigravityPlan(plan);
 }
 
+// ── the legacy per-model fallback ───────────────────────────────────────────
+
+/** One model's quota from the legacy endpoints. A model with no quotaInfo is
+ *  treated as depleted — the legacy path's known fabrication, acceptable only
+ *  because a *parsed summary* never reaches it. */
+type LegacyModelConfig = {
+  label: string;
+  modelID?: string;
+  remainingFraction: number;
+  resetTime: string | null;
+};
+
+/** Internal/duplicate model ids that must never surface as a meter. */
+const LEGACY_MODEL_BLACKLIST = new Set([
+  "MODEL_CHAT_20706",
+  "MODEL_CHAT_23310",
+  "MODEL_GOOGLE_GEMINI_2_5_FLASH",
+  "MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING",
+  "MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE",
+  "MODEL_GOOGLE_GEMINI_2_5_PRO",
+  "MODEL_PLACEHOLDER_M19",
+  "MODEL_PLACEHOLDER_M9",
+  "MODEL_PLACEHOLDER_M12",
+]);
+
+/** "Gemini 3 Pro (High)" → "Gemini 3 Pro" — strip a trailing parenthetical
+ *  variant before pooling. */
+export function normalizeAntigravityModelLabel(label: string): string {
+  return label.trim().replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+/** Every Gemini model maps to the shared "Session" pool; every other model
+ *  (Claude, GPT-OSS, …) to the "Claude" pool. */
+export function antigravityPoolLabel(normalizedLabel: string): "Session" | "Claude" {
+  return normalizedLabel.toLowerCase().includes("gemini") ? "Session" : "Claude";
+}
+
+function readLegacyConfig(value: unknown): LegacyModelConfig | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const label = typeof record.label === "string" ? record.label.trim() : "";
+  if (!label) return null;
+  const modelOrAlias = asRecord(record.modelOrAlias);
+  const modelID = typeof modelOrAlias?.model === "string" ? modelOrAlias.model : undefined;
+  const quotaInfo = asRecord(record.quotaInfo);
+  const remaining = readNumber(quotaInfo?.remainingFraction);
+  const resetTime = typeof quotaInfo?.resetTime === "string" && !Number.isNaN(Date.parse(quotaInfo.resetTime))
+    ? new Date(quotaInfo.resetTime).toISOString()
+    : null;
+  return {
+    label,
+    modelID,
+    remainingFraction: remaining === null ? 0 : Math.max(0, Math.min(1, remaining)),
+    resetTime,
+  };
+}
+
+/** `GetUserStatus` → the per-model configs (`cascadeModelConfigData`), nil
+ *  when absent. Exported for tests. */
+export function parseAntigravityUserStatusConfigs(body: unknown): LegacyModelConfig[] | null {
+  const envelope = asRecord(body);
+  const cascade = asRecord(asRecord(envelope?.userStatus)?.cascadeModelConfigData);
+  const configs = asArray(cascade?.clientModelConfigs);
+  if (configs.length === 0) return null;
+  const parsed = configs.map(readLegacyConfig).filter((config): config is LegacyModelConfig => config !== null);
+  return parsed.length > 0 ? parsed : null;
+}
+
+/** `GetCommandModelConfigs` → the per-model configs (`clientModelConfigs`),
+ *  nil when absent. Exported for tests. */
+export function parseAntigravityCommandModelConfigs(body: unknown): LegacyModelConfig[] | null {
+  const envelope = asRecord(body);
+  const configs = asArray(envelope?.clientModelConfigs);
+  if (configs.length === 0) return null;
+  const parsed = configs.map(readLegacyConfig).filter((config): config is LegacyModelConfig => config !== null);
+  return parsed.length > 0 ? parsed : null;
+}
+
+/** Collapse the legacy per-model configs into the two 5-hour pool meters,
+ *  keeping each pool's worst remaining fraction — "Session" (Gemini) first,
+ *  then "Claude". Empty when nothing usable pooled;
+ *  the weekly meters are simply absent (legacy data is 5h-only). */
+export function buildAntigravityLegacyWindows(configs: readonly LegacyModelConfig[]): QuotaWindow[] {
+  const pooled = new Map<"Session" | "Claude", { consumed: number; resetsAt: string | null }>();
+  for (const config of configs) {
+    if (config.modelID && LEGACY_MODEL_BLACKLIST.has(config.modelID)) continue;
+    const pool = antigravityPoolLabel(normalizeAntigravityModelLabel(config.label));
+    const consumed = 1 - config.remainingFraction;
+    const existing = pooled.get(pool);
+    if (!existing || consumed > existing.consumed) {
+      pooled.set(pool, { consumed, resetsAt: config.resetTime });
+    }
+  }
+  const windows: QuotaWindow[] = [];
+  for (const pool of ["Session", "Claude"] as const) {
+    const entry = pooled.get(pool);
+    if (!entry) continue;
+    windows.push({
+      id: pool === "Session" ? "legacy-gemini-5h" : "legacy-3p-5h",
+      label: pool,
+      used: percentValue(entry.consumed),
+      limit: null,
+      percent: entry.consumed,
+      state: windowState(entry.consumed, entry.resetsAt),
+      resetsAt: entry.resetsAt,
+    });
+  }
+  return windows;
+}
+
 // ── the provider surface ─────────────────────────────────────────────────────
 
 /** Offline presence check: is the user logged in? Login ≠ the language server
@@ -460,6 +625,12 @@ export async function fetchAntigravityQuota(options: {
       };
     }
 
+    // The quota summary is authoritative (merged pools + weekly windows), so
+    // it goes first. A parsed summary — even one with zero usable buckets —
+    // ends the probe: the legacy endpoints fabricate "fully used" from missing
+    // quota info, so an authoritative answer must never fall through to them.
+    // A 404 (build without the RPC) and a 2xx that isn't a summary payload are
+    // the expected triggers for the legacy fallback.
     const summary = await callLs(server, "RetrieveUserQuotaSummary", signal);
     if (summary === null) {
       return {
@@ -470,67 +641,113 @@ export async function fetchAntigravityQuota(options: {
         ),
       };
     }
-    if (summary.status !== 200) {
-      return {
-        report: emptyReport(
-          "antigravity",
-          summary.status >= 400 && summary.status < 500 ? "terminalFailure" : "transientFailure",
-          `Antigravity's language server returned ${summary.status}.`,
-        ),
-      };
-    }
-    let windows: QuotaWindow[];
-    try {
-      const parsed = parseAntigravityQuotaSummary(JSON.parse(summary.body) as unknown);
-      if (parsed === null) {
+    if (summary.status >= 200 && summary.status < 300) {
+      let windows: QuotaWindow[] | null = null;
+      try {
+        windows = parseAntigravityQuotaSummary(JSON.parse(summary.body) as unknown);
+      } catch {
+        windows = null;
+      }
+      if (windows !== null) {
+        const planLabel = await fetchPlanLabel(server, signal);
         return {
-          report: emptyReport(
-            "antigravity",
-            "transientFailure",
-            "Antigravity's quota response didn't include usable pools.",
-          ),
+          report: {
+            provider: "antigravity",
+            connection: "connected",
+            primary: windows.find((window) => window.id === "gemini-weekly") ?? windows[0] ?? null,
+            windows,
+            spend: [],
+            trend: [],
+            planLabel,
+            excludedModels: [],
+            fetchedAt: Date.now(),
+          },
         };
       }
-      windows = parsed;
-    } catch {
-      return {
-        report: emptyReport(
-          "antigravity",
-          "transientFailure",
-          "Antigravity's quota response wasn't valid JSON.",
-        ),
-      };
     }
 
-    // The plan comes from an independent GetUserStatus call; a failed plan
-    // lookup just leaves the label blank.
-    let planLabel: string | null = null;
-    const status = await callLs(server, "GetUserStatus", signal);
-    if (status !== null && status.status === 200) {
-      try {
-        planLabel = parseAntigravityUserStatus(JSON.parse(status.body) as unknown);
-      } catch {
-        planLabel = null;
-      }
+    // Legacy flow — the per-model endpoints collapse into the two 5-hour pool
+    // meters; the weekly meters read "No data" on builds that only get here.
+    const legacyWindows = await fetchLegacyWindows(server, signal);
+    if (legacyWindows) {
+      return {
+        report: {
+          provider: "antigravity",
+          connection: "connected",
+          primary: legacyWindows.windows.find((window) => window.id === "legacy-gemini-5h") ?? legacyWindows.windows[0] ?? null,
+          windows: legacyWindows.windows,
+          spend: [],
+          trend: [],
+          planLabel: legacyWindows.planLabel,
+          excludedModels: [],
+          fetchedAt: Date.now(),
+        },
+      };
     }
 
     return {
-      report: {
-        provider: "antigravity",
-        connection: "connected",
-        primary: windows.find((window) => window.id === "gemini-weekly") ?? windows[0] ?? null,
-        windows,
-        spend: [],
-        trend: [],
-        planLabel,
-        excludedModels: [],
-        fetchedAt: Date.now(),
-      },
+      report: emptyReport(
+        "antigravity",
+        "connected",
+        "Antigravity exposed no quota pools for this build — updating the app (or `agy`) usually restores limits.",
+      ),
     };
   } catch (error) {
     console.warn(`[quota] Antigravity quota unavailable: ${sanitizeError(error)}`);
     return {
       report: emptyReport("antigravity", "transientFailure", "Something went wrong reading Antigravity's limits."),
     };
+  }
+}
+
+/** The plan label from GetUserStatus — independent of the window flow, so a
+ *  failed plan lookup never voids a good quota read. */
+async function fetchPlanLabel(
+  server: AntigravityLanguageServer,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const status = await callLs(server, "GetUserStatus", signal);
+  if (status === null || status.status !== 200) return null;
+  try {
+    return parseAntigravityUserStatus(JSON.parse(status.body) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/** The legacy per-model quota chain: `GetUserStatus`
+ *  (`cascadeModelConfigData.clientModelConfigs`), then `GetCommandModelConfigs`
+ *  (`clientModelConfigs`). Nil when neither yielded a usable pool. */
+async function fetchLegacyWindows(
+  server: AntigravityLanguageServer,
+  signal?: AbortSignal,
+): Promise<{ windows: QuotaWindow[]; planLabel: string | null } | null> {
+  const status = await callLs(server, "GetUserStatus", signal);
+  if (status !== null && status.status === 200) {
+    let body: unknown;
+    let planLabel: string | null = null;
+    let configs: LegacyModelConfig[] | null = null;
+    try {
+      body = JSON.parse(status.body) as unknown;
+      planLabel = parseAntigravityUserStatus(body);
+      configs = parseAntigravityUserStatusConfigs(body);
+    } catch {
+      body = null;
+    }
+    if (body !== null && configs) {
+      const windows = buildAntigravityLegacyWindows(configs);
+      if (windows.length > 0) return { windows, planLabel };
+    }
+  }
+
+  const commandConfigs = await callLs(server, "GetCommandModelConfigs", signal);
+  if (commandConfigs === null || commandConfigs.status !== 200) return null;
+  try {
+    const configs = parseAntigravityCommandModelConfigs(JSON.parse(commandConfigs.body) as unknown);
+    if (!configs) return null;
+    const windows = buildAntigravityLegacyWindows(configs);
+    return windows.length > 0 ? { windows, planLabel: null } : null;
+  } catch {
+    return null;
   }
 }

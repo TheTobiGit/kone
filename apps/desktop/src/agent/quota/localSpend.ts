@@ -7,9 +7,10 @@
 // Claude and Codex. The honest move it makes, kept here: the **token counts are
 // measured** (read straight from the CLI's own session logs), and the **dollars
 // are an estimate**, priced from those tokens at published API rates and flagged
-// as such (the `estimated` "~" on the tile). Cursor is different again: kone
-// reads Cursor's own dashboard usage export, so its dollars are Cursor's figure,
-// not kone's estimate.
+// as such (the `estimated` "~" on the tile). Cursor is priced the same way:
+// kone reads Cursor's own dashboard usage export, but the CSV only carries
+// token counts — the dollars are kone's price-table estimate, imputed from
+// locally-read Cursor costs.
 //
 // Source of the numbers is kone's existing local usage layer
 // (buildAgentUsageReport) — the same scan the Usage tab already shows — filtered
@@ -30,6 +31,7 @@ const DOLLARS_ARE_ESTIMATED: Record<QuotaCapableProvider, boolean> = {
   cursor: true, //      dashboard export or store fallback — mark as estimated
   opencode: false, //   unused — has its own authoritative source
   antigravity: true, // priced from measured tokens like claudeAgent/codex
+  droid: true, //       has no authoritative cost of its own (sidecar is zeros) — kone's estimate
 };
 
 const round4 = (n: number) => Math.round(n * 10000) / 10000;

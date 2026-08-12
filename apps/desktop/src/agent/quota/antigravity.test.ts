@@ -5,11 +5,16 @@ import path from "node:path";
 
 import {
   ANTIGRAVITY_CLI_DIR_ENV,
+  antigravityPoolLabel,
+  buildAntigravityLegacyWindows,
   cliFlagValue,
   detectAntigravityCredential,
   formatAntigravityPlan,
+  normalizeAntigravityModelLabel,
+  parseAntigravityCommandModelConfigs,
   parseAntigravityLanguageServerLine,
   parseAntigravityLanguageServerLines,
+  parseAntigravityUserStatusConfigs,
   parseListeningPorts,
 } from "./antigravity.js";
 import { parseAntigravityQuotaSummary, parseAntigravityUserStatus } from "./antigravity.js";
@@ -50,23 +55,38 @@ describe("Antigravity language-server discovery", () => {
     });
   });
 
-  test("rejects lines without the antigravity marker or a usable csrf", () => {
+  test("rejects lines without the antigravity marker; any non-empty csrf is accepted", () => {
     expect(parseAntigravityLanguageServerLine("--csrf_token x --https_server_port 1")).toBeNull();
     expect(
       parseAntigravityLanguageServerLine(
         "/opt/codeium/language_server --csrf_token short --https_server_port 1",
       ),
     ).toBeNull();
+    // The token is not validated beyond non-empty — the app writes tokens of
+    // varied shapes.
     expect(
       parseAntigravityLanguageServerLine(
         "/opt/antigravity/language_server --csrf_token=short-token --https_server_port 1",
       ),
-    ).toBeNull();
+    ).toEqual({ csrfToken: "short-token", ports: [1] });
   });
 
-  test("needs at least one port to be usable", () => {
+  test("port flags are optional — a tokenless-by-flags build still resolves, ports come later", () => {
     const line = "/x/antigravity/language_server --csrf_token abcdefghijklmnopqrstuvwxyz123456";
-    expect(parseAntigravityLanguageServerLine(line)).toBeNull();
+    expect(parseAntigravityLanguageServerLine(line)).toEqual({
+      csrfToken: "abcdefghijklmnopqrstuvwxyz123456",
+      ports: [],
+    });
+  });
+
+  test("a pid prefix on the ps line is carried through for the lsof fallback", () => {
+    const line =
+      "42319 /Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/language_server/language_server --csrf_token abcdefghijklmnopqrstuvwxyz123456";
+    expect(parseAntigravityLanguageServerLine(line)).toEqual({
+      csrfToken: "abcdefghijklmnopqrstuvwxyz123456",
+      ports: [],
+      pid: 42319,
+    });
   });
 
   test("returns the first matching candidate from ps output", () => {
@@ -197,6 +217,93 @@ describe("Antigravity quota summary", () => {
     expect(clamped![0]!.percent).toBe(0);
     expect(parseAntigravityQuotaSummary({ foo: "bar" })).toBeNull();
     expect(parseAntigravityQuotaSummary(null)).toBeNull();
+  });
+
+  test("groups with no usable buckets parse as an authoritative empty summary", () => {
+    // A parsed summary — even an empty one — must never fall through to the
+    // legacy endpoints, which fabricate "fully used" from missing quota info.
+    expect(parseAntigravityQuotaSummary({ groups: [{ buckets: [{ bucketId: "gemini-image-5h" }] }] })).toEqual([]);
+  });
+});
+
+describe("Antigravity legacy per-model fallback", () => {
+  test("GetUserStatus yields the per-model configs alongside the plan", () => {
+    const body = {
+      userStatus: {
+        userTier: { name: "Google AI Pro" },
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { label: "Gemini 3 Pro", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_3_PRO" }, quotaInfo: { remainingFraction: 0.5 } },
+            { label: "Gemini 3 Flash", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_3_FLASH" }, quotaInfo: { remainingFraction: 0.8 } },
+            { label: "Claude Sonnet 4.5", modelOrAlias: { model: "MODEL_ANTHROPIC_CLAUDE_SONNET_4_5" }, quotaInfo: { remainingFraction: 0.25 } },
+          ],
+        },
+      },
+    };
+    expect(parseAntigravityUserStatus(body)).toBe("Pro");
+    expect(parseAntigravityUserStatusConfigs(body)).toHaveLength(3);
+    expect(parseAntigravityUserStatusConfigs({ userStatus: { userTier: { name: "Pro" } } })).toBeNull();
+  });
+
+  test("GetCommandModelConfigs yields configs from the top-level list", () => {
+    const body = {
+      clientModelConfigs: [
+        { label: "Gemini 2.5 Pro", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_2_5_PRO" }, quotaInfo: { remainingFraction: 0.9 } },
+        { label: "GPT-OSS", modelOrAlias: { model: "MODEL_GPT_OSS" } },
+      ],
+    };
+    const configs = parseAntigravityCommandModelConfigs(body);
+    expect(configs).toHaveLength(2);
+    expect(configs![1]!.remainingFraction).toBe(0); // no quotaInfo reads as depleted (openusage's default)
+    expect(parseAntigravityCommandModelConfigs({})).toBeNull();
+  });
+
+  test("label normalization strips trailing variants and drops empty labels", () => {
+    expect(normalizeAntigravityModelLabel("Gemini 3 Pro (High)")).toBe("Gemini 3 Pro");
+    expect(normalizeAntigravityModelLabel("  Gemini 3 Pro  ")).toBe("Gemini 3 Pro");
+    expect(antigravityPoolLabel("Gemini 3 Pro")).toBe("Session");
+    expect(antigravityPoolLabel("Claude Sonnet 4.5")).toBe("Claude");
+  });
+
+  test("buildLegacyWindows pools per family, keeps the worst, orders Session first", () => {
+    const body = {
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { label: "Gemini 3 Pro (High)", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_3_PRO" }, quotaInfo: { remainingFraction: 0.5 } },
+            { label: "Gemini 3 Flash", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_3_FLASH" }, quotaInfo: { remainingFraction: 0.2 } },
+            { label: "Claude Sonnet 4.5", modelOrAlias: { model: "MODEL_ANTHROPIC_CLAUDE_SONNET_4_5" }, quotaInfo: { remainingFraction: 0.8 } },
+            { label: "GPT-OSS", modelOrAlias: { model: "MODEL_GPT_OSS" }, quotaInfo: { remainingFraction: 0.4 } },
+          ],
+        },
+      },
+    };
+    const windows = buildAntigravityLegacyWindows(parseAntigravityUserStatusConfigs(body)!);
+    expect(windows.map((w) => [w.id, w.label])).toEqual([
+      ["legacy-gemini-5h", "Session"],
+      ["legacy-3p-5h", "Claude"],
+    ]);
+    // Gemini pool keeps the worst remaining fraction (0.2 → 0.8 consumed);
+    // Claude pool the worst of Claude/GPT-OSS (0.4 → 0.6 consumed).
+    expect(windows[0]!.percent).toBeCloseTo(0.8);
+    expect(windows[1]!.percent).toBeCloseTo(0.6);
+    expect(windows[1]!.state).toBe("active");
+  });
+
+  test("blacklisted internal models never surface as a meter", () => {
+    const body = {
+      clientModelConfigs: [
+        { label: "Internal", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_2_5_FLASH" }, quotaInfo: { remainingFraction: 0.1 } },
+        { label: "Gemini 3 Pro", modelOrAlias: { model: "MODEL_GOOGLE_GEMINI_3_PRO" }, quotaInfo: { remainingFraction: 0.9 } },
+      ],
+    };
+    const windows = buildAntigravityLegacyWindows(parseAntigravityCommandModelConfigs(body)!);
+    expect(windows.map((w) => w.id)).toEqual(["legacy-gemini-5h"]);
+    expect(windows[0]!.percent).toBeCloseTo(0.1);
+  });
+
+  test("nothing usable pools to an empty window list", () => {
+    expect(buildAntigravityLegacyWindows([])).toEqual([]);
   });
 });
 

@@ -2,6 +2,7 @@ import { detectAntigravityCredential, fetchAntigravityQuota } from "./antigravit
 import { detectClaudeCredential, fetchClaudeQuota } from "./claude.js";
 import { fetchCodexQuota } from "./codex.js";
 import { fetchCursorQuota, detectCursorCredential } from "./cursor.js";
+import { detectDroidCredential, fetchDroidQuota } from "./droid.js";
 import { fetchOpenCodeQuota, detectOpenCodeDatabase } from "./opencode.js";
 import { readSecureFile, sanitizeError } from "./security.js";
 import { emptyReport } from "./types.js";
@@ -24,9 +25,12 @@ import type { QuotaCapableProvider, QuotaProviderReport } from "./types.js";
 //                                 server the Antigravity app / `agy` already
 //                                 runs on loopback answers the quota RPC, so
 //                                 the "credential" is the process itself.
-// Factory Droid is absent because it publishes nothing to read — the Limits
-// section says so rather than drawing a meter it cannot substantiate (Droid's
-// tokenUsage sidecar is always zeros).
+//   droid                       → the Factory API key the user already holds
+//                                 (FACTORY_API_KEY or ~/.factory/.env), spent
+//                                 against Factory's billing/usage endpoints.
+//                                 Droid's own device-pairing login files are
+//                                 encrypted and
+//                                 never opened.
 
 export type {
   QuotaConnection,
@@ -61,7 +65,7 @@ const blockedUntil = new Map<QuotaCapableProvider, number>();
  *  they appear. OpenCode leads because it is the only one that needs neither a
  *  network call nor a consent prompt to be useful. */
 export function quotaCapableProviders(): QuotaCapableProvider[] {
-  return ["opencode", "claudeAgent", "codex", "cursor", "antigravity"];
+  return ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
 }
 
 function backedOff(provider: QuotaCapableProvider): QuotaProviderReport | null {
@@ -98,6 +102,7 @@ export async function detectProviderCredential(provider: QuotaCapableProvider): 
     if (provider === "cursor") return await detectCursorCredential();
     if (provider === "claudeAgent") return await detectClaudeCredential();
     if (provider === "antigravity") return await detectAntigravityCredential();
+    if (provider === "droid") return await detectDroidCredential();
     if ((await readSecureFile(CODEX_AUTH_PATH, 64 * 1024)) !== null) return true;
     return (await readSecureFile(CODEX_OPENAI_AUTH_PATH, 64 * 1024).catch(() => null)) !== null;
   } catch (error) {
@@ -194,5 +199,7 @@ function fetchFor(
       return fetchOpenCodeQuota({ signal: opts.signal });
     case "antigravity":
       return fetchAntigravityQuota({ signal: opts.signal });
+    case "droid":
+      return fetchDroidQuota({ signal: opts.signal });
   }
 }

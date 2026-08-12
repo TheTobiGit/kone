@@ -17,9 +17,7 @@ import type { QuotaProvider, useAgentSpace } from "~/composables/useAgentSpace";
 // never silently missing from the page. Every *number* on a card comes from
 // that provider's own accounting — either its usage API, read with the token
 // its CLI stored locally, or (for OpenCode) the per-message cost it wrote to a
-// local database itself. Providers kone cannot read a single figure from
-// (Droid, Antigravity) get a card that says exactly that — an honest note
-// instead of a meter.
+// local database itself.
 //
 // the version this replaces: **never draw a number kone did not read.** A value
 // we failed to fetch is "No data", not `$0.00`; a rolling window with no usage
@@ -52,14 +50,13 @@ const CONNECT_COPY: Record<QuotaProvider, string> = {
   codex: "Ask OpenAI for your remaining Codex limits, using the token the Codex CLI already stored on this machine.",
   cursor: "Ask Cursor for your remaining credits and included usage, using the session Cursor already stored on this machine.",
   antigravity: "Ask the language server the Antigravity app (or `agy`) is running for your Session and Weekly pool quotas — no network, and kone never stores a credential.",
+  droid: "Ask Factory for your 5-hour, weekly and monthly token-rate limits, using a Factory API key you already hold (FACTORY_API_KEY or ~/.factory/.env) — kone never stores it.",
 };
 
 /** Why there is no meter at all — per provider, in its own terms. The point is
  *  to explain the *absence* honestly, so a user who expects a Limits card here
  *  learns the CLI simply keeps no readable figures, not that kone forgot them. */
-const UNREADABLE_COPY: Partial<Record<ProviderKind, string>> = {
-  droid: "Droid's CLI keeps no usage or limit figures kone can read — its session logs report zeros and Factory exposes nothing to ask. Your Droid threads still appear in the Usage tab.",
-};
+const UNREADABLE_COPY: Partial<Record<ProviderKind, string>> = {};
 
 // ── per-card state ───────────────────────────────────────────────────────────
 // One provider resolves to exactly one of these — the template picks its body
@@ -109,6 +106,39 @@ const cards = computed(() =>
     };
   }),
 );
+
+// ── two tiers ────────────────────────────────────────────────────────────────
+// Six providers in one flat column meant scrolling past four paragraphs of "no
+// sign-in found" to reach the two meters you opened the page for. So the page
+// splits by whether a provider is *reporting a number* at all: the ones that are
+// keep the full card (meters, spend, trend) and sit two-up in a grid; the ones
+// that aren't collapse to a single ruled line each — same words, a fraction of
+// the height, and still every provider present and accounted for.
+const reporting = computed(() =>
+  cards.value.filter((c) => c.state.kind === "connected" || c.state.kind === "loading"),
+);
+const quiet = computed(() =>
+  cards.value.filter((c) => c.state.kind !== "connected" && c.state.kind !== "loading"),
+);
+
+/** The one word that says why a quiet row is quiet, so the column of rows can be
+ *  read down its right edge without parsing four different sentences. */
+function quietStatus(kind: CardState["kind"]): string {
+  if (kind === "error") return "Unreadable";
+  if (kind === "connectable") return "Not connected";
+  if (kind === "unreadable") return "No figures";
+  return "No sign-in";
+}
+
+/** The tightest window a provider is reporting, promoted into the card's head as
+ *  a percentage — the number you'd otherwise have to find by comparing bars.
+ *  Null when nothing is measurable, which is a fact the head then simply omits. */
+function peakPercent(report: QuotaProviderReport): number | null {
+  const measured = report.windows
+    .filter((w) => w.state !== "notStarted" && w.percent !== null)
+    .map((w) => w.percent as number);
+  return measured.length ? Math.max(...measured) : null;
+}
 
 // ── formatting ───────────────────────────────────────────────────────────────
 // Compact to three significant figures with a unit suffix, so a column of
@@ -268,14 +298,22 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 
 <template>
   <section class="limits" aria-label="Limits">
-    <div class="cards">
-      <article v-for="card in cards" :key="card.provider" class="card">
+    <!-- ══ tier 1 — providers reporting a number ═══════════════════════════ -->
+    <div v-if="reporting.length" class="group">
+      <div class="cards">
+      <article v-for="card in reporting" :key="card.provider" class="card">
         <!-- ── head ─────────────────────────────────────────────────────────── -->
         <header class="card__head">
           <div class="card__id">
             <ProviderLogo :brand="card.brand" :size="16" />
             <span class="card__name">{{ card.label }}</span>
             <span v-if="card.planLabel" class="chip">{{ card.planLabel }}</span>
+            <span
+              v-if="card.state.kind === 'connected' && peakPercent(card.state.report) !== null"
+              class="card__peak"
+              :style="{ color: fillColor(peakPercent(card.state.report)) }"
+              :title="`Tightest window at ${pct(peakPercent(card.state.report))}%`"
+            >{{ pct(peakPercent(card.state.report)) }}%</span>
           </div>
 
           <div class="card__actions">
@@ -289,7 +327,7 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
             </button>
             <button
               v-if="
-                (card.state.kind === 'connected' || card.state.kind === 'error') &&
+                card.state.kind === 'connected' &&
                 card.quotaProvider &&
                 space.needsConsent(card.quotaProvider)
               "
@@ -315,6 +353,7 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
             <div v-for="w in card.state.report.windows" :key="w.id" class="meter">
               <div class="meter__head">
                 <span class="meter__label">{{ w.label }}</span>
+                <span v-if="resetLine(w)" class="meter__when">{{ resetLine(w) }}</span>
                 <span class="meter__value">{{ windowValue(w) }}</span>
               </div>
               <div
@@ -331,9 +370,8 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
                   :style="{ width: `${pct(w.percent)}%`, backgroundColor: fillColor(w.percent) }"
                 />
               </div>
-              <div v-if="showsPercentFoot(w) || resetLine(w)" class="meter__foot">
-                <span v-if="showsPercentFoot(w)" class="meter__pct">{{ pct(w.percent) }}%</span>
-                <span v-if="resetLine(w)" class="meter__reset">{{ resetLine(w) }}</span>
+              <div v-if="showsPercentFoot(w)" class="meter__foot">
+                <span class="meter__pct">{{ pct(w.percent) }}%</span>
               </div>
             </div>
           </div>
@@ -372,42 +410,70 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
           <p v-if="card.state.report.rateLimited" class="card__note">
             {{ card.label }}'s own usage endpoint is rate-limiting us right now — these figures may be stale.
           </p>
+
+          <!-- A connected read can legitimately carry no windows (a provider
+               build that exposes no pools) — say so rather than leaving the
+               body blank next to a meterless header. -->
+          <p
+            v-if="card.state.report.message && !card.state.report.windows.length"
+            class="card__note"
+          >
+            {{ card.state.report.message }}
+          </p>
         </div>
 
         <!-- ── 2. loading: a calm placeholder, never a spinner ───────────────── -->
-        <div v-else-if="card.state.kind === 'loading'" :key="'loading'" class="meters card__reveal" aria-hidden="true">
+        <div v-else :key="'loading'" class="meters card__reveal" aria-hidden="true">
           <span v-for="n in 3" :key="n" class="placeholder" :style="{ animationDelay: `${n * 180}ms` }" />
         </div>
-
-        <!-- ── 3. connected but the report came back unhappy ─────────────────── -->
-        <div v-else-if="card.state.kind === 'error'" :key="'error'" class="card__aside card__reveal">
-          <p class="card__note">{{ card.state.report.message || ERROR_FALLBACK }}</p>
-          <button type="button" class="btn" @click="card.quotaProvider && space.loadQuota(card.quotaProvider, true)">Try again</button>
-        </div>
-
-        <!-- ── 4. readable, but the user hasn't opted in yet ─────────────────── -->
-        <div v-else-if="card.state.kind === 'connectable'" :key="'connectable'" class="card__aside card__reveal">
-          <p class="card__note">{{ card.connectCopy }}</p>
-          <button type="button" class="btn btn--go" @click="card.quotaProvider && space.connect(card.quotaProvider)">Connect</button>
-        </div>
-
-        <!-- ── 5. nothing to read ───────────────────────────────────────────── -->
-        <p v-else-if="card.state.kind === 'none'" :key="'none'" class="card__note card__reveal">
-          {{
-            card.provider === "opencode"
-              ? "OpenCode has written no usage database on this machine, so there is nothing to report."
-              : card.provider === "antigravity"
-                ? "Antigravity isn't signed in on this machine yet — run `agy` once to sign in, then start the app to read your limits."
-                : `No local sign-in found for ${card.label}'s CLI, so there are no limits to report.`
-          }}
-        </p>
-
-        <!-- ── 6. no figures exist to read at all (Droid, Antigravity) ─────── -->
-        <p v-else :key="'unreadable'" class="card__note card__reveal">
-          {{ card.unreadableCopy }}
-        </p>
         </SmoothResize>
       </article>
+      </div>
+    </div>
+
+    <!-- ══ tier 2 — everything with no number to draw, one line each ════════ -->
+    <div v-if="quiet.length" class="group">
+      <ul class="rows">
+        <li v-for="card in quiet" :key="card.provider" class="row">
+          <div class="row__head">
+            <ProviderLogo :brand="card.brand" :size="15" />
+            <span class="row__name">{{ card.label }}</span>
+            <span class="row__status">{{ quietStatus(card.state.kind) }}</span>
+
+            <button
+              v-if="card.state.kind === 'connectable'"
+              type="button"
+              class="btn btn--go row__btn"
+              @click="card.quotaProvider && space.connect(card.quotaProvider)"
+            >
+              Connect
+            </button>
+            <button
+              v-else-if="card.state.kind === 'error'"
+              type="button"
+              class="btn row__btn"
+              @click="card.quotaProvider && space.loadQuota(card.quotaProvider, true)"
+            >
+              Try again
+            </button>
+          </div>
+
+          <p class="row__note">
+            <template v-if="card.state.kind === 'error'">{{ card.state.report.message || ERROR_FALLBACK }}</template>
+            <template v-else-if="card.state.kind === 'connectable'">{{ card.connectCopy }}</template>
+            <template v-else-if="card.state.kind === 'unreadable'">{{ card.unreadableCopy }}</template>
+            <template v-else>
+              {{
+                card.provider === "opencode"
+                  ? "OpenCode has written no usage database on this machine, so there is nothing to report."
+                  : card.provider === "antigravity"
+                    ? "Antigravity isn't signed in on this machine yet — run `agy` once to sign in, then start the app to read your limits."
+                    : `No local sign-in found for ${card.label}'s CLI, so there are no limits to report.`
+              }}
+            </template>
+          </p>
+        </li>
+      </ul>
     </div>
 
     <p v-if="foot" class="limits__foot">
@@ -426,9 +492,28 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   padding-bottom: 2rem;
 }
 
-.cards {
+/* ── groups ───────────────────────────────────────────────────────────────── */
+/* Two tiers — providers with a number, then providers without — but unlabelled.
+   The distinction is already obvious from the shape of what's in each (meters
+   versus a single line), and a heading over each was two more things to read on
+   a page whose whole problem was having too much to read. */
+.group {
   display: flex;
   flex-direction: column;
+}
+
+/* Cards run two-up once there's room for a full-width meter in each column —
+   the drawer widens to 1040px for this page, which the single column was
+   spending on whitespace. Flowed columns rather than a grid on purpose: cards
+   differ wildly in height (OpenCode has no meters, Claude has three), and grid
+   rows would leave a card-sized hole beside every short one. `columns: 310px 2`
+   is its own breakpoint — one column when there isn't room for two. */
+.cards {
+  columns: 310px 2;
+  column-gap: 64px;
+}
+.cards > * {
+  break-inside: avoid;
 }
 
 /* No entrance choreography on the cards — they're present the moment the pane
@@ -455,16 +540,16 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 
 /* ── card ─────────────────────────────────────────────────────────────────── */
 /* A hairline rule, not a box — kone separates with air and a single line. */
+/* Every card carries its rule, first one included: in a grid the two cells of a
+   row have to agree, and the rule under the caption reads as that group's header
+   line rather than an orphan. */
 .card {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 26px 0;
+  gap: 20px;
+  padding: 26px 0 34px;
   border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
-}
-.card:first-child {
-  border-top: none;
-  padding-top: 0;
+  min-width: 0;
 }
 
 .card__head {
@@ -486,6 +571,16 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The tightest window, promoted into the head and carrying the same colour its
+   bar does — so a column of cards can be triaged by glancing down the heads
+   without reading a single meter. */
+.card__peak {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  transition: color 140ms ease;
+}
+
 .card__actions {
   display: flex;
   align-items: center;
@@ -513,39 +608,95 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   max-width: 58ch;
 }
 
-.card__aside {
+/* ── quiet rows ───────────────────────────────────────────────────────────── */
+/* A provider with no number to draw costs one ruled line and its sentence — the
+   full card it used to get spent a meter's worth of height saying "there is no
+   meter". Two-up as well, so four of them read as a short block. */
+.rows {
+  columns: 310px 2;
+  column-gap: 44px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rows > * {
+  break-inside: avoid;
+}
+.row {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 20px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 14px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  min-width: 0;
 }
-.card__aside .card__note {
-  max-width: 52ch;
+.row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
-.card__aside .btn {
+.row__name {
+  font-size: 13.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+/* Why it's quiet, in one word, on the same x-position down the whole column —
+   the thing you scan instead of reading four sentences. */
+.row__status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--ink) 38%, transparent);
+  white-space: nowrap;
+}
+.row__btn {
+  margin-left: auto;
   flex-shrink: 0;
+}
+.row__note {
+  margin: 0;
+  padding-left: 23px; /* clears the logo, so the sentence hangs off the name */
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 52ch;
 }
 
 /* ── meters ───────────────────────────────────────────────────────────────── */
 .meters {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
 }
 .meter {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 }
 .meter__head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 2px 10px;
 }
 .meter__label {
   font-size: 13px;
   color: var(--ink);
+  white-space: nowrap;
+}
+/* The countdown rides beside its label rather than on a line of its own — three
+   lines per meter meant a provider with four windows spent twelve lines saying
+   four things. It's the quietest thing on the row, so it sets no rhythm. */
+.meter__when {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--ink) 34%, transparent);
+  white-space: nowrap;
+}
+.meter__value {
+  margin-left: auto;
 }
 /* The number is the point of the row, so it gets the mono treatment and the
    full ink — the label beside it is only a handle for finding it. */
@@ -572,15 +723,11 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 .meter__foot {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 12px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-}
-.meter__reset {
-  margin-left: auto;
 }
 
 /* ── spend strip ──────────────────────────────────────────────────────────── */
@@ -588,13 +735,15 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 32px;
+  gap: 20px 28px;
   flex-wrap: wrap;
 }
 .tiles {
   display: flex;
-  gap: 40px;
+  gap: 28px;
   margin: 0;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .tile {
   display: flex;
@@ -630,6 +779,15 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   align-items: flex-end;
   gap: 4px;
   margin: 0;
+  /* In a two-up column the trend gives way to the tiles (which carry numbers)
+     rather than forcing a wrap; it's texture, and texture can be narrower. */
+  flex: 1 1 92px;
+  min-width: 92px;
+}
+.spark svg {
+  width: 100%;
+  max-width: 168px;
+  height: 30px;
 }
 .spark__area {
   fill: color-mix(in srgb, var(--accent) 10%, transparent);

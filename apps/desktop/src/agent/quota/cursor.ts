@@ -24,8 +24,8 @@ import type { QuotaProviderReport, QuotaWindow } from "./types.js";
 // spend trend are knowingly not implemented: Enterprise/Team accounts whose
 // `planUsage` has no usable limit fall through to no windows rather than a
 // half-built fallback, and the Today/Yesterday/Last-30-days spend tiles and
-// trend sparkline stay empty rather than fabricated (see decodeCursorUsage's
-// `spend`/`trend` fields below).
+// trend sparkline are filled from the CSV-pricing layer at the IPC boundary
+// (see decodeCursorUsage's `spend`/`trend` fields below), never here.
 const DASHBOARD_BASE = "https://api2.cursor.sh/aiserver.v1.DashboardService";
 const USAGE_URL = `${DASHBOARD_BASE}/GetCurrentPeriodUsage`;
 const PLAN_URL = `${DASHBOARD_BASE}/GetPlanInfo`;
@@ -431,10 +431,13 @@ export function decodeCursorUsage(body: unknown, planName: string | null, credit
     connection: "connected",
     primary,
     windows,
-    // Today/Yesterday/Last-30-days spend and the trend sparkline both come,
-    // local model-pricing table kone has no port of. Rather than fabricate
-    // either from data this module doesn't have, both stay empty — the UI
-    // renders that as "No data" for the tiles, which is the honest read.
+    // Today/Yesterday/Last-30-days spend and the trend sparkline both come
+    // from the usage-events CSV export priced through a shared local
+    // model-pricing table. kone wires the same CSV through its usage layer
+    // (usage/cursorDashboardUsage.ts priced via usage/pricing) and folds it in
+    // at the IPC boundary (quota/localSpend.ts), which owns the store; this
+    // module is deliberately store-free, so both fields leave here empty and
+    // the card only ever sees them filled from that enrichment.
     spend: [],
     trend: [],
     planLabel: planLabelOf(planName),

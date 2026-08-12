@@ -1,7 +1,14 @@
-// already saved locally — no extra credential storage in kone.
+// Cursor overall usage from cursor.com's usage-events CSV export. Requires
+// the same login Cursor's desktop app or CLI already saved locally — no extra
+// credential storage in kone. Since Cursor 1.x the CLI keeps that login in the
+// macOS Keychain and the desktop app's sqlite store may not exist at all, so
+// the token is read there too — gated on the same quiet presence probe the
+// quota path uses, so a never-connected user never sees a surprise prompt on
+// page load.
 
 import {
   buildCursorSessionCookie,
+  detectCursorCredential,
   resolveCursorAccessToken,
 } from "../quota/cursor.js";
 import { parseCursorUsageCsv } from "./cursorUsageCsv.js";
@@ -127,7 +134,15 @@ export async function scanCursorDashboardUsage(options: {
     return cache.result;
   }
 
-  const accessToken = await resolveCursorAccessToken();
+  // The sqlite read never prompts, but a keychain-only login (the Cursor CLI
+  // keeps its session in the macOS Keychain these days) would read as "not
+  // connected" forever if the keychain were never consulted. `detectCursorCredential`
+  // is the same probe the quota path runs: a 2.5s presence check that dies
+  // silently, so a first-time prompt can never hold the page open — and it
+  // only answers "something is there" when the item is already readable or a
+  // prompt is the honest ask. A user who connected in Limits reads silently.
+  const keychainPresent = await detectCursorCredential();
+  const accessToken = await resolveCursorAccessToken({ allowKeychain: keychainPresent });
   if (!accessToken) {
     const result: CursorDashboardScanResult = {
       buckets: [],

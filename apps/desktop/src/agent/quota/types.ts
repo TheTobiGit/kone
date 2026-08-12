@@ -100,13 +100,15 @@ export type QuotaConnection =
 
 /** The provider kinds this module can report on. A subset of kone's full
  *  ProviderKind — quota is only meaningful for a subscription-metered CLI.
- *  Factory Droid publishes nothing to read. */
+ *  Factory Droid reads through Factory's billing/usage APIs with the user's
+ *  own Factory API key. */
 export type QuotaCapableProvider =
   | "claudeAgent"
   | "codex"
   | "opencode"
   | "cursor"
-  | "antigravity";
+  | "antigravity"
+  | "droid";
 
 /** One provider's quota report, as the Agents page renders it. Every path
  *  through fetchProviderQuota resolves to one of these — it never throws. */
