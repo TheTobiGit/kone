@@ -1571,9 +1571,9 @@ export type KoneAgentUsageApi = {
 //
 // Mirrors apps/desktop/src/agent/quota/types.ts — keep the two in step.
 
-/** Providers kone can report a quota card for. Factory Droid is absent
- *  because it publishes nothing to read. */
-export type QuotaCapableProvider = "claudeAgent" | "codex" | "opencode" | "cursor" | "antigravity";
+/** Providers kone can report a quota card for. Factory Droid reads through
+ *  Factory's billing/usage APIs with the user's own Factory API key. */
+export type QuotaCapableProvider = "claudeAgent" | "codex" | "opencode" | "cursor" | "antigravity" | "droid";
 
 /** What a number *is*, so the UI can format it without a per-provider special
  *  case: a share of a window, an amount of money, or a plain tally. */
@@ -1690,6 +1690,10 @@ export type KoneAgentQuotaApi = {
 // skills, MCP servers, and the instruction files in scope. kone scans and
 // reports; it never writes to any of them.
 
+/** One on-disk copy of a skill: enough to name where it is and who would
+ *  have offered it, never the file's contents. */
+export type SkillCopy = { origin: string; scope: SkillEntry["scope"]; path: string };
+
 /** One discovered skill (a directory holding a SKILL.md). `origin` names the
  *  CLI root it was found under — a plain string, not a union, so a new origin
  *  can't break the contract. Today: claude | codex | opencode | cursor |
@@ -1704,6 +1708,35 @@ export type SkillEntry = {
   scope: "user" | "project" | "plugin" | "system";
   displayName: string | null;
   shortDescription: string | null;
+  /** Copies of this same skill name that lost the precedence contest, nearest
+   *  loser first. Empty for the overwhelming majority of skills. */
+  shadowedBy: SkillCopy[];
+  /** True when the SKILL.md asks not to be invoked automatically
+   *  (`disable-model-invocation: true`) — the skill is still there, but the
+   *  model won't reach for it on its own. */
+  manualOnly: boolean;
+};
+
+/** Full per-skill detail for the skill detail view — what the list's
+ *  name/description snippet can't show. Read on demand instead of padding the
+ *  scan's payload, so the list render never waits on the slowest root. */
+export type SkillDetail = {
+  /** The SKILL.md absolute path, as resolved. */
+  path: string;
+  directory: string;
+  bytes: number;
+  /** Epoch ms. */
+  modifiedAt: number;
+  /** Every frontmatter key/value as written, keys lowercased-as-parsed. */
+  frontmatter: Record<string, string>;
+  /** Markdown body after the frontmatter block, whitespace-trimmed and
+   *  capped (see below). */
+  body: string;
+  /** True when the body was cut short by the cap. */
+  bodyTruncated: boolean;
+  /** Sibling files/dirs bundled with the skill (scripts/, references/, ...),
+   *  relative to `directory`, sorted, dirs marked. Capped at 60 entries. */
+  resources: { name: string; kind: "file" | "directory" }[];
 };
 
 /** How an MCP server is reached. `unknown` is a real, expected value — many
@@ -1757,6 +1790,10 @@ export type KoneAgentInventoryApi = {
   /** Scan every discovery root, plus the given project's own config. Never
    *  throws: an unreadable root lands in `errors`. */
   scan: (projectPath: string | null) => Promise<AgentInventory>;
+  /** Read one SKILL.md's full detail for the detail view. Refuses anything
+   *  that is not an absolute SKILL.md path, and never throws — an
+   *  unresolvable path resolves to null. */
+  readSkill: (skillMdPath: string) => Promise<SkillDetail | null>;
 };
 
 /** The user's per-thread picker knobs, persisted via agent:set-thread-selection
@@ -1915,6 +1952,18 @@ export type TerminalCloseInput = {
   deleteHistory?: boolean;
 };
 
+export type TerminalRestartInput = {
+  terminalId: TerminalId;
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+};
+
+export type TerminalAckInput = {
+  terminalId: TerminalId;
+  byteCount: number;
+};
+
 export type TerminalSessionSnapshot = {
   terminalId: TerminalId;
   pid: number;
@@ -1922,17 +1971,37 @@ export type TerminalSessionSnapshot = {
   rows: number;
   cwd: string;
   status: TerminalStatus;
+  /** Replay payload: a mode-restoring preamble followed by the sanitized,
+   *  accumulated output (queries stripped, ANSI styling intact), capped to a
+   *  byte ceiling. Safe to feed xterm verbatim. */
   history: string;
+  /** Monotonic per-session event counter at snapshot time. Renderers use it to
+   *  drop a stale re-seed (the manager re-emits `started` on re-attach). */
+  sequence: number;
+  exitCode: number | null;
+  exitSignal: number | null;
+  /** True while a non-shell subprocess (vim, `npm run dev`) is alive under the
+   *  PTY. Drives the strip's busy state. */
+  hasRunningSubprocess: boolean;
+  /** Normalized command name of that subprocess, when known. */
+  childCommandLabel: string | null;
 };
 
 export type TerminalEvent =
-  | { terminalId: TerminalId; type: "started"; snapshot: TerminalSessionSnapshot }
-  | { terminalId: TerminalId; type: "output"; data: string }
-  | { terminalId: TerminalId; type: "exited"; exitCode: number | null; signal?: number }
-  | { terminalId: TerminalId; type: "error"; message: string }
-  | { terminalId: TerminalId; type: "cleared" }
-  | { terminalId: TerminalId; type: "restarted"; snapshot: TerminalSessionSnapshot }
-  | { terminalId: TerminalId; type: "closed" };
+  | { terminalId: TerminalId; type: "started"; sequence: number; snapshot: TerminalSessionSnapshot }
+  | { terminalId: TerminalId; type: "output"; sequence: number; data: string }
+  | { terminalId: TerminalId; type: "exited"; sequence: number; exitCode: number | null; signal?: number }
+  | { terminalId: TerminalId; type: "error"; sequence: number; message: string }
+  | { terminalId: TerminalId; type: "cleared"; sequence: number }
+  | { terminalId: TerminalId; type: "restarted"; sequence: number; snapshot: TerminalSessionSnapshot }
+  | { terminalId: TerminalId; type: "closed"; sequence: number }
+  | {
+      terminalId: TerminalId;
+      type: "activity";
+      sequence: number;
+      hasRunningSubprocess: boolean;
+      childCommandLabel: string | null;
+    };
 
 export type KoneTerminalApi = {
   open: (input: TerminalOpenInput) => Promise<TerminalSessionSnapshot>;
@@ -1940,6 +2009,10 @@ export type KoneTerminalApi = {
   resize: (input: TerminalResizeInput) => Promise<void>;
   clear: (terminalId: TerminalId) => Promise<void>;
   close: (input: TerminalCloseInput) => Promise<void>;
+  restart: (input: TerminalRestartInput) => Promise<TerminalSessionSnapshot>;
+  /** Flow-control: report consumed output bytes so the main process can
+   *  pause/resume the PTY (backpressure). */
+  ack: (input: TerminalAckInput) => Promise<void>;
   onEvent: (cb: (event: TerminalEvent) => void) => () => void;
 };
 

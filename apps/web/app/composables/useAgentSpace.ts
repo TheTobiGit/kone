@@ -19,17 +19,18 @@ import type {
  *  accepts exactly these, so the narrowing belongs in the type. OpenCode leads
  *  because it is the only one that is useful with no network and no consent;
  *  Antigravity needs no consent either — its "credential" is the language
- *  server the app/CLI already runs, never a stored token. */
+ *  server the app/CLI already runs, never a stored token. Droid reads through
+ *  Factory's billing/usage APIs with the user's own Factory API key. */
 export type QuotaProvider = QuotaProviderReport["provider"];
-const QUOTA_CAPABLE: QuotaProvider[] = ["opencode", "claudeAgent", "codex", "cursor", "antigravity"];
+const QUOTA_CAPABLE: QuotaProvider[] = ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
 
 /** Installed providers the Limits section still shows a card for, even though
- *  kone cannot read a single number from them (Droid's session sidecar always
- *  reports zeros, and Factory exposes no API kone could ask). A card with the
- *  honest "nothing to read" note beats no card at all — the absence of a meter
- *  should be explained, not silent. Never added to QUOTA_CAPABLE: the quota
- *  bridge accepts exactly that list, and these must not reach it. */
-const UNREADABLE: ProviderKind[] = ["droid"];
+ *  kone cannot read a single number from them. A card with the honest "nothing
+ *  to read" note beats no card at all — the absence of a meter should be
+ *  explained, not silent. Never added to QUOTA_CAPABLE: the quota bridge
+ *  accepts exactly that list, and these must not reach it. (Empty today — every
+ *  provider kone offers has a quota path.) */
+const UNREADABLE: ProviderKind[] = [];
 const READABLE: ReadonlySet<string> = new Set(QUOTA_CAPABLE);
 
 /** Every provider the Limits section can render a card for. */
@@ -304,7 +305,6 @@ export function useAgentSpace(projectPath: () => string | null) {
   const busy = computed(() => usageLoading.value || inventoryLoading.value);
 
   return {
-    // usage
     usage: usage,
     usageLoading: usageLoading,
     usageLoaded: usageLoaded,
@@ -328,6 +328,10 @@ export function useAgentSpace(projectPath: () => string | null) {
     inventory: inventory,
     inventoryLoading: inventoryLoading,
     inventoryLoaded: inventoryLoaded,
+    /** Re-walk the skills/MCP/instruction roots and nothing else. A pane that
+     *  only shows inventory (settings' Skills page) must not drag a usage scan
+     *  and a round of quota reads along with its own refresh button. */
+    refreshInventory: loadInventory,
     // shell
     busy,
     load,

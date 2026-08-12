@@ -10,6 +10,7 @@ import {
   DistributeHorizontalCenterIcon,
   GaugeIcon,
   KeyboardIcon,
+  PuzzleIcon,
   RefreshIcon,
   UndoIcon,
   UserIcon,
@@ -162,6 +163,11 @@ function openProviderLimits() {
   cue("press");
 }
 
+function openAgentSkills() {
+  pane.value = "agentSkills";
+  cue("press");
+}
+
 function backToRoot() {
   cancelCapture(); // abandon any in-flight rebind when leaving the pane
   pane.value = "root";
@@ -308,6 +314,8 @@ defineExpose({ cancelCapture });
     <SettingsAgentsUsagePane v-if="pane === 'agentsUsage'" :open="open" @back="backToRoot" />
 
     <SettingsProviderLimitsPane v-if="pane === 'providerLimits'" :open="open" @back="backToRoot" />
+
+    <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
 
     <!-- Both panes stack in one grid cell so the push transition overlaps them;
          the active pane is keyed and slides in over the outgoing one. -->
@@ -473,6 +481,35 @@ defineExpose({ cancelCapture });
               >
                 {{ providerSummary }}
               </span>
+            </button>
+          </Magnet>
+
+          <!-- Skills — every SKILL.md the CLIs on this machine can reach, and one
+               skill's own page. Read-only: kone scans and reports, the CLIs own
+               what they actually load. -->
+          <Magnet
+            class="block"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <button
+              type="button"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              :tabindex="open ? 0 : -1"
+              aria-label="Open agent skills settings"
+              @click="openAgentSkills"
+            >
+              <HugeiconsIcon
+                :icon="PuzzleIcon"
+                :size="17"
+                :stroke-width="1.7"
+                class="shrink-0 text-muted transition-colors group-hover:text-ink"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Skills</span>
             </button>
           </Magnet>
 

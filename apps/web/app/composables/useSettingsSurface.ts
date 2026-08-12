@@ -19,7 +19,8 @@ export type SettingsPane =
   | "motion"
   | "providers"
   | "agentsUsage"
-  | "providerLimits";
+  | "providerLimits"
+  | "agentSkills";
 
 /** The drawer as a list: a column beside the launcher, which stays the subject. */
 const COLUMN_WIDTH = 320;
@@ -33,7 +34,14 @@ const PAGE_MAX = 1040;
 const pane = ref<SettingsPane>("root");
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
-const PAGE_PANES: SettingsPane[] = ["providers", "motion", "profile", "agentsUsage", "providerLimits"];
+const PAGE_PANES: SettingsPane[] = [
+  "providers",
+  "motion",
+  "profile",
+  "agentsUsage",
+  "providerLimits",
+  "agentSkills",
+];
 
 export function useSettingsSurface() {
   const { width } = useWindowSize();

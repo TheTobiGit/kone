@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { RefreshIcon } from "@hugeicons/core-free-icons";
-import AgentSpaceModels from "~/components/AgentSpaceModels.vue";
 import AgentSpaceSkills from "~/components/AgentSpaceSkills.vue";
 import AgentSpaceMcp from "~/components/AgentSpaceMcp.vue";
 import AgentSpaceInstructions from "~/components/AgentSpaceInstructions.vue";
@@ -20,14 +19,18 @@ const props = defineProps<{ project: Project }>();
 const space = useAgentSpace(() => props.project.path);
 const { cue } = useSound();
 
-type Section = "models" | "skills" | "mcp" | "instructions";
+// Models used to lead this rail. It answered "what can the agents here run" by
+// mirroring the picker's own preferences back at you, and that question now has
+// a real home in settings — Agents / Providers, where the model roster is
+// editable rather than a read-only echo. Two places telling the same story is
+// one place too many, so the section is gone rather than duplicated.
+type Section = "skills" | "mcp" | "instructions";
 const SECTIONS: { id: Section; label: string }[] = [
-  { id: "models", label: "Models" },
   { id: "skills", label: "Skills" },
   { id: "mcp", label: "MCP" },
   { id: "instructions", label: "Instructions" },
 ];
-const section = ref<Section>("models");
+const section = ref<Section>("skills");
 const activeIndex = computed(() => SECTIONS.findIndex((s) => s.id === section.value));
 
 function go(id: Section): void {
@@ -36,10 +39,9 @@ function go(id: Section): void {
   section.value = id;
 }
 
-// Counts ride the rail only where a number is a fact worth carrying — how many
+// Counts ride the rail where a number is a fact worth carrying — how many
 // skills are reachable, how many servers are configured, how many instruction
-// files are in scope. Models have no count that means anything, so they carry
-// none rather than a decorative one.
+// files are in scope.
 function countFor(id: Section): number | null {
   const inv = space.inventory.value;
   if (id === "skills") return inv?.skills.length || null;
@@ -127,8 +129,7 @@ onMounted(() => {
         <!-- One panel under the rail. Keyed on the section so a switch is a
              clean arrival, not a morph of one section's rows into another's. -->
         <div :key="section" class="as__panel">
-          <AgentSpaceModels v-if="section === 'models'" :project="project" />
-          <AgentSpaceSkills v-else-if="section === 'skills'" :space="space" />
+          <AgentSpaceSkills v-if="section === 'skills'" :space="space" />
           <AgentSpaceMcp v-else-if="section === 'mcp'" :space="space" />
           <AgentSpaceInstructions v-else :space="space" />
         </div>
