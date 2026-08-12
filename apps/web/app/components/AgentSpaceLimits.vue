@@ -434,7 +434,7 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 /* No entrance choreography on the cards — they're present the moment the pane
    opens, heads and all. The old blur-rise stagger fired once per card at mount,
    and because each card's quota lands async it turned every late arrival into
-   its own little animation; synara's equivalent has none and reads as instant.
+   its own little animation; the equivalent has none and reads as instant.
    The only motion left on this page is the body fade below and the meter width. */
 
 /* Body resolve — as the card's height eases open (SmoothResize), the incoming
