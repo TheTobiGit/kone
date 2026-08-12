@@ -7,6 +7,7 @@ import type {
   StoredThreadPage,
 } from "./agent/ConversationStore.js";
 import type { AgentInventory } from "./agent/inventory/types.js";
+import type { SkillDetail } from "./agent/inventory/skillDetail.js";
 import type { QuotaCapableProvider } from "./agent/quota/index.js";
 import type { QuotaProviderReport } from "./agent/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "./agent/usage/report.js";
@@ -37,10 +38,12 @@ import type {
   UserInputAnswers,
 } from "./agent/index.js";
 import type {
+  TerminalAckInput,
   TerminalCloseInput,
   TerminalEvent,
   TerminalOpenInput,
   TerminalResizeInput,
+  TerminalRestartInput,
   TerminalSessionSnapshot,
   TerminalWriteInput,
 } from "./terminal/index.js";
@@ -363,7 +366,8 @@ const api = {
     // rows history is built from, bounded to a window and optionally to one
     // project. Quota reaches a provider's own usage API — only for a provider
     // the user connected, and `allowKeychain` only on a user-initiated action.
-    // Inventory is a read-only walk of the CLIs' config roots.
+    // Inventory is a read-only walk of the CLIs' config roots, plus one
+    // single-file detail read for the skill detail view.
     usage: {
       report: (options: {
         range: UsageRange;
@@ -383,6 +387,8 @@ const api = {
     inventory: {
       scan: (projectPath: string | null): Promise<AgentInventory> =>
         ipcRenderer.invoke("agent:inventory-scan", projectPath),
+      readSkill: (skillMdPath: string): Promise<SkillDetail | null> =>
+        ipcRenderer.invoke("agent:skill-read", skillMdPath),
     },
     // Persist the user's per-thread picker selection (model/effort/serviceTier/
     // contextWindow) so a reopened thread restores the picker exactly.
@@ -417,6 +423,12 @@ const api = {
       ipcRenderer.invoke("terminal:clear", terminalId),
     close: (input: TerminalCloseInput): Promise<void> =>
       ipcRenderer.invoke("terminal:close", input),
+    restart: (input: TerminalRestartInput): Promise<TerminalSessionSnapshot> =>
+      ipcRenderer.invoke("terminal:restart", input),
+    // Renderer flow-control: report consumed output bytes so the main process
+    // can pause/resume the PTY (backpressure).
+    ack: (input: TerminalAckInput): Promise<void> =>
+      ipcRenderer.invoke("terminal:ack", input),
     onEvent: (cb: (event: TerminalEvent) => void): (() => void) => {
       const listener = (_event: unknown, ev: TerminalEvent) => cb(ev);
       ipcRenderer.on("terminal:event", listener);
