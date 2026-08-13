@@ -130,16 +130,6 @@ function quietStatus(kind: CardState["kind"]): string {
   return "No sign-in";
 }
 
-/** The tightest window a provider is reporting, promoted into the card's head as
- *  a percentage — the number you'd otherwise have to find by comparing bars.
- *  Null when nothing is measurable, which is a fact the head then simply omits. */
-function peakPercent(report: QuotaProviderReport): number | null {
-  const measured = report.windows
-    .filter((w) => w.state !== "notStarted" && w.percent !== null)
-    .map((w) => w.percent as number);
-  return measured.length ? Math.max(...measured) : null;
-}
-
 // ── formatting ───────────────────────────────────────────────────────────────
 // Compact to three significant figures with a unit suffix, so a column of
 // numbers lines up at a glance (`1.94M`, `804K`) instead of forcing the eye to
@@ -200,18 +190,25 @@ function windowValue(w: QuotaWindow): string {
   return `${used} of ${formatBare(w.limit)}${suffix}`;
 }
 
-/** Whether the meter's foot should repeat the percentage. It shouldn't when the
- *  headline already *is* that percentage — the old card printed "12%" twice on
- *  the same row, which reads as two different facts that happen to agree. */
-function showsPercentFoot(w: QuotaWindow): boolean {
-  return w.percent !== null && w.state !== "notStarted" && w.used.kind !== "percent";
-}
-
-/** A window with nothing in it yet has no bar to draw — an empty track would
+/** A window with nothing in it yet has no arc to draw — an empty ring would
  *  claim a measurement of zero rather than the absence of a window. */
-function showsBar(w: QuotaWindow): boolean {
+function showsRing(w: QuotaWindow): boolean {
   return w.percent !== null && w.state !== "notStarted";
 }
+
+/** The used/limit line beside the ring. Dropped when that line would just repeat
+ *  the percentage already sitting in the hole. */
+function showsUsedLine(w: QuotaWindow): boolean {
+  return w.used.kind !== "percent" || w.state === "notStarted";
+}
+
+// Ring geometry in SVG user units. Stroke sits inside the viewBox; the hole has
+// to fit a tabular "100%" at 12px, which this radius does with a few pixels of
+// air. Circumference is the dasharray length the arc animates against.
+const RING_SIZE = 52;
+const RING_STROKE = 3.5;
+const RING_R = (RING_SIZE - RING_STROKE) / 2;
+const RING_C = 2 * Math.PI * RING_R;
 
 /** `resetsAt` is an ISO timestamp; read as "resets in 3h 12m" without a date
  *  library. Two units at most, and "resets shortly" under a minute. A window
@@ -237,7 +234,7 @@ function resetLine(w: QuotaWindow): string | null {
 }
 
 // Both take a nullable fraction: the template only reaches them behind
-// `showsBar(w)`, but that guard lives in a helper the compiler can't narrow
+// `showsRing(w)`, but that guard lives in a helper the compiler can't narrow
 // through, and threading a non-null assertion through four call sites in the
 // markup would be noisier than accepting the null here.
 const pct = (n: number | null) => Math.round((n ?? 0) * 100);
@@ -254,7 +251,7 @@ function fillColor(percent: number | null): string {
 
 // ── sparkline ────────────────────────────────────────────────────────────────
 // A 30-day trend drawn small enough to read as texture rather than a chart —
-// the meters above carry the actual numbers, this only answers "is my burn
+// the rings above carry the actual numbers, this only answers "is my burn
 // rising or falling". Points are normalised against the series' own peak, so
 // every provider's line uses the full height regardless of scale.
 const SPARK_W = 168;
@@ -308,12 +305,6 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
             <ProviderLogo :brand="card.brand" :size="16" />
             <span class="card__name">{{ card.label }}</span>
             <span v-if="card.planLabel" class="chip">{{ card.planLabel }}</span>
-            <span
-              v-if="card.state.kind === 'connected' && peakPercent(card.state.report) !== null"
-              class="card__peak"
-              :style="{ color: fillColor(peakPercent(card.state.report)) }"
-              :title="`Tightest window at ${pct(peakPercent(card.state.report))}%`"
-            >{{ pct(peakPercent(card.state.report)) }}%</span>
           </div>
 
           <div class="card__actions">
@@ -348,30 +339,54 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
         <SmoothResize>
         <!-- ── 1. connected ─────────────────────────────────────────────────── -->
         <div v-if="card.state.kind === 'connected'" :key="'connected'" class="card__body card__reveal">
-          <!-- meters, one per window the provider reported -->
+          <!-- rings, one per window the provider reported -->
           <div v-if="card.state.report.windows.length" class="meters">
             <div v-for="w in card.state.report.windows" :key="w.id" class="meter">
-              <div class="meter__head">
-                <span class="meter__label">{{ w.label }}</span>
-                <span v-if="resetLine(w)" class="meter__when">{{ resetLine(w) }}</span>
-                <span class="meter__value">{{ windowValue(w) }}</span>
-              </div>
               <div
-                v-if="showsBar(w)"
-                class="meter__track"
+                class="meter__dial"
                 role="progressbar"
-                :aria-valuenow="pct(w.percent)"
+                :aria-valuenow="showsRing(w) ? pct(w.percent) : undefined"
                 aria-valuemin="0"
                 aria-valuemax="100"
-                :aria-label="`${card.label} ${w.label} usage, ${pct(w.percent)} percent`"
+                :aria-label="`${card.label} ${w.label} usage${showsRing(w) ? `, ${pct(w.percent)} percent` : ''}`"
               >
-                <div
-                  class="meter__fill"
-                  :style="{ width: `${pct(w.percent)}%`, backgroundColor: fillColor(w.percent) }"
-                />
+                <svg
+                  :viewBox="`0 0 ${RING_SIZE} ${RING_SIZE}`"
+                  :width="RING_SIZE"
+                  :height="RING_SIZE"
+                  aria-hidden="true"
+                >
+                  <circle
+                    class="meter__track"
+                    :cx="RING_SIZE / 2"
+                    :cy="RING_SIZE / 2"
+                    :r="RING_R"
+                  />
+                  <circle
+                    v-if="showsRing(w)"
+                    class="meter__arc"
+                    :class="{ 'is-empty': (w.percent ?? 0) < 0.005 }"
+                    :cx="RING_SIZE / 2"
+                    :cy="RING_SIZE / 2"
+                    :r="RING_R"
+                    :style="{
+                      '--ring-c': `${RING_C}`,
+                      '--ring-p': `${w.percent ?? 0}`,
+                      stroke: fillColor(w.percent),
+                    }"
+                  />
+                </svg>
+                <span
+                  v-if="showsRing(w)"
+                  class="meter__pct"
+                  :style="{ color: fillColor(w.percent) }"
+                >{{ pct(w.percent) }}%</span>
+                <span v-else class="meter__pct meter__pct--quiet">—</span>
               </div>
-              <div v-if="showsPercentFoot(w)" class="meter__foot">
-                <span class="meter__pct">{{ pct(w.percent) }}%</span>
+              <div class="meter__copy">
+                <span class="meter__label">{{ w.label }}</span>
+                <span v-if="showsUsedLine(w)" class="meter__value">{{ windowValue(w) }}</span>
+                <span v-if="resetLine(w)" class="meter__when">{{ resetLine(w) }}</span>
               </div>
             </div>
           </div>
@@ -488,7 +503,7 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   --limits-ease: cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   flex-direction: column;
-  gap: 2rem;
+  gap: 2.5rem;
   padding-bottom: 2rem;
 }
 
@@ -520,12 +535,12 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
    opens, heads and all. The old blur-rise stagger fired once per card at mount,
    and because each card's quota lands async it turned every late arrival into
    its own little animation; the equivalent has none and reads as instant.
-   The only motion left on this page is the body fade below and the meter width. */
+   The only motion left on this page is the body fade below and the ring arc. */
 
 /* Body resolve — as the card's height eases open (SmoothResize), the incoming
    content fades in over it. Opacity only, so it reads as one soft reveal rather
    than a separate animation; fires once per state change, not on a refresh (the
-   connected element stays mounted, so only its meter widths glide). */
+   connected element stays mounted, so only its ring arcs glide). */
 .card__reveal {
   animation: limits-fade-in 0.28s ease both;
 }
@@ -546,8 +561,8 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 .card {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 26px 0 34px;
+  gap: 22px;
+  padding: 28px 0 40px;
   border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   min-width: 0;
 }
@@ -571,16 +586,6 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The tightest window, promoted into the head and carrying the same colour its
-   bar does — so a column of cards can be triaged by glancing down the heads
-   without reading a single meter. */
-.card__peak {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  transition: color 140ms ease;
-}
-
 .card__actions {
   display: flex;
   align-items: center;
@@ -594,10 +599,13 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   opacity: 1;
 }
 
+/* The rings are the subject of this page; the spend strip below is supporting
+   history. A wider gap than the meters use between themselves reads as the seam
+   between those two jobs — the eye takes the rings first, then drops to spend. */
 .card__body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 28px;
 }
 
 .card__note {
@@ -665,69 +673,90 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 }
 
 /* ── meters ───────────────────────────────────────────────────────────────── */
+/* One ring per window, in a row. A stack of tracks made four windows feel like
+   four separate charts; sitting them as peers lets the eye compare fractions
+   in the holes without walking down a column. */
 .meters {
   display: flex;
-  flex-direction: column;
-  gap: 22px;
+  flex-wrap: wrap;
+  gap: 20px 30px;
 }
 .meter {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 148px;
 }
-.meter__head {
+.meter__dial {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+}
+.meter__dial svg {
+  display: block;
+}
+.meter__track,
+.meter__arc {
+  fill: none;
+  stroke-width: 3.5;
+}
+.meter__track {
+  stroke: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.meter__arc {
+  stroke-linecap: round;
+  stroke-dasharray: var(--ring-c);
+  stroke-dashoffset: calc(var(--ring-c) * (1 - var(--ring-p, 0)));
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  transition:
+    stroke-dashoffset 0.5s var(--limits-ease),
+    stroke 140ms ease;
+}
+/* A round cap at 0% still paints a dot on the 12 o'clock — hide the arc
+   entirely until there's a fraction worth drawing. */
+.meter__arc.is-empty {
+  opacity: 0;
+}
+.meter__pct {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  transition: color 140ms ease;
+}
+.meter__pct--quiet {
+  color: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.meter__copy {
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 2px 10px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .meter__label {
   font-size: 13px;
   color: var(--ink);
   white-space: nowrap;
 }
-/* The countdown rides beside its label rather than on a line of its own — three
-   lines per meter meant a provider with four windows spent twelve lines saying
-   four things. It's the quietest thing on the row, so it sets no rhythm. */
+.meter__value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
 .meter__when {
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: color-mix(in srgb, var(--ink) 34%, transparent);
   white-space: nowrap;
-}
-.meter__value {
-  margin-left: auto;
-}
-/* The number is the point of the row, so it gets the mono treatment and the
-   full ink — the label beside it is only a handle for finding it. */
-.meter__value {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-  white-space: nowrap;
-}
-.meter__track {
-  height: 5px;
-  border-radius: 999px;
-  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
-  overflow: hidden;
-}
-.meter__fill {
-  height: 100%;
-  border-radius: 999px;
-  transition:
-    width 0.5s var(--limits-ease),
-    background-color 140ms ease;
-}
-.meter__foot {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
 }
 
 /* ── spend strip ──────────────────────────────────────────────────────────── */
@@ -740,7 +769,7 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 }
 .tiles {
   display: flex;
-  gap: 28px;
+  gap: 32px;
   margin: 0;
   min-width: 0;
   flex-wrap: wrap;
@@ -756,20 +785,25 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
   letter-spacing: 0.08em;
   color: var(--muted);
 }
+/* Spend used to be the largest text on a page whose subject is the rings above —
+   the eye landed on a dollar figure first. Sized to the provider name, it reads
+   as one of the card's figures rather than its headline. */
 .tile__value {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 17px;
+  font-size: 14.5px;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
   line-height: 1.15;
 }
+/* The token count behind each dollar is the faintest thing on the card — there
+   for the reader who goes looking, never competing with the figure it sits under. */
 .tile__sub {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 74%, transparent);
 }
 
 /* ── sparkline ────────────────────────────────────────────────────────────── */
@@ -811,9 +845,10 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 
 /* ── loading placeholder — at rest, breathing, never a spinner ─────────────── */
 .placeholder {
-  height: 5px;
-  border-radius: 999px;
-  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 3.5px color-mix(in srgb, var(--ink) 8%, transparent);
   animation: limits-breathe 1700ms ease-in-out infinite;
 }
 @keyframes limits-breathe {
@@ -878,7 +913,7 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .meter__fill,
+  .meter__arc,
   .placeholder,
   .card__actions,
   .card__reveal {
