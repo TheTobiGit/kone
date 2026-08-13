@@ -13,13 +13,7 @@ import type { CreateSideChatResult, CreateSideChatTarget } from "~/types/desktop
 //   once creation settles.
 //
 // The UI owns panes and sessions; this module only guarantees the fork happens
-// exactly once and the queued prompts reach it. `SIDECHAT_MISSING_GRACE_MS` is
-// the UI's pane-retention budget: how long a closed pane whose backing thread
-// is slow to appear may be kept before teardown.
-
-/** How long a side-chat pane whose backing thread hasn't appeared yet may be
- *  this deadline while the thread reports as syncing. */
-export const SIDECHAT_MISSING_GRACE_MS = 15_000;
+// exactly once and the queued prompts reach it.
 
 /** A flight in progress for one source thread. `creation` settles once the
  *  fork row exists; `promptTail` chains the queued prompts after it. */

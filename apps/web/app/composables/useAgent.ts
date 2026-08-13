@@ -2304,8 +2304,9 @@ import { isThreadSessionBlank } from "~/utils/panes";
 
 /** How many idle, settled background threads to keep resident. Busy threads are
  *  never evicted; this only bounds the settled backlog so the registry (and the
- *  pill stack) can't grow without end. */
-const MAX_RESIDENT_THREADS = 6;
+ *  pill stack) can't grow without end. Matches the board's restored-pane cap so
+ *  a saved strip of conversations doesn't immediately go dormant on open. */
+const MAX_RESIDENT_THREADS = 8;
 /** How long a started session may sit without any activity before the sweep
  *  hibernates it — stops the provider process (and releases the gateway token)
  *  while keeping the thread resident, so the pane stays and the next send
@@ -2678,12 +2679,11 @@ export function useAgent(options: UseAgentOptions) {
     // Same as newThreadAt: the blank thread is usable immediately; its provider
     // process comes up on the first send.
     fresh.deferStart();
-    // Drop the prior thread if it's idle and never ran a live turn this session —
-    // whether a blank slate or the project's rehydrated latest the user stepped
-    // past to start something new. Its transcript is on disk, so reopening it
-    // from recent sessions just resumes it. A thread that ran (or is running)
-    // stays resident so it keeps streaming and pilling.
-    if (prev && prev !== fresh && !prev.busy.value && !prev.everRan.value) {
+    // Drop the prior thread only if it's still a blank slate — no transcript,
+    // nothing in flight. A restored conversation has blocks even when it hasn't
+    // sent a turn this session; evicting those is what left the column you just
+    // left sitting on "Opening…".
+    if (prev && prev !== fresh && isThreadSessionBlank(prev)) {
       await evict(prev);
     }
     pruneResident();
@@ -2740,9 +2740,11 @@ export function useAgent(options: UseAgentOptions) {
       loading?.touch();
       return { key: inFlight.key, ready: inFlight.promise };
     }
-    // If the active thread is idle and never ran a live turn this session (a
-    // blank slate or a rehydrated latest the user stepped past), drop it rather
-    // than stacking it behind the opened thread — its transcript is on disk.
+    // If the active thread is still a blank slate, drop it rather than stacking
+    // it behind the opened thread. A restored conversation (transcript already
+    // on the session) stays resident — `everRan` only flips on a turn *this*
+    // session, so using that as the throwaway test evicted every stored column
+    // the moment another one attached.
     const prev = active.value;
     const s = spawn({ rehydrate: false });
     activeKey.value = s.key;
@@ -2762,8 +2764,7 @@ export function useAgent(options: UseAgentOptions) {
           prev !== s &&
           prev.key !== activeKey.value &&
           !prevOpening &&
-          !prev.busy.value &&
-          !prev.everRan.value
+          isThreadSessionBlank(prev)
         ) {
           await evict(prev);
         }

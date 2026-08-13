@@ -697,11 +697,14 @@ watch(
 );
 
 // A restored thread/terminal pane stays dormant while the overview is showing.
-// Attach it once the board surface is revealed so the column is live on entry.
+// Attach the focused pane (a terminal still waits until you look at it) and
+// every stored thread once the board is revealed, so neighbouring columns
+// show their transcripts instead of sitting on "Opening…".
 watch(surface, (s, prev) => {
   if (s !== "board" || prev === "board") return;
   const id = focusedId.value;
   if (id) void board.attach(id);
+  void board.wakeThreadPanes();
 });
 
 onMounted(resolveUser);

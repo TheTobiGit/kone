@@ -1514,12 +1514,12 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     @flush="emit('scratchpad-flush', c.id)"
                   />
                 </template>
-                <!-- Dormant: the pane is restored but nothing has attached yet. It
-                     attaches on focus, so this is what an unfocused restored pane
-                     shows — a single muted line, no card / border / button / spinner.
-                     A dormant scratchpad shows nothing (its empty-state idiom is an
-                     empty page); a thread's "Opening…" is transient (focus attaches
-                     immediately); a terminal invites the click that starts its PTY. -->
+                <!-- Dormant: the pane is restored but nothing has attached yet.
+                     Threads attach when the board is shown (and on focus if they
+                     were evicted past the resident cap) — "Opening…" is that
+                     brief load, not a resting state. A dormant scratchpad shows
+                     nothing (its empty-state idiom is an empty page); a terminal
+                     invites the click that starts its PTY. -->
                 <template v-else-if="c.kind === 'terminal'">
                   <p class="col__dormant">Terminal ready — click to open a shell.</p>
                 </template>

@@ -611,6 +611,48 @@ describe("useBoard — board laws", () => {
     expect(roundTrip.panes.map((p) => p.width)).toEqual([1, 0, 2]);
     expect(roundTrip.focusedId).toBe("p2");
   });
+
+  test("restore attaches every stored thread, not only the focused one", async () => {
+    const { board } = harness();
+
+    await board.restore({
+      version: 1 as const,
+      panes: [
+        { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-1" }, width: 0 },
+        { id: "p2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-2" }, width: 0 },
+      ],
+      focusedId: "p1",
+    });
+    await settle();
+
+    expect(board.panes.value.map((p) => p.session !== null)).toEqual([true, true]);
+    expect(board.entries.value.map((e) => e.id)).toEqual(["p1", "p2"]);
+  });
+
+  test("wakeThreadPanes attaches dormant threads after a deferred restore", async () => {
+    const { board } = harness();
+
+    await board.restore(
+      {
+        version: 1 as const,
+        panes: [
+          { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-1" }, width: 0 },
+          { id: "p2", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-2" }, width: 0 },
+        ],
+        focusedId: "p1",
+      },
+      undefined,
+      { deferHeavyAttach: true },
+    );
+    await settle();
+    expect(board.panes.value.every((p) => p.session === null)).toBe(true);
+
+    await board.wakeThreadPanes();
+    await settle();
+
+    expect(board.panes.value.map((p) => p.session !== null)).toEqual([true, true]);
+    expect(board.focusedId.value).toBe("p1");
+  });
 });
 
 describe("useBoard — attach never conjures a second column", () => {

@@ -96,6 +96,10 @@ export interface UseBoardReturn {
   /** Bind a dormant pane to a live session on demand (the focus-attaches path).
    *  Idempotent and de-duped: concurrent calls for the same pane share one spawn. */
   attach: (id: PaneId) => Promise<void>;
+  /** Attach every dormant thread pane. Used when the board surface is revealed
+   *  after a deferred restore, so off-screen columns load their transcripts
+   *  instead of sitting on the Opening placeholder until they're focused. */
+  wakeThreadPanes: () => Promise<void>;
   /** Bring the pane hosting `threadId` to focus (the away-from-thread pill open).
    *  Every agent thread is adopted as a pane, so it always resolves to one. */
   focusThreadById: (threadId: string) => void;
@@ -438,6 +442,16 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     const p = mutate(() => doAttach(id)).finally(() => inFlight.delete(id));
     inFlight.set(id, p);
     return p;
+  }
+
+  async function wakeThreadPanes(): Promise<void> {
+    const focused = focusedId.value;
+    const ids = entries.value
+      .filter((e) => e.kind === "thread" && !sessionKeyOf(e.id))
+      .map((e) => e.id);
+    const ordered =
+      focused && ids.includes(focused) ? [focused, ...ids.filter((id) => id !== focused)] : ids;
+    for (const id of ordered) await attach(id);
   }
 
   async function doAttach(id: PaneId): Promise<void> {
@@ -858,7 +872,6 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     if (!layout || layout.version !== 1 || !Array.isArray(layout.panes)) return false;
     const sanitized = sanitizeLayout(layout, knownThreadIds);
     if (!sanitized.length && layout.panes.length > 0) return false;
-    const firstThread = sanitized.find((e) => e.kind === "thread");
     const deferHeavy = opts?.deferHeavyAttach ?? false;
 
     await mutate(async () => {
@@ -873,18 +886,20 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       //   · the focused pane, whatever its kind (you should see content, not a
       //     dormant placeholder, on the pane you left focused) — unless
       //     `deferHeavyAttach` (project-home open: thread/terminal spawn later),
-      //   · exactly ONE thread when the focused pane isn't itself a thread, so
-      //     the boot session useAgent already spawned gets consumed (openThread
-      //     evicts the idle boot) instead of lingering as an extra pane.
-      // Everything else — other terminals, background threads — stays dormant and
-      // attaches on focus. Attaching a second stored thread here would trip
-      // useAgent's open-evicts-idle-previous rule and drop the first, so we
-      // deliberately keep threads to one.
+      //   · every stored thread when we're not deferring. Opening one used to
+      //     evict the previous restored session (it looked like a throwaway
+      //     because it hadn't sent a turn *this* session), so restore kept
+      //     threads to one; that's fixed, and a saved strip should come back
+      //     with every conversation already readable.
+      // Other terminals stay dormant until focused — a PTY is a process, and
+      // the column already invites the click that starts it.
       const toAttach = new Set<PaneId>();
       for (const e of sanitized) if (paneKindMeta(e.kind).eagerAttach) toAttach.add(e.id);
       const focusedEntry = sanitized.find((e) => e.id === focusedId.value);
       if (focusedEntry && !deferHeavy) toAttach.add(focusedEntry.id);
-      if (firstThread && focusedEntry?.kind !== "thread" && !deferHeavy) toAttach.add(firstThread.id);
+      if (!deferHeavy) {
+        for (const e of sanitized) if (e.kind === "thread") toAttach.add(e.id);
+      }
       for (const id of toAttach) await attach(id);
 
       // G6 — dispose stray idle blank threads. useAgent still spawns one session at
@@ -942,6 +957,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     move,
     setWidth,
     attach,
+    wakeThreadPanes,
     focusThreadById,
     dispatch,
     serialize,
