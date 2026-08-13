@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { UserIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import ProfileBody from "~/components/ProfileBody.vue";
 
@@ -15,6 +16,7 @@ defineEmits<{ back: [] }>();
   <SettingsPageShell
     :open="open"
     breadcrumb="General / Profile"
+    :breadcrumb-icon="UserIcon"
     label="Profile settings"
     @back="$emit('back')"
   >

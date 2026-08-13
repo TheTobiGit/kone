@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
+import { GaugeIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import AgentSpaceLimits from "~/components/AgentSpaceLimits.vue";
 
@@ -23,6 +24,7 @@ onMounted(() => {
   <SettingsPageShell
     :open="open"
     breadcrumb="Agents / Provider limits"
+    :breadcrumb-icon="GaugeIcon"
     label="Provider limits settings"
     @back="$emit('back')"
   >

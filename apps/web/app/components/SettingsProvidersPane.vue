@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
+  AiChipIcon,
   AlertCircleIcon,
   Copy01Icon,
   LinkSquare02Icon,
@@ -571,6 +572,7 @@ async function copy(text: string) {
   <SettingsPageShell
     :open="open"
     breadcrumb="Agents / Providers"
+    :breadcrumb-icon="AiChipIcon"
     label="Providers settings"
     :scroll="false"
     @back="emit('back')"

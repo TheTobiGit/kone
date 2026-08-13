@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
+import { Analytics01Icon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import AgentSpaceUsage from "~/components/AgentSpaceUsage.vue";
 
@@ -23,6 +24,7 @@ onMounted(() => {
   <SettingsPageShell
     :open="open"
     breadcrumb="Agents / Usage"
+    :breadcrumb-icon="Analytics01Icon"
     label="Agent usage settings"
     @back="$emit('back')"
   >

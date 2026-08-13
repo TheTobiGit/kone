@@ -6,7 +6,13 @@ import {
   useWindowSize,
 } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { PauseIcon, PlayIcon, ReplayIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import {
+  DistributeHorizontalCenterIcon,
+  PauseIcon,
+  PlayIcon,
+  ReplayIcon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import {
@@ -370,6 +376,7 @@ function offsetStyle(mode: CenterMode) {
   <SettingsPageShell
     :open="open"
     breadcrumb="Personalization / Thread strip"
+    :breadcrumb-icon="DistributeHorizontalCenterIcon"
     label="Thread strip settings"
     :scroll="false"
     @back="emit('back')"

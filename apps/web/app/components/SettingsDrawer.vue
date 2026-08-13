@@ -600,7 +600,13 @@ defineExpose({ cancelCapture });
                 aria-hidden="true"
               />
             </button>
-            <h2 class="px-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+            <h2 class="flex items-center gap-[5px] px-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
+              <HugeiconsIcon
+                :icon="KeyboardIcon"
+                :size="12"
+                :stroke-width="1.8"
+                aria-hidden="true"
+              />
               Shortcuts
             </h2>
           </div>
