@@ -27,11 +27,11 @@ export interface ShortcutAction {
   /** When false the row is shown read-only in the list (e.g. Escape to close). */
   rebindable: boolean;
   /**
-   * Show this action in the Personalization → Shortcuts pane. When absent/false
-   * the binding still lives in the registry (handlers consult it) but the UI
-   * hides it — used for OS-convention keys (⌘, / ⌘K), dev gestures (play-demo),
-   * and fixed keys (Esc / Enter / type-to-compose) that carry no meaning to
-   * rebind.
+   * Show this action in the Personalization → Keyboard shortcuts pane. When
+   * absent/false the binding still lives in the registry (handlers consult it)
+   * but the UI hides it — used for OS-convention keys (⌘, / ⌘K), dev gestures
+   * (play-demo), and fixed keys (Esc / Enter / type-to-compose) that carry no
+   * meaning to rebind.
    */
   personalize?: boolean;
 }
@@ -518,7 +518,7 @@ export function useShortcuts() {
     return order.map((g) => ({ group: g, items: byGroup.get(g)! }));
   });
 
-  // Actions surfaced in the Personalization → Shortcuts pane. Deliberately a
+  // Actions surfaced in the Keyboard shortcuts pane. Deliberately a
   // subset: only genuinely app-defined, rebind-worthy gestures. Today: Switch
   // project. Add more later by flipping `personalize: true` on an action — the
   // UI picks it up automatically, no template edits.

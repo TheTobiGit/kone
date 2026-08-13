@@ -1,24 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
+import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiChipIcon,
   Analytics01Icon,
-  ArrowTurnBackwardIcon,
   DistributeHorizontalCenterIcon,
   GaugeIcon,
   KeyboardIcon,
   PuzzleIcon,
-  RefreshIcon,
-  UndoIcon,
   UserIcon,
   VolumeHighIcon,
   VolumeMute01Icon,
 } from "@hugeicons/core-free-icons";
 import { Magnet } from "~/components/ui/magnet";
-import type { ShortcutAction } from "~/composables/useShortcuts";
 import { CENTER_MODES } from "~/utils/stripScroll";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
@@ -27,39 +23,17 @@ import { CENTER_MODES } from "~/utils/stripScroll";
 // just the panel surface; the reveal lives upstream.
 //
 // The panel is a small navigable drawer: a root list of section groups that
-// pushes into detail panes. One of those panes is a list and lives here in the
-// 320px column — Shortcuts, which rebinds the app's custom, genuinely
-// rebind-worthy gestures. OS-convention keys (⌘, / ⌘K) and fixed keys (Esc /
-// Enter / type-to-compose) stay in the shortcut registry — handlers still consult
-// them — but are deliberately hidden from the UI; there's no meaning in rebinding
-// those.
-//
-// The other two are *pages*: the drawer widens and hands the whole surface to
-// SettingsProvidersPane and SettingsThreadStripPane. Panes that are pages are
-// declared in useSettingsSurface, since the launcher's slide is measured from the
-// same value.
-//
-// Thread strip is a page rather than a column list because the setting it holds
-// can't be explained in a sentence — the page previews all three modes live, and a
-// strip needs width to be a strip. It's also the shelf the rest of the strip's
-// knobs will land on (gaps, snap feel, width steps).
+// pushes into detail panes. Those panes are *pages* — the drawer widens and
+// hands the whole surface to SettingsProfilePane, SettingsShortcutsPane,
+// SettingsProvidersPane, SettingsThreadStripPane, and the rest. Which panes are
+// pages is declared in useSettingsSurface, since the launcher's slide is measured
+// from the same value.
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
 const { muted, toggleMuted, cue } = useSound();
 const { name: profileName, resolve: resolveProfile } = useProfile();
-const {
-  personalizableGroups,
-  hasOverrides,
-  isCustomized,
-  conflictFor,
-  rebind,
-  reset,
-  resetAll,
-  captureFromEvent,
-  displayTokens,
-} = useShortcuts();
 
 // ── thread strip (niri's center-focused-column) ─────────────────────────────────
 // The same module-scope ref ThreadStrip.vue reads, so setting it here steers the
@@ -108,29 +82,25 @@ function onSoundToggle() {
 }
 
 // ── pane navigation ──────────────────────────────────────────────────────────
-// Root lists the section groups; each detail pane ("shortcuts", "motion") is
-// reached by tapping its row. The drawer always reopens at root so the user lands
-// somewhere predictable, and leaving the shortcuts pane abandons any in-flight
-// rebind capture.
+// Root lists the section groups; each detail pane is reached by tapping its row.
+// The drawer always reopens at root so the user lands somewhere predictable.
 //
 // The pane lives in useSettingsSurface rather than here because the launcher
-// slides aside by exactly this drawer's width, and one pane (Providers) is
-// a page rather than a column — so the stage upstream has to know which pane is
-// open to know how far to move.
+// slides aside by exactly this drawer's width, and most panes are pages rather
+// than a column — so the stage upstream has to know which pane is open to know
+// how far to move.
 const { pane, isPage, revealWidth } = useSettingsSurface();
 
-// The narrow column (root list + Shortcuts) scrolls the aside itself. It smokes
-// its top/bottom edges exactly like the pages do rather than showing a scrollbar,
-// so the one long list in the drawer (Shortcuts) fades out of view instead of
-// hard-cutting. Pages manage their own inner smoke and are overflow-hidden here,
-// so the mask only rides the column state.
+// The narrow column (the root list) scrolls the aside itself. It smokes its
+// top/bottom edges exactly like the pages do rather than showing a scrollbar.
+// Pages manage their own inner smoke and are overflow-hidden here, so the mask
+// only rides the column state.
 const drawerScroll = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(drawerScroll);
 const asideStyle = computed(() => ({
   width: `${revealWidth.value}px`,
   ...(isPage.value ? {} : maskStyle.value),
 }));
-// Root ↔ Shortcuts swaps the scrolling content, so re-measure once it's laid out.
 watch(pane, () => void nextTick(measure));
 
 function openShortcuts() {
@@ -169,85 +139,16 @@ function openAgentSkills() {
 }
 
 function backToRoot() {
-  cancelCapture(); // abandon any in-flight rebind when leaving the pane
   pane.value = "root";
   cue("toggle");
 }
 
-// ── capture state ─────────────────────────────────────────────────────────────
-// Clicking a rebindable row puts it into "listening" mode: the next keydown is
-// captured into a fresh binding, Esc cancels. We hold the capturing action id
-// plus an optional conflict message so the row can show inline feedback.
-const capturingId = ref<string | null>(null);
-const captureMsg = ref<string>("");
-const captureRef = ref<HTMLElement | null>(null);
-
-function prettyBinding(action: { binding: string }): string[] {
-  return displayTokens(action.binding);
-}
-
-function startCapture(action: ShortcutAction) {
-  if (!action.rebindable || !props.open || pane.value !== "shortcuts") return;
-  capturingId.value = action.id;
-  captureMsg.value = "";
-  cue("press");
-  // Focus moves into the capturing chip so screen readers announce the change.
-  nextTick(() => captureRef.value?.focus());
-}
-
-function cancelCapture() {
-  capturingId.value = null;
-  captureMsg.value = "";
-}
-
-function onCaptureKeydown(e: KeyboardEvent) {
-  if (!capturingId.value) return;
-  // Capture anywhere on the panel — but don't hijack the drawer's own Esc-close
-  // while we're mid-capture? Actually do: a rebind capture owns Esc, so Esc
-  // cancels the capture rather than closing the drawer (one Esc leaves capture;
-  // a second leaves the drawer).
-  e.preventDefault();
-  e.stopPropagation();
-  e.stopImmediatePropagation();
-
-  const res = captureFromEvent(e);
-  if (!res.ok) {
-    if (res.reason === "escape") {
-      cancelCapture();
-      cue("toggle");
-    }
-    return;
-  }
-  const id = capturingId.value;
-  const conflict = conflictFor(res.binding, id);
-  if (conflict) {
-    captureMsg.value = `Already used by “${conflict.label}”`;
-    cue("error");
-    return;
-  }
-  const ok = rebind(id, res.binding);
-  if (!ok) {
-    captureMsg.value = "That binding couldn't be set.";
-    cue("error");
-    return;
-  }
-  capturingId.value = null;
-  captureMsg.value = "";
-  cue("success");
-}
-
-// Capture calls happen on window so even if focus strays outside the chip we
-// still grab the next key. We only act while capturing; otherwise we let events
-// through. Bound/unbound with the drawer's visibility, not lifecycle.
-useEventListener(window, "keydown", onCaptureKeydown, { capture: true });
-
-// A single drawer-level Esc handler (separate from capture). Esc is a natural
-// "up": from mid-capture → capture handler eats it (leaving capture); from the
-// shortcuts pane → back to root; from root → close the drawer.
+// Esc is a natural "up": from a detail pane → back to root; from root → close.
+// A rebind capture on the shortcuts page owns Esc first (capture-phase listener
+// there), so one Esc leaves capture and a second walks back.
 function onKeydown(e: KeyboardEvent) {
   if (!props.open) return;
   if (e.key !== "Escape") return;
-  if (capturingId.value) return; // capture owns this Esc
   e.preventDefault();
   if (pane.value !== "root") {
     backToRoot();
@@ -261,34 +162,18 @@ onMounted(() => {
 });
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
-
-// When the drawer closes, abandon capture and land back on the root pane so it
-// always reopens at the top level.
+// Always reopen at the top level.
 watch(
   () => props.open,
   (open) => {
-    if (!open) {
-      cancelCapture();
-      pane.value = "root";
-    }
+    if (!open) pane.value = "root";
   },
 );
 
-// The flat list of rebindable items, used for the "Reset all" affordance's
-// enabled state (any override present) — `hasOverrides` already covers this.
-const anyCustomized = computed(() => hasOverrides.value);
-
-// ── pane motion ───────────────────────────────────────────────────────────────
-// A light horizontal push between panes — root slides left as shortcuts enters
-// from the right, and back again on return. Same spring the stage rides. The
-// panes sit in a grid stack so they overlap while the transition plays; once it
-// ends the inactive pane is removed (the spring has no exit, so the outgoing
-// pane's slide is covered by the incoming one arriving over it).
+// A light horizontal push when the root list enters. Same spring the stage rides.
 const paneSpring = { type: "spring", stiffness: 520, damping: 26, mass: 0.8 } as const;
 const reducedMotion = usePreferredReducedMotion();
 const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
-
-defineExpose({ cancelCapture });
 </script>
 
 <template>
@@ -309,6 +194,8 @@ defineExpose({ cancelCapture });
          racing to describe one movement. -->
     <SettingsProfilePane v-if="pane === 'profile'" :open="open" @back="backToRoot" />
 
+    <SettingsShortcutsPane v-if="pane === 'shortcuts'" :open="open" @back="backToRoot" />
+
     <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
 
     <SettingsAgentsUsagePane v-if="pane === 'agentsUsage'" :open="open" @back="backToRoot" />
@@ -317,13 +204,13 @@ defineExpose({ cancelCapture });
 
     <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
 
-    <!-- Both panes stack in one grid cell so the push transition overlaps them;
-         the active pane is keyed and slides in over the outgoing one. -->
-    <div v-else class="grid min-h-0 flex-1 content-start">
-      <!-- Root pane: the Personalization section — a Keyboard shortcuts row
-           that pushes into the shortcuts detail pane. Borderless rows on the
-           sunken surface; the row rides the same magnet pull as the app's
-           other buttons instead of a hover wash. -->
+    <!-- Root list (and Thread strip, which still mounts from here). Pages above
+         take the widened aside themselves. -->
+    <div
+      v-if="pane === 'root' || pane === 'motion'"
+      class="grid min-h-0 flex-1 content-start"
+    >
+      <!-- Root pane: section groups, each row a magnet rather than a hover wash. -->
       <motion.section
         v-if="pane === 'root'"
         key="root"
@@ -572,161 +459,13 @@ defineExpose({ cancelCapture });
         </div>
       </motion.section>
 
-      <!-- Shortcuts pane: rebinds the app's custom gestures. Lists only actions
-           marked `personalize` in the registry, grouped by their `group` label
-           (Navigation, Conversation, Threads, …). -->
-      <motion.section
-        v-else-if="pane === 'shortcuts'"
-        key="shortcuts"
-        class="col-start-1 row-start-1 flex flex-col"
-        aria-label="Keyboard shortcuts"
-        :initial="{ opacity: 0, x: paneOffset }"
-        :animate="{ opacity: 1, x: 0 }"
-        :transition="paneSpring"
-      >
-        <div class="mb-4 flex items-center justify-between gap-3 pr-3">
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="back-glyph flex size-5 items-center justify-center text-muted focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Back to settings"
-              @click="backToRoot"
-            >
-              <HugeiconsIcon
-                :icon="ArrowTurnBackwardIcon"
-                :size="13"
-                :stroke-width="2"
-                aria-hidden="true"
-              />
-            </button>
-            <h2 class="flex items-center gap-[5px] px-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
-              <HugeiconsIcon
-                :icon="KeyboardIcon"
-                :size="12"
-                :stroke-width="1.8"
-                aria-hidden="true"
-              />
-              Shortcuts
-            </h2>
-          </div>
-          <button
-            v-if="anyCustomized"
-            type="button"
-            :tabindex="open ? 0 : -1"
-            class="flex cursor-pointer items-center gap-1 rounded-[8px] px-1.5 py-1 text-[11px] leading-none text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
-            @click="resetAll"
-          >
-            <HugeiconsIcon
-              :icon="UndoIcon"
-              :size="12"
-              :stroke-width="2"
-              aria-hidden="true"
-            />
-            Reset all
-          </button>
-        </div>
-
-        <div
-          v-if="personalizableGroups.length"
-          class="flex flex-col gap-6"
-        >
-          <section
-            v-for="g in personalizableGroups"
-            :key="g.group"
-            class="flex flex-col gap-1.5"
-            :aria-label="g.group"
-          >
-            <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
-              {{ g.group }}
-            </p>
-            <ul class="flex flex-col">
-              <li v-for="a in g.items" :key="a.id">
-                <div class="flex items-center justify-between gap-3 px-3 py-2.5">
-                  <div class="flex min-w-0 flex-col">
-                    <span class="truncate text-[13px] leading-tight text-ink">
-                      {{ a.label }}
-                    </span>
-                    <span
-                      v-if="a.description ?? a.hint"
-                      class="mt-0.5 line-clamp-2 text-pretty text-[11px] leading-snug text-muted"
-                    >
-                      {{ a.description ?? a.hint }}
-                    </span>
-                  </div>
-
-                  <div class="flex shrink-0 items-center gap-1">
-                    <button
-                      ref="captureRef"
-                      type="button"
-                      class="flex min-w-[64px] cursor-pointer items-center justify-end gap-1 rounded-[8px] px-1.5 py-1 transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
-                      :class="capturingId === a.id ? 'bg-hover' : ''"
-                      :tabindex="open ? 0 : -1"
-                      :aria-label="
-                        capturingId === a.id
-                          ? `Press a new key combination for ${a.label}; Escape cancels`
-                          : `Rebind ${a.label}`
-                      "
-                      @click="startCapture(a)"
-                    >
-                      <template v-if="capturingId === a.id">
-                        <span class="text-[11px] font-medium text-ink-soft">
-                          Press keys…
-                        </span>
-                      </template>
-                      <template v-else>
-                        <kbd
-                          v-for="(tok, i) in prettyBinding(a)"
-                          :key="i"
-                          class="rounded-[5px] border border-muted/25 bg-hover px-1.5 py-0.5 font-mono text-[11px] leading-none text-ink-soft"
-                        >
-                          {{ tok }}
-                        </kbd>
-                      </template>
-                    </button>
-
-                    <button
-                      v-if="isCustomized(a.id)"
-                      type="button"
-                      :tabindex="open ? 0 : -1"
-                      class="flex size-6 items-center justify-center rounded-[8px] text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:bg-hover focus-visible:outline-none"
-                      :aria-label="`Reset ${a.label} to its default`"
-                      title="Reset shortcut"
-                      @click="reset(a.id)"
-                    >
-                      <HugeiconsIcon
-                        :icon="RefreshIcon"
-                        :size="13"
-                        :stroke-width="2"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-                </div>
-
-                <p
-                  v-if="capturingId === a.id && captureMsg"
-                  class="px-3 pb-2 text-[11px] leading-snug text-red-500"
-                >
-                  {{ captureMsg }}
-                </p>
-              </li>
-            </ul>
-          </section>
-        </div>
-
-        <p v-else class="px-3 text-[11px] leading-snug text-muted">
-          No customizable shortcuts yet.
-        </p>
-      </motion.section>
-
       <SettingsThreadStripPane v-else-if="pane === 'motion'" :open="open" @back="backToRoot" />
 
     </div>
 
     <!-- Controls sit at the foot of the panel. Sound is the first. Only the
          switch itself toggles — the label and icon are inert. It lives on the
-         root pane only; a detail pane like Shortcuts fills the panel. -->
+         root pane only; a detail pane fills the panel. -->
     <div v-if="pane === 'root'" class="mt-auto flex items-center justify-between gap-4">
       <span class="flex items-center gap-3">
         <HugeiconsIcon
@@ -765,8 +504,8 @@ defineExpose({ cancelCapture });
 
 <style scoped>
 /* No visible bar — the drawer column smokes its top/bottom edges (mask bound from
-   useEdgeFade) exactly like the settings pages, so the one long list here
-   (Shortcuts) fades out of view instead of hard-cutting under a scrollbar. */
+   useEdgeFade) exactly like the settings pages, so the root list fades out of
+   view instead of hard-cutting under a scrollbar. */
 .settings-scroll {
   scrollbar-width: none;
 }
@@ -800,27 +539,5 @@ defineExpose({ cancelCapture });
    a keyboard user needs a ring — the same one the pages and shortcut chips wear. */
 .nav-row:focus-visible {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-
-/* The pane's back button wears the same glyph as the app's corner return:
-   the return arrow turned upside down, then mirrored left-to-right — and the
-   same 20px/6px/wash+ring recipe as every page's back, not a bigger one. */
-.back-glyph {
-  border-radius: 6px;
-  cursor: pointer;
-  transition:
-    background-color 0.14s ease,
-    color 0.14s ease;
-}
-.back-glyph:hover {
-  background-color: var(--hover);
-  color: var(--ink);
-}
-.back-glyph:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.back-glyph :deep(svg) {
-  transform: rotate(180deg) scaleX(-1);
 }
 </style>

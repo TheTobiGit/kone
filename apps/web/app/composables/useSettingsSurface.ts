@@ -38,6 +38,7 @@ const PAGE_PANES: SettingsPane[] = [
   "providers",
   "motion",
   "profile",
+  "shortcuts",
   "agentsUsage",
   "providerLimits",
   "agentSkills",
