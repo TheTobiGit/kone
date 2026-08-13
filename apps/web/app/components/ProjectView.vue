@@ -647,7 +647,7 @@ const pickerProviders = computed<PickerProvider[]>(() => {
 // Three views over the same page: the working tree ("overview"), the
 // conversation ("board"), and the repository ("git"). Sending the first turn
 // flips to the board; the corner glyphs move between overview and git.
-const surface = ref<"overview" | "board" | "git" | "agents">("overview");
+const surface = ref<"overview" | "board" | "git">("overview");
 
 /** Point agent.activeKey at the thread the composer is editing so setModel and
  *  friends land on the session the next send will use. No-ops until the board
@@ -1106,7 +1106,7 @@ function toLauncher() {
 // return glyph — the file detail, a commit, a pull request — so it never has to
 // answer for a layer it can't see.
 function onBack() {
-  if (surface.value === "board" || surface.value === "git" || surface.value === "agents") {
+  if (surface.value === "board" || surface.value === "git") {
     surface.value = "overview";
     return;
   }
@@ -1130,28 +1130,13 @@ function openGitSpace() {
   void space.load();
 }
 
-// ── the agents surface ────────────────────────────────────────────────────────
-// The repository space's sibling, and mounted on the same terms: nothing about
-// what the agents have spent or what they can reach belongs on project open, but
-// once it has been opened its report and its inventory scan are worth keeping
-// across a step back to the working tree.
-const agentsMounted = ref(false);
-function openAgentSpace() {
-  cue("press");
-  agentsMounted.value = true;
-  surface.value = "agents";
-}
-
 // ── the centre nav ──────────────────────────────────────────────────────────
-// The one row the back arrow and the branch glyph already bookend gains a middle:
-// a name per space this project has — its working tree, the agents working in it,
-// and the repository underneath. It rides the same fixed top line and steps out
-// of the way (like the back arrow) whenever a sub-surface draws its own chrome.
-// Agents sits in the middle deliberately: it reads between the code as it stands
-// and the history of how it got there.
+// The one row the back arrow and the profile chip already bookend gains a middle:
+// a name per space this project has — its working tree, and the repository
+// underneath. It rides the same fixed top line and steps out of the way (like
+// the back arrow) whenever a sub-surface draws its own chrome.
 const NAV = [
   { id: "overview", label: "Project" },
-  { id: "agents", label: "Agents" },
   { id: "git", label: "Git" },
 ] as const;
 const navIndex = computed(() => NAV.findIndex((n) => n.id === surface.value));
@@ -1159,10 +1144,6 @@ function goSurface(target: (typeof NAV)[number]["id"]) {
   if (target === surface.value) return;
   if (target === "git") {
     openGitSpace();
-    return;
-  }
-  if (target === "agents") {
-    openAgentSpace();
     return;
   }
   cue("press");
@@ -1919,19 +1900,6 @@ function onDiscardFile(path: string) {
       />
     </div>
 
-    <!-- AGENTS · what the agents have spent, what they're allowed, and what they
-         can reach. Mounted on the same terms as the repository: on first entry,
-         then kept, so a usage report and an inventory scan survive a step back. -->
-    <div
-      v-if="agentsMounted"
-      class="surface-layer surface-layer--git"
-      :class="{ 'surface-layer--hidden': surface !== 'agents' }"
-      :inert="surface !== 'agents' || Boolean(activeFile)"
-      :aria-hidden="surface !== 'agents' ? 'true' : undefined"
-    >
-      <AgentSpace :project="project" />
-    </div>
-
     <!-- The folder settles into the corner last — rising into place with a soft
          spring, the physical grace note after the greeting, changes, and
          sessions have landed. (Home only — it steps aside once the conversation
@@ -2377,7 +2345,7 @@ function onDiscardFile(path: string) {
 /* ── The centre nav ───────────────────────────────────────────────────────── */
 /* Pinned to the same fixed top line as the two corner buttons, held at centre.
    Borderless like the rest of the app: the only mark of selection is one soft
-   ink-tinted pill sliding between three equal segments. */
+   ink-tinted pill sliding between two equal segments. */
 .project-nav {
   position: fixed;
   top: 1.25rem;
