@@ -87,9 +87,7 @@ import type {
 } from "./git/index.js";
 
 const api = {
-  isDesktop: true as const,
   platform: process.platform,
-  version: process.versions.electron,
   fs: {
     home: (): Promise<string> => ipcRenderer.invoke("fs:home"),
     listDir: (dir: string): Promise<DirListing> =>
@@ -329,7 +327,6 @@ const api = {
       ipcRenderer.invoke("agent:steer-turn", input),
     spawnChildren: (threadId: string): Promise<SpawnedThread[]> =>
       ipcRenderer.invoke("agent:spawn-children", threadId),
-    listSessions: (): Promise<Session[]> => ipcRenderer.invoke("agent:list-sessions"),
     // Persisted conversation history (read-only): rehydrate a project's last
     // thread on open, or list past ones. Null when nothing is stored yet.
     history: {

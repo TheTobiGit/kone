@@ -305,7 +305,6 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) =>
     svc.steerTurn(input),
   );
-  ipcMain.handle("agent:list-sessions", () => svc.listSessions());
   // Read a parent thread's spawned children, projected fresh from the store.
   // The spawn events aren't journaled (derived state), so a reloaded renderer
   // has no record of them — this is the one read that repopulates the dock.

@@ -124,8 +124,3 @@ export function resolveMode(mode: ModeKey, size: number): Resolved {
   cache.set(key, resolved);
   return resolved;
 }
-
-/** Resolve a turn state (working / thinking / a tool family) to its mode. */
-export function resolvePreset(state: TurnOrbState, size: number): Resolved {
-  return resolveMode(STATE_TO_MODE[state], size);
-}

@@ -1912,7 +1912,6 @@ export type KoneAgentApi = {
    *  The spawn events aren't journaled, so a reloaded renderer has no record of
    *  them — this is how the Subagents dock repopulates after a reload. */
   spawnChildren: (threadId: string) => Promise<SpawnedThread[]>;
-  listSessions: () => Promise<Session[]>;
   /** Subscribe to the runtime event stream; returns an unsubscribe fn. */
   onEvent: (cb: (event: RuntimeEvent) => void) => () => void;
 };
@@ -2084,9 +2083,7 @@ export type KoneBoardApi = {
 };
 
 export type KoneDesktopApi = {
-  isDesktop: true;
   platform: string;
-  version: string;
   fs: KoneFsApi;
   git: KoneGitApi;
   system: KoneSystemApi;
