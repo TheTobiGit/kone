@@ -24,19 +24,87 @@
   --color-accent: var(--accent);
   --color-hover: var(--hover);
   --color-sunken: var(--sunken);
+  --color-band: var(--band);
+  --color-raised: var(--raised);
+  --color-raised-high: var(--raised-high);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-strip: var(--strip);
+  --color-panel: var(--panel);
+  --color-field: var(--field);
+  --color-chip: var(--chip);
+  --color-placeholder: var(--placeholder);
+  --color-accent-2: var(--accent-2);
+  --color-highlight: var(--highlight);
+  --color-folder: var(--folder);
+  --color-file: var(--file);
+  --color-agent: var(--agent);
+  --color-boost: var(--boost);
 }
 
+/* Fallback paint: the whole `kone` light scheme. The runtime sets these as
+   inline custom properties on <html>, which beat this block; this only shows
+   when JS never ran, so the app is never left unstyled. */
 :root {
+  /* Surfaces, bottom of the stack up. --sunken sits *beneath* the launcher,
+     revealed when a page slides aside to uncover the settings drawer, so it is
+     always a shade deeper than --ground and the page reads as a lifted card. */
+  --sunken: #e9e8e5;
   --ground: #f6f5f3;
+  --band: color-mix(in srgb, var(--ink) 2%, var(--ground));
+  --raised: #fffefb;
+  --raised-high: #ffffff;
+  --overlay: rgb(39 39 42 / 0.28);
+  /* Named surfaces a theme can pull away from the ladder: the thread strip, a
+     floating panel, an input well, a small chip. Under the default appearance
+     they defer to the surface already painted there. */
+  --strip: var(--ground);
+  --panel: var(--raised);
+  --field: var(--raised-high);
+  --chip: #faf9f6;
+
+  /* Text, descending emphasis. */
   --ink: #27272a;
   --ink-soft: #52525b;
   --muted: #9c9a94;
-  --accent: #d97757;
+  --faint: #b0afaa;
+  --placeholder: #b7b4ae;
+
+  --line: rgb(39 39 42 / 0.1);
+  --line-soft: rgb(39 39 42 / 0.06);
+
   --hover: rgb(39 39 42 / 0.04);
-  /* The surface *beneath* the launcher — revealed when a page slides aside to
-     uncover the settings drawer. Always a shade deeper than --ground so the page
-     reads as a card lifted above it. */
-  --sunken: #e9e8e5;
+  --press: rgb(39 39 42 / 0.08);
+  --selected: color-mix(in oklab, var(--accent) 12%, transparent);
+  --focus: var(--accent);
+
+  --accent: #d97757;
+  --accent-ink: #ffffff;
+  --accent-wash: color-mix(in oklab, var(--accent) 10%, transparent);
+
+  /* The second voice — a counter-hue to the accent, so an interface can carry
+     two identities without either becoming decoration. */
+  --accent-2: #2f7d78;
+  --accent-2-ink: #ffffff;
+  --accent-2-wash: color-mix(in oklab, var(--accent-2) 10%, transparent);
+
+  --highlight: #f0c674;
+  --highlight-wash: color-mix(in oklab, var(--highlight) 22%, transparent);
+
+  /* Object identity: what a folder is, what a file is, what the agent is, and
+     the gold reserved for a boosted/fast mode. */
+  --folder: #c4a44a;
+  --file: #7c8794;
+  --agent: var(--accent);
+  --boost: #f5b300;
+
+  --ok: #059669;
+  --warn: #a57c2b;
+  --danger: #e11d48;
 
   /* Diffstat semantics — insertions/deletions. `--diff-*` is the crisp
      diffstat pair (numbers, dots, badges); `--diff-*-soft` is the warmer,
@@ -45,20 +113,21 @@
   --diff-del: #e11d48;
   --diff-add-soft: #5f9e6a;
   --diff-del-soft: #c2745c;
+
+  --code-bg: color-mix(in srgb, var(--ink) 3%, var(--raised));
+  --term-bg: var(--ground);
+  --term-ink: var(--ink);
+  --term-cursor: var(--accent);
+  --term-selection: color-mix(in oklab, var(--accent) 24%, transparent);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ground: #070708;
-    --ink: #f4f4f5;
-    --ink-soft: #f4f4f5;
-    --muted: #8a8a90;
-    --accent: #d97757;
-    --hover: rgb(244 244 245 / 0.06);
-    --sunken: #000000;
-    --diff-add-soft: #7fb98a;
-    --diff-del-soft: #dc8a6f;
-  }
+/* The runtime tags <html> with this for the span of a theme swap so every
+   surface lands on its new colour in the same frame instead of cross-fading.
+   Transitions only; canvas-driven animation is untouched. */
+.theme-swapping *,
+.theme-swapping *::before,
+.theme-swapping *::after {
+  transition: none !important;
 }
 
 html,

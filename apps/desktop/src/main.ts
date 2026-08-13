@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, net, protocol, shell } from "electron";
+import { app, BrowserWindow, nativeTheme, net, protocol, shell } from "electron";
 
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { setUserDataDir } from "./agent/userDataDir.js";
@@ -121,6 +121,9 @@ async function createWindow() {
     show: false,
     frame: false,
     title: "Kone",
+    // Created before the renderer paints — give the frame the scheme-correct
+    // ground so a fresh window never flashes the opposite theme.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#070708" : "#f6f5f3",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

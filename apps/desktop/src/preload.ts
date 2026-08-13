@@ -63,6 +63,7 @@ import type {
   ScratchpadSaveInput,
 } from "./scratchpad/index.js";
 import type { DirListing } from "./fs.js";
+import type { ThemeMode } from "./system.js";
 import type {
   CloneProgress,
   CloneResult,
@@ -264,6 +265,10 @@ const api = {
     reveal: (target: string): Promise<void> =>
       ipcRenderer.invoke("system:reveal", target),
   },
+  // Appearance: "light" | "dark" | "system". The main process applies it to
+  // nativeTheme so the OS chrome and the window follow the same choice.
+  setTheme: (mode: ThemeMode): Promise<void> =>
+    ipcRenderer.invoke("theme:set", mode),
   agent: {
     // The last known provider surface off the main process's disk cache — no
     // CLI is spawned, so this resolves immediately and lets the picker be real

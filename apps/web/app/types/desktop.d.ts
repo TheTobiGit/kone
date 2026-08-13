@@ -2211,6 +2211,8 @@ export type KoneBoardApi = {
 
 export type KoneDesktopApi = {
   platform: string;
+  /** Hands the chosen appearance to the shell so native chrome follows it. */
+  setTheme: (mode: "light" | "dark" | "system") => Promise<void>;
   fs: KoneFsApi;
   git: KoneGitApi;
   system: KoneSystemApi;
