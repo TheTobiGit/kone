@@ -110,6 +110,75 @@ describe("discoverSkills shadowing", () => {
   });
 });
 
+describe("discoverSkills author", () => {
+  test("reads a top-level author field", async () => {
+    const project = makeProject();
+    const name = `auth-top-${path.basename(project)}`;
+    writeSkill(
+      path.join(project, ".claude", "skills", name),
+      `name: ${name}\nauthor: Jane Doe`,
+    );
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.author).toBe("Jane Doe");
+  });
+
+  test("reads a literal metadata.author field", async () => {
+    const project = makeProject();
+    const name = `auth-dot-${path.basename(project)}`;
+    writeSkill(
+      path.join(project, ".claude", "skills", name),
+      `name: ${name}\nmetadata.author: Jane Doe`,
+    );
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.author).toBe("Jane Doe");
+  });
+
+  test("reads an author nested under metadata", async () => {
+    const project = makeProject();
+    const name = `auth-nested-${path.basename(project)}`;
+    writeSkill(
+      path.join(project, ".claude", "skills", name),
+      `name: ${name}\nmetadata:\n  author: Jane Doe`,
+    );
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.author).toBe("Jane Doe");
+  });
+
+  test("reads an author inline in the metadata value", async () => {
+    const project = makeProject();
+    const name = `auth-inline-${path.basename(project)}`;
+    writeSkill(
+      path.join(project, ".claude", "skills", name),
+      `name: ${name}\nmetadata: author: Jane Doe, source: https://example.com/skills`,
+    );
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.author).toBe("Jane Doe");
+  });
+
+  test("is null when no author is credited", async () => {
+    const project = makeProject();
+    const name = `auth-none-${path.basename(project)}`;
+    writeSkill(path.join(project, ".claude", "skills", name), `name: ${name}`);
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.author).toBeNull();
+  });
+});
+
 describe("discoverSkills manualOnly", () => {
   test("is true only when a disable-model-invocation alias is literally true", async () => {
     const project = makeProject();

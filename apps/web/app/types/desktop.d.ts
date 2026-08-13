@@ -1687,8 +1687,8 @@ export type KoneAgentQuotaApi = {
 
 // ── Agents page: inventory ──────────────────────────────────────────────────
 // A read-only snapshot of what the agent CLIs on this machine can reach:
-// skills, MCP servers, and the instruction files in scope. kone scans and
-// reports; it never writes to any of them.
+// skills, MCP servers, and the instruction files in scope. The scan itself
+// only reads; the writes live below, on the skills API.
 
 /** One on-disk copy of a skill: enough to name where it is and who would
  *  have offered it, never the file's contents. */
@@ -1708,6 +1708,8 @@ export type SkillEntry = {
   scope: "user" | "project" | "plugin" | "system";
   displayName: string | null;
   shortDescription: string | null;
+  /** Who the SKILL.md credits, from `author` (or nested `metadata.author`) frontmatter; null when unsigned. */
+  author: string | null;
   /** Copies of this same skill name that lost the precedence contest, nearest
    *  loser first. Empty for the overwhelming majority of skills. */
   shadowedBy: SkillCopy[];
@@ -1796,6 +1798,128 @@ export type KoneAgentInventoryApi = {
   readSkill: (skillMdPath: string) => Promise<SkillDetail | null>;
 };
 
+// ── Agents page: managing a skill ───────────────────────────────────────────
+// Turning a skill off writes the setting file its own CLI already reads; kone
+// holds no switch of its own. Not every CLI has such a setting, so `unsupported`
+// is a real answer rather than a failure, and it must never be drawn as a
+// switch that does nothing.
+
+/** A skill's effective state. `unsupported` means this CLI offers no way to
+ *  turn a skill off at all. */
+export type SkillState =
+  | "enabled"
+  | "name-only"
+  | "user-invocable-only"
+  | "disabled"
+  | "unsupported";
+
+/** The states that can actually be written — everything but `unsupported`. */
+export type WritableSkillState = Exclude<SkillState, "unsupported">;
+
+/** What the renderer knows about a skill when asking about its state: the
+ *  scan's own facts. */
+export type SkillStateQuery = {
+  origin: string;
+  skillName: string;
+  /** Absolute SKILL.md path — Codex's config selects skills by path. */
+  skillPath?: string;
+  scope?: SkillEntry["scope"];
+  /** The pane's project path, for project-scope settings files. */
+  projectPath?: string | null;
+  frontmatter?: Record<string, string> | null;
+};
+
+/** `reason` is a finished sentence naming the exact file the state came from,
+ *  written to be shown as-is; `source` is that file's path. Both are null for
+ *  a plain enabled skill, which has nothing to explain. */
+export type SkillStateResult = {
+  state: SkillState;
+  reason: string | null;
+  source: string | null;
+};
+
+/** `ok` covers the "nothing needed writing" cases too; `reason` says which. */
+export type StateWriteResult = { ok: boolean; wrotePath: string | null; reason: string };
+
+/** One thing worth telling the author about their SKILL.md. `message` is a
+ *  finished sentence, not a rule name. */
+export type SkillFinding = {
+  id: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+};
+
+/** How much of an agent's at-rest reading budget the skill's listing spends. */
+export type SkillCostFacts = {
+  descriptionChars: number;
+  listingChars: number;
+  overSpecCap: boolean;
+  overListingCap: boolean;
+};
+
+/** One informative fact about what a skill does. `detail` carries the
+ *  specifics; `preview` shows decoded or redacted text where that is the
+ *  point. */
+export type SkillSecuritySignal = {
+  id: string;
+  label: string;
+  detail: string | null;
+  preview: string | null;
+};
+
+/** `limitation` states plainly what this reading cannot tell the user, so the
+ *  signals are never mistaken for a verdict. */
+export type SkillSignals = {
+  cost: SkillCostFacts;
+  security: SkillSecuritySignal[];
+  limitation: string;
+};
+
+/** Where a skill came from — the scan knows this and the path does not. */
+export type SkillSignalsContext = { origin: string; scope: SkillEntry["scope"] };
+
+/** One surgical frontmatter edit: set replaces the key's line, delete removes
+ *  it. The body is preserved byte for byte either way. */
+export type SkillFrontmatterEdit =
+  | { op: "set"; key: string; value: string }
+  | { op: "delete"; key: string };
+
+/** `detail` is one finished sentence describing what happened, on success and
+ *  on failure alike — show it rather than composing wording of your own. */
+export type SkillMutateResult = {
+  ok: boolean;
+  action: string;
+  /** The path the action targeted, or null when it never reached one. */
+  path: string | null;
+  detail: string;
+};
+
+export type KoneAgentSkillsApi = {
+  /** Read a skill's effective state from whatever file its CLI keeps it in. */
+  readState: (query: SkillStateQuery) => Promise<SkillStateResult>;
+  /** Write the state into that same file, surgically — comments, key order and
+   *  formatting in the user's config survive. */
+  writeState: (query: SkillStateQuery, state: WritableSkillState) => Promise<StateWriteResult>;
+  /** Check one SKILL.md against the authoring rules. An unreadable path yields
+   *  no findings. */
+  lint: (skillMdPath: string) => Promise<SkillFinding[]>;
+  /** Derive context cost and the honest signals about what a skill does.
+   *  Resolves to null when the file cannot be read. */
+  signals: (skillMdPath: string, context: SkillSignalsContext) => Promise<SkillSignals | null>;
+  /** Create a new skill folder with a minimal SKILL.md under `root`. */
+  scaffold: (root: string, name: string, description: string) => Promise<SkillMutateResult>;
+  /** Edit frontmatter keys in place, leaving the body untouched. */
+  editFrontmatter: (
+    skillMdPath: string,
+    edits: SkillFrontmatterEdit[],
+  ) => Promise<SkillMutateResult>;
+  /** Move a skill folder to the Trash. Never unlinks. */
+  remove: (skillDir: string) => Promise<SkillMutateResult>;
+  /** Clone a skill from a git URL into `destRoot`, confirming a SKILL.md
+   *  actually arrived before calling it installed. */
+  installFromGit: (url: string, destRoot: string) => Promise<SkillMutateResult>;
+};
+
 /** The user's per-thread picker knobs, persisted via agent:set-thread-selection
  *  so a reopened thread restores the picker exactly where it was left. Each
  *  knob is a ModelDescriptor axis id — the same values SendTurnInput carries;
@@ -1855,6 +1979,9 @@ export type KoneAgentApi = {
   /** Read-only scan of the skills, MCP servers and instruction files this
    *  machine's agent CLIs can reach. */
   inventory: KoneAgentInventoryApi;
+  /** Managing a skill rather than reporting one: its state, its findings, and
+   *  the writes — scaffold, edit, delete, install. */
+  skills: KoneAgentSkillsApi;
   /** Persist the user's per-thread picker selection (model/effort/serviceTier/
    *  contextWindow) so a reopened thread restores it exactly. */
   setThreadSelection: (

@@ -14,6 +14,25 @@ import { createGateway, type GatewayHandle } from "./gateway/index.js";
 import { scanAgentInventory } from "./inventory/index.js";
 import { readSkillDetail } from "./inventory/skillDetail.js";
 import {
+  lintSkillAt,
+  signalsForSkillAt,
+  type SkillSignalsContext,
+} from "./inventory/skillInspect.js";
+import {
+  deleteSkillToTrash,
+  editSkillFrontmatter,
+  installSkillFromGit,
+  scaffoldSkill,
+  type FrontmatterEdit,
+} from "./inventory/skillMutate.js";
+import {
+  readSkillState,
+  writeSkillState,
+  type SkillStateContext,
+  type SkillStateQuery,
+  type WritableSkillState,
+} from "./inventory/skillState.js";
+import {
   detectProviderCredential,
   fetchProviderQuota,
   type QuotaCapableProvider,
@@ -40,6 +59,20 @@ import type {
 // ack calls are `ipcMain.handle` (agent:*); the one runtime event stream is
 // pushed on the "agent:event" side channel to every live renderer, exactly like
 // git's "git:status-changed". Each renderer forwards it into its own store.
+
+/** Rebuilds the context field by field rather than spreading the renderer's
+ *  object, so a stray `home` or `fs` can't redirect a settings write somewhere
+ *  the user never agreed to. */
+function stateContext(query: SkillStateQuery): SkillStateContext {
+  return {
+    origin: query.origin,
+    skillName: query.skillName,
+    skillPath: query.skillPath,
+    scope: query.scope,
+    projectPath: query.projectPath ?? null,
+    frontmatter: query.frontmatter ?? null,
+  };
+}
 
 let service: AgentService | null = null;
 
@@ -396,6 +429,30 @@ export function registerAgentIpc(): void {
     scanAgentInventory(projectPath),
   );
   ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
+  ipcMain.handle("agent:skill-state-read", (_event, query: SkillStateQuery) =>
+    readSkillState(stateContext(query)),
+  );
+  ipcMain.handle(
+    "agent:skill-state-write",
+    (_event, query: SkillStateQuery, state: WritableSkillState) =>
+      writeSkillState({ ...stateContext(query), state }),
+  );
+  ipcMain.handle("agent:skill-lint", (_event, skillMdPath: string) => lintSkillAt(skillMdPath));
+  ipcMain.handle("agent:skill-signals", (_event, skillMdPath: string, context: SkillSignalsContext) =>
+    signalsForSkillAt(skillMdPath, { origin: context.origin, scope: context.scope }),
+  );
+  ipcMain.handle("agent:skill-scaffold", (_event, root: string, name: string, description: string) =>
+    scaffoldSkill(root, name, description),
+  );
+  ipcMain.handle(
+    "agent:skill-edit-frontmatter",
+    (_event, skillMdPath: string, edits: FrontmatterEdit[]) =>
+      editSkillFrontmatter(skillMdPath, edits),
+  );
+  ipcMain.handle("agent:skill-remove", (_event, skillDir: string) => deleteSkillToTrash(skillDir));
+  ipcMain.handle("agent:skill-install", (_event, url: string, destRoot: string) =>
+    installSkillFromGit(url, destRoot),
+  );
   ipcMain.handle("agent:history-archive", (_event, threadId: string, archived: boolean) => {
     const result = store.setArchived(threadId, archived);
     if (!result.ok) {

@@ -8,6 +8,16 @@ import type {
 } from "./agent/ConversationStore.js";
 import type { AgentInventory } from "./agent/inventory/types.js";
 import type { SkillDetail } from "./agent/inventory/skillDetail.js";
+import type { SkillSignalsContext } from "./agent/inventory/skillInspect.js";
+import type { SkillFinding } from "./agent/inventory/skillLint.js";
+import type { SkillSignals } from "./agent/inventory/skillSignals.js";
+import type { FrontmatterEdit, MutateResult } from "./agent/inventory/skillMutate.js";
+import type {
+  SkillStateQuery,
+  SkillStateResult,
+  StateWriteResult,
+  WritableSkillState,
+} from "./agent/inventory/skillState.js";
 import type { QuotaCapableProvider } from "./agent/quota/index.js";
 import type { QuotaProviderReport } from "./agent/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "./agent/usage/report.js";
@@ -386,6 +396,30 @@ const api = {
         ipcRenderer.invoke("agent:inventory-scan", projectPath),
       readSkill: (skillMdPath: string): Promise<SkillDetail | null> =>
         ipcRenderer.invoke("agent:skill-read", skillMdPath),
+    },
+    // Managing a skill, as opposed to reporting one. Every call resolves to a
+    // result carrying its own sentence about what happened; none of them throw
+    // across the wire.
+    skills: {
+      readState: (query: SkillStateQuery): Promise<SkillStateResult> =>
+        ipcRenderer.invoke("agent:skill-state-read", query),
+      writeState: (query: SkillStateQuery, state: WritableSkillState): Promise<StateWriteResult> =>
+        ipcRenderer.invoke("agent:skill-state-write", query, state),
+      lint: (skillMdPath: string): Promise<SkillFinding[]> =>
+        ipcRenderer.invoke("agent:skill-lint", skillMdPath),
+      signals: (
+        skillMdPath: string,
+        context: SkillSignalsContext,
+      ): Promise<SkillSignals | null> =>
+        ipcRenderer.invoke("agent:skill-signals", skillMdPath, context),
+      scaffold: (root: string, name: string, description: string): Promise<MutateResult> =>
+        ipcRenderer.invoke("agent:skill-scaffold", root, name, description),
+      editFrontmatter: (skillMdPath: string, edits: FrontmatterEdit[]): Promise<MutateResult> =>
+        ipcRenderer.invoke("agent:skill-edit-frontmatter", skillMdPath, edits),
+      remove: (skillDir: string): Promise<MutateResult> =>
+        ipcRenderer.invoke("agent:skill-remove", skillDir),
+      installFromGit: (url: string, destRoot: string): Promise<MutateResult> =>
+        ipcRenderer.invoke("agent:skill-install", url, destRoot),
     },
     // Persist the user's per-thread picker selection (model/effort/serviceTier/
     // contextWindow) so a reopened thread restores the picker exactly.

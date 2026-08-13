@@ -142,6 +142,22 @@ function readAliasField(frontmatter: Record<string, string>, keys: readonly stri
   return null;
 }
 
+// A `metadata:` value can carry the author inline as a subkey
+// (`metadata: author: Somebody`); metadataSubkey plucks it out of the
+// comma/semicolon/newline-separated list.
+function metadataSubkey(value: string, key: string): string {
+  const match = new RegExp(`(?:^|[,\n;])\\s*${key}\\s*:\\s*([^,\n;]+)`).exec(value);
+  return match?.[1]?.trim() ?? "";
+}
+
+function readSkillAuthor(frontmatter: Record<string, string>): string | null {
+  const direct = readAliasField(frontmatter, ["author", "metadata.author"]);
+  if (direct) return direct;
+  const metadata = readAliasField(frontmatter, ["metadata"]);
+  if (!metadata) return null;
+  return metadataSubkey(metadata, "author") || null;
+}
+
 async function readSkillEntry(
   skillMdPath: string,
   origin: string,
@@ -180,6 +196,7 @@ async function readSkillEntry(
     scope,
     displayName: readAliasField(frontmatter, ["display-name", "displayName", "title"]),
     shortDescription: readAliasField(frontmatter, ["short-description", "shortDescription", "summary"]),
+    author: readSkillAuthor(frontmatter),
     shadowedBy: [],
     manualOnly: manualInvocation?.toLowerCase() === "true",
   };

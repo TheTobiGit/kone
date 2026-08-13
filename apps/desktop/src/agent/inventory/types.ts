@@ -24,6 +24,8 @@ export type SkillEntry = {
   scope: "user" | "project" | "plugin" | "system";
   displayName: string | null;
   shortDescription: string | null;
+  /** Who the SKILL.md credits, from `author` (or nested `metadata.author`) frontmatter; null when unsigned. */
+  author: string | null;
   /** Copies of this same skill name that lost the precedence contest, nearest
    *  loser first. Empty for the overwhelming majority of skills. */
   shadowedBy: SkillCopy[];
