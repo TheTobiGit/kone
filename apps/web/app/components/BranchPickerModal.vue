@@ -137,7 +137,7 @@ const cardSpring = {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-start overflow-hidden p-6">
+  <div class="fixed inset-0 z-50 flex items-end justify-start overflow-hidden p-10">
     <motion.div
       class="modal-scrim absolute inset-0"
       :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
@@ -163,10 +163,10 @@ const cardSpring = {
       aria-modal="true"
       aria-label="Switch branch"
     >
-      <div ref="contentEl" class="branch-browser flex shrink-0 flex-col py-4 pl-4">
+      <div ref="contentEl" class="branch-browser flex shrink-0 flex-col px-3 pb-3">
         <!-- Header band: title + dismiss, the same recessed band the folder
              browser wears. -->
-        <div class="picker-header -ml-4 -mt-4 mb-4 flex items-center justify-between gap-4">
+        <div class="picker-header -mx-3 mb-3 flex items-center justify-between gap-4">
           <span class="branch-title">Switch branch</span>
           <button
             type="button"
@@ -179,7 +179,7 @@ const cardSpring = {
         </div>
 
         <div
-          class="picker-scroll relative flex max-h-[48vh] w-full flex-col items-stretch overflow-y-auto overflow-x-hidden py-1 pr-4"
+          class="picker-scroll relative flex max-h-[48vh] w-full flex-col items-stretch gap-0.5 overflow-y-auto overflow-x-hidden"
         >
           <p v-if="loading" class="branch-note">Loading…</p>
           <p v-else-if="loadError" class="branch-note">{{ loadError }}</p>
@@ -227,13 +227,13 @@ const cardSpring = {
 
 .branch-browser {
   --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
-  --band-arc: 14px;
+  --band-arc: 10px;
 }
 
 /* Recessed header band with the arc scoops that flow into the card walls. */
 .picker-header {
   position: relative;
-  padding: 0.625rem 1rem;
+  padding: 0.75rem 1.5rem;
   background-color: var(--band-bg);
 }
 .picker-header::before,
@@ -296,7 +296,7 @@ const cardSpring = {
   width: 100%;
   cursor: pointer;
   border-radius: 10px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.625rem 0.75rem;
   text-align: left;
   color: var(--ink);
   transition:
@@ -348,7 +348,7 @@ const cardSpring = {
 }
 
 .branch-note {
-  padding: 0.5rem 0.75rem;
+  padding: 0.625rem 0.75rem;
   font-size: 14px;
   line-height: 1.35;
   color: var(--muted);
