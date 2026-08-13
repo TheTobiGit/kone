@@ -44,7 +44,11 @@ function draw(time: number) {
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, size, size);
-  drawTurnOrb(ctx, size, reduced ? 0.6 : time / 1000, dark, props.state, reduced);
+  // A settled orb (batch collapsed, pill idle, …) must not keep ticking: theme
+  // and class mutations elsewhere still call `sync()`, and feeding those a live
+  // timestamp made a "stopped" worker look like it was still running.
+  const frozen = reduced || !props.active;
+  drawTurnOrb(ctx, size, frozen ? 0.6 : time / 1000, dark, props.state, frozen);
 }
 
 function stop() {
