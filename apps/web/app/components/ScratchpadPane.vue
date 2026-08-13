@@ -495,26 +495,27 @@ function onKeydown(e: KeyboardEvent): void {
   --pad-tc-ash: #8a8a90;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --pad-hl-copper: rgba(217, 119, 87, 0.36);
-    --pad-hl-amber: rgba(234, 179, 8, 0.32);
-    --pad-hl-moss: rgba(16, 185, 129, 0.3);
-    --pad-hl-sky: rgba(86, 152, 255, 0.32);
-    --pad-hl-orchid: rgba(178, 124, 245, 0.32);
+/* The dark column keys off the scheme class the theme runtime toggles on <html>,
+   not a media query, so the pens follow the app's chosen appearance rather than
+   the OS's. */
+html.dark {
+  --pad-hl-copper: rgba(217, 119, 87, 0.36);
+  --pad-hl-amber: rgba(234, 179, 8, 0.32);
+  --pad-hl-moss: rgba(16, 185, 129, 0.3);
+  --pad-hl-sky: rgba(86, 152, 255, 0.32);
+  --pad-hl-orchid: rgba(178, 124, 245, 0.32);
 
-    --pad-hl-copper-dot: rgba(226, 137, 108, 0.8);
-    --pad-hl-amber-dot: rgba(234, 179, 8, 0.8);
-    --pad-hl-moss-dot: rgba(52, 199, 148, 0.75);
-    --pad-hl-sky-dot: rgba(108, 166, 255, 0.75);
-    --pad-hl-orchid-dot: rgba(188, 141, 247, 0.75);
+  --pad-hl-copper-dot: rgba(226, 137, 108, 0.8);
+  --pad-hl-amber-dot: rgba(234, 179, 8, 0.8);
+  --pad-hl-moss-dot: rgba(52, 199, 148, 0.75);
+  --pad-hl-sky-dot: rgba(108, 166, 255, 0.75);
+  --pad-hl-orchid-dot: rgba(188, 141, 247, 0.75);
 
-    --pad-tc-copper: #e8907a;
-    --pad-tc-moss: #5fc294;
-    --pad-tc-sky: #7fa9f0;
-    --pad-tc-orchid: #b58ae0;
-    --pad-tc-ash: #9c9ca4;
-  }
+  --pad-tc-copper: #e8907a;
+  --pad-tc-moss: #5fc294;
+  --pad-tc-sky: #7fa9f0;
+  --pad-tc-orchid: #b58ae0;
+  --pad-tc-ash: #9c9ca4;
 }
 
 .pad-doc > *:first-child {

@@ -2699,16 +2699,16 @@ function onDiscardFile(path: string) {
   max-width: min(520px, calc(100vw - 48px));
   padding: 9px 14px;
   border-radius: 999px;
-  background: var(--surface, #1c1c1e);
-  border: 1px solid color-mix(in srgb, var(--line, #3a3a3c) 70%, transparent);
+  background: var(--sunken);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
-  color: var(--ink-soft, #d4d4d8);
+  color: var(--ink-soft);
   font-size: 12.5px;
   line-height: 1.4;
 }
 .archive-notice :deep(svg) {
   flex: none;
-  color: var(--amber, #f59e0b);
+  color: var(--warn);
 }
 .archive-notice-enter-active,
 .archive-notice-leave-active {

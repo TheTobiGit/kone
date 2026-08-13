@@ -1192,10 +1192,10 @@ defineExpose({ wake, setDraft });
             >
               <!-- Stop square while a turn runs; the send arrow otherwise. -->
               <svg v-if="busy" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
-                <rect x="5" y="5" width="8" height="8" rx="2" fill="#FFFFFF" />
+                <rect x="5" y="5" width="8" height="8" rx="2" fill="var(--accent-ink)" />
               </svg>
               <svg v-else class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
-                <path d="M9 14V4.2M9 4.2L4.3 8.9M9 4.2L13.7 8.9" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M9 14V4.2M9 4.2L4.3 8.9M9 4.2L13.7 8.9" fill="none" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
           </div>
@@ -1246,43 +1246,9 @@ defineExpose({ wake, setDraft });
 </template>
 
 <style scoped>
-/* Pill rim — polished chrome: a conic sweep of two specular highlights and two
-   dark bands, cool in the shadows with one warm bounce so the metal reads as
-   lit rather than grey. The send seed layers the sheen on top for the marble. */
 .dock {
-  --pill-rim: conic-gradient(
-    in oklab from 205deg at 50% 50%,
-    oklch(90% 0.004 250) 0%,
-    oklch(64% 0.006 258) 13%,
-    oklch(97% 0.002 250) 27%,
-    oklch(74% 0.005 262) 41%,
-    oklch(93% 0.006 85) 55%,
-    oklch(61% 0.006 258) 71%,
-    oklch(95% 0.003 250) 86%,
-    oklch(90% 0.004 250) 100%
-  );
   /* Accent rings (drag, armed, busy) ride the same metal, not a hue. */
   --chrome-ring: 138 141 149;
-  --sheen: radial-gradient(
-    ellipse 125% 125% at 30% 24% in oklab,
-    oklab(100% 0 0 / 85%) 0%,
-    oklab(100% 0 0 / 0%) 42%
-  );
-  /* A warm near-white so the card sits in the same family as the cream board
-     (--ground #f6f5f3) rather than reading cold on top of it — still bright
-     enough to lift clear of the page. */
-  --surface: #fffefb;
-  --field-ink: #17171a;
-  --placeholder: #b7b4ae;
-  --btn: #fffefb;
-  --btn-border: rgb(0 0 0 / 0.08);
-  --btn-ink: #55555a;
-  --chip: #faf9f6;
-  --chip-ink: #3a3a3e;
-  --chip-x: #b0aea9;
-  /* The tray slab — one step below the card, seated toward the ground so the
-     card reads as lifted above it. Never a hairline. */
-  --tray: #f0efec;
 
   /* A column now: the card, with the context tray tucked in behind its floor. */
   display: flex;
@@ -1321,11 +1287,11 @@ defineExpose({ wake, setDraft });
   max-width: 380px;
   padding: 8px;
   border-radius: 14px;
-  background: var(--surface);
+  background: var(--raised);
   box-shadow:
     rgb(0 0 0 / 0.10) 0 8px 28px -6px,
     rgb(0 0 0 / 0.06) 0 2px 8px -2px,
-    var(--btn-border) 0 0 0 1px;
+    var(--line) 0 0 0 1px;
   pointer-events: auto;
 }
 .queue__head {
@@ -1367,7 +1333,7 @@ defineExpose({ wake, setDraft });
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: var(--field-ink);
+  color: var(--ink);
 }
 .queue__remove {
   display: inline-flex;
@@ -1376,12 +1342,12 @@ defineExpose({ wake, setDraft });
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--chip-x);
+  color: var(--faint);
   cursor: pointer;
 }
 .queue__remove:hover {
   background: color-mix(in srgb, var(--ink) 8%, transparent);
-  color: var(--field-ink);
+  color: var(--ink);
 }
 .queue__x {
   display: block;
@@ -1411,37 +1377,10 @@ defineExpose({ wake, setDraft });
   box-shadow: rgb(var(--chrome-ring) / 0.30) 0 0 0 3px;
 }
 
-@media (prefers-color-scheme: dark) {
-  .dock {
-    /* Neutral dark (no blue cast) in the same family as the near-black board
-       (--ground #070708) — a clear but calm lift, not a floating cool slab. */
-    --surface: #18181a;
-    --field-ink: #f4f4f5;
-    --placeholder: #6b6b72;
-    --btn: #202022;
-    --btn-border: rgb(255 255 255 / 0.1);
-    --btn-ink: #c4c4c8;
-    --chip: #202022;
-    --chip-ink: #e6e6e8;
-    --chip-x: #7a7a80;
-    /* Tray recedes below the card toward the ground (matching light mode's
-       card → tray → ground stacking), instead of floating brighter than it. */
-    --tray: #101012;
-    /* Chrome darkens on a dark surface — the highlights stay bright so the rim
-       still reads as metal, but the dark bands drop to keep it off the page. */
-    --pill-rim: conic-gradient(
-      in oklab from 205deg at 50% 50%,
-      oklch(78% 0.004 250) 0%,
-      oklch(42% 0.006 258) 13%,
-      oklch(92% 0.002 250) 27%,
-      oklch(56% 0.005 262) 41%,
-      oklch(82% 0.006 85) 55%,
-      oklch(38% 0.006 258) 71%,
-      oklch(86% 0.003 250) 86%,
-      oklch(78% 0.004 250) 100%
-    );
-    --chrome-ring: 168 171 179;
-  }
+/* A brighter chrome ring in dark, so the drag/armed/busy glows keep their
+   weight off the near-black ground. Everything else follows the theme. */
+html.dark .dock {
+  --chrome-ring: 168 171 179;
 }
 
 /* ── The morphing surface ─────────────────────────────────────────────────── */
@@ -1534,7 +1473,7 @@ defineExpose({ wake, setDraft });
 .surface.is-open .panel {
   display: flex;
   flex-direction: column;
-  background: var(--surface);
+  background: var(--field);
   border-radius: 26px;
   flex: 1 1 auto;
   min-height: 0;
@@ -1637,7 +1576,7 @@ defineExpose({ wake, setDraft });
   border: 0;
   outline: 0;
   background: transparent;
-  color: var(--field-ink);
+  color: var(--ink);
   font-family: var(--font-sans);
   font-size: 16px;
   line-height: 25px;
@@ -1717,14 +1656,14 @@ defineExpose({ wake, setDraft });
   border: 0;
   border-radius: 9px;
   background: transparent;
-  color: var(--btn-ink);
+  color: var(--ink-soft);
   cursor: pointer;
   opacity: 0.78;
   transition: opacity 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
 }
 .barbtn:hover {
   opacity: 1;
-  background: color-mix(in srgb, var(--chip-ink) 6%, transparent);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .barbtn:active { transform: scale(0.95); }
 
@@ -1745,7 +1684,7 @@ defineExpose({ wake, setDraft });
   margin-top: 0;
   padding: 0 14px;
   border-radius: 0 0 18px 18px;
-  background: var(--tray);
+  background: var(--sunken);
   opacity: 0;
   transform: translateY(-8px);
   pointer-events: none;
@@ -1779,14 +1718,14 @@ defineExpose({ wake, setDraft });
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--chip-x);
+  color: var(--faint);
   font-family: var(--font-sans);
   font-size: 11.5px;
   line-height: 14px;
   white-space: nowrap;
 }
 .tray__label {
-  color: var(--chip-ink);
+  color: var(--ink);
   opacity: 0.62;
   max-width: 148px;
   overflow: hidden;
@@ -1798,7 +1737,7 @@ defineExpose({ wake, setDraft });
   transition: background-color 0.2s ease;
 }
 .tray__item--action:hover {
-  background: color-mix(in srgb, var(--chip-ink) 7%, transparent);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
 }
 .tray__item--action:hover .tray__label { opacity: 0.9; }
 .tray__item--end {
@@ -1843,7 +1782,7 @@ defineExpose({ wake, setDraft });
   width: 30px;
   height: 30px;
   margin-right: 4px;
-  border: 1px solid var(--btn-border);
+  border: 1px solid var(--line);
   border-radius: 50%;
   background: color-mix(in srgb, var(--ink) 5%, transparent);
   color: var(--muted);
@@ -1878,10 +1817,10 @@ defineExpose({ wake, setDraft });
   gap: 8px;
   height: 32px;
   padding: 0 5px 0 8px;
-  border: 1px solid var(--btn-border);
+  border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--chip);
-  color: var(--chip-x);
+  color: var(--faint);
 }
 .chip--image { padding-left: 4px; }
 /* Extension badge for non-image files — a soft neutral tile, no loud colour
@@ -1894,8 +1833,8 @@ defineExpose({ wake, setDraft });
   height: 20px;
   padding: 0 5px;
   border-radius: 6px;
-  background: var(--btn-border);
-  color: var(--chip-ink);
+  background: var(--line);
+  color: var(--ink);
   font-family: var(--font-mono);
   font-weight: 700;
   font-size: 8.5px;
@@ -1912,7 +1851,7 @@ defineExpose({ wake, setDraft });
   display: block;
 }
 .chip__name {
-  color: var(--chip-ink);
+  color: var(--ink);
   font-size: 13px;
   font-weight: 500;
   line-height: 16px;
@@ -1934,16 +1873,16 @@ defineExpose({ wake, setDraft });
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--chip-x);
+  color: var(--faint);
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
-.chip__remove:hover { background: var(--btn-border); color: var(--chip-ink); }
+.chip__remove:hover { background: var(--line); color: var(--ink); }
 .chip__remove:active { transform: scale(0.9); }
 .chip__x { width: 12px; height: 12px; flex-shrink: 0; }
 .chips__notice {
   align-self: center;
-  color: var(--chip-x);
+  color: var(--faint);
   font-size: 12px;
   line-height: 16px;
 }
@@ -1953,7 +1892,7 @@ defineExpose({ wake, setDraft });
    full picker. It's the one control allowed to give up width on a narrow card. */
 .model { flex: 0 1 auto; min-width: 0; gap: 7px; }
 .model__name {
-  color: var(--chip-ink);
+  color: var(--ink);
   font-size: 12.5px;
   font-weight: 500;
   line-height: 16px;
@@ -1967,10 +1906,10 @@ defineExpose({ wake, setDraft });
 /* ── Permission mode (autonomy ladder) ────────────────────────────────────── */
 /* The hued icon carries the rung and a neutral label names it. Cycles on click,
    with a tactile pop. */
-.mode { color: var(--mode-hue, #9a9a97); opacity: 0.92; }
+.mode { color: var(--mode-hue, var(--muted)); opacity: 0.92; }
 .mode__icon { width: 15px; height: 15px; }
 .mode__label {
-  color: var(--chip-ink);
+  color: var(--ink);
   font-size: 12.5px;
   font-weight: 500;
   line-height: 16px;
@@ -1999,7 +1938,7 @@ defineExpose({ wake, setDraft });
    cycle is readable at a glance rather than something you have to count. */
 .effort { gap: 6px; opacity: 0.9; }
 .effort__label {
-  color: var(--chip-ink);
+  color: var(--ink);
   font-size: 12.5px;
   font-weight: 500;
   line-height: 16px;
@@ -2009,17 +1948,17 @@ defineExpose({ wake, setDraft });
 .effort--bump .stack { animation: effort-pop 0.24s cubic-bezier(0.34, 1.5, 0.64, 1); }
 
 /* ── Fast mode toggle ─────────────────────────────────────────────────────── */
-.fast { width: 28px; padding: 0; color: var(--chip-ink); opacity: 0.66; }
+.fast { width: 28px; padding: 0; color: var(--ink); opacity: 0.66; }
 .fast--on {
-  color: #f5b300;
+  color: var(--boost);
   opacity: 1;
-  filter: drop-shadow(0 0 4px rgba(245, 179, 0, 0.5));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--boost) 50%, transparent));
 }
 
 /* ── Context-window cycle ─────────────────────────────────────────────────── */
 .ctxwin {
   min-width: 32px;
-  color: var(--chip-ink);
+  color: var(--ink);
   font: 500 11px/1 var(--font-mono, ui-monospace, monospace);
   letter-spacing: 0.02em;
   opacity: 0.66;
@@ -2046,17 +1985,17 @@ defineExpose({ wake, setDraft });
   gap: 1px;
   padding: 6px;
   border-radius: 14px;
-  background: var(--surface);
+  background: var(--raised);
   box-shadow:
     rgb(0 0 0 / 0.10) 0 8px 28px -6px,
     rgb(0 0 0 / 0.06) 0 2px 8px -2px,
-    var(--btn-border) 0 0 0 1px;
+    var(--line) 0 0 0 1px;
 }
 .menu--model { right: 0; min-width: 232px; max-width: 320px; max-height: 340px; overflow-y: auto; }
 .menu__empty {
   margin: 0;
   padding: 10px 12px;
-  color: var(--chip-x);
+  color: var(--faint);
   font-size: 13px;
 }
 .opt {
@@ -2085,10 +2024,10 @@ defineExpose({ wake, setDraft });
   background: var(--hover);
 }
 .opt__stack { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
-.opt__label { flex: 1 1 auto; color: var(--chip-ink); font-size: 13.5px; font-weight: 500; }
+.opt__label { flex: 1 1 auto; color: var(--ink); font-size: 13.5px; font-weight: 500; }
 .opt__stack .opt__label { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.opt__vendor { color: var(--chip-x); font-size: 11px; line-height: 1.2; }
-.opt__hint { color: var(--chip-x); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+.opt__vendor { color: var(--faint); font-size: 11px; line-height: 1.2; }
+.opt__hint { color: var(--faint); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 .opt--model { align-items: center; }
 .opt .stack { flex-shrink: 0; }
 .opt__check { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent); }
@@ -2101,8 +2040,8 @@ defineExpose({ wake, setDraft });
 .seed__stop { width: 15px; height: 15px; }
 .seed--busy { animation: seed-pulse 1.8s ease-in-out infinite; }
 @keyframes seed-pulse {
-  0%, 100% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.10) 0 0 0 3px; }
-  50% { box-shadow: rgb(255 255 255 / 0.6) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.28) 0 0 0 6px; }
+  0%, 100% { box-shadow: color-mix(in srgb, var(--accent-ink) 60%, transparent) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.10) 0 0 0 3px; }
+  50% { box-shadow: color-mix(in srgb, var(--accent-ink) 60%, transparent) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.28) 0 0 0 6px; }
 }
 
 .fade-enter-active { transition: opacity 0.24s ease 0.08s; }

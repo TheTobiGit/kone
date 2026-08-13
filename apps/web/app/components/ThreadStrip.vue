@@ -22,7 +22,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   useEventListener,
-  usePreferredDark,
   usePreferredReducedMotion,
   useResizeObserver,
 } from "@vueuse/core";
@@ -1219,8 +1218,8 @@ function columnLabel(c: Pane): string {
 // On white, the plasma's ridge veins read as a soft cloud; on near-black the
 // same veins glow as high-contrast filaments — the same tuning as the
 // projects-list empty state, so the bare board shares its ambient floor.
-const isDark = usePreferredDark();
-const plasmaOpacity = computed(() => (isDark.value ? 0.5 : 1));
+const { scheme } = useTheme();
+const plasmaOpacity = computed(() => (scheme.value === "dark" ? 0.5 : 1));
 
 const chooserActions = computed(() =>
   PANE_KINDS.map((meta) => ({
@@ -1582,12 +1581,6 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
           :grain="0.4"
           :sparkle="0.35"
           :opacity="plasmaOpacity"
-          light-color-a="#f6f5f3"
-          light-color-b="#efe4dc"
-          light-color-c="#e4c1af"
-          dark-color-a="#070708"
-          dark-color-b="#120d0a"
-          dark-color-c="#43251a"
         />
       </motion.div>
       <div class="chooser__panel">

@@ -371,7 +371,7 @@ const crumb = computed(() => {
   max-width: min(36ch, calc(100vw - 4rem));
   padding: 10px 12px;
   border-radius: 12px;
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
     0 6px 24px rgba(0, 0, 0, 0.12);

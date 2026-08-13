@@ -76,12 +76,9 @@ const reduced = typeof window !== 'undefined'
 
 // The particles ARE the orb — there's no disc behind them, so they're toned to
 // read against the page: luminous grey on a dark ground, ink-grey on a light
-// one. Track the theme live so the orb re-tones when the scheme flips.
-const darkMedia = typeof window !== 'undefined'
-  ? window.matchMedia('(prefers-color-scheme: dark)')
-  : null
-let isDark = darkMedia?.matches ?? true
-const onTheme = (e: MediaQueryListEvent) => { isDark = e.matches }
+// one. The scheme comes from the theme, not the OS, so a forced light or dark
+// appearance re-tones the orb; reading it per frame keeps it live for free.
+const { scheme } = useTheme()
 
 function draw(now: number) {
   const el = canvas.value
@@ -161,6 +158,7 @@ function draw(now: number) {
 
   // On dark: dots glow, so ADD their light (lighter). On light: dots are ink, so
   // paint them normally over the page (source-over) — no glow, no shadow disc.
+  const isDark = scheme.value === 'dark'
   ctx.globalCompositeOperation = isDark ? 'lighter' : 'source-over'
   for (const q of proj) {
     const depth = (q.z + 1) / 2 // 0 far → 1 near
@@ -219,13 +217,11 @@ watch(() => props.active, sync)
 onMounted(() => {
   buildPoints()
   ctx = canvas.value?.getContext('2d') ?? null
-  darkMedia?.addEventListener('change', onTheme)
   document.addEventListener('visibilitychange', sync)
   play()
 })
 onBeforeUnmount(() => {
   pause()
-  darkMedia?.removeEventListener('change', onTheme)
   document.removeEventListener('visibilitychange', sync)
 })
 </script>

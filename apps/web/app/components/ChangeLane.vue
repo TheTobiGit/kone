@@ -390,8 +390,5 @@ const bundleCards: BundleCard[] = [
   color: #d4d4d8;
 }
 
-@media (prefers-color-scheme: dark) {
-  .bundle__card { --sheet-bg: #17171a; border-color: rgb(255 255 255 / 0.08); }
-  .lane--changed .lane__dot { background-color: #3f3f46; }
-}
+html.dark .bundle__card { --sheet-bg: #17171a; border-color: rgb(255 255 255 / 0.08); }
 </style>

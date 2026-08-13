@@ -593,7 +593,7 @@ onBeforeUnmount(() => {
 /* The band vars are self-contained here so the browser looks right in any host
    card (the standalone shell or the clone card). */
 .folder-browser {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
 }
 

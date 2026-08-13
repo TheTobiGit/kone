@@ -58,7 +58,7 @@ const parts = computed(() => {
   flex: none;
 }
 .chip__ico--folder {
-  color: #c4a44a;
+  color: var(--folder);
 }
 .chip__path {
   min-width: 0;

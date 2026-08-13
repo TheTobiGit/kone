@@ -859,7 +859,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }
 .mp-card {
-  background: color-mix(in srgb, var(--ink) 7%, var(--surface, var(--ground)));
+  background: color-mix(in srgb, var(--ink) 7%, var(--panel));
   border-radius: 22px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   transition: height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
@@ -985,7 +985,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   color: var(--ink);
 }
 .mp-search__input::placeholder {
-  color: var(--muted);
+  color: var(--placeholder);
 }
 .mp-search__clear {
   display: inline-flex;
@@ -1057,8 +1057,8 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
 .mp-row:hover .mp-meta-brains { opacity: 1; }
 
 .mp-meta-fast {
-  color: #f5b300;
-  filter: drop-shadow(0 0 3px rgba(245, 179, 0, 0.5));
+  color: var(--boost);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--boost) 50%, transparent));
 }
 
 /* The context-window indicator: a compact monospace token count (200K / 1M),
@@ -1204,9 +1204,9 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   transform: translateY(0) scale(0.95);
 }
 .mp-fast-toggle--on {
-  color: #f5b300;
+  color: var(--boost);
   opacity: 1;
-  filter: drop-shadow(0 0 4px rgba(245, 179, 0, 0.4));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--boost) 40%, transparent));
 }
 
 /* Context-window cycle — a plain label pill matching the composer's ctxwin. */

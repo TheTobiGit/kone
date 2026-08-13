@@ -3,6 +3,8 @@
 // hue. This file keeps the long-lived public surface stable: the same
 // state vocabulary, draw helpers and hue helpers the components import.
 
+import { useTheme } from "~/composables/useTheme";
+import type { ThemeHues } from "~/theme/roles";
 import { MODE_DRAWS } from "~/utils/toolOrb/registry";
 import { STATE_TO_MODE, resolveMode, type ModeKey } from "~/utils/toolOrb/presets";
 import type { OrbSize, ToolOrbFamily, TurnOrbState } from "~/utils/toolOrb/types";
@@ -33,7 +35,19 @@ export function hexToHueDeg(hex: string): number {
   return raw * 60;
 }
 
-export const THINKING_ORB_HUE = "#8b5cf6";
+/** Non-reactive read of the active theme's hue tables, for plain modules that
+ *  cannot call a composable in setup. Reads resolve the live theme at call time,
+ *  so a swap is picked up the next time a drawer or a meta table runs. */
+export function activeHues(): ThemeHues {
+  return useTheme().theme.value.hues;
+}
+
+/** The thinking orb's hue, read from the active theme on each call so a swap
+ *  isn't frozen out. Returned as a bare string: callers interpolate it as a
+ *  CSS value. */
+export function thinkingOrbHue(): string {
+  return activeHues().orbStates.thinking!;
+}
 
 /** Draw one mode's frame — preset (speed + scaled opts) resolved per size. */
 function paintMode(c: OrbDrawCtx, mode: ModeKey): void {

@@ -144,7 +144,7 @@ const cardSpring = {
    springy settle as it grows and shrinks with the listing; a hairline ring
    sits it on the scrim without a heavy drop shadow. */
 .modal-card {
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   /* Decelerating ease with no overshoot: resize smoothly instead of springing

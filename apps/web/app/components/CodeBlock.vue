@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from "vue";
-import { usePreferredDark } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import type { CodeLine } from "~/composables/useHighlighter";
@@ -17,7 +16,7 @@ const props = defineProps<{ code: string; info: string }>();
 
 const { cue } = useSound();
 const { highlightCode } = useHighlighter();
-const dark = usePreferredDark();
+const { scheme } = useTheme();
 
 const lines = shallowRef<CodeLine[] | null>(null);
 const lang = ref<string>("");
@@ -26,10 +25,10 @@ const lang = ref<string>("");
 // against an out-of-order async resolve painting stale colours.
 let seq = 0;
 watch(
-  [() => props.code, dark],
+  [() => props.code, scheme],
   async () => {
     const mine = ++seq;
-    const res = await highlightCode(props.code, props.info, dark.value);
+    const res = await highlightCode(props.code, props.info, scheme.value === "dark");
     if (mine !== seq) return;
     lines.value = res.lines;
     lang.value = res.lang;
@@ -101,9 +100,6 @@ async function copy() {
   border-radius: 13px;
   background: var(--code-bg, var(--hover));
   overflow: hidden;
-}
-@media (prefers-color-scheme: dark) {
-  .cb { --code-bg: rgb(244 244 245 / 0.045); }
 }
 
 /* Header — language on the left, copy fading in on hover. */

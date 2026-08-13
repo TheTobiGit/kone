@@ -33,7 +33,7 @@ import {
   type Segment,
 } from "~/utils/conversationSegments";
 import { toolMeta, type HugeIcon } from "~/utils/toolPresentation";
-import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
+import { thinkingOrbHue } from "~/utils/toolOrbDraw";
 
 // ── Agent activity ─────────────────────────────────────────────────────────────
 //
@@ -352,7 +352,7 @@ onBeforeUnmount(() => ro?.disconnect());
 
 type Glyph = { icon: HugeIcon; hue: string; label: string };
 function glyphOf(e: ActivityEntry): Glyph {
-  if (e.type === "thinking") return { icon: AiBrain01Icon, hue: THINKING_ORB_HUE, label: "Thinking" };
+  if (e.type === "thinking") return { icon: AiBrain01Icon, hue: thinkingOrbHue(), label: "Thinking" };
   const m = toolMeta(e.item.name);
   return { icon: m.icon, hue: m.hue, label: m.label };
 }

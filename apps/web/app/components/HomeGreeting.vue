@@ -243,7 +243,6 @@ const body = computed<Seg[]>(() => {
 
 <style scoped>
 .greet {
-  --hi-muted: #b4b1aa;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -319,7 +318,7 @@ const body = computed<Seg[]>(() => {
   color: var(--ink);
 }
 .t-muted {
-  color: var(--hi-muted);
+  color: var(--ink-soft);
 }
 
 /* The switchable project name — the name + a chevron that sits inline in the
@@ -368,7 +367,7 @@ const body = computed<Seg[]>(() => {
   vertical-align: middle;
   margin-top: -0.1em;
   margin-left: 3px;
-  color: var(--hi-muted);
+  color: var(--ink-soft);
   transition:
     color 0.2s ease,
     transform 0.2s ease;
@@ -440,12 +439,6 @@ const body = computed<Seg[]>(() => {
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
-}
-
-@media (prefers-color-scheme: dark) {
-  .greet {
-    --hi-muted: #6c6c74;
-  }
 }
 
 /* Honour a reduced-motion preference: show the greeting settled, no rise, no

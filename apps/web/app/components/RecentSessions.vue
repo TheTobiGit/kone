@@ -478,22 +478,22 @@ function hasDiff(s: SessionSummary): boolean {
 }
 /* Pin warms to gold — the deliberate group. */
 .rs__pin {
-  stroke: var(--pin-ink, #a57c2b);
+  stroke: var(--warn);
 }
 /* The recent clock stays quiet, tinted to match its label. */
 .rs__clock {
-  stroke: var(--rs-label, #b0afaa);
+  stroke: var(--faint);
 }
 .rs__label {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
   line-height: 1;
-  color: var(--rs-label, #b0afaa);
+  color: var(--faint);
 }
 /* The pinned header carries the gold pin, so its label warms to match. */
 .rs__head:has(.rs__pin) .rs__label {
-  color: var(--pin-ink, #a57c2b);
+  color: var(--warn);
 }
 
 /* ── rows ───────────────────────────────────────────────────────────────── */
@@ -627,12 +627,12 @@ function hasDiff(s: SessionSummary): boolean {
     linear-gradient(
       100deg,
       transparent 20%,
-      color-mix(in srgb, var(--ink, #1c1c1f) 6%, transparent) 40%,
-      color-mix(in srgb, var(--ink, #1c1c1f) 10%, transparent) 50%,
-      color-mix(in srgb, var(--ink, #1c1c1f) 6%, transparent) 60%,
+      color-mix(in srgb, var(--ink) 6%, transparent) 40%,
+      color-mix(in srgb, var(--ink) 10%, transparent) 50%,
+      color-mix(in srgb, var(--ink) 6%, transparent) 60%,
       transparent 80%
     ),
-    color-mix(in srgb, var(--ink, #1c1c1f) 5%, transparent);
+    color-mix(in srgb, var(--ink) 5%, transparent);
   background-size: 220% 100%, 100% 100%;
   background-repeat: no-repeat;
   animation: rs-shimmer 1.4s ease-in-out infinite;
@@ -647,22 +647,6 @@ function hasDiff(s: SessionSummary): boolean {
   .rs-loading-leave-active,
   .rs-out-leave-active { transition: opacity 160ms ease; }
   .rs__skel-row { animation: none; }
-}
-@media (prefers-color-scheme: dark) {
-  .rs__shimmer {
-    background:
-      linear-gradient(
-        100deg,
-        transparent 20%,
-        color-mix(in srgb, #fff 8%, transparent) 40%,
-        color-mix(in srgb, #fff 13%, transparent) 50%,
-        color-mix(in srgb, #fff 8%, transparent) 60%,
-        transparent 80%
-      ),
-      color-mix(in srgb, #fff 6%, transparent);
-    background-size: 220% 100%, 100% 100%;
-    background-repeat: no-repeat;
-  }
 }
 .rs__row {
   position: relative;
@@ -720,7 +704,7 @@ function hasDiff(s: SessionSummary): boolean {
 }
 .rs__row:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink, #1c1c1f) 30%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
 }
 .rs__main {
   display: flex;
@@ -752,7 +736,7 @@ function hasDiff(s: SessionSummary): boolean {
   display: inline-flex;
   flex: none;
   align-items: center;
-  color: color-mix(in srgb, var(--accent, #8b5cf6) 75%, var(--ink-soft, #3f3f46));
+  color: color-mix(in srgb, var(--accent) 75%, var(--ink-soft));
 }
 
 /* mono meta line — branch · diff · when */
@@ -763,7 +747,7 @@ function hasDiff(s: SessionSummary): boolean {
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 14px;
-  color: var(--rs-muted, #a1a1aa);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .rs__branch {
@@ -774,7 +758,7 @@ function hasDiff(s: SessionSummary): boolean {
 }
 .rs__branch svg {
   flex-shrink: 0;
-  stroke: var(--rs-muted, #a1a1aa);
+  stroke: var(--muted);
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -788,7 +772,7 @@ function hasDiff(s: SessionSummary): boolean {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  color: var(--rs-project, #6b6b70);
+  color: var(--ink-soft);
   font-weight: 500;
 }
 .rs__project svg {
@@ -804,8 +788,8 @@ function hasDiff(s: SessionSummary): boolean {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rs__add { color: #059669; }
-.rs__del { color: #e11d48; }
+.rs__add { color: var(--diff-add); }
+.rs__del { color: var(--diff-del); }
 
 /* ── token tally ────────────────────────────────────────────────────────── */
 .rs__tokens {
@@ -823,7 +807,7 @@ function hasDiff(s: SessionSummary): boolean {
   font-size: 22px;
   letter-spacing: -0.02em;
   line-height: 28px;
-  color: var(--rs-count, #27272a);
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
 .rs__unit {
@@ -831,7 +815,7 @@ function hasDiff(s: SessionSummary): boolean {
   font-size: 9px;
   letter-spacing: 0.1em;
   line-height: 12px;
-  color: var(--rs-label, #b0afaa);
+  color: var(--faint);
 }
 
 /* ── trailing row actions ───────────────────────────────────────────────── */
@@ -893,7 +877,7 @@ function hasDiff(s: SessionSummary): boolean {
   border: none;
   border-radius: 7px;
   background: transparent;
-  color: var(--rs-muted, #a1a1aa);
+  color: var(--muted);
   font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 500;
@@ -913,15 +897,15 @@ function hasDiff(s: SessionSummary): boolean {
 }
 .rs__act:hover,
 .rs__act:focus-visible {
-  color: var(--ink, #1c1c1f);
+  color: var(--ink);
 }
 .rs__act:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink, #1c1c1f) 30%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
 }
 /* Pinned: the pin sits lit in gold even at rest. */
 .rs__act--on {
-  color: var(--pin-ink, #a57c2b);
+  color: var(--warn);
 }
 .rs__act--on svg {
   fill: color-mix(in srgb, currentColor 22%, transparent);
@@ -943,16 +927,7 @@ function hasDiff(s: SessionSummary): boolean {
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  .rs {
-    --rs-muted: #8a8a90;
-    --rs-label: #6b6b70;
-    --rs-count: #ededf0;
-    --rs-project: #b6b6bd;
-    --pin-ink: #c99b45;
-  }
-  .rs__name {
-    color: var(--muted);
-  }
+html.dark .rs__name {
+  color: var(--muted);
 }
 </style>

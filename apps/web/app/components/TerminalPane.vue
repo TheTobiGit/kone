@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { useResizeObserver } from "@vueuse/core";
 import "@xterm/xterm/css/xterm.css";
+import { useTheme } from "~/composables/useTheme";
 import type { TerminalSession } from "~/composables/useTerminal";
 
 const props = defineProps<{
@@ -22,32 +23,14 @@ let fitAddon: FitAddon | null = null;
 let webgl: WebglAddon | null = null;
 let detachSink: (() => void) | null = null;
 let noticeShown = false;
-let darkQuery: MediaQueryList | null = null;
-let onSchemeChange: (() => void) | null = null;
+const { scheme, extras } = useTheme();
 
 // ── Theme ────────────────────────────────────────────────────────────────────
-// The terminal is NOT hardcoded dark. Foreground /
-// background / cursor / selection are read live from kone's design tokens
-// (--ground, --ink, --accent) so the terminal reads correctly in both light and
-// dark, and the ANSI-16 palette is a calm, kone-tinted set chosen per scheme
-// (diff-add/diff-del for green/red, muted blues/purples). Rebuilt when the OS
-// colour-scheme flips.
-
-// ANSI palettes tuned to sit calmly on kone's grounds (#f6f5f3 / #070708).
-const ANSI_DARK = {
-  black: "#3b3b42", red: "#f2726f", green: "#4ec9a6", yellow: "#e5b567",
-  blue: "#7aa2f7", magenta: "#c9a2f0", cyan: "#6bd6c6", white: "#d4d4d8",
-  brightBlack: "#5b5b63", brightRed: "#ff8f8b", brightGreen: "#79e3c0",
-  brightYellow: "#f2cd88", brightBlue: "#9cb8ff", brightMagenta: "#dcb8ff",
-  brightCyan: "#8ce8da", brightWhite: "#ffffff",
-};
-const ANSI_LIGHT = {
-  black: "#3f3f46", red: "#c81e3a", green: "#0f8a5f", yellow: "#b45309",
-  blue: "#2563eb", magenta: "#9333ea", cyan: "#0e7490", white: "#52525b",
-  brightBlack: "#71717a", brightRed: "#e11d48", brightGreen: "#059669",
-  brightYellow: "#d97706", brightBlue: "#3b82f6", brightMagenta: "#a855f7",
-  brightCyan: "#0891b2", brightWhite: "#27272a",
-};
+// The terminal is NOT hardcoded dark. The 16-colour ANSI set comes from the
+// active theme's `extras` (one table per scheme), and foreground / background /
+// cursor / selection are read live from the terminal roles (--term-ink,
+// --term-bg, --term-cursor, --term-selection) so a theme's designed terminal
+// comes through as-is. The theme is rebuilt when the resolved scheme flips.
 
 /** Resolve a CSS colour expression (a token ref or color-mix) to a concrete
  *  rgb()/rgba() string xterm accepts, by reading it back off a probe element —
@@ -70,17 +53,17 @@ function makeResolver(): { resolve: (expr: string, fallback: string) => string; 
 }
 
 function buildTheme(): ITheme {
-  const dark = !!darkQuery?.matches;
-  const ansi = dark ? ANSI_DARK : ANSI_LIGHT;
+  const dark = scheme.value === "dark";
+  const ansi = extras.value.ansi;
   const r = makeResolver();
   const theme: ITheme = {
-    background: r.resolve("var(--ground)", dark ? "#070708" : "#f6f5f3"),
-    foreground: r.resolve("var(--ink)", dark ? "#f4f4f5" : "#27272a"),
-    cursor: r.resolve("var(--accent)", "#d97757"),
-    cursorAccent: r.resolve("var(--ground)", dark ? "#070708" : "#f6f5f3"),
+    background: r.resolve("var(--term-bg)", dark ? "#000000" : "#ffffff"),
+    foreground: r.resolve("var(--term-ink)", dark ? "#ffffff" : "#000000"),
+    cursor: r.resolve("var(--term-cursor)", dark ? "#ffffff" : "#000000"),
+    cursorAccent: r.resolve("var(--term-bg)", dark ? "#000000" : "#ffffff"),
     selectionBackground: r.resolve(
-      "color-mix(in oklab, var(--accent) 24%, transparent)",
-      "rgba(217,119,87,0.24)",
+      "var(--term-selection)",
+      dark ? "rgba(255,255,255,0.24)" : "rgba(0,0,0,0.24)",
     ),
     ...ansi,
   };
@@ -105,10 +88,14 @@ function fitSafely(): void {
   emit("resize", cols, rows);
 }
 
+// Rebuild the terminal theme when the resolved scheme flips. Guarded: before
+// the terminal exists (or after it's disposed) there's nothing to re-theme.
+watch(scheme, () => {
+  if (term) term.options.theme = buildTheme();
+});
+
 onMounted(() => {
   if (!container.value) return;
-
-  darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
   // The app's mono token (SF Mono on macOS), so the terminal matches kone's
   // other monospaced surfaces.
@@ -139,12 +126,6 @@ onMounted(() => {
   term.open(container.value);
 
   term.onData((data) => emit("write", data));
-
-  // Rebuild the theme when the OS light/dark preference flips.
-  onSchemeChange = () => {
-    if (term) term.options.theme = buildTheme();
-  };
-  darkQuery.addEventListener("change", onSchemeChange);
 
   // Fit once layout settles (double rAF: lay out, then measure), then attach the
   // live sink so replay wraps at the real width. The composable owns replay.
@@ -198,7 +179,6 @@ function maybeShowExitNotice(status: TerminalSession["status"]): void {
 watch(() => props.session.status, (status) => maybeShowExitNotice(status));
 
 onBeforeUnmount(() => {
-  if (darkQuery && onSchemeChange) darkQuery.removeEventListener("change", onSchemeChange);
   detachSink?.();
   webgl?.dispose();
   fitAddon?.dispose();

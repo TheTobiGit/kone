@@ -464,7 +464,7 @@ onBeforeUnmount(() => {
   width: min(58rem, 100%);
   height: min(88vh, 800px);
   border-radius: 24px;
-  background: var(--surface, var(--ground));
+  background: var(--ground);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent),
     0 28px 70px -20px color-mix(in srgb, #000 48%, transparent);
@@ -474,7 +474,7 @@ onBeforeUnmount(() => {
 
 /* ── header — the recessed band, the dock's own signature ─────────────────── */
 .sh__head {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 16px;
   position: relative;
   display: flex;
@@ -532,14 +532,16 @@ onBeforeUnmount(() => {
   height: 19px;
   font-size: 11px;
   line-height: 1;
-  color: #fff;
+  /* Check and cross both sit on a filled state chip — accent-ink is the theme's
+     ink for text on a coloured fill, where white only works in some themes. */
+  color: var(--accent-ink);
   border-radius: 6px;
 }
 .sh__state-glyph--done {
-  background: color-mix(in oklab, var(--accent) 88%, transparent);
+  background: color-mix(in oklab, var(--ok) 88%, transparent);
 }
 .sh__state-glyph--failed {
-  background: color-mix(in oklab, var(--danger, #e5484d) 82%, transparent);
+  background: color-mix(in oklab, var(--danger) 82%, transparent);
 }
 
 .sh__identity {
@@ -846,7 +848,7 @@ onBeforeUnmount(() => {
 
 /* ── footer band (thread kind) — the open-the-child action ────────────────── */
 .sh__foot {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 16px;
   position: relative;
   display: flex;

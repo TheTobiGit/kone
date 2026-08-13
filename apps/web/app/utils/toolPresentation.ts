@@ -25,100 +25,90 @@ import {
   ToolsIcon,
 } from "@hugeicons/core-free-icons";
 import type { RuntimeItem } from "~/types/desktop";
-import type { ToolOrbFamily } from "~/utils/toolOrbDraw";
+import { activeHues, type ToolOrbFamily } from "~/utils/toolOrbDraw";
 import { looksLikeDirectoryPath, looksLikeSite } from "~/utils/siteChip";
 
 // Icons are Hugeicons SVG data objects (the `:icon` prop of <HugeiconsIcon>), not
 // Vue components — same shape as File01Icon et al.
 export type HugeIcon = typeof File01Icon;
 export type ToolMeta = { icon: HugeIcon; label: string; hue: string; family: ToolOrbFamily };
+type ToolMetaInput = Omit<ToolMeta, "hue">;
 
-// Family hues — mid-tone so they read on both the warm-light and near-black
-// grounds without a per-theme table. Double-encoded with the tool's icon glyph
-// and label text, never colour alone.
-export const HUE = {
-  read: "#5b9dd9", // blues — read / list / inspect
-  write: "#8b7ff0", // violets — write / edit
-  search: "#d99a4e", // ambers — grep / glob / search
-  intel: "#48b0b8", // teal — code intelligence
-  run: "#4fae86", // greens — shell / commands
-  web: "#3fa9c9", // cyan — the network
-  agent: "#d97aa8", // pink — sub-agents / orchestration
-  del: "var(--diff-del)", // red — destructive
-  neutral: "var(--muted)",
-} as const;
-
-const TOOL_TABLE: Record<string, ToolMeta> = {
+const TOOL_TABLE: Record<string, ToolMetaInput> = {
   // filesystem
-  read_file: { icon: File01Icon, label: "Read", hue: HUE.read, family: "read" },
-  view_file: { icon: File01Icon, label: "Read", hue: HUE.read, family: "read" },
-  read: { icon: File01Icon, label: "Read", hue: HUE.read, family: "read" },
-  write_to_file: { icon: FileEditIcon, label: "Write", hue: HUE.write, family: "write" },
-  create_file: { icon: FileEditIcon, label: "Write", hue: HUE.write, family: "write" },
-  write: { icon: FileEditIcon, label: "Write", hue: HUE.write, family: "write" },
-  edit_file: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
-  apply_patch: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
-  str_replace: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
-  replace_file_content: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
-  edit: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
-  multiedit: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" }, // Claude
-  notebookedit: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" }, // Claude
-  list_dir: { icon: ListViewIcon, label: "List", hue: HUE.read, family: "read" },
-  ls: { icon: ListViewIcon, label: "List", hue: HUE.read, family: "read" },
-  delete_file: { icon: Delete02Icon, label: "Delete", hue: HUE.del, family: "del" },
-  rm: { icon: Delete02Icon, label: "Delete", hue: HUE.del, family: "del" },
+  read_file: { icon: File01Icon, label: "Read", family: "read" },
+  view_file: { icon: File01Icon, label: "Read", family: "read" },
+  read: { icon: File01Icon, label: "Read", family: "read" },
+  write_to_file: { icon: FileEditIcon, label: "Write", family: "write" },
+  create_file: { icon: FileEditIcon, label: "Write", family: "write" },
+  write: { icon: FileEditIcon, label: "Write", family: "write" },
+  edit_file: { icon: FileEditIcon, label: "Edit", family: "write" },
+  apply_patch: { icon: FileEditIcon, label: "Edit", family: "write" },
+  str_replace: { icon: FileEditIcon, label: "Edit", family: "write" },
+  replace_file_content: { icon: FileEditIcon, label: "Edit", family: "write" },
+  edit: { icon: FileEditIcon, label: "Edit", family: "write" },
+  multiedit: { icon: FileEditIcon, label: "Edit", family: "write" }, // Claude
+  notebookedit: { icon: FileEditIcon, label: "Edit", family: "write" }, // Claude
+  list_dir: { icon: ListViewIcon, label: "List", family: "read" },
+  ls: { icon: ListViewIcon, label: "List", family: "read" },
+  delete_file: { icon: Delete02Icon, label: "Delete", family: "del" },
+  rm: { icon: Delete02Icon, label: "Delete", family: "del" },
   // search & navigation
-  grep_search: { icon: Search01Icon, label: "Grep", hue: HUE.search, family: "search" },
-  ripgrep: { icon: Search01Icon, label: "Grep", hue: HUE.search, family: "search" },
-  glob_file_search: { icon: Search01Icon, label: "Glob", hue: HUE.search, family: "search" },
-  find_by_name: { icon: Search01Icon, label: "Glob", hue: HUE.search, family: "search" },
-  glob: { icon: Search01Icon, label: "Glob", hue: HUE.search, family: "search" }, // Claude
-  codebase_search: { icon: Search01Icon, label: "Search", hue: HUE.search, family: "search" },
-  grep: { icon: Search01Icon, label: "Grep", hue: HUE.search, family: "search" },
-  search: { icon: Search01Icon, label: "Search", hue: HUE.search, family: "search" },
-  go_to_definition: { icon: SourceCodeIcon, label: "Code intel", hue: HUE.intel, family: "intel" },
-  view_code_item: { icon: SourceCodeIcon, label: "Code intel", hue: HUE.intel, family: "intel" },
-  lsp: { icon: SourceCodeIcon, label: "Code intel", hue: HUE.intel, family: "intel" },
+  grep_search: { icon: Search01Icon, label: "Grep", family: "search" },
+  ripgrep: { icon: Search01Icon, label: "Grep", family: "search" },
+  glob_file_search: { icon: Search01Icon, label: "Glob", family: "search" },
+  find_by_name: { icon: Search01Icon, label: "Glob", family: "search" },
+  glob: { icon: Search01Icon, label: "Glob", family: "search" }, // Claude
+  codebase_search: { icon: Search01Icon, label: "Search", family: "search" },
+  grep: { icon: Search01Icon, label: "Grep", family: "search" },
+  search: { icon: Search01Icon, label: "Search", family: "search" },
+  go_to_definition: { icon: SourceCodeIcon, label: "Code intel", family: "intel" },
+  view_code_item: { icon: SourceCodeIcon, label: "Code intel", family: "intel" },
+  lsp: { icon: SourceCodeIcon, label: "Code intel", family: "intel" },
   // execution
-  bash: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
-  run_terminal_cmd: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
-  execute_command: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
-  run_command: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
-  run: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
-  command: { icon: CommandLineIcon, label: "Run", hue: HUE.run, family: "run" },
+  bash: { icon: CommandLineIcon, label: "Run", family: "run" },
+  run_terminal_cmd: { icon: CommandLineIcon, label: "Run", family: "run" },
+  execute_command: { icon: CommandLineIcon, label: "Run", family: "run" },
+  run_command: { icon: CommandLineIcon, label: "Run", family: "run" },
+  run: { icon: CommandLineIcon, label: "Run", family: "run" },
+  command: { icon: CommandLineIcon, label: "Run", family: "run" },
   // web
-  web_search: { icon: GlobalSearchIcon, label: "Web search", hue: HUE.web, family: "web" },
-  search_web: { icon: GlobalSearchIcon, label: "Web search", hue: HUE.web, family: "web" },
-  websearch: { icon: GlobalSearchIcon, label: "Web search", hue: HUE.web, family: "web" }, // Claude
-  web_fetch: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
-  read_url_content: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
-  view_web_document: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" },
-  webfetch: { icon: Link01Icon, label: "Web fetch", hue: HUE.web, family: "web" }, // Claude
-  list: { icon: ListViewIcon, label: "List", hue: HUE.read, family: "read" },
-  todowrite: { icon: WorkflowSquare01Icon, label: "Plan", hue: HUE.agent, family: "agent" },
-  patch: { icon: FileEditIcon, label: "Edit", hue: HUE.write, family: "write" },
+  web_search: { icon: GlobalSearchIcon, label: "Web search", family: "web" },
+  search_web: { icon: GlobalSearchIcon, label: "Web search", family: "web" },
+  websearch: { icon: GlobalSearchIcon, label: "Web search", family: "web" }, // Claude
+  web_fetch: { icon: Link01Icon, label: "Web fetch", family: "web" },
+  read_url_content: { icon: Link01Icon, label: "Web fetch", family: "web" },
+  view_web_document: { icon: Link01Icon, label: "Web fetch", family: "web" },
+  webfetch: { icon: Link01Icon, label: "Web fetch", family: "web" }, // Claude
+  list: { icon: ListViewIcon, label: "List", family: "read" },
+  todowrite: { icon: WorkflowSquare01Icon, label: "Plan", family: "agent" },
+  patch: { icon: FileEditIcon, label: "Edit", family: "write" },
   // planning & orchestration
-  task: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
-  new_task: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
-  agent: { icon: WorkflowSquare01Icon, label: "Subagent", hue: HUE.agent, family: "agent" },
-  mcp: { icon: WorkflowSquare01Icon, label: "MCP tool", hue: HUE.agent, family: "agent" },
+  task: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
+  new_task: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
+  agent: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
+  mcp: { icon: WorkflowSquare01Icon, label: "MCP tool", family: "agent" },
   // context & specialized
-  deploy_web_app: { icon: Rocket01Icon, label: "Deploy", hue: HUE.run, family: "run" },
+  deploy_web_app: { icon: Rocket01Icon, label: "Deploy", family: "run" },
 };
 
 export function toolMeta(name: string | undefined): ToolMeta {
-  if (!name) return { icon: ToolsIcon, label: "Tool", hue: HUE.neutral, family: "neutral" };
+  const families = activeHues().families;
+  if (!name) return { icon: ToolsIcon, label: "Tool", hue: families.neutral!, family: "neutral" };
   const key = name.trim().toLowerCase();
-  if (TOOL_TABLE[key]) return TOOL_TABLE[key]!;
+  if (TOOL_TABLE[key]) {
+    const meta = TOOL_TABLE[key]!;
+    return { ...meta, hue: families[meta.family]! };
+  }
   // MCP tools arrive as `mcp__server__tool` — read the last segment as the label
   // and hue them as external/orchestration rather than a raw title-cased blob.
   if (key.startsWith("mcp__")) {
     const tail = key.split("__").filter(Boolean).pop() ?? key;
     const label = tail.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    return { icon: WorkflowSquare01Icon, label, hue: HUE.agent, family: "agent" };
+    return { icon: WorkflowSquare01Icon, label, hue: families.agent!, family: "agent" };
   }
   const label = key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return { icon: ToolsIcon, label, hue: HUE.neutral, family: "neutral" };
+  return { icon: ToolsIcon, label, hue: families.neutral!, family: "neutral" };
 }
 
 export function toolStatus(t: RuntimeItem): "running" | "done" | "error" {

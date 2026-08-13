@@ -9,7 +9,7 @@
 
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
-import type { ToolOrbFamily } from "~/utils/toolOrbDraw";
+import { activeHues, type ToolOrbFamily } from "~/utils/toolOrbDraw";
 
 export type TurnActivity = {
   /** Which orb/glyph the pill shows at its left. `done` is a settled turn held
@@ -23,20 +23,6 @@ export type TurnActivity = {
   /** Colours a settled (`done`) turn's glyph + label. */
   tone?: "ok" | "error" | "muted";
 };
-
-// Family hues — kept in lockstep with ConversationThread's HUE table so a tool's
-// orb reads the same colour in the pill as it does in the thread.
-const HUE = {
-  read: "#5b9dd9",
-  write: "#8b7ff0",
-  search: "#d99a4e",
-  intel: "#48b0b8",
-  run: "#4fae86",
-  web: "#3fa9c9",
-  agent: "#d97aa8",
-  del: "var(--diff-del)",
-  neutral: "var(--muted)",
-} as const;
 
 /** Peel the `name:` prefix the providers stamp on a tool_call's text, leaving
  *  just the target (path / query / command). */
@@ -58,8 +44,8 @@ function shorten(s: string, max = 30): string {
   return s.slice(0, max - 1) + "…";
 }
 
-function tool(family: ToolOrbFamily, hue: string, label: string): TurnActivity {
-  return { orb: "tool", family, hue, label };
+function tool(family: ToolOrbFamily, label: string): TurnActivity {
+  return { orb: "tool", family, hue: activeHues().families[family]!, label };
 }
 
 /** The present-tense status for a running tool_call, matching the thread's
@@ -75,11 +61,11 @@ function toolActivity(item: RuntimeItem): TurnActivity {
     case "read_file":
     case "view_file":
     case "read":
-      return tool("read", HUE.read, t ? `Reading ${t}` : "Reading a file");
+      return tool("read", t ? `Reading ${t}` : "Reading a file");
     case "write_to_file":
     case "create_file":
     case "write":
-      return tool("write", HUE.write, t ? `Writing ${t}` : "Writing a file");
+      return tool("write", t ? `Writing ${t}` : "Writing a file");
     case "edit_file":
     case "apply_patch":
     case "str_replace":
@@ -87,28 +73,28 @@ function toolActivity(item: RuntimeItem): TurnActivity {
     case "edit":
     case "multiedit":
     case "notebookedit":
-      return tool("write", HUE.write, t ? `Editing ${t}` : "Editing a file");
+      return tool("write", t ? `Editing ${t}` : "Editing a file");
     case "list_dir":
     case "ls":
-      return tool("read", HUE.read, t ? `Listing ${t}` : "Listing a folder");
+      return tool("read", t ? `Listing ${t}` : "Listing a folder");
     case "delete_file":
     case "rm":
-      return tool("del", HUE.del, t ? `Deleting ${t}` : "Deleting a file");
+      return tool("del", t ? `Deleting ${t}` : "Deleting a file");
     case "grep_search":
     case "ripgrep":
     case "grep":
     case "codebase_search":
     case "search":
-      return tool("search", HUE.search, query ? `Searching for ${query}` : "Searching the codebase");
+      return tool("search", query ? `Searching for ${query}` : "Searching the codebase");
     case "glob_file_search":
     case "find_by_name":
     case "glob":
-      return tool("search", HUE.search, t ? `Finding files matching ${t}` : "Finding files");
+      return tool("search", t ? `Finding files matching ${t}` : "Finding files");
     case "go_to_definition":
     case "view_code_item":
     case "lsp": {
       const symbol = shorten(raw.split("→")[0]?.trim() || raw);
-      return tool("intel", HUE.intel, symbol ? `Looking up ${symbol}` : "Looking something up");
+      return tool("intel", symbol ? `Looking up ${symbol}` : "Looking something up");
     }
     case "bash":
     case "run_terminal_cmd":
@@ -116,30 +102,30 @@ function toolActivity(item: RuntimeItem): TurnActivity {
     case "run_command":
     case "run":
     case "command":
-      return tool("run", HUE.run, t ? `Running ${t}` : "Running a command");
+      return tool("run", t ? `Running ${t}` : "Running a command");
     case "web_search":
     case "search_web":
     case "websearch":
-      return tool("web", HUE.web, query ? `Searching the web for ${query}` : "Searching the web");
+      return tool("web", query ? `Searching the web for ${query}` : "Searching the web");
     case "web_fetch":
     case "read_url_content":
     case "view_web_document":
     case "webfetch": {
       const url = shorten(raw.split("·")[0]?.trim() || raw);
-      return tool("web", HUE.web, url ? `Fetching ${url}` : "Fetching a page");
+      return tool("web", url ? `Fetching ${url}` : "Fetching a page");
     }
     case "task":
     case "new_task":
     case "agent":
-      return tool("agent", HUE.agent, "Running a sub-task");
+      return tool("agent", "Running a sub-task");
     case "mcp":
-      return tool("agent", HUE.agent, "Running an MCP tool");
+      return tool("agent", "Running an MCP tool");
     default: {
-      if (name.startsWith("mcp__")) return tool("agent", HUE.agent, "Running an MCP tool");
+      if (name.startsWith("mcp__")) return tool("agent", "Running an MCP tool");
       if (name.includes("screenshot") || name.includes("capture"))
-        return tool("neutral", HUE.neutral, "Taking a screenshot");
+        return tool("neutral", "Taking a screenshot");
       const human = name ? name.replace(/[_-]+/g, " ") : "a tool";
-      return tool("neutral", HUE.neutral, `Running ${human}`);
+      return tool("neutral", `Running ${human}`);
     }
   }
 }

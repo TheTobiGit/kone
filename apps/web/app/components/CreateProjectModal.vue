@@ -612,9 +612,9 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }
 .modal-card {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   transition: height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
@@ -933,7 +933,7 @@ const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
 }
 .cp-seg-opt.is-on {
   color: var(--ink);
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.14);
 }
 .cp-seg-opt:focus-visible {

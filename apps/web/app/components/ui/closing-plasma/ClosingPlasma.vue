@@ -1,6 +1,8 @@
 <script setup lang="ts">
-  import { ref, onMounted, onBeforeUnmount, computed } from "vue";
-  import { useResizeObserver, usePreferredDark } from "@vueuse/core";
+  import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+  import { useResizeObserver } from "@vueuse/core";
+  import { useTheme } from "~/composables/useTheme";
+  import { extrasFor } from "~/theme/roles";
   import type { ClosingPlasmaProps } from "./types";
   import { cn } from "~/lib/utils";
 
@@ -13,12 +15,6 @@
     vignette: 1,
     opacity: 1,
     interactive: true,
-    darkColorA: "#0d0d14",
-    darkColorB: "#1f2540",
-    darkColorC: "#4a6191",
-    lightColorA: "#f0f2f7",
-    lightColorB: "#d7dceb",
-    lightColorC: "#bcc5e0",
     class: "",
   });
 
@@ -103,12 +99,6 @@ void main(){
 }`;
 
   const HEX_RE = /^#?[0-9a-f]{6}$/i;
-  const DA = "#0d0d14";
-  const DB = "#1f2540";
-  const DC = "#4a6191";
-  const LA = "#f0f2f7";
-  const LB = "#d7dceb";
-  const LC = "#bcc5e0";
 
   function sanitizeHex(v: string, fb: string): string {
     const t = v.trim();
@@ -125,9 +115,13 @@ void main(){
     ];
   }
 
-  // Match the app's theming: it reacts to the OS scheme via prefers-color-scheme
-  // rather than a color-mode module, so mirror that with usePreferredDark.
-  const isDark = usePreferredDark();
+  // The resolved appearance comes from the theme store — the same source the
+  // rest of the app paints from — so an explicit light/dark choice and the OS
+  // preference both land here the same way. The shader holds both triads at once
+  // and blends between them by that flag, so it reads both halves of the theme
+  // rather than the active one, and re-pushes them when the theme changes.
+  const { scheme, theme } = useTheme();
+  const isDark = computed(() => scheme.value === "dark");
 
   const containerRef = ref<HTMLDivElement | null>(null);
   const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -145,6 +139,31 @@ void main(){
 
   type Uniforms = Record<string, WebGLUniformLocation>;
   const uniforms: Uniforms = {};
+
+  /**
+   * Send both scheme triads to the shader; the theme supplies the defaults.
+   *
+   * The shader always holds two ramps and crossfades between them, so it wants a
+   * light triad and a dark triad even from a theme that only has one appearance.
+   * A fixed theme answers with its single ramp for both, which is the correct
+   * reading: it has no other appearance to fade toward.
+   */
+  function pushPalette() {
+    if (!gl) return;
+    const light = extrasFor(theme.value, "light").plasma;
+    const dark = extrasFor(theme.value, "dark").plasma;
+    const stops: [string, readonly [string, string, string], (string | undefined)[]][] = [
+      ["u_dark", dark, [props.darkColorA, props.darkColorB, props.darkColorC]],
+      ["u_light", light, [props.lightColorA, props.lightColorB, props.lightColorC]],
+    ];
+    for (const [prefix, fallback, overrides] of stops) {
+      for (const [i, suffix] of ["A", "B", "C"].entries()) {
+        const fb = fallback[i]!;
+        const [r, g, b] = hexToRgb(overrides[i] ?? fb, fb);
+        gl.uniform3f(uniforms[`${prefix}${suffix}`] ?? null, r, g, b);
+      }
+    }
+  }
 
   function compileShader(
     ctx: WebGLRenderingContext,
@@ -270,18 +289,10 @@ void main(){
       uniforms[n] = loc;
     }
 
-    const dA = hexToRgb(props.darkColorA, DA);
-    const dB = hexToRgb(props.darkColorB, DB);
-    const dC = hexToRgb(props.darkColorC, DC);
-    const lA = hexToRgb(props.lightColorA, LA);
-    const lB = hexToRgb(props.lightColorB, LB);
-    const lC = hexToRgb(props.lightColorC, LC);
-    gl.uniform3f(uniforms.u_darkA ?? null, dA[0], dA[1], dA[2]);
-    gl.uniform3f(uniforms.u_darkB ?? null, dB[0], dB[1], dB[2]);
-    gl.uniform3f(uniforms.u_darkC ?? null, dC[0], dC[1], dC[2]);
-    gl.uniform3f(uniforms.u_lightA ?? null, lA[0], lA[1], lA[2]);
-    gl.uniform3f(uniforms.u_lightB ?? null, lB[0], lB[1], lB[2]);
-    gl.uniform3f(uniforms.u_lightC ?? null, lC[0], lC[1], lC[2]);
+    pushPalette();
+    // A theme swap changes both triads, so they go back down to the GPU. The
+    // props still win where a caller has a reason to override the theme.
+    watch(() => theme.value.id, pushPalette);
 
     resize();
     startTime = performance.now();

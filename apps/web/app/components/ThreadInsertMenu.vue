@@ -178,14 +178,14 @@ function onPick(kind: PaneKind, disabled: boolean): void {
 }
 
 .insert-card {
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   overflow: hidden;
 }
 
 .insert-shell {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
   padding: 0 0 0.5rem 0.75rem;
 }

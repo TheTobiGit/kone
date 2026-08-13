@@ -305,7 +305,7 @@ function discardUnstaged() {
 }
 .ch__dot--add { background-color: var(--diff-add); }
 .ch__dot--del { background-color: var(--diff-del); }
-.ch__dot--idle { background-color: #d4d4d8; }
+.ch__dot--idle { background-color: color-mix(in srgb, var(--ink-soft) 24%, var(--raised-high)); }
 
 .ch__btn {
   display: inline-flex;
@@ -365,11 +365,11 @@ function discardUnstaged() {
   gap: 8px;
   font-size: 12.5px;
   line-height: 1;
-  color: var(--clean-ink, #71717a);
+  color: var(--clean-ink, color-mix(in srgb, var(--ink-soft) 82%, var(--raised-high)));
 }
 .empty__clean svg {
   flex-shrink: 0;
-  stroke: #059669;
+  stroke: var(--diff-add);
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -380,7 +380,7 @@ function discardUnstaged() {
   letter-spacing: 1.5px;
   text-transform: uppercase;
   line-height: 1;
-  color: var(--sync-ink, #c8c6c1);
+  color: var(--sync-ink, color-mix(in srgb, var(--muted) 57%, var(--raised-high)));
 }
 
 /* Centred illustration region. */
@@ -394,8 +394,10 @@ function discardUnstaged() {
   padding: 28px;
 }
 
-/* Three-sheet folder glyph: two fanned back sheets + a centred front sheet,
- */
+/* Three-sheet folder glyph: two fanned back sheets + a centred front sheet.
+   The papers and their marks are built from theme roles — a raised surface,
+   faint-ink edges and dots — so the stack carries the active theme's
+   temperature on every ground. */
 .empty__glyph {
   position: relative;
   width: 180px;
@@ -408,8 +410,8 @@ function discardUnstaged() {
   width: 76px;
   height: 92px;
   border-radius: 12px;
-  border: 1px solid var(--sheet-bd, #e7e6e2);
-  background-color: var(--sheet-bg, #fcfcfb);
+  border: 1px solid var(--sheet-bd, color-mix(in srgb, var(--faint) 32%, var(--raised-high)));
+  background-color: var(--sheet-bg, color-mix(in srgb, var(--ink) 1.6%, var(--raised-high)));
   box-shadow: #1e1b180a 0 4px 12px;
   transform-origin: top left;
   transform: rotate(var(--r));
@@ -433,8 +435,8 @@ function discardUnstaged() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-color: var(--sheet-front-bd, #e4e3df);
-  background-color: var(--sheet-front-bg, #fff);
+  border-color: var(--sheet-front-bd, color-mix(in srgb, var(--faint) 36%, var(--raised-high)));
+  background-color: var(--sheet-front-bg, var(--raised-high));
   box-shadow: #1e1b1812 0 6px 16px;
   animation-delay: calc(var(--proj-enter-changes, 0ms) + 120ms);
 }
@@ -443,14 +445,14 @@ function discardUnstaged() {
   height: 15px;
   margin: 12px 0 0 12px;
   border-radius: 4px;
-  background-color: var(--sheet-mark, #e7e6e2);
+  background-color: var(--sheet-mark, color-mix(in srgb, var(--faint) 32%, var(--raised-high)));
 }
 .empty__dot--end { margin-left: auto; margin-right: 12px; }
 .empty__dash {
   width: 14px;
   height: 6px;
   border-radius: 3px;
-  background-color: var(--sheet-front-mark, #eae9e5);
+  background-color: var(--sheet-front-mark, color-mix(in srgb, var(--faint) 29%, var(--raised-high)));
 }
 .empty__check {
   position: absolute;
@@ -462,7 +464,7 @@ function discardUnstaged() {
   width: 32px;
   height: 32px;
   border-radius: 16px;
-  background-color: #059669;
+  background-color: var(--diff-add);
   border: 3px solid var(--ground);
   animation: empty-check-in 300ms cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
   animation-delay: calc(var(--proj-enter-changes, 0ms) + 200ms);
@@ -481,14 +483,14 @@ function discardUnstaged() {
   gap: 6px;
   padding: 5px 11px;
   border-radius: 8px;
-  background-color: var(--branch-bg, #00000008);
-  color: var(--branch-ink, #3f3f46);
+  background-color: var(--branch-bg, color-mix(in srgb, var(--ink) 3.8%, var(--ground)));
+  color: var(--branch-ink, color-mix(in srgb, var(--ink-soft) 56.5%, var(--ink)));
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1;
 }
 .empty__branch svg {
-  stroke: var(--branch-mark, #a1a1aa);
+  stroke: var(--branch-mark, var(--muted));
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -507,22 +509,20 @@ function discardUnstaged() {
   .empty__check { animation: none; }
 }
 
-@media (prefers-color-scheme: dark) {
-  .empty {
-    --clean-ink: #8a8a90;
-    --sync-ink: #55555b;
-    --sheet-bd: #2a2a2e;
-    --sheet-bg: #161618;
-    --sheet-front-bd: #33333a;
-    --sheet-front-bg: #1c1c1f;
-    --sheet-mark: #2f2f34;
-    --sheet-front-mark: #34343a;
-    --branch-bg: rgb(244 244 245 / 0.05);
-    --branch-ink: #d4d4d8;
-    --branch-mark: #6b6b70;
-  }
-  .empty__sheet { box-shadow: #0000002e 0 4px 12px; }
-  .empty__sheet--front { box-shadow: #00000038 0 6px 16px; }
-  .ch__dot--idle { background-color: #3f3f46; }
+html.dark .empty {
+  --clean-ink: var(--muted);
+  --sync-ink: color-mix(in srgb, var(--muted) 60%, var(--ground));
+  --sheet-bd: color-mix(in srgb, var(--faint) 13%, var(--raised-high));
+  --sheet-bg: var(--raised);
+  --sheet-front-bd: color-mix(in srgb, var(--faint) 27%, var(--raised-high));
+  --sheet-front-bg: color-mix(in srgb, var(--ink) 2%, var(--raised));
+  --sheet-mark: color-mix(in srgb, var(--faint) 20%, var(--raised-high));
+  --sheet-front-mark: color-mix(in srgb, var(--faint) 27%, var(--raised-high));
+  --branch-bg: color-mix(in srgb, var(--ink) 5%, var(--ground));
+  --branch-ink: color-mix(in srgb, var(--ink) 87%, var(--ground));
+  --branch-mark: var(--faint);
 }
+html.dark .empty__sheet { box-shadow: #0000002e 0 4px 12px; }
+html.dark .empty__sheet--front { box-shadow: #00000038 0 6px 16px; }
+html.dark .ch__dot--idle { background-color: color-mix(in srgb, var(--faint) 43%, var(--raised-high)); }
 </style>

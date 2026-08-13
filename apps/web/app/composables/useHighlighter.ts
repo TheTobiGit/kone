@@ -1,13 +1,16 @@
-import type { BundledLanguage, Highlighter, ThemedToken } from "shiki";
+import { useTheme } from "~/composables/useTheme";
+import type { BundledLanguage, BundledTheme, Highlighter, ThemedToken } from "shiki";
 
-// Syntax highlighting for the file-detail preview, using Shiki with VSCode's own
-// default themes (light-plus / dark-plus) and TextMate grammars — so the colours
-// read exactly like VSCode.
+// Syntax highlighting for the file-detail preview, using Shiki with TextMate
+// grammars. The active theme's `extras` names the Shiki theme (one per scheme),
+// so syntax colours track the app's appearance the way the terminal's ANSI set
+// does.
 //
 // One highlighter is created for the whole app (module-level singleton): making
-// it loads the WASM engine and both themes once. Grammars load per language, and
-// `warm()` preloads the ones a project's changes need the moment it opens, so the
-// first file a user clicks paints instantly instead of loading on demand.
+// it loads the WASM engine once. Themes and grammars load on demand (the
+// current scheme's syntax theme first), and `warm()` preloads the grammars a
+// project's changes need the moment it opens, so the first file a user clicks
+// paints instantly instead of loading on demand.
 
 // Extension → Shiki language id. Anything unmapped is plaintext (one default-
 // coloured token per line), so an unknown file still renders cleanly.
@@ -37,10 +40,23 @@ const inflight = new Map<string, Promise<void>>(); // in-progress grammar loads
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = import("shiki").then(({ createHighlighter }) =>
-      createHighlighter({ themes: ["light-plus", "dark-plus"], langs: [] }),
+      createHighlighter({ themes: [], langs: [] }),
     );
   }
   return highlighterPromise;
+}
+
+/** Make sure `theme` (the active scheme's syntax name) is loaded, so
+ *  `codeToTokens` can colour with it. Skips once loaded; false when the name
+ *  can't be resolved to a theme Shiki ships. */
+async function ensureTheme(hl: Highlighter, theme: string): Promise<boolean> {
+  if (hl.getLoadedThemes().includes(theme)) return true;
+  try {
+    await hl.loadTheme(theme as BundledTheme);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function langFor(path: string): string {
@@ -96,12 +112,16 @@ async function ensureLang(hl: Highlighter, lang: string): Promise<string> {
 }
 
 export function useHighlighter() {
-  /** Preload the grammars a set of files will need (plus the engine + themes),
-   *  so opening any of them later is instant. Safe to call repeatedly — already
-   *  loaded / failed grammars are skipped. */
+  const { extras } = useTheme();
+
+  /** Preload the current scheme's syntax theme plus the grammars a set of
+   *  files will need (and the engine), so opening any of them later is
+   *  instant. Safe to call repeatedly — already loaded / failed grammars are
+   *  skipped. */
   async function warm(paths: string[]): Promise<void> {
     if (import.meta.server) return;
     const hl = await getHighlighter();
+    await ensureTheme(hl, extras.value.syntax);
     const langs = new Set<string>();
     for (const p of paths) {
       const l = langFor(p);
@@ -110,20 +130,23 @@ export function useHighlighter() {
     await Promise.all([...langs].map((l) => ensureLang(hl, l)));
   }
 
-  /** Tokenize `code` for `path` in the given theme, or null to fall back to
-   *  plain text (server render, oversize file, or an unknown grammar). */
+  /** Tokenize `code` for `path` in the active scheme's syntax theme, or null to
+   *  fall back to plain text (server render, oversize file, or an unknown
+   *  grammar). `_dark` is retained for the existing callers; the theme name is
+   *  always taken from the theme system's resolved scheme. */
   async function highlight(
     code: string,
     path: string,
-    dark: boolean,
+    _dark: boolean,
   ): Promise<CodeLine[] | null> {
     if (import.meta.server || code.length > MAX_HIGHLIGHT) return null;
     try {
       const hl = await getHighlighter();
+      if (!(await ensureTheme(hl, extras.value.syntax))) return null;
       const lang = await ensureLang(hl, langFor(path));
       const { tokens } = hl.codeToTokens(code, {
         lang: lang as BundledLanguage,
-        theme: dark ? "dark-plus" : "light-plus",
+        theme: extras.value.syntax,
       });
       return tokens;
     } catch {
@@ -137,16 +160,17 @@ export function useHighlighter() {
   async function highlightCode(
     code: string,
     info: string,
-    dark: boolean,
+    _dark: boolean,
   ): Promise<{ lines: CodeLine[] | null; lang: string }> {
     const resolved = langForInfo(info);
     if (import.meta.server || code.length > MAX_HIGHLIGHT) return { lines: null, lang: resolved };
     try {
       const hl = await getHighlighter();
+      if (!(await ensureTheme(hl, extras.value.syntax))) return { lines: null, lang: resolved };
       const lang = await ensureLang(hl, resolved);
       const { tokens } = hl.codeToTokens(code, {
         lang: lang as BundledLanguage,
-        theme: dark ? "dark-plus" : "light-plus",
+        theme: extras.value.syntax,
       });
       return { lines: tokens, lang: resolved };
     } catch {

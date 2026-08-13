@@ -119,11 +119,11 @@ const marks = computed<Mark[]>(() => {
 
 <style scoped>
 .card {
-  --card-bg: #ffffff;
-  --card-border: rgb(161 161 170 / 0.16);
-  --card-shadow: #1e1b180f 0 4px 14px;
-  --ctx: #d0cec9;
-  --name: #3f3f46;
+  --card-bg: var(--raised-high);
+  --card-border: var(--line-soft);
+  --card-shadow: color-mix(in srgb, var(--ink) 6%, transparent) 0 4px 14px;
+  --ctx: var(--muted);
+  --name: var(--ink);
 
   display: flex;
   flex-direction: column;
@@ -143,7 +143,7 @@ const marks = computed<Mark[]>(() => {
 }
 .card:hover {
   /* Lifts on hover. Soft shadow only — no heavy drop shadows anywhere. */
-  box-shadow: #1e1b1814 0 8px 20px;
+  box-shadow: color-mix(in srgb, var(--ink) 8%, transparent) 0 8px 20px;
   transform: translateY(-6px);
 }
 /* Ring only when the keyboard is driving focus. The detail overlay takes focus
@@ -194,7 +194,7 @@ const marks = computed<Mark[]>(() => {
 }
 .card__placeholder {
   width: 44px;
-  border-top: 1.5px dashed #d8d7d3;
+  border-top: 1.5px dashed var(--line-soft);
 }
 
 .card__bottom {
@@ -213,7 +213,7 @@ const marks = computed<Mark[]>(() => {
 }
 .card__name--del {
   text-decoration: line-through;
-  color: #a1a1aa;
+  color: var(--muted);
 }
 .card__foot {
   display: flex;
@@ -239,7 +239,7 @@ const marks = computed<Mark[]>(() => {
   font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1;
-  color: #a1a1aa;
+  color: var(--faint);
 }
 /* Quiet "new" marker — a muted lowercase tag, not a coloured badge. */
 .card__new {
@@ -248,19 +248,6 @@ const marks = computed<Mark[]>(() => {
   line-height: 1;
   letter-spacing: 0.3px;
   color: var(--muted);
-}
-
-@media (prefers-color-scheme: dark) {
-  .card {
-    --card-bg: #17171a;
-    --card-border: rgb(255 255 255 / 0.08);
-    --card-shadow: #00000040 0 4px 14px;
-    --ctx: #3f3f46;
-    --name: #d4d4d8;
-  }
-  .card:hover {
-    box-shadow: #00000047 0 8px 20px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

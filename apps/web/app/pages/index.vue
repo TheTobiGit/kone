@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { usePreferredDark } from "@vueuse/core";
 import { motion } from "motion-v";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import { ClickSpark } from "~/components/ui/click-spark";
@@ -116,8 +115,15 @@ function onCreateCancel() {
   resetCreate();
 }
 
-const isDark = usePreferredDark();
-const sparkColor = computed(() => (isDark.value ? "#ffffff" : "#000000"));
+const { scheme } = useTheme();
+// The spark paints ink on the sunken launcher; read the resolved ink because
+// canvas strokeStyle can't consume var(). Keyed on the scheme so a theme or
+// mode swap re-resolves the value.
+const sparkColor = computed(() => {
+  if (typeof window === "undefined") return "#fff";
+  const ink = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim();
+  return ink || (scheme.value === "dark" ? "#ffffff" : "#000000");
+});
 
 // The launcher slides aside to reveal the settings panel pinned to the left
 // edge — the X account-drawer gesture. A straight translate, no scale: the page

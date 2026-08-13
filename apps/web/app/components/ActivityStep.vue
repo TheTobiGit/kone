@@ -8,7 +8,7 @@ import TurnOrb from "~/components/TurnOrb.vue";
 import type { ActivityEntry } from "~/utils/conversationSegments";
 import { SUBAGENT_OPEN_KEY, subagentTitle } from "~/utils/subagentRuns";
 import { stateForToolFamily } from "~/utils/thinkingOrb";
-import { THINKING_ORB_HUE } from "~/utils/toolOrbDraw";
+import { thinkingOrbHue } from "~/utils/toolOrbDraw";
 import { toolDetailFull, toolMeta, toolPhraseParts, toolStatus } from "~/utils/toolPresentation";
 
 // One row of the Agent Activity feed — a single thinking segment or tool call.
@@ -56,7 +56,7 @@ const hasThinkingBody = computed(() => isThinking.value && !!props.thinkingText?
 const hasToolBody = computed(() => !!tool.value?.detail);
 const clickable = computed(() => hasThinkingBody.value || hasToolBody.value);
 
-const hue = computed(() => (isThinking.value ? THINKING_ORB_HUE : meta.value?.hue));
+const hue = computed(() => (isThinking.value ? thinkingOrbHue() : meta.value?.hue));
 
 function toggle(): void {
   if (!clickable.value) return;

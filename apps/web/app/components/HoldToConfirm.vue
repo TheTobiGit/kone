@@ -107,7 +107,7 @@ onBeforeUnmount(() => cancelAnimationFrame(raf));
 
 <style scoped>
 .hold {
-  --hold-danger: #e11d48;
+  --hold-danger: var(--danger);
   position: relative;
   display: inline-flex;
   align-items: center;

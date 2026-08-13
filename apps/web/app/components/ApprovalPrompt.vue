@@ -121,7 +121,7 @@ const mono = computed(() => props.approval.kind !== "tool");
 
 <style scoped>
 .approve-body {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
   display: flex;
   flex-direction: column;
@@ -265,7 +265,7 @@ const mono = computed(() => props.approval.kind !== "tool");
   opacity: 0.4;
 }
 .text-danger {
-  color: var(--danger, #d97757);
+  color: var(--danger);
 }
 .text-muted {
   color: var(--muted);

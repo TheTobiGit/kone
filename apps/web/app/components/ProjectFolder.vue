@@ -173,33 +173,38 @@ const showDiff = computed(
 
 <style scoped>
 .folder {
-  
-  --paper-bg: #ffffff;
-  --mark-edit-1: #d8d7d3;
-  --mark-edit-2: #e4e3df;
+  /* The tile's faces and marks are built from theme roles — ink and faint over
+     a surface, the diff family for new-file lines — never fixed colours, so the
+     folder carries the active theme's temperature on every ground. */
+  --paper-bg: var(--raised-high);
+  --mark-edit-1: color-mix(in srgb, var(--faint) 50%, var(--raised-high));
+  --mark-edit-2: color-mix(in srgb, var(--faint) 36%, var(--raised-high));
+  /* The new-file greens stay fixed across themes for the same reason the tool
+     hues do: green means new, and a mark that changed temperature per theme
+     would stop meaning it. The branch mark is ordinary secondary text, so it
+     takes the muted role and follows the theme instead. */
   --mark-new-1: var(--diff-add);
   --mark-new-2: #8fd9bd;
-  --mark-name: #27272a;
-  --mark-gh: #3f3f46;
-  --branch: #a1a1aa;
+  --mark-gh: color-mix(in srgb, var(--ink-soft) 56.5%, var(--ink));
+  --branch: var(--muted);
   --add: var(--diff-add);
-  --del: var(--diff-del);
 
   --sheet: linear-gradient(
     160deg in oklab,
-    oklab(96.4% -0.0001 0.004) 0%,
-    oklab(91.9% 0.0005 0.006) 100%
+    color-mix(in srgb, var(--ink) 5.2%, var(--raised)) 0%,
+    color-mix(in srgb, var(--ink) 12.3%, var(--raised)) 100%
   );
-  --sheet-inset: #ffffffb3;
+  --sheet-inset: color-mix(in srgb, var(--raised-high) 70%, transparent);
   --pocket: linear-gradient(
     168deg in oklab,
-    oklab(98.8% 0.0003 0.003) 0%,
-    oklab(94.7% 0.0009 0.004) 55%,
-    oklab(92.2% 0.0002 0.007) 100%
+    color-mix(in srgb, var(--ink) 1.3%, var(--raised)) 0%,
+    color-mix(in srgb, var(--ink) 7.7%, var(--raised)) 55%,
+    color-mix(in srgb, var(--ink) 12%, var(--raised)) 100%
   );
-  --pocket-shadow: #ffffffe6 0 2px 0 inset, #00000008 0 -10px 18px inset,
-    #1e1b180f 0 4px 10px;
-  --paper-shadow: #1e1b1812 0 4px 10px;
+  --pocket-shadow: color-mix(in srgb, var(--raised-high) 90%, transparent) 0 2px 0 inset,
+    color-mix(in srgb, var(--ink) 3%, transparent) 0 -10px 18px inset,
+    color-mix(in srgb, var(--ink) 6%, transparent) 0 4px 10px;
+  --paper-shadow: color-mix(in srgb, var(--ink) 7%, transparent) 0 4px 10px;
 
   position: relative;
   display: inline-block;
@@ -242,7 +247,7 @@ const showDiff = computed(
 }
 .folder__paper--torn {
   background-color: color-mix(in srgb, var(--paper-bg) 35%, transparent);
-  border: 1.5px dashed var(--del);
+  border: 1.5px dashed var(--diff-del);
   opacity: 0.9;
 }
 
@@ -271,7 +276,7 @@ const showDiff = computed(
   background-color: var(--mark-new-1);
 }
 .folder__mark--del {
-  background-color: var(--del);
+  background-color: var(--diff-del);
 }
 
 .folder__pocket {
@@ -317,7 +322,7 @@ const showDiff = computed(
   font-weight: 600;
   letter-spacing: -0.024em;
   line-height: 1;
-  color: var(--mark-name);
+  color: var(--ink);
 }
 
 .folder__branch {
@@ -357,35 +362,33 @@ const showDiff = computed(
   color: var(--add);
 }
 .folder__del {
-  color: var(--del);
+  color: var(--diff-del);
 }
 
-@media (prefers-color-scheme: dark) {
-  .folder {
-    --paper-bg: #2c2c31;
-    --mark-edit-1: rgb(255 255 255 / 0.32);
-    --mark-edit-2: rgb(255 255 255 / 0.18);
-    --mark-new-1: #12b981;
-    --mark-new-2: #0f6b4d;
-    --mark-name: #f4f4f5;
-    --mark-gh: #e4e4e7;
-    --add: #10b981;
+html.dark .folder {
+  --paper-bg: color-mix(in srgb, var(--ink) 5.7%, var(--raised-high));
+  --mark-edit-1: color-mix(in srgb, var(--ink) 44.6%, var(--ground));
+  --mark-edit-2: color-mix(in srgb, var(--ink) 32.3%, var(--ground));
+  --mark-new-1: #12b981;
+  --mark-new-2: #0f6b4d;
+  --mark-gh: color-mix(in srgb, var(--ink) 93.7%, var(--ground));
+  --add: #10b981;
 
-    --sheet: linear-gradient(
-      160deg in oklab,
-      oklab(20.2% 0.002 -0.006) 0%,
-      oklab(17.4% 0.001 -0.004) 100%
-    );
-    --sheet-inset: #ffffff0d;
-    --pocket: linear-gradient(
-      168deg in oklab,
-      oklab(22.8% 0.002 -0.007) 0%,
-      oklab(19.2% 0.001 -0.004) 55%,
-      oklab(16.9% 0.001 -0.004) 100%
-    );
-    --pocket-shadow: #ffffff12 0 1px 0 inset, #00000038 0 -10px 18px inset,
-      #0000004d 0 4px 10px;
-    --paper-shadow: #00000073 0 4px 10px;
-  }
+  --sheet: linear-gradient(
+    160deg in oklab,
+    color-mix(in srgb, var(--ink) 6.8%, var(--ground)) 0%,
+    color-mix(in srgb, var(--ink) 4%, var(--ground)) 100%
+  );
+  --sheet-inset: color-mix(in srgb, var(--ink) 5%, transparent);
+  --pocket: linear-gradient(
+    168deg in oklab,
+    color-mix(in srgb, var(--ink) 9.4%, var(--ground)) 0%,
+    color-mix(in srgb, var(--ink) 5.7%, var(--ground)) 55%,
+    color-mix(in srgb, var(--ink) 3.5%, var(--ground)) 100%
+  );
+  --pocket-shadow: color-mix(in srgb, var(--ink) 7%, transparent) 0 1px 0 inset,
+    color-mix(in srgb, var(--sunken) 22%, transparent) 0 -10px 18px inset,
+    color-mix(in srgb, var(--sunken) 30%, transparent) 0 4px 10px;
+  --paper-shadow: color-mix(in srgb, var(--sunken) 45%, transparent) 0 4px 10px;
 }
 </style>

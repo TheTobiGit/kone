@@ -15,20 +15,24 @@ let visible = true;
 let reduced = false;
 let dark = true;
 
-function ancestorDark(): boolean | null {
+const { scheme } = useTheme();
+
+// A nearer scheme wins: an orb sitting on a locally inverted surface tones to
+// that surface, not to the page. Nothing above it means the page itself, so the
+// active theme's scheme decides.
+function ancestorScheme(): boolean | null {
   let node: Element | null = host.value;
   while (node) {
-    const theme = node.getAttribute("data-theme");
-    if (theme === "dark" || node.classList.contains("dark")) return true;
-    if (theme === "light" || node.classList.contains("light")) return false;
+    const local = node.getAttribute("data-scheme");
+    if (local === "dark" || node.classList.contains("dark")) return true;
+    if (local === "light" || node.classList.contains("light")) return false;
     node = node.parentElement;
   }
   return null;
 }
 
 function syncEnvironment() {
-  const treeTheme = ancestorDark();
-  dark = treeTheme ?? window.matchMedia("(prefers-color-scheme: dark)").matches;
+  dark = ancestorScheme() ?? scheme.value === "dark";
   reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
@@ -78,17 +82,15 @@ onMounted(() => {
   const onVisibility = sync;
   const onTheme = () => { syncEnvironment(); sync(); };
   document.addEventListener("visibilitychange", onVisibility);
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", onTheme);
   window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", onTheme);
   const mutations = new MutationObserver(onTheme);
-  mutations.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ["class", "data-theme"] });
+  mutations.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ["class", "data-theme", "data-scheme"] });
   sync();
   onBeforeUnmount(() => {
     stop();
     observer.disconnect();
     mutations.disconnect();
     document.removeEventListener("visibilitychange", onVisibility);
-    window.matchMedia("(prefers-color-scheme: dark)").removeEventListener("change", onTheme);
     window.matchMedia("(prefers-reduced-motion: reduce)").removeEventListener("change", onTheme);
   });
 });

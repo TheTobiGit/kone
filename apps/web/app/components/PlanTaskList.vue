@@ -293,7 +293,7 @@ function rowDelay(index: number): number {
 }
 
 .plan-card {
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   overflow: hidden;
@@ -301,7 +301,7 @@ function rowDelay(index: number): number {
 }
 
 .plan-shell {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
   padding: 0 0 0.75rem 0.75rem;
   transition: padding-bottom 0.2s cubic-bezier(0.22, 1, 0.36, 1);

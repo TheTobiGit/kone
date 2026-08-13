@@ -474,7 +474,7 @@ function rowBrand(row: DelegateRow): BrandKey {
 }
 
 .sub-card {
-  background: var(--surface, var(--ground));
+  background: var(--ground);
   border-radius: 18px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   overflow: hidden;
@@ -482,7 +482,7 @@ function rowBrand(row: DelegateRow): BrandKey {
 }
 
 .sub-shell {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
   padding: 0 0 0.75rem 0.75rem;
   transition: padding-bottom 0.2s cubic-bezier(0.22, 1, 0.36, 1);
@@ -742,14 +742,16 @@ function rowBrand(row: DelegateRow): BrandKey {
   height: 15px;
   font-size: 10px;
   line-height: 1;
-  color: #fff;
+  /* Check and cross both sit on a filled state chip — accent-ink is the theme's
+     ink for text on a coloured fill, where white only works in some themes. */
+  color: var(--accent-ink);
   border-radius: 5px;
 }
 .sub-state-glyph--done {
-  background: color-mix(in oklab, var(--accent) 88%, transparent);
+  background: color-mix(in oklab, var(--ok) 88%, transparent);
 }
 .sub-state-glyph--failed {
-  background: color-mix(in oklab, var(--danger, #e5484d) 82%, transparent);
+  background: color-mix(in oklab, var(--danger) 82%, transparent);
 }
 
 .sub-run {
@@ -898,7 +900,7 @@ function rowBrand(row: DelegateRow): BrandKey {
 }
 .sub-approve-btn--reject:hover,
 .sub-approve-btn--reject:focus-visible {
-  color: var(--danger, #d97757);
+  color: var(--danger);
 }
 .sub-approve-btn--allow {
   color: var(--ground);

@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { usePreferredDark } from "@vueuse/core";
 import { motion } from "motion-v";
+import { useTheme } from "~/composables/useTheme";
 import type { ActionKey } from "./StartActions.vue";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 
 // On white, the plasma's ridge veins read as a soft cloud; on near-black the
 // same veins glow as high-contrast filaments. Sitting the layer back in dark
 // mode lets it settle into the ground like it does in light.
-const isDark = usePreferredDark();
-const plasmaOpacity = computed(() => (isDark.value ? 0.5 : 1));
+const { scheme } = useTheme();
+const plasmaOpacity = computed(() => (scheme.value === "dark" ? 0.5 : 1));
 
 // First-run screen: no projects, no sessions yet — just three ways to begin.
 // Key of the action currently in session (e.g. folder picker open), or null.
@@ -61,12 +61,6 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
         :grain="0.4"
         :sparkle="0.35"
         :opacity="plasmaOpacity"
-        light-color-a="#f6f5f3"
-        light-color-b="#efe4dc"
-        light-color-c="#e4c1af"
-        dark-color-a="#070708"
-        dark-color-b="#120d0a"
-        dark-color-c="#43251a"
       />
     </motion.div>
   </main>

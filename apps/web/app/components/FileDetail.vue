@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { usePreferredDark } from "@vueuse/core";
 import { Magnet } from "~/components/ui/magnet";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
@@ -35,7 +34,7 @@ const git = useGit();
 const { highlight } = useHighlighter();
 const { render: renderMd } = useMarkdown();
 const { buildRows } = useDiff();
-const dark = usePreferredDark();
+const { scheme } = useTheme();
 
 const content = ref<GitFileContent | null>(null);
 const tokenLines = ref<CodeLine[] | null>(null);
@@ -103,9 +102,9 @@ watch(
     // behind `loading` so the view arrives complete (no plain→coloured flash,
     // no file→diff flash).
     const [tokens, md, rows] = await Promise.all([
-      result?.text ? highlight(result.text, props.file.path, dark.value) : null,
+      result?.text ? highlight(result.text, props.file.path, scheme.value === "dark") : null,
       result?.text && isMarkdown.value ? renderMd(result.text) : null,
-      buildRows(diff, dark.value),
+      buildRows(diff, scheme.value === "dark"),
     ]);
     if (mine !== token) return;
     tokenLines.value = tokens;
@@ -118,11 +117,11 @@ watch(
 
 // Re-tint (not re-read) when the colour scheme flips — both the file tokens and
 // the diff rows carry theme colours. Rebuilds from what's already loaded.
-watch(dark, async () => {
+watch(scheme, async () => {
   const mine = token;
   const [tinted, rows] = await Promise.all([
-    content.value?.text ? highlight(content.value.text, props.file.path, dark.value) : null,
-    buildRows(diffData.value, dark.value),
+    content.value?.text ? highlight(content.value.text, props.file.path, scheme.value === "dark") : null,
+    buildRows(diffData.value, scheme.value === "dark"),
   ]);
   if (mine !== token) return;
   if (tinted) tokenLines.value = tinted;
@@ -986,16 +985,14 @@ function onTrapKeydown(e: KeyboardEvent) {
 }
 .ctl__sw--on .ctl__dot { transform: translateX(15px); }
 
-@media (prefers-color-scheme: dark) {
-  /* Off-track ring for definition; the thumb stays --ground so it reads on the
-     light --ink on-track. */
-  .ctl__sw { box-shadow: inset 0 0 0 1px #ffffff12; }
-  .ctl__sw--on { box-shadow: none; }
-  .ctl__sw:focus-visible {
-    box-shadow: inset 0 0 0 1px #ffffff12, 0 0 0 2px color-mix(in srgb, var(--ink) 40%, transparent);
-  }
-  .ctl__dot { box-shadow: #00000045 0 1px 2px; }
+/* Off-track ring for definition; the thumb stays --ground so it reads on the
+   light --ink on-track. */
+html.dark .ctl__sw { box-shadow: inset 0 0 0 1px #ffffff12; }
+html.dark .ctl__sw--on { box-shadow: none; }
+html.dark .ctl__sw:focus-visible {
+  box-shadow: inset 0 0 0 1px #ffffff12, 0 0 0 2px color-mix(in srgb, var(--ink) 40%, transparent);
 }
+html.dark .ctl__dot { box-shadow: #00000045 0 1px 2px; }
 @media (prefers-reduced-motion: reduce) {
   .fd__skeleton-row { animation: none; }
 }

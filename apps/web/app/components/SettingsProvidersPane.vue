@@ -1121,11 +1121,11 @@ async function copy(text: string) {
 }
 /* A sign-in is an ask, not a fault — a warm amber that reads on every wash. */
 .pp__pip--attention {
-  background-color: #f5c15a;
+  background-color: var(--warn);
 }
 /* Unreachable is the one state that alarms — the app's own delete/red. */
 .pp__pip--problem {
-  background-color: #f0685a;
+  background-color: var(--danger);
 }
 
 .pp__foot {
@@ -1381,7 +1381,7 @@ async function copy(text: string) {
   min-width: 0;
   /* A hairline divider, not a boxed row — the same low-contrast register the
      rest of the app keeps to. */
-  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  border-top: 1px solid var(--line-soft);
 }
 .pp__model:first-child {
   border-top: none;

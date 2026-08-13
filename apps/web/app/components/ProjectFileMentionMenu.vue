@@ -70,7 +70,7 @@ const emit = defineEmits<{
   width: min(520px, calc(100vw - 32px));
   overflow: hidden;
   border-radius: 18px;
-  background: var(--surface, var(--ground));
+  background: var(--panel);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   transform-origin: bottom left;
   animation: mention-in 160ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -87,7 +87,7 @@ const emit = defineEmits<{
 }
 
 .mention-menu__shell {
-  --band-bg: color-mix(in srgb, var(--ink) 2%, var(--surface, var(--ground)));
+  --band-bg: var(--band);
   --band-arc: 14px;
   padding: 0 0 5px;
 }
