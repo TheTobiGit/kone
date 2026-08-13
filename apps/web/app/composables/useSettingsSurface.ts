@@ -17,6 +17,7 @@ export type SettingsPane =
   | "profile"
   | "shortcuts"
   | "motion"
+  | "appearance"
   | "providers"
   | "agentsUsage"
   | "providerLimits"
@@ -37,6 +38,7 @@ const pane = ref<SettingsPane>("root");
 const PAGE_PANES: SettingsPane[] = [
   "providers",
   "motion",
+  "appearance",
   "profile",
   "shortcuts",
   "agentsUsage",

@@ -10,6 +10,7 @@ import {
   GaugeIcon,
   KeyboardIcon,
   PuzzleIcon,
+  SwatchIcon,
   UserIcon,
   VolumeHighIcon,
   VolumeMute01Icon,
@@ -113,6 +114,11 @@ function openMotion() {
   cue("press");
 }
 
+function openAppearance() {
+  pane.value = "appearance";
+  cue("press");
+}
+
 function openProfile() {
   pane.value = "profile";
   cue("press");
@@ -195,6 +201,8 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
     <SettingsProfilePane v-if="pane === 'profile'" :open="open" @back="backToRoot" />
 
     <SettingsShortcutsPane v-if="pane === 'shortcuts'" :open="open" @back="backToRoot" />
+
+    <SettingsAppearancePane v-if="pane === 'appearance'" :open="open" @back="backToRoot" />
 
     <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
 
@@ -323,6 +331,35 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
               <span class="shrink-0 text-[12px] leading-tight text-muted">
                 {{ currentCenterOption }}
               </span>
+            </button>
+          </Magnet>
+
+          <!-- Appearance — the widened page with the mode tiles and the theme
+               list. Same borderless magnet row as Shortcuts; the pane itself
+               shows what each choice looks like, so the row stays plain. -->
+          <Magnet
+            class="block"
+            inner-class="w-full"
+            :padding="12"
+            :magnet-strength="9"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          >
+            <button
+              type="button"
+              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
+              :tabindex="open ? 0 : -1"
+              aria-label="Open appearance settings"
+              @click="openAppearance"
+            >
+              <HugeiconsIcon
+                :icon="SwatchIcon"
+                :size="17"
+                :stroke-width="1.7"
+                class="shrink-0 text-muted transition-colors group-hover:text-ink"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Appearance</span>
             </button>
           </Magnet>
         </div>
