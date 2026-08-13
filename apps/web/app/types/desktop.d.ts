@@ -1992,7 +1992,6 @@ export type TerminalEvent =
   | { terminalId: TerminalId; type: "output"; sequence: number; data: string }
   | { terminalId: TerminalId; type: "exited"; sequence: number; exitCode: number | null; signal?: number }
   | { terminalId: TerminalId; type: "error"; sequence: number; message: string }
-  | { terminalId: TerminalId; type: "cleared"; sequence: number }
   | { terminalId: TerminalId; type: "restarted"; sequence: number; snapshot: TerminalSessionSnapshot }
   | { terminalId: TerminalId; type: "closed"; sequence: number }
   | {
@@ -2007,7 +2006,6 @@ export type KoneTerminalApi = {
   open: (input: TerminalOpenInput) => Promise<TerminalSessionSnapshot>;
   write: (input: TerminalWriteInput) => Promise<void>;
   resize: (input: TerminalResizeInput) => Promise<void>;
-  clear: (terminalId: TerminalId) => Promise<void>;
   close: (input: TerminalCloseInput) => Promise<void>;
   restart: (input: TerminalRestartInput) => Promise<TerminalSessionSnapshot>;
   /** Flow-control: report consumed output bytes so the main process can

@@ -419,8 +419,6 @@ const api = {
       ipcRenderer.invoke("terminal:write", input),
     resize: (input: TerminalResizeInput): Promise<void> =>
       ipcRenderer.invoke("terminal:resize", input),
-    clear: (terminalId: string): Promise<void> =>
-      ipcRenderer.invoke("terminal:clear", terminalId),
     close: (input: TerminalCloseInput): Promise<void> =>
       ipcRenderer.invoke("terminal:close", input),
     restart: (input: TerminalRestartInput): Promise<TerminalSessionSnapshot> =>

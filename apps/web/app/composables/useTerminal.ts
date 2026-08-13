@@ -141,9 +141,6 @@ export function useTerminal(options: UseTerminalOptions) {
             // break the stream, so no await and no throw.
             void api.ack({ terminalId: event.terminalId, byteCount: event.data.length });
             break;
-          case "cleared":
-            seedBuffer(event.terminalId, "");
-            break;
           case "exited":
             setStatus(event.terminalId, "exited");
             break;

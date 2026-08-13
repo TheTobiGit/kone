@@ -79,7 +79,6 @@ export type TerminalEvent =
   | { terminalId: TerminalId; type: "output"; sequence: number; data: string }
   | { terminalId: TerminalId; type: "exited"; sequence: number; exitCode: number | null; signal?: number }
   | { terminalId: TerminalId; type: "error"; sequence: number; message: string }
-  | { terminalId: TerminalId; type: "cleared"; sequence: number }
   | { terminalId: TerminalId; type: "restarted"; sequence: number; snapshot: TerminalSessionSnapshot }
   | { terminalId: TerminalId; type: "closed"; sequence: number }
   | {

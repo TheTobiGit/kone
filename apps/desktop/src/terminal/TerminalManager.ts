@@ -388,20 +388,6 @@ export class TerminalManager {
     s.modeTracker.resize(input.cols, input.rows);
   }
 
-  /** Clear the renderer's scrollback + the in-memory history. */
-  clear(terminalId: string): void {
-    const s = this.sessions.get(terminalId);
-    if (!s) return;
-    if (s.flushTimer !== null) {
-      clearTimeout(s.flushTimer);
-      s.flushTimer = null;
-    }
-    s.pendingOutput = [];
-    s.pendingLength = 0;
-    s.history = "";
-    this.fire(this.stamp(s, { terminalId, type: "cleared" }));
-  }
-
   /** Restart a terminal in place: tree-kill the current process, reset all
    *  session state, and spawn a fresh shell. The sequence counter is carried
    *  forward so re-attach dedupe still holds across the reset. */

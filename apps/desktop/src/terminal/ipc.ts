@@ -44,9 +44,6 @@ export function registerTerminalIpc(): void {
   ipcMain.handle("terminal:resize", (_event, input: TerminalResizeInput) =>
     mgr.resize(input),
   );
-  ipcMain.handle("terminal:clear", (_event, terminalId: string) =>
-    mgr.clear(terminalId),
-  );
   ipcMain.handle("terminal:close", (_event, input: TerminalCloseInput) =>
     mgr.close(input),
   );
