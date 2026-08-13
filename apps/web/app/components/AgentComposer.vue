@@ -4,6 +4,7 @@ import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiBrain01Icon,
+  BubbleChatTemporaryIcon,
   CornerDownRightIcon,
   FlashIcon,
   Folder01Icon,
@@ -52,9 +53,15 @@ const props = defineProps<{
   projectPath: string;
   /** Project display name for the context tray tucked under the card. */
   projectName?: string;
-  /** The checked-out branch, shown in the tray. Clicking it asks the host to
-   *  open the branch picker; omit it (a non-git folder) and the chip is gone. */
+  /** The checked-out branch, shown in the tray. Omit it (a non-git folder) and
+   *  the chip is gone. */
   branch?: string;
+  /** When true (the default), the branch chip opens the picker. Once a thread
+   *  has already started, the host turns this off so the chip is only a label. */
+  branchSwitchable?: boolean;
+  /** The focused thread's title, parked on the far right of the tray so the
+   *  left stays project + branch. Empty / missing falls back to "New thread". */
+  threadName?: string;
   /** A turn is running — the send seed becomes a stop, Enter is inert. */
   busy?: boolean;
   /** Follow-ups durably queued behind the running turn (AgentService). The
@@ -107,6 +114,9 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+
+const threadLabel = computed(() => props.threadName?.trim() || "New thread");
+const canSwitchBranch = computed(() => props.branchSwitchable !== false);
 
 // ── model + effort pickers (both on the right) ─────────────────────────────────
 // The family comes from the model id; the effort within it comes from the
@@ -1193,17 +1203,20 @@ defineExpose({ wake, setDraft });
       </div>
     </div>
 
-    <!-- Context tray — where the turn will land: project, machine, branch. It's
+    <!-- Context tray — where the turn will land: project, branch, thread. It's
          tucked BEHIND the card and only its bottom strip shows, so it reads as
          the ground the composer is standing on rather than another control bar.
-         Everything here is ambient except the branch, which opens the picker. -->
+         The branch is a picker only on a blank thread; once the thread has
+         started it is just a label, same as the project. The thread name sits
+         on the far right so the left stays place and the right names the
+         conversation. -->
     <div class="tray" :class="{ 'is-shown': open }" :inert="!open" aria-label="Turn context">
       <span v-if="projectName" class="tray__item">
         <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">{{ projectName }}</span>
       </span>
       <button
-        v-if="branch"
+        v-if="branch && canSwitchBranch"
         type="button"
         class="tray__item tray__item--action"
         :aria-label="`On ${branch}. Switch branch.`"
@@ -1213,6 +1226,21 @@ defineExpose({ wake, setDraft });
         <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
         <span class="tray__label">{{ branch }}</span>
       </button>
+      <span
+        v-else-if="branch"
+        class="tray__item"
+        :title="`On ${branch}`"
+      >
+        <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label">{{ branch }}</span>
+      </span>
+      <span
+        class="tray__item tray__item--end"
+        :title="threadLabel"
+      >
+        <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label">{{ threadLabel }}</span>
+      </span>
     </div>
   </div>
 </template>
@@ -1701,7 +1729,7 @@ defineExpose({ wake, setDraft });
 .barbtn:active { transform: scale(0.95); }
 
 /* ── Context tray ─────────────────────────────────────────────────────────── */
-/* Where the turn will land — project, machine, branch — tucked in behind the
+/* Where the turn will land — project, branch, thread — tucked in behind the
    card so only its bottom strip shows. It's ground, not chrome: a quieter
    surface, smaller type, and no hairline anywhere. */
 .tray {
@@ -1773,6 +1801,13 @@ defineExpose({ wake, setDraft });
   background: color-mix(in srgb, var(--chip-ink) 7%, transparent);
 }
 .tray__item--action:hover .tray__label { opacity: 0.9; }
+.tray__item--end {
+  margin-left: auto;
+  min-width: 0;
+}
+.tray__item--end .tray__label {
+  max-width: 220px;
+}
 
 /* ── Send seed ────────────────────────────────────────────────────────────── */
 .seed {

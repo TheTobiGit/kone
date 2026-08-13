@@ -1978,6 +1978,8 @@ function onDiscardFile(path: string) {
           :project-path="project.path"
           :project-name="project.name"
           :branch="g.branch.value ?? undefined"
+          :branch-switchable="(focusedThread?.blocks.value.length ?? 0) === 0"
+          :thread-name="focusedThread?.title.value"
           :busy="busy"
           :queued="queuedTurns"
           :picking="modelPickerOpen"
