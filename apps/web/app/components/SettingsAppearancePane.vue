@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, type Ref } from "vue";
-import { SwatchIcon } from "@hugeicons/core-free-icons";
+import {
+  AlertCircleIcon,
+  CheckmarkCircle01Icon,
+  Delete01Icon,
+  Store02Icon,
+  SwatchIcon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/vue";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import AppearanceMiniature from "~/components/AppearanceMiniature.vue";
+import ThemeBrowseModal from "~/components/ThemeBrowseModal.vue";
 import {
   colorsFor,
   schemesOf,
@@ -10,13 +19,13 @@ import {
   type ThemeDefinition,
   type ThemeScheme,
 } from "~/theme/roles";
-import { themeGroups } from "~/theme/themes";
+import { themeGroups } from "~/theme/library";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
 
 const { cue } = useSound();
-const { mode, modeLocked, themeId, theme, scheme, setMode, setTheme } = useTheme();
+const { mode, modeLocked, themeId, theme, scheme, setMode, setTheme, importThemes, removeImportedTheme, isImported } = useTheme();
 
 const MODES = ["system", "light", "dark"] as const satisfies readonly AppearanceMode[];
 
@@ -127,6 +136,7 @@ interface ThemeRow {
   blurb: string;
   beads: Bead[];
   index: number;
+  imported: boolean;
 }
 
 /** The bead's paint: the ground as the base, the accent as a contained glow,
@@ -151,6 +161,7 @@ const groups = computed(() => {
       id: t.id,
       label: t.label,
       blurb: t.blurb,
+      imported: isImported(t.id),
       beads: schemesOf(t).map((s) => {
         const c = colorsFor(t, s);
         return { key: s, ground: c.ground, ink: c.ink, wash: beadWash(t, s) };
@@ -183,6 +194,60 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
     els: themeEls,
   });
 }
+
+// ── Import ───────────────────────────────────────────────────────────────────
+// VS Code colour-theme files picked from disk become kone themes: the editor
+// canvas and accent grow a full palette, light/dark siblings pair into one
+// adaptive theme, and the rest is derived. What a file couldn't become is said
+// out loud under the masthead, not buried in a toast.
+
+const fileInput = ref<HTMLInputElement>();
+const notice = ref<{ kind: "ok" | "error"; text: string } | null>(null);
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+function showNotice(kind: "ok" | "error", text: string) {
+  notice.value = { kind, text };
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    notice.value = null;
+  }, 9000);
+}
+
+async function onFilesPicked(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  if (files.length === 0) return;
+
+  const result = await importThemes(files);
+  const first = result.failures[0];
+  if (!first) {
+    cue("success");
+    const n = result.added.length;
+    showNotice("ok", `Imported ${n} ${n === 1 ? "theme" : "themes"}.`);
+    return;
+  }
+  const more = result.failures.length - 1;
+  const suffix = more > 0 ? ` (and ${more} more)` : "";
+  if (result.added.length > 0) {
+    cue("toggle");
+    showNotice(
+      "error",
+      `Imported ${result.added.length}. Couldn't import ${first.name} — ${first.reason}${suffix}`,
+    );
+    return;
+  }
+  cue("error");
+  showNotice("error", `Couldn't import ${first.name} — ${first.reason}${suffix}`);
+}
+
+function removeRow(id: string) {
+  removeImportedTheme(id);
+  cue("toggle");
+}
+
+// ── Community browse ─────────────────────────────────────────────────────────
+const browseOpen = ref(false);
 </script>
 
 <template>
@@ -193,11 +258,49 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
     label="Appearance settings"
     @back="emit('back')"
   >
+    <template #actions>
+      <button type="button" class="ap__import" :tabindex="open ? 0 : -1" @click="browseOpen = true">
+        <HugeiconsIcon :icon="Store02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+        Browse themes
+      </button>
+      <button type="button" class="ap__import" :tabindex="open ? 0 : -1" @click="fileInput?.click()">
+        <HugeiconsIcon :icon="Upload01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+        Import theme
+      </button>
+      <input
+        ref="fileInput"
+        type="file"
+        multiple
+        accept=".json,application/json"
+        class="ap__file"
+        aria-hidden="true"
+        tabindex="-1"
+        @change="onFilesPicked"
+      />
+    </template>
+
+    <template #lede>
+      <div class="ap__lede">
+        <p
+          v-if="notice"
+          class="ap__notice"
+          :class="`ap__notice--${notice.kind}`"
+          :role="notice.kind === 'error' ? 'alert' : 'status'"
+        >
+          <HugeiconsIcon
+            :icon="notice.kind === 'ok' ? CheckmarkCircle01Icon : AlertCircleIcon"
+            :size="13"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
+          {{ notice.text }}
+        </p>
+      </div>
+    </template>
+
     <div class="ap">
       <!-- ── Appearance ──────────────────────────────────────────────────── -->
       <section class="ap__section">
-        <h3 class="ap__title">Appearance</h3>
-
         <div
           v-if="!modeLocked"
           class="ap__modes"
@@ -250,7 +353,7 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
               :ref="(el) => setThemeEl(el, row.index)"
               role="radio"
               class="ap__card"
-              :class="{ 'ap__card--on': row.id === themeId }"
+              :class="{ 'ap__card--on': row.id === themeId, 'ap__card--imported': row.imported }"
               :aria-checked="row.id === themeId"
               :aria-label="`${row.label} — ${row.blurb}`"
               :tabindex="open ? (row.id === themeId ? 0 : -1) : -1"
@@ -278,6 +381,23 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
                 <span class="ap__blurb">{{ row.blurb }}</span>
               </span>
 
+              <button
+                v-if="row.imported"
+                type="button"
+                class="ap__remove"
+                :tabindex="open ? 0 : -1"
+                :aria-label="`Remove ${row.label}`"
+                @click.stop="removeRow(row.id)"
+                @keydown.stop
+              >
+                <HugeiconsIcon
+                  :icon="Delete01Icon"
+                  :size="13"
+                  :stroke-width="1.8"
+                  aria-hidden="true"
+                />
+              </button>
+
               <svg
                 v-if="row.id === themeId"
                 class="ap__check"
@@ -296,11 +416,9 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
         </section>
       </div>
     </div>
-
-    <template #foot>
-      Appearance lives on this machine only — your theme and mode never leave it.
-    </template>
   </SettingsPageShell>
+
+  <ThemeBrowseModal v-if="browseOpen" :open="browseOpen" @close="browseOpen = false" />
 </template>
 
 <style scoped>
@@ -312,6 +430,74 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
   max-width: 60rem;
   padding-block: 8px 4rem;
   animation: ap-in 400ms var(--ap-ease) backwards;
+}
+
+/* ── Masthead import ──────────────────────────────────────────────────────── */
+
+.ap__file {
+  display: none;
+}
+
+.ap__import {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 27px;
+  padding-inline: 11px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 140ms ease;
+}
+
+.ap__import:hover {
+  background-color: var(--hover);
+}
+
+.ap__import:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+
+/* ── Import notice ────────────────────────────────────────────────────────── */
+
+/* display: contents so the line sits in the shell's flow under the masthead,
+   aligned like the pane's own content. */
+.ap__lede {
+  display: contents;
+}
+
+.ap__notice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 1rem 0;
+  padding: 7px 12px;
+  border-radius: 9px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  animation: ap-in 240ms var(--ap-ease) backwards;
+}
+
+.ap__notice--ok {
+  background-color: color-mix(in oklab, var(--ok) 10%, transparent);
+  color: var(--ink-soft);
+}
+
+.ap__notice--ok svg {
+  color: var(--ok);
+}
+
+.ap__notice--error {
+  background-color: color-mix(in oklab, var(--danger) 9%, transparent);
+  color: var(--ink-soft);
+}
+
+.ap__notice--error svg {
+  color: var(--danger);
 }
 
 @keyframes ap-in {
@@ -345,11 +531,6 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--muted);
-}
-
-.ap__title + .ap__modes,
-.ap__title + .ap__locked {
-  margin-top: 14px;
 }
 
 /* ── Appearance mode ──────────────────────────────────────────────────────── */
@@ -546,6 +727,50 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
   overflow: hidden;
 }
 
+/* Imported cards carry their own dismissal. It only appears when the row is
+   being looked at — hover or keyboard focus — so fourteen themes do not all
+   wear a delete glyph at once. */
+.ap__remove {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.ap__card:hover .ap__remove,
+.ap__remove:focus-visible {
+  opacity: 1;
+}
+
+.ap__remove:hover {
+  background-color: var(--hover);
+  color: var(--ink);
+}
+
+.ap__remove:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+
+/* The check steps left of the removal glyph so an active imported theme shows
+   both: it is selected *and* it can go. */
+.ap__card--imported .ap__check {
+  right: 36px;
+}
+
 .ap__check {
   position: absolute;
   top: 50%;
@@ -575,7 +800,9 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
   .ap__frame,
   .ap__bead,
   .ap__card,
-  .ap__check {
+  .ap__check,
+  .ap__notice,
+  .ap__remove {
     transition: none;
     animation: none;
   }

@@ -1,5 +1,15 @@
 import { computed, readonly, ref, watch } from "vue";
 import { applyThemeColors } from "~/theme/apply";
+import { buildImportedThemes, isVsCodeThemeFile, parseVsCodeThemeEntry, type VsCodeImportEntry } from "~/theme/import-vscode";
+import {
+  hydrateImportedThemes,
+  isImported,
+  registerImportedThemes,
+  removeImportedTheme as dropImportedTheme,
+  reservedThemeIds,
+  resolveTheme,
+  themes as libraryThemes,
+} from "~/theme/library";
 import {
   colorsFor,
   extrasFor,
@@ -10,7 +20,7 @@ import {
   type ThemeExtras,
   type ThemeScheme,
 } from "~/theme/roles";
-import { BUILT_IN_THEMES, DEFAULT_THEME_ID, resolveTheme } from "~/theme/themes";
+import { DEFAULT_THEME_ID } from "~/theme/themes";
 
 const STORAGE_THEME = "kone:theme";
 const STORAGE_APPEARANCE = "kone:appearance";
@@ -119,12 +129,72 @@ function setMode(next: AppearanceMode): void {
   writeStored(STORAGE_APPEARANCE, next);
 }
 
+/** One file that failed to become a theme, with a reason the pane can show. */
+export interface ThemeImportFailure {
+  name: string;
+  reason: string;
+}
+
+/** The outcome of an import: what joined the library and what was refused. */
+export interface ThemeImportResult {
+  added: ThemeDefinition[];
+  failures: ThemeImportFailure[];
+}
+
 /**
- * Read persisted preferences, paint the first theme and ensure the system
- * listener is live. Safe to call more than once. This is the only entry point
- * that applies without a prior user action — the plugin calls it on boot.
+ * Import one or more VS Code colour-theme files. Each file is read, parsed and
+ * judged on its own; the ones that make it are paired into adaptive themes
+ * where the batch allows and registered with the library. Nothing here selects
+ * the new themes — importing is not choosing.
+ */
+async function importThemes(files: File[]): Promise<ThemeImportResult> {
+  const entries: VsCodeImportEntry[] = [];
+  const failures: ThemeImportFailure[] = [];
+
+  for (const file of files) {
+    const stem = file.name.replace(/\.[^.]+$/, "");
+    let json: unknown;
+    try {
+      json = JSON.parse(await file.text());
+    } catch {
+      failures.push({ name: file.name, reason: "That file isn't valid JSON." });
+      continue;
+    }
+    if (!isVsCodeThemeFile(json)) {
+      failures.push({ name: file.name, reason: "That file isn't a VS Code colour theme." });
+      continue;
+    }
+    try {
+      entries.push(parseVsCodeThemeEntry(json, stem));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "That file couldn't be read.";
+      failures.push({ name: file.name, reason });
+    }
+  }
+
+  const added = buildImportedThemes(entries, reservedThemeIds());
+  registerImportedThemes(added);
+  return { added, failures };
+}
+
+/** Remove an imported theme. If it was the active one, kone's own appearance
+ *  takes over — the removed theme can't keep painting. */
+function removeImportedTheme(id: string): void {
+  dropImportedTheme(id);
+  if (themeId.value === id) {
+    themeId.value = DEFAULT_THEME_ID;
+    writeStored(STORAGE_THEME, DEFAULT_THEME_ID);
+  }
+}
+
+/**
+ * Read persisted preferences, restore the imported library, paint the first
+ * theme and ensure the system listener is live. Safe to call more than once.
+ * This is the only entry point that applies without a prior user action — the
+ * plugin calls it on boot.
  */
 export function initTheme(): void {
+  hydrateImportedThemes();
   bindMediaListener();
   themeId.value = readStoredThemeId();
   mode.value = readStoredMode();
@@ -139,8 +209,11 @@ export function useTheme() {
     modeLocked,
     theme,
     extras,
-    themes: BUILT_IN_THEMES,
+    themes: libraryThemes,
     setTheme,
     setMode,
+    importThemes,
+    removeImportedTheme,
+    isImported,
   };
 }

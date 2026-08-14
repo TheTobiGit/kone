@@ -221,6 +221,11 @@ export type ThemeDefinition = Readonly<{
   colors: Readonly<Partial<Record<ThemeScheme, ThemeColors>>>;
   extras: Readonly<Partial<Record<ThemeScheme, ThemeExtras>>>;
   hues: ThemeHues;
+  /**
+   * The marketplace extension this came from ("dracula-theme.theme-dracula"),
+   * when it was imported from one. Lets the picker hide what's already here.
+   */
+  source?: string;
 }>;
 
 /**
