@@ -1816,35 +1816,88 @@ function onDiscardFile(path: string) {
       <!-- Greeting + changes stay put at the top; only the conversation listing
            below scrolls, so the page itself never moves. -->
       <div class="flex shrink-0 flex-col gap-11">
-        <!-- The greeting's project name doubles as a switcher trigger; the popover
-             drops just beneath it, anchored to the name. -->
-        <div ref="greetWrap" class="relative w-fit">
-          <HomeGreeting
-            :project-name="project.name"
-            :loading="!g.loaded.value"
-            :repo="g.repo.value"
-            :has-commits="g.hasCommits.value"
-            :branch="g.branch.value"
-            :clean="g.clean.value"
-            :added="g.added.value"
-            :removed="g.removed.value"
-            :file-count="g.fileCount.value"
-            :staged="g.stagedCount.value"
-            :ahead="g.ahead.value"
-            :behind="g.behind.value"
-            switchable
-            @switch="switcherOpen = !switcherOpen"
-            @profile="emit('profile')"
-          />
-          <AnimatePresence>
-            <ProjectSwitcher
-              v-if="switcherOpen"
-              class="greet-switcher"
-              :projects="otherProjects"
-              @switch="switchTo"
-              @all="toLauncher"
+        <div class="overview-header flex items-start justify-between gap-8">
+          <!-- The greeting's project name doubles as a switcher trigger; the popover
+               drops just beneath it, anchored to the name. -->
+          <div ref="greetWrap" class="relative min-w-0 flex-1">
+            <HomeGreeting
+              :project-name="project.name"
+              :loading="!g.loaded.value"
+              :repo="g.repo.value"
+              :has-commits="g.hasCommits.value"
+              :branch="g.branch.value"
+              :clean="g.clean.value"
+              :added="g.added.value"
+              :removed="g.removed.value"
+              :file-count="g.fileCount.value"
+              :staged="g.stagedCount.value"
+              :ahead="g.ahead.value"
+              :behind="g.behind.value"
+              switchable
+              @switch="switcherOpen = !switcherOpen"
+              @profile="emit('profile')"
             />
-          </AnimatePresence>
+            <AnimatePresence>
+              <ProjectSwitcher
+                v-if="switcherOpen"
+                class="greet-switcher"
+                :projects="otherProjects"
+                @switch="switchTo"
+                @all="toLauncher"
+              />
+            </AnimatePresence>
+          </div>
+
+          <!-- Inline folder companion for compact / laptop screens: settles in alongside
+               the greeting so the physical folder and its actions remain present when
+               the viewport is not wide enough for the corner dock. -->
+          <div
+            class="overview-folder-inline shrink-0"
+            @mouseenter="folderHovered = true"
+            @mouseleave="folderHovered = false"
+          >
+            <div class="project-folder">
+              <ProjectFolder
+                :name="project.name"
+                :repo="g.repo.value"
+                :branch="g.branch.value"
+                :added="g.added.value"
+                :removed="g.removed.value"
+                :files="folderFiles"
+                :scale="0.95"
+                :hovered="folderHovered"
+              />
+            </div>
+
+            <div
+              class="folder-actions folder-actions--inline"
+              :class="{ 'is-visible': folderHovered || branchPickerOpen }"
+            >
+              <button
+                v-if="g.repo.value"
+                type="button"
+                class="folder-action"
+                :class="{ 'is-active': branchPickerOpen }"
+                aria-label="Switch branch"
+                title="Switch branch"
+                @click="openBranchPicker"
+              >
+                <HugeiconsIcon :icon="GitBranchIcon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                <span>Switch branch</span>
+              </button>
+
+              <button
+                type="button"
+                class="folder-action"
+                aria-label="Reveal in Finder"
+                title="Reveal in Finder"
+                @click="onRevealProject"
+              >
+                <HugeiconsIcon :icon="AppleFinderIcon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                <span>Open in Finder</span>
+              </button>
+            </div>
+          </div>
         </div>
         <ChangesPanel
           :loading="!g.loaded.value"
@@ -2613,7 +2666,8 @@ function onDiscardFile(path: string) {
   pointer-events: none;
   transition: opacity 0.2s ease;
 }
-.folder-actions.is-visible {
+.folder-actions.is-visible,
+.folder-actions:focus-within {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2635,12 +2689,54 @@ function onDiscardFile(path: string) {
   color: var(--ink);
 }
 
-/* Once the centered work column reaches the folder's footprint, remove the
-   decorative folder + its actions so they cannot overlap actionable page
-   content. */
+/* Inline companion for the project folder on compact / laptop screens.
+   When the centered work column approaches the viewport boundary, the folder
+   moves from the floating corner perch into the overview header next to the
+   greeting, so its physical representation and actions stay accessible. */
+.overview-folder-inline {
+  display: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  animation: folder-inline-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: 120ms;
+}
+
+@keyframes folder-inline-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.folder-actions--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  margin-top: 2px;
+}
+
 @media (max-width: 1440px) {
   .project-folder-row {
     display: none;
+  }
+  .overview-folder-inline {
+    display: flex;
+  }
+}
+
+@media (max-width: 860px) {
+  .overview-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20px;
+  }
+  .overview-folder-inline {
+    align-items: flex-start;
   }
 }
 
