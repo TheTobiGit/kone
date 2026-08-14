@@ -269,6 +269,21 @@ const api = {
   // nativeTheme so the OS chrome and the window follow the same choice.
   setTheme: (mode: ThemeMode): Promise<void> =>
     ipcRenderer.invoke("theme:set", mode),
+  // Window chrome for the renderer's caption buttons. getState/toggleMaximize
+  // return live maximized/fullscreen flags; onState pushes each transition.
+  window: {
+    minimize: (): Promise<void> => ipcRenderer.invoke("window:minimize"),
+    toggleMaximize: (): Promise<{ isMaximized: boolean; isFullscreen: boolean }> =>
+      ipcRenderer.invoke("window:toggle-maximize"),
+    close: (): Promise<void> => ipcRenderer.invoke("window:close"),
+    getState: (): Promise<{ isMaximized: boolean; isFullscreen: boolean }> =>
+      ipcRenderer.invoke("window:get-state"),
+    onState: (cb: (state: { isMaximized: boolean; isFullscreen: boolean }) => void): (() => void) => {
+      const listener = (_event: unknown, state: { isMaximized: boolean; isFullscreen: boolean }) => cb(state);
+      ipcRenderer.on("window:state", listener);
+      return () => ipcRenderer.removeListener("window:state", listener);
+    },
+  },
   agent: {
     // The last known provider surface off the main process's disk cache — no
     // CLI is spawned, so this resolves immediately and lets the picker be real

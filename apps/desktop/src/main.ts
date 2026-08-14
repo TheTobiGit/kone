@@ -5,12 +5,17 @@ import { app, BrowserWindow, nativeTheme, net, protocol, shell } from "electron"
 
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { setUserDataDir } from "./agent/userDataDir.js";
+import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelClone, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
 import { registerBoardIpc } from "./board/index.js";
 import { registerScratchpadIpc } from "./scratchpad/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./terminal/index.js";
+import {
+  bindWindowChromeEvents,
+  registerWindowControlsIpc,
+} from "./windowControls.js";
 import {
   createRendererRecoveryGate,
   getInitialWindowState,
@@ -106,6 +111,9 @@ function registerIpc() {
 
   // Per-project board layout (pane order, kinds, widths, focus).
   registerBoardIpc();
+
+  // Window chrome: minimize/maximize/close for the renderer's caption buttons.
+  registerWindowControlsIpc(() => mainWindow);
 }
 
 async function createWindow() {
@@ -119,7 +127,7 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    frame: false,
+    ...titleBarOptions(process.platform),
     title: "Kone",
     // Created before the renderer paints — give the frame the scheme-correct
     // ground so a fresh window never flashes the opposite theme.
@@ -137,6 +145,9 @@ async function createWindow() {
     mainWindow.maximize();
   }
   manageWindowState(mainWindow);
+
+  // Push maximize/fullscreen transitions to the renderer's caption buttons.
+  bindWindowChromeEvents(mainWindow);
 
   // Renderer crash (usually V8 OOM on long sessions) recovery: reload after a
   // short delay, bounded to 3 attempts per rolling 60s window (gate in
