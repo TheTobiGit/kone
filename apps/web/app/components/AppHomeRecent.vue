@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion } from "motion-v";
-import { HugeiconsIcon } from "@hugeicons/vue";
-import {
-  PinIcon,
-  AppleFinderIcon,
-  Cancel01Icon,
-  Search01Icon,
-  ArrowDown01Icon,
-} from "@hugeicons/core-free-icons";
+import ArrowDown01 from "~/components/icons/animated/ArrowDown01.vue";
+import AppleFinder from "~/components/icons/animated/AppleFinder.vue";
+import Cancel01 from "~/components/icons/animated/Cancel01.vue";
+import Pin from "~/components/icons/animated/Pin.vue";
+import Search01 from "~/components/icons/animated/Search01.vue";
 import type { ActionKey } from "./StartActions.vue";
 import type { RecentProject } from "~/composables/useRecentProjects";
 
@@ -149,8 +146,7 @@ function onSideAction(
           <label
             class="flex h-9 items-center gap-2.5 rounded-[11px] bg-hover px-3 transition-colors focus-within:bg-hover"
           >
-            <HugeiconsIcon
-              :icon="Search01Icon"
+            <Search01
               :size="15"
               :stroke-width="2"
               class="shrink-0 text-muted"
@@ -175,8 +171,7 @@ function onSideAction(
             @click="cycleSort"
           >
             <span>{{ sortLabel }}</span>
-            <HugeiconsIcon
-              :icon="ArrowDown01Icon"
+            <ArrowDown01
               :size="12"
               :stroke-width="2"
               class="text-muted"
@@ -231,7 +226,7 @@ function onSideAction(
             class="folder-btn block cursor-pointer rounded-[22px] text-left focus-visible:outline-none disabled:cursor-default"
             :animate="{ y: isActive(project.path) ? -6 : 0 }"
             :while-tap="anyPending ? {} : { y: -3, scale: 0.985 }"
-            :transition="{ type: 'spring', stiffness: 420, damping: 17, mass: 0.85 }"
+            :transition="{ type: 'spring', stiffness: 420, damping: 38, mass: 0.85 }"
             @click="emit('open', project)"
           >
             <ProjectFolder
@@ -269,8 +264,7 @@ function onSideAction(
               @mousedown.prevent
               @click.stop="onSideAction(project.path, 'pin')"
             >
-              <HugeiconsIcon
-                :icon="PinIcon"
+              <Pin
                 :size="14"
                 :stroke-width="project.pinned ? 2.4 : 1.8"
                 aria-hidden="true"
@@ -286,8 +280,7 @@ function onSideAction(
               @mousedown.prevent
               @click.stop="onSideAction(project.path, 'reveal')"
             >
-              <HugeiconsIcon
-                :icon="AppleFinderIcon"
+              <AppleFinder
                 :size="15"
                 :stroke-width="1.7"
                 aria-hidden="true"
@@ -303,8 +296,7 @@ function onSideAction(
               @mousedown.prevent
               @click.stop="onSideAction(project.path, 'forget')"
             >
-              <HugeiconsIcon
-                :icon="Cancel01Icon"
+              <Cancel01
                 :size="14"
                 :stroke-width="2"
                 aria-hidden="true"
@@ -382,6 +374,16 @@ function onSideAction(
 .home-sessions::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/* The hover lift translates the whole tile, and motion-v drives it by writing the
+   transform inline each frame — so without promotion the name/branch/diff text
+   re-paints at every fractional offset while the vector glyphs stay crisp, which
+   reads as the icons settling a beat before the text. Pinning the tile to its own
+   compositor layer rasterizes the text once and lets it ride the transform. */
+.folder-btn {
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 /* Keyboard-only focus (nothing on mouse — clicking a folder opens it, so no ring

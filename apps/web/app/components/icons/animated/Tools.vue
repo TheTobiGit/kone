@@ -1,0 +1,54 @@
+<script setup lang="ts">
+import { motion, useAnimationControls } from "motion-v";
+import { useIconAnimation } from "./useIconAnimation";
+
+withDefaults(defineProps<{ size?: number; strokeWidth?: number; trigger?: "hover" | "manual" }>(), {
+  size: 24,
+  strokeWidth: 1.5,
+  trigger: "hover",
+});
+
+const controls = useAnimationControls();
+const { startAnimation, stopAnimation } = useIconAnimation(controls);
+defineExpose({ startAnimation, stopAnimation });
+
+// a quick tilt-shake that reads as activity, damping to still.
+const iconVariants = {
+  normal: { transform: "rotate(0deg)" },
+  animate: {
+    transform: ["rotate(0deg)", "rotate(-10deg)", "rotate(10deg)", "rotate(-5.0deg)", "rotate(0deg)"],
+    transition: { duration: 0.55, times: [0, 0.25, 0.55, 0.8, 1], ease: [0.4, 0, 0.2, 1] },
+  },
+};
+</script>
+
+<template>
+  <span
+    class="animated-icon"
+    @mouseenter="trigger === 'hover' && startAnimation()"
+    @mouseleave="trigger === 'hover' && stopAnimation()"
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      :width="size"
+      :height="size"
+      viewBox="0 0 24 24"
+      fill="none"
+      overflow="visible"
+    >
+      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '12px 12px', transformBox: 'view-box' }">
+        <path d="M13 11L18 6" stroke="currentColor" :stroke-width="strokeWidth" />
+        <path d="M19 7L17 5L19.5 3.5L20.5 4.5L19 7Z" stroke="currentColor" stroke-linejoin="round" :stroke-width="strokeWidth" />
+        <path d="M4.02513 8.97487C3.01416 7.96391 2.75095 6.48836 3.23548 5.23548L4.65748 6.65748H6.65748V4.65748L5.23548 3.23548C6.48836 2.75095 7.96391 3.01416 8.97487 4.02513C9.98621 5.03647 10.2493 6.51274 9.76398 7.76593L16.2341 14.236C17.4873 13.7507 18.9635 14.0138 19.9749 15.0251C20.9858 16.0361 21.2491 17.5116 20.7645 18.7645L19.3425 17.3425L17.3425 17.3425V19.3425L18.7645 20.7645C17.5116 21.2491 16.0361 20.9858 15.0251 19.9749C14.0145 18.9643 13.7511 17.4895 14.2349 16.2369L7.76312 9.76507C6.51053 10.2489 5.03571 9.98546 4.02513 8.97487Z" stroke="currentColor" stroke-linejoin="round" :stroke-width="strokeWidth" />
+        <path d="M12.203 14.5L6.59897 20.1041C6.07115 20.6319 5.2154 20.6319 4.68758 20.1041L3.89586 19.3124C3.36805 18.7846 3.36805 17.9288 3.89586 17.401L9.49994 11.7969" stroke="currentColor" stroke-linejoin="round" :stroke-width="strokeWidth" />
+      </motion.g>
+    </svg>
+  </span>
+</template>
+
+<style scoped>
+.animated-icon {
+  display: inline-flex;
+  line-height: 0;
+}
+</style>
