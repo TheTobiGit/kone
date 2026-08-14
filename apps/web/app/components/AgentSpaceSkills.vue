@@ -17,6 +17,7 @@ const ORIGIN_LABEL: Record<string, string> = {
   codex: "Codex",
   opencode: "OpenCode",
   cursor: "Cursor",
+  factory: "Factory",
   agents: "Agents",
   kone: "kone",
 };

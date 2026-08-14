@@ -33,7 +33,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type SkillOrigin = "claude" | "codex" | "opencode" | "cursor" | "agents";
+type SkillOrigin = "claude" | "codex" | "opencode" | "cursor" | "factory" | "agents";
 
 type SkillRoot = {
   readonly dir: string;
@@ -41,12 +41,14 @@ type SkillRoot = {
   readonly scope: "user" | "project";
 };
 
-// The five user/global roots kone scans today (docs/skills-mcp-research.md §3).
+// The user/global roots kone scans across installed agent providers.
 function userSkillRoots(home: string): SkillRoot[] {
   return [
     { dir: path.join(home, ".claude", "skills"), origin: "claude", scope: "user" },
     { dir: path.join(home, ".codex", "skills"), origin: "codex", scope: "user" },
+    { dir: path.join(home, ".cursor", "skills-cursor"), origin: "cursor", scope: "user" },
     { dir: path.join(home, ".cursor", "skills"), origin: "cursor", scope: "user" },
+    { dir: path.join(home, ".factory", "skills"), origin: "factory", scope: "user" },
     { dir: path.join(home, ".config", "opencode", "skills"), origin: "opencode", scope: "user" },
     { dir: path.join(home, ".agents", "skills"), origin: "agents", scope: "user" },
   ];
@@ -56,6 +58,7 @@ const PROJECT_SKILL_DIRS: ReadonlyArray<{ dirName: string; origin: SkillOrigin }
   { dirName: ".claude", origin: "claude" },
   { dirName: ".opencode", origin: "opencode" },
   { dirName: ".cursor", origin: "cursor" },
+  { dirName: ".factory", origin: "factory" },
   { dirName: ".codex", origin: "codex" },
   { dirName: ".agents", origin: "agents" },
 ];
@@ -302,11 +305,94 @@ async function readClaudePluginSkills(home: string): Promise<SkillEntry[]> {
   return perPlugin.flat();
 }
 
+async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
+  const factoryDir = path.join(home, ".factory");
+  const marketplacesManifest = path.join(factoryDir, "plugins", "known_marketplaces.json");
+
+  let info;
+  try {
+    info = await stat(marketplacesManifest);
+  } catch {
+    return [];
+  }
+  if (!info.isFile() || info.size > MAX_FILE_BYTES) return [];
+
+  let known: unknown;
+  try {
+    known = JSON.parse(await readFile(marketplacesManifest, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!known || typeof known !== "object" || Array.isArray(known)) return [];
+
+  const factoryRealRoot = await realpath(factoryDir).catch(() => factoryDir);
+
+  const perMarketplace = await Promise.all(
+    Object.entries(known as Record<string, unknown>).map(async ([, reg]) => {
+      if (!reg || typeof reg !== "object" || Array.isArray(reg)) return [];
+      const installLocation = (reg as Record<string, unknown>).installLocation;
+      if (typeof installLocation !== "string" || !installLocation.trim()) return [];
+
+      const marketplaceDir = path.resolve(factoryDir, installLocation.trim());
+      const marketplaceRealDir = await realpath(marketplaceDir).catch(() => null);
+      if (!marketplaceRealDir || !isContainedIn(marketplaceRealDir, factoryRealRoot)) return [];
+
+      const manifestPath = path.join(marketplaceRealDir, ".factory-plugin", "marketplace.json");
+      let manifestRaw: string;
+      try {
+        manifestRaw = await readFile(manifestPath, "utf8");
+      } catch {
+        return [];
+      }
+
+      let manifest: unknown;
+      try {
+        manifest = JSON.parse(manifestRaw);
+      } catch {
+        return [];
+      }
+      if (!manifest || typeof manifest !== "object" || !Array.isArray((manifest as Record<string, unknown>).plugins)) {
+        return [];
+      }
+
+      const plugins = (manifest as Record<string, unknown>).plugins as Array<Record<string, unknown>>;
+      const perPlugin = await Promise.all(
+        plugins.map(async (plugin) => {
+          if (!plugin || typeof plugin !== "object") return [];
+          const source = typeof plugin.source === "string" ? plugin.source.trim() : null;
+          const pluginName = typeof plugin.name === "string" ? plugin.name.trim() : null;
+          if (!source || !pluginName) return [];
+
+          const pluginDir = path.resolve(marketplaceRealDir, source);
+          const pluginRealDir = await realpath(pluginDir).catch(() => null);
+          if (!pluginRealDir || !isContainedIn(pluginRealDir, marketplaceRealDir)) return [];
+
+          const skillsDir = path.join(pluginRealDir, "skills");
+          const resolvedSkillsDir = await realpath(skillsDir).catch(() => null);
+          if (!resolvedSkillsDir || !isContainedIn(resolvedSkillsDir, marketplaceRealDir)) return [];
+
+          const skillPaths = await collectSkillMarkdownPaths(skillsDir);
+          const entries = await Promise.all(
+            skillPaths.map(async (skillPath) => {
+              const entry = await readSkillEntry(skillPath, "factory", "plugin");
+              if (!entry) return null;
+              return { ...entry, name: `${pluginName}:${entry.name}` };
+            }),
+          );
+          return entries.filter((entry): entry is SkillEntry => entry !== null);
+        }),
+      );
+      return perPlugin.flat();
+    }),
+  );
+
+  return perMarketplace.flat();
+}
+
 /** Scans every known skills root — user/global plus the project's ancestor
- *  chain, plus Claude plugin skills — and dedupes by lowercased name.
+ *  chain, plus plugin skills — and dedupes by lowercased name.
  *
- *  Precedence mirrors Claude Code's own documented rule
- *  (docs/skills-mcp-research.md §3: "enterprise > personal > project"): user
+ *  Precedence mirrors the documented enterprise > personal > project rule: user
  *  roots win first, then plugin skills, then project roots — so a
  *  repo-committed `.claude/skills/x` can never silently shadow something the
  *  user already keeps for themselves in `~/.claude/skills/x`.
@@ -330,12 +416,21 @@ export async function discoverSkills(projectPath: string | null): Promise<{
     projectPath ? scanRoots(projectSkillRoots(projectPath), errors) : Promise.resolve([]),
   ]);
 
-  let pluginSkills: SkillEntry[] = [];
+  let claudePluginSkills: SkillEntry[] = [];
   try {
-    pluginSkills = await readClaudePluginSkills(home);
+    claudePluginSkills = await readClaudePluginSkills(home);
   } catch (error) {
     errors.push({ source: "skills:claude-plugins", message: errorMessage(error) });
   }
+
+  let factoryPluginSkills: SkillEntry[] = [];
+  try {
+    factoryPluginSkills = await readFactoryPluginSkills(home);
+  } catch (error) {
+    errors.push({ source: "skills:factory-plugins", message: errorMessage(error) });
+  }
+
+  const pluginSkills = [...claudePluginSkills, ...factoryPluginSkills];
 
   const ordered = [...userSkills, ...pluginSkills, ...projectSkills];
   const byName = new Map<string, SkillEntry>();

@@ -858,6 +858,8 @@ export async function readSkillState(context: SkillStateContext): Promise<SkillS
       return readOpenCodeState(ctx);
     case "cursor":
       return { state: "unsupported", reason: "Cursor has no per-skill switch, so there is nothing to read for this skill.", source: null };
+    case "factory":
+      return { state: "unsupported", reason: "Factory has no per-skill switch, so there is nothing to read for this skill.", source: null };
     case "agents":
       return {
         state: "unsupported",
@@ -1033,6 +1035,12 @@ export async function writeSkillState(
         ok: false,
         wrotePath: null,
         reason: "Cursor has no per-skill switch; the honest way to stop a Cursor skill is to move it out of the skills folder, so nothing was written.",
+      };
+    case "factory":
+      return {
+        ok: false,
+        wrotePath: null,
+        reason: "Factory has no per-skill switch; the honest way to stop a Factory skill is to move it out of the skills folder, so nothing was written.",
       };
     case "agents":
       return {

@@ -453,6 +453,13 @@ describe("readSkillState edge", () => {
     expect(result.source).toBeNull();
   });
 
+  test("factory is unsupported with a stated reason", async () => {
+    const result = await readSkillState({ origin: "factory", skillName: "x", home: HOME, fs: memoryFs({}) });
+    expect(result.state).toBe("unsupported");
+    expect(result.reason).toMatch(/no per-skill switch/);
+    expect(result.source).toBeNull();
+  });
+
   test("the shared agents root is unsupported", async () => {
     const result = await readSkillState({ origin: "agents", skillName: "x", home: HOME, fs: memoryFs({}) });
     expect(result.state).toBe("unsupported");
@@ -684,10 +691,14 @@ describe("writeSkillState edge", () => {
     expect(blocked.reason).toContain('"*" wildcard');
   });
 
-  test("cursor and agents writes are refused honestly", async () => {
+  test("cursor, factory, and agents writes are refused honestly", async () => {
     const cursor = await writeSkillState({ origin: "cursor", skillName: "s", state: "disabled", home: HOME, fs: memoryFs({}) });
     expect(cursor.ok).toBe(false);
     expect(cursor.reason).toMatch(/no per-skill switch/);
+
+    const factory = await writeSkillState({ origin: "factory", skillName: "s", state: "disabled", home: HOME, fs: memoryFs({}) });
+    expect(factory.ok).toBe(false);
+    expect(factory.reason).toMatch(/no per-skill switch/);
 
     const agents = await writeSkillState({ origin: "agents", skillName: "s", state: "disabled", home: HOME, fs: memoryFs({}) });
     expect(agents.ok).toBe(false);

@@ -211,3 +211,41 @@ describe("discoverSkills manualOnly", () => {
     }
   });
 });
+
+describe("discoverSkills cursor", () => {
+  test("discovers skills from project .cursor/skills", async () => {
+    const project = makeProject();
+    const name = `cursor-proj-${path.basename(project)}`;
+    writeSkill(
+      path.join(project, ".cursor", "skills", name),
+      `name: ${name}\ndescription: Cursor project skill\ndisplay-name: Cursor Test`,
+    );
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.origin).toBe("cursor");
+    expect(winner.scope).toBe("project");
+    expect(winner.description).toBe("Cursor project skill");
+    expect(winner.displayName).toBe("Cursor Test");
+  });
+});
+
+describe("discoverSkills factory", () => {
+  test("discovers skills from project .factory/skills", async () => {
+    const project = makeProject();
+    const name = `factory-proj-${path.basename(project)}`;
+    writeSkill(
+      path.join(project, ".factory", "skills", name),
+      `name: ${name}\ndescription: Factory project skill\ndisplay-name: Factory Test`,
+    );
+
+    const winner = await findSkill(name, project);
+    expect(winner).not.toBeNull();
+    if (!winner) return;
+    expect(winner.origin).toBe("factory");
+    expect(winner.scope).toBe("project");
+    expect(winner.description).toBe("Factory project skill");
+    expect(winner.displayName).toBe("Factory Test");
+  });
+});
