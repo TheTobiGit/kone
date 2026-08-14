@@ -108,7 +108,9 @@ type MProvider = {
 
 // One rail entry per real provider, mapped straight from the live catalogs the
 // host handed in. Keeping this a list (not a single value) lets the rail,
-// seedPending, and Favorites all walk providers uniformly.
+// seedPending, and Favorites all walk providers uniformly. Hidden models are
+// already stripped by the host (ProjectView filters its picker catalog through
+// useProviderSettings), so every view here inherits that for free.
 const realProviders = computed<MProvider[]>(() =>
   props.providers.map((p) => ({
     id: p.id,
@@ -166,7 +168,9 @@ const searchResults = computed<SearchHit[]>(() => {
       const score = scoreModel(m, p, q);
       if (score >= 0) {
         seen.add(m.key);
-        hits.push({ model: m, score });
+        // Search spans providers, so each hit carries its origin — the row shows
+        // it so two same-named models from different providers read apart.
+        hits.push({ model: { ...m, origin: { label: p.label, ready: p.ready } }, score });
       }
     }
   }
@@ -195,6 +199,13 @@ const searchResults = computed<SearchHit[]>(() => {
 // else the open provider tab's models. One list, one row markup.
 const displayModels = computed<MModel[]>(() =>
   searching.value ? searchResults.value.map((h) => h.model) : (provider.value?.models ?? []),
+);
+
+// Whether a row should name its provider. Only worth it where the list spans
+// providers — search, Favorites, Recent — since the rail already names it for a
+// plain provider tab. This is what tells the two same-named "Luna" rows apart.
+const crossProvider = computed(
+  () => searching.value || provider.value?.id === "favorites" || provider.value?.id === "recent",
 );
 
 function onSearchEsc() {
@@ -587,6 +598,13 @@ let opener: HTMLElement | null = null;
 onMounted(() => {
   opener = document.activeElement as HTMLElement | null;
   seedPending();
+  // Which tab greets you on open. seedPending has already staged the active
+  // model (so it stays marked current and its settings read true) and landed on
+  // its provider tab — that's the fallback. Prefer a shortcut shelf when it has
+  // content: Favorites leads, then Recent, and only with neither do we rest on
+  // the current model's provider list.
+  if (favorites.value.models.length) provider.value = favorites.value;
+  else if (recent.value.models.length) provider.value = recent.value;
   // Favourites hydrate from localStorage (see `favoritedKeys`); don't re-seed
   // here — doing so used to wipe the user's stars on every open.
   window.addEventListener("resize", syncHeight);
@@ -722,6 +740,7 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
                   <span class="mp-body">
                     <span class="mp-label">{{ m.label }}</span>
                     <span class="mp-meta">
+                      <span v-if="crossProvider && m.origin" class="mp-meta-origin">{{ m.origin.label }}</span>
                       <span
                         v-if="reasoningMeta(m)"
                         class="mp-meta-brains"
@@ -1073,6 +1092,23 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   transition: opacity 0.14s ease;
 }
 .mp-row:hover .mp-meta-ctx { opacity: 1; }
+
+/* The origin tag: which provider a row came from, shown only in cross-provider
+   views (search / Favorites / Recent) so two same-named models read apart. Quiet
+   by default, lifting on hover like the other meta bits. A trailing dot sets it
+   off from whatever reasoning / context meta follows. */
+.mp-meta-origin {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.72;
+  transition: opacity 0.14s ease;
+}
+.mp-meta-origin:not(:last-child)::after {
+  content: "·";
+  margin-left: 5px;
+  opacity: 0.6;
+}
+.mp-row:hover .mp-meta-origin { opacity: 1; }
 
 .mp-icon {
   display: inline-flex;
