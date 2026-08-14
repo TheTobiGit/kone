@@ -92,7 +92,7 @@ export function useAgentSpace(projectPath: () => string | null) {
   const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
 
   // ── usage ──────────────────────────────────────────────────────────────────
-  const range = ref<UsageRange>("30d");
+  const range = ref<UsageRange>("1d");
   const usage = ref<AgentUsageReport | null>(null);
   const usageLoading = ref(false);
   const usageLoaded = ref(false);

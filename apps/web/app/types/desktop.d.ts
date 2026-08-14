@@ -1481,7 +1481,7 @@ export type ProfileStats = {
 // rate table, and the UI is required to say so.
 
 /** The windows the usage report can be asked for. */
-export type UsageRange = "7d" | "30d" | "all";
+export type UsageRange = "1d" | "7d" | "30d" | "all";
 
 export type UsageTotals = {
   tokens: number;

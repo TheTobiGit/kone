@@ -34,6 +34,7 @@ const props = withDefaults(
 const report = computed(() => props.space.usage.value);
 
 const RANGES: { id: UsageRange; label: string }[] = [
+  { id: "1d", label: "Today" },
   { id: "7d", label: "7 days" },
   { id: "30d", label: "30 days" },
   { id: "all", label: "All time" },
@@ -49,6 +50,7 @@ const recentDays = computed(() => [...days.value].reverse().slice(0, 8));
 const windowLabel = computed(() => {
   const list = days.value;
   if (!list.length) return "";
+  if (list.length === 1) return formatDayShort(list[0]!.date);
   return `${formatDayShort(list[0]!.date)} to ${formatDayShort(list[list.length - 1]!.date)}`;
 });
 

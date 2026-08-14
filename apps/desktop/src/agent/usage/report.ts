@@ -2,7 +2,7 @@
 // from local CLI logs; Cursor from dashboard CSV when signed in; kone store only
 // as fallback for Cursor when the dashboard export is unavailable.
 
-export type UsageRange = "7d" | "30d" | "all";
+export type UsageRange = "1d" | "7d" | "30d" | "all";
 
 /** Cache/reasoning token counts a provider adapter attaches to a
  *  `thread.token-usage.updated` payload's `usage` object, beyond the fields
@@ -102,7 +102,7 @@ export type AgentUsageReport = {
 
 export function rangeStart(range: UsageRange, now: number = Date.now()): number | null {
   if (range === "all") return null;
-  const days = range === "7d" ? 7 : 30;
+  const days = range === "1d" ? 1 : range === "7d" ? 7 : 30;
   const d = new Date(now);
   const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   start.setDate(start.getDate() - (days - 1));
