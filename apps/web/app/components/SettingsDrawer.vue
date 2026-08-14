@@ -2,20 +2,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion } from "motion-v";
-import { HugeiconsIcon } from "@hugeicons/vue";
-import {
-  AiChipIcon,
-  Analytics01Icon,
-  DistributeHorizontalCenterIcon,
-  GaugeIcon,
-  KeyboardIcon,
-  PuzzleIcon,
-  SwatchIcon,
-  UserIcon,
-  VolumeHighIcon,
-  VolumeMute01Icon,
-} from "@hugeicons/core-free-icons";
-import { Magnet } from "~/components/ui/magnet";
+import AiChip from "~/components/icons/animated/AiChip.vue";
+import Analytics01 from "~/components/icons/animated/Analytics01.vue";
+import DistributeHorizontalCenter from "~/components/icons/animated/DistributeHorizontalCenter.vue";
+import Gauge from "~/components/icons/animated/Gauge.vue";
+import Keyboard from "~/components/icons/animated/Keyboard.vue";
+import Puzzle from "~/components/icons/animated/Puzzle.vue";
+import Swatch from "~/components/icons/animated/Swatch.vue";
+import User from "~/components/icons/animated/User.vue";
+import VolumeHigh from "~/components/icons/animated/VolumeHigh.vue";
+import VolumeMute01 from "~/components/icons/animated/VolumeMute01.vue";
+import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
 import { CENTER_MODES } from "~/utils/stripScroll";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
@@ -80,6 +77,25 @@ function onSoundToggle() {
   // If we just switched sound back on, confirm it with a soft cue (a no-op the
   // other way, since cues stay silent while muted).
   cue("toggle");
+  // The volume glyph is a click-to-start: fire it once the icon has swapped to
+  // the new mute state (the ref re-binds on the swapped component).
+  void nextTick(() => volumeHandle.value?.startAnimation());
+}
+
+// The nav rows and the volume glyph drive their own icons. Hover on a row replays
+// its glyph (row-level, not the tiny icon); toggling sound fires the volume glyph
+// on demand. Manual trigger in both cases — the row/switch is the hover target.
+const navIconHandles = new Map<string, AnimatedIconHandle>();
+function setNavIcon(key: string, el: unknown): void {
+  if (el) navIconHandles.set(key, el as AnimatedIconHandle);
+  else navIconHandles.delete(key);
+}
+function playNavIcon(key: string): void {
+  navIconHandles.get(key)?.startAnimation();
+}
+const volumeHandle = ref<AnimatedIconHandle | null>(null);
+function setVolumeIcon(el: unknown): void {
+  volumeHandle.value = el as AnimatedIconHandle | null;
 }
 
 // ── pane navigation ──────────────────────────────────────────────────────────
@@ -233,37 +249,30 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
           <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
             General
           </p>
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open profile settings"
+            @mouseenter="playNavIcon('profile')"
+            @click="openProfile"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open profile settings"
-              @click="openProfile"
+            <User
+              :ref="(el) => setNavIcon('profile', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Profile</span>
+            <span
+              v-if="profileName"
+              class="shrink-0 max-w-[40%] truncate text-[12px] leading-tight text-muted"
             >
-              <HugeiconsIcon
-                :icon="UserIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Profile</span>
-              <span
-                v-if="profileName"
-                class="shrink-0 max-w-[40%] truncate text-[12px] leading-tight text-muted"
-              >
-                {{ profileName }}
-              </span>
-            </button>
-          </Magnet>
+              {{ profileName }}
+            </span>
+          </button>
         </div>
 
         <!-- Personalization -->
@@ -271,97 +280,76 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
           <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
             Personalization
           </p>
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open keyboard shortcuts settings"
+            @mouseenter="playNavIcon('shortcuts')"
+            @click="openShortcuts"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open keyboard shortcuts settings"
-              @click="openShortcuts"
-            >
-              <HugeiconsIcon
-                :icon="KeyboardIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
-                Keyboard shortcuts
-              </span>
-            </button>
-          </Magnet>
+            <Keyboard
+              :ref="(el) => setNavIcon('shortcuts', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+              Keyboard shortcuts
+            </span>
+          </button>
 
           <!-- Thread strip — pushes into its own pane (the shelf the board's other
                strip knobs will land on). Same borderless magnet row as Shortcuts;
                the current choice trails the label in --muted so the row reads as
                "Thread strip · When needed" at a glance without opening it. -->
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open thread strip settings"
+            @mouseenter="playNavIcon('motion')"
+            @click="openMotion"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open thread strip settings"
-              @click="openMotion"
-            >
-              <HugeiconsIcon
-                :icon="DistributeHorizontalCenterIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
-                Thread strip
-              </span>
-              <span class="shrink-0 text-[12px] leading-tight text-muted">
-                {{ currentCenterOption }}
-              </span>
-            </button>
-          </Magnet>
+            <DistributeHorizontalCenter
+              :ref="(el) => setNavIcon('motion', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+              Thread strip
+            </span>
+            <span class="shrink-0 text-[12px] leading-tight text-muted">
+              {{ currentCenterOption }}
+            </span>
+          </button>
 
           <!-- Appearance — the widened page with the mode tiles and the theme
                list. Same borderless magnet row as Shortcuts; the pane itself
                shows what each choice looks like, so the row stays plain. -->
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open appearance settings"
+            @mouseenter="playNavIcon('appearance')"
+            @click="openAppearance"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open appearance settings"
-              @click="openAppearance"
-            >
-              <HugeiconsIcon
-                :icon="SwatchIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Appearance</span>
-            </button>
-          </Magnet>
+            <Swatch
+              :ref="(el) => setNavIcon('appearance', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Appearance</span>
+          </button>
         </div>
 
         <!-- Agents -->
@@ -374,125 +362,97 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
                can drive: status, version, install channel, executable, whether
                it's offered in the picker). The trailing summary is the picker's
                real reach right now, or the updates waiting if there are any. -->
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open providers settings"
+            @mouseenter="playNavIcon('providers')"
+            @click="openProviders"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open providers settings"
-              @click="openProviders"
+            <AiChip
+              :ref="(el) => setNavIcon('providers', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+              Providers
+            </span>
+            <span
+              v-if="providerSummary"
+              class="shrink-0 text-[12px] leading-tight text-muted"
             >
-              <HugeiconsIcon
-                :icon="AiChipIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
-                Providers
-              </span>
-              <span
-                v-if="providerSummary"
-                class="shrink-0 text-[12px] leading-tight text-muted"
-              >
-                {{ providerSummary }}
-              </span>
-            </button>
-          </Magnet>
+              {{ providerSummary }}
+            </span>
+          </button>
 
           <!-- Skills — every SKILL.md the CLIs on this machine can reach, and one
                skill's own page. Read-only: kone scans and reports, the CLIs own
                what they actually load. -->
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open agent skills settings"
+            @mouseenter="playNavIcon('skills')"
+            @click="openAgentSkills"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open agent skills settings"
-              @click="openAgentSkills"
-            >
-              <HugeiconsIcon
-                :icon="PuzzleIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Skills</span>
-            </button>
-          </Magnet>
+            <Puzzle
+              :ref="(el) => setNavIcon('skills', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Skills</span>
+          </button>
 
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open agent usage settings"
+            @mouseenter="playNavIcon('usage')"
+            @click="openAgentsUsage"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open agent usage settings"
-              @click="openAgentsUsage"
-            >
-              <HugeiconsIcon
-                :icon="Analytics01Icon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Usage</span>
-            </button>
-          </Magnet>
+            <Analytics01
+              :ref="(el) => setNavIcon('usage', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Usage</span>
+          </button>
 
           <!-- Provider limits — the widened limits page: what each provider's
                own accounting says you have left. Same global read as the Agents
                space's Limits section. -->
-          <Magnet
-            class="block"
-            inner-class="w-full"
-            :padding="12"
-            :magnet-strength="9"
-            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open provider limits settings"
+            @mouseenter="playNavIcon('limits')"
+            @click="openProviderLimits"
           >
-            <button
-              type="button"
-              class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-none"
-              :tabindex="open ? 0 : -1"
-              aria-label="Open provider limits settings"
-              @click="openProviderLimits"
-            >
-              <HugeiconsIcon
-                :icon="GaugeIcon"
-                :size="17"
-                :stroke-width="1.7"
-                class="shrink-0 text-muted transition-colors group-hover:text-ink"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
-                Provider limits
-              </span>
-            </button>
-          </Magnet>
+            <Gauge
+              :ref="(el) => setNavIcon('limits', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+              Provider limits
+            </span>
+          </button>
         </div>
       </motion.section>
 
@@ -505,10 +465,12 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
          root pane only; a detail pane fills the panel. -->
     <div v-if="pane === 'root'" class="mt-auto flex items-center justify-between gap-4">
       <span class="flex items-center gap-3">
-        <HugeiconsIcon
-          :icon="muted ? VolumeMute01Icon : VolumeHighIcon"
+        <component
+          :is="muted ? VolumeMute01 : VolumeHigh"
+          :ref="setVolumeIcon"
           :size="17"
           :stroke-width="1.7"
+          trigger="manual"
           class="text-ink-soft"
           aria-hidden="true"
         />

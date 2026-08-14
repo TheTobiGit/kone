@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { motion } from "motion-v";
 import type { RecentProject } from "~/composables/useRecentProjects";
-import { ClickSpark } from "~/components/ui/click-spark";
 
 const project = useProject();
 const { recents, forget, togglePin } = useRecentProjects();
@@ -115,16 +114,6 @@ function onCreateCancel() {
   resetCreate();
 }
 
-const { scheme } = useTheme();
-// The spark paints ink on the sunken launcher; read the resolved ink because
-// canvas strokeStyle can't consume var(). Keyed on the scheme so a theme or
-// mode swap re-resolves the value.
-const sparkColor = computed(() => {
-  if (typeof window === "undefined") return "#fff";
-  const ink = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim();
-  return ink || (scheme.value === "dark" ? "#ffffff" : "#000000");
-});
-
 // The launcher slides aside to reveal the settings panel pinned to the left
 // edge — the X account-drawer gesture. A straight translate, no scale: the page
 // keeps its full size and just shifts right by the reveal width.
@@ -133,6 +122,13 @@ const sparkColor = computed(() => {
 // widens the panel, and the stage moves further to uncover it — so the same
 // gesture reads as "step aside" for a list and "make room" for a page. The
 // number comes from useSettingsSurface so the drawer and the stage can't drift.
+//
+// Only the translate rides the spring. The corner rounding snaps instead of
+// animating: border-radius is a paint property, so easing it on a layer holding
+// the whole launcher repaints that layer every frame — the slide would fight a
+// full repaint to win each one. The radius is small and at the left edge, where
+// the eye is already on the moving edge, so it reads as part of the gesture
+// without the per-frame cost.
 const stageSpring = {
   type: "spring",
   stiffness: 520,
@@ -166,13 +162,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
 </script>
 
 <template>
-  <ClickSpark
-    class="relative h-full min-h-screen overflow-hidden bg-sunken"
-    :spark-color="sparkColor"
-    :spark-count="10"
-    :spark-radius="18"
-    :duration="480"
-  >
+  <div class="relative h-full min-h-screen overflow-hidden bg-sunken">
     <!-- Settings panel, pinned to the left edge and revealed as the stage slides
          aside. It sits behind the stage (z-0) and shows through the gap. -->
     <SettingsDrawer :open="settingsOpen" @close="settingsOpen = false" />
@@ -183,10 +173,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
     <motion.div
       class="stage relative z-10 h-full min-h-screen bg-ground"
       :style="{ willChange: 'transform' }"
-      :animate="{
-        x: settingsOpen ? settingsWidth : 0,
-        borderRadius: settingsOpen ? 26 : 0,
-      }"
+      :class="settingsOpen ? 'rounded-[26px]' : ''"
+      :animate="{ x: settingsOpen ? settingsWidth : 0 }"
       :transition="stageSpring"
     >
       <div class="h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
@@ -241,5 +229,5 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       @create="onCreated"
       @cancel="onCreateCancel"
     />
-  </ClickSpark>
+  </div>
 </template>
