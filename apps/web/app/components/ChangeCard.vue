@@ -121,7 +121,7 @@ const marks = computed<Mark[]>(() => {
 .card {
   --card-bg: var(--raised-high);
   --card-border: var(--line-soft);
-  --card-shadow: color-mix(in srgb, var(--ink) 6%, transparent) 0 4px 14px;
+  --card-shadow: color-mix(in srgb, var(--ink) 3%, transparent) 0 1px 3px;
   --ctx: var(--muted);
   --name: var(--ink);
 
@@ -142,8 +142,8 @@ const marks = computed<Mark[]>(() => {
     transform 0.44s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .card:hover {
-  /* Lifts on hover. Soft shadow only — no heavy drop shadows anywhere. */
-  box-shadow: color-mix(in srgb, var(--ink) 8%, transparent) 0 8px 20px;
+  /* Lifts on hover with a subtle, tight shadow. */
+  box-shadow: color-mix(in srgb, var(--ink) 5%, transparent) 0 3px 8px;
   transform: translateY(-6px);
 }
 /* Ring only when the keyboard is driving focus. The detail overlay takes focus
