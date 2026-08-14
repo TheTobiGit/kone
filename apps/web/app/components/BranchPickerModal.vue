@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { motion } from "motion-v";
+import { Magnet } from "~/components/ui/magnet";
 import type { GitBranch } from "~/types/desktop";
 
 // "Switch branch" overlay — the same scrim + elastic card shell the folder and
@@ -150,7 +151,7 @@ const cardSpring = {
     />
 
     <motion.div
-      class="modal-card relative z-20 w-full max-w-md overflow-hidden"
+      class="modal-card relative z-20 w-fit max-w-md overflow-hidden"
       :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
       :initial="{ opacity: 0, y: 12, scale: 0.96 }"
       :animate="{
@@ -179,30 +180,40 @@ const cardSpring = {
         </div>
 
         <div
-          class="picker-scroll relative flex max-h-[48vh] w-full flex-col items-stretch gap-0.5 overflow-y-auto overflow-x-hidden"
+          class="picker-scroll relative flex max-h-[48vh] w-full flex-col items-start gap-0.5 overflow-y-auto overflow-x-hidden py-1"
         >
           <p v-if="loading" class="branch-note">Loading…</p>
           <p v-else-if="loadError" class="branch-note">{{ loadError }}</p>
           <p v-else-if="branches.length === 0" class="branch-note">No other branches</p>
 
-          <button
+          <Magnet
             v-for="b in branches"
             v-else
             :key="b.name"
-            type="button"
-            role="menuitemradio"
-            :aria-checked="b.current"
-            :disabled="b.current || !!switchingTo"
-            class="picker-row"
-            :class="{ 'is-current': b.current }"
-            @click="choose(b)"
+            class="w-fit"
+            inner-class="w-fit"
+            :padding="12"
+            :magnet-strength="9"
+            :disabled="!!switchingTo"
+            active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+            inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
           >
-            <span v-if="switchingTo === b.name" class="branch-mark">
-              <span class="branch-spin" aria-hidden="true" />
-            </span>
-            <span class="picker-label" :title="b.name">{{ b.name }}</span>
-            <span v-if="b.current" class="branch-tag">current</span>
-          </button>
+            <button
+              type="button"
+              role="menuitemradio"
+              :aria-checked="b.current"
+              :disabled="b.current || !!switchingTo"
+              class="picker-row"
+              :class="{ 'is-current': b.current }"
+              @click="choose(b)"
+            >
+              <span v-if="switchingTo === b.name" class="branch-mark">
+                <span class="branch-spin" aria-hidden="true" />
+              </span>
+              <span class="picker-label" :title="b.name">{{ b.name }}</span>
+              <span v-if="b.current" class="branch-tag">current</span>
+            </button>
+          </Magnet>
 
           <p v-if="switchError" class="branch-note branch-note--err">{{ switchError }}</p>
         </div>
@@ -227,13 +238,13 @@ const cardSpring = {
 
 .branch-browser {
   --band-bg: var(--band);
-  --band-arc: 10px;
+  --band-arc: 14px;
 }
 
 /* Recessed header band with the arc scoops that flow into the card walls. */
 .picker-header {
   position: relative;
-  padding: 0.75rem 1.5rem;
+  padding: 0.625rem 1rem;
   background-color: var(--band-bg);
 }
 .picker-header::before,
@@ -287,13 +298,14 @@ const cardSpring = {
   opacity: 0.4;
 }
 
-/* Full-width branch rows — same quiet hover fill as the folder rows, but they
-   stretch so the whole row lights up (a list of actions, not inline crumbs). */
+/* Branch rows — quiet hover fill that hugs the content like the folder rows,
+   so the row lights up as one readable line, not a full-width swath. */
 .picker-row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   cursor: pointer;
   border-radius: 10px;
   padding: 0.625rem 0.75rem;
