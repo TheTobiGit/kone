@@ -27,9 +27,16 @@ const themeBootScript = {
   var appearance = "system";
   try {
     var storedTheme = localStorage.getItem("kone:theme");
-    if (storedTheme && themes[storedTheme]) themeId = storedTheme;
     var storedMode = localStorage.getItem("kone:appearance");
     if (storedMode === "light" || storedMode === "dark") appearance = storedMode;
+    // Imported themes keep a runtime boot table (built at import time, not at
+    // config time) so their first frame is their own too.
+    var storedImports = localStorage.getItem("kone:theme-boot");
+    if (storedImports) {
+      var imported = JSON.parse(storedImports);
+      for (var importId in imported) themes[importId] = imported[importId];
+    }
+    if (storedTheme && themes[storedTheme]) themeId = storedTheme;
   } catch (e) {}
   var entry = themes[themeId] || themes.kone;
   var scheme;
