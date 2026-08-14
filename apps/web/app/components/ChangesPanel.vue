@@ -6,8 +6,9 @@ import type { ChangeItem } from "~/types/change";
 // The file-changes block that heads the project rail. Splits the working tree
 // into two lanes — Staged and Changed — each a ChangeLane with its own sweep
 // (Unstage all / Stage all), and the Changed lane owns Discard (it only ever
-// touches unstaged work). A compact header carries Commit + the diffstat
-// summary. When the tree is clean it collapses to a quiet empty state.
+// touches unstaged work). The compact header carries Commit; the tree-wide
+// diffstat + per-file dots ride the Changed lane's own header row (far right),
+// and the whole block collapses to a quiet empty state when the tree is clean.
 
 const props = defineProps<{
   /** false until the first git read resolves — suppresses the "No changes"
@@ -163,13 +164,12 @@ function discardUnstaged() {
   </div>
 
   <div v-else class="panel">
-    <!-- Header is a right-aligned summary strip: Commit sits just left of the
-         diffstat + dots. Discard lives down in the Changed section (it only ever
-         touches unstaged work). -->
-    <header class="ch">
+    <!-- Header: Commit alone. The tree-wide +/− tally and per-file dots live on
+         the Changed lane's header row (far right), beside the files they
+         describe. -->
+    <header v-if="canCommit" class="ch">
       <span class="ch__meta">
         <button
-          v-if="canCommit"
           type="button"
           class="ch__btn ch__btn--primary"
           @click="emit('commit')"
@@ -181,14 +181,6 @@ function discardUnstaged() {
           </svg>
           Commit
         </button>
-        <span class="ch__diff">
-          <span v-if="added > 0" class="ch__add">+<CountUp :to="added" :duration="1.1" /></span>
-          <span v-if="removed > 0" class="ch__del">−<CountUp :to="removed" :duration="1.1" /></span>
-        </span>
-        <span class="ch__dots" :title="`${allDots.length} changed files`">
-          <i v-for="(d, i) in dots" :key="i" class="ch__dot" :class="`ch__dot--${d}`" :style="{ '--i': i }" />
-          <span v-if="dotsOverflow > 0" class="ch__dots-more">+{{ dotsOverflow }}</span>
-        </span>
       </span>
     </header>
 
@@ -216,7 +208,21 @@ function discardUnstaged() {
         @discard-lane="discardUnstaged"
         @open="(item, rect) => emit('open', item, rect)"
         @peek="emit('peek')"
-      />
+      >
+        <!-- The tree-wide summary parks at the far right of the Changed row:
+             the +/− tally and the per-file dots, together as in the old
+             header. -->
+        <template #stat>
+          <span class="ch__diff">
+            <span v-if="added > 0" class="ch__add">+<CountUp :to="added" :duration="1.1" /></span>
+            <span v-if="removed > 0" class="ch__del">−<CountUp :to="removed" :duration="1.1" /></span>
+          </span>
+          <span class="ch__dots" :title="`${allDots.length} changed files`">
+            <i v-for="(d, i) in dots" :key="i" class="ch__dot" :class="`ch__dot--${d}`" :style="{ '--i': i }" />
+            <span v-if="dotsOverflow > 0" class="ch__dots-more">+{{ dotsOverflow }}</span>
+          </span>
+        </template>
+      </ChangeLane>
     </div>
   </div>
 </template>
@@ -275,7 +281,7 @@ function discardUnstaged() {
 .ch__dots {
   display: flex;
   align-items: center;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 3px;
