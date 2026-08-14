@@ -72,12 +72,6 @@ function byKind(kind: ThemeKind, appearance?: ThemeScheme): readonly ThemeDefini
 export function themeGroups(): readonly ThemeGroup[] {
   return [
     {
-      key: "system",
-      label: "Default",
-      note: "Follows your appearance setting.",
-      themes: byKind("system"),
-    },
-    {
       key: "adaptive",
       label: "Adaptive",
       note: "A designed light palette and a designed dark one. Follows your appearance setting.",

@@ -20,7 +20,7 @@ export const KONE_THEME: ThemeDefinition = {
   id: "kone",
   label: "kone",
   blurb: "The app's own appearance. Follows your system light and dark.",
-  kind: "system",
+  kind: "adaptive",
   appearance: "light",
 
   colors: {

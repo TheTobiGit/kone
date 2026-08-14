@@ -1,92 +1,30 @@
 <script setup lang="ts">
 import { computed, ref, type Ref } from "vue";
-import { HugeiconsIcon } from "@hugeicons/vue";
 import { SwatchIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
-import { colorsFor, schemesOf, type AppearanceMode, type ThemeColors } from "~/theme/roles";
+import AppearanceMiniature from "~/components/AppearanceMiniature.vue";
+import {
+  colorsFor,
+  schemesOf,
+  type AppearanceMode,
+  type ThemeDefinition,
+  type ThemeScheme,
+} from "~/theme/roles";
 import { themeGroups } from "~/theme/themes";
-
-// The appearance page: the two knobs that decide how the interface looks — the
-// mode (which of the theme's schemes is painted) and the theme (the whole
-// palette). The mode tiles preview the interface itself rather than a swatch: a
-// miniature ground with one raised card on it, drawn from the theme's own role
-// values, so the tile is the palette's truth and not a picture of it. The
-// System tile shows both schemes at once, split down a diagonal, because that is
-// what following the OS means — the interface as either, until the OS picks.
-//
-// A theme designed as a single appearance takes the mode out of play. The tiles
-// stay on the page rather than disappearing — a control that vanishes reads as a
-// bug — but they go inert and say why, and the stored mode is left untouched so
-// it comes back the moment a theme that follows it is chosen again.
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
 
 const { cue } = useSound();
-const { mode, modeLocked, themeId, theme, setMode, setTheme } = useTheme();
+const { mode, modeLocked, themeId, theme, scheme, setMode, setTheme } = useTheme();
 
 const MODES = ["system", "light", "dark"] as const satisfies readonly AppearanceMode[];
 
-// ── the mode tiles ──────────────────────────────────────────────────────────
-// The miniature is four colours from the scheme's role table: the ground the
-// card sits on, the raised card itself, ink for the two text lines and the
-// accent dot. The line colour is ink softened over its own ground — at
-// miniature scale full-strength ink reads as bars rather than text. Only these
-// four role values are read from the definition; everything else on the pane
-// is roles and mixes.
-interface MiniColors {
-  ground: string;
-  card: string;
-  line: string;
-  dot: string;
-}
-
-function miniFor(colors: ThemeColors): MiniColors {
-  return {
-    ground: colors.ground,
-    card: colors.raised,
-    line: `color-mix(in srgb, ${colors.ink} 62%, ${colors.ground})`,
-    dot: colors.accent,
-  };
-}
-
-interface MiniLayer {
-  key: string;
-  /** Clip that cuts this layer out of a split tile; absent on whole tiles. */
-  clip?: string;
-  mini: MiniColors;
-}
-
-interface ModeTile {
-  mode: AppearanceMode;
-  label: string;
-  layers: MiniLayer[];
-}
-
-const tiles = computed<ModeTile[]>(() => {
-  // `colorsFor` rather than the raw table: a fixed theme ships one scheme, and
-  // asking it for the other returns the one it has. That is the honest preview —
-  // both halves of the System tile show what selecting it would actually paint.
-  const light = miniFor(colorsFor(theme.value, "light"));
-  const dark = miniFor(colorsFor(theme.value, "dark"));
-  return MODES.map((m) => {
-    if (m === "system") {
-      return {
-        mode: m,
-        label: "System",
-        layers: [
-          { key: "light", mini: light, clip: "polygon(0 0, 100% 0, 0 100%)" },
-          { key: "dark", mini: dark, clip: "polygon(100% 0, 100% 100%, 0 100%)" },
-        ],
-      };
-    }
-    return {
-      mode: m,
-      label: m === "light" ? "Light" : "Dark",
-      layers: [{ key: m, mini: m === "light" ? light : dark }],
-    };
-  });
-});
+const MODE_LABEL: Record<AppearanceMode, string> = {
+  system: "System",
+  light: "Light",
+  dark: "Dark",
+};
 
 function chooseMode(m: AppearanceMode) {
   if (modeLocked.value || mode.value === m) return;
@@ -94,19 +32,42 @@ function chooseMode(m: AppearanceMode) {
   cue("toggle");
 }
 
-/** Why the mode is inert, named after the theme that took it out of play. */
+// ── Mode tiles ───────────────────────────────────────────────────────────────
+// Each tile is kone drawn small in the *selected theme's* colours for that
+// scheme, so the choice is made by looking rather than by reading three words.
+// The System tile is the same miniature twice, split down the middle, which is
+// the only honest picture of "whichever one the machine is in".
+
+const modeTiles = computed(() =>
+  MODES.map((m) => ({
+    mode: m,
+    label: MODE_LABEL[m],
+    panes:
+      m === "system"
+        ? ([
+            { clip: "left" as const, colors: colorsFor(theme.value, "light") },
+            { clip: "right" as const, colors: colorsFor(theme.value, "dark") },
+          ])
+        : [{ clip: undefined, colors: colorsFor(theme.value, m) }],
+  })),
+);
+
+/** What the locked pane shows instead of the row: the one appearance it has. */
+const lockedTile = computed(() => ({
+  label: theme.value.appearance === "dark" ? "Dark" : "Light",
+  colors: colorsFor(theme.value, scheme.value),
+}));
+
 const lockNote = computed(() =>
   modeLocked.value
-    ? `${theme.value.label} is designed as ${theme.value.appearance === "dark" ? "a dark" : "a light"} theme, so the interface stays ${theme.value.appearance}.`
+    ? `${theme.value.label} is designed as ${
+        theme.value.appearance === "dark" ? "a dark" : "a light"
+      } theme, so the interface stays ${theme.value.appearance} whatever your system is doing.`
     : "",
 );
 
-// Roving focus, the way a native radiogroup behaves: arrows move the selection
-// and the focus together, Enter/Space select. A modified arrow is the board's
-// own focus-thread chord and must pass straight through. Both lists on this
-// pane — the three mode tiles and the theme rows — walk the same pattern, so
-// the key handling lives here once and each list only supplies its items, its
-// select action and its focusable rows.
+// ── Roving focus, shared by both radiogroups ─────────────────────────────────
+
 interface RovingList {
   count: number;
   choose: (index: number) => void;
@@ -148,18 +109,36 @@ function onModeKeydown(e: KeyboardEvent, i: number) {
   });
 }
 
-// ── the theme list ──────────────────────────────────────────────────────────
-// Grouped, because the groups are the behaviour: a theme that follows the
-// appearance setting and one that overrides it are different kinds of choice,
-// and the only honest place to say which is which is above the themes it
-// applies to. Rows keep a flat index across the groups so arrow keys walk the
-// whole list as one radiogroup, which is what it still is.
+// ── Theme cards ──────────────────────────────────────────────────────────────
+// A card carries the theme's own light and dark as two soft-lit beads rather
+// than flat swatches: a palette is a ground with colour *in* it, and a blurred
+// wash off the accent says that where a hard disc can only say "orange".
+
+interface Bead {
+  key: ThemeScheme;
+  ground: string;
+  ink: string;
+  wash: string;
+}
+
 interface ThemeRow {
   id: string;
   label: string;
-  /** One bead per scheme the theme actually ships: two adaptive, one fixed. */
-  beads: { key: string; ground: string; accent: string }[];
+  blurb: string;
+  beads: Bead[];
   index: number;
+}
+
+/** The bead's paint: the ground as the base, the accent as a contained glow,
+ *  the second voice as a quieter tint from the far corner. */
+function beadWash(theme: ThemeDefinition, s: ThemeScheme): string {
+  const c = colorsFor(theme, s);
+  const accentAt = s === "dark" ? "30% 76%" : "70% 24%";
+  const secondAt = s === "dark" ? "80% 20%" : "20% 80%";
+  return [
+    `radial-gradient(circle at ${accentAt} in oklab, ${c.accent} 0%, color-mix(in oklab, ${c.accent} 62%, transparent) 30%, transparent 62%)`,
+    `radial-gradient(circle at ${secondAt} in oklab, color-mix(in oklab, ${c.accentSecondary} 42%, transparent) 0%, transparent 58%)`,
+  ].join(", ");
 }
 
 const groups = computed(() => {
@@ -171,16 +150,16 @@ const groups = computed(() => {
     rows: group.themes.map<ThemeRow>((t) => ({
       id: t.id,
       label: t.label,
-      beads: schemesOf(t).map((scheme) => {
-        const colors = colorsFor(t, scheme);
-        return { key: scheme, ground: colors.ground, accent: colors.accent };
+      blurb: t.blurb,
+      beads: schemesOf(t).map((s) => {
+        const c = colorsFor(t, s);
+        return { key: s, ground: c.ground, ink: c.ink, wash: beadWash(t, s) };
       }),
       index: index++,
     })),
   }));
 });
 
-/** The themes in the order the rows are laid out, so roving lands where it looks. */
 const orderedThemes = computed(() => groups.value.flatMap((g) => g.rows));
 
 function chooseTheme(id: string) {
@@ -215,101 +194,107 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
     @back="emit('back')"
   >
     <div class="ap">
-      <!-- Mode: three miniatures of the interface, one per appearance. The
-           selected mode is the one ringed in accent — the tile is the preview,
-           so the hairline frame around it is all the confirmation the state
-           needs. -->
-      <section class="ap__section-block" aria-label="Appearance mode">
-        <p class="ap__section">Mode</p>
+      <!-- ── Appearance ──────────────────────────────────────────────────── -->
+      <section class="ap__section">
+        <h3 class="ap__title">Appearance</h3>
+
         <div
+          v-if="!modeLocked"
           class="ap__modes"
-          :class="{ 'ap__modes--locked': modeLocked }"
           role="radiogroup"
           aria-label="Appearance mode"
-          :aria-disabled="modeLocked"
         >
-          <div
-            v-for="(tile, i) in tiles"
+          <button
+            v-for="(tile, i) in modeTiles"
             :key="tile.mode"
             :ref="(el) => setModeEl(el, i)"
+            type="button"
             role="radio"
-            class="ap__tile"
-            :class="{ 'ap__tile--on': !modeLocked && mode === tile.mode }"
-            :aria-checked="!modeLocked && mode === tile.mode"
-            :tabindex="open && !modeLocked ? (mode === tile.mode ? 0 : -1) : -1"
+            class="ap__mode"
+            :class="{ 'ap__mode--on': mode === tile.mode }"
+            :aria-checked="mode === tile.mode"
+            :tabindex="open ? (mode === tile.mode ? 0 : -1) : -1"
             @click="chooseMode(tile.mode)"
             @keydown="onModeKeydown($event, i)"
           >
-            <div class="ap__mini" aria-hidden="true">
-              <div
-                v-for="layer in tile.layers"
-                :key="layer.key"
-                class="ap__split"
-                :style="layer.clip ? { clipPath: layer.clip } : undefined"
-              >
-                <div class="ap__split-bg" :style="{ backgroundColor: layer.mini.ground }"></div>
-                <div class="ap__card" :style="{ backgroundColor: layer.mini.card }">
-                  <span class="ap__dot" :style="{ backgroundColor: layer.mini.dot }"></span>
-                  <span class="ap__line" :style="{ backgroundColor: layer.mini.line }"></span>
-                  <span
-                    class="ap__line ap__line--short"
-                    :style="{ backgroundColor: layer.mini.line }"
-                  ></span>
-                </div>
-              </div>
-            </div>
-            <span class="ap__tile-label">{{ tile.label }}</span>
-          </div>
+            <span class="ap__frame">
+              <AppearanceMiniature
+                v-for="pane in tile.panes"
+                :key="pane.clip ?? 'full'"
+                :colors="pane.colors"
+                :clip="pane.clip"
+              />
+            </span>
+            <span class="ap__mode-label">{{ tile.label }}</span>
+          </button>
         </div>
-        <p v-if="modeLocked" class="ap__note">{{ lockNote }}</p>
+
+        <div v-else class="ap__locked">
+          <span class="ap__frame ap__frame--locked">
+            <AppearanceMiniature :colors="lockedTile.colors" />
+          </span>
+          <p class="ap__locked-note">{{ lockNote }}</p>
+        </div>
       </section>
 
-      <!-- Theme: one borderless row per theme, its identity told by its beads —
-           each shipped scheme's ground with that scheme's accent at its centre,
-           so a theme that carries both appearances shows two and one designed as
-           a single appearance shows one. The active row is the one carrying the
-           accent mark; the rest stay quiet. -->
-      <section class="ap__themes" aria-label="Theme">
-        <p class="ap__section">Theme</p>
-        <div class="ap__groups" role="radiogroup" aria-label="Theme">
-          <section v-for="group in groups" :key="group.key" class="ap__group">
-            <p class="ap__group-head">
-              <span class="ap__group-label">{{ group.label }}</span>
-              <span class="ap__group-note">{{ group.note }}</span>
-            </p>
-            <ul class="ap__list">
-              <li v-for="row in group.rows" :key="row.id">
-                <button
-                  type="button"
-                  :ref="(el) => setThemeEl(el, row.index)"
-                  role="radio"
-                  class="ap__row"
-                  :class="{ 'ap__row--on': row.id === themeId }"
-                  :aria-checked="row.id === themeId"
-                  :tabindex="open ? (row.id === themeId ? 0 : -1) : -1"
-                  @click="chooseTheme(row.id)"
-                  @keydown="onThemeKeydown($event, row.index)"
+      <!-- ── Themes ──────────────────────────────────────────────────────── -->
+      <div class="ap__themes" role="radiogroup" aria-label="Theme">
+        <section v-for="group in groups" :key="group.key" class="ap__section">
+          <h3 class="ap__title">{{ group.label }}</h3>
+          <p class="ap__note">{{ group.note }}</p>
+
+          <div class="ap__grid">
+            <div
+              v-for="row in group.rows"
+              :key="row.id"
+              :ref="(el) => setThemeEl(el, row.index)"
+              role="radio"
+              class="ap__card"
+              :class="{ 'ap__card--on': row.id === themeId }"
+              :aria-checked="row.id === themeId"
+              :aria-label="`${row.label} — ${row.blurb}`"
+              :tabindex="open ? (row.id === themeId ? 0 : -1) : -1"
+              @click="chooseTheme(row.id)"
+              @keydown="onThemeKeydown($event, row.index)"
+            >
+              <span class="ap__beads" aria-hidden="true">
+                <span
+                  v-for="(bead, bi) in row.beads"
+                  :key="bead.key"
+                  class="ap__bead"
+                  :style="{
+                    backgroundColor: bead.ground,
+                    marginLeft: bi > 0 ? '-14px' : undefined,
+                    zIndex: row.beads.length - bi,
+                    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${bead.ink} 12%, transparent)`,
+                  }"
                 >
-                  <span class="ap__mark" aria-hidden="true">
-                    <span v-if="row.id === themeId" class="ap__mark-dot"></span>
-                  </span>
-                  <span class="ap__name">{{ row.label }}</span>
-                  <span class="ap__beads" aria-hidden="true">
-                    <span
-                      v-for="bead in row.beads"
-                      :key="bead.key"
-                      class="ap__bead"
-                      :style="{ backgroundColor: bead.ground }"
-                    >
-                      <span class="ap__bead-dot" :style="{ backgroundColor: bead.accent }"></span>
-                    </span>
-                  </span>
-                </button>
-              </li>
-            </ul>
-          </section>
-        </div>
-      </section>
+                  <span class="ap__bead-wash" :style="{ backgroundImage: bead.wash }" />
+                </span>
+              </span>
+
+              <span class="ap__meta">
+                <span class="ap__name">{{ row.label }}</span>
+                <span class="ap__blurb">{{ row.blurb }}</span>
+              </span>
+
+              <svg
+                v-if="row.id === themeId"
+                class="ap__check"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
 
     <template #foot>
@@ -321,22 +306,18 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
 <style scoped>
 .ap {
   --ap-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --ap-t-micro: 140ms;
-  --ap-t-enter: 320ms;
   display: flex;
   flex-direction: column;
-  gap: 2rem;
-  /* One measure for both sections: wide enough that a miniature reads as a
-     picture of the interface, narrow enough that it stays a miniature. */
-  max-width: 30rem;
-  /* The pane note sits over the bottom-left; the last row needs room under it. */
-  padding-bottom: 2.75rem;
+  gap: 40px;
+  max-width: 60rem;
+  padding-block: 8px 4rem;
+  animation: ap-in 400ms var(--ap-ease) backwards;
 }
 
 @keyframes ap-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -344,251 +325,262 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
   }
 }
 
-/* Both sections carry a label over their content, so the page reads as two
-   equal choices rather than one titled list and one loose row of tiles. */
-.ap__section-block,
-.ap__themes {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* ── mode tiles ───────────────────────────────────────────────────────────── */
-.ap__modes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  animation: ap-in var(--ap-t-enter) var(--ap-ease) backwards;
-}
-
-/* The tile is the preview and the control in one. The hover wash pads out past
-   the miniature so the tile reads as tappable without the miniature pretending
-   the preview changed. */
-.ap__tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 6px;
-  border-radius: 14px;
-  cursor: pointer;
-  transition: background-color var(--ap-t-micro) ease;
-}
-.ap__tile:hover {
-  background-color: var(--hover);
-}
-
-/* Inert, not hidden: the tiles still show what the three appearances look like
-   under this theme, they just stop being a choice. Reaching for one and getting
-   nothing is the point — the line underneath explains it. */
-.ap__modes--locked {
-  opacity: 0.45;
-}
-.ap__modes--locked .ap__tile {
-  cursor: default;
-}
-.ap__modes--locked .ap__tile:hover {
-  background-color: transparent;
-}
-.ap__tile:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-
-/* The rounded ground field of the miniature, clipped so a split tile's
-   diagonal can't bleed past the corner. */
-.ap__mini {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  border-radius: 12px;
-  overflow: hidden;
-}
-/* Selected is a hairline ring in accent and nothing else — no fill, no shadow,
-   no border of its own. */
-.ap__tile--on .ap__mini {
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-/* Each layer is a full miniature clipped to its share of the tile: one whole
-   layer for Light and Dark, two diagonal halves for System. */
-.ap__split {
-  position: absolute;
-  inset: 0;
-}
-.ap__split-bg {
-  position: absolute;
-  inset: 0;
-}
-
-.ap__card {
-  position: absolute;
-  inset: 9px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 9px;
-  border-radius: 7px;
-}
-.ap__dot {
-  width: 5px;
-  height: 5px;
-  margin-inline-start: auto;
-  border-radius: 50%;
-}
-.ap__line {
-  display: block;
-  height: 3px;
-  width: 100%;
-  border-radius: 2px;
-}
-.ap__line--short {
-  width: 55%;
-}
-
-.ap__tile-label {
-  font-size: 13px;
-  line-height: 1.2;
-  color: var(--muted);
-  transition: color var(--ap-t-micro) ease;
-}
-.ap__tile--on .ap__tile-label {
-  color: var(--ink);
-}
-
-/* ── theme list ───────────────────────────────────────────────────────────── */
-.ap__themes {
-  animation: ap-in var(--ap-t-enter) var(--ap-ease) backwards;
-  animation-delay: 60ms;
-}
-
 .ap__section {
-  padding-inline: 2px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.ap__note {
-  padding-inline: 2px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--muted);
-}
-
-/* The groups are spaced apart rather than ruled apart — the gap and the heading
-   do the separating, so the list stays a list. */
-.ap__groups {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-.ap__group {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-/* Label and note on one line: the note is the whole reason the group exists, so
-   it sits with the name rather than under it as a second paragraph. */
-.ap__group-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-  padding-inline: 2px;
-  padding-bottom: 2px;
-}
-.ap__group-label {
-  font-size: 12px;
-  line-height: 1.3;
-  color: var(--ink-soft);
-}
-.ap__group-note {
+
+.ap__title {
+  margin: 0;
   font-size: 11px;
-  line-height: 1.3;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
   color: var(--faint);
 }
 
-.ap__list {
+.ap__note {
+  margin: 0 0 14px;
+  max-width: 44ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.ap__title + .ap__modes,
+.ap__title + .ap__locked {
+  margin-top: 14px;
+}
+
+/* ── Appearance mode ──────────────────────────────────────────────────────── */
+
+/* Capped well short of the page measure: three tiles at full width become the
+   subject of the pane, and the subject is the theme list. */
+.ap__modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 41rem;
+}
+
+.ap__mode {
   display: flex;
   flex-direction: column;
-  margin: 0;
+  gap: 9px;
   padding: 0;
-  list-style: none;
-}
-
-/* One borderless row per theme: the wash on hover is the only surface, and the
-   active row's difference is the accent mark alone. */
-.ap__row {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 10px;
-  width: 100%;
-  padding: 9px 8px;
-  border-radius: 10px;
+  border: none;
+  background: none;
   cursor: pointer;
-  transition: background-color var(--ap-t-micro) ease;
-}
-.ap__row:hover {
-  background-color: var(--hover);
-}
-.ap__row:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-
-/* The mark's column is always reserved, so labels line up whether or not the
-   row carries the mark. */
-.ap__mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.ap__mark-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--accent);
-}
-
-.ap__name {
-  font-size: 13px;
-  line-height: 1.25;
   text-align: left;
+}
+
+/* The frame is the only place in the pane that draws a hairline, because a
+   miniature of the interface needs an edge to *be* an interface. */
+.ap__frame {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent);
+  transition:
+    transform 320ms var(--ap-ease),
+    box-shadow 220ms var(--ap-ease);
+}
+
+.ap__mode:hover .ap__frame {
+  transform: translateY(-2px);
+}
+
+.ap__mode--on .ap__frame {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent),
+    0 0 0 2px var(--accent);
+}
+
+.ap__mode:focus-visible .ap__frame {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent),
+    0 0 0 2px var(--focus);
+}
+
+.ap__mode-label {
+  font-size: 12.5px;
+  color: var(--muted);
+  transition: color 200ms ease;
+}
+
+.ap__mode:hover .ap__mode-label,
+.ap__mode--on .ap__mode-label {
   color: var(--ink);
 }
 
+.ap__locked {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.ap__frame--locked {
+  flex: 0 0 auto;
+  width: 176px;
+}
+
+.ap__locked-note {
+  margin: 0;
+  max-width: 40ch;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* ── Themes ───────────────────────────────────────────────────────────────── */
+
+.ap__themes {
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+}
+
+.ap__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 4px;
+}
+
+.ap__card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px 34px 12px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+  outline: none;
+  background-color: transparent;
+  transition:
+    background-color 220ms var(--ap-ease),
+    box-shadow 220ms var(--ap-ease);
+}
+
+.ap__card:hover {
+  background-color: var(--hover);
+}
+
+/* Lighter than `--selected`, which is tuned for a list row you are navigating.
+   A theme you already chose should not out-shout the fourteen you have not. */
+.ap__card--on {
+  background-color: color-mix(in oklab, var(--accent) 7%, transparent);
+}
+
+.ap__card:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus);
+}
+
+/* Held at the width of a pair so a one-scheme theme's single bead doesn't pull
+   its name left — the names have to line up down the page across all three
+   groups, or the list stops reading as one list. */
 .ap__beads {
   display: flex;
+  flex: 0 0 66px;
   align-items: center;
-  gap: 6px;
 }
-/* A bead is one scheme's ground with that scheme's accent at its centre — the
-   two colours a scheme is defined by, shown as the surfaces they are. */
+
 .ap__bead {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 17px;
-  height: 17px;
+  position: relative;
+  display: block;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
-  /* Each bead carries one scheme's ground, so on any page one of the pair is
-     the same colour as the surface behind it. The hairline is what keeps it a
-     bead instead of a hole. */
-  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+  transition: transform 320ms var(--ap-ease);
 }
-.ap__bead-dot {
-  width: 5px;
-  height: 5px;
+
+/* The wash overspills and blurs, so the accent reads as light in the ground
+   rather than a disc printed on it. */
+.ap__bead-wash {
+  position: absolute;
+  inset: -12%;
   border-radius: 50%;
+  filter: blur(3px);
+}
+
+.ap__card:hover .ap__bead:first-child,
+.ap__card--on .ap__bead:first-child {
+  transform: translateX(-2px);
+}
+
+.ap__card:hover .ap__bead:last-child:not(:first-child),
+.ap__card--on .ap__bead:last-child:not(:first-child) {
+  transform: translateX(2px);
+}
+
+.ap__meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ap__name {
+  font-size: 13.5px;
+  color: color-mix(in oklab, var(--ink) 74%, transparent);
+  transition: color 200ms ease;
+}
+
+.ap__card:hover .ap__name,
+.ap__card--on .ap__name {
+  color: var(--ink);
+}
+
+.ap__blurb {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.ap__check {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 13px;
+  height: 13px;
+  margin-top: -6.5px;
+  color: var(--accent);
+  animation: ap-check 260ms cubic-bezier(0.175, 0.885, 0.32, 1.275) backwards;
+}
+
+@keyframes ap-check {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ap__modes,
-  .ap__themes {
+  .ap {
     animation: none;
+  }
+  .ap__frame,
+  .ap__bead,
+  .ap__card,
+  .ap__check {
+    transition: none;
+    animation: none;
+  }
+  .ap__mode:hover .ap__frame {
+    transform: none;
   }
 }
 </style>
