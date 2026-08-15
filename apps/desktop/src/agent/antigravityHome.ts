@@ -7,7 +7,8 @@ import { buildAgentEnv } from "./processEnv.js";
 // stance as codexHome/droidHome: kone never runs an `agy` login and never reads
 // a credential — Antigravity keeps its session in its own store under
 // ~/.gemini/antigravity-cli, which discovery only ever asks the CLI about
-// ground truth). Auth/install facts were verified against the live CLI.
+// (the CLI's own answer is the source of truth). Auth/install facts were
+// verified against the live CLI.
 
 export const ANTGRAVITY_BINARY = "agy";
 

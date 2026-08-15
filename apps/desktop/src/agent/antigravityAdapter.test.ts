@@ -21,9 +21,9 @@ import {
   resolveAntigravityCliModelLabel,
 } from "./adapters/AntigravityAdapter.js";
 
-// ground truth for provider/process work) into kone's pure-helper test style.
-// The CLI itself is never spawned here — the helpers below are the same ones
-// the adapter runs live, and the shapes they assert were verified against the
+// The adapter's parsing helpers are exercised directly, with no CLI spawn:
+// each helper is the same one the adapter runs live, and the shapes it
+// asserts were captured from the real CLI's output.
 
 const noopEmit = () => {};
 

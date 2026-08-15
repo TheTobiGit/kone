@@ -3,8 +3,8 @@
 // the terminal: closing a tab must kill everything below the PTY pid (a bare
 // pty.kill() leaves `npm run dev` or vim running), and the UI needs to know
 // whether a subprocess is actually busy under the shell (tab busy labels, kill
-// confirmations). The model is both reference repos' — one snapshot per
-// capture, a children-by-ppid map, a visited-capped descendant walk, and a
+// confirmations). The model: one snapshot per capture, a children-by-ppid
+// map, a visited-capped descendant walk, and a
 // tree kill that re-captures at signal time so reparented children are caught.
 // A failed snapshot is "unproven" (captureComplete: false), never a throw.
 
@@ -58,7 +58,7 @@ export const SHELL_LIKE_PROCESS_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 // Full-system `ps` output scales with host process count; an undersized cap
-// makes snapshot failure routine on busy machines (both references use 8MB).
+// makes snapshot failure routine on busy machines.
 const PROCESS_TREE_SCAN_TIMEOUT_MS = 1_000;
 const PROCESS_TREE_SCAN_MAX_BUFFER_BYTES = 8_388_608;
 // PowerShell pays interpreter startup per invocation, so its one-shot table
@@ -67,7 +67,7 @@ const WINDOWS_PROCESS_SCAN_TIMEOUT_MS = 3_000;
 const WINDOWS_PROCESS_SCAN_MAX_BUFFER_BYTES = 8_388_608;
 const WINDOWS_KILL_TIMEOUT_MS = 10_000;
 // Bound for pathological trees (pid loops, wide fan-out) so a walk can never
-// starve the main process. Both references cap at 256 visited nodes.
+// starve the main process.
 const MAX_TREE_WALK_VISITED = 256;
 
 // One powershell.exe invocation owns the whole table, pid|ppid|command per

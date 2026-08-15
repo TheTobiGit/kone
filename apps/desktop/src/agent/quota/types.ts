@@ -20,9 +20,9 @@ export type MetricKind = "percent" | "dollars" | "count";
 
 /** One number kone is prepared to put on screen.
  *
- *  is strict about this and so is kone: showing `$0.00` when we simply failed
- *  to read a provider is a lie that reads as good news. A null renders as
- *  "No data" and nothing else. */
+ *  kone is strict here: showing `$0.00` when we simply failed to read a
+ *  provider is a lie that reads as good news. A null renders as "No data" and
+ *  nothing else. */
 export type MetricValue = {
   number: number | null;
   kind: MetricKind;
@@ -128,8 +128,8 @@ export type QuotaProviderReport = {
    *  credential itself) names one — e.g. "Max 20x", "Plus", "Team". */
   planLabel: string | null;
   /** Models whose cost kone could not price, and therefore left *out* of every
-   *  model at zero understates spend and the user never finds out. Naming them
-   *  is what makes the exclusion honest. */
+   *  figure — pricing an unpriced model at zero understates spend and the user
+   *  never finds out. Naming them is what makes the exclusion honest. */
   excludedModels: string[];
   /** Set when this report reflects a 429 backoff window rather than a fresh
    *  fetch, so the UI can say so honestly instead of a generic "waiting". */
