@@ -93,7 +93,7 @@ function harness() {
     sessions: padSessions,
     open: async () => {
       const key = "pad-1";
-      padSessions.value = [{ key, padId: key }];
+      padSessions.value = [{ key, scratchpadId: key }];
       return key;
     },
     close: async () => {},
@@ -600,7 +600,7 @@ describe("useBoard — board laws", () => {
       panes: [
         { id: "p1", kind: "thread" as const, anchor: { kind: "thread" as const, threadId: "real-1" }, width: 1 },
         { id: "p2", kind: "terminal" as const, anchor: { kind: "terminal" as const, terminalId: null }, width: 0 },
-        { id: "p3", kind: "scratchpad" as const, anchor: { kind: "scratchpad" as const, padId: null }, width: 2 },
+        { id: "p3", kind: "scratchpad" as const, anchor: { kind: "scratchpad" as const, scratchpadId: null }, width: 2 },
       ],
       focusedId: "p2",
     });

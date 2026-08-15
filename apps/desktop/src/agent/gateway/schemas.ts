@@ -85,7 +85,7 @@ export class GatewayToolError extends Error {
 // ── scratchpad tool inputs ───────────────────────────────────────────────────
 
 export const ScratchpadReadInputSchema = z.object({
-  padId: z.string().min(1).optional(),
+  scratchpadId: z.string().min(1).optional(),
 });
 
 export const ScratchpadWriteInputSchema = z.object({
@@ -103,7 +103,7 @@ export const ScratchpadWriteInputSchema = z.object({
 
 export const SCRATCHPAD_READ_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
-  properties: { padId: { type: "string" } },
+  properties: { scratchpadId: { type: "string" } },
 };
 
 export const SCRATCHPAD_WRITE_JSON_SCHEMA: Record<string, unknown> = {
@@ -153,7 +153,7 @@ export const WaitForThreadsInputSchema = z.object({
   /** Positionally paired with `threadIds`: the exact turn of that child to wait
    *  on, so a human typing into the child mid-wait can't hand the parent a
    *  different turn's outcome. Omit to wait on the child's latest turn. */
-  runIds: z.array(z.string().min(1)).max(12).optional(),
+  turnIds: z.array(z.string().min(1)).max(12).optional(),
   /** Engine default when omitted; the engine clamps to its own max. */
   timeoutMs: z.number().int().nonnegative().optional(),
 });
@@ -195,7 +195,7 @@ export const WAIT_FOR_THREADS_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
     threadIds: { type: "array", items: { type: "string" } },
-    runIds: { type: "array", items: { type: "string" } },
+    turnIds: { type: "array", items: { type: "string" } },
     timeoutMs: { type: "integer" },
   },
   required: ["threadIds"],

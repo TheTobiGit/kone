@@ -85,7 +85,6 @@ import { thinkingOrbHue } from "~/utils/toolOrbDraw";
 
 const props = defineProps<{
   segments: Segment[];
-  /** Is the parent turn still running? */
   running: boolean;
   /** Is this the turn's final (tail) batch? A tail batch stays active through a
    *  quiet lull; a batch already overtaken by streamed text is done. */

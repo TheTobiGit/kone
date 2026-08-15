@@ -263,7 +263,7 @@ export function registerGitIpc(): void {
       }
     }),
   );
-  ipcMain.handle("git:clone-cancel", () => cancelClone());
+  ipcMain.handle("git:cancel-clone", () => cancelClone());
   ipcMain.handle("git:create", (_event, opts: CreateProjectOptions) =>
     createProject(opts),
   );

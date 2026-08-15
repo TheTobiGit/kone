@@ -19,7 +19,7 @@ import { userDataPath } from "./userDataDir.js";
 
 const VERSION = 1;
 
-export interface ProviderCacheSnapshot {
+export interface ProviderSurfaceSnapshot {
   version: number;
   /** ms epoch of the last write — lets a reader decide how much to trust it. */
   savedAt: number;
@@ -27,7 +27,7 @@ export interface ProviderCacheSnapshot {
   models: Partial<Record<ProviderKind, ModelDescriptor[]>>;
 }
 
-function emptySnapshot(): ProviderCacheSnapshot {
+function emptySnapshot(): ProviderSurfaceSnapshot {
   return { version: VERSION, savedAt: 0, statuses: [], models: {} };
 }
 
@@ -39,7 +39,7 @@ function cacheFilePath(): string {
 
 /** Keep only well-shaped entries so a hand-edited or version-skewed file can
  *  never feed junk ids into an adapter or the renderer's picker. */
-function sanitize(raw: unknown): ProviderCacheSnapshot {
+function sanitize(raw: unknown): ProviderSurfaceSnapshot {
   const out = emptySnapshot();
   if (!raw || typeof raw !== "object") return out;
   const obj = raw as Record<string, unknown>;
@@ -65,12 +65,12 @@ function sanitize(raw: unknown): ProviderCacheSnapshot {
   return out;
 }
 
-let cache: ProviderCacheSnapshot | null = null;
+let cache: ProviderSurfaceSnapshot | null = null;
 
 /** The last persisted snapshot, read from disk once and held in memory. A
  *  missing or unreadable file is a clean empty snapshot — callers then behave
  *  exactly as they did before this cache existed (probe on demand). */
-export function readProviderCache(): ProviderCacheSnapshot {
+export function readProviderCache(): ProviderSurfaceSnapshot {
   if (cache) return cache;
   try {
     cache = sanitize(JSON.parse(fs.readFileSync(cacheFilePath(), "utf8")));
@@ -80,7 +80,7 @@ export function readProviderCache(): ProviderCacheSnapshot {
   return cache;
 }
 
-function persist(next: ProviderCacheSnapshot): ProviderCacheSnapshot {
+function persist(next: ProviderSurfaceSnapshot): ProviderSurfaceSnapshot {
   cache = next;
   try {
     fs.writeFileSync(cacheFilePath(), JSON.stringify(next), "utf8");

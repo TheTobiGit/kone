@@ -12,6 +12,7 @@ import type { SkillSignalsContext } from "./agent/inventory/skillInspect.js";
 import type { SkillFinding } from "./agent/inventory/skillLint.js";
 import type { SkillSignals } from "./agent/inventory/skillSignals.js";
 import type { FrontmatterEdit, MutateResult } from "./agent/inventory/skillMutate.js";
+import type { SkillRootTarget } from "./agent/inventory/skills.js";
 import type {
   SkillStateQuery,
   SkillStateResult,
@@ -29,7 +30,7 @@ import type {
   CreateSideChatResult,
   ModelDescriptor,
   ProfileStats,
-  ProviderCacheSnapshot,
+  ProviderSurfaceSnapshot,
   ProviderConfig,
   ProviderKind,
   ProviderMaintenance,
@@ -61,6 +62,7 @@ import type {
   ScratchpadDeleteInput,
   ScratchpadListInput,
   ScratchpadSaveInput,
+  ScratchpadSaveResult,
 } from "./scratchpad/index.js";
 import type { DirListing } from "./fs.js";
 import type { ThemeMode } from "./system.js";
@@ -218,7 +220,7 @@ const api = {
     clone: (url: string, dest: string): Promise<CloneResult> =>
       ipcRenderer.invoke("git:clone", url, dest),
     // Abort the clone currently in flight (its git.clone() invoke then rejects).
-    cancelClone: (): Promise<void> => ipcRenderer.invoke("git:clone-cancel"),
+    cancelClone: (): Promise<void> => ipcRenderer.invoke("git:cancel-clone"),
     create: (opts: CreateProjectOptions): Promise<CreateProjectResult> =>
       ipcRenderer.invoke("git:create", opts),
     // Live status: watch the repo and receive a fresh GitStatus whenever it moves
@@ -288,7 +290,7 @@ const api = {
     // The last known provider surface off the main process's disk cache — no
     // CLI is spawned, so this resolves immediately and lets the picker be real
     // at app open instead of merely populated.
-    surface: (): Promise<ProviderCacheSnapshot> => ipcRenderer.invoke("agent:surface"),
+    surface: (): Promise<ProviderSurfaceSnapshot> => ipcRenderer.invoke("agent:surface"),
     // Ask the main process to re-probe everything in the background.
     warm: (): Promise<void> => ipcRenderer.invoke("agent:warm"),
     // Probe which agent CLIs are installed + logged in on this machine.
@@ -333,7 +335,7 @@ const api = {
       threadId: string,
       requestId: string,
       decision: ApprovalDecision,
-    ): Promise<void> => ipcRenderer.invoke("agent:respond", threadId, requestId, decision),
+    ): Promise<void> => ipcRenderer.invoke("agent:respond-approval", threadId, requestId, decision),
     respondUserInput: (
       threadId: string,
       requestId: string,
@@ -432,6 +434,8 @@ const api = {
         context: SkillSignalsContext,
       ): Promise<SkillSignals | null> =>
         ipcRenderer.invoke("agent:skill-signals", skillMdPath, context),
+      roots: (projectPath: string | null): Promise<SkillRootTarget[]> =>
+        ipcRenderer.invoke("agent:skill-roots", projectPath),
       scaffold: (root: string, name: string, description: string): Promise<MutateResult> =>
         ipcRenderer.invoke("agent:skill-scaffold", root, name, description),
       editFrontmatter: (skillMdPath: string, edits: FrontmatterEdit[]): Promise<MutateResult> =>
@@ -491,7 +495,7 @@ const api = {
   scratchpad: {
     list: (input: ScratchpadListInput): Promise<ScratchpadRecord[]> =>
       ipcRenderer.invoke("scratchpad:list", input),
-    save: (input: ScratchpadSaveInput): Promise<{ savedAt: number; revision: number } | { conflict: number } | null> =>
+    save: (input: ScratchpadSaveInput): Promise<ScratchpadSaveResult> =>
       ipcRenderer.invoke("scratchpad:save", input),
     delete: (input: ScratchpadDeleteInput): Promise<void> =>
       ipcRenderer.invoke("scratchpad:delete", input),

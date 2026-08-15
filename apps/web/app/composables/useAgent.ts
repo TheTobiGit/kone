@@ -2943,7 +2943,6 @@ export function useAgent(options: UseAgentOptions) {
     now,
     // the whole registry — for the away-from-thread pill stack
     threads,
-    activeThreadId: threadId,
     setActiveThread,
     forgetThread,
     // the strip: live sessions in column order + the focused column. The strip

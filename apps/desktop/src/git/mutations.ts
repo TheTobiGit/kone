@@ -212,7 +212,6 @@ export async function deleteBranch(
   await git(root, ["branch", opts?.force ? "-D" : "-d", "--", name.trim()]);
 }
 
-/** Rename a local branch. */
 export async function renameBranch(dir: string, from: string, to: string): Promise<void> {
   const root = await repoRoot(dir);
   if (!root || !from.trim() || !to.trim()) return;

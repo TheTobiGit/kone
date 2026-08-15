@@ -186,17 +186,17 @@ export interface SpawnEngine {
     /** Positionally paired with `threadIds`: pin each wait to that exact turn
      *  of the child, so a newer turn can't swap the outcome mid-wait. Omit to
      *  wait on the child's latest turn. */
-    runIds?: (string | undefined)[];
+    turnIds?: (string | undefined)[];
     timeoutMs?: number;
     scopeThreadId: string;
   }): Promise<{
     threads: SpawnedThread[];
     allTerminal: boolean;
     timedOut: boolean;
-    /** The runId each wait was pinned to (requested, else the child's latest
+    /** The turnId each wait was pinned to (requested, else the child's latest
      *  turn at resolution, else null) — echo back to keep waiting on the same
      *  turn. */
-    runIds: (string | null)[];
+    turnIds: (string | null)[];
   }>;
   dispose(): void;
 }
@@ -282,13 +282,13 @@ type TrackedChild = {
 type Waiter = {
   ids: string[];
   /** Positionally paired with `ids`; undefined = wait on the child's latest. */
-  runIds?: (string | undefined)[];
+  turnIds?: (string | undefined)[];
   scopeThreadId: string;
   resolve: (out: {
     threads: SpawnedThread[];
     allTerminal: boolean;
     timedOut: boolean;
-    runIds: (string | null)[];
+    turnIds: (string | null)[];
   }) => void;
   timeout: ReturnType<typeof setTimeout> | null;
 };
@@ -681,23 +681,23 @@ class SpawnEngineImpl implements SpawnEngine {
 
   async waitFor(input: {
     threadIds: string[];
-    runIds?: (string | undefined)[];
+    turnIds?: (string | undefined)[];
     timeoutMs?: number;
     scopeThreadId: string;
   }): Promise<{
     threads: SpawnedThread[];
     allTerminal: boolean;
     timedOut: boolean;
-    runIds: (string | null)[];
+    turnIds: (string | null)[];
   }> {
     const timeoutMs = Math.min(
       Math.max(input.timeoutMs ?? SPAWN_WAIT_DEFAULT_MS, 0),
       SPAWN_WAIT_MAX_MS,
     );
-    if (input.runIds && input.runIds.length !== input.threadIds.length) {
+    if (input.turnIds && input.turnIds.length !== input.threadIds.length) {
       throw new SpawnError(
         "invalid_input",
-        "runIds must be positionally paired with threadIds — one run id per thread, in the same order.",
+        "turnIds must be positionally paired with threadIds — one turn id per thread, in the same order.",
       );
     }
     // A parent may only wait on its own subtree — anything else is a forgery
@@ -714,7 +714,7 @@ class SpawnEngineImpl implements SpawnEngine {
     return new Promise((resolve) => {
       const waiter: Waiter = {
         ids: [...input.threadIds],
-        runIds: input.runIds ? [...input.runIds] : undefined,
+        turnIds: input.turnIds ? [...input.turnIds] : undefined,
         scopeThreadId: input.scopeThreadId,
         resolve,
         timeout: null,
@@ -731,12 +731,12 @@ class SpawnEngineImpl implements SpawnEngine {
     // leaving a parent agent hanging on a promise that will never settle.
     for (const waiter of this.waiters) {
       if (waiter.timeout) clearTimeout(waiter.timeout);
-      const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.runIds?.[i]));
+      const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.turnIds?.[i]));
       waiter.resolve({
         threads,
         allTerminal: threads.every((t) => t.terminal),
         timedOut: true,
-        runIds: this.resolvedRunIds(waiter),
+        turnIds: this.resolvedTurnIds(waiter),
       });
     }
     this.waiters.length = 0;
@@ -926,7 +926,7 @@ class SpawnEngineImpl implements SpawnEngine {
   // first).
 
   private checkWaiter(waiter: Waiter): void {
-    const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.runIds?.[i]));
+    const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.turnIds?.[i]));
     const anyGated = threads.some(
       (t) => t.status === "waiting-for-approval" || t.status === "waiting-for-user-input",
     );
@@ -943,21 +943,21 @@ class SpawnEngineImpl implements SpawnEngine {
     if (index === -1) return;
     this.waiters.splice(index, 1);
     if (waiter.timeout) clearTimeout(waiter.timeout);
-    const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.runIds?.[i]));
+    const threads = waiter.ids.map((id, i) => this.snapshotForWait(id, waiter.turnIds?.[i]));
     waiter.resolve({
       threads,
       allTerminal: threads.every((t) => t.terminal),
       timedOut,
-      runIds: this.resolvedRunIds(waiter),
+      turnIds: this.resolvedTurnIds(waiter),
     });
   }
 
-  /** The runId each named wait resolved to — the requested pin, else the child's
+  /** The turnId each named wait resolved to — the requested pin, else the child's
    *  latest turn at resolution, else null. Echoed in the wait result so a parent
    *  can keep waiting on the same turn. */
-  private resolvedRunIds(waiter: Waiter): (string | null)[] {
+  private resolvedTurnIds(waiter: Waiter): (string | null)[] {
     return waiter.ids.map((id, i) => {
-      const requested = waiter.runIds?.[i];
+      const requested = waiter.turnIds?.[i];
       if (requested !== undefined) return requested;
       const tracked = this.tracked.get(id);
       if (tracked && tracked.turns.length > 0) {
@@ -967,17 +967,17 @@ class SpawnEngineImpl implements SpawnEngine {
     });
   }
 
-  /** snapshot, pinned to one turn when a runId is given, with the one subtree
+  /** snapshot, pinned to one turn when a turnId is given, with the one subtree
    *  member that has no spawned-child projection — the scope thread itself —
    *  read as trivially settled (nothing the engine drives is pending on it). */
-  private snapshotForWait(threadId: string, runId?: string): SpawnedThread {
+  private snapshotForWait(threadId: string, turnId?: string): SpawnedThread {
     const tracked = this.tracked.get(threadId);
-    if (tracked && runId) {
+    if (tracked && turnId) {
       // Pin the wait to this exact turn: a human typing into the child must
       // not swap which turn's outcome the parent collects. A pin whose turn
       // hasn't started yet reads starting (non-terminal), so the wait keeps
       // going.
-      const pin = tracked.turns.find((t) => t.turnId === runId);
+      const pin = tracked.turns.find((t) => t.turnId === turnId);
       const pinnedTurns = pin ? [pin] : [];
       return projectSpawnedThread({
         thread: {

@@ -29,7 +29,7 @@ export type PaneId = string;
 export type PaneAnchor =
   | { kind: "thread"; threadId: string | null }
   | { kind: "terminal"; terminalId: string | null }
-  | { kind: "scratchpad"; padId: string | null };
+  | { kind: "scratchpad"; scratchpadId: string | null };
 
 /** Pure layout. Serialisable: no refs, no session objects, no functions.
  *  This is exactly what gets written to the store. */

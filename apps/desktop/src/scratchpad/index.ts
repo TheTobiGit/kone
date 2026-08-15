@@ -3,4 +3,5 @@ export type {
   ScratchpadDeleteInput,
   ScratchpadListInput,
   ScratchpadSaveInput,
+  ScratchpadSaveResult,
 } from "./types.js";

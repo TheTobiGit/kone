@@ -41,6 +41,8 @@ type SkillRoot = {
   readonly scope: "user" | "project";
 };
 
+export type SkillRootTarget = SkillRoot & { readonly exists: boolean };
+
 // The user/global roots kone scans across installed agent providers.
 function userSkillRoots(home: string): SkillRoot[] {
   return [
@@ -62,6 +64,16 @@ const PROJECT_SKILL_DIRS: ReadonlyArray<{ dirName: string; origin: SkillOrigin }
   { dirName: ".codex", origin: "codex" },
   { dirName: ".agents", origin: "agents" },
 ];
+
+/** A root that cannot be stat'd is one nothing has been written into yet, which
+ *  is the same answer as absent as far as offering it goes. */
+async function directoryExists(dir: string): Promise<boolean> {
+  try {
+    return (await stat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 function projectAncestors(projectPath: string): string[] {
   const ancestors: string[] = [];
@@ -404,6 +416,47 @@ async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
  *
  *  Every individual root's failure (missing dir, EACCES, ...) is caught into
  *  `errors` — this function never rejects. */
+/** Where a new skill could be written. The scan reports what exists; this
+ *  reports where something could be put, which is a different question and the
+ *  only one an "add a skill" flow can be answered with — a machine with no
+ *  skills at all still has folders each CLI would read.
+ *
+ *  A root that does not exist yet is still offered, marked `exists: false`;
+ *  creating it is what writing the first skill into it means. Never rejects. */
+export async function skillRootTargets(projectPath: string | null): Promise<SkillRootTarget[]> {
+  const home = homedir();
+  const targets: SkillRootTarget[] = [];
+
+  // Cursor reads two differently-named folders, so offering both would put the
+  // same origin on screen twice. The one already on disk wins; with neither, the
+  // first is the one to create.
+  const userRoots = userSkillRoots(home);
+  const cursorRoots = userRoots.filter((root) => root.origin === "cursor");
+  let cursorPick = cursorRoots[0];
+  for (const root of cursorRoots) {
+    if (await directoryExists(root.dir)) {
+      cursorPick = root;
+      break;
+    }
+  }
+
+  for (const root of userRoots) {
+    if (root.origin === "cursor" && root.dir !== cursorPick?.dir) continue;
+    targets.push({ ...root, exists: await directoryExists(root.dir) });
+  }
+
+  // Only the project's own folders, never the ancestor walk: someone adding a
+  // skill to a project means this project, not a monorepo root several levels up.
+  if (projectPath) {
+    for (const { dirName, origin } of PROJECT_SKILL_DIRS) {
+      const dir = path.join(path.resolve(projectPath), dirName, "skills");
+      targets.push({ dir, origin, scope: "project", exists: await directoryExists(dir) });
+    }
+  }
+
+  return targets;
+}
+
 export async function discoverSkills(projectPath: string | null): Promise<{
   skills: SkillEntry[];
   errors: InventoryError[];

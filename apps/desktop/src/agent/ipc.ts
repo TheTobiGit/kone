@@ -13,6 +13,7 @@ import { initThreadDispatcher } from "./dispatch.js";
 import { createGateway, type GatewayHandle } from "./gateway/index.js";
 import { scanAgentInventory } from "./inventory/index.js";
 import { readSkillDetail } from "./inventory/skillDetail.js";
+import { skillRootTargets } from "./inventory/skills.js";
 import {
   lintSkillAt,
   signalsForSkillAt,
@@ -302,7 +303,7 @@ export function registerAgentIpc(): void {
     svc.stopSession(threadId),
   );
   ipcMain.handle(
-    "agent:respond",
+    "agent:respond-approval",
     (_event, threadId: string, requestId: string, decision: ApprovalDecision) =>
       svc.respondToRequest(threadId, requestId, decision),
   );
@@ -429,6 +430,9 @@ export function registerAgentIpc(): void {
     scanAgentInventory(projectPath),
   );
   ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
+  ipcMain.handle("agent:skill-roots", (_event, projectPath: string | null) =>
+    skillRootTargets(projectPath),
+  );
   ipcMain.handle("agent:skill-state-read", (_event, query: SkillStateQuery) =>
     readSkillState(stateContext(query)),
   );

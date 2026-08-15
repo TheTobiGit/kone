@@ -175,7 +175,7 @@ describe("kone_scratchpad_read", () => {
     expect(result.structuredContent?.error.code).toBe("not_found");
   });
 
-  test("reads the most-recently-updated pad when padId omitted", async () => {
+  test("reads the most-recently-updated pad when scratchpadId omitted", async () => {
     const { registry, store } = makeTools();
     store.saveScratchpad({ padId: "old", projectPath: PROJECT, title: "Scratchpad", body: "old" });
     store.saveScratchpad({ padId: "new", projectPath: PROJECT, title: "Scratchpad", body: "new body" });
@@ -185,10 +185,10 @@ describe("kone_scratchpad_read", () => {
     expect(result.structuredContent?.pad).toMatchObject({ id: "new", body: "new body", revision: 1 });
   });
 
-  test("reads by explicit padId", async () => {
+  test("reads by explicit scratchpadId", async () => {
     const { registry, store } = makeTools();
     store.saveScratchpad({ padId: "p1", projectPath: PROJECT, title: "Scratchpad", body: "one" });
-    const result = await registry.call(ctx(), "kone_scratchpad_read", { padId: "p1" });
+    const result = await registry.call(ctx(), "kone_scratchpad_read", { scratchpadId: "p1" });
     expect(result.structuredContent?.pad.id).toBe("p1");
   });
 });

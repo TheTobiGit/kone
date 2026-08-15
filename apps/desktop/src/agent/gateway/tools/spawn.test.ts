@@ -42,7 +42,7 @@ type FakeSpawnRequest = {
   target: { provider: string; model?: string; effort?: string };
   mode?: string;
 };
-type FakeWaitInput = { threadIds: string[]; runIds?: (string | undefined)[]; timeoutMs?: number; scopeThreadId: string };
+type FakeWaitInput = { threadIds: string[]; turnIds?: (string | undefined)[]; timeoutMs?: number; scopeThreadId: string };
 type FakeTargetsReport = {
   providers: Array<{
     provider: string;
@@ -63,7 +63,7 @@ type FakeEngine = {
     threads: SpawnedThread[];
     allTerminal: boolean;
     timedOut: boolean;
-    runIds: (string | null)[];
+    turnIds: (string | null)[];
   }>;
 };
 
@@ -92,7 +92,7 @@ function makeEngine(overrides: Partial<FakeEngine> = {}): FakeEngine {
       throw new Error("targets not stubbed");
     },
     isInSubtree: () => true,
-    waitFor: async () => ({ threads: [], allTerminal: true, timedOut: false, runIds: [] }),
+    waitFor: async () => ({ threads: [], allTerminal: true, timedOut: false, turnIds: [] }),
     ...overrides,
   };
 }
@@ -279,7 +279,7 @@ describe("spawn gateway tools", () => {
     });
   });
 
-  test("kone_wait_for_threads forwards ids, runIds, timeout and scope, shapes the outcome", async () => {
+  test("kone_wait_for_threads forwards ids, turnIds, timeout and scope, shapes the outcome", async () => {
     let captured: FakeWaitInput | null = null;
     currentEngine = makeEngine({
       waitFor: async (input) => {
@@ -291,26 +291,26 @@ describe("spawn gateway tools", () => {
           ],
           allTerminal: false,
           timedOut: true,
-          runIds: ["turn-1", "turn-9"],
+          turnIds: ["turn-1", "turn-9"],
         };
       },
     });
     const registry = createRegistry(createSpawnTools({ store: makeStore() }));
     const res = await registry.call(ctx, "kone_wait_for_threads", {
       threadIds: ["child-1", "child-2"],
-      runIds: ["turn-1", "turn-9"],
+      turnIds: ["turn-1", "turn-9"],
       timeoutMs: 5000,
     });
     expect(captured).toEqual({
       threadIds: ["child-1", "child-2"],
-      runIds: ["turn-1", "turn-9"],
+      turnIds: ["turn-1", "turn-9"],
       timeoutMs: 5000,
       scopeThreadId: "parent-1",
     });
     expect(res.structuredContent).toMatchObject({
       allTerminal: false,
       timedOut: true,
-      runIds: ["turn-1", "turn-9"],
+      turnIds: ["turn-1", "turn-9"],
     });
     expect((res.structuredContent as { threads: SpawnedThread[] }).threads).toHaveLength(2);
   });

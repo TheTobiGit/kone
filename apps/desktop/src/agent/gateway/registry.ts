@@ -17,7 +17,6 @@ import { GatewayToolError } from "./schemas.js";
 
 export type { GatewayToolContext, GatewayToolResult, ToolEntry } from "./schemas.js";
 
-/** The text content of a tool result. */
 export function mcpToolResultText(text: string): GatewayToolResult {
   return { content: [{ type: "text", text }] };
 }

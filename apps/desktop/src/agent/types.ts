@@ -80,7 +80,6 @@ export type ModelDescriptor = {
 
 // ── Session / turn IO ────────────────────────────────────────────────────────
 
-/** How much the agent may do without asking. Mirrors the calm-UI intent. */
 /** The approval-policy ladder — how much the agent may do without asking,
  *  from most to least restrictive: `ask` always asks first (read-only
  *  sandbox); `accept-edits` auto-approves file edits but still asks before
@@ -197,9 +196,7 @@ export type UploadAttachmentInput = {
   data: string;
 };
 
-/** Max bytes for an image attachment (10 MB). */
 export const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-/** Max bytes for a non-image file attachment (25 MB). */
 export const MAX_FILE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 /** Image mime types Claude renders natively; anything else falls back to the
  *  on-disk path block. */
@@ -583,7 +580,7 @@ export type ForkContext = {
   sourceThreadId: string;
   /** Id of the last native block in the source at import time. Provenance
    *  only — the import is never truncated, so this does not mark a cut. */
-  forkPointMessageId: string | null;
+  forkPointBlockId: string | null;
   /** Epoch millis when the fork was created. */
   importedAt: number;
   /** One-shot bootstrap flag: `"pending"` until the thread's first turn
@@ -684,7 +681,7 @@ export type SpawnThreadResult = {
   model?: string;
   effort?: string;
   mode: InteractionMode;
-  /** The child's FIRST turn id — the runId to pin kone_wait_for_threads to, so
+  /** The child's FIRST turn id — the turnId to pin kone_wait_for_threads to, so
    *  the parent waits on the turn it spawned rather than whatever the child's
    *  latest turn happens to be when the wait runs. */
   firstTurnId?: string;
@@ -759,6 +756,10 @@ export type RuntimeSessionState =
   | "error";
 
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
+
+/** How a turn settled when it didn't run to completion. `turn.aborted` covers
+ *  crashes as well as user interrupts, so "completed" is unreachable here. */
+export type TurnAbortReason = Exclude<RuntimeTurnState, "completed">;
 
 /** A unit of work inside a turn the UI renders as one block. A shell command
  *  execution is a `tool_call` like any other — it doesn't get its own kind. */
@@ -1015,7 +1016,7 @@ export type RuntimeEvent =
   // it only when `revision` is newer than their own.
   | (BaseEvent & {
       type: "scratchpad.updated";
-      padId: string;
+      scratchpadId: string;
       projectPath: string;
       title: string;
       body: string;
@@ -1060,7 +1061,7 @@ export type RuntimeEvent =
       turnId?: string;
     })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
-  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: RuntimeTurnState; message?: string })
+  | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
   // turn itself: it belongs in that run's `items`, not the assistant block's.
   | (BaseEvent & {
@@ -1132,7 +1133,6 @@ export type AdapterCapabilities = {
   supportsToolEvents: boolean;
   /** Can resume a prior conversation. */
   supportsResume: boolean;
-  /** Exposes a model list. */
   supportsModelList: boolean;
   /** Spawns provider-native subagents inside a turn and reports their nested
    *  transcripts (`subagent.*` events + items tagged with a run). */

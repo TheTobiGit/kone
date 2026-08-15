@@ -29,7 +29,6 @@ const LANG_BY_EXT: Record<string, string> = {
 // Past this the file stays plain — highlighting a huge blob would jank the open.
 const MAX_HIGHLIGHT = 150_000;
 
-/** One code line as coloured tokens. */
 export type CodeLine = ThemedToken[];
 
 // ── singleton state (shared across every useHighlighter() call) ────────────────

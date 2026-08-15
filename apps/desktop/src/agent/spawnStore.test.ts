@@ -288,7 +288,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
         sourceThreadId: "root-1",
         forkContext: {
           sourceThreadId: "root-1",
-          forkPointMessageId: null,
+          forkPointBlockId: null,
           importedAt: 20,
           bootstrapStatus: "pending",
         },

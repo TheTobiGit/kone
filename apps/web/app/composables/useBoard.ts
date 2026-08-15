@@ -150,7 +150,7 @@ function sessionMatchesKind(
     case "terminal":
       return "terminalId" in session;
     case "scratchpad":
-      return "padId" in session;
+      return "scratchpadId" in session;
   }
 }
 
@@ -172,7 +172,7 @@ function persistableThreadId(s: ThreadSession): string | null {
       case "terminal":
         return { kind: "terminal", terminalId: null };
       case "scratchpad":
-        return { kind: "scratchpad", padId: null };
+        return { kind: "scratchpad", scratchpadId: null };
     }
   }
 
@@ -364,7 +364,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
         queueAdopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
     for (const s of scratchpad.sessions.value)
       if (!claimed.has(s.key))
-        queueAdopt("scratchpad", s.key, { kind: "scratchpad", padId: s.padId });
+        queueAdopt("scratchpad", s.key, { kind: "scratchpad", scratchpadId: s.scratchpadId });
     if (toAdopt.length) {
       let insertAt = insertIndexFor({}, next);
       for (const item of toAdopt) {
@@ -758,7 +758,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       case "scratchpad":
         return {
           kind: "scratchpad",
-          padId: p.session?.padId ?? (p.entry.anchor as { padId: string | null }).padId ?? null,
+          scratchpadId: p.session?.scratchpadId ?? (p.entry.anchor as { scratchpadId: string | null }).scratchpadId ?? null,
         };
     }
   }
@@ -770,7 +770,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       case "terminal":
         return a.terminalId ?? "";
       case "scratchpad":
-        return a.padId ?? "";
+        return a.scratchpadId ?? "";
     }
   }
 
