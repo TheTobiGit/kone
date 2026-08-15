@@ -4,10 +4,11 @@
 // authoritative per-message cost to a local database, so its tiles come from
 // that (quota/opencode.ts) and are exact, not estimated.
 //
-// Claude and Codex. The honest move it makes, kept here: the **token counts are
-// measured** (read straight from the CLI's own session logs), and the **dollars
-// are an estimate**, priced from those tokens at published API rates and flagged
-// as such (the `estimated` "~" on the tile). Cursor is priced the same way:
+// Applies to Claude and Codex. The honest move this makes, kept here: the
+// **token counts are measured** (read straight from the CLI's own session
+// logs), and the **dollars are an estimate**, priced from those tokens at
+// published API rates and flagged as such (the `estimated` "~" on the tile).
+// Cursor is priced the same way:
 // kone reads Cursor's own dashboard usage export, but the CSV only carries
 // token counts — the dollars are kone's price-table estimate, imputed from
 // locally-read Cursor costs.

@@ -489,7 +489,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
   }
 
   if (version < 18) {
-    // v18 — the persistence-findings sweep (docs/thread-conversation-audit):
+    // v18 — the persistence-findings sweep:
     //  - `is_pinned` moves pins out of browser localStorage into the DB, so a
     //    pinned thread follows the thread across browser profiles and shows in
     //  - `model_selection_json` persists the user's per-thread picker knobs
@@ -497,8 +497,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     //    carries; `model` rides the existing column), so a reopened thread
     //    restores the picker instead of boot defaults.
     //  - `resume_session_at` stores Claude's last assistant message uuid for
-    //    reliable resume (fix_adapters contract; captured live like
-    //    conversationId).
+    //    reliable resume, captured live like conversationId.
     //  - `last_activity_at` separates "when the conversation was last active"
     //    from `updated_at` — title renames and archive stamps also bump the
     //    latter, so recency ordering previously reshuffled under a background
@@ -1383,7 +1382,7 @@ export class ConversationStore {
 
   /** Claude's last assistant message uuid, captured live off every envelope's
    *  `refs.resumeSessionAt` — the anchor Claude's SDK needs for a reliable
-   *  resume (fix_adapters contract). Same discipline as conversationId:
+   *  resume. Same discipline as conversationId:
    *  memoized per thread, written durably, never off an item.updated delta.
    *  Cleared on `session.started` when the anchor is absent — a fresh session,
    *  or a resume the provider refused (the adapter stops carrying the anchor,

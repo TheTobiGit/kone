@@ -90,9 +90,9 @@ function shellArgs(shell: string): string[] {
 }
 
 /** The first shell candidate that actually exists on disk. node-pty throws on a
- *  missing binary, so we walk the fallback list (both references do the same)
- *  rather than failing hard on a missing $SHELL. Bare names (no slash) are left
- *  for node-pty to resolve via PATH. */
+ *  missing binary, so we walk the fallback list rather than failing hard on a
+ *  missing $SHELL. Bare names (no slash) are left for node-pty to resolve via
+ *  PATH. */
 async function resolveShell(): Promise<{ shell: string; args: string[] }> {
   const candidates = shellCandidates();
   for (const shell of candidates) {

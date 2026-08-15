@@ -71,9 +71,9 @@ export function quotaCapableProviders(): QuotaCapableProvider[] {
 function backedOff(provider: QuotaCapableProvider): QuotaProviderReport | null {
   const until = blockedUntil.get(provider);
   if (until === undefined || until <= Date.now()) return null;
-  // resilience): if we read this provider successfully before the limit hit,
-  // keep those meters on screen, only flagged stale, rather than dropping the
-  // card to an error while we cool down. The card already renders `rateLimited`
+  // If we read this provider successfully before the limit hit, keep those
+  // meters on screen, only flagged stale, rather than dropping the card to an
+  // error while we cool down. The card already renders `rateLimited`
   // as "these figures may be stale". Only when there's nothing cached do we fall
   // back to the bare "backing off" message.
   const cached = cache.get(provider);

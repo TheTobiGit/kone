@@ -57,9 +57,9 @@ export function claudeSystemPromptAppend(gatewayControlAvailable: boolean): stri
 
 /** Codex envelope default when kone hasn't selected a model. The app-server
  *  schema requires `collaborationMode.settings.model` (Schema.String, not
- *  optional); both references hardcode an envelope fallback the same way
- *  `model` whenever one is known, which stays authoritative, so this slug
- *  only rides along on provider-default sessions. */
+ *  optional), so provider-default sessions still need a slug to send. A
+ *  `model` whenever one is known stays authoritative, so this slug only rides
+ *  along on provider-default sessions. */
 export const CODEX_ENVELOPE_DEFAULT_MODEL = "gpt-5.6-sol";
 
 export interface CodexTurnCollaborationMode {
