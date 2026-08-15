@@ -13,6 +13,7 @@ type OpenCodeMessagePayload = {
     input?: number;
     output?: number;
     total?: number;
+    reasoning?: number;
     cache?: { read?: number; write?: number };
   };
   time?: { created?: number };
@@ -66,12 +67,18 @@ function pickPricedModel(model: string, provider: string): string {
 function totalsFromPayload(tokens: OpenCodeMessagePayload["tokens"]): UsageTokenTotals | null {
   if (!tokens) return null;
   const cache = tokens.cache;
+  const reasoning = int(tokens.reasoning);
+  // opencode counts reasoning outside `output` — a message's own total is
+  // input + output + reasoning + cache.read + cache.write. Fold reasoning into
+  // output so the record reconciles with that total, while the report still
+  // carries the reasoning share of output separately without double counting.
+  const output = int(tokens.output) + reasoning;
   const totals: UsageTokenTotals = {
     uncachedInputTokens: int(tokens.input),
     cachedInputTokens: int(cache?.read),
     cacheCreationTokens: int(cache?.write),
-    outputTokens: int(tokens.output),
-    reasoningTokens: 0,
+    outputTokens: output,
+    reasoningTokens: reasoning,
   };
   const explicitTotal = int(tokens.total);
   const sum =
@@ -81,6 +88,7 @@ function totalsFromPayload(tokens: OpenCodeMessagePayload["tokens"]): UsageToken
     totals.outputTokens;
   if (sum === 0 && explicitTotal > 0) {
     totals.outputTokens = explicitTotal;
+    totals.reasoningTokens = 0;
   }
   if (
     totals.uncachedInputTokens +

@@ -118,6 +118,9 @@ describe("OpenCode pure translation helpers", () => {
       total: 245,
       contextUsed: 245,
       contextWindow: 200_000,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 5,
+      reasoningTokens: 30,
     });
     expect(
       normalizeOpenCodeTokenUsage({
