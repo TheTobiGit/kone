@@ -21,10 +21,18 @@ export function formatCount(value: number): string {
 /** Three significant figures with a unit suffix (`19.9B`, `804K`). */
 export function formatTokens(value: number): string {
   const abs = Math.abs(value);
-  if (abs >= 1e12) return `${trim(value / 1e12)}T`;
-  if (abs >= 1e9) return `${trim(value / 1e9)}B`;
-  if (abs >= 1e6) return `${trim(value / 1e6)}M`;
-  if (abs >= 1e3) return `${trim(value / 1e3)}K`;
+  const magnitudes = [1e12, 1e9, 1e6, 1e3] as const;
+  const suffix: Record<number, string> = { 1e12: "T", 1e9: "B", 1e6: "M", 1e3: "K" };
+  for (const magnitude of magnitudes) {
+    if (abs < magnitude) continue;
+    // A value that trims to "1000" (e.g. 999.95K) belongs to the next magnitude
+    // up — print 1M, not a four-digit "1000K" that reads as a counting error.
+    if (trim(value / magnitude) === "1000") {
+      const rolled = magnitude * 1000;
+      if (suffix[rolled]) return `${trim(value / rolled)}${suffix[rolled]}`;
+    }
+    return `${trim(value / magnitude)}${suffix[magnitude]}`;
+  }
   return INTEGER.format(Math.round(value));
 }
 
