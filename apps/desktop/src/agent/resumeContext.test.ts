@@ -84,6 +84,24 @@ describe("buildResumeContext", () => {
     expect(context).not.toContain("cut off");
   });
 
+  test("a prompt that was never answered gets the marker", () => {
+    const context = buildResumeContext({ blocks: [user("hi")] }) ?? "";
+    expect(context).toContain("never answered");
+  });
+
+  test("a thread ending on an unanswered prompt keeps its marker and the prompt", () => {
+    const context =
+      buildResumeContext({
+        blocks: [
+          user("do the rollback"),
+          assistant([item({ kind: "assistant_text", text: "done" })]),
+          user("now do the rollback"),
+        ],
+      }) ?? "";
+    expect(context).toContain("never answered");
+    expect(context).toContain("user: now do the rollback");
+  });
+
   test("replays the latest plan snapshot with its statuses", () => {
     const context =
       buildResumeContext({

@@ -51,6 +51,14 @@ const WEDGE_SWEEP_MS = 60_000;
  *  works — is never mistaken for a dead one. */
 const WEDGE_SILENCE_MS = 5 * 60_000;
 
+/** How often the idle session reaper sweeps inactive sessions (module constants
+ *  so the tuning lives with the mechanism it tunes). */
+const IDLE_SWEEP_MS = 5 * 60_000;
+/** Inactive session threshold: a session with no active turn and no activity
+ *  for this long is cleanly stopped to reclaim child CLI processes and system
+ *  resources. Subsequent turns rehydrate/resume on demand. */
+const IDLE_THRESHOLD_MS = 30 * 60_000;
+
 /** A parked provider ask (tool approval / user-input question) that a renderer
  *  reload would otherwise lose: approvals and user-input questions are live
  *  round-trips and are deliberately never journaled, so a re-subscribing
@@ -63,11 +71,14 @@ export type PendingInteraction = {
   event: RuntimeEvent;
 };
 
-/** Constructor tuning for the wedge watchdog — both default to the module
- *  constants above; tests shrink them to exercise the sweep without waiting. */
+/** Constructor tuning for the wedge watchdog and idle session reaper — defaults
+ *  to the module constants above; tests shrink them to exercise the sweep
+ *  without waiting. */
 export type AgentServiceOptions = {
   wedgeSweepMs?: number;
   wedgeSilenceMs?: number;
+  idleSweepMs?: number;
+  idleThresholdMs?: number;
   /** The conversation store's queue surface, injected by tests. Defaults to
    *  the app-wide store (getConversationStore) when absent. */
   store?: QueuedTurnStore;
@@ -104,7 +115,7 @@ export class AgentService {
    *  re-subscribing renderer can be replayed from (reload recovery), and the
    *  precise "waiting on the human" signal the wedge watchdog must respect. */
   private readonly parkedByThread = new Map<string, Map<string, PendingInteraction>>();
-  /** Last event arrival per thread — the wedge watchdog's heartbeat. */
+  /** Last event arrival per thread — the wedge watchdog's heartbeat and idle reaper clock. */
   private readonly lastActivity = new Map<string, number>();
   /** Turns currently live per thread (turnId) — the wedge watchdog's scope. */
   private readonly activeTurns = new Map<string, string>();
@@ -118,6 +129,8 @@ export class AgentService {
   private queueUnavailableWarned = false;
   /** The wedge sweep timer — lazily started on first session, cleared on stopAll. */
   private wedgeTimer: ReturnType<typeof setInterval> | null = null;
+  /** The idle session sweep timer — lazily started on first session, cleared on stopAll. */
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
     const emit: EmitEvent = (event) => this.dispatch(event);
@@ -437,8 +450,10 @@ export class AgentService {
       effort,
       gatewayConnection,
     });
+    this.lastActivity.set(input.threadId, Date.now());
     this.routing.set(input.threadId, input.provider);
     this.ensureWedgeWatchdog();
+    this.ensureIdleReaper();
     // Crash-recovery drain: queued rows survive a quit, so when the thread
     // reopens and a session comes up, any rows still waiting are promoted
     // into it (boot itself has no sessions, so there is nothing to drain
@@ -448,6 +463,7 @@ export class AgentService {
   }
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    this.lastActivity.set(input.threadId, Date.now());
     // SendTurnInput.model overrides the session model per turn (CodexAdapter
     // sets `session.model = input.model`), so guarding startSession alone left
     // the desync fully live — every turn re-supplied the foreign id.
@@ -649,6 +665,67 @@ export class AgentService {
     // handled by the before-quit teardown, which clears this timer via stopAll.
     timer.unref?.();
     this.wedgeTimer = timer;
+  }
+
+  /** The idle session reaper: sweeps active sessions that have had no turn or
+   *  event activity for longer than the inactivity threshold (default 30 min).
+   *  Unlike the wedge watchdog (which rescues running turns that stalled), this
+   *  reclaims child CLI processes for quiescent sessions while keeping the
+   *  conversation store history intact. Sessions with a turn currently running,
+   *  sessions parked on human approval/input, or sessions with queued follow-ups
+   *  are never reaped. */
+  async sweepIdleSessions(): Promise<void> {
+    const now = Date.now();
+    const thresholdMs = this.options.idleThresholdMs ?? IDLE_THRESHOLD_MS;
+    for (const threadId of [...this.routing.keys()]) {
+      // Never reap while a turn is in flight.
+      if (this.activeTurns.has(threadId)) continue;
+      // Never reap while waiting on user approval or question answer.
+      if (this.parkedByThread.get(threadId)?.size) continue;
+      // Never reap if queued follow-ups are waiting to run or being promoted.
+      if ((this.queuedByThread.get(threadId) ?? 0) > 0 || this.promotingThreads.has(threadId)) continue;
+
+      const last = this.lastActivity.get(threadId);
+      if (last !== undefined && now - last < thresholdMs) continue;
+
+      const provider = this.routing.get(threadId);
+      if (!provider) continue;
+
+      const idleSeconds = last === undefined ? "unknown" : `${Math.max(0, Math.round((now - last) / 1000))}s`;
+      console.warn(
+        `[agent] idle session reaper: stopping inactive ${provider} session ${threadId} (idle ${idleSeconds})`,
+      );
+
+      try {
+        await this.stopSession(threadId);
+        this.dispatch({
+          type: "session.state.changed",
+          threadId,
+          provider,
+          at: now,
+          source: "kone.store",
+          state: "stopped",
+          message: "idle session reaped",
+        });
+      } catch (err) {
+        console.warn(`[agent] idle session reaper failed to stop session ${threadId}:`, err);
+      }
+    }
+  }
+
+  private ensureIdleReaper(): void {
+    if (this.idleTimer) return;
+    const timer = setInterval(() => {
+      try {
+        void this.sweepIdleSessions();
+      } catch (err) {
+        console.warn("[agent] idle session reaper sweep failed:", err);
+      }
+    }, this.options.idleSweepMs ?? IDLE_SWEEP_MS);
+    // Never hold the process open on the reaper's account — clean quit is
+    // handled by the before-quit teardown, which clears this timer via stopAll.
+    timer.unref?.();
+    this.idleTimer = timer;
   }
 
   async respondToRequest(
@@ -993,6 +1070,10 @@ export class AgentService {
     if (this.wedgeTimer) {
       clearInterval(this.wedgeTimer);
       this.wedgeTimer = null;
+    }
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
     }
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();

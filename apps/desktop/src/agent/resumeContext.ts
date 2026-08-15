@@ -104,7 +104,15 @@ function latestPlan(blocks: StoredBlock[]): PlanTask[] | null {
  *  beats leaving the agent to infer it from a sentence that stops mid-word. */
 function renderEnding(blocks: StoredBlock[]): string | null {
   const last = blocks.at(-1);
-  if (!last || last.role !== "assistant") return null;
+  if (!last) return null;
+  // A thread ending on a user block never got a turn: the prompt is journaled
+  // before a turn begins, so a trailing user message means the process died
+  // before anything answered it — the fresh agent must answer it, not read it
+  // as settled history.
+  if (last.role === "user") {
+    return "[the message above was never answered — the process went down before a turn started.]";
+  }
+  if (last.role !== "assistant") return null;
   if (last.state === "completed") return null;
   const unfinished = last.items.filter((item) => item.status === "in-progress");
   const cut = unfinished.length

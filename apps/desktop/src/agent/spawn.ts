@@ -5,6 +5,13 @@ import { createInterface } from "node:readline";
 // git/core.ts. Agent CLIs are long-lived and spawn their own child tools, so we
 // need line-oriented streaming and whole-tree teardown, not just a buffered run.
 
+// Grace period between the polite SIGTERM group-kill and escalating to SIGKILL.
+const KILL_ESCALATION_MS = 1_500;
+
+// Cap on probe stdout accumulation; beyond this we keep draining but stop
+// appending, so a chatty CLI can't balloon memory over a long probe window.
+const PROBE_OUTPUT_CAP_BYTES = 1024 * 1024;
+
 /** A running agent invocation and the plumbing to observe/stop it. */
 export type StreamingRun = {
   /** Resolves when the process exits — never rejects; inspect `code`. `stdout`
@@ -88,15 +95,34 @@ export function killTree(pid: number | undefined): void {
     spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
     return;
   }
+  let signalDelivered = false;
   try {
     // Negative pid targets the process group (adapters spawn detached).
     process.kill(-pid, "SIGTERM");
+    signalDelivered = true;
   } catch {
     try {
       process.kill(pid, "SIGTERM");
+      signalDelivered = true;
     } catch {
       // Already gone.
     }
+  }
+  // A wedged CLI that ignores the polite signal would otherwise leak its whole
+  // process group, so escalate to SIGKILL after a grace period — but only when
+  // a signal actually landed (both failed means the tree is already gone).
+  if (signalDelivered) {
+    setTimeout(() => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }, KILL_ESCALATION_MS).unref?.();
   }
 }
 
@@ -108,7 +134,8 @@ export function killTree(pid: number | undefined): void {
  *  Critically, stdin is closed: some agent CLIs block forever on an open stdin
  *  pipe when not attached to a TTY, so a probe that leaves stdin open just
  *  hangs until the timeout. For quick, bounded probes (`--version` and the
- *  like) — never for turns. */
+ *  like) — never for turns. Output is capped at 1 MiB and a timed-out probe
+ *  tears down the child's whole process group, escalating SIGTERM to SIGKILL. */
 export function probe(
   command: string,
   args: string[],
@@ -131,13 +158,19 @@ export function probe(
       resolve(value);
     };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      killTree(child.pid);
       finish(stdout.length > 0 ? stdout : null);
     }, timeoutMs);
 
     child.stdout.on("data", (buf: Buffer) => {
+      // Keep draining the stream but stop appending past the cap so a
+      // misbehaving CLI can't balloon memory over a long probe window.
+      if (stdout.length >= PROBE_OUTPUT_CAP_BYTES) return;
       stdout += buf.toString();
     });
+    // Drain stderr too: a chatty stream with no consumer would fill its pipe
+    // buffer and block the child (backpressure) — that deadlocks the probe.
+    child.stderr.resume();
     // ENOENT and friends — the binary isn't runnable.
     child.on("error", () => finish(null));
     child.on("close", () => finish(stdout));
