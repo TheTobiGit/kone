@@ -21,7 +21,7 @@ export function registerScratchpadIpc(): void {
   );
   ipcMain.handle("scratchpad:save", (_event, input: ScratchpadSaveInput) =>
     store.saveScratchpad({
-      padId: input.padId,
+      padId: input.scratchpadId,
       projectPath: input.projectPath,
       title: input.title,
       body: input.body,
@@ -29,6 +29,6 @@ export function registerScratchpadIpc(): void {
     }),
   );
   ipcMain.handle("scratchpad:delete", (_event, input: ScratchpadDeleteInput) => {
-    store.deleteScratchpad(input.padId);
+    store.deleteScratchpad(input.scratchpadId);
   });
 }

@@ -17,7 +17,7 @@ export type PadMarker = {
 
 export type ScratchpadSession = {
   key: string;
-  padId: string;
+  scratchpadId: string;
   /** The pad document, as rich HTML (the editor formats as you type). */
   doc: Ref<string>;
   savedAt: number | null;
@@ -119,7 +119,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
   const sessions = shallowRef<ScratchpadSession[]>([]);
   const hydrated = ref(false);
   /** The project's pad row — its id and last-known body, even while closed. */
-  const padId = ref("");
+  const scratchpadId = ref("");
   const storedBody = ref("");
   /** The exact raw body last persisted (or last landed from a gateway write) —
    *  the no-op save guard compares drafts against this, not the html form. */
@@ -163,7 +163,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
     sessions.value = [...sessions.value];
 
     const payload = {
-      padId: session.padId,
+      scratchpadId: session.scratchpadId,
       projectPath,
       title: SCRATCHPAD_TITLE,
       body: session.doc.value,
@@ -186,10 +186,10 @@ export function useScratchpad(options: UseScratchpadOptions) {
       revision = saved?.revision ?? revision;
     } else {
       const list = readLocal(projectPath);
-      const idx = list.findIndex((r) => r.id === session.padId);
+      const idx = list.findIndex((r) => r.id === session.scratchpadId);
       const now = Date.now();
       const row: ScratchpadRecord = {
-        id: session.padId,
+        id: session.scratchpadId,
         projectPath,
         title: payload.title,
         body: payload.body,
@@ -228,7 +228,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
     const marker = ref<PadMarker>(readMarker(resolvePath()));
     const session: ScratchpadSession = {
       key: uid(),
-      padId: padId.value,
+      scratchpadId: scratchpadId.value,
       doc: ref(storedBody.value),
       savedAt: storedSavedAt.value,
       status: "ready",
@@ -262,10 +262,10 @@ export function useScratchpad(options: UseScratchpadOptions) {
     const sorted = [...records].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     const keep = sorted[0];
     if (!keep) {
-      padId.value = uid();
+      scratchpadId.value = uid();
       return;
     }
-    padId.value = keep.id;
+    scratchpadId.value = keep.id;
     storedBody.value = await toPadHtml(keep.body);
     storedRawBody.value = keep.body;
     storedSavedAt.value = keep.updatedAt ?? null;
@@ -273,7 +273,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
     const stale = sorted.slice(1);
     if (stale.length) {
       if (api) {
-        await Promise.all(stale.map((r) => api.delete({ padId: r.id })));
+        await Promise.all(stale.map((r) => api.delete({ scratchpadId: r.id })));
       } else {
         writeLocal(projectPath, [keep]);
       }
@@ -332,7 +332,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
   }
 
   async function applyAgentWrite(event: {
-    padId: string;
+    scratchpadId: string;
     body: string;
     savedAt: number;
     revision: number;
@@ -347,7 +347,7 @@ export function useScratchpad(options: UseScratchpadOptions) {
       session.savedAt = event.savedAt;
       session.status = "ready";
     }
-    if (event.padId) padId.value = event.padId;
+    if (event.scratchpadId) scratchpadId.value = event.scratchpadId;
     storedBody.value = html;
     storedRawBody.value = event.body;
     storedSavedAt.value = event.savedAt;

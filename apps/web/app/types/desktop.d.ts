@@ -919,6 +919,10 @@ export type UserInputAnswers = Record<string, string | string[] | null>;
 
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
 
+/** How a turn settled when it didn't run to completion. `turn.aborted` covers
+ *  crashes as well as user interrupts, so "completed" is unreachable here. */
+export type TurnAbortReason = Exclude<RuntimeTurnState, "completed">;
+
 /** A shell command execution is a `tool_call` like any other — it doesn't get
  *  its own kind. */
 export type RuntimeItemKind = "assistant_text" | "reasoning_text" | "plan_text" | "tool_call";
@@ -1108,7 +1112,7 @@ export type RuntimeEvent =
   // only when `revision` is newer than their own.
   | (AgentBaseEvent & {
       type: "scratchpad.updated";
-      padId: string;
+      scratchpadId: string;
       projectPath: string;
       title: string;
       body: string;
@@ -1152,7 +1156,7 @@ export type RuntimeEvent =
   | (AgentBaseEvent & {
       type: "turn.aborted";
       turnId: string;
-      reason: RuntimeTurnState;
+      reason: TurnAbortReason;
       message?: string;
     })
   // `subagentToolUseId` scopes the item to a nested subagent run instead of the
@@ -1288,7 +1292,7 @@ export type ForkContext = {
   sourceThreadId: string;
   /** Id of the last native block in the source at import time. Provenance
    *  only — the import is never truncated. */
-  forkPointMessageId: string | null;
+  forkPointBlockId: string | null;
   /** Epoch millis when the fork was created. */
   importedAt: number;
   /** One-shot bootstrap flag: `"pending"` until the thread's first turn
@@ -1878,6 +1882,16 @@ export type SkillSignals = {
 /** Where a skill came from — the scan knows this and the path does not. */
 export type SkillSignalsContext = { origin: string; scope: SkillEntry["scope"] };
 
+/** A folder one CLI reads skills out of. `exists` is false for a root nobody
+ *  has written into yet — still a valid destination, since writing the first
+ *  skill into it is what creates it. */
+export type SkillRootTarget = {
+  dir: string;
+  origin: string;
+  scope: "user" | "project";
+  exists: boolean;
+};
+
 /** One surgical frontmatter edit: set replaces the key's line, delete removes
  *  it. The body is preserved byte for byte either way. */
 export type SkillFrontmatterEdit =
@@ -1906,6 +1920,9 @@ export type KoneAgentSkillsApi = {
   /** Derive context cost and the honest signals about what a skill does.
    *  Resolves to null when the file cannot be read. */
   signals: (skillMdPath: string, context: SkillSignalsContext) => Promise<SkillSignals | null>;
+  /** Every folder a new skill could be written into, whether or not it exists
+   *  yet. The scan says what is installed; this says where something can go. */
+  roots: (projectPath: string | null) => Promise<SkillRootTarget[]>;
   /** Create a new skill folder with a minimal SKILL.md under `root`. */
   scaffold: (root: string, name: string, description: string) => Promise<SkillMutateResult>;
   /** Edit frontmatter keys in place, leaving the body untouched. */
@@ -2159,7 +2176,7 @@ export type ScratchpadListInput = {
 };
 
 export type ScratchpadSaveInput = {
-  padId: string;
+  scratchpadId: string;
   projectPath: string;
   title: string;
   body: string;
@@ -2186,7 +2203,7 @@ export type ScratchpadWriter = {
 };
 
 export type ScratchpadDeleteInput = {
-  padId: string;
+  scratchpadId: string;
 };
 
 export type KoneScratchpadApi = {

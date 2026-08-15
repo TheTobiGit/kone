@@ -3,7 +3,7 @@ export type ScratchpadListInput = {
 };
 
 export type ScratchpadSaveInput = {
-  padId: string;
+  scratchpadId: string;
   projectPath: string;
   title: string;
   body: string;
@@ -22,5 +22,5 @@ export type ScratchpadSaveResult =
   | null;
 
 export type ScratchpadDeleteInput = {
-  padId: string;
+  scratchpadId: string;
 };

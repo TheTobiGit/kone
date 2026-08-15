@@ -2,7 +2,7 @@
 //
 // The first "agent steers the app" capability: agents read and write the
 // project scratchpad the web board already renders. v1 speaks the current
-// single-pad model — read without a padId resolves the project's
+// single-pad model — read without a scratchpadId resolves the project's
 // most-recently-updated pad; write targets that pad (creating it when the
 // project has none). The list-read stays for future multi-pad.
 //
@@ -93,10 +93,10 @@ function currentPad(store: ScratchpadStore, projectPath: string) {
 export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
   const readHandler = async (
     ctx: GatewayToolContext,
-    args: { padId?: string },
+    args: { scratchpadId?: string },
   ): Promise<GatewayToolResult> => {
-    const pad = args.padId
-      ? input.store.getScratchpad(args.padId)
+    const pad = args.scratchpadId
+      ? input.store.getScratchpad(args.scratchpadId)
       : currentPad(input.store, ctx.cwd);
     if (!pad) {
       return gatewayToolErrorResult(
@@ -170,11 +170,11 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
 
     // 2. Resolve the target pad (single-pad model — create on first write).
     const current = currentPad(input.store, ctx.cwd);
-    const padId = current?.id ?? randomUUID();
+    const scratchpadId = current?.id ?? randomUUID();
 
     // 3. Revision guard + upsert, atomically inside the store.
     const saved = input.store.saveScratchpad({
-      padId,
+      padId: scratchpadId,
       projectPath: ctx.cwd,
       title: args.title,
       body: args.body,
@@ -197,7 +197,7 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
     }
 
     const payload: ScratchpadPayload = {
-      id: padId,
+      id: scratchpadId,
       title: args.title,
       body: args.append && current ? `${current.body}\n\n${args.body}` : args.body,
       revision: saved.revision,
@@ -212,7 +212,7 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
       provider: ctx.provider,
       at: Date.now(),
       source: "kone.store",
-      padId,
+      scratchpadId,
       projectPath: ctx.cwd,
       title: args.title,
       body: payload.body,
@@ -240,7 +240,7 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
     {
       name: "kone_scratchpad_read",
       description:
-        "Read this project's scratchpad — a notes board the user sees live on kone's project page, and the durable memory you share with the user across sessions. Read it before acting when the user references their notes, or to ground yourself in prior plans and decisions; it is the one place your context outlives the conversation. Omit padId to read the project's current pad (single-pad model).",
+        "Read this project's scratchpad — a notes board the user sees live on kone's project page, and the durable memory you share with the user across sessions. Read it before acting when the user references their notes, or to ground yourself in prior plans and decisions; it is the one place your context outlives the conversation. Omit scratchpadId to read the project's current pad (single-pad model).",
       inputSchema: ScratchpadReadInputSchema,
       jsonSchema: SCRATCHPAD_READ_JSON_SCHEMA,
       permission: "allow",

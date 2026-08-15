@@ -96,7 +96,6 @@ export async function stashApply(
   }
 }
 
-/** Drop one stash entry by its list index. */
 export async function stashDrop(dir: string, index: number): Promise<void> {
   const root = await repoRoot(dir);
   if (!root) return;

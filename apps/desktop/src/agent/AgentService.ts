@@ -11,7 +11,7 @@ import {
   cacheModels,
   cacheStatuses,
   readProviderCache,
-  type ProviderCacheSnapshot,
+  type ProviderSurfaceSnapshot,
 } from "./providerCache.js";
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
@@ -211,7 +211,7 @@ export class AgentService {
    *  from this at app open and refreshes in the background, which is what makes
    *  a cold launch present a provider list that's actually usable rather than
    *  one that only *looks* populated. Empty on a first-ever run. */
-  cachedSurface(): ProviderCacheSnapshot {
+  cachedSurface(): ProviderSurfaceSnapshot {
     return readProviderCache();
   }
 

@@ -76,7 +76,6 @@ const emit = defineEmits<{
   shift: [delta: number];
   /** Carry the focused column this many places along the strip. */
   move: [delta: number];
-  /** Close this column. */
   close: [key: string];
   /** Archive this thread and close its column. Carries the provider thread id (so
    *  the store/history row can be stamped archived) and the pane key (so the

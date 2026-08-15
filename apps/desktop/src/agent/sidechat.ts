@@ -330,7 +330,7 @@ export function createSidechatThread(input: CreateSideChatInput): CreateSideChat
   const createdAt = Date.now();
   const forkContext: ForkContext = {
     sourceThreadId: input.sourceThreadId,
-    forkPointMessageId: forkPointOf(source),
+    forkPointBlockId: forkPointOf(source),
     importedAt: createdAt,
     bootstrapStatus: "pending",
   };

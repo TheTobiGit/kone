@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { discoverSkills } from "./skills.js";
+import { discoverSkills, skillRootTargets } from "./skills.js";
 
 // discoverSkills reads the REAL homedir for the user-scope roots, so every
 // fixture lives in a temp project tree and each skill name derives from its
@@ -247,5 +247,39 @@ describe("discoverSkills factory", () => {
     expect(winner.scope).toBe("project");
     expect(winner.description).toBe("Factory project skill");
     expect(winner.displayName).toBe("Factory Test");
+  });
+});
+
+describe("skillRootTargets", () => {
+  test("offers one folder per CLI, marking the ones that exist", async () => {
+    const project = makeProject();
+    mkdirSync(path.join(project, ".claude", "skills"), { recursive: true });
+
+    const targets = await skillRootTargets(project);
+    const projectTargets = targets.filter((t) => t.scope === "project");
+
+    // One per CLI, no duplicates — a picker that offered the same agent twice
+    // would be asking a question with two identical answers.
+    const origins = projectTargets.map((t) => t.origin);
+    expect(new Set(origins).size).toBe(origins.length);
+
+    const claude = projectTargets.find((t) => t.origin === "claude");
+    expect(claude?.dir).toBe(path.join(project, ".claude", "skills"));
+    expect(claude?.exists).toBe(true);
+    expect(projectTargets.find((t) => t.origin === "codex")?.exists).toBe(false);
+
+    // Only this project's own folders: an ancestor several levels up is not
+    // what someone adding a skill here means.
+    for (const target of projectTargets) {
+      expect(path.dirname(path.dirname(target.dir))).toBe(project);
+    }
+  });
+
+  test("user folders are offered with no project at all, and come first", async () => {
+    const targets = await skillRootTargets(null);
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.every((t) => t.scope === "user")).toBe(true);
+    const cursor = targets.filter((t) => t.origin === "cursor");
+    expect(cursor).toHaveLength(1);
   });
 });

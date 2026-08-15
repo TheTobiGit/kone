@@ -754,7 +754,7 @@ describe("spawn engine", () => {
     expect(providers.stopped).toHaveLength(0);
   });
 
-  test("waitFor pins to a runId so a newer turn can't swap the outcome (F7)", async () => {
+  test("waitFor pins to a turnId so a newer turn can't swap the outcome (F7)", async () => {
     const { engine, store, providers, bus } = makeEngine();
     setupParent(store, providers);
 
@@ -763,10 +763,10 @@ describe("spawn engine", () => {
     expect(result.firstTurnId).toBe("turn-1");
 
     // Pinned wait: turn-1 settles, then a second turn starts — the pinned wait
-    // resolves on turn-1's outcome either way, echoing the resolved runIds.
+    // resolves on turn-1's outcome either way, echoing the resolved turnIds.
     const pinned = engine.waitFor({
       threadIds: [result.threadId],
-      runIds: [result.firstTurnId],
+      turnIds: [result.firstTurnId],
       timeoutMs: 300,
       scopeThreadId: CALLER.threadId,
     });
@@ -778,8 +778,7 @@ describe("spawn engine", () => {
     expect(pinnedOut.timedOut).toBe(false);
     expect(pinnedOut.allTerminal).toBe(true);
     expect(pinnedOut.threads[0].status).toBe("completed");
-    expect(pinnedOut.runIds).toEqual(["turn-1"]);
-
+    expect(pinnedOut.turnIds).toEqual(["turn-1"]);
     // Unpinned wait: the child's LATEST turn is running, so the wait does not
     // resolve on the settled earlier turn — it times out still running.
     const unpinned = engine.waitFor({
@@ -791,10 +790,10 @@ describe("spawn engine", () => {
     expect(unpinnedOut.timedOut).toBe(true);
     expect(unpinnedOut.allTerminal).toBe(false);
     expect(unpinnedOut.threads[0].status).toBe("working");
-    expect(unpinnedOut.runIds).toEqual(["turn-2"]);
+    expect(unpinnedOut.turnIds).toEqual(["turn-2"]);
   });
 
-  test("waitFor rejects runIds whose length doesn't pair with threadIds", async () => {
+  test("waitFor rejects turnIds whose length doesn't pair with threadIds", async () => {
     const { engine, store, providers } = makeEngine();
     setupParent(store, providers);
 
@@ -802,7 +801,7 @@ describe("spawn engine", () => {
     const error = await engine
       .waitFor({
         threadIds: [result.threadId],
-        runIds: [],
+        turnIds: [],
         timeoutMs: 10,
         scopeThreadId: CALLER.threadId,
       })
