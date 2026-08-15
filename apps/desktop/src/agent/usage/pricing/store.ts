@@ -13,6 +13,7 @@
 // keeps serving until the next attempt.
 
 import fs from "node:fs";
+import { writeFileAtomicSync } from "../../../atomicWrite.js";
 
 import litellmSnapshot from "./snapshots/litellm.snapshot.json" with { type: "json" };
 import modelsDevSnapshot from "./snapshots/models-dev.snapshot.json" with { type: "json" };
@@ -83,8 +84,7 @@ function readJsonFile<T>(path: string | undefined): T | undefined {
 function writeJsonFile(path: string | undefined, data: unknown): void {
   if (path === undefined) return;
   try {
-    fs.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
-    fs.writeFileSync(path, JSON.stringify(data), "utf8");
+    writeFileAtomicSync(path, JSON.stringify(data));
   } catch {
     // Best-effort: a disk-write failure keeps the in-memory snapshot
     // authoritative for this session rather than crashing pricing over it.

@@ -2,6 +2,7 @@
 // overall Claude + Codex usage — including sessions never driven through kone.
 
 import * as fs from "node:fs/promises";
+import { writeFileAtomic } from "../../atomicWrite.js";
 import path from "node:path";
 
 import { resolveClaudeConfigDir } from "../claudeHome.js";
@@ -118,8 +119,7 @@ async function persistScanCache(): Promise<void> {
   if (!cacheDirty) return;
   try {
     const serialized = JSON.stringify(encodeScanCache(fileCache));
-    await fs.mkdir(path.dirname(SCAN_CACHE_PATH()), { recursive: true });
-    await fs.writeFile(SCAN_CACHE_PATH(), serialized, "utf8");
+    await writeFileAtomic(SCAN_CACHE_PATH(), serialized);
     cacheDirty = false;
   } catch {
     // A failed write costs a slower next scan, not a failed read.

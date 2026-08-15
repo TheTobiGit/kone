@@ -1,5 +1,7 @@
 import fs from "node:fs";
 
+import { writeFileAtomicSync } from "../atomicWrite.js";
+
 import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.js";
 import { userDataPath } from "./userDataDir.js";
 
@@ -67,7 +69,7 @@ export function writeProviderSettings(
   else delete next[provider];
   cache = next;
   try {
-    fs.writeFileSync(settingsFilePath(), JSON.stringify(next, null, 2), "utf8");
+    writeFileAtomicSync(settingsFilePath(), JSON.stringify(next, null, 2));
   } catch {
     // Persisting is best-effort; never crash the app over a settings write.
   }
