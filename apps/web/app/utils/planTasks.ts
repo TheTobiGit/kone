@@ -152,24 +152,24 @@ export function activePlanTask(blocks: ThreadBlock[]): ActivePlanTask | null {
  *  the thread. Stays visible after the turn settles (even when every task is
  *  done) until a later turn replaces it with a new plan snapshot. */
 export function deriveActivePlan(blocks: ThreadBlock[]): ActivePlanState | null {
-  let latest: ActivePlanState | null = null;
-
-  for (const b of blocks) {
-    if (b.role !== "assistant") continue;
-    for (const it of b.items) {
-      if (it.kind !== "plan_text") continue;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (!b || b.role !== "assistant") continue;
+    for (let j = b.items.length - 1; j >= 0; j--) {
+      const it = b.items[j];
+      if (!it || it.kind !== "plan_text") continue;
       // Fall back to parsing the markdown body only when the provider gave no
       // structured tasks. Derive ids deterministically from the owning item so
       // that re-deriving the plan on unrelated reactive updates keeps the same
       // row identity (random ids would remount rows and replay Motion each time).
-      const tasks = it.tasks ?? parsePlanTasks(it.text, (i) => `${it.itemId}:${i}`);
+      const tasks = it.tasks ?? parsePlanTasks(it.text, (k) => `${it.itemId}:${k}`);
       if (!tasks.length && it.status !== "in-progress") continue;
-      latest = {
+      return {
         tasks,
         streaming: it.status === "in-progress",
       };
     }
   }
 
-  return latest;
+  return null;
 }

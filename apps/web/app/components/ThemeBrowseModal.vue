@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, type CSSProperties
 import { onClickOutside } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { CheckmarkCircle01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { registerImportedThemes, themes as libraryThemes } from "~/theme/library";
 import {
   importOpenVsxThemeExtension,
@@ -69,14 +69,16 @@ const skeletonOn = computed(() =>
 );
 
 // ── what's already here ─────────────────────────────────────────────────────
-// Extensions whose themes are already in the library are left out of the list
-// entirely — the shelf shows what can be added, not a row of "done". Adding
-// one makes its row disappear the moment the library updates.
+// Extensions whose themes are already in the library are marked as added:
+// the row remains in view with an "Added" pill and is deactivated.
 
 const importedSources = computed(
-  () => new Set(libraryThemes.value.filter((t) => t.source).map((t) => t.source)),
+  () => new Set(libraryThemes.value.flatMap((t) => (t.source ? [t.source.toLowerCase()] : []))),
 );
-const offered = computed(() => displayed.value.filter((ext) => !importedSources.value.has(ext.id)));
+
+function isAdded(extId: string): boolean {
+  return importedSources.value.has(extId.toLowerCase());
+}
 
 // ── search ──────────────────────────────────────────────────────────────────
 let searchSeq = 0;
@@ -127,7 +129,7 @@ function onQueryInput() {
 
 // ── import ──────────────────────────────────────────────────────────────────
 async function addExtension(ext: OpenVsxThemeExtension) {
-  if (adding.value.has(ext.id) || importedSources.value.has(ext.id)) return;
+  if (adding.value.has(ext.id) || isAdded(ext.id)) return;
   adding.value = new Set(adding.value).add(ext.id);
   try {
     const themes = await importOpenVsxThemeExtension(ext);
@@ -414,13 +416,6 @@ const cardSpring = {
                   open-source themes are offered.
                 </p>
 
-                <p
-                  v-else-if="showingCatalog && catalog.length > 0 && offered.length === 0 && status === 'idle'"
-                  class="tb__hint"
-                >
-                  The most downloaded themes are all in your library already.
-                </p>
-
                 <p v-if="status === 'error'" class="tb__error" role="alert">{{ errorMsg }}</p>
 
                 <p
@@ -432,21 +427,15 @@ const cardSpring = {
                   Nothing found for that name.
                 </p>
 
-                <p
-                  v-else-if="!showingCatalog && status !== 'loading' && results.length > 0 && offered.length === 0"
-                  class="tb__hint"
-                >
-                  Everything matching that name is already in your library.
-                </p>
-
-                <div v-if="offered.length > 0" class="tb__results">
+                <div v-if="displayed.length > 0" class="tb__results">
                   <button
-                    v-for="(ext, i) in offered"
+                    v-for="(ext, i) in displayed"
                     :key="ext.id"
                     type="button"
                     class="tb__row"
+                    :class="{ 'tb__row--added': isAdded(ext.id) }"
                     :style="{ '--i': Math.min(i, 11) }"
-                    :disabled="adding.has(ext.id)"
+                    :disabled="isAdded(ext.id) || adding.has(ext.id)"
                     @click="addExtension(ext)"
                   >
                     <span class="tb__meta">
@@ -462,6 +451,10 @@ const cardSpring = {
                     </span>
                     <span class="tb__action" aria-hidden="true">
                       <template v-if="adding.has(ext.id)">Adding…</template>
+                      <template v-else-if="isAdded(ext.id)">
+                        <HugeiconsIcon :icon="CheckmarkCircle01Icon" :size="11" :stroke-width="2.2" class="tb__action-icon" aria-hidden="true" />
+                        Added
+                      </template>
                       <template v-else>Add</template>
                     </span>
                   </button>
@@ -918,8 +911,12 @@ const cardSpring = {
 }
 
 .tb__row:disabled .tb__action {
-  color: var(--muted);
-  background: color-mix(in oklab, var(--ok) 9%, transparent);
+  color: var(--ink-soft);
+  background: color-mix(in oklab, var(--ok) 11%, transparent);
+}
+
+.tb__action-icon {
+  color: var(--ok);
 }
 
 /* Match the pickers' quiet scrollbar. */

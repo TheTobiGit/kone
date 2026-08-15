@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineComponent, Fragment, h, ref, watch } from "vue";
+import { computed, defineComponent, Fragment, h, onBeforeUnmount, ref, watch } from "vue";
 import type { VNode } from "vue";
 import type Token from "markdown-it/lib/token.mjs";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -32,15 +32,36 @@ const { parse } = useMarkdown();
 
 const tokens = ref<Token[] | null>(null);
 let seq = 0;
+let rafId: number | null = null;
+
+async function updateTokens(src: string): Promise<void> {
+  const mine = ++seq;
+  const t = await parse(src);
+  if (mine === seq) tokens.value = t;
+}
+
 watch(
   () => props.source,
-  async (src) => {
-    const mine = ++seq;
-    const t = await parse(src);
-    if (mine === seq) tokens.value = t;
+  (src) => {
+    if (props.historical || !tokens.value || !import.meta.client) {
+      void updateTokens(src);
+      return;
+    }
+    if (rafId !== null) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      void updateTokens(src);
+    });
   },
   { immediate: true },
 );
+
+onBeforeUnmount(() => {
+  if (rafId !== null && import.meta.client) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+});
 
 // Every word gets its own stable key, so a streamed word mounts as a genuinely
 // new element the instant it arrives — and springs into place on mount, driven

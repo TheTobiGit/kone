@@ -2334,10 +2334,8 @@ type ProjectRegistry = {
   sessions: ShallowRef<ThreadSession[]>;
   opening: Map<string, { key: string; promise: Promise<void> }>;
   activeKey: Ref<string>;
-  /** The registry's event listener — attached once, never detached (a project
-   *  with no <ProjectView> mounted still needs its background sessions to fold
-   *  events, or the pill state is stale the moment the user comes back). */
   listenerAttached: boolean;
+  unsubscribeListener: (() => void) | null;
   sweepTimer: ReturnType<typeof setInterval> | null;
 };
 const registries = new Map<string, ProjectRegistry>();
@@ -2350,11 +2348,37 @@ function registryFor(projectPath: string): ProjectRegistry {
       opening: new Map(),
       activeKey: ref(""),
       listenerAttached: false,
+      unsubscribeListener: null,
       sweepTimer: null,
     };
     registries.set(projectPath, r);
   }
   return r;
+}
+
+/** Explicit teardown for a project's agent registry: clears the background
+ *  sweep timer, detaches the IPC event listener, disposes all sessions, and
+ *  evicts the entry from memory so background listeners do not leak. */
+export async function disposeProjectRegistry(projectPath: string): Promise<void> {
+  const r = registries.get(projectPath);
+  if (!r) return;
+  if (r.sweepTimer !== null) {
+    clearInterval(r.sweepTimer);
+    r.sweepTimer = null;
+  }
+  if (r.unsubscribeListener) {
+    try {
+      r.unsubscribeListener();
+    } catch {
+      /* ignore unsubscribe failure */
+    }
+    r.unsubscribeListener = null;
+    r.listenerAttached = false;
+  }
+  const toDispose = [...r.sessions.value];
+  r.sessions.value = [];
+  await Promise.all(toDispose.map((s) => s.dispose()));
+  registries.delete(projectPath);
 }
 
 export function useAgent(options: UseAgentOptions) {
@@ -2495,7 +2519,7 @@ export function useAgent(options: UseAgentOptions) {
     const api = ctx.bridge();
     if (api) {
       registry.listenerAttached = true;
-      api.onEvent((event: RuntimeEvent) => {
+      registry.unsubscribeListener = api.onEvent((event: RuntimeEvent) => {
         // A spawned child's events carry the CHILD's id — the child is the
         // event's *subject* — but its session is never in this registry (only
         // the parent's is, and the parent's dock is what these events

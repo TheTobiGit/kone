@@ -24,9 +24,13 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
     <h1 class="sr-only">Start a project</h1>
 
     <!-- Wordmark top-left, settings top-right — both on the page's inset row. -->
-    <div class="relative z-10 flex items-center justify-between">
-      <RotatingWordmark />
-      <SettingsButton @open="emit('settings')" />
+    <div class="app-drag relative z-10 flex items-center justify-between">
+      <div class="app-no-drag">
+        <RotatingWordmark />
+      </div>
+      <div class="app-no-drag">
+        <SettingsButton @open="emit('settings')" />
+      </div>
     </div>
 
     <!-- Hero: the start options rest dead-center in the open space. -->
