@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { AnimatePresence, motion } from "motion-v";
+import { computed, nextTick, reactive, ref, watch } from "vue";
+import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowDown01Icon,
@@ -390,63 +390,10 @@ function dismissLoad(): void {
   cue("toggle");
 }
 
-// ── auto-scroll ────────────────────────────────────────────────────────────────
+// ── helpers ─────────────────────────────────────────────────────────────────────
+// The column's own root — `scroller` anchors on it to find the scroll container.
 const root = ref<HTMLElement | null>(null);
-function tailSignature(): string {
-  const last = props.blocks[props.blocks.length - 1];
-  if (!last) return "";
-  if (last.role === "user") return `${props.blocks.length}:u:${last.text.length}`;
-  const chars = last.items.reduce((n, i) => n + i.text.length, 0);
-  return `${props.blocks.length}:a:${last.items.length}:${chars}:${last.state}`;
-}
-// Anchor each new request to the top, then let the reply grow *down* into blank
-// space — never shove the prior exchange up.
-//
-// The old model pinned the bottom every streamed frame. On a fresh thread that
-// reads as calm (nothing above to move), but on the second turn the reply, to
-// stay in view, drags the whole first exchange upward one line at a time — and
-// the entering-turn spring transform fighting that per-frame scroll is the
-// flashing / shaking you feel.
-//
-// Instead we do what a reader expects: when a new request lands we lift it to
-// the top of the viewport and reserve a screen of empty space below it, so the
-// answer streams downward into that space with everything above held perfectly
-// still. As the reply grows we simply trim the reserve to exactly what's needed
-// to keep the request pinned at the top — every one of those changes happens
-// *below the fold*, so it's invisible and can't jitter. Only once a reply
-// outgrows a full screen does the reserve reach zero and we fall back to a calm
-// bottom-follow (unless you've scrolled up to read, which we leave alone).
-// Where the request locks to the top. Must match the sticky `top` in .turn--you
-// so the anchor scroll lands the request exactly on its sticky rail with no jump
-// as it takes over.
-const TOP_PAD = 14;
-const tailSpacer = ref(0);
-const tailSpacerEl = ref<HTMLElement | null>(null);
-let reflowQueued = false;
-let anchoredUserId: string | null = null;
-let anchorAt = 0;
-// The reserve lives *inside* `root`, which the ResizeObserver watches — so every
-// time reflow trims it we'd re-trigger the observer, and reflow→resize→reflow
-// spins a frame forever (the freeze). Route every reserve write through here so
-// the observer can recognise and skip its own mutations.
-let programmaticResize = false;
-function setTailSpacer(px: number): void {
-  const v = Math.max(0, Math.round(px));
-  if (tailSpacer.value === v) return;
-  programmaticResize = true;
-  tailSpacer.value = v;
-}
-// `detached` = the reader has moved away from the live tail — scrolled up, arrow
-// keys, an upward touch-swipe, or a text selection. While set we never yank the
-// view; it re-arms only when the reader is back at the live edge (see onScroll).
-const detached = ref(false);
-function isLiveTail(): boolean {
-  const last = props.blocks[props.blocks.length - 1];
-  if (!last) return false;
-  if (last.role === "user") return true;
-  return last.role === "assistant" && last.state === "running";
-}
-
+// The last user block — the edit affordance keys off it (`lastUserBlockId`).
 function lastUserBlock(): ThreadBlock | null {
   for (let i = props.blocks.length - 1; i >= 0; i--) {
     const b = props.blocks[i];
@@ -454,75 +401,8 @@ function lastUserBlock(): ThreadBlock | null {
   }
   return null;
 }
-function turnEl(id: string): HTMLElement | null {
-  return root.value?.querySelector<HTMLElement>(`[data-turn-id="${id}"]`) ?? null;
-}
-// How much empty space we must reserve below so `userEl`'s top can rest TOP_PAD
-// from the viewport top. Measured against the content height *without* our own
-// reserve, so it's stable frame to frame.
-function neededSpacer(sc: HTMLElement, userEl: HTMLElement): number {
-  const userTop = sc.scrollTop + (userEl.getBoundingClientRect().top - sc.getBoundingClientRect().top);
-  // Measure the reserve's *live* DOM height, not the reactive ref — Vue commits
-  // the ref to the DOM a tick late, so subtracting the ref from `scrollHeight`
-  // reads two different moments and makes `base` (and thus `needed`) jitter.
-  const reserve = tailSpacerEl.value?.offsetHeight ?? 0;
-  const base = sc.scrollHeight - reserve;
-  return Math.max(0, userTop - TOP_PAD + sc.clientHeight - base);
-}
-
-// One pass per frame: the content-signature watch and the ResizeObserver (async
-// image / code-fence growth that changes height AFTER the signature ticked) both
-// funnel through here, so reflow never runs twice in the same frame.
-function queueReflow(): void {
-  if (!import.meta.client || reflowQueued) return;
-  reflowQueued = true;
-  requestAnimationFrame(() => {
-    reflowQueued = false;
-    reflow();
-  });
-}
-function reflow(): void {
-  const sc = scroller();
-  if (!sc) return;
-  const lu = lastUserBlock();
-
-  // A brand-new request — lift it to the top with a screen of room below.
-  if (lu && lu.id !== anchoredUserId) {
-    anchoredUserId = lu.id;
-    if (!isLiveTail()) return; // opening a settled thread — adopt the id, don't yank
-    detached.value = false; // a fresh request — the reader wants to watch its reply
-    anchorAt = performance.now();
-    setTailSpacer(sc.clientHeight); // reserve first, so the row can reach the top
-    requestAnimationFrame(() => {
-      const el = turnEl(lu.id);
-      if (!el) return;
-      const target =
-        sc.scrollTop + (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - TOP_PAD;
-      sc.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-    });
-    return;
-  }
-
-  // Let the lift settle before we start trimming, so we don't fight the smooth
-  // scroll toward the top with per-frame reserve changes.
-  if (performance.now() - anchorAt < 450) return;
-
-  // Mid-stream: hold the request at the top by trimming the reserve.
-  const el = lu ? turnEl(lu.id) : null;
-  const needed = el ? neededSpacer(sc, el) : 0;
-  if (needed > 0) {
-    setTailSpacer(needed);
-    return;
-  }
-  // Reply outgrew the screen — release the reserve and calmly follow the tail.
-  setTailSpacer(0);
-  const gap = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
-  if (gap > 260) return; // scrolled away to read — don't yank them back
-  if (gap <= 1) return; // already pinned
-  if (detached.value) return; // reading elsewhere — don't yank either
-  sc.scrollTop = sc.scrollHeight;
-}
-watch(tailSignature, queueReflow);
+// The nearest scrollable container above the column — used to pin scroll offsets
+// across the history reveal / older-page prepend.
 function scroller(): HTMLElement | null {
   let el = root.value?.parentElement ?? null;
   while (el) {
@@ -533,152 +413,18 @@ function scroller(): HTMLElement | null {
   return (document.scrollingElement as HTMLElement) ?? document.documentElement;
 }
 
-// ── is the live request actually stuck? ────────────────────────────────────────
-// The pinned request carries an OPAQUE sheet of paper above it — that's what
-// makes the reply vanish under it instead of showing through. But a sticky
-// element is only a header while it's *stuck*; the rest of the time it sits in
-// normal flow, and there the sheet is just a slab of paper blanking whatever
-// exchange happens to be above it. (Scroll up mid-stream to reread the previous
-// answer and it's gone — that's this.) So the fog is gated on the request having
-// actually reached its rail.
-const stuckId = ref<string | null>(null);
-let stuckQueued = false;
-function measureStuck(): void {
-  if (!import.meta.client) return;
-  const sc = scroller();
-  const lu = lastUserBlock();
-  const el = sc && lu ? turnEl(lu.id) : null;
-  if (!sc || !lu || !el) {
-    stuckId.value = null;
-    return;
-  }
-  const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top;
-  stuckId.value = top <= TOP_PAD + 1.5 ? lu.id : null;
-}
-function queueStuck(): void {
-  if (stuckQueued) return;
-  stuckQueued = true;
-  requestAnimationFrame(() => {
-    stuckQueued = false;
-    measureStuck();
-  });
-}
-// Interaction = intent: any of these means the reader is looking at something
-// other than the live tail, so auto-follow hands over control (see `detached`).
-let touchStartY = 0;
-let touchUpward = false;
-function onScroll(): void {
-  if (!detached.value) return;
-  const sc = scrollHost;
-  if (!sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight > 8) return;
-  detached.value = false; // back at the live edge — re-arm the follow
-}
-function onWheel(e: WheelEvent): void {
-  if (e.deltaY < 0) detached.value = true;
-}
-function onKeydown(e: KeyboardEvent): void {
-  const k = e.key;
-  if (k !== "ArrowUp" && k !== "PageUp" && k !== "Home") return;
-  if (scrollHost?.contains(e.target as Node)) detached.value = true;
-}
-function onTouchStart(e: TouchEvent): void {
-  touchUpward = false;
-  const t = e.touches[0] ?? e.changedTouches[0];
-  if (t) touchStartY = t.clientY;
-}
-function onTouchMove(e: TouchEvent): void {
-  if (touchUpward) return;
-  const t = e.touches[0] ?? e.changedTouches[0];
-  if (t && t.clientY < touchStartY) {
-    touchUpward = true;
-    detached.value = true;
-  }
-}
-function onSelectionChange(): void {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed) return;
-  const node = sel.anchorNode;
-  if (node && root.value?.contains(node)) detached.value = true;
-}
-let scrollHost: HTMLElement | null = null;
-let resizeObserver: ResizeObserver | null = null;
-onMounted(() => {
-  scrollHost = scroller();
-  scrollHost?.addEventListener("scroll", queueStuck, { passive: true });
-  scrollHost?.addEventListener("scroll", onScroll, { passive: true });
-  scrollHost?.addEventListener("wheel", onWheel, { passive: true });
-  scrollHost?.addEventListener("keydown", onKeydown, { passive: true });
-  scrollHost?.addEventListener("touchstart", onTouchStart, { passive: true });
-  scrollHost?.addEventListener("touchmove", onTouchMove, { passive: true });
-  document.addEventListener("selectionchange", onSelectionChange, { passive: true });
-  // Content can change height long after a stream tick — images, code fences —
-  // which would drift the pinned request. Only a live tail needs re-pinning, so
-  // a settled transcript never re-enters the trim/follow path from here.
-  if (root.value) {
-    resizeObserver = new ResizeObserver(() => {
-      // Ignore the resize our own reserve write just caused — otherwise
-      // reflow→resize→reflow spins forever (the freeze).
-      if (programmaticResize) {
-        programmaticResize = false;
-        return;
-      }
-      // Only re-pin a live tail, and never while the reader has scrolled away.
-      if (isLiveTail() && !detached.value) queueReflow();
-    });
-    resizeObserver.observe(root.value);
-  }
-  queueStuck();
-});
-onBeforeUnmount(() => {
-  scrollHost?.removeEventListener("scroll", queueStuck);
-  scrollHost?.removeEventListener("scroll", onScroll);
-  scrollHost?.removeEventListener("wheel", onWheel);
-  scrollHost?.removeEventListener("keydown", onKeydown);
-  scrollHost?.removeEventListener("touchstart", onTouchStart);
-  scrollHost?.removeEventListener("touchmove", onTouchMove);
-  document.removeEventListener("selectionchange", onSelectionChange);
-  resizeObserver?.disconnect();
-});
-// The reply growing under a held request changes the answer too, not just the
-// scroll position.
-watch(tailSignature, queueStuck);
 const hasBlocks = computed(() => props.blocks.length > 0);
 
 // Group the flat block list into exchanges: each user request opens a new group
-// and the assistant turn(s) that follow it belong to that group. The group is the
-// sticky containing block for the request (see the template + .exchange CSS).
+// and the assistant turn(s) that follow it belong to that group.
 const allExchanges = computed(() => {
   const groups: { key: string; blocks: ThreadBlock[] }[] = [];
   for (const b of props.blocks) {
     if (b.role === "user" || groups.length === 0) groups.push({ key: b.id, blocks: [b] });
     else groups[groups.length - 1]!.blocks.push(b);
   }
-  // `live` = the reply is still streaming (or just sent, response not started).
-  // Only the live exchange pins its request to the top; once the reply settles
-  // the whole exchange scrolls like ordinary content again.
-  return groups.map((g, i) => {
-    const asst = g.blocks.filter((b) => b.role === "assistant");
-    const running = asst.some((b) => b.role === "assistant" && b.state === "running");
-    const awaiting = asst.length === 0 && i === groups.length - 1;
-    return { ...g, live: running || awaiting };
-  });
+  return groups;
 });
-
-// ── jump to latest ────────────────────────────────────────────────────────────
-// A quiet pill that appears only while the live exchange is streaming/awaiting
-// AND the reader has detached — i.e. the reply they want is somewhere below the
-// fold. Clicking it drops the reader back on the live edge.
-const liveNow = computed(() => {
-  const g = allExchanges.value[allExchanges.value.length - 1];
-  return g ? g.live : false;
-});
-const showJumpPill = computed(() => liveNow.value && detached.value);
-function jumpToLatest(): void {
-  cue("toggle");
-  detached.value = false;
-  const sc = scroller();
-  sc?.scrollTo({ top: sc.scrollHeight, behavior: "smooth" });
-}
 
 // ── the open window ────────────────────────────────────────────────────────────
 // Reopening a long conversation used to mount every exchange it ever had: every
@@ -687,9 +433,7 @@ function jumpToLatest(): void {
 // was going to look. So we mount the tail and offer the rest.
 //
 // A window, not virtualisation: real virtualisation would have to measure and
-// recycle rows, and this transcript's sticky requests, reserved tail space and
-// anchored auto-scroll all read live DOM geometry (see `neededSpacer`). Mounting
-// a suffix keeps every one of those measurements exactly as true as before —
+// recycle rows. Mounting a suffix keeps the DOM simple and the scroll stable —
 // the only thing that changes is how much history is above the fold.
 const OPEN_WINDOW = 8;
 const showAllExchanges = ref(false);
@@ -808,10 +552,8 @@ function requestOlder(): void {
       <p>Nothing here yet — say something to begin.</p>
     </div>
 
-    <!-- One request + its response form an "exchange" — the sticky containing
-         block for the request. Grouping this way is what lets each new request
-         push the previous one up and out of the sticky spot, instead of two
-         sticky headers piling on top of each other. -->
+    <!-- One request + its response form an "exchange" — grouped so the response
+         always sits directly under the request it answers. -->
     <!-- A stored thread adopted windowed (keyset pagination): the store holds
          older blocks than the window in hand — fetch the next page and prepend
          it above (session.loadOlder). Distinct from the "N earlier exchanges"
@@ -857,8 +599,6 @@ function requestOlder(): void {
       class="turn"
       :class="[
         block.role === 'user' ? 'turn--you' : 'turn--kone',
-        block.role === 'user' && ex.live ? 'turn--pinned' : '',
-        block.role === 'user' && ex.live && stuckId === block.id ? 'turn--stuck' : '',
         block.role === 'assistant' && block.state !== 'running' ? 'turn--settled' : '',
         block.role === 'assistant' && flash[block.id] ? 'turn--flash' : '',
       ]"
@@ -1067,38 +807,6 @@ function requestOlder(): void {
       </template>
     </motion.div>
     </div>
-
-    <!-- Reserved room the live turn streams down into, so a new request can sit
-         at the top of the viewport instead of shoving the last exchange up. -->
-    <div
-      v-if="tailSpacer > 0"
-      ref="tailSpacerEl"
-      class="thread__tail-spacer"
-      :style="{ height: `${tailSpacer}px` }"
-      aria-hidden="true"
-    />
-
-    <!-- Jump to latest — floats at the bottom-centre of the column while the live
-         reply is out of view, so a reader who scrolled up gets back in one tap. -->
-    <div class="jump">
-      <AnimatePresence>
-        <motion.button
-          v-if="showJumpPill"
-          key="jump-to-latest"
-          type="button"
-          class="jump__btn"
-          aria-label="Jump to latest reply"
-          :initial="{ opacity: 0, y: 8 }"
-          :animate="{ opacity: 1, y: 0 }"
-          :exit="{ opacity: 0, y: 8 }"
-          :transition="{ type: 'spring', stiffness: 320, damping: 30, mass: 0.8 }"
-          @click="jumpToLatest"
-        >
-          <HugeiconsIcon :icon="ArrowDown01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
-          <span>Jump to latest</span>
-        </motion.button>
-      </AnimatePresence>
-    </div>
   </div>
 </template>
 
@@ -1154,12 +862,6 @@ function requestOlder(): void {
   line-height: 1.5;
   color: var(--muted);
   text-wrap: pretty;
-}
-
-.thread__tail-spacer {
-  flex: none;
-  width: 100%;
-  pointer-events: none;
 }
 /* The way back into a long conversation's history. Deliberately the quietest
    thing on the page — it sits above the oldest mounted request, where the eye
@@ -1221,46 +923,7 @@ function requestOlder(): void {
   }
 }
 
-/* Jump to latest — floats at the bottom-centre of the column while the live reply
-   is below the fold and the reader has detached. Deliberately quiet, like .earlier:
-   no border, a whisper of the agent accent over the panel surface, one soft shadow.
-   The 200px bottom clears the column's bottom smoke (a 176px fade over a 208px
-   pad — see .col__body in ThreadStrip) so the pill is never masked. */
-.jump {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 200px;
-  z-index: 20;
-}
-.jump__btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--accent) 9%, var(--ground));
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-.jump__btn:hover {
-  background: color-mix(in oklab, var(--accent) 15%, var(--ground));
-  color: var(--ink);
-}
-.jump__btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
-  outline-offset: 2px;
-}
-
-/* An exchange = one request + its response. It's the sticky containing block for
-   the request: the request sticks to the top only while its own exchange is on
-   screen, so the next request cleanly takes over the rail as you scroll on. */
+/* An exchange = one request + its response, stacked with breathing room. */
 .exchange {
   display: flex;
   flex-direction: column;
@@ -1271,43 +934,8 @@ function requestOlder(): void {
   flex-direction: column;
   gap: 10px;
 }
-/* The request rides at the top of its exchange as its own opaque header while
-   the response scrolls underneath — exactly like the thread body sliding under
-   the thread header. The ::before is a full-bleed sheet of paper that reaches
-   far above (hiding everything the reply scrolls up behind it, completely — not
-   a translucent tint) and ends in a short blurred skirt where the reply emerges
-   softly from under it. */
 .turn--you {
   align-items: flex-end;
-}
-/* Only the live exchange pins its request as a header; a settled exchange drops
-   the stickiness and scrolls away normally. */
-.turn--you.turn--pinned {
-  position: sticky;
-  top: 14px; /* keep in sync with TOP_PAD */
-  z-index: 4;
-}
-/* Only once it has actually reached the rail — in normal flow this opaque sheet
-   would blank the exchange above it (see `measureStuck`). */
-.turn--you.turn--pinned.turn--stuck::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  top: -1200px; /* cover everything above — clipped by the scroller */
-  /* The sheet is solid all the way to the request's bottom edge and then fades
-     over a skirt that sits ENTIRELY below the request — so the reply is hidden
-     the instant it passes under the request and only emerges (softly) in the gap
-     beneath it. The bottom offset must equal the skirt height in the mask below;
-     opaque region = top → (100% − skirt) lands exactly on the request's bottom. */
-  bottom: -30px;
-  left: -50vw;
-  right: -50vw;
-  background: var(--ground);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
-  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 30px), transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 30px), transparent 100%);
-  pointer-events: none;
 }
 
 /* ── The turn's body stack ─────────────────────────────────────────────────── */
