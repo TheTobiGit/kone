@@ -14,7 +14,10 @@ export async function branches(dir: string): Promise<GitBranch[]> {
   if (!root) return [];
   const out = await git(root, [
     "for-each-ref",
-    "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)",
+    // The full refname tells apart refs/remotes/* from refs/heads/* — the short
+    // name alone can't, because a local branch like feature/login looks just
+    // like origin/feature (both slash-bearing, both often upstream-less).
+    "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(refname)",
     "refs/heads",
     "refs/remotes",
   ]);
@@ -22,12 +25,12 @@ export async function branches(dir: string): Promise<GitBranch[]> {
   const result: GitBranch[] = [];
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
-    const [name, head, upstream, track] = line.split("\0");
+    const [name, head, upstream, track, full] = line.split("\0");
     if (!name) continue;
     // Skip the symbolic "origin/HEAD -> origin/main" pointer.
     if (name.endsWith("/HEAD")) continue;
 
-    const remote = name.includes("/") && !upstream && head !== "*";
+    const remote = (full ?? "").startsWith("refs/remotes/");
     const branch: GitBranch = {
       name,
       current: head === "*",

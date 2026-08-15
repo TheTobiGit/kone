@@ -2,6 +2,7 @@ import { watch as fsWatch, type FSWatcher } from "node:fs";
 import path from "node:path";
 
 import { repoRoot } from "./core.js";
+import { invalidateFileIndex } from "./files.js";
 import { status } from "./status.js";
 import type { GitStatus } from "./types.js";
 
@@ -74,6 +75,10 @@ export async function watchStatus(
 
   function schedule(): void {
     if (closed) return;
+    // A relevant disk change means the cached path list may be missing a new
+    // file or still listing a deleted one, so the next mention-picker search
+    // must rebuild rather than trust the stale entry.
+    invalidateFileIndex(root);
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;

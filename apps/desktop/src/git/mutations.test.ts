@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { git } from "./core.js";
-import { createBranch } from "./mutations.js";
+import { createBranch, stage } from "./mutations.js";
 
 // repos' worktree setup: the branch is created before the (risky) checkout and
 // rolled back when the checkout fails, so "create and switch" is atomic.
@@ -70,5 +70,38 @@ describe("createBranch", () => {
       createBranch(dir, "feature", { checkout: true }),
     ).rejects.toThrow();
     expect(await branchExists(dir, "feature")).toBe(true);
+  });
+});
+
+describe("stage", () => {
+  async function stagedNames(dir: string): Promise<string[]> {
+    const out = (await git(dir, ["diff", "--cached", "--name-only"])).trim();
+    return out.length === 0 ? [] : out.split("\n");
+  }
+
+  test("overlapping stages of two untracked files both land", async () => {
+    const dir = await makeRepo();
+    await writeFile(path.join(dir, "b.txt"), "be\n", "utf8");
+    await writeFile(path.join(dir, "c.txt"), "ce\n", "utf8");
+
+    await Promise.all([stage(dir, ["b.txt"]), stage(dir, ["c.txt"])]);
+
+    const staged = await stagedNames(dir);
+    expect(staged).toContain("b.txt");
+    expect(staged).toContain("c.txt");
+  });
+
+  test("overlapping stages of eight distinct files all land", async () => {
+    const dir = await makeRepo();
+    const names = Array.from({ length: 8 }, (_, i) => `f${i}.txt`);
+    for (const name of names) {
+      await writeFile(path.join(dir, name), `${name}\n`, "utf8");
+    }
+
+    await Promise.all(names.map((name) => stage(dir, [name])));
+
+    const staged = await stagedNames(dir);
+    expect(staged).toHaveLength(8);
+    for (const name of names) expect(staged).toContain(name);
   });
 });

@@ -1,6 +1,8 @@
+import { realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { createKeyedSingleFlightCache } from "../singleFlightCache.js";
 import { git } from "./core.js";
 import type { GitProjectFile } from "./types.js";
 
@@ -15,6 +17,14 @@ const IGNORED_DIRECTORIES = new Set([
   "dist",
   "node_modules",
 ]);
+
+const INDEX_TTL_MS = 8_000;
+const INDEX_MAX_KEYS = 8;
+
+const fileIndex = createKeyedSingleFlightCache<string[]>({
+  ttlMs: INDEX_TTL_MS,
+  maxEntries: INDEX_MAX_KEYS,
+});
 
 function toProjectFile(relativePath: string): GitProjectFile | null {
   const normalized = relativePath.replaceAll("\\", "/").replace(/^\.\//, "");
@@ -92,15 +102,48 @@ async function walkProjectFiles(root: string): Promise<string[]> {
   return result;
 }
 
-/** List project files for the composer mention picker. Git's tracked +
- * non-ignored untracked view is preferred; plain folders still work through a
- * bounded filesystem walk. */
-export async function files(dir: string, query = ""): Promise<GitProjectFile[]> {
-  const root = path.resolve(dir);
+async function loadPaths(root: string): Promise<string[]> {
   try {
     const output = await git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
-    return selectFiles(output.split("\0"), query);
+    return output.split("\0").filter((p) => p.length > 0);
   } catch {
-    return selectFiles(await walkProjectFiles(root), query);
+    return walkProjectFiles(root);
   }
+}
+
+/** Canonical folder for the index map. `path.resolve` keeps a symlink and its
+ *  target as two keys, so a watcher that learned the real path would miss the
+ *  listing the picker populated from the path the renderer sent. */
+function indexKey(dir: string): string {
+  const resolved = path.resolve(dir);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/** List project files for the composer mention picker. Git's tracked +
+ * non-ignored untracked view is preferred; plain folders still work through a
+ * bounded filesystem walk.
+ *
+ * The path list is cached per resolved root (8s, bounded to 8 roots), so typing
+ * successive queries in one project walks the tree once and filters in memory.
+ * Call invalidateFileIndex after a working-tree or index change that may have
+ * added or removed files so the next search sees them. */
+export async function files(dir: string, query = ""): Promise<GitProjectFile[]> {
+  const root = indexKey(dir);
+  const paths = await fileIndex.get(root, () => loadPaths(root));
+  return selectFiles(paths, query);
+}
+
+/** Drop the cached path list for `dir` so the next files() rebuilds from disk.
+ *  Call when the working tree or index may have gained or lost files. */
+export function invalidateFileIndex(dir: string): void {
+  fileIndex.invalidate(indexKey(dir));
+}
+
+/** Drop every cached listing. Tests use this so one case cannot leak into the next. */
+export function resetFileIndexForTests(): void {
+  fileIndex.invalidateAll();
 }

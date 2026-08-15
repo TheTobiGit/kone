@@ -1,5 +1,6 @@
 import { ipcMain } from "electron";
 
+import { withTimeout } from "../ipcTimeout.js";
 import { clone, cancelClone } from "./clone.js";
 import { createProject } from "./create.js";
 import { contributors, identity, logo, readme } from "./about.js";
@@ -79,20 +80,42 @@ function stopAllWatchers(id: number): void {
   activeWatchers.delete(id);
 }
 
+// Read-only git/github handlers are bounded by one deadline so a wedged read —
+// a `git status` waiting on a credential prompt, a file preview on a stalled
+// network share — can't leave the renderer's `invoke` hanging forever. The
+// subprocess runner has its own shorter kill-timeout; this is the uniform
+// backstop for every read, and the one deadline the fs-backed reads (which
+// have no subprocess to time out) get at all. Both paths fail with the same
+// classified TIMEOUT the renderer turns into a retry hint.
+const GIT_READ_TIMEOUT_MS = 20_000;
+
 /** Register the git:* IPC handlers. Call once, before creating the window. */
 export function registerGitIpc(): void {
-  ipcMain.handle("git:detect", (_event, dir: string) => detect(dir));
-  ipcMain.handle("git:status", (_event, dir: string) => status(dir));
+  ipcMain.handle("git:detect", (_event, dir: string) =>
+    withTimeout(() => detect(dir), { channel: "git:detect", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
+  ipcMain.handle("git:status", (_event, dir: string) =>
+    withTimeout(() => status(dir), { channel: "git:status", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
   ipcMain.handle(
     "git:diff",
     (_event, dir: string, path: string, staged: boolean) =>
-      diff(dir, path, staged),
+      withTimeout(() => diff(dir, path, staged), {
+        channel: "git:diff",
+        timeoutMs: GIT_READ_TIMEOUT_MS,
+      }),
   );
   ipcMain.handle("git:content", (_event, dir: string, path: string) =>
-    content(dir, path),
+    withTimeout((signal) => content(dir, path, signal), {
+      channel: "git:content",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
   );
   ipcMain.handle("git:files", (_event, dir: string, query?: string) =>
-    files(dir, query),
+    withTimeout(() => files(dir, query), {
+      channel: "git:files",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
   );
   // Start live status watching of `dir` for the calling renderer; fresh status
   // is pushed on the "git:status-changed" channel — tagged with `dir` so the
@@ -154,15 +177,21 @@ export function registerGitIpc(): void {
   ipcMain.handle("git:checkout", (_event, dir: string, branch: string) =>
     checkout(dir, branch),
   );
-  ipcMain.handle("git:branches", (_event, dir: string) => branches(dir));
+  ipcMain.handle("git:branches", (_event, dir: string) =>
+    withTimeout(() => branches(dir), { channel: "git:branches", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
   ipcMain.handle("git:log", (_event, dir: string, limit?: number, skip?: number) =>
-    log(dir, limit, skip),
+    withTimeout(() => log(dir, limit, skip), { channel: "git:log", timeoutMs: GIT_READ_TIMEOUT_MS }),
   );
   // Git Space surface (spec §5.2). Every git: channel follows the same shape:
   // the renderer invokes with (dir, ...args) and failures reject with the
   // GitError message.
-  ipcMain.handle("git:remotes", (_event, dir: string) => remotes(dir));
-  ipcMain.handle("git:repo-state", (_event, dir: string) => repoState(dir));
+  ipcMain.handle("git:remotes", (_event, dir: string) =>
+    withTimeout(() => remotes(dir), { channel: "git:remotes", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
+  ipcMain.handle("git:repo-state", (_event, dir: string) =>
+    withTimeout(() => repoState(dir), { channel: "git:repo-state", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
   ipcMain.handle("git:commit", (_event, dir: string, opts: GitCommitOptions) =>
     commit(dir, opts),
   );
@@ -198,12 +227,20 @@ export function registerGitIpc(): void {
   );
   ipcMain.handle("git:abort-operation", (_event, dir: string) => abortOperation(dir));
   ipcMain.handle("git:commit-detail", (_event, dir: string, hash: string) =>
-    commitDetail(dir, hash),
+    withTimeout(() => commitDetail(dir, hash), {
+      channel: "git:commit-detail",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
   );
   ipcMain.handle("git:commit-diff", (_event, dir: string, hash: string, path: string) =>
-    commitDiff(dir, hash, path),
+    withTimeout(() => commitDiff(dir, hash, path), {
+      channel: "git:commit-diff",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
   );
-  ipcMain.handle("git:stashes", (_event, dir: string) => stashes(dir));
+  ipcMain.handle("git:stashes", (_event, dir: string) =>
+    withTimeout(() => stashes(dir), { channel: "git:stashes", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
   ipcMain.handle(
     "git:stash-push",
     (_event, dir: string, opts?: { message?: string; includeUntracked?: boolean }) =>
@@ -220,10 +257,27 @@ export function registerGitIpc(): void {
   // The About section: the repo's presentation surface. All are local reads
   // that resolve to a "nothing here" shape (null, or an empty list) rather
   // than throwing.
-  ipcMain.handle("git:readme", (_event, dir: string) => readme(dir));
-  ipcMain.handle("git:identity", (_event, dir: string) => identity(dir));
-  ipcMain.handle("git:logo", (_event, dir: string) => logo(dir));
-  ipcMain.handle("git:contributors", (_event, dir: string) => contributors(dir));
+  ipcMain.handle("git:readme", (_event, dir: string) =>
+    withTimeout((signal) => readme(dir, signal), {
+      channel: "git:readme",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("git:identity", (_event, dir: string) =>
+    withTimeout(() => identity(dir), { channel: "git:identity", timeoutMs: GIT_READ_TIMEOUT_MS }),
+  );
+  ipcMain.handle("git:logo", (_event, dir: string) =>
+    withTimeout((signal) => logo(dir, signal), {
+      channel: "git:logo",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("git:contributors", (_event, dir: string) =>
+    withTimeout(() => contributors(dir), {
+      channel: "git:contributors",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
+  );
   // GitHub (gh) surface — its own channel namespace.
   ipcMain.handle("github:status", () => github.status());
   ipcMain.handle("github:repo", (_event, dir: string) => github.repo(dir));
