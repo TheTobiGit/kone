@@ -138,6 +138,7 @@ export function createModeReplayTracker(cols: number, rows: number): ModeReplayT
       if (modes.originMode) parts.push("\u001b[?6h");
       if (modes.reverseWraparoundMode) parts.push("\u001b[?45h");
       if (modes.sendFocusMode) parts.push("\u001b[?1004h");
+      if (modes.synchronizedOutputMode) parts.push("\u001b[?2026h");
       if (!modes.wraparoundMode) parts.push("\u001b[?7l");
       if (internals._core?.coreService?.isCursorHidden === true) parts.push("\u001b[?25l");
 

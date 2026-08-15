@@ -231,6 +231,25 @@ describe("TerminalManager", () => {
     await closePromise2;
   });
 
+  test("restart preserves the session's env", async () => {
+    const fake = fakePty();
+    const spawns: Array<{ env?: Record<string, string> }> = [];
+    const mgr = new TerminalManager({ spawn: async (input) => {
+      spawns.push(input);
+      return fake.process;
+    } });
+    mgr.onEvent(() => {});
+    await mgr.open({ terminalId: "t1", cwd: "/tmp", env: { FOO: "bar" } });
+    expect(spawns[0]?.env).toEqual({ FOO: "bar" });
+
+    const restartPromise = mgr.restart({ terminalId: "t1" });
+    fake.emitExit(0);
+    await restartPromise;
+
+    expect(spawns).toHaveLength(2);
+    expect(spawns[1]?.env).toEqual({ FOO: "bar" });
+  });
+
   test("restarting a missing session throws", async () => {
     const fake = fakePty();
     const { mgr } = makeManager(fake);

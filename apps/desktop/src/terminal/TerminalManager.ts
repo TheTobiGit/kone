@@ -60,6 +60,9 @@ type TerminalSession = {
   terminalId: string;
   process: PtyProcess;
   cwd: string;
+  /** Extra env the session was opened with — re-passed on restart so a shell
+   *  never silently loses its environment. */
+  env?: Record<string, string>;
   cols: number;
   rows: number;
   status: "starting" | "ready" | "exited" | "closed" | "error";
@@ -319,6 +322,7 @@ export class TerminalManager {
       terminalId: input.terminalId,
       process,
       cwd: input.cwd,
+      ...(input.env ? { env: input.env } : {}),
       cols,
       rows,
       status: "ready",
@@ -414,6 +418,7 @@ export class TerminalManager {
       cwd: input.cwd ?? s.cwd,
       cols: input.cols ?? s.cols,
       rows: input.rows ?? s.rows,
+      ...(s.env ? { env: s.env } : {}),
     });
     spawn.sequence = carriedSequence;
 

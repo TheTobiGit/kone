@@ -46,6 +46,18 @@ describe("createModeReplayTracker", () => {
     expect(preamble).not.toContain("1000");
   });
 
+  test("synchronized output mode is replayed", () => {
+    const tracker = createModeReplayTracker(80, 24);
+    tracker.feed("\x1b[?2026h");
+    expect(tracker.buildPreamble()).toContain("\x1b[?2026h");
+  });
+
+  test("synchronized output mode set then unset is not replayed", () => {
+    const tracker = createModeReplayTracker(80, 24);
+    tracker.feed("\x1b[?2026h\x1b[?2026l");
+    expect(tracker.buildPreamble()).not.toContain("2026");
+  });
+
   test("no modes set yields an empty preamble", () => {
     const tracker = createModeReplayTracker(80, 24);
     tracker.feed("plain output\r\n");
