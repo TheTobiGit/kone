@@ -10,7 +10,7 @@ import {
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import { Magnet } from "~/components/ui/magnet";
@@ -73,6 +73,24 @@ const sections = computed(() => {
 
 const hasContent = computed(() => props.pinned.length > 0 || props.recent.length > 0);
 
+// ── page-open entrance ──────────────────────────────────────────────────────
+// Same beat as --proj-enter-sessions on the project-home mount root. The block
+// holds until the first history read resolves — a placeholder on this beat
+// flashes shimmer then immediately dissolves, because the IPC round-trip lands
+// in the same window. Real rows then inherit whatever of that beat is still
+// left, so a fast read still waits its turn and a late read doesn't restart
+// the 230ms wait from scratch.
+const SESSIONS_ENTER_MS = 230;
+const openedAt = performance.now();
+const waitedForRead = Boolean(props.loading);
+const enterSessionsMs = ref(waitedForRead ? SESSIONS_ENTER_MS : 0);
+watch(hasContent, (yes) => {
+  if (!yes || !waitedForRead) return;
+  enterSessionsMs.value = Math.round(
+    Math.max(0, SESSIONS_ENTER_MS - (performance.now() - openedAt)),
+  );
+}, { flush: "pre" });
+
 // ── lazy reveal ─────────────────────────────────────────────────────────────
 // The component renders every row it is handed; the RECENT group starts capped
 // (8) and grows a batch at a time as the sentinel below the list scrolls into
@@ -90,15 +108,11 @@ const RECENT_STEP = 8;
 const recentLimit = ref(RECENT_INITIAL);
 const recentReady = ref(RECENT_INITIAL);
 const recentOvershoot = computed(() => Math.max(0, props.recent.length - recentLimit.value));
+// Where the entrance cascade stops. Rows mounted while the block is still
+// writing itself in join the stagger; anything revealed later lands settled,
+// because there the mask's fade is the reveal.
+const lazyFrom = ref(Number.POSITIVE_INFINITY);
 
-// ── initial-load skeleton ───────────────────────────────────────────────────
-// While the first history read is in flight the block isn't a hole in the page:
-// a skeleton of shimmering rows (the same geometry as the lazy-reveal masks)
-// holds the RECENT group's place, staggered in on the project-home entrance
-// cascade (--proj-enter-sessions) like every other block. When the data arrives
-// the overlay dissolves in place — the real rows are already cascading in
-// underneath, so the placeholder is what leaves.
-const SKELETON_ROWS = 6;
 function visibleRows(section: { kind: "pinned" | "recent"; rows: SessionSummary[] }): SessionSummary[] {
   if (section.kind === "recent") {
     return section.rows.slice(0, recentLimit.value);
@@ -120,28 +134,75 @@ let observer: IntersectionObserver | null = null;
 let revealTimer: number | undefined;
 const revealing = ref(false);
 
+// The skeleton is a scroll affordance — it answers "more is coming" for a batch
+// the reader asked for. On open the probe already sits in view (eight rows
+// rarely fill the region), so the first batch would fire on mount and shimmer
+// through the entrance beat. Until the block has settled — or the reader scrolls,
+// which is the ask the skeleton answers — reveals mount their rows outright and
+// let them ride the cascade instead.
+const SETTLE_MS = 750;
+const revealArmed = ref(false);
+let settleTimer: number | undefined;
+
+function arm(): void {
+  if (revealArmed.value) return;
+  revealArmed.value = true;
+  // Everything already on screen has had its entrance; only what comes next is
+  // a lazy reveal.
+  lazyFrom.value = recentLimit.value;
+  window.clearTimeout(settleTimer);
+  document.removeEventListener("scroll", arm, true);
+}
+// Scroll doesn't bubble, so listen in the capture phase to catch the block's own
+// scroll region without reaching for it.
+if (import.meta.client) document.addEventListener("scroll", arm, { capture: true, passive: true });
+watch(hasContent, (yes) => {
+  if (!yes || revealArmed.value || settleTimer !== undefined) return;
+  settleTimer = window.setTimeout(arm, enterSessionsMs.value + SETTLE_MS);
+}, { immediate: true });
+
 function revealMore(): void {
   if (revealing.value || recentOvershoot.value === 0) return;
-  revealing.value = true;
+  recentLimit.value = Math.min(recentLimit.value + RECENT_STEP, props.recent.length);
+  if (!revealArmed.value) {
+    // Opening: fill the region with real rows, no mask, no wait. The probe never
+    // left view, so the observer won't call again — keep going by hand until the
+    // region is full.
+    recentReady.value = recentLimit.value;
+    void nextTick(() => {
+      if (!revealArmed.value && probeInView()) revealMore();
+    });
+    return;
+  }
   // Mount the next batch now (real rows appear, masked); lift the masks after a
   // beat so the skeleton is what fades, never a hole in the list.
-  recentLimit.value = Math.min(recentLimit.value + RECENT_STEP, props.recent.length);
+  revealing.value = true;
   revealTimer = window.setTimeout(() => {
     recentReady.value = recentLimit.value;
     revealing.value = false;
   }, REVEAL_DELAY);
 }
+const REVEAL_MARGIN = 240;
+let sentinelEl: Element | null = null;
+// Same reach the observer's rootMargin has, asked directly — used while opening,
+// where the observer stays quiet because the probe never leaves view.
+function probeInView(): boolean {
+  if (!sentinelEl) return false;
+  return sentinelEl.getBoundingClientRect().top <= window.innerHeight + REVEAL_MARGIN;
+}
+
 // Template (function) ref: the probe mounts and unmounts with the overshoot, so
 // (re)wire the observer whenever the element itself changes.
 function setSentinel(el: Element | null | any): void {
   observer?.disconnect();
   observer = null;
+  sentinelEl = (el as Element | null) ?? null;
   if (!el || typeof IntersectionObserver === "undefined") return;
   observer = new IntersectionObserver(
     (entries) => {
       if (entries.some((e) => e.isIntersecting)) revealMore();
     },
-    { rootMargin: "0px 0px 240px 0px" },
+    { rootMargin: `0px 0px ${REVEAL_MARGIN}px 0px` },
   );
   observer.observe(el as Element);
 }
@@ -155,6 +216,8 @@ watch(
 onBeforeUnmount(() => {
   observer?.disconnect();
   window.clearTimeout(revealTimer);
+  window.clearTimeout(settleTimer);
+  document.removeEventListener("scroll", arm, true);
 });
 
 // 3_200_000 → "3.2M", 480_000 → "480K". Trims trailing zeros so 1.9M / 1.24M
@@ -192,12 +255,15 @@ function hasDiff(s: SessionSummary): boolean {
 
 <template>
   <!-- Hold until the first read resolves, and stay out of the layout entirely
-       when there's nothing to show — no empty header, no reserved gap. The
-       loading skeleton sits over the same slot (see rs__skeleton below) and the
-       whole block fades away if the read comes back empty. -->
+       when there's nothing to show — no empty header, no reserved gap, no
+       placeholder flash on the way in. The rows arrive with the data and take
+       whatever is left of the project-home sessions beat. -->
   <Transition name="rs-out">
-    <section v-if="loading || hasContent" class="rs">
-      <template v-if="hasContent">
+    <section
+      v-if="hasContent"
+      class="rs"
+      :style="{ '--proj-enter-sessions': `${enterSessionsMs}ms` }"
+    >
         <div v-for="section in sections" :key="section.kind" class="rs__group">
       <div class="rs__head" :style="{ '--i': section.start }">
         <HugeiconsIcon
@@ -218,7 +284,7 @@ function hasDiff(s: SessionSummary): boolean {
           class="rs__row"
           :class="{
             'rs__row--loading': isLoading(section, ri),
-            'rs__row--lazy': section.kind === 'recent' && ri >= RECENT_INITIAL,
+            'rs__row--lazy': section.kind === 'recent' && ri >= lazyFrom,
           }"
           :style="{ '--i': section.start + ri }"
           :role="isLoading(section, ri) ? undefined : 'button'"
@@ -365,52 +431,6 @@ function hasDiff(s: SessionSummary): boolean {
         aria-hidden="true"
       />
     </div>
-      </template>
-
-      <!-- Initial-load skeleton: while the first read is still in flight this
-           ground-filled overlay holds the RECENT group's place — header + six
-           shimmering rows, entering on the same cascade slot as the real rows
-           (--proj-enter-sessions). When the data lands it dissolves in place:
-           the real block is already rising in underneath, so the placeholder is
-           what leaves, exactly like the lazy-reveal masks. -->
-      <Transition name="rs-loading">
-        <div v-if="loading" class="rs__skeleton" role="status" aria-label="Loading conversations">
-          <div class="rs__head" style="--i: 0">
-            <HugeiconsIcon
-              class="rs__hicon rs__clock"
-              :icon="Clock01Icon"
-              :size="11"
-              :stroke-width="1.8"
-              aria-hidden="true"
-            />
-            <span class="rs__label">RECENT</span>
-          </div>
-          <div class="rs__skel-list">
-            <div
-              v-for="n in SKELETON_ROWS"
-              :key="n"
-              class="rs__skel-row"
-              :style="{ '--i': n }"
-            >
-              <div class="rs__skel-main">
-                <div class="rs__skel-title">
-                  <span class="rs__skel-dot rs__shimmer" />
-                  <span
-                    class="rs__skel-name rs__shimmer"
-                    :style="{ width: 42 + ((n * 13) % 34) + '%' }"
-                  />
-                </div>
-                <div class="rs__skel-meta">
-                  <span class="rs__skel-chip rs__shimmer" style="width: 68px" />
-                  <span class="rs__skel-chip rs__shimmer" style="width: 40px" />
-                  <span class="rs__skel-chip rs__shimmer" style="width: 52px" />
-                </div>
-              </div>
-              <span class="rs__skel-tokens rs__shimmer" />
-            </div>
-          </div>
-        </div>
-      </Transition>
     </section>
   </Transition>
 </template>
@@ -513,43 +533,6 @@ function hasDiff(s: SessionSummary): boolean {
   pointer-events: none;
 }
 
-/* ── initial-load skeleton ──────────────────────────────────────────────── */
-/* The overlay covers the whole block slot while the first read is in flight,
-   ground-filled so no real row can flash through early. It sits above the
-   groups (z-3, same as the lazy masks) and leaves with a fade, so when data
-   lands the placeholder dissolves over the real rows already rising in. */
-.rs__skeleton {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  background: var(--ground);
-}
-/* Skeleton rows mirror the real row's geometry and share its entrance cadence
-   (soft rise + settle, staggered down the list from --proj-enter-sessions), so
-   the placeholder builds the same way the block will. */
-.rs__skel-list {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-.rs__skel-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  animation: rs-row-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(var(--proj-enter-sessions, 0ms) + 50ms + min(var(--i, 0) * 30ms, 360ms));
-}
-/* The overlay's own departure — the same unhurried dissolve the lazy masks
-   use, so the two skeleton systems share one feel. */
-.rs-loading-leave-active {
-  transition: opacity 440ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.rs-loading-leave-to {
-  opacity: 0;
-}
 /* An empty read closes the whole block with a quiet fade instead of the page
    snapping shut. */
 .rs-out-leave-active {
@@ -644,9 +627,7 @@ function hasDiff(s: SessionSummary): boolean {
 @media (prefers-reduced-motion: reduce) {
   .rs__shimmer { animation: none; }
   .rs-mask-leave-active { transition: opacity 160ms ease; }
-  .rs-loading-leave-active,
   .rs-out-leave-active { transition: opacity 160ms ease; }
-  .rs__skel-row { animation: none; }
 }
 .rs__row {
   position: relative;

@@ -2518,9 +2518,10 @@ function onDiscardFile(path: string) {
   /* Project-home entrance cascade — read top → bottom, corner accents last.
      The fixed top row enters first as one beat: back arrow, centre nav and the
      profile chip all ride --proj-enter-back. Then the working tree reads in —
-     greeting → changes → sessions, where the sessions slot is held by the
-     RECENT skeleton until the first history read lands (its shimmer rows
-     inherit this same var) — and finally the corner folder. Child blocks
+     greeting → changes → sessions — and finally the corner folder. Sessions
+     hold until the history read resolves (no placeholder on this beat: a fast
+     IPC would flash shimmer over the same slot the real rows should own), then
+     inherit whatever of --proj-enter-sessions is still left. Child blocks
      inherit these via --proj-enter-* and layer their own internal stagger on
      top. Defined on the mount root (not a per-surface class) so the docked
      composer keeps its delay regardless of which surface owns the viewport. */
