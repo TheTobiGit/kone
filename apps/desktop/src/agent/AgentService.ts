@@ -830,6 +830,10 @@ export class AgentService {
     const store = this.queueStore;
     if (!store) return null;
     try {
+      if (typeof store.latestUserBlockId === "function") {
+        const id = store.latestUserBlockId(threadId);
+        if (id) return id;
+      }
       const thread = store.loadThread(threadId);
       if (!thread) return null;
       for (let i = thread.blocks.length - 1; i >= 0; i--) {

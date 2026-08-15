@@ -16,7 +16,7 @@
 // under the shell, and ACK-based PTY pause/resume so a slow renderer can't
 // balloon memory.
 
-import { inspectSubprocessActivity, killProcessTree } from "./processTree.js";
+import { inspectSubprocessActivityAsync, killProcessTree } from "./processTree.js";
 import { createModeReplayTracker, type ModeReplayTracker } from "./modeReplay.js";
 import { sanitizeTerminalHistoryChunk } from "./sanitize.js";
 import { spawnPty, type PtyProcess } from "./Pty.js";
@@ -236,9 +236,9 @@ export class TerminalManager {
     }, SUBPROCESS_POLL_INTERVAL_MS);
   }
 
-  private pollSubprocessActivity(s: TerminalSession): void {
+  private async pollSubprocessActivity(s: TerminalSession): Promise<void> {
     if (s.status !== "ready") return;
-    const inspection = inspectSubprocessActivity(s.process.pid);
+    const inspection = await inspectSubprocessActivityAsync(s.process.pid);
     // Only trust an "idle" reading when the process snapshot actually
     // succeeded; a failed capture means absence is unproven, so keep the last
     // known state rather than flashing the busy state off.

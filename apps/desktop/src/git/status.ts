@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -200,13 +200,18 @@ async function trackedLineCounts(
   return map;
 }
 
+const UNTRACKED_SIZE_CAP = 512 * 1024; // 512 KB
+
 /** Line count of an untracked file (its whole content is "added"). Binary or
  *  unreadable files count as 0. */
 async function fileLineCount(root: string, relPath: string): Promise<number> {
   try {
     // A `/`-terminated path is a directory; readFile would throw (EISDIR).
     if (relPath.endsWith("/")) return 0;
-    const buf = await readFile(path.join(root, relPath));
+    const fullPath = path.join(root, relPath);
+    const st = await stat(fullPath);
+    if (st.size > UNTRACKED_SIZE_CAP) return 0;
+    const buf = await readFile(fullPath);
     if (buf.length === 0 || buf.includes(0)) return 0;
     let lines = 0;
     for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) lines++;

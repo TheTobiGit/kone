@@ -1648,7 +1648,7 @@ function onDiscardFile(path: string) {
     <motion.main
     class="project-main relative bg-ground"
     :class="{ 'project-main--peek': peekOpen }"
-    :animate="{ x: peekOpen ? -342 : 0 }"
+    :animate="{ x: peekOpen ? -402 : 0 }"
     :transition="peekSpring"
   >
   <!-- Transient archive-refusal notice — a thread that is still working can't
@@ -1674,86 +1674,92 @@ function onDiscardFile(path: string) {
     @click="peekOpen = false"
   />
 
-    <!-- Back to the launcher — a bare return glyph in the corner, on the same
-         magnet-pull the app's other buttons ride, lighting up to the accent
-         on hover. It steps aside for any surface that draws its own: the
-         file-detail overlay covers it, and a commit or pull request — which puts
-         the same glyph beside its own title — fades it out rather than stand as
-         a second, identical arrow across the page from the first. -->
-    <Magnet
-      class="project-back-magnet"
-      inner-class="w-fit"
-      :padding="12"
-      :magnet-strength="9"
-      :disabled="backIsAway"
-      active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
-      inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
-    >
-      <motion.button
-        type="button"
-        class="project-back"
-        :inert="backIsAway"
-        :aria-label="
-          surface === 'board' || surface === 'git' ? 'Back to project' : 'Back to projects'
-        "
-        :initial="{ opacity: 0, x: -6 }"
-        :animate="gitDepth > 0 ? { opacity: 0, x: -6 } : { opacity: 1, x: 0 }"
-        :transition="{ duration: 0.3 }"
-        @click="onBack"
+    <!-- Titlebar: one drag region with the three controls as no-drag children.
+         Electron only subtracts no-drag from a drag ancestor — a sibling strip
+         left the profile chip (almost entirely inside that band) undraggable. -->
+    <header class="project-chrome app-drag">
+      <!-- Back to the launcher — a bare return glyph in the corner, on the same
+           magnet-pull the app's other buttons ride, lighting up to the accent
+           on hover. It steps aside for any surface that draws its own: the
+           file-detail overlay covers it, and a commit or pull request — which puts
+           the same glyph beside its own title — fades it out rather than stand as
+           a second, identical arrow across the page from the first. -->
+      <Magnet
+        class="project-back-magnet app-no-drag"
+        inner-class="w-fit"
+        :padding="12"
+        :magnet-strength="9"
+        :disabled="backIsAway"
+        active-transition="transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)"
+        inactive-transition="transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)"
       >
-        <HugeiconsIcon
-          class="back-glyph"
-          :icon="ArrowTurnBackwardIcon"
-          :size="18"
-          :stroke-width="2"
-          aria-hidden="true"
-        />
-      </motion.button>
-    </Magnet>
+        <motion.button
+          type="button"
+          class="project-back"
+          :inert="backIsAway"
+          :aria-label="
+            surface === 'board' || surface === 'git' ? 'Back to project' : 'Back to projects'
+          "
+          :initial="{ opacity: 0, x: -6 }"
+          :animate="gitDepth > 0 ? { opacity: 0, x: -6 } : { opacity: 1, x: 0 }"
+          :transition="{ duration: 0.3 }"
+          @click="onBack"
+        >
+          <HugeiconsIcon
+            class="back-glyph"
+            :icon="ArrowTurnBackwardIcon"
+            :size="18"
+            :stroke-width="2"
+            aria-hidden="true"
+          />
+        </motion.button>
+      </Magnet>
 
-    <!-- The centre of that same top row: the two layers, named. A borderless
-         rail with one soft pill that slides between them (arithmetic, not
-         measurement — the segments are equal-width). It steps aside with the back
-         arrow whenever a sub-surface draws its own chrome. Git is dimmed and
-         unclickable when the project isn't a repository. -->
-    <nav
-      class="project-nav"
-      :class="{ 'project-nav--away': backIsAway || surface === 'board' }"
-      :inert="backIsAway || surface === 'board'"
-      aria-label="Project sections"
-    >
-      <i class="project-nav__mark" :style="{ '--at': navIndex }" aria-hidden="true" />
-      <button
-        v-for="n in NAV"
-        :key="n.id"
-        type="button"
-        class="project-nav__row"
-        :class="{ 'project-nav__row--on': surface === n.id }"
-        :disabled="n.id === 'git' && !g.repo.value"
-        :aria-current="surface === n.id ? 'page' : undefined"
-        @click="goSurface(n.id)"
+      <!-- The centre of that same top row: the two layers, named. A borderless
+           rail with one soft pill that slides between them (arithmetic, not
+           measurement — the segments are equal-width). It steps aside with the back
+           arrow whenever a sub-surface draws its own chrome. Git is dimmed and
+           unclickable when the project isn't a repository. -->
+      <nav
+        class="project-nav app-no-drag"
+        :class="{ 'project-nav--away': backIsAway || surface === 'board' }"
+        :inert="backIsAway || surface === 'board'"
+        aria-label="Project sections"
       >
-        {{ n.label }}
-      </button>
-    </nav>
+        <i class="project-nav__mark" :style="{ '--at': navIndex }" aria-hidden="true" />
+        <button
+          v-for="n in NAV"
+          :key="n.id"
+          type="button"
+          class="project-nav__row"
+          :class="{ 'project-nav__row--on': surface === n.id }"
+          :disabled="n.id === 'git' && !g.repo.value"
+          :aria-current="surface === n.id ? 'page' : undefined"
+          @click="goSurface(n.id)"
+        >
+          {{ n.label }}
+        </button>
+      </nav>
 
-    <!-- The far-right end of that same top row: the signed-in user's profile
-         chip, mirroring the back arrow across the page. It rides the same fixed
-         top line and steps aside with the rest of the chrome whenever a
-         sub-surface takes over. Only shown once a machine name resolves — when
-         nobody's signed in there's nothing to draw. -->
-    <Transition name="project-avatar">
-      <button
-        v-if="displayName && !backIsAway && surface !== 'board'"
-        type="button"
-        class="project-avatar"
-        :title="displayName"
-        :aria-label="`Open profile — ${displayName}`"
-        @click="emit('profile')"
-      >
-        <span class="project-avatar__chip">{{ initial }}</span>
-      </button>
-    </Transition>
+      <!-- The far-right end of that same top row: the signed-in user's profile
+           chip, mirroring the back arrow across the page. The slot stays mounted
+           so the no-drag hole is a stable box; the chip itself still steps aside
+           with the rest of the chrome. Only shown once a machine name resolves. -->
+      <div class="project-avatar-slot app-no-drag">
+        <Transition name="project-avatar">
+          <button
+            v-if="displayName && !backIsAway && surface !== 'board'"
+            type="button"
+            class="project-avatar"
+            :title="displayName"
+            :aria-label="`Open profile — ${displayName}`"
+            @click="emit('profile')"
+          >
+            <span class="project-avatar__chip">{{ initial }}</span>
+          </button>
+        </Transition>
+      </div>
+    </header>
 
     <!-- BOARD · the thread strip. Every live thread in this project is a column
          on one horizontally scrollable rail (niri-style scrollable tiling), the
@@ -2310,15 +2316,23 @@ function onDiscardFile(path: string) {
   pointer-events: none;
 }
 
+/* ── Titlebar ─────────────────────────────────────────────────────────────── */
+/* Full-width drag region. Controls are absolutely placed in the same spots as
+   before, but as descendants so their no-drag holes actually punch through. */
+.project-chrome {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 40;
+  height: 3.25rem;
+}
 /* ── Back to launcher ─────────────────────────────────────────────────────── */
 /* A quiet return glyph in the top-left corner — mirrors the folder's own perch
    in the bottom-left. Bare, no chrome; it rides the same magnet pull as the
    app's other buttons and brightens to full ink on hover. */
 .project-back-magnet {
-  position: fixed;
+  position: absolute;
   top: 1.25rem;
   left: 2rem;
-  z-index: 40;
 }
 .project-back {
   display: inline-flex;
@@ -2346,11 +2360,14 @@ function onDiscardFile(path: string) {
 /* Pinned to the same fixed top line as the back arrow, mirrored to the right
    edge. Borderless like the rest of the app: just the signed-in user's initial
    on an ink dot, matching the Home greeting's avatar chip. */
-.project-avatar {
-  position: fixed;
+.project-avatar-slot {
+  position: absolute;
   top: 1.25rem;
   right: 2rem;
-  z-index: 40;
+  width: 30px;
+  height: 30px;
+}
+.project-avatar {
   display: inline-flex;
   padding: 0;
   border: none;
@@ -2402,10 +2419,9 @@ function onDiscardFile(path: string) {
    Borderless like the rest of the app: the only mark of selection is one soft
    ink-tinted pill sliding between two equal segments. */
 .project-nav {
-  position: fixed;
+  position: absolute;
   top: 1.25rem;
   left: 50%;
-  z-index: 40;
   display: inline-flex;
   transform: translateX(-50%);
   transition:
@@ -2492,10 +2508,10 @@ function onDiscardFile(path: string) {
 .project-main {
   height: 100vh;
   overflow: hidden;
-  /* Sits above the peek (the sibling pinned to the right edge) so it fully
-     covers it at rest; the slide below opens the gap it shows through. */
+  /* Above the window-drag strip (z-20) and the peek (below this layer) so it
+     covers the peek at rest; the slide below opens the gap it shows through. */
   position: relative;
-  z-index: 1;
+  z-index: 30;
   /* The slide itself is the settings drawer's spring (driven by motion-v on
      <motion.main>); only the corner curve eases in CSS, alongside it. */
   transition: border-radius 0.4s cubic-bezier(0.22, 1, 0.36, 1);
@@ -2519,7 +2535,7 @@ function onDiscardFile(path: string) {
    motion-v), the corner curve lives on the page: its right edge (the one facing
    the peek) arcs inward, mirroring the settings page carrying the curve on the
    edge facing its drawer. The slide stops just short of the peek's full width
-   (peek 360 − radius 18 = 342) so the rounded corners overlap only the panel's
+   (peek 420 − radius 18 = 402) so the rounded corners overlap only the panel's
    own left padding — the arc then reads against the panel's sunken surface
    instead of the page's ground (a flush slide shows --ground through the
    corners, hiding the curve), while the rows themselves stay fully visible. */

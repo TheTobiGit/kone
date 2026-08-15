@@ -7,8 +7,8 @@ import {
 } from "./chrome.js";
 
 describe("getMacTrafficLightPosition", () => {
-  test("centers the traffic-light row on the 46px header", () => {
-    expect(getMacTrafficLightPosition()).toEqual({ x: 16, y: 16 });
+  test("positions the traffic-light row with compact top inset", () => {
+    expect(getMacTrafficLightPosition()).toEqual({ x: 16, y: 10 });
   });
 });
 
@@ -16,7 +16,7 @@ describe("titleBarOptions", () => {
   test("darwin keeps the native traffic lights and insets them in the content", () => {
     expect(titleBarOptions("darwin")).toEqual({
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 16, y: 16 },
+      trafficLightPosition: { x: 16, y: 10 },
     });
   });
 

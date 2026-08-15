@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import type { CodeLine } from "~/composables/useHighlighter";
@@ -24,17 +24,38 @@ const lang = ref<string>("");
 // Highlight on mount and re-tint when the colour scheme flips. A token guards
 // against an out-of-order async resolve painting stale colours.
 let seq = 0;
+let rafId: number | null = null;
+
+async function doHighlight(): Promise<void> {
+  const mine = ++seq;
+  const res = await highlightCode(props.code, props.info, scheme.value === "dark");
+  if (mine !== seq) return;
+  lines.value = res.lines;
+  lang.value = res.lang;
+}
+
 watch(
   [() => props.code, scheme],
-  async () => {
-    const mine = ++seq;
-    const res = await highlightCode(props.code, props.info, scheme.value === "dark");
-    if (mine !== seq) return;
-    lines.value = res.lines;
-    lang.value = res.lang;
+  () => {
+    if (!lines.value || !import.meta.client) {
+      void doHighlight();
+      return;
+    }
+    if (rafId !== null) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      void doHighlight();
+    });
   },
   { immediate: true },
 );
+
+onBeforeUnmount(() => {
+  if (rafId !== null && import.meta.client) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+});
 
 // The plain-text rows we fall back to before highlighting lands (or when the
 // grammar is unknown) — split so line height stays identical either way.

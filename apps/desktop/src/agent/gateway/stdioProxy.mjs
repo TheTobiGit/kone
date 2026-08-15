@@ -40,8 +40,8 @@ if (process.versions.electron && process.env.ELECTRON_RUN_AS_NODE !== "1") {
     stdio: "inherit",
   });
   child.on("error", () => process.exit(1));
-  process.exit(0);
-}
+  child.on("exit", (code) => process.exit(code ?? 0));
+} else {
 
 const url = process.env.KONE_GATEWAY_URL;
 let token = process.env.KONE_GATEWAY_TOKEN;
@@ -295,3 +295,4 @@ process.stdin.on("end", async () => {
   await outputQueue.catch(() => undefined);
   process.exit(0);
 });
+}

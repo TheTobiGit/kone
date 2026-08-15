@@ -8,8 +8,11 @@
 // tree kill that re-captures at signal time so reparented children are caught.
 // A failed snapshot is "unproven" (captureComplete: false), never a throw.
 
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export type CapturedProcess = { pid: number; command: string };
 
@@ -208,16 +211,11 @@ export function captureProcessTree(rootPid: number): ProcessTreeCapture {
   };
 }
 
-/** Whether anything is actually running below `rootPid`, for tab busy labels
- *  and kill confirmations. Walks the tree from a fresh snapshot, skips
- *  shell-like names (a nested interactive shell counts only when IT has real
- *  children), and labels the deepest real child. */
-export function inspectSubprocessActivity(rootPid: number): SubprocessActivityInspection {
-  if (!Number.isInteger(rootPid) || rootPid <= 0) {
-    return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
-  }
-  const childrenByParentPid = captureProcessChildrenMap();
-  if (childrenByParentPid === null) {
+function walkSubprocessActivity(
+  rootPid: number,
+  childrenByParentPid: ProcessChildrenMap | null,
+): SubprocessActivityInspection {
+  if (!Number.isInteger(rootPid) || rootPid <= 0 || childrenByParentPid === null) {
     return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
   }
   const descendantPids: number[] = [];
@@ -251,6 +249,55 @@ export function inspectSubprocessActivity(rootPid: number): SubprocessActivityIn
     descendantPids,
     captureComplete: true,
   };
+}
+
+/** Full-system children-by-ppid snapshot (async). Runs `execFile` off the main
+ *  thread so platform scans (especially Windows powershell.exe) do not block
+ *  the Electron event loop. */
+export async function captureProcessChildrenMapAsync(): Promise<ProcessChildrenMap | null> {
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFileAsync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_TABLE_SCRIPT],
+        {
+          encoding: "utf8",
+          maxBuffer: WINDOWS_PROCESS_SCAN_MAX_BUFFER_BYTES,
+          timeout: WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
+        },
+      );
+      return parseWindowsProcessTable(stdout);
+    }
+    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,comm="], {
+      encoding: "utf8",
+      maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
+      timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
+    });
+    return parseProcessChildrenMap(stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether anything is actually running below `rootPid`, for tab busy labels
+ *  and kill confirmations. Walks the tree from a fresh snapshot, skips
+ *  shell-like names (a nested interactive shell counts only when IT has real
+ *  children), and labels the deepest real child. */
+export function inspectSubprocessActivity(rootPid: number): SubprocessActivityInspection {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) {
+    return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
+  }
+  const childrenByParentPid = captureProcessChildrenMap();
+  return walkSubprocessActivity(rootPid, childrenByParentPid);
+}
+
+/** Asynchronous variant of `inspectSubprocessActivity` for the 1s poller loop. */
+export async function inspectSubprocessActivityAsync(rootPid: number): Promise<SubprocessActivityInspection> {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) {
+    return { hasRunningSubprocess: false, childCommandLabel: null, descendantPids: [], captureComplete: false };
+  }
+  const childrenByParentPid = await captureProcessChildrenMapAsync();
+  return walkSubprocessActivity(rootPid, childrenByParentPid);
 }
 
 /** Kill `rootPid` and every descendant, captured fresh at signal time so

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { copyFileSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 import type {
   ChatAttachment,
@@ -862,10 +862,22 @@ function backfillOrphanedTurns(db: DatabaseSync): void {
 
 export class ConversationStore {
   private db: DatabaseSync | null = null;
+  private readonly statements = new Map<string, StatementSync>();
 
   /** @param userDataDir per-user state dir; defaults to the one the host
    *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
   constructor(private readonly userDataDir?: string) {}
+
+  /** Cached statement preparation to avoid parsing and compiling SQL strings
+   *  repeatedly on the high-frequency streaming path. */
+  private prepare(db: DatabaseSync, sql: string): StatementSync {
+    let stmt = this.statements.get(sql);
+    if (!stmt) {
+      stmt = db.prepare(sql);
+      this.statements.set(sql, stmt);
+    }
+    return stmt;
+  }
   /** threadId → the provider conversation id already written for it. Events carry
    *  the id on every envelope (see ProviderRefs), including one per streamed text
    *  delta, so this memo keeps the capture to a single write per session instead
@@ -1418,7 +1430,8 @@ export class ConversationStore {
           // it loses the reply even when the items themselves survived (the
           // failure mode the v6 migration had to repair after the fact).
           this.durably(db, () => {
-            db.prepare(
+            this.prepare(
+              db,
               `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, at)
                VALUES (?, ?, 'assistant', ?, 'running', ?)
                ON CONFLICT(block_id) DO NOTHING`,
@@ -1436,7 +1449,8 @@ export class ConversationStore {
         case "item.updated":
         case "item.completed": {
           const it = event.item;
-          db.prepare(
+          this.prepare(
+            db,
             `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail, tasks_json, subagent_tool_use_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
@@ -1467,7 +1481,8 @@ export class ConversationStore {
           // Whole-snapshot upsert, matching the item.* convention: the adapter
           // sends the full run each time, so there's no patch to merge here.
           const s = event.subagent;
-          db.prepare(
+          this.prepare(
+            db,
             `INSERT INTO subagents (
                tool_use_id, thread_id, turn_id, task_id, parent_item_id, agent_type,
                description, prompt, model, effort, background, status, summary,
@@ -1520,7 +1535,8 @@ export class ConversationStore {
             // consumption must land together — a crash between them would
             // re-inject `<sidechat_context>` into the next turn.
             withTransaction(db, () => {
-              db.prepare(
+              this.prepare(
+                db,
                 `UPDATE blocks SET state = 'completed', ended_at = ?
                  WHERE block_id = ?`,
               ).run(event.at, assistantBlockId(event.threadId, event.turnId));
@@ -1536,7 +1552,8 @@ export class ConversationStore {
         case "turn.aborted": {
           const state = event.reason === "interrupted" ? "interrupted" : "failed";
           this.durably(db, () => {
-            db.prepare(
+            this.prepare(
+              db,
               `UPDATE blocks SET state = ?, error = ?, ended_at = ?
                WHERE block_id = ?`,
             ).run(
@@ -1702,7 +1719,8 @@ export class ConversationStore {
     // Bumps both clocks: `updated_at` is the generic "row changed" stamp,
     // `last_activity_at` is the recency ordering key (title/archive bookkeeping
     // touches only the former — see renameThread).
-    db.prepare(
+    this.prepare(
+      db,
       `UPDATE threads SET updated_at = ?, last_activity_at = ? WHERE thread_id = ?`,
     ).run(at, at, threadId);
   }
@@ -2211,6 +2229,22 @@ export class ConversationStore {
   latestThread(projectPath: string): StoredThread | null {
     const meta = this.latestThreadMeta(projectPath);
     return meta ? this.loadThread(meta.threadId) : null;
+  }
+
+  /** Fast indexed lookup for the ID of the most recent user block in a thread,
+   *  avoiding full-transcript parsing on turn enqueues. */
+  latestUserBlockId(threadId: string): string | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = this.prepare(
+        db,
+        `SELECT block_id FROM blocks WHERE thread_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1`,
+      ).get(threadId) as { block_id: string } | undefined;
+      return row?.block_id ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** Reconstruct one thread by id: its metadata plus every block in arrival

@@ -177,6 +177,15 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       :animate="{ x: settingsOpen ? settingsWidth : 0 }"
       :transition="stageSpring"
     >
+      <!-- Launcher-only drag strip. The open project draws its own titlebar
+           with controls as no-drag children; a second full-width strip here
+           would still claim the profile chip's rectangle. -->
+      <div
+        v-if="!project"
+        class="app-drag pointer-events-auto absolute inset-x-0 top-0 z-20 h-11"
+        aria-hidden="true"
+      />
+
       <div class="h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
         <ProjectView
           v-if="project"

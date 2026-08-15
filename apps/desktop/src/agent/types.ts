@@ -547,6 +547,7 @@ export type QueuedTurnStore = {
   cancelQueuedTurn(queueId: string): Promise<boolean>;
   cancelQueuedTurnsForThread(threadId: string): Promise<string[]>;
   listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]>;
+  latestUserBlockId?(threadId: string): string | null;
   loadThread(threadId: string): StoredThread | null;
 };
 
