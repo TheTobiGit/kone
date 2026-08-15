@@ -216,6 +216,8 @@ beforeAll(async () => {
   service = new AgentServiceCtor({
     wedgeSweepMs: 40,
     wedgeSilenceMs: 30,
+    idleSweepMs: 40,
+    idleThresholdMs: 50,
     // The fake implements the queue slice the service needs (its loadThread
     // only backs latestUserBlockId's user-block walk, so it is not a full
     // StoredThread) — cast at the boundary, the same contract the module mock
@@ -346,6 +348,95 @@ describe("AgentService wedge watchdog", () => {
     await new Promise((r) => setTimeout(r, 150));
     clearInterval(heartbeat);
     expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+});
+
+describe("AgentService idle session reaper", () => {
+  test("stops an inactive session whose inactivity exceeds the idle threshold", async () => {
+    const thread = "t-idle-1";
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    // Inactivity > idleThresholdMs (50ms) with sweep at 40ms — reaper must stop the session.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(FakeAdapter.stopped).toContain(thread);
+    const stoppedEvent = received.find(
+      (e) => e.threadId === thread && e.type === "session.state.changed" && e.state === "stopped",
+    ) as Extract<import("./types.js").RuntimeEvent, { type: "session.state.changed" }> | undefined;
+    expect(stoppedEvent?.message).toBe("idle session reaped");
+  }, 5_000);
+
+  test("never reaps a session while a turn is actively running", async () => {
+    const thread = "t-idle-turn-active";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    FakeAdapter.stopped.length = 0;
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-running" });
+    // Wait past the idle threshold (50ms) while a turn is in flight.
+    await new Promise((r) => setTimeout(r, 150));
+    // The idle reaper must NOT have stopped it (the wedge watchdog handles hung turns instead).
+    const reapedEvent = received.find(
+      (e) => e.threadId === thread && e.type === "session.state.changed" && e.message === "idle session reaped",
+    );
+    expect(reapedEvent).toBeUndefined();
+  }, 5_000);
+
+  test("never reaps a session parked on human approval or user input", async () => {
+    const thread = "t-idle-parked";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    FakeAdapter.stopped.length = 0;
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-p" });
+    codexEmit({
+      ...base,
+      type: "approval.requested",
+      requestId: "req-idle-p",
+      turnId: "turn-p",
+      approval: { kind: "command", title: "git push" },
+    });
+    // Wait past the idle threshold.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+
+  test("recent activity resets the idle timer and keeps the session alive", async () => {
+    const thread = "t-idle-heartbeat";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    FakeAdapter.stopped.length = 0;
+    // Emit periodic activity within the 50ms threshold.
+    const heartbeat = setInterval(() => {
+      codexEmit({ ...base, type: "thread.token-usage.updated", usage: { total: 1 } });
+    }, 15);
+    await new Promise((r) => setTimeout(r, 150));
+    clearInterval(heartbeat);
+    expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+
+  test("re-starting a reaped session starts cleanly and resumes", async () => {
+    const thread = "t-idle-resume";
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(FakeAdapter.stopped).toContain(thread);
+
+    // Re-start the session.
+    FakeAdapter.stopped.length = 0;
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask", resume: thread });
+    expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+
+  test("never reaps a session that has queued turns waiting", async () => {
+    const thread = "t-idle-queued";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    FakeAdapter.stopped.length = 0;
+    // Set a live turn and enqueue a turn.
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-running-q" });
+    await service.sendTurn({ threadId: thread, input: "queued follow up" });
+    // Wait past the idle threshold.
+    await new Promise((r) => setTimeout(r, 150));
+    const reapedEvent = received.find(
+      (e) => e.threadId === thread && e.type === "session.state.changed" && e.message === "idle session reaped",
+    );
+    expect(reapedEvent).toBeUndefined();
   }, 5_000);
 });
 
