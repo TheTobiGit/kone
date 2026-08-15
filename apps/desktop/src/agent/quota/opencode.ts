@@ -10,10 +10,10 @@ import type { QuotaProviderReport, QuotaWindow, SpendTile, TrendPoint } from "./
 // OpenCode's own usage, read straight off the local SQLite log OpenCode's CLI
 // already writes (~/.local/share/opencode/opencode*.db) — no network call,
 // no credential, nothing to opt into beyond "does this machine have the
-// file". The read is flattened to kone's simpler needs: one aggregate
-// "hosted usage" read
-// for its Zen pay-as-you-go plan; kone's Agents page only cares about the Go
-// subscription caps, so both hosted providerIDs feed every figure below).
+// file". The read is flattened to kone's needs: one aggregate "hosted usage"
+// read across both providerIDs OpenCode itself prices (see
+// HOSTED_PROVIDER_IDS below), feeding every window, spend tile and trend
+// point this module produces.
 
 const DOLLARS_PER_SESSION_CAP = 12; // per rolling 5 hours
 const DOLLARS_PER_WEEK_CAP = 30; // per UTC week (Monday start)
@@ -38,6 +38,7 @@ const TREND_DAYS = 30;
 // it always logs `cost: 0` for those rows. Summing those in would either add
 // nothing (the common case) or, worse, credit kone's OpenCode card with spend
 // that has nothing to do with the Go/Zen caps it's reporting against — so
+// only the two hosted ids are summed.
 const HOSTED_PROVIDER_IDS = ["opencode-go", "opencode"];
 const HOSTED_PROVIDER_FILTER = HOSTED_PROVIDER_IDS.map((id) => `'${id}'`).join(",");
 
@@ -312,6 +313,17 @@ function startOfLocalDay(ms: number): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
+/** Local midnight `days` calendar days before `nowMs`'s local midnight. Steps
+ *  by date fields rather than a fixed 86_400_000ms stride, so a DST transition
+ *  inside the span never shifts the boundary by an hour — a spring-forward day
+ *  is 23h and a fall-back day 25h, so a fixed stride lands one hour early or
+ *  late and mislabels the day. */
+function daysAgoStart(nowMs: number, days: number): number {
+  const d = new Date(startOfLocalDay(nowMs));
+  d.setDate(d.getDate() - days);
+  return d.getTime();
+}
+
 /** `YYYY-MM-DD` in local time — the same `toLocaleDateString("en-CA")`
  *  convention ConversationStore uses for its day-keyed series, so a day
  *  label here means the same calendar day everywhere else in the app. */
@@ -319,10 +331,10 @@ function localDateLabel(ms: number): string {
   return new Date(ms).toLocaleDateString("en-CA");
 }
 
-function computeSpendTiles(rows: UsageRow[], nowMs: number): SpendTile[] {
+export function computeSpendTiles(rows: UsageRow[], nowMs: number): SpendTile[] {
   const todayStart = startOfLocalDay(nowMs);
-  const yesterdayStart = todayStart - DAY_MS;
-  const last30Start = todayStart - 29 * DAY_MS; // today + the 29 days before it
+  const yesterdayStart = daysAgoStart(nowMs, 1);
+  const last30Start = daysAgoStart(nowMs, 29); // today + the 29 days before it
   const upperBound = nowMs + 1; // inclusive of "now" — nothing has happened later yet
 
   const tally = (start: number, end: number): { dollars: number; tokens: number } => {
@@ -351,10 +363,10 @@ function computeSpendTiles(rows: UsageRow[], nowMs: number): SpendTile[] {
 /** The last 30 local calendar days, oldest first, zero-filled — a day with no
  *  hosted usage is still a point at `dollars: 0`, because a gap in the line
  *  would claim "no data" for a day kone actually knows was quiet. */
-function computeTrend(rows: UsageRow[], nowMs: number): TrendPoint[] {
+export function computeTrend(rows: UsageRow[], nowMs: number): TrendPoint[] {
   const todayStart = startOfLocalDay(nowMs);
   const byDay = new Map<string, { dollars: number; tokens: number }>();
-  const oldestTracked = todayStart - (TREND_DAYS - 1) * DAY_MS;
+  const oldestTracked = daysAgoStart(nowMs, TREND_DAYS - 1);
   for (const row of rows) {
     const dayStart = startOfLocalDay(row.timeCreated);
     if (dayStart < oldestTracked || dayStart > todayStart) continue;
@@ -366,7 +378,7 @@ function computeTrend(rows: UsageRow[], nowMs: number): TrendPoint[] {
   }
   const points: TrendPoint[] = [];
   for (let i = TREND_DAYS - 1; i >= 0; i--) {
-    const dayStart = todayStart - i * DAY_MS;
+    const dayStart = daysAgoStart(nowMs, i);
     const label = localDateLabel(dayStart);
     const entry = byDay.get(label);
     points.push({

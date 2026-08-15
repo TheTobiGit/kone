@@ -161,12 +161,12 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.threadLineage("child-1")).toEqual(spawnedLineage("parent-1", "root-1"));
     expect(store.spawnedChildren("parent-1").map((t) => t.threadId)).toEqual(["child-1"]);
 
-    // The v16 → v20 steps landed: version bumped, the parent index exists, and
-    // the gateway_ops dispatched bit (the spawn crash-recovery ledger, F8) is
-    // in place.
+    // The migration ran to completion: user_version bumped to the current
+    // schema, the parent index exists, and the gateway_ops dispatched bit (the
+    // spawn crash-recovery ledger) is in place.
     const raw = new Database(dbPath());
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(20);
+    expect(version.user_version).toBe(21);
     const idx = raw
       .prepare(
         `SELECT 1 FROM sqlite_master
