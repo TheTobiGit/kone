@@ -4,8 +4,14 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiChipIcon,
   AlertCircleIcon,
+  ArrowUp02Icon,
   Copy01Icon,
+  Folder01Icon,
+  GitForkIcon,
+  Layers01Icon,
+  Link01Icon,
   LinkSquare02Icon,
+  Package01Icon,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
@@ -724,28 +730,48 @@ async function copy(text: string) {
            rather than swapping text under a settled view. -->
       <div :key="current.provider" class="pp__detail">
         <div class="pp__cols">
-          <!-- Left: the executable and its standing. -->
+          <!-- Left: the executable and its standing. Labels wear a quiet glyph
+               so the two columns scan like a sheet, without boxing the facts
+               off the page they already sit on. -->
           <div class="pp__side">
           <!-- ── version ──────────────────────────────────────────────────── -->
           <section class="pp__block" aria-label="Version">
             <p class="pp__blocklabel">Version</p>
 
-            <dl class="pp__def">
-              <dt>Current</dt>
-              <dd>{{ current.upkeep?.currentVersion ?? current.status?.version ?? "—" }}</dd>
+            <dl class="pp__facts">
+              <div class="pp__factsrow">
+                <dt>
+                  <HugeiconsIcon :icon="Layers01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Current
+                </dt>
+                <dd>{{ current.upkeep?.currentVersion ?? current.status?.version ?? "—" }}</dd>
+              </div>
 
-              <template v-if="current.upkeep?.latestKnowable">
-                <dt>Latest</dt>
+              <div v-if="current.upkeep?.latestKnowable" class="pp__factsrow">
+                <dt>
+                  <HugeiconsIcon :icon="ArrowUp02Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Latest
+                </dt>
                 <dd>{{ current.upkeep?.latestVersion ?? "—" }}</dd>
-              </template>
+              </div>
 
-              <dt>Channel</dt>
-              <dd>{{ INSTALL_SOURCE_LABEL[current.upkeep?.installSource ?? "unknown"] }}</dd>
+              <div class="pp__factsrow">
+                <dt>
+                  <HugeiconsIcon :icon="GitForkIcon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Channel
+                </dt>
+                <dd class="pp__factsval--plain">
+                  {{ INSTALL_SOURCE_LABEL[current.upkeep?.installSource ?? "unknown"] }}
+                </dd>
+              </div>
 
-              <template v-if="current.upkeep?.packageName">
-                <dt>Package</dt>
+              <div v-if="current.upkeep?.packageName" class="pp__factsrow">
+                <dt>
+                  <HugeiconsIcon :icon="Package01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Package
+                </dt>
                 <dd>{{ current.upkeep.packageName }}</dd>
-              </template>
+              </div>
             </dl>
 
             <p class="pp__standing" :class="`pp__standing--${standingLine.tone}`">
@@ -813,13 +839,21 @@ async function copy(text: string) {
                 Leave blank to use <code>{{ current.meta.binary }}</code> from your PATH.
               </p>
 
-              <dl v-if="current.upkeep?.resolvedPath" class="pp__def">
-                <dt>Resolved</dt>
-                <dd>{{ current.upkeep.resolvedPath }}</dd>
-                <template v-if="current.upkeep.realPath">
-                  <dt>Points at</dt>
+              <dl v-if="current.upkeep?.resolvedPath" class="pp__facts">
+                <div class="pp__factsrow">
+                  <dt>
+                    <HugeiconsIcon :icon="Folder01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                    Resolved
+                  </dt>
+                  <dd>{{ current.upkeep.resolvedPath }}</dd>
+                </div>
+                <div v-if="current.upkeep.realPath" class="pp__factsrow">
+                  <dt>
+                    <HugeiconsIcon :icon="Link01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                    Points at
+                  </dt>
                   <dd>{{ current.upkeep.realPath }}</dd>
-                </template>
+                </div>
               </dl>
             </template>
 
@@ -1307,7 +1341,7 @@ async function copy(text: string) {
 }
 @container (min-width: 660px) {
   .pp__cols {
-    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
   }
 }
@@ -1317,6 +1351,13 @@ async function copy(text: string) {
   gap: 30px;
   min-width: 0;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pp__side::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 .pp__block {
   display: flex;
@@ -1331,6 +1372,56 @@ async function copy(text: string) {
   line-height: 1;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+/* Icon + label | value. Hairlines only — same ground as the page, so the
+   sheet doesn't lift off it. */
+.pp__facts {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0;
+}
+.pp__factsrow {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.pp__factsrow:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+.pp__facts dt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  min-width: 0;
+}
+.pp__facts dt :deep(svg) {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.pp__facts dd {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.pp__factsval--plain {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-variant-numeric: normal;
 }
 
 /* ── the model roster ───────────────────────────────────────────────────────── */
@@ -1439,28 +1530,6 @@ async function copy(text: string) {
 .pp__hint code {
   font-family: var(--font-mono);
   font-size: 11px;
-}
-
-/* Identifiers — versions, paths, package names, commands — are mono in their
-   natural case, set as a two-column definition list so the values align. */
-.pp__def {
-  display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 5px 16px;
-  width: 100%;
-}
-.pp__def dt {
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-.pp__def dd {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.4;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-soft);
-  overflow-wrap: anywhere;
 }
 
 .pp__standing {
