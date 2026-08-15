@@ -3,6 +3,9 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { markKind } from "../ipcError.js";
+import type { IpcErrorKind } from "../ipcError.js";
+
 // The shared foundation every git feature module builds on: the git process
 // runner, the error type it throws, and the path/fs guards that keep operations
 // inside the repository.
@@ -16,9 +19,23 @@ export class GitError extends Error {
     /** stdout captured on the failing run — some commands (e.g. `git diff
      *  --no-index`) exit non-zero yet still produce their real output here. */
     readonly stdout = "",
+    /** Semantic failure kind, when the caller can classify the error. Carried
+     *  in the message as a "[kone:…]" marker so it survives IPC serialization —
+     *  see ipcError.ts. */
+    readonly kind: IpcErrorKind | null = null,
   ) {
-    super(message);
+    super(kind ? markKind(kind, message) : message);
     this.name = "GitError";
+  }
+
+  /** Build a GitError carrying a semantic failure kind. */
+  static classified(
+    kind: IpcErrorKind,
+    message: string,
+    code: number | null = null,
+    stdout = "",
+  ): GitError {
+    return new GitError(message, code, stdout, kind);
   }
 }
 
@@ -26,6 +43,13 @@ export class GitError extends Error {
  *  or `fallback` when there's nothing usable. */
 export function lastStderrLine(stderr: string, fallback: string): string {
   return stderr.trim().split("\n").pop()?.trim() || fallback;
+}
+
+/** Whether a rejected child_process run died from its own timeout (killed by
+ *  the `timeout` option) rather than a real exit. */
+export function isExecTimeout(err: unknown): boolean {
+  const e = err as { killed?: boolean; code?: number | string } | null | undefined;
+  return e?.killed === true || e?.code === "ETIMEDOUT";
 }
 
 export async function git(
@@ -46,6 +70,9 @@ export async function git(
     });
     return stdout;
   } catch (error) {
+    if (isExecTimeout(error)) {
+      throw new GitError("The git command timed out.", null, "", "TIMEOUT");
+    }
     const err = error as NodeJS.ErrnoException & {
       stderr?: string;
       stdout?: string;

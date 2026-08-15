@@ -6,6 +6,7 @@ import { shell } from "electron";
 
 import { GitError, lastStderrLine, repoRoot, run } from "./core.js";
 import { parseFileDiff } from "./diff.js";
+import { classifyGhError } from "./ghError.js";
 import { GIT_AUTHOR_AVATAR_CAP, GIT_CONTRIBUTOR_CAP } from "./types.js";
 import type {
   GitCommitAuthors,
@@ -44,7 +45,7 @@ const NOT_AUTHENTICATED_MESSAGE = "Sign in to GitHub with gh auth login to see p
 
 /** Run `gh` and return stdout. A missing gh binary surfaces as a friendly
  *  GitError instead of an ENOENT crash; any other failure carries gh's last
- *  stderr line. */
+ *  stderr line, classified onto a semantic kind. */
 async function gh(cwd: string | undefined, args: string[]): Promise<string> {
   try {
     const { stdout } = await run("gh", args, {
@@ -61,8 +62,11 @@ async function gh(cwd: string | undefined, args: string[]): Promise<string> {
       stdout?: string;
       code?: number | string;
     };
-    if (err.code === "ENOENT") throw new GitError(NOT_INSTALLED_MESSAGE, null);
-    throw new GitError(lastStderrLine(err.stderr ?? "", err.message), null);
+    if (err.code === "ENOENT") {
+      throw GitError.classified("NOT_INSTALLED", NOT_INSTALLED_MESSAGE, null);
+    }
+    const line = lastStderrLine(err.stderr ?? "", err.message);
+    throw GitError.classified(classifyGhError(line) ?? "INTERNAL", line, null);
   }
 }
 
@@ -79,7 +83,7 @@ export async function status(): Promise<GitHubStatus> {
   try {
     out = await gh(os.homedir(), ["auth", "status", "--json", "hosts"]);
   } catch (error) {
-    if (error instanceof GitError && error.message === NOT_INSTALLED_MESSAGE) {
+    if (error instanceof GitError && error.kind === "NOT_INSTALLED") {
       return { installed: false, authenticated: false, user: null, message: NOT_INSTALLED_MESSAGE };
     }
     // gh runs but reported a problem (typically "please run: gh auth login").
@@ -236,7 +240,7 @@ export async function prs(
   opts?: { state?: "open" | "all"; limit?: number },
 ): Promise<GitHubPullRequest[]> {
   const root = await repoRoot(dir);
-  if (!root) throw new GitError("Not inside a git repository.", null);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
   const state = opts?.state ?? "open";
   const limit = Number.isFinite(opts?.limit) ? Math.max(1, Math.floor(opts?.limit ?? 50)) : 50;
   const out = await gh(root, [
@@ -280,11 +284,9 @@ export async function prs(
 function isRepoViewAbsence(error: unknown): boolean {
   if (!(error instanceof GitError)) return false;
   return (
-    error.message === NOT_INSTALLED_MESSAGE ||
-    /auth(enticat| login)|bad credentials|\b401\b/i.test(error.message) ||
-    /no git remotes found|do not point to a known GitHub host|could not determine the default repository/i.test(
-      error.message,
-    )
+    error.kind === "NOT_INSTALLED" ||
+    error.kind === "NOT_AUTHENTICATED" ||
+    error.kind === "NO_GITHUB_REMOTE"
   );
 }
 
@@ -659,7 +661,7 @@ export async function prDetail(
   const root = await repoRoot(dir);
   if (!root) return null;
   if (!Number.isInteger(number) || number <= 0) {
-    throw new GitError(`Invalid pull request number: ${number}`, null);
+    throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
   }
   let out: string;
   try {
@@ -667,7 +669,7 @@ export async function prDetail(
   } catch (error) {
     if (isRepoViewAbsence(error)) return null;
     // A number that doesn't exist is an empty view, not a broken one.
-    if (error instanceof GitError && /no pull requests found|could not resolve/i.test(error.message)) {
+    if (error instanceof GitError && error.kind === "NOT_FOUND") {
       return null;
     }
     throw error;
@@ -837,7 +839,7 @@ export async function prDiff(dir: string, number: number): Promise<GitFileDiff[]
   const root = await repoRoot(dir);
   if (!root) return [];
   if (!Number.isInteger(number) || number <= 0) {
-    throw new GitError(`Invalid pull request number: ${number}`, null);
+    throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
   }
   let out: string;
   try {
@@ -932,7 +934,7 @@ export async function createPr(
   opts: GitHubPrCreateOptions,
 ): Promise<GitHubPrCreateResult> {
   const root = await repoRoot(dir);
-  if (!root) throw new GitError("Not inside a git repository.", null);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
   const title = opts.title.trim();
   if (!title) throw new GitError("Pull request title is empty.", null);
   const args = ["pr", "create", "--title", title];
@@ -960,9 +962,9 @@ export async function createPr(
 /** Check out a pull request's head branch locally (via gh). */
 export async function checkoutPr(dir: string, number: number): Promise<void> {
   const root = await repoRoot(dir);
-  if (!root) throw new GitError("Not inside a git repository.", null);
+  if (!root) throw GitError.classified("NOT_A_REPO", "Not inside a git repository.", null);
   if (!Number.isInteger(number) || number <= 0) {
-    throw new GitError(`Invalid pull request number: ${number}`, null);
+    throw GitError.classified("INVALID_INPUT", `Invalid pull request number: ${number}`, null);
   }
   await gh(root, ["pr", "checkout", String(number)]);
 }
@@ -970,7 +972,7 @@ export async function checkoutPr(dir: string, number: number): Promise<void> {
 /** Open a URL in the user's real browser. Refuses anything but http(s). */
 export async function open(url: string): Promise<void> {
   if (!/^https?:\/\//i.test(url.trim())) {
-    throw new GitError(`Refusing to open a non-http URL: ${url}`, null);
+    throw GitError.classified("INVALID_INPUT", `Refusing to open a non-http URL: ${url}`, null);
   }
   await shell.openExternal(url.trim());
 }

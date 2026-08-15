@@ -82,7 +82,7 @@ async function findReadme(root: string): Promise<string | null> {
 
 /** The repo's README, capped at 512 KB (cut back to a line boundary, then
  *  `\n\n…`). Null when the repo has no README — a normal state, not an error. */
-export async function readme(dir: string): Promise<GitReadme | null> {
+export async function readme(dir: string, signal?: AbortSignal): Promise<GitReadme | null> {
   const root = await repoRoot(dir);
   if (!root) return null;
   const rel = await findReadme(root);
@@ -91,8 +91,9 @@ export async function readme(dir: string): Promise<GitReadme | null> {
   if (abs === null) return null;
   let buf: Buffer;
   try {
-    buf = await readFile(abs);
-  } catch {
+    buf = await readFile(abs, signal ? { signal } : undefined);
+  } catch (error) {
+    if (signal?.aborted) throw error;
     // Unreadable (a broken pipe of a symlink, permissions…) — treat as absent.
     return null;
   }
@@ -164,7 +165,11 @@ function firstLocalImageSrc(markdown: string): string | null {
 /** Read a repo-relative logo into a base64 data URL, or null when it is
  *  missing, unreadable, has an unmapped extension, or exceeds the 512 KB cap
  *  (a truncated image is broken — oversize means "doesn't qualify"). */
-async function readLogoDataUrl(root: string, relPath: string): Promise<string | null> {
+async function readLogoDataUrl(
+  root: string,
+  relPath: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const abs = safeRepoPath(root, relPath);
   if (abs === null) return null;
   const ext = path.extname(relPath).slice(1).toLowerCase();
@@ -172,8 +177,9 @@ async function readLogoDataUrl(root: string, relPath: string): Promise<string | 
   if (!mime) return null;
   let buf: Buffer;
   try {
-    buf = await readFile(abs);
-  } catch {
+    buf = await readFile(abs, signal ? { signal } : undefined);
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return null;
   }
   if (buf.length === 0 || buf.length > LOGO_CAP) return null;
@@ -184,19 +190,19 @@ async function readLogoDataUrl(root: string, relPath: string): Promise<string | 
  *  README's first image that points at a repo-local file (resolved against the
  *  README's directory, and rejected if it escapes the repo root). Null when
  *  nothing qualifies. */
-export async function logo(dir: string): Promise<GitLogo | null> {
+export async function logo(dir: string, signal?: AbortSignal): Promise<GitLogo | null> {
   const root = await repoRoot(dir);
   if (!root) return null;
   for (const rel of LOGO_CANDIDATES) {
-    const dataUrl = await readLogoDataUrl(root, rel);
+    const dataUrl = await readLogoDataUrl(root, rel, signal);
     if (dataUrl) return { path: rel, dataUrl };
   }
-  const repoReadme = await readme(dir);
+  const repoReadme = await readme(dir, signal);
   if (!repoReadme) return null;
   const src = firstLocalImageSrc(repoReadme.markdown);
   if (!src) return null;
   const rel = path.posix.normalize(path.posix.join(path.posix.dirname(repoReadme.path), src));
-  const dataUrl = await readLogoDataUrl(root, rel);
+  const dataUrl = await readLogoDataUrl(root, rel, signal);
   return dataUrl ? { path: rel, dataUrl } : null;
 }
 

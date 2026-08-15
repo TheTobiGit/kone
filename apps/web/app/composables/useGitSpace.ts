@@ -2,6 +2,7 @@ import { computed, ref, type Ref } from "vue";
 import type { Project } from "~/composables/useProject";
 import type { useProjectGit } from "~/composables/useProjectGit";
 import { createSectionSerializer } from "~/utils/latestWins";
+import { classifyIpcError, kindHint } from "~/utils/ipcError";
 import type {
   GitBranch,
   GitCommit,
@@ -73,6 +74,7 @@ export function useGitSpace(
   const loaded = ref(false);
   const op = ref<GitSpaceOp | null>(null);
   const error = ref<string | null>(null);
+  const errorKind = ref<string | null>(null);
 
   const remotes = ref<GitRemote[]>([]);
   const state = ref<GitRepoState>({ operation: "none", conflicts: [] });
@@ -305,10 +307,13 @@ export function useGitSpace(
     try {
       await run();
       error.value = null;
+      errorKind.value = null;
       await after();
       return true;
     } catch (e) {
-      error.value = messageOf(e);
+      const c = classifyIpcError(e, "Something went wrong");
+      errorKind.value = c.kind;
+      error.value = kindHint(c.kind) ?? c.message;
       return false;
     } finally {
       op.value = null;
@@ -414,10 +419,13 @@ export function useGitSpace(
     try {
       const result = await bridge.github.createPr(dir(), opts);
       error.value = null;
+      errorKind.value = null;
       await loadPrs();
       return result;
     } catch (e) {
-      error.value = messageOf(e);
+      const c = classifyIpcError(e, "Something went wrong");
+      errorKind.value = c.kind;
+      error.value = kindHint(c.kind) ?? c.message;
       return null;
     } finally {
       op.value = null;
@@ -437,6 +445,7 @@ export function useGitSpace(
     loaded,
     op,
     error,
+    errorKind,
 
     remotes,
     origin,
@@ -491,18 +500,4 @@ export function useGitSpace(
     checkoutPr,
     openExternal,
   };
-}
-
-/** git writes paragraphs; the masthead has one line. Take the last thing it
- *  said, which is the part that names the actual failure. */
-function messageOf(e: unknown): string {
-  const raw = e instanceof Error ? e.message : String(e);
-  const line = raw
-    .split("\n")
-    .map((l) => l.trim())
-    // Electron prefixes an IPC rejection with "Error invoking remote method …:",
-    // which is noise in front of git's real complaint.
-    .filter((l) => l.length > 0 && !l.startsWith("Error invoking remote method"))
-    .pop();
-  return line ?? "Something went wrong";
 }

@@ -84,6 +84,7 @@ const CONTENT_CAP = 512 * 1024; // 512 KB — ample for source, guards huge blob
 export async function content(
   dir: string,
   relPath: string,
+  signal?: AbortSignal,
 ): Promise<GitFileContent | null> {
   const root = await repoRoot(dir);
   if (!root) return null;
@@ -91,12 +92,14 @@ export async function content(
   if (abs === null) return null;
   if (relPath.endsWith("/")) return { text: null, binary: false, truncated: false };
   try {
-    const buf = await readFile(abs);
+    const buf = await readFile(abs, signal ? { signal } : undefined);
     if (buf.includes(0)) return { text: null, binary: true, truncated: false };
     const truncated = buf.length > CONTENT_CAP;
     const slice = truncated ? buf.subarray(0, CONTENT_CAP) : buf;
     return { text: slice.toString("utf8"), binary: false, truncated };
-  } catch {
+  } catch (error) {
+    // An aborted read must surface, not read as "no content".
+    if (signal?.aborted) throw error;
     // Missing (e.g. a deleted file) or unreadable — no content to preview.
     return { text: null, binary: false, truncated: false };
   }

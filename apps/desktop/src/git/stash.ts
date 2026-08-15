@@ -1,4 +1,5 @@
 import { GitError, git, repoRoot } from "./core.js";
+import { withRepoMutation } from "./mutationLock.js";
 import type { GitStashEntry } from "./types.js";
 
 // The stash surface. Two parsing rules matter: the stash ref comes straight
@@ -7,6 +8,9 @@ import type { GitStashEntry } from "./types.js";
 // structurally ("WIP on <branch>: <sha> " for the default stash, "On <branch>:
 // " for `stash push -m`) — never by splitting on ":", because stash messages
 // routinely contain colons.
+//
+// Push/apply/drop all take the index lock, so they run under the repo mutation
+// queue and must not overlap other kone git writes.
 
 /** "WIP on main: b6afb12 subject" / "On main: message" → message + branch.
  *  Branch names may contain spaces, so the branch is the non-greedy span up to
@@ -65,12 +69,14 @@ export async function stashPush(
   dir: string,
   opts?: { message?: string; includeUntracked?: boolean },
 ): Promise<void> {
-  const root = await repoRoot(dir);
-  if (!root) return;
-  const args = ["stash", "push"];
-  if (opts?.includeUntracked) args.push("-u");
-  if (opts?.message?.trim()) args.push("-m", opts.message.trim());
-  await git(root, args);
+  await withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root) return;
+    const args = ["stash", "push"];
+    if (opts?.includeUntracked) args.push("-u");
+    if (opts?.message?.trim()) args.push("-m", opts.message.trim());
+    await git(root, args);
+  });
 }
 
 /** Apply a stash entry by its list index; `pop` additionally drops it once the
@@ -82,22 +88,26 @@ export async function stashApply(
   index: number,
   opts?: { pop?: boolean },
 ): Promise<void> {
-  const root = await repoRoot(dir);
-  if (!root) return;
-  const ref = stashRefFor(index);
-  try {
-    await git(root, opts?.pop ? ["stash", "pop", ref] : ["stash", "apply", ref]);
-  } catch (error) {
-    if (error instanceof GitError) {
-      const conflictReport = error.stdout.trim();
-      if (conflictReport) throw new GitError(conflictReport, error.code);
+  await withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root) return;
+    const ref = stashRefFor(index);
+    try {
+      await git(root, opts?.pop ? ["stash", "pop", ref] : ["stash", "apply", ref]);
+    } catch (error) {
+      if (error instanceof GitError) {
+        const conflictReport = error.stdout.trim();
+        if (conflictReport) throw new GitError(conflictReport, error.code);
+      }
+      throw error;
     }
-    throw error;
-  }
+  });
 }
 
 export async function stashDrop(dir: string, index: number): Promise<void> {
-  const root = await repoRoot(dir);
-  if (!root) return;
-  await git(root, ["stash", "drop", stashRefFor(index)]);
+  await withRepoMutation(dir, async () => {
+    const root = await repoRoot(dir);
+    if (!root) return;
+    await git(root, ["stash", "drop", stashRefFor(index)]);
+  });
 }
