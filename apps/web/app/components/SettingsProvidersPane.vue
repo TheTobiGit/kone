@@ -5,6 +5,7 @@ import {
   AiChipIcon,
   AlertCircleIcon,
   ArrowUp02Icon,
+  ComputerTerminal01Icon,
   Copy01Icon,
   Folder01Icon,
   GitForkIcon,
@@ -293,26 +294,23 @@ const INSTALL_SOURCE_LABEL: Record<string, string> = {
 /** What the version block should say about standing, in words. The distinction
  *  that matters: a CLI kone *can't* look up is not "up to date" and not "behind"
  *  — it's simply not knowable, and saying so is more useful than a guess. */
-const standingLine = computed<{ text: string; tone: "ink" | "muted" }>(() => {
+const standingLine = computed<string | null>(() => {
   const m = current.value.upkeep;
-  if (!m) return { text: "Reading the install…", tone: "muted" };
+  if (!m) return "Reading the install…";
   if (m.installSource === "bundled") {
-    return { text: "Updates arrive with kone itself.", tone: "muted" };
+    return "Updates arrive with kone itself.";
   }
   if (!current.value.status?.available) {
-    return { text: "Nothing installed to compare.", tone: "muted" };
+    return "Nothing installed to compare.";
   }
-  if (m.standing === "behind" && m.latestVersion) {
-    return { text: `Version ${m.latestVersion} is available.`, tone: "ink" };
-  }
-  if (m.standing === "current") return { text: "Up to date.", tone: "muted" };
+  // Behind is the Latest row's job — a second sentence repeating the number
+  // is the same fact twice. The row wears a New mark instead.
+  if (m.standing === "behind" && m.latestVersion) return null;
+  if (m.standing === "current") return "Up to date.";
   if (!m.latestKnowable) {
-    return {
-      text: "This CLI updates itself and publishes no version kone can read.",
-      tone: "muted",
-    };
+    return "This CLI updates itself and publishes no version kone can read.";
   }
-  return { text: "Couldn't reach the registry to compare.", tone: "muted" };
+  return "Couldn't reach the registry to compare.";
 });
 
 const run = computed(() => upkeep.runFor(current.value.provider));
@@ -752,7 +750,13 @@ async function copy(text: string) {
                   <HugeiconsIcon :icon="ArrowUp02Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
                   Latest
                 </dt>
-                <dd>{{ current.upkeep?.latestVersion ?? "—" }}</dd>
+                <dd>
+                  {{ current.upkeep?.latestVersion ?? "—" }}
+                  <span
+                    v-if="hasUpdate(current.status, current.upkeep)"
+                    class="pp__new"
+                  >New</span>
+                </dd>
               </div>
 
               <div class="pp__factsrow">
@@ -772,32 +776,38 @@ async function copy(text: string) {
                 </dt>
                 <dd>{{ current.upkeep.packageName }}</dd>
               </div>
+
+              <!-- The exact command kone would run for the card's Update pill,
+                   shown before it runs, not after it fails: an update through
+                   the wrong package manager is the classic way to end up with
+                   two installs. -->
+              <div
+                v-if="current.upkeep?.canUpdate && current.status?.available && current.upkeep.updateCommand"
+                class="pp__factsrow"
+              >
+                <dt>
+                  <HugeiconsIcon :icon="ComputerTerminal01Icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+                  Update
+                </dt>
+                <dd class="pp__factsval--cmd">
+                  <code>{{ current.upkeep.updateCommand }}</code>
+                  <button
+                    type="button"
+                    class="pp__copy"
+                    :tabindex="open ? 0 : -1"
+                    aria-label="Copy the update command"
+                    @click="copy(current.upkeep.updateCommand!)"
+                  >
+                    <HugeiconsIcon :icon="Copy01Icon" :size="12" :stroke-width="1.9" aria-hidden="true" />
+                    {{ copied === current.upkeep.updateCommand ? "Copied" : "Copy" }}
+                  </button>
+                </dd>
+              </div>
             </dl>
 
-            <p class="pp__standing" :class="`pp__standing--${standingLine.tone}`">
-              {{ standingLine.text }}
+            <p v-if="standingLine" class="pp__standing">
+              {{ standingLine }}
             </p>
-
-            <!-- The exact command kone would run for the card's Update pill,
-                 shown before it runs, not after it fails: an update through the
-                 wrong package manager is the classic way to end up with two
-                 installs. -->
-            <div
-              v-if="current.upkeep?.canUpdate && current.status?.available && current.upkeep.updateCommand"
-              class="pp__cmd pp__cmd--inline"
-            >
-              <code class="pp__cmdtext">{{ current.upkeep.updateCommand }}</code>
-              <button
-                type="button"
-                class="pp__copy"
-                :tabindex="open ? 0 : -1"
-                aria-label="Copy the update command"
-                @click="copy(current.upkeep.updateCommand!)"
-              >
-                <HugeiconsIcon :icon="Copy01Icon" :size="12" :stroke-width="1.9" aria-hidden="true" />
-                {{ copied === current.upkeep.updateCommand ? "Copied" : "Copy" }}
-              </button>
-            </div>
 
             <div v-if="runLine" class="pp__result">
               <p class="pp__resulttext" :class="{ 'pp__resulttext--bad': runLine.bad }">
@@ -1409,6 +1419,10 @@ async function copy(text: string) {
   color: var(--muted);
 }
 .pp__facts dd {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 0;
   min-width: 0;
   font-family: var(--font-mono);
@@ -1418,10 +1432,49 @@ async function copy(text: string) {
   color: var(--ink-soft);
   overflow-wrap: anywhere;
 }
+.pp__new {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--ink);
+}
 .pp__factsval--plain {
   font-family: var(--font-sans);
   font-size: 12.5px;
   font-variant-numeric: normal;
+}
+.pp__factsval--cmd {
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  overflow: hidden;
+  overflow-wrap: normal;
+}
+.pp__factsval--cmd code {
+  min-width: 0;
+  flex: 1 1 auto;
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pp__factsval--cmd .pp__copy {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  padding-left: 18px;
+  background: linear-gradient(to right, transparent, var(--panel) 18px);
+}
+.pp__factsval--cmd .pp__copy:hover {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--ink) 8%, var(--panel)) 18px
+  );
 }
 
 /* ── the model roster ───────────────────────────────────────────────────────── */
@@ -1535,32 +1588,9 @@ async function copy(text: string) {
 .pp__standing {
   font-size: 12px;
   line-height: 1.4;
-}
-.pp__standing--ink {
-  color: var(--ink);
-}
-.pp__standing--muted {
   color: var(--muted);
 }
 
-/* A command, on the surface rather than in a box: a soft fill, the text mono in
-   its own case, and a copy affordance that only colours up on hover. */
-.pp__cmd {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  padding: 6px 6px 6px 10px;
-  border-radius: 8px;
-  background-color: var(--hover);
-}
-.pp__cmdtext {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--ink-soft);
-  overflow-wrap: anywhere;
-}
 .pp__copy {
   display: inline-flex;
   align-items: center;
