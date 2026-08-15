@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { writeFileAtomicSync } from "../atomicWrite.js";
 
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "./types.js";
 import { userDataPath } from "./userDataDir.js";
@@ -83,7 +84,7 @@ export function readProviderCache(): ProviderSurfaceSnapshot {
 function persist(next: ProviderSurfaceSnapshot): ProviderSurfaceSnapshot {
   cache = next;
   try {
-    fs.writeFileSync(cacheFilePath(), JSON.stringify(next), "utf8");
+    writeFileAtomicSync(cacheFilePath(), JSON.stringify(next));
   } catch {
     // Best-effort: an I/O failure keeps the in-memory snapshot authoritative
     // for this session rather than crashing the app over a cache write.

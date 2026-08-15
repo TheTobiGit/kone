@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { writeFileAtomicSync } from "./atomicWrite.js";
+
 import { app, type BrowserWindow, type Rectangle, screen } from "electron";
 
 // Persists the main window's size / position between launches so the app
@@ -124,7 +126,7 @@ export function manageWindowState(win: BrowserWindow) {
     if (serialized === lastWritten) return;
 
     try {
-      fs.writeFileSync(stateFilePath(), serialized, "utf8");
+      writeFileAtomicSync(stateFilePath(), serialized);
       lastWritten = serialized;
     } catch {
       // Persisting window state is best-effort; never crash the app over it.
