@@ -1466,6 +1466,11 @@ export class ConversationStore {
         case "item.started":
         case "item.updated":
         case "item.completed": {
+          // No touch() here: `item.updated` fires once per text delta, so a
+          // recency stamp on this branch would rewrite the thread row thousands
+          // of times a turn. `last_activity_at` only needs turn granularity —
+          // turn.started and turn.completed already stamp it — so the per-delta
+          // churn is pure write amplification with no ordering consequence.
           const it = event.item;
           this.prepare(
             db,
@@ -1490,7 +1495,6 @@ export class ConversationStore {
             it.tasks?.length ? JSON.stringify(it.tasks) : null,
             event.subagentToolUseId ?? null,
           );
-          this.touch(db, event.threadId, event.at);
           break;
         }
         case "subagent.started":
@@ -1541,7 +1545,6 @@ export class ConversationStore {
             s.startedAt,
             s.endedAt ?? null,
           );
-          this.touch(db, event.threadId, event.at);
           break;
         }
         case "turn.completed": {
@@ -3384,6 +3387,18 @@ export class ConversationStore {
       return null;
     }
   }
+
+  /** Close the open database connection, if any. */
+  close(): void {
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {
+        /* best-effort */
+      }
+      this.db = null;
+    }
+  }
 }
 
 /** The board document as it lives in the store — a serialisable layout blob.
@@ -3898,3 +3913,12 @@ export function getConversationStore(): ConversationStore {
   if (!store) store = new ConversationStore();
   return store;
 }
+
+/** Drop the module-level singleton so tests start from a clean instance. */
+export function resetConversationStoreForTests(): void {
+  if (store) {
+    store.close();
+    store = null;
+  }
+}
+
