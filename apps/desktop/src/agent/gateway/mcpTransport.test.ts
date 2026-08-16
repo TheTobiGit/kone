@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { GatewayCredentials } from "./credentials.js";
+import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import { createRegistry, gatewayToolErrorResult } from "./registry.js";
 import { GatewayToolError } from "./schemas.js";
 import {
@@ -285,5 +286,214 @@ describe("gateway transport methods", () => {
     const res = await post(transport, auth, [{ jsonrpc: "2.0", id: 1, method: "ping" }, "junk"]);
     expect((res.body as any[]).length).toBe(2);
     expect((res.body as any[])[1].error.code).toBe(-32600);
+  });
+});
+
+describe("in-flight MCP cancellation (cross-POST)", () => {
+  test(
+    "a later POST of notifications/cancelled aborts an in-flight tools/call",
+    { timeout: 2000 },
+    async () => {
+    const credentials = new GatewayCredentials();
+    const store: GatewayTransportStore = {
+      threadProjectPath: (threadId: string) => (threadId === "thread-1" ? PROJECT : null),
+    };
+    let started!: () => void;
+    const startedP = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let sawAbort = false;
+    const registry = createRegistry([
+      {
+        name: "hang",
+        description: "blocks until aborted",
+        inputSchema: z.object({}),
+        jsonSchema: { type: "object" },
+        permission: "allow",
+        requiresActiveTurn: false,
+        handler: async (ctx) => {
+          started();
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 8_000);
+            const onAbort = () => {
+              sawAbort = true;
+              clearTimeout(timer);
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            };
+            if (ctx.signal?.aborted) {
+              onAbort();
+              return;
+            }
+            ctx.signal?.addEventListener("abort", onAbort, { once: true });
+          });
+          return { content: [{ type: "text", text: "should-not-land" }] };
+        },
+      },
+    ]);
+    const transport = makeMcpTransport({
+      credentials,
+      registry,
+      store,
+      turnState: new Map(),
+      serverVersion: "0.1.0",
+      instructions: "test",
+    });
+    const token = credentials.issueSessionToken("thread-1", "claudeAgent");
+    const auth = `Bearer ${token}`;
+
+    const callP = post(transport, auth, {
+      jsonrpc: "2.0",
+      id: 42,
+      method: "tools/call",
+      params: { name: "hang", arguments: {} },
+    });
+    await startedP;
+    const cancelRes = await post(transport, auth, {
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: 42 },
+    });
+    expect(cancelRes.status).toBe(202);
+    const callRes = await callP;
+    expect(callRes.status).toBe(202);
+    expect(callRes.body).toBeUndefined();
+    expect(sawAbort).toBe(true);
+  });
+
+  test("cancelling one thread's request id leaves another thread's same-id call alone", async () => {
+    const credentials = new GatewayCredentials();
+    const store: GatewayTransportStore = {
+      threadProjectPath: (threadId: string) =>
+        threadId === "thread-1" || threadId === "thread-2" ? PROJECT : null,
+    };
+    let started!: () => void;
+    const startedP = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const releaseP = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let sawAbort = false;
+    const registry = createRegistry([
+      {
+        name: "hang",
+        description: "blocks until released or aborted",
+        inputSchema: z.object({}),
+        jsonSchema: { type: "object" },
+        permission: "allow",
+        requiresActiveTurn: false,
+        handler: async (ctx) => {
+          started();
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => {
+              sawAbort = true;
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            };
+            if (ctx.signal?.aborted) {
+              onAbort();
+              return;
+            }
+            ctx.signal?.addEventListener("abort", onAbort, { once: true });
+            void releaseP.then(resolve);
+          });
+          return { content: [{ type: "text", text: "landed" }] };
+        },
+      },
+    ]);
+    const transport = makeMcpTransport({
+      credentials,
+      registry,
+      store,
+      turnState: new Map(),
+      serverVersion: "0.1.0",
+      instructions: "test",
+    });
+    const auth2 = `Bearer ${credentials.issueSessionToken("thread-2", "claudeAgent")}`;
+    const auth1 = `Bearer ${credentials.issueSessionToken("thread-1", "claudeAgent")}`;
+
+    const callP = post(transport, auth2, {
+      jsonrpc: "2.0",
+      id: 42,
+      method: "tools/call",
+      params: { name: "hang", arguments: {} },
+    });
+    await startedP;
+    const cancelRes = await post(transport, auth1, {
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: 42 },
+    });
+    expect(cancelRes.status).toBe(202);
+    release();
+    const callRes = await callP;
+    expect(callRes.status).toBe(200);
+    expect((callRes.body as any).result.content[0].text).toBe("landed");
+    expect(sawAbort).toBe(false);
+  });
+
+  test("cancelTurn on the injected registry aborts a call bound to that turn", async () => {
+    const credentials = new GatewayCredentials();
+    const store: GatewayTransportStore = {
+      threadProjectPath: (threadId: string) => (threadId === "thread-1" ? PROJECT : null),
+    };
+    let started!: () => void;
+    const startedP = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let sawAbort = false;
+    const registry = createRegistry([
+      {
+        name: "hang",
+        description: "blocks until aborted",
+        inputSchema: z.object({}),
+        jsonSchema: { type: "object" },
+        permission: "allow",
+        requiresActiveTurn: false,
+        handler: async (ctx) => {
+          started();
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 8_000);
+            const onAbort = () => {
+              sawAbort = true;
+              clearTimeout(timer);
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            };
+            if (ctx.signal?.aborted) {
+              onAbort();
+              return;
+            }
+            ctx.signal?.addEventListener("abort", onAbort, { once: true });
+          });
+          return { content: [{ type: "text", text: "should-not-land" }] };
+        },
+      },
+    ]);
+    const inFlight = makeInFlightRequestRegistry();
+    const turnState = new Map<string, { turnId: string; running: boolean }>();
+    turnState.set("thread-1", { turnId: "turn-9", running: true });
+    const transport = makeMcpTransport({
+      credentials,
+      registry,
+      store,
+      turnState,
+      serverVersion: "0.1.0",
+      instructions: "test",
+      inFlight,
+    });
+    const auth = `Bearer ${credentials.issueSessionToken("thread-1", "claudeAgent")}`;
+
+    const callP = post(transport, auth, {
+      jsonrpc: "2.0",
+      id: 42,
+      method: "tools/call",
+      params: { name: "hang", arguments: {} },
+    });
+    await startedP;
+    inFlight.cancelTurn("thread-1", "turn-9");
+    const callRes = await callP;
+    expect(callRes.status).toBe(202);
+    expect(callRes.body).toBeUndefined();
+    expect(sawAbort).toBe(true);
   });
 });

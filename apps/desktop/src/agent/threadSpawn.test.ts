@@ -546,7 +546,9 @@ describe("spawn engine", () => {
     expect(error).toBeInstanceOf(SpawnError);
     expect((error as SpawnError).code).toBe("provider_unavailable");
     // The row stays — a failed child is visible, not silently erased.
-    expect(store.spawnedChildren(CALLER.threadId)).toHaveLength(1);
+    const children = store.spawnedChildren(CALLER.threadId);
+    expect(children).toHaveLength(1);
+    const childId = children[0]!.threadId;
     // The child projects failed + terminal, and the settled turn's own error
     // rides up as the detail rather than being shadowed by a synthetic turn.
     const updates = bus.ofType("thread.spawn-updated");
@@ -554,6 +556,27 @@ describe("spawn engine", () => {
     expect(last.spawned.status).toBe("failed");
     expect(last.spawned.terminal).toBe(true);
     expect(last.spawned.detail).toContain("refused");
+    // The newly-started provider session must be torn down, not leaked in the background.
+    expect(providers.stopped).toContain(childId);
+  });
+
+  test("a sendThreadTurn rejection without prior events stops the session and leaves a synthetic failed turn", async () => {
+    const { engine, store, providers, dispatcher, bus } = makeEngine();
+    setupParent(store, providers);
+    dispatcher.failSend = true;
+
+    const error = await engine.spawn(CALLER, REQUEST).catch((e) => e);
+
+    expect(error).toBeInstanceOf(SpawnError);
+    expect((error as SpawnError).code).toBe("provider_unavailable");
+    const children = store.spawnedChildren(CALLER.threadId);
+    expect(children).toHaveLength(1);
+    const childId = children[0]!.threadId;
+    const updates = bus.ofType("thread.spawn-updated");
+    const last = updates.at(-1) as Extract<RuntimeEvent, { type: "thread.spawn-updated" }>;
+    expect(last.spawned.status).toBe("failed");
+    expect(last.spawned.terminal).toBe(true);
+    expect(providers.stopped).toContain(childId);
   });
 
   test("the in-memory live union stops a burst at the parent breadth cap", async () => {
@@ -846,6 +869,72 @@ describe("spawn engine", () => {
     expect(out.timedOut).toBe(true);
     expect(out.allTerminal).toBe(false);
     expect(out.threads[0].threadId).toBe(result.threadId);
+  });
+
+  test("waitFor with an already-aborted signal rejects immediately with AbortError", async () => {
+    const { engine, store, providers } = makeEngine();
+    setupParent(store, providers);
+
+    const result = await engine.spawn(CALLER, REQUEST);
+    const controller = new AbortController();
+    controller.abort();
+    // Count every settlement: the 20ms timeout must never get a chance to fire
+    // a second one — a leaked waiter would settle this promise again.
+    let settlements = 0;
+    const waiting = engine.waitFor({
+      threadIds: [result.threadId],
+      timeoutMs: 20,
+      scopeThreadId: CALLER.threadId,
+      signal: controller.signal,
+    });
+    waiting.then(
+      () => {
+        settlements++;
+      },
+      () => {
+        settlements++;
+      },
+    );
+    const started = Date.now();
+    const error = await waiting.catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).name).toBe("AbortError");
+    expect((error as Error).message).toBe("The wait was cancelled.");
+    // Rejected on entry, well before the 20ms timeout could have fired.
+    expect(Date.now() - started).toBeLessThan(20);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(settlements).toBe(1);
+  });
+
+  test("waitFor aborts a parked wait on signal and leaves no ghost waiter", async () => {
+    const { engine, store, providers } = makeEngine();
+    setupParent(store, providers);
+
+    // A freshly spawned child with no events: non-terminal, so the wait parks
+    // until the signal aborts it well before the 500ms timeout.
+    const result = await engine.spawn(CALLER, REQUEST);
+    const controller = new AbortController();
+    const waiting = engine.waitFor({
+      threadIds: [result.threadId],
+      timeoutMs: 500,
+      scopeThreadId: CALLER.threadId,
+      signal: controller.signal,
+    });
+    controller.abort();
+    const error = await waiting.catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).name).toBe("AbortError");
+
+    // The aborted waiter was removed from the list, not left to collide with
+    // a later wait on the same child: the fresh wait times out on its own
+    // 20ms timer and reports the child still non-terminal.
+    const out = await engine.waitFor({
+      threadIds: [result.threadId],
+      timeoutMs: 20,
+      scopeThreadId: CALLER.threadId,
+    });
+    expect(out.timedOut).toBe(true);
+    expect(out.allTerminal).toBe(false);
   });
 
   test("snapshot() recovers a child from the store with honest inputs", async () => {

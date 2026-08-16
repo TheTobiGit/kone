@@ -8,6 +8,7 @@ import {
   type ScratchpadStore,
 } from "./tools/scratchpad.js";
 import type { GatewayToolContext } from "./schemas.js";
+import { z } from "zod";
 
 const PROJECT = "/tmp/proj";
 
@@ -303,5 +304,44 @@ describe("kone_scratchpad_write", () => {
     });
     expect(secondTurn.isError).toBeUndefined();
     expect(secondTurn.structuredContent?.revision).toBe(2);
+  });
+});
+
+describe("registry AbortError passthrough", () => {
+  test("AbortError from a handler is rethrown, not mapped to isError", async () => {
+    const registry = createRegistry([
+      {
+        name: "hang",
+        description: "throws AbortError",
+        inputSchema: z.object({}),
+        jsonSchema: { type: "object" },
+        permission: "allow",
+        requiresActiveTurn: false,
+        handler: async () => {
+          throw Object.assign(new Error("The wait was cancelled."), { name: "AbortError" });
+        },
+      },
+    ]);
+    await expect(registry.call(ctx(), "hang", {})).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("a generic throw is still mapped to an internal isError result", async () => {
+    const registry = createRegistry([
+      {
+        name: "boom",
+        description: "throws",
+        inputSchema: z.object({}),
+        jsonSchema: { type: "object" },
+        permission: "allow",
+        requiresActiveTurn: false,
+        handler: async () => {
+          throw new Error("disk full");
+        },
+      },
+    ]);
+    const result = await registry.call(ctx(), "boom", {});
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error.code).toBe("internal");
+    expect(result.structuredContent?.error.message).toContain("disk full");
   });
 });

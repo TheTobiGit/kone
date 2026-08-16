@@ -42,7 +42,13 @@ type FakeSpawnRequest = {
   target: { provider: string; model?: string; effort?: string };
   mode?: string;
 };
-type FakeWaitInput = { threadIds: string[]; turnIds?: (string | undefined)[]; timeoutMs?: number; scopeThreadId: string };
+type FakeWaitInput = {
+  threadIds: string[];
+  turnIds?: (string | undefined)[];
+  timeoutMs?: number;
+  scopeThreadId: string;
+  signal?: AbortSignal;
+};
 type FakeTargetsReport = {
   providers: Array<{
     provider: string;
@@ -313,6 +319,38 @@ describe("spawn gateway tools", () => {
       turnIds: ["turn-1", "turn-9"],
     });
     expect((res.structuredContent as { threads: SpawnedThread[] }).threads).toHaveLength(2);
+  });
+
+  test("kone_wait_for_threads forwards ctx.signal into engine.waitFor", async () => {
+    const controller = new AbortController();
+    let captured: FakeWaitInput | null = null;
+    currentEngine = makeEngine({
+      waitFor: async (input) => {
+        captured = input;
+        return { threads: [], allTerminal: true, timedOut: false, turnIds: [] };
+      },
+    });
+    const tools = createSpawnTools({ store: makeStore() });
+    const waitTool = tools.find((t) => t.name === "kone_wait_for_threads")!;
+    const res = await waitTool.handler({ ...ctx, signal: controller.signal }, {
+      threadIds: ["child-1"],
+    });
+    expect(res.isError).toBeUndefined();
+    expect(captured).not.toBeNull();
+    expect(captured!.signal).toBe(controller.signal);
+  });
+
+  test("an AbortError from engine.waitFor is rethrown, not mapped to an error result", async () => {
+    currentEngine = makeEngine({
+      waitFor: async () => {
+        throw Object.assign(new Error("The wait was cancelled."), { name: "AbortError" });
+      },
+    });
+    const tools = createSpawnTools({ store: makeStore() });
+    const waitTool = tools.find((t) => t.name === "kone_wait_for_threads")!;
+    await expect(
+      waitTool.handler(ctx, { threadIds: ["child-1"] }),
+    ).rejects.toEqual(expect.objectContaining({ name: "AbortError" }));
   });
 
   test("kone_read_thread on an out-of-subtree id returns not_found", async () => {

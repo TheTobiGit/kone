@@ -78,86 +78,92 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  try {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
-  if (url.pathname === AGENT_GATEWAY_BOOTSTRAP_PATH) {
-    // proxy spawned by a provider whose plugin config must be secret-free on
-    // disk (Antigravity) redeems its env-carried single-use token here for the
-    // real session bearer. The session token itself never enters the provider
-    // process env, and the bootstrap dies after one exchange.
+    if (url.pathname === AGENT_GATEWAY_BOOTSTRAP_PATH) {
+      // proxy spawned by a provider whose plugin config must be secret-free on
+      // disk (Antigravity) redeems its env-carried single-use token here for the
+      // real session bearer. The session token itself never enters the provider
+      // process env, and the bootstrap dies after one exchange.
+      if (req.method !== "POST") {
+        res.writeHead(405, { Allow: "POST" });
+        res.end();
+        return;
+      }
+      const bootstrap = extractBearerToken(req.headers.authorization);
+      const sessionToken =
+        bootstrap === null ? null : credentials.exchangeStdioBootstrapToken(bootstrap);
+      if (sessionToken === null) {
+        unauthorized(res);
+        return;
+      }
+      sendJson(res, 200, { bearerToken: sessionToken });
+      return;
+    }
+
+    if (url.pathname !== AGENT_GATEWAY_MCP_PATH) {
+      sendJson(res, 404, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: JSON_RPC_INVALID_REQUEST, message: "Not found." },
+      });
+      return;
+    }
+
+    if (req.method === "GET" || req.method === "DELETE") {
+      // Stateless JSON-only server: no server-initiated stream (GET), and no
+      // session to tear down (DELETE).
+      res.writeHead(405, { Allow: "POST" });
+      res.end();
+      return;
+    }
+
     if (req.method !== "POST") {
       res.writeHead(405, { Allow: "POST" });
       res.end();
       return;
     }
-    const bootstrap = extractBearerToken(req.headers.authorization);
-    const sessionToken =
-      bootstrap === null ? null : credentials.exchangeStdioBootstrapToken(bootstrap);
-    if (sessionToken === null) {
+
+    const token = extractBearerToken(req.headers.authorization);
+    if (!token || credentials.verifySessionToken(token) === null) {
       unauthorized(res);
       return;
     }
-    sendJson(res, 200, { bearerToken: sessionToken });
-    return;
-  }
 
-  if (url.pathname !== AGENT_GATEWAY_MCP_PATH) {
-    sendJson(res, 404, {
-      jsonrpc: "2.0",
-      id: null,
-      error: { code: JSON_RPC_INVALID_REQUEST, message: "Not found." },
+    const body = await readBody(req);
+    if (body.kind === "too-large") {
+      sendJson(res, 413, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: JSON_RPC_INVALID_REQUEST, message: "Request body exceeds the 1 MiB limit." },
+      });
+      return;
+    }
+    if (body.kind === "invalid") {
+      sendJson(res, 400, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: JSON_RPC_PARSE_ERROR, message: "Invalid JSON body." },
+      });
+      return;
+    }
+
+    const result = await transport.handlePost({
+      authorizationHeader: req.headers.authorization,
+      body: body.body,
     });
-    return;
+    if (result.body === undefined) {
+      res.writeHead(result.status);
+      res.end();
+      return;
+    }
+    sendJson(res, result.status, result.body);
+  } catch (err) {
+    console.error("!!! GATEWAY ERROR !!!", err);
+    res.writeHead(500);
+    res.end("Internal Server Error");
   }
-
-  if (req.method === "GET" || req.method === "DELETE") {
-    // Stateless JSON-only server: no server-initiated stream (GET), and no
-    // session to tear down (DELETE).
-    res.writeHead(405, { Allow: "POST" });
-    res.end();
-    return;
-  }
-
-  if (req.method !== "POST") {
-    res.writeHead(405, { Allow: "POST" });
-    res.end();
-    return;
-  }
-
-  const token = extractBearerToken(req.headers.authorization);
-  if (!token || credentials.verifySessionToken(token) === null) {
-    unauthorized(res);
-    return;
-  }
-
-  const body = await readBody(req);
-  if (body.kind === "too-large") {
-    sendJson(res, 413, {
-      jsonrpc: "2.0",
-      id: null,
-      error: { code: JSON_RPC_INVALID_REQUEST, message: "Request body exceeds the 1 MiB limit." },
-    });
-    return;
-  }
-  if (body.kind === "invalid") {
-    sendJson(res, 400, {
-      jsonrpc: "2.0",
-      id: null,
-      error: { code: JSON_RPC_PARSE_ERROR, message: "Invalid JSON body." },
-    });
-    return;
-  }
-
-  const result = await transport.handlePost({
-    authorizationHeader: req.headers.authorization,
-    body: body.body,
-  });
-  if (result.body === undefined) {
-    res.writeHead(result.status);
-    res.end();
-    return;
-  }
-  sendJson(res, result.status, result.body);
 }
 
 async function readBody(

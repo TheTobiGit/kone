@@ -173,6 +173,12 @@ export type SpawnTargetsReport = {
 export const SPAWN_WAIT_DEFAULT_MS = 30_000;
 export const SPAWN_WAIT_MAX_MS = 60_000;
 
+/** The rejection a cancelled wait settles with — named AbortError so the
+ *  gateway transport can tell a client-cancelled call from a tool failure. */
+function abortWaitError(): Error {
+  return Object.assign(new Error("The wait was cancelled."), { name: "AbortError" });
+}
+
 export interface SpawnEngine {
   spawn(caller: SpawnCaller, request: SpawnRequest): Promise<SpawnThreadResult>;
   targets(caller: SpawnCaller): Promise<SpawnTargetsReport>;
@@ -189,6 +195,9 @@ export interface SpawnEngine {
     turnIds?: (string | undefined)[];
     timeoutMs?: number;
     scopeThreadId: string;
+    /** The caller's cancellation signal — aborting it tears down the parked
+     *  waiter and rejects the wait instead of holding to the timeout. */
+    signal?: AbortSignal;
   }): Promise<{
     threads: SpawnedThread[];
     allTerminal: boolean;
@@ -538,6 +547,12 @@ class SpawnEngineImpl implements SpawnEngine {
         turn.endedAt = at;
         turn.error = message;
       }
+      // Release any provider session startThread already started before
+      // sendThreadTurn failed, so the child process is not leaked in the background.
+      if (!child.sessionStopped) {
+        child.sessionStopped = true;
+        void this.providers.stopSession(child.threadId).catch(() => {});
+      }
       child.hasLiveSession = false;
       child.gate = null;
       if (!settledRunning) {
@@ -684,6 +699,7 @@ class SpawnEngineImpl implements SpawnEngine {
     turnIds?: (string | undefined)[];
     timeoutMs?: number;
     scopeThreadId: string;
+    signal?: AbortSignal;
   }): Promise<{
     threads: SpawnedThread[];
     allTerminal: boolean;
@@ -711,7 +727,13 @@ class SpawnEngineImpl implements SpawnEngine {
         );
       }
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      if (input.signal?.aborted) {
+        // Cancelled before we even parked — no waiter, no timer, so nothing is
+        // left behind to settle this promise later.
+        reject(abortWaitError());
+        return;
+      }
       const waiter: Waiter = {
         ids: [...input.threadIds],
         turnIds: input.turnIds ? [...input.turnIds] : undefined,
@@ -722,6 +744,22 @@ class SpawnEngineImpl implements SpawnEngine {
       waiter.timeout = setTimeout(() => this.finishWaiter(waiter, true), timeoutMs);
       this.waiters.push(waiter);
       this.checkWaiter(waiter);
+      const signal = input.signal;
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            // The waiter may already have finished (resolved or timed out) —
+            // then there is nothing to tear down and this is a no-op.
+            const index = this.waiters.indexOf(waiter);
+            if (index === -1) return;
+            this.waiters.splice(index, 1);
+            if (waiter.timeout) clearTimeout(waiter.timeout);
+            reject(abortWaitError());
+          },
+          { once: true },
+        );
+      }
     });
   }
 

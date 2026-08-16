@@ -281,4 +281,31 @@ describe("gateway integration (real store + HTTP)", () => {
 
     await gateway.shutdown();
   });
+
+  test("turn.aborted retires write authority for the thread's tokens", async () => {
+    const store = freshStore();
+    const { gateway, turn } = makeGateway(store);
+    await gateway.ready;
+
+    const conn = gateway.connectionForThread("thread-abort", "claudeAgent", "sonnet");
+    store.ensureThread({
+      threadId: "thread-abort",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+
+    // A running turn binds write authority.
+    turn({ type: "turn.started", threadId: "thread-abort", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" } as RuntimeEvent);
+    let res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "in turn" } } });
+    expect((res.json as any).result.structuredContent).toMatchObject({ revision: 1 });
+
+    // The abort terminal event retires the exact turn, so the next write is
+    // refused — the same branch that sweeps the turn's in-flight work.
+    turn({ type: "turn.aborted", threadId: "thread-abort", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1", reason: "interrupted" } as RuntimeEvent);
+    res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "after abort" } } });
+    expect((res.json as any).result.structuredContent.error.code).toBe("capability_denied");
+
+    await gateway.shutdown();
+  });
 });

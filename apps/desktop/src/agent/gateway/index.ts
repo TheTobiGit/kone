@@ -14,6 +14,7 @@ import type { ConversationStore } from "../ConversationStore.js";
 import type { EmitEvent, ProviderKind, RuntimeEvent } from "../types.js";
 import { GatewayCredentials, type GatewayConnection } from "./credentials.js";
 import { startGatewayHttpServer } from "./httpServer.js";
+import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeMcpTransport } from "./mcpTransport.js";
 import { createRegistry } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
@@ -60,6 +61,7 @@ export interface GatewayInput {
 
 export function createGateway(input: GatewayInput): GatewayHandle {
   const credentials = new GatewayCredentials();
+  const inFlight = makeInFlightRequestRegistry();
   const turnState = new Map<string, TurnState>();
 
   const tools = [
@@ -73,6 +75,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     store: input.store,
     turnState,
     serverVersion: GATEWAY_SERVER_VERSION,
+    inFlight,
     instructions:
       "kone gateway: tools that read and write the project scratchpad, and that " +
       "open, follow and read kone threads. Scratchpad writes are attributed to " +
@@ -97,6 +100,11 @@ export function createGateway(input: GatewayInput): GatewayHandle {
       for (const token of credentials.tokensForThread(event.threadId)) {
         credentials.retireSessionTurn(token, event.turnId);
       }
+      // The turn event is also the abort path some MCP clients rely on — they
+      // omit notifications/cancelled when the parent operation is interrupted —
+      // so sweep the turn's in-flight work here. cancelTurn tombstones the turn
+      // id, cancelling a request that races Stop the moment it registers.
+      void inFlight.cancelTurn(event.threadId, event.turnId).settled;
     }
   });
 
@@ -106,7 +114,12 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     connectionForThread: (threadId, provider, model) =>
       credentials.connectionForThread(threadId, provider, model),
     issueBootstrapToken: (sessionToken) => credentials.issueStdioBootstrapToken(sessionToken),
-    revokeThread: (threadId) => credentials.revokeThread(threadId),
+    revokeThread: (threadId) => {
+      // Revoke in-flight work before dropping the token so an active
+      // cancel() still resolves its registration against a live session.
+      inFlight.revokeSession(threadId);
+      credentials.revokeThread(threadId);
+    },
     mcpEndpointUrl: () => credentials.mcpEndpointUrl(),
     ready: server.ready,
     shutdown: async () => {

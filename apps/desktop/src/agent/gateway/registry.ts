@@ -102,6 +102,10 @@ export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry
       if (error instanceof GatewayToolError) {
         return gatewayToolErrorResult(error);
       }
+      // A cancelled in-flight call is not a tool failure — the transport
+      // turns AbortError into an empty 202. Swallowing it here would log a
+      // fake crash and return isError to a client that already hung up.
+      if (error instanceof Error && error.name === "AbortError") throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[gateway] tool "${name}" failed:`, error);
       return gatewayToolErrorResult(
