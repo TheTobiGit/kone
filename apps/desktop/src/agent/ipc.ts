@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ipcMain, type WebContents } from "electron";
+import { ipcMain } from "electron";
 
 import { AgentService } from "./AgentService.js";
 import { getAttachmentStore } from "./AttachmentStore.js";
@@ -10,6 +10,7 @@ import {
   projectStoredThreadForIpc,
 } from "./ConversationStore.js";
 import { initThreadDispatcher } from "./dispatch.js";
+import { EventSubscriptions } from "./eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "./gateway/index.js";
 import { scanAgentInventory } from "./inventory/index.js";
 import { readSkillDetail } from "./inventory/skillDetail.js";
@@ -86,10 +87,6 @@ export function getAgentService(): AgentService {
   return service;
 }
 
-// Renderers currently subscribed to the event stream. We hold WebContents and
-// drop them on destroy so a closed window leaks no forwarding.
-const subscribers = new Set<WebContents>();
-
 /** Register the agent:* IPC handlers. Call once, before creating the window. */
 export function registerAgentIpc(): void {
   const svc = getAgentService();
@@ -107,6 +104,14 @@ export function registerAgentIpc(): void {
   // dispatcher the handlers below forward to, so a spawned thread behaves
   // exactly like a renderer-driven one.
   const dispatcher = initThreadDispatcher({ service: svc, store, broadcast });
+  // Renderer event-stream subscriptions: who gets the live stream, plus the
+  // reload-recovery replay of parked asks. One instance per process; broadcast
+  // and the subscribe/unsubscribe handlers below all read it.
+  const subscriptions = new EventSubscriptions({
+    pendingInteractions: () => svc.pendingInteractions(),
+    parentTurnIdFor: (threadId) => dispatcher.spawnParentTurnId(threadId),
+    scheduleDelay: (fn, ms) => setTimeout(fn, ms),
+  });
 
   // The agent-facing MCP gateway (docs/mcp-gateway-design.md): a loopback
   // streamable-HTTP server with scratchpad tools. Its events (scratchpad.updated)
@@ -156,9 +161,7 @@ export function registerAgentIpc(): void {
     // Slim before the wire: the journal keeps the FULL payload; the renderer
     // copy gets bounded tool-call bodies (see projectRuntimeEventForIpc).
     const wire = projectRuntimeEventForIpc(stamped);
-    for (const wc of subscribers) {
-      if (!wc.isDestroyed()) wc.send("agent:event", wire);
-    }
+    subscriptions.broadcast(wire);
   }
 
   // Fan the merged event stream out to every subscribed renderer, and journal
@@ -220,42 +223,14 @@ export function registerAgentIpc(): void {
     svc.updateProvider(provider),
   );
 
-  // Subscribe/unsubscribe the calling renderer to the event stream.
+  // Subscribe/unsubscribe the calling renderer to the event stream. Subscribe
+  // always runs the reload-recovery replay — see eventSubscriptions.ts for why
+  // a re-subscribing renderer must be re-presented the asks it was parked on.
   ipcMain.handle("agent:subscribe", (event) => {
-    const wc = event.sender;
-    if (subscribers.has(wc)) return;
-    subscribers.add(wc);
-    wc.once("destroyed", () => subscribers.delete(wc));
-    // Reload recovery: approvals/user-inputs are live round-trips and are
-    // deliberately not journaled, so a re-subscribing renderer (⌘R, crash
-    // reload) would otherwise never learn about an ask its turn is still
-    // parked on — the modal stays gone and the turn stays blocked. Replay the
-    // CURRENT parked asks to THIS subscriber only, as fresh emissions of the
-    // same live ask (fresh envelope ids; sent outside broadcast so they are
-    // never journaled). A second pass a beat later covers asks whose thread
-    // session the reloading renderer hasn't hydrated yet — the renderer's
-    // fan-out drops events aimed at a session object that doesn't exist — and
-    // only still-parked, not-yet-sent asks ride the second pass, so a
-    // delivered prompt is never duplicated.
-    const sent = new Set<string>();
-    const replayPending = () => {
-      if (wc.isDestroyed()) return;
-      for (const pending of svc.pendingInteractions()) {
-        const key = `${pending.threadId}::${pending.requestId}`;
-        if (sent.has(key)) continue;
-        sent.add(key);
-        wc.send("agent:event", {
-          ...pending.event,
-          eventId: randomUUID(),
-          parentTurnId: dispatcher.spawnParentTurnId(pending.threadId),
-        });
-      }
-    };
-    replayPending();
-    setTimeout(replayPending, 800);
+    subscriptions.subscribe(event.sender);
   });
   ipcMain.handle("agent:unsubscribe", (event) => {
-    subscribers.delete(event.sender);
+    subscriptions.unsubscribe(event.sender);
   });
 
   // Session lifecycle (request/ack — results flow through agent:event). The
