@@ -194,7 +194,7 @@ useEventListener(window, "keydown", (e) => {
          glyph mirrors the settings panel's corner return. When the tree is all one
          staging state its bulk actions ride here too, so the list drops straight
          into folders with no repeated "CHANGED 21" header underneath. -->
-    <header class="peek__head app-drag">
+    <header class="peek__head">
       <div class="peek__title-row">
         <div class="peek__title">
           <h2 class="peek__name">Changes</h2>
@@ -206,7 +206,7 @@ useEventListener(window, "keydown", (e) => {
         </span>
         <button
           type="button"
-          class="peek__close app-no-drag"
+          class="peek__close"
           aria-label="Close changed files"
           @click="emit('close')"
         >
@@ -217,7 +217,7 @@ useEventListener(window, "keydown", (e) => {
         <span v-if="commonPrefix" class="peek__root selectable" :title="commonPrefix">
           {{ commonPrefix }}<span class="peek__root-slash">/</span>
         </span>
-        <div v-if="soleGroup" class="peek__meta-actions app-no-drag">
+        <div v-if="soleGroup" class="peek__meta-actions">
           <button
             v-if="soleGroup.sweep"
             type="button"

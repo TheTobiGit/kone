@@ -24,11 +24,11 @@ const emit = defineEmits<{ start: [key: ActionKey]; settings: [] }>();
     <h1 class="sr-only">Start a project</h1>
 
     <!-- Wordmark top-left, settings top-right — both on the page's inset row. -->
-    <div class="app-drag relative z-10 flex items-center justify-between">
-      <div class="app-no-drag">
+    <div class="relative z-10 flex items-center justify-between">
+      <div>
         <RotatingWordmark />
       </div>
-      <div class="app-no-drag">
+      <div>
         <SettingsButton @open="emit('settings')" />
       </div>
     </div>

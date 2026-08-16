@@ -288,8 +288,8 @@ function onAbort() {
   <div class="gs">
     <div v-show="!detail" class="gs__inner">
       <!-- ── masthead ───────────────────────────────────────────────────── -->
-      <header class="gs__masthead app-drag">
-        <div class="gs__identity app-no-drag">
+      <header class="gs__masthead">
+        <div class="gs__identity">
           <p class="gs__eyebrow">
             <template v-if="originLabel">{{ originLabel }}</template>
             <template v-else>Local only</template>
@@ -307,7 +307,7 @@ function onAbort() {
           <p v-else-if="note" class="gs__note">{{ note }}</p>
         </div>
 
-        <div class="gs__actions app-no-drag">
+        <div class="gs__actions">
           <template v-if="midOperation">
             <button type="button" class="gs__btn" :disabled="busy" @click="onAbort">
               Abort

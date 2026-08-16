@@ -1,9 +1,9 @@
 <template>
-  <header class="app-drag relative z-30 flex w-full items-center justify-between">
-    <div class="app-no-drag">
+  <header class="relative z-30 flex w-full items-center justify-between">
+    <div>
       <slot name="leading" />
     </div>
-    <div class="app-no-drag">
+    <div>
       <slot name="trailing" />
     </div>
   </header>
