@@ -13,6 +13,16 @@ import {
 } from "./types.js";
 import { getUserDataDir } from "./userDataDir.js";
 
+/** The ConversationStore slice this module reads. Tests pass a fake so they
+ *  do not have to replace the store module for the whole bun worker. */
+export type AttachmentRegistry = {
+  listSubtreeAttachments(threadId: string): StoredAttachment[];
+  listAllAttachments(): StoredAttachment[];
+  getAttachment(id: string): StoredAttachment | null;
+  registerAttachment(row: StoredAttachment): void;
+  forgetAttachment(attachmentId: string): void;
+};
+
 // Filesystem side of prompt attachments. The renderer uploads a file's bytes
 // once (base64 over IPC); we validate, decode, and write them to a per-user
 // attachments dir, then register the bytes-free metadata + on-disk path in the
@@ -71,8 +81,17 @@ export class AttachmentStore {
   private dirPath: string | null = null;
 
   /** @param userDataDir per-user state dir; defaults to the one the host
-   *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
-  constructor(private readonly userDataDir?: string) {}
+   *  injected at startup (see userDataDir.ts). Tests pass a temp dir.
+   *  @param registry optional store stand-in; production omits it and uses
+   *  the process ConversationStore. */
+  constructor(
+    private readonly userDataDir?: string,
+    private readonly registry?: AttachmentRegistry,
+  ) {}
+
+  private conv(): AttachmentRegistry {
+    return this.registry ?? getConversationStore();
+  }
 
   /** The attachments directory under the per-user state dir, created once. */
   private dir(): string {
@@ -120,7 +139,7 @@ export class AttachmentStore {
       relPath,
       createdAt: Date.now(),
     };
-    getConversationStore().registerAttachment(stored);
+    this.conv().registerAttachment(stored);
 
     return { type, id, name, mimeType, sizeBytes: bytes.length };
   }
@@ -128,7 +147,7 @@ export class AttachmentStore {
   /** Resolve an attachment's on-disk absolute path via its registry row.
    *  Returns null when unknown or if the resolved path escapes the dir. */
   resolveAbsPath(id: string): string | null {
-    const row = getConversationStore().getAttachment(id);
+    const row = this.conv().getAttachment(id);
     if (!row) return null;
     const dir = this.dir();
     const abs = path.resolve(dir, row.relPath);
@@ -149,14 +168,15 @@ export class AttachmentStore {
     }
   }
 
-  /** Unlink every on-disk file for a thread — call before deleting the thread
-   *  so no orphaned bytes are left behind. Best-effort per file: one retry on
-   *  a transient failure; if the file still won't go (locked/in-use), the
+  /** Unlink every on-disk file for a thread and its spawned descendants —
+   *  call before deleting a thread so no orphaned bytes are left behind for
+   *  child threads' files either. Best-effort per file: one retry on a
+   *  transient failure; if the file still won't go (locked/in-use), the
    *  registry row is dropped anyway so the file becomes orphan-eligible for
    *  {@link sweepOrphans} instead of being claimed forever by a thread that no
    *  longer exists. */
   async deleteThreadFiles(threadId: string): Promise<void> {
-    const rows = getConversationStore().listThreadAttachments(threadId);
+    const rows = this.conv().listSubtreeAttachments(threadId);
     const dir = this.dir();
     await Promise.all(
       rows.map(async (row) => {
@@ -171,7 +191,7 @@ export class AttachmentStore {
             /* transient failure (locked, EMFILE…) — retry once, then give up */
           }
         }
-        if (!unlinked) getConversationStore().forgetAttachment(row.id);
+        if (!unlinked) this.conv().forgetAttachment(row.id);
       }),
     );
   }
@@ -186,7 +206,7 @@ export class AttachmentStore {
     const dir = this.dir();
     try {
       const referenced = new Set(
-        getConversationStore().listAllAttachments().map((a) => a.relPath),
+        this.conv().listAllAttachments().map((a) => a.relPath),
       );
       const entries = await readdir(dir, { withFileTypes: true });
       const now = Date.now();
@@ -220,4 +240,9 @@ let store: AttachmentStore | null = null;
 export function getAttachmentStore(): AttachmentStore {
   if (!store) store = new AttachmentStore();
   return store;
+}
+
+/** Drop the module-level singleton so tests start from a clean instance. */
+export function resetAttachmentStoreForTests(): void {
+  store = null;
 }
