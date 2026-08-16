@@ -346,7 +346,7 @@ useEventListener(window, "keydown", (e) => {
   position: fixed;
   inset: 0 0 0 auto; /* pinned to the right edge, full height */
   width: 420px;
-  z-index: 21; /* below the stage (z-30), above the window-drag strip (z-20) */
+  z-index: 21; /* below the stage (z-30) */
   display: flex;
   flex-direction: column;
   overflow: hidden;

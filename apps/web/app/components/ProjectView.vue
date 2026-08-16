@@ -1363,9 +1363,29 @@ const changeItems = computed<ChangeItem[]>(() =>
 const activePath = ref<string | null>(null);
 // The clicked card's viewport rect — the detail grows out of it.
 const originRect = ref<DOMRect | null>(null);
-const activeFile = computed(
-  () => changeItems.value.find((c) => c.path === activePath.value) ?? null,
-);
+// True while the open file is one of the working tree's changes — it then
+// self-closes if that change leaves the tree. A file opened from outside the
+// tree (a commit's file list, or a dock row whose edit is already committed)
+// isn't tracked that way; it just stays open until it's closed.
+const activeTracked = ref(false);
+const activeFile = computed<ChangeItem | null>(() => {
+  const path = activePath.value;
+  if (!path) return null;
+  const item = changeItems.value.find((c) => c.path === path);
+  if (item) return item;
+  // Opened from somewhere that isn't the working tree — a commit's file list, or
+  // the agent's changes dock after the edit was committed. There's no diffstat to
+  // carry, so the detail reads the file as it stands now.
+  return {
+    path,
+    name: basename(path),
+    added: 0,
+    removed: 0,
+    staged: false,
+    isNew: false,
+    deleted: false,
+  };
+});
 // The right-hand "peek" drawer — opened by a lane's +N bundle. The stage slides
 // left to uncover it (the same spring the settings drawer's stage rides, so the
 // two reveals share a feel); picking a file closes it and opens that file's
@@ -1390,6 +1410,15 @@ function lockPage(locked: boolean) {
 watch(activeFile, (f) => {
   if (activePath.value && !f) activePath.value = null;
   lockPage(Boolean(f));
+});
+// A tracked file leaving the working tree (discarded, or swept away by a commit)
+// closes its detail — the change it was showing no longer exists.
+watch(changeItems, (items) => {
+  if (!activeTracked.value || !activePath.value) return;
+  if (!items.some((c) => c.path === activePath.value)) {
+    activeTracked.value = false;
+    activePath.value = null;
+  }
 });
 onBeforeUnmount(() => {
   lockPage(false);
@@ -1587,9 +1616,12 @@ function onCommit() {
 // A file opened from the repository surface reuses the working tree's own detail
 // overlay — one diff viewer for the whole app. It grows from the clicked row
 // when the space hands us its rect, and from nothing when it can't.
+// Opened from outside the working-tree lanes — a commit's file list, or the
+// agent's changes dock. Tracked only when the path is in fact a live change.
 function onOpenFileFromGit(path: string, rect: DOMRect | null) {
   cue("press");
   originRect.value = rect;
+  activeTracked.value = changeItems.value.some((c) => c.path === path);
   activePath.value = path;
 }
 function onOpenFile(item: ChangeItem, rect: DOMRect) {
@@ -1597,6 +1629,7 @@ function onOpenFile(item: ChangeItem, rect: DOMRect) {
   // Picked from the peek: slide the stage back and grow the detail from the row.
   peekOpen.value = false;
   originRect.value = rect;
+  activeTracked.value = true;
   activePath.value = item.path;
 }
 // Opening the peek from a lane's +N bundle — the stage steps aside for the list.
@@ -1606,6 +1639,7 @@ function openPeek() {
 }
 function onCloseFile() {
   activePath.value = null;
+  activeTracked.value = false;
 }
 // Esc backs out of whatever is frontmost: the detail view, then the peek, then
 // an open switcher. (The peek also owns its own Esc — this is the same step.)
@@ -1674,10 +1708,8 @@ function onDiscardFile(path: string) {
     @click="peekOpen = false"
   />
 
-    <!-- Titlebar: one drag region with the three controls as no-drag children.
-         Electron only subtracts no-drag from a drag ancestor — a sibling strip
-         left the profile chip (almost entirely inside that band) undraggable. -->
-    <header class="project-chrome app-drag">
+    <!-- Titlebar: a full-width top row holding the three chrome controls. -->
+    <header class="project-chrome">
       <!-- Back to the launcher — a bare return glyph in the corner, on the same
            magnet-pull the app's other buttons ride, lighting up to the accent
            on hover. It steps aside for any surface that draws its own: the
@@ -1685,7 +1717,7 @@ function onDiscardFile(path: string) {
            the same glyph beside its own title — fades it out rather than stand as
            a second, identical arrow across the page from the first. -->
       <Magnet
-        class="project-back-magnet app-no-drag"
+        class="project-back-magnet"
         inner-class="w-fit"
         :padding="12"
         :magnet-strength="9"
@@ -1721,7 +1753,7 @@ function onDiscardFile(path: string) {
            arrow whenever a sub-surface draws its own chrome. Git is dimmed and
            unclickable when the project isn't a repository. -->
       <nav
-        class="project-nav app-no-drag"
+        class="project-nav"
         :class="{ 'project-nav--away': backIsAway || surface === 'board' }"
         :inert="backIsAway || surface === 'board'"
         aria-label="Project sections"
@@ -1743,9 +1775,9 @@ function onDiscardFile(path: string) {
 
       <!-- The far-right end of that same top row: the signed-in user's profile
            chip, mirroring the back arrow across the page. The slot stays mounted
-           so the no-drag hole is a stable box; the chip itself still steps aside
-           with the rest of the chrome. Only shown once a machine name resolves. -->
-      <div class="project-avatar-slot app-no-drag">
+           so the box is stable; the chip itself still steps aside with the rest
+           of the chrome. Only shown once a machine name resolves. -->
+      <div class="project-avatar-slot">
         <Transition name="project-avatar">
           <button
             v-if="displayName && !backIsAway && surface !== 'board'"
@@ -2129,6 +2161,8 @@ function onDiscardFile(path: string) {
           :total-added="activeChanges.totalAdded"
           :total-removed="activeChanges.totalRemoved"
           :streaming="activeChanges.streaming"
+          :repo-path="project.path"
+          @open-file="onOpenFileFromGit"
         />
       </AnimatePresence>
       <AnimatePresence :initial="false">
@@ -2317,8 +2351,7 @@ function onDiscardFile(path: string) {
 }
 
 /* ── Titlebar ─────────────────────────────────────────────────────────────── */
-/* Full-width drag region. Controls are absolutely placed in the same spots as
-   before, but as descendants so their no-drag holes actually punch through. */
+/* Full-width top band; the controls are absolutely placed within it. */
 .project-chrome {
   position: absolute;
   inset: 0 0 auto;
@@ -2508,8 +2541,8 @@ function onDiscardFile(path: string) {
 .project-main {
   height: 100vh;
   overflow: hidden;
-  /* Above the window-drag strip (z-20) and the peek (below this layer) so it
-     covers the peek at rest; the slide below opens the gap it shows through. */
+  /* Above the peek (below this layer) so it covers the peek at rest; the slide
+     below opens the gap it shows through. */
   position: relative;
   z-index: 30;
   /* The slide itself is the settings drawer's spring (driven by motion-v on
