@@ -4,6 +4,7 @@ import { fetchCodexQuota } from "./codex.js";
 import { fetchCursorQuota, detectCursorCredential } from "./cursor.js";
 import { detectDroidCredential, fetchDroidQuota } from "./droid.js";
 import { fetchOpenCodeQuota, detectOpenCodeDatabase } from "./opencode.js";
+import { createRateLimitResilience } from "./rateLimitResilience.js";
 import { readSecureFile, sanitizeError } from "./security.js";
 import { emptyReport } from "./types.js";
 import type { QuotaCapableProvider, QuotaProviderReport } from "./types.js";
@@ -57,9 +58,7 @@ const cache = new Map<QuotaCapableProvider, CacheEntry>();
  *  provider within the same tick. */
 const inFlight = new Map<QuotaCapableProvider, Promise<QuotaProviderReport>>();
 
-/** ms epoch until which a provider is in backoff, keyed by provider. Set from
- *  a 429's Retry-After (or a safe default); cleared on the next success. */
-const blockedUntil = new Map<QuotaCapableProvider, number>();
+const resilience = createRateLimitResilience();
 
 /** The provider kinds the Agents page can show a quota card for, in the order
  *  they appear. OpenCode leads because it is the only one that needs neither a
@@ -68,25 +67,12 @@ export function quotaCapableProviders(): QuotaCapableProvider[] {
   return ["opencode", "claudeAgent", "codex", "cursor", "antigravity", "droid"];
 }
 
-function backedOff(provider: QuotaCapableProvider): QuotaProviderReport | null {
-  const until = blockedUntil.get(provider);
-  if (until === undefined || until <= Date.now()) return null;
-  // If we read this provider successfully before the limit hit, keep those
-  // meters on screen, only flagged stale, rather than dropping the card to an
-  // error while we cool down. The card already renders `rateLimited`
-  // as "these figures may be stale". Only when there's nothing cached do we fall
-  // back to the bare "backing off" message.
-  const cached = cache.get(provider);
-  if (cached && cached.report.connection === "connected") {
-    return { ...cached.report, rateLimited: true };
-  }
-  const report = emptyReport(
-    provider,
-    "transientFailure",
-    "Backing off after a rate limit — try again shortly.",
-  );
-  report.rateLimited = true;
-  return report;
+/** Drop the in-memory quota cache, any in-flight read, and all remembered
+ *  rate-limit state. Tests use this so one case cannot leak into the next. */
+export function resetQuotaStateForTests(): void {
+  cache.clear();
+  inFlight.clear();
+  resilience.reset();
 }
 
 /** Answers "is there something here to connect to" — no parsing beyond
@@ -125,7 +111,7 @@ export async function fetchProviderQuota(
   const cached = cache.get(provider);
   if (!opts.force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.report;
 
-  const backoff = backedOff(provider);
+  const backoff = resilience.serveDuringCooldown(provider, Date.now());
   if (backoff) return backoff;
 
   // Coalesce with any read already in flight for this provider — a concurrent
@@ -148,9 +134,12 @@ async function runProviderQuota(
     const result = await fetchFor(provider, opts);
 
     if (result.retryAfterSeconds !== undefined) {
-      blockedUntil.set(provider, Date.now() + result.retryAfterSeconds * 1000);
-    } else {
-      blockedUntil.delete(provider);
+      // A 429: begin the cooldown and serve the last clean snapshot (flagged
+      // stale) instead of blanking the meters. The freshness cache is cleared so
+      // a later force refresh re-fetches once the cooldown lapses; the
+      // resilience layer holds the remembered numbers separately.
+      cache.delete(provider);
+      return resilience.enterCooldown(provider, result.retryAfterSeconds, Date.now());
     }
 
     // Only a live read earns a minute in the cache. A `disconnected` report is
@@ -160,8 +149,18 @@ async function runProviderQuota(
     // asking them to re-authenticate for no reason.
     if (result.report.connection === "connected") {
       cache.set(provider, { at: Date.now(), report: result.report });
-    } else {
-      cache.delete(provider);
+      resilience.rememberLastGood(provider, result.report);
+      return result.report;
+    }
+
+    cache.delete(provider);
+    if (
+      result.report.connection === "disconnected" ||
+      result.report.connection === "terminalFailure"
+    ) {
+      // The account or credential changed — drop the remembered snapshot so a
+      // later backoff can't serve numbers for a provider that is gone.
+      resilience.forget(provider);
     }
     return result.report;
   } catch (error) {
