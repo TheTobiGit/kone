@@ -1,12 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
   captureProcessChildrenMap,
   captureProcessTree,
   inspectSubprocessActivity,
   killProcessTree,
+  resetProcessTreeKillStateForTests,
 } from "./processTree.js";
 
 // Real-process tests against the host's process table: spawn an `sh` with two
@@ -45,9 +46,52 @@ function spawnSleepTree(): ChildProcess {
   return spawn("sh", ["-c", "sleep 30 & sleep 30"], { stdio: "ignore" });
 }
 
+/** Parent shell dies on SIGTERM; the node child ignores SIGTERM and stays
+ *  alive, so it is reparented to init once the shell exits. */
+function spawnTermIgnoringDescendant(): ChildProcess {
+  return spawn(
+    "sh",
+    [
+      "-c",
+      `node -e 'process.on("SIGTERM",()=>{}); setInterval(()=>{},1000)' & echo CHILD:$!; wait`,
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+}
+
+async function waitForPrintedChildPid(
+  child: ChildProcess,
+  timeoutMs = 3_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let buf = "";
+  return new Promise((resolve, reject) => {
+    const onData = (chunk: Buffer | string) => {
+      buf += chunk.toString();
+      const match = buf.match(/CHILD:(\d+)/);
+      if (match) {
+        child.stdout?.off("data", onData);
+        resolve(Number(match[1]));
+      }
+    };
+    child.stdout?.on("data", onData);
+    const poll = setInterval(() => {
+      if (Date.now() > deadline) {
+        clearInterval(poll);
+        child.stdout?.off("data", onData);
+        reject(new Error(`no CHILD pid printed: ${JSON.stringify(buf)}`));
+      }
+    }, 50);
+  });
+}
+
 const describePosix = describe.skipIf(process.platform === "win32");
 
 describePosix("process tree", () => {
+  beforeEach(() => {
+    resetProcessTreeKillStateForTests();
+  });
+
   test(
     "inspectSubprocessActivity sees the real subprocess under a shell and labels it",
     async () => {
@@ -91,6 +135,46 @@ describePosix("process tree", () => {
       killProcessTree(child.pid!, "SIGKILL");
     }
   });
+
+  test(
+    "killProcessTree SIGKILL still reaps a TERM-ignoring child after the root has exited",
+    async () => {
+      const child = spawnTermIgnoringDescendant();
+      let stubbornPid: number | null = null;
+      try {
+        expect(child.pid).not.toBeNull();
+        stubbornPid = await waitForPrintedChildPid(child);
+        expect(processAlive(stubbornPid)).toBe(true);
+
+        killProcessTree(child.pid!, "SIGTERM");
+
+        const rootDeadDeadline = Date.now() + 1_500;
+        while (Date.now() < rootDeadDeadline && processAlive(child.pid!)) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(processAlive(child.pid!)).toBe(false);
+        expect(processAlive(stubbornPid)).toBe(true);
+
+        killProcessTree(child.pid!, "SIGKILL");
+
+        const stubbornDeadDeadline = Date.now() + 1_500;
+        while (Date.now() < stubbornDeadDeadline && processAlive(stubbornPid)) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(processAlive(stubbornPid)).toBe(false);
+      } finally {
+        if (stubbornPid !== null) {
+          try {
+            process.kill(stubbornPid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
+        }
+        if (child.pid !== undefined) killProcessTree(child.pid, "SIGKILL");
+      }
+    },
+    10_000,
+  );
 
   test("a bogus pid yields an empty tree without failing the capture", () => {
     const map = captureProcessChildrenMap();

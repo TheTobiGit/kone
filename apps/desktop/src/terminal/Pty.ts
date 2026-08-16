@@ -68,6 +68,38 @@ export type PtySpawnInput = {
   env?: Record<string, string>;
 };
 
+/** The subscription surface a PTY must expose for createPtySubscriptions to
+ *  wrap. node-pty's onData/onExit already return a fresh IDisposable per
+ *  registration, so this is just a shape both the real pty and fakes satisfy. */
+export type NodePtyEventSource = {
+  onData(listener: (data: string) => void): nodePty.IDisposable;
+  onExit(
+    listener: (ev: { exitCode: number; signal?: number }) => void,
+  ): nodePty.IDisposable;
+};
+
+/** Wrap a PTY's event registrations so each unsubscribe owns exactly its own
+ *  registration. Each returned closure captures the IDisposable handed back by
+ *  that single onData/onExit call, so disposing one handler can never release
+ *  a handler registered later (or earlier) on the same event. */
+export function createPtySubscriptions(source: NodePtyEventSource): {
+  onData(listener: (data: string) => void): () => void;
+  onExit(
+    listener: (ev: { exitCode: number; signal?: number }) => void,
+  ): () => void;
+} {
+  return {
+    onData: (listener) => {
+      const disposer = source.onData(listener);
+      return () => disposer.dispose();
+    },
+    onExit: (listener) => {
+      const disposer = source.onExit(listener);
+      return () => disposer.dispose();
+    },
+  };
+}
+
 /** Shell candidates in fallback order — the user's $SHELL first, then common
  */
 function shellCandidates(): string[] {
@@ -146,8 +178,7 @@ export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
     name: "xterm-256color",
   });
 
-  let dataDisposer: nodePty.IDisposable | null = null;
-  let exitDisposer: nodePty.IDisposable | null = null;
+  const subs = createPtySubscriptions(pty);
 
   return {
     pid: pty.pid,
@@ -164,13 +195,7 @@ export async function spawnPty(input: PtySpawnInput): Promise<PtyProcess> {
     },
     pause: () => pty.pause(),
     resume: () => pty.resume(),
-    onData: (cb) => {
-      dataDisposer = pty.onData(cb);
-      return () => dataDisposer?.dispose();
-    },
-    onExit: (cb) => {
-      exitDisposer = pty.onExit(cb);
-      return () => exitDisposer?.dispose();
-    },
+    onData: subs.onData,
+    onExit: subs.onExit,
   };
 }

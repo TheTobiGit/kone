@@ -4,9 +4,11 @@
 // pty.kill() leaves `npm run dev` or vim running), and the UI needs to know
 // whether a subprocess is actually busy under the shell (tab busy labels, kill
 // confirmations). The model: one snapshot per capture, a children-by-ppid
-// map, a visited-capped descendant walk, and a
-// tree kill that re-captures at signal time so reparented children are caught.
-// A failed snapshot is "unproven" (captureComplete: false), never a throw.
+// map, a visited-capped descendant walk, and a tree kill that keeps the
+// SIGTERM-time capture for the follow-up SIGKILL — children which ignore
+// SIGTERM are reparented to init once the root dies, so a fresh capture from
+// the dead root sees nothing. A failed snapshot is "unproven"
+// (captureComplete: false), never a throw.
 
 import { execFile, spawnSync } from "node:child_process";
 import path from "node:path";
@@ -23,6 +25,9 @@ export type ProcessTreeCapture = {
   /** False when the platform process snapshot failed and descendant absence is
    *  unproven — the pid may still have children we could not see. */
   captureComplete: boolean;
+  /** Command of the root at capture time. Null when the snapshot could not
+   *  name it — SIGKILL must then refuse the root pid rather than risk a reuse. */
+  rootCommand: string | null;
 };
 
 export type SubprocessActivityInspection = {
@@ -36,6 +41,33 @@ export type SubprocessActivityInspection = {
 };
 
 export type TerminalKillSignal = "SIGTERM" | "SIGKILL";
+
+export type ProcessCommandMap = Map<number, string>;
+
+export type CapturedProcessTreeInspection = {
+  /** True when every descendant's current command still matches its capture —
+   *  the tree is exactly what was captured, nothing recycled. */
+  verified: boolean;
+  /** Descendants still alive and command-identical to capture. */
+  survivors: Array<CapturedProcess>;
+};
+
+export type ProcessTreeKillerDependencies = {
+  captureChildrenMap: () => ProcessChildrenMap | null;
+  readCurrentCommands: (pids: readonly number[]) => ProcessCommandMap | null;
+  signalPid: (pid: number, signal: TerminalKillSignal) => void;
+};
+
+export type ProcessTreeKiller = {
+  capture(rootPid: number): ProcessTreeCapture;
+  inspect(tree: ProcessTreeCapture): CapturedProcessTreeInspection;
+  signal(input: {
+    rootPid: number;
+    signal: TerminalKillSignal;
+    tree: ProcessTreeCapture;
+    includeRoot?: boolean;
+  }): void;
+};
 
 /** Shell-like names that never count as "a real subprocess" on their own — a
  *  nested interactive shell is activity only when IT has non-shell children. */
@@ -83,8 +115,10 @@ const WINDOWS_PROCESS_TABLE_SCRIPT =
   "$cmd = if ($_.CommandLine) { [string]$_.CommandLine } else { [string]$_.Name }; " +
   "Write-Output ('{0}|{1}|{2}' -f $_.ProcessId, $_.ParentProcessId, $cmd) }";
 
-/** `ps -eo pid=,ppid=,comm=` lines -> children-by-ppid map. Skips malformed
- *  lines and empty commands rather than failing the whole snapshot. */
+/** `ps -eo pid=,ppid=,command=` lines -> children-by-ppid map. Skips malformed
+ *  lines and empty commands rather than failing the whole snapshot. The full
+ *  command column (not a short comm) is what lets a kill-time identity re-read
+ *  match the whole argv. */
 function parseProcessChildrenMap(psOutput: string): ProcessChildrenMap {
   const childrenByParentPid: ProcessChildrenMap = new Map();
   for (const line of psOutput.split(/\r?\n/g)) {
@@ -165,7 +199,7 @@ function signalPid(pid: number, signal: TerminalKillSignal): void {
 
 /** Full-system children-by-ppid snapshot. Returns null when the platform
  *  process table cannot be read — "unproven", never an empty map. POSIX uses
- *  one `ps -eo pid=,ppid=,comm=`; Windows one `Get-CimInstance` via
+ *  one `ps -eo pid=,ppid=,command=`; Windows one `Get-CimInstance` via
  *  powershell.exe. */
 export function captureProcessChildrenMap(): ProcessChildrenMap | null {
   try {
@@ -182,7 +216,7 @@ export function captureProcessChildrenMap(): ProcessChildrenMap | null {
       if (result.error || result.status !== 0) return null;
       return parseWindowsProcessTable(result.stdout);
     }
-    const result = spawnSync("ps", ["-eo", "pid=,ppid=,comm="], {
+    const result = spawnSync("ps", ["-eo", "pid=,ppid=,command="], {
       encoding: "utf8",
       maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
       timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
@@ -194,21 +228,166 @@ export function captureProcessChildrenMap(): ProcessChildrenMap | null {
   }
 }
 
+/** Parse `ps -o pid=,command=` lines into a pid -> command map. Lines that do
+ *  not carry a pid and command are skipped. Internal runs of whitespace are
+ *  collapsed to single spaces so a re-read command compares equal to the
+ *  token-joined command captured via parseProcessChildrenMap. */
+export function parseProcessCommandMap(psOutput: string): ProcessCommandMap {
+  const commands: ProcessCommandMap = new Map();
+  for (const line of psOutput.split(/\r?\n/g)) {
+    const match = /^\s*(\d+)\s+(.*\S)\s*$/.exec(line);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const command = match[2];
+    if (command === undefined) continue;
+    commands.set(pid, command.split(/\s+/g).join(" "));
+  }
+  return commands;
+}
+
+/** Re-read the current command line of each pid from the live process table.
+ *  Null means the read itself failed and the pids are unproven — callers must
+ *  not signal anything they could not identify. An empty map means every pid
+ *  is gone (ps exits non-zero when none of the requested pids exist). */
+export function readCurrentCommands(pids: readonly number[]): ProcessCommandMap | null {
+  const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
+  if (unique.length === 0) return new Map();
+  try {
+    const result = spawnSync("ps", ["-p", unique.join(","), "-o", "pid=,command="], {
+      encoding: "utf8",
+      maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
+      timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
+    });
+    if (result.error) return null;
+    if (result.status !== 0) {
+      const parsed = parseProcessCommandMap(result.stdout);
+      if (parsed.size > 0) return parsed;
+      return new Map();
+    }
+    return parseProcessCommandMap(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a captured process may still be signalled. SIGTERM is always safe to
+ *  send again. SIGKILL is not: a pid recycled between capture and kill now
+ *  names a different command, so it is only signalled while its current command
+ *  still matches the capture — and never when the re-read failed (null). */
+export function shouldSignalCapturedProcess(
+  proc: CapturedProcess,
+  signal: TerminalKillSignal,
+  currentCommands: ProcessCommandMap | null,
+): boolean {
+  if (signal !== "SIGKILL") return true;
+  return currentCommands?.get(proc.pid) === proc.command;
+}
+
+/** Factory for the tree killer with injectable scan/signal primitives, so the
+ *  remember-and-reuse and identity-check behaviour can be exercised against
+ *  deterministic fakes. */
+export function createProcessTreeKiller(
+  deps: Partial<ProcessTreeKillerDependencies> = {},
+): ProcessTreeKiller {
+  const captureChildrenMap = deps.captureChildrenMap ?? captureProcessChildrenMap;
+  const readCommands = deps.readCurrentCommands ?? readCurrentCommands;
+  const sendSignal = deps.signalPid ?? signalPid;
+
+  function capture(rootPid: number): ProcessTreeCapture {
+    if (!Number.isInteger(rootPid) || rootPid <= 0) {
+      return { descendants: [], captureComplete: false, rootCommand: null };
+    }
+    const childrenByParentPid = captureChildrenMap();
+    if (childrenByParentPid === null) {
+      return { descendants: [], captureComplete: false, rootCommand: null };
+    }
+    const descendants = collectDescendantProcesses(rootPid, childrenByParentPid);
+    let rootCommand: string | null = null;
+    for (const children of childrenByParentPid.values()) {
+      const root = children.find((entry) => entry.pid === rootPid);
+      if (root !== undefined) {
+        rootCommand = root.command;
+        break;
+      }
+    }
+    return { descendants, captureComplete: true, rootCommand };
+  }
+
+  function inspect(tree: ProcessTreeCapture): CapturedProcessTreeInspection {
+    if (tree.descendants.length === 0) {
+      return { verified: true, survivors: [] };
+    }
+    const currentCommands = readCommands(tree.descendants.map((descendant) => descendant.pid));
+    if (currentCommands === null) {
+      return { verified: false, survivors: [...tree.descendants] };
+    }
+    return {
+      verified: true,
+      survivors: tree.descendants.filter(
+        (descendant) => currentCommands.get(descendant.pid) === descendant.command,
+      ),
+    };
+  }
+
+  function signal(input: {
+    rootPid: number;
+    signal: TerminalKillSignal;
+    tree: ProcessTreeCapture;
+    includeRoot?: boolean;
+  }): void {
+    const { rootPid, tree, includeRoot = true } = input;
+    const killSignal = input.signal;
+    const currentCommands =
+      killSignal === "SIGKILL"
+        ? readCommands([...tree.descendants.map((descendant) => descendant.pid), rootPid])
+        : null;
+    for (const descendant of tree.descendants.toReversed()) {
+      if (shouldSignalCapturedProcess(descendant, killSignal, currentCommands)) {
+        sendSignal(descendant.pid, killSignal);
+      }
+    }
+    if (includeRoot !== false) {
+      if (killSignal === "SIGKILL") {
+        // Descendants fail closed when identity is unknowable, because any one
+        // of them may be a recycled pid nobody here owns. The root is not in
+        // that position: it is the pid the caller spawned and is escalating on,
+        // so when there is nothing to compare against — the capture never read
+        // its command, or the re-read itself failed — it is still signalled.
+        // Otherwise a force kill on a host without a usable `ps` would quietly
+        // do nothing at all.
+        const identityUnknown = tree.rootCommand === null || currentCommands === null;
+        if (identityUnknown || currentCommands.get(rootPid) === tree.rootCommand) {
+          sendSignal(rootPid, killSignal);
+        }
+      } else {
+        sendSignal(rootPid, killSignal);
+      }
+    }
+  }
+
+  return { capture, inspect, signal };
+}
+
+// SIGTERM captures are kept so the follow-up SIGKILL can find descendants that
+// survived and got reparented to init — re-capturing from the now-dead root
+// sees nothing. Capped so a series of SIGTERMs without SIGKILLs cannot grow
+// without bound; the oldest is dropped first because its escalation is the
+// least likely to still be pending.
+const MAX_PENDING_TREES = 256;
+const pendingTrees = new Map<number, ProcessTreeCapture>();
+const defaultProcessTreeKiller = createProcessTreeKiller();
+
+/** Clear remembered SIGTERM captures — test teardown only. */
+export function resetProcessTreeKillStateForTests(): void {
+  pendingTrees.clear();
+}
+
 /** Capture every descendant of `rootPid` from a fresh snapshot. Empty
  *  descendants with captureComplete: true means the pid simply has no children
  *  (it may already be gone). */
 export function captureProcessTree(rootPid: number): ProcessTreeCapture {
-  if (!Number.isInteger(rootPid) || rootPid <= 0) {
-    return { descendants: [], captureComplete: false };
-  }
-  const childrenByParentPid = captureProcessChildrenMap();
-  if (childrenByParentPid === null) {
-    return { descendants: [], captureComplete: false };
-  }
-  return {
-    descendants: collectDescendantProcesses(rootPid, childrenByParentPid),
-    captureComplete: true,
-  };
+  return defaultProcessTreeKiller.capture(rootPid);
 }
 
 function walkSubprocessActivity(
@@ -268,7 +447,7 @@ export async function captureProcessChildrenMapAsync(): Promise<ProcessChildrenM
       );
       return parseWindowsProcessTable(stdout);
     }
-    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,comm="], {
+    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,command="], {
       encoding: "utf8",
       maxBuffer: PROCESS_TREE_SCAN_MAX_BUFFER_BYTES,
       timeout: PROCESS_TREE_SCAN_TIMEOUT_MS,
@@ -300,11 +479,14 @@ export async function inspectSubprocessActivityAsync(rootPid: number): Promise<S
   return walkSubprocessActivity(rootPid, childrenByParentPid);
 }
 
-/** Kill `rootPid` and every descendant, captured fresh at signal time so
- *  children reparented after an earlier snapshot are caught too. POSIX signals
- *  each pid (deepest first, then the root); Windows hands the tree to
- *  `taskkill /T /F`, which owns descendant traversal natively. Per-pid errors
- *  (already dead) are swallowed. */
+/** Kill `rootPid` and every descendant. SIGTERM captures the tree and remembers
+ *  it; the follow-up SIGKILL reuses that capture, because children which ignore
+ *  SIGTERM are reparented to init once the root dies — re-capturing from the
+ *  dead root finds nothing. SIGKILL re-reads current commands and only signals
+ *  pids whose command still matches, so a recycled pid running a different
+ *  command is never killed. Windows hands the tree to `taskkill /T /F`, which
+ *  owns descendant traversal natively. Per-pid errors (already dead) are
+ *  swallowed. */
 export function killProcessTree(rootPid: number, signal: TerminalKillSignal): void {
   if (!Number.isInteger(rootPid) || rootPid <= 0) return;
   if (process.platform === "win32") {
@@ -318,9 +500,17 @@ export function killProcessTree(rootPid: number, signal: TerminalKillSignal): vo
     }
     return;
   }
-  const { descendants } = captureProcessTree(rootPid);
-  for (const descendant of descendants.toReversed()) {
-    signalPid(descendant.pid, signal);
+  if (signal === "SIGTERM") {
+    const tree = defaultProcessTreeKiller.capture(rootPid);
+    if (pendingTrees.size >= MAX_PENDING_TREES) {
+      const oldestKey = pendingTrees.keys().next().value;
+      if (oldestKey !== undefined) pendingTrees.delete(oldestKey);
+    }
+    pendingTrees.set(rootPid, tree);
+    defaultProcessTreeKiller.signal({ rootPid, signal: "SIGTERM", tree, includeRoot: true });
+    return;
   }
-  signalPid(rootPid, signal);
+  const tree = pendingTrees.get(rootPid) ?? defaultProcessTreeKiller.capture(rootPid);
+  pendingTrees.delete(rootPid);
+  defaultProcessTreeKiller.signal({ rootPid, signal: "SIGKILL", tree, includeRoot: true });
 }

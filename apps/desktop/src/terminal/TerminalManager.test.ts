@@ -150,9 +150,36 @@ describe("TerminalManager", () => {
 
     const restarted = events.find((e) => e.type === "restarted");
     expect(restarted).toBeDefined();
-    expect(restarted!.sequence).toBeGreaterThan(3);
-    expect(restarted!.snapshot.sequence).toBeGreaterThan(3);
+    // No spurious `exited` consumed a sequence slot during restart, so the
+    // carried snapshot sequence is the last real event's (3) and the
+    // `restarted` event itself is strictly next (4).
+    expect(restarted!.sequence).toBe(4);
+    expect(restarted!.snapshot.sequence).toBe(3);
     expect(restarted!.snapshot.history).toBe("");
+  });
+
+  test("restart does not emit an exited event for the deliberate kill", async () => {
+    const fake = fakePty();
+    const { mgr, events } = makeManager(fake);
+    await mgr.open({ terminalId: "t1", cwd: "/tmp" });
+
+    const restartPromise = mgr.restart({ terminalId: "t1" });
+    fake.emitExit(0);
+    await restartPromise;
+
+    expect(events.map((e) => e.type)).toEqual(["started", "restarted"]);
+  });
+
+  test("close does not emit an exited event for the deliberate kill", async () => {
+    const fake = fakePty();
+    const { mgr, events } = makeManager(fake);
+    await mgr.open({ terminalId: "t1", cwd: "/tmp" });
+
+    const closePromise = mgr.close({ terminalId: "t1" });
+    fake.emitExit(0);
+    await closePromise;
+
+    expect(events.map((e) => e.type)).toEqual(["started", "closed"]);
   });
 
   test("backpressure: pauses the PTY past the high watermark, resumes on acks", async () => {
