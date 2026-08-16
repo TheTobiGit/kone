@@ -130,12 +130,31 @@ describe("antigravity conversation scan", () => {
     );
     expect(parseAntigravityGenMetadataRow(row, 0)).toEqual({
       inputTokens: 100,
-      outputTokens: 20,
+      // The codebase-wide invariant: reasoningTokens is a subset of
+      // outputTokens, so outputTokens must carry the FULL output (response +
+      // thinking), not just the non-thinking response field.
+      outputTokens: 60,
       thinkingTokens: 40,
       responseId: "resp-1",
       model: "gemini-3.5-flash-high",
       createdAtMs: Date.parse("2026-08-01T10:00:00.000Z"),
     });
+  });
+
+  test("thinking tokens fold into outputTokens (reasoning is a subset, never dropped)", () => {
+    const row = genMetadataRow(
+      chatMessage(usageMessage(100, 60, 40, "resp-inv"), {
+        displayName: "Gemini 3.5 Flash (High)",
+      }),
+    );
+    const parsed = parseAntigravityGenMetadataRow(row, 0);
+    expect(parsed?.thinkingTokens).toBe(40);
+    expect(parsed?.outputTokens).toBe(60);
+    // The invariant every other scanner honors: reasoning is counted *inside*
+    // output, so a turn's total tokens are input + output (never input + a
+    // thinking-free response). If this fails, thinking tokens are being dropped
+    // from totalTokens() and never billed.
+    expect(parsed!.outputTokens).toBeGreaterThanOrEqual(parsed!.thinkingTokens);
   });
 
   test("falls back to total output when response/thinking are absent", () => {
@@ -238,7 +257,7 @@ describe("antigravity conversation scan", () => {
       expect(result.records[0]).toMatchObject({
         provider: "antigravity",
         sessionId: "cascade-1",
-        totals: { uncachedInputTokens: 100, outputTokens: 20, reasoningTokens: 40 },
+        totals: { uncachedInputTokens: 100, outputTokens: 60, reasoningTokens: 40 },
         reportedCostUsd: null,
       });
       expect(result.records.map((record) => record.dedupeKey)).toEqual([

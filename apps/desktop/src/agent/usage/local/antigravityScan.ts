@@ -283,7 +283,12 @@ export function parseAntigravityGenMetadataRow(
 
   return {
     inputTokens,
-    outputTokens: responseTokens,
+    // Output is the whole generated text: reasoning (thinking) plus the plain
+    // response. Reasoning tokens are a subset of output everywhere else in this
+    // codebase (totalTokens()/pricing deliberately do NOT add reasoningTokens
+    // again), so folding thinking into output here keeps a Gemini thinking turn
+    // from silently undercounting its tokens and undercharging its cost.
+    outputTokens: responseTokens + thinkingTokens,
     thinkingTokens,
     responseId,
     model,

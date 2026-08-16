@@ -49,22 +49,22 @@ export function parseAntigravityVersion(stdout: string): string | undefined {
 
 /** Where Antigravity keeps its per-user state (auth store, plugins, brain
  *  transcripts). */
-export function antigravityHomeDir(): string {
-  return path.join(os.homedir(), ".gemini", "antigravity-cli");
+export function antigravityHomeDir(homeDir?: string): string {
+  return path.join(homeDir ?? os.homedir(), ".gemini", "antigravity-cli");
 }
 
 /** The kone capture plugin's install dir — a global (secret-free) plugin every
  *  `agy` session loads. The hooks stream capture events to a per-turn file;
  *  the mcp_config.json hands the agent the kone gateway via the stdio proxy. */
-export function koneCapturePluginDir(): string {
-  return path.join(antigravityHomeDir(), "plugins", "kone-capture");
+export function koneCapturePluginDir(homeDir?: string): string {
+  return path.join(antigravityHomeDir(homeDir), "plugins", "kone-capture");
 }
 
 /** Where the CLI writes one conversation's transcript — the turn-rendering
  */
-export function antigravityTranscriptPath(conversationId: string): string {
+export function antigravityTranscriptPath(conversationId: string, homeDir?: string): string {
   return path.join(
-    antigravityHomeDir(),
+    antigravityHomeDir(homeDir),
     "brain",
     conversationId,
     ".system_generated",
