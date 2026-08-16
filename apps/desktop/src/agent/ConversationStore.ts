@@ -1192,8 +1192,7 @@ export class ConversationStore {
     }
   }
 
-  /** Every attachment registered under a thread — used to unlink the on-disk
-   *  files when the thread is destroyed. */
+  /** Every attachment registered under a single thread, not its descendants. */
   listThreadAttachments(threadId: string): StoredAttachment[] {
     const db = this.handle();
     if (!db) return [];
@@ -1204,6 +1203,26 @@ export class ConversationStore {
       return rows.map(rowToAttachment);
     } catch (err) {
       console.error("[conversation-store] listThreadAttachments failed:", err);
+      return [];
+    }
+  }
+
+  /** Every attachment registered under a thread and its spawned descendants —
+   *  used to unlink on-disk files when the thread is destroyed. Delete drops
+   *  the whole subtree's rows in one transaction; the files must go first
+   *  while the registry can still resolve their paths, including children. */
+  listSubtreeAttachments(threadId: string): StoredAttachment[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      const ids = this.subtreeIds(db, threadId);
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = db
+        .prepare(`SELECT * FROM attachments WHERE thread_id IN (${placeholders})`)
+        .all(...ids) as AttachmentRow[];
+      return rows.map(rowToAttachment);
+    } catch (err) {
+      console.error("[conversation-store] listSubtreeAttachments failed:", err);
       return [];
     }
   }

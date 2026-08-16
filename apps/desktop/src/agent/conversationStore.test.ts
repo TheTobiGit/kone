@@ -446,6 +446,52 @@ describe("delete/archive subtree cascade with busy guard", () => {
     after.close();
   });
 
+  test("listSubtreeAttachments includes spawned descendants, not siblings", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "parent-1", projectPath: "/p", provider: "opencode" });
+    store.writeSpawnedThread({
+      threadId: "child-1",
+      projectPath: "/p",
+      provider: "opencode",
+      createdAt: 10,
+      title: "Child",
+      lineage: spawnedLineage("parent-1", "parent-1"),
+    });
+    store.writeSpawnedThread({
+      threadId: "grand-1",
+      projectPath: "/p",
+      provider: "opencode",
+      createdAt: 20,
+      title: "Grandchild",
+      lineage: spawnedLineage("child-1", "parent-1"),
+    });
+    store.ensureThread({ threadId: "sibling-1", projectPath: "/p", provider: "opencode" });
+
+    const att = (
+      id: string,
+      threadId: string,
+    ): Parameters<ConversationStoreType["registerAttachment"]>[0] => ({
+      id,
+      threadId,
+      type: "file",
+      name: `${id}.txt`,
+      mimeType: "text/plain",
+      sizeBytes: 1,
+      relPath: `${id}.txt`,
+      createdAt: 1,
+    });
+    store.registerAttachment(att("att_p", "parent-1"));
+    store.registerAttachment(att("att_c", "child-1"));
+    store.registerAttachment(att("att_g", "grand-1"));
+    store.registerAttachment(att("att_s", "sibling-1"));
+
+    expect(
+      store.listSubtreeAttachments("parent-1").map((row) => row.id).sort(),
+    ).toEqual(["att_c", "att_g", "att_p"]);
+    expect(store.listThreadAttachments("parent-1").map((row) => row.id)).toEqual(["att_p"]);
+    expect(store.listSubtreeAttachments("sibling-1").map((row) => row.id)).toEqual(["att_s"]);
+  });
+
   test("setArchived archives the subtree and refuses while a child is busy", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "parent-1", projectPath: "/p", provider: "opencode" });
