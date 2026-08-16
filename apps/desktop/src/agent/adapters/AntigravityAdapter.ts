@@ -120,6 +120,7 @@ type AntigravitySession = {
   modelOptions?: { reasoningEffort?: string };
   /** The CLI executable to spawn. */
   binary: string;
+  homeDir?: string;
   activeTurnId?: string;
   activeProcess?: ChildProcess;
   eventFile?: string;
@@ -513,13 +514,18 @@ export async function ensureCapturePlugin(
   } else {
     await fs.rm(mcpConfigPath, { force: true });
   }
+  const env = await buildAntigravityProbeEnv();
+  if (options.homeDir) {
+    env.HOME = options.homeDir;
+    env.USERPROFILE = options.homeDir;
+  }
   const installed = await (options.runHelper ?? runAntigravityHelperProcess)(
     binaryPath,
     ["plugin", "install", pluginDir],
     {
       // The agent env (PATH recovery) so a Dock-launched kone can reach the
       // CLI and its install dir the same way every other probe does.
-      env: await buildAntigravityProbeEnv(),
+      env,
       timeoutMs: PLUGIN_INSTALL_TIMEOUT_MS,
     },
   );
@@ -558,20 +564,24 @@ export class AntigravityAdapter implements ProviderAdapter {
   /** Plugin install dir root — the real home in production; tests point this
    *  at a temp dir so the machine's ~/.gemini is never touched. */
   private readonly homeDir?: string;
+  private readonly resolveBinaryOption?: () => string;
 
   constructor(
     emit: EmitEvent,
     issueBootstrapToken?: (sessionToken: string) => string | null,
-    options: { homeDir?: string } = {},
+    options: { homeDir?: string; resolveBinary?: () => string } = {},
   ) {
     this.emit = emit;
-    this.binary = ANTGRAVITY_BINARY;
+    this.resolveBinaryOption = options.resolveBinary;
+    this.binary = options.resolveBinary ? options.resolveBinary() : ANTGRAVITY_BINARY;
     this.issueBootstrapToken = issueBootstrapToken ?? (() => null);
     this.homeDir = options.homeDir;
   }
 
   setConfig(config: ProviderConfig): void {
-    const next = resolveAntigravityBinary(config.binaryPath);
+    const next = this.resolveBinaryOption
+      ? this.resolveBinaryOption()
+      : resolveAntigravityBinary(config.binaryPath);
     if (next === this.binary) return;
     this.binary = next;
     this.modelsCache = null;
@@ -581,6 +591,10 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   async discover(): Promise<ProviderStatus> {
     const env = await buildAntigravityProbeEnv();
+    if (this.homeDir) {
+      env.HOME = this.homeDir;
+      env.USERPROFILE = this.homeDir;
+    }
     const versionOutput = await probe(this.binary, ["--version"], env, 5_000);
     if (versionOutput === null) {
       return {
@@ -642,6 +656,10 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildAntigravityProbeEnv();
+    if (this.homeDir) {
+      env.HOME = this.homeDir;
+      env.USERPROFILE = this.homeDir;
+    }
     const result = await runAntigravityHelperProcess(this.binary, ["models"], {
       env,
       timeoutMs: MODEL_DISCOVERY_TIMEOUT_MS,
@@ -696,6 +714,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       gatewayConnection: input.gatewayConnection,
       ...(input.effort ? { modelOptions: { reasoningEffort: input.effort } } : {}),
       binary: this.binary,
+      homeDir: this.homeDir,
       processedHookBytes: 0,
       processedTranscriptBytes: 0,
       processedSteps: new Set(),
@@ -705,7 +724,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       interrupted: false,
       stopped: false,
       turnTerminalEmitted: false,
-      ...(conversationId ? { transcriptPath: antigravityTranscriptPath(conversationId) } : {}),
+      ...(conversationId ? { transcriptPath: antigravityTranscriptPath(conversationId, this.homeDir) } : {}),
     };
     this.sessions.set(input.threadId, session);
     this.emit({ ...this.base(session), source: "antigravity.cli.lifecycle", type: "session.started" });
@@ -725,10 +744,11 @@ export class AntigravityAdapter implements ProviderAdapter {
       // node:sqlite — statically importing it would make this module
       // unloadable outside the Electron runtime (same pattern as
       // CursorAdapter/DroidAdapter). Images can't ride a print-mode prompt
-      // string, so only the on-disk path block is attached.
+      // string, so all attachments (visual or text) are named in the
+      // on-disk path block for the agent to inspect with its tools.
       const attachments = await import("../promptAttachments.js");
-      const built = await attachments.buildCursorAttachmentInput(input.attachments);
-      promptText = attachments.composePromptText(promptText, built.fileBlock ?? "");
+      const fileBlock = await attachments.buildTextAttachmentBlock(input.attachments);
+      promptText = attachments.composePromptText(promptText, fileBlock);
     }
     if (!promptText) {
       throw new Error("A prompt or file attachment is required.");
@@ -1234,6 +1254,10 @@ async function buildAntigravityTurnEnvironment(
   bootstrapToken: string | null | undefined,
 ): Promise<NodeJS.ProcessEnv> {
   const env = await buildAntigravityEnv(eventFile);
+  if (session.homeDir) {
+    env.HOME = session.homeDir;
+    env.USERPROFILE = session.homeDir;
+  }
   if (session.gatewayConnection && bootstrapToken) {
     env[KONE_AGENT_GATEWAY_URL_ENV] = session.gatewayConnection.url;
     env[KONE_AGENT_GATEWAY_BOOTSTRAP_TOKEN_ENV] = bootstrapToken;

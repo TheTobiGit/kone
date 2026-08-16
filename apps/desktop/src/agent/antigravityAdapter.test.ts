@@ -1,8 +1,28 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+
+class DatabaseSyncShim {
+  private readonly db: Database;
+  constructor(filePath: string, options?: { readOnly?: boolean }) {
+    this.db = options?.readOnly
+      ? new Database(filePath, { readonly: true })
+      : new Database(filePath);
+  }
+  prepare(sql: string) {
+    return this.db.prepare(sql);
+  }
+  exec(sql: string) {
+    this.db.exec(sql);
+  }
+  close() {
+    this.db.close();
+  }
+}
+mock.module("node:sqlite", () => ({ DatabaseSync: DatabaseSyncShim }));
 
 import {
   ANTGRAVITY_BINARY,
@@ -338,5 +358,63 @@ describe("Antigravity turn guards", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test("rejects sendTurn when both prompt and attachments are empty", async () => {
+    const adapter = new AntigravityAdapter(noopEmit, undefined, { homeDir: TEST_HOME });
+    await adapter.startSession({
+      threadId: "t-empty",
+      provider: "antigravity",
+      cwd: "/tmp",
+      mode: "full-access",
+    });
+    await expect(
+      adapter.sendTurn({ threadId: "t-empty", input: "" }),
+    ).rejects.toThrow("A prompt or file attachment is required.");
+  });
+
+  test("accepts image attachments in sendTurn and includes them in the prompt", async () => {
+    const { getAttachmentStore, resetAttachmentStoreForTests } = await import("./AttachmentStore.js");
+    const { resetConversationStoreForTests } = await import("./ConversationStore.js");
+    const { setUserDataDir } = await import("./userDataDir.js");
+
+    const attTmpDir = mkdtempSync(path.join(tmpdir(), "kone-antigravity-att-"));
+    setUserDataDir(attTmpDir);
+    try {
+      const store = getAttachmentStore();
+      const img = await store.save({
+        threadId: "t-image",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        data: Buffer.from("png-bytes").toString("base64"),
+      });
+
+      const adapter = new AntigravityAdapter(noopEmit, undefined, {
+        homeDir: TEST_HOME,
+        // Use a dummy binary path so process spawning fails after prompt assembly
+        resolveBinary: () => "/bin/echo",
+      });
+      await adapter.startSession({
+        threadId: "t-image",
+        provider: "antigravity",
+        cwd: "/tmp",
+        mode: "full-access",
+      });
+
+      // Sending a turn with empty input but a valid image attachment must pass prompt validation
+      // and start the turn
+      const result = await adapter.sendTurn({
+        threadId: "t-image",
+        input: "",
+        attachments: [img],
+      });
+      expect(result.turnId).toBeDefined();
+      expect(result.turnId.startsWith("antigravity-turn-")).toBe(true);
+    } finally {
+      resetAttachmentStoreForTests();
+      resetConversationStoreForTests();
+      rmSync(attTmpDir, { recursive: true, force: true });
+    }
+  });
 });
+
 

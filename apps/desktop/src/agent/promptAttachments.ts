@@ -60,6 +60,24 @@ function fileBlock(entries: FileEntry[]): string {
   ].join("\n");
 }
 
+/** Build a path block naming every attached file (including images) on disk.
+ *  Used by CLI / text-only adapters (such as Antigravity print mode) where
+ *  all attachments — visual or text — are read off disk by the agent's tools. */
+export async function buildTextAttachmentBlock(
+  attachments: ChatAttachment[] | undefined,
+): Promise<string> {
+  const store = getAttachmentStore();
+  const files: FileEntry[] = [];
+
+  for (const att of attachments ?? []) {
+    const absPath = store.resolveAbsPath(att.id);
+    if (!absPath) continue; // never uploaded / GC'd — nothing to attach
+    files.push({ name: att.name, mimeType: att.mimeType, sizeBytes: att.sizeBytes, absPath });
+  }
+
+  return fileBlock(files);
+}
+
 /** Build Codex's image input items + a path block for everything else. Codex
  *  renders any `image/*` natively, so only unreadable images fall through to
  *  the file block. */
