@@ -67,6 +67,7 @@ import {
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
+import { isResumeRefusalError } from "./errors.js";
 import {
   buildClaudeAttachmentContent,
   composePromptText,
@@ -793,6 +794,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       return await this.startFreshSession(input);
     } catch (error) {
+      // Only a refusal-class failure (the stored conversation was pruned or is
+      // foreign) deserves the fresh-start fallback; a transport, auth or
+      // protocol failure must surface, or the thread reopens blank and the
+      // user never learns why. Same gate Codex/Cursor/Droid apply.
+      if (!isResumeRefusalError(error)) throw error;
       console.warn(
         `[claude] resume "${input.resume}" failed (${
           error instanceof Error ? error.message : String(error)
@@ -907,8 +913,8 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     try {
       // Resolves once the CLI subprocess has initialized — our request/ack point.
-      // A dead or foreign `resume` id fails here ("conversation id does not
-      // exist"), which is what startSession's catch retries without it, so
+      // A dead or foreign `resume` id fails here ("no conversation found with
+      // session id"), which is what startSession's catch retries without it, so
       // getting past this line means the resume was genuinely adopted.
       await q.initializationResult();
     } catch (error) {

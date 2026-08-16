@@ -69,13 +69,16 @@ const state: {
    *  from it to assert what was offered into the queue — and that close()
    *  drops what was never pulled. */
   promptIterable: AsyncIterable<Record<string, unknown>> | null;
-} = { feed: null, stopTask: null, interrupt: null, promptIterable: null };
+  /** The stubbed SDK's initializationResult — the adapter's request/ack point.
+   *  Tests drive resume failures here (transport vs. refusal). */
+  initializationResult: ReturnType<typeof mock> | null;
+} = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null };
 
 const stubQuery = mock((input: unknown) => {
   state.promptIterable =
     (input as { prompt?: AsyncIterable<Record<string, unknown>> }).prompt ?? null;
   return {
-    initializationResult: async () => ({}),
+    initializationResult: async () => state.initializationResult?.() ?? {},
     interrupt: () => state.interrupt?.(),
     stopTask: (taskId: string) => state.stopTask?.(taskId),
     setPermissionMode: async () => {},
@@ -100,6 +103,7 @@ function setup() {
   state.feed = new MessageFeed();
   state.stopTask = mock(async () => {});
   state.interrupt = mock(async () => {});
+  state.initializationResult = mock(async () => ({}));
   state.promptIterable = null;
   return { adapter, events };
 }
@@ -380,5 +384,46 @@ describe("Claude steerTurn", () => {
     // The queue is shutdown: the parked steer is dropped, never delivered.
     const { done } = await iterator.next();
     expect(done).toBe(true);
+  });
+});
+
+describe("Claude startSession resume fallback", () => {
+  test("startSession surfaces a transport failure instead of masking it with a fresh start", async () => {
+    const { adapter } = setup();
+    let attempts = 0;
+    state.initializationResult = mock(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("connection refused");
+      return {};
+    });
+
+    await expect(
+      adapter.startSession({
+        threadId: THREAD,
+        provider: "claudeAgent",
+        cwd: "/tmp/kone-test-project",
+        resume: "conv-42",
+      }),
+    ).rejects.toThrow("connection refused");
+  });
+
+  test("startSession falls back to a fresh conversation only on a missing-resume refusal", async () => {
+    const { adapter } = setup();
+    let calls = 0;
+    state.initializationResult = mock(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("No conversation found with session ID: abc");
+      return {};
+    });
+
+    const session = await adapter.startSession({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      cwd: "/tmp/kone-test-project",
+      resume: "abc",
+    });
+
+    expect(session.resumedFrom).toBeUndefined();
+    expect(state.initializationResult).toHaveBeenCalledTimes(2);
   });
 });
