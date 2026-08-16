@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import JSZip from "jszip";
 import {
   importOpenVsxThemeExtension,
@@ -6,6 +6,13 @@ import {
   searchOpenVsxThemes,
   type OpenVsxThemeExtension,
 } from "./openvsx";
+
+const originalFetch = globalThis.fetch;
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
 
 // The registry side of the flow is mocked with a tiny fetch router; the
 // package side is real — VSIXes are built with JSZip and the importer must
