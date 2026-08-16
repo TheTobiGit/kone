@@ -97,8 +97,8 @@ const crumb = computed(() => {
 
 <template>
   <section class="sps" :aria-label="label ?? breadcrumb">
-    <header class="sps__mast app-drag" :class="{ 'sps__mast--split': $slots.actions }">
-      <p class="sps__eyebrow app-no-drag">
+    <header class="sps__mast" :class="{ 'sps__mast--split': $slots.actions }">
+      <p class="sps__eyebrow">
         <button
           type="button"
           class="sps__back"
@@ -136,7 +136,7 @@ const crumb = computed(() => {
         </span>
       </p>
 
-      <div v-if="$slots.actions" class="sps__actions app-no-drag">
+      <div v-if="$slots.actions" class="sps__actions">
         <slot name="actions" />
       </div>
     </header>

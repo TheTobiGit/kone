@@ -183,26 +183,6 @@ textarea,
   user-select: text;
 }
 
-/* ── Frameless desktop window dragging ─────────────────────────────────────── */
-.app-drag,
-.drag-region {
-  -webkit-app-region: drag;
-}
-
-.app-no-drag,
-.no-drag,
-button,
-input,
-textarea,
-select,
-a,
-[role="button"],
-[role="tab"],
-[role="switch"],
-[role="dialog"] {
-  -webkit-app-region: no-drag;
-}
-
 /* The board overview's inverse zoom factor (1/k), published on the scaled plane in
    ThreadStrip and consumed by every piece of card chrome as `calc(<px> * var(--inv-k))`
    so radii, rings, shadows and captions hold a constant *screen* size at any zoom.
