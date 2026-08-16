@@ -54,6 +54,8 @@ export interface GatewayToolContext {
   cwd: string;
   /** The MCP jsonrpc request id — cancellation mapping. */
   requestId: string | number | null;
+  /** Present on in-flight MCP calls so a later cancel can abort the handler. */
+  signal?: AbortSignal;
 }
 
 /** A registered gateway tool. `inputSchema` validates args (zod); the

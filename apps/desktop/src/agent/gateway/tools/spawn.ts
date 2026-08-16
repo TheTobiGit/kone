@@ -171,6 +171,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         turnIds: args.turnIds,
         timeoutMs: args.timeoutMs,
         scopeThreadId: ctx.threadId,
+        signal: ctx.signal,
       });
       const running = outcome.threads.filter((t) => !t.terminal).length;
       const parked = outcome.threads.filter(
@@ -186,6 +187,10 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
             : `${count} thread${count === 1 ? "" : "s"} reported; ${running} still running.`;
       return { content: [{ type: "text", text }], structuredContent: outcome };
     } catch (error) {
+      // An aborted wait is the caller cancelling — the transport turns it into
+      // a 202 with no body. Mapping it to a tool error would report a failure
+      // to a client that already gave up on the call.
+      if (error instanceof Error && error.name === "AbortError") throw error;
       return gatewayToolErrorResult(mapSpawnError(error));
     }
   };

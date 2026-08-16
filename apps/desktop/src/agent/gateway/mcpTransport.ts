@@ -14,6 +14,8 @@
 import type { ConversationStore } from "../ConversationStore.js";
 import type { ProviderKind } from "../types.js";
 import type { GatewayCredentials } from "./credentials.js";
+import type { InFlightRequestRegistry } from "./inFlightRequests.js";
+import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import type { GatewayRegistry } from "./registry.js";
 
 /** The store surface the transport needs — structural, so unit tests can
@@ -146,6 +148,9 @@ export interface McpTransportInput {
   turnState: ReadonlyMap<string, { turnId: string; running: boolean }>;
   serverVersion: string;
   instructions: string;
+  /** Cross-POST cancellation ownership for in-flight calls; a per-transport
+   *  registry is used when the gateway does not inject its own. */
+  inFlight?: InFlightRequestRegistry;
 }
 
 export interface McpTransport {
@@ -157,6 +162,8 @@ export interface McpTransport {
 }
 
 export function makeMcpTransport(input: McpTransportInput): McpTransport {
+  const inFlight = input.inFlight ?? makeInFlightRequestRegistry();
+
   async function handleRequest(
     request: JsonRpcRequest,
     ctx: {
@@ -165,6 +172,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       model?: string;
       cwd: string;
       turnId: string | null;
+      signal?: AbortSignal;
     },
   ): Promise<Record<string, unknown>> {
     switch (request.method) {
@@ -186,18 +194,16 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         if (typeof name !== "string") {
           return jsonRpcError(request.id, JSON_RPC_INVALID_PARAMS, "Missing tool name.");
         }
-        const result = await input.registry.call(
-          {
-            threadId: ctx.threadId,
-            turnId: ctx.turnId,
-            provider: ctx.provider,
-            model: ctx.model,
-            cwd: ctx.cwd,
-            requestId: request.id,
-          },
-          name,
-          request.params.arguments,
-        );
+        const toolCtx = {
+          threadId: ctx.threadId,
+          turnId: ctx.turnId,
+          provider: ctx.provider,
+          model: ctx.model,
+          cwd: ctx.cwd,
+          requestId: request.id,
+          signal: ctx.signal,
+        };
+        const result = await input.registry.call(toolCtx, name, request.params.arguments);
         return jsonRpcResult(request.id, result);
       }
       default:
@@ -284,18 +290,53 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
               responses.push(null);
               break;
             }
-            responses.push(
-              await handleRequest(
+            const controller = new AbortController();
+            const unregister = inFlight.register({
+              sessionKey: threadId,
+              turnId,
+              requestId: message.request.id,
+              cancel: async () => {
+                controller.abort();
+              },
+            });
+            let response: Record<string, unknown> | null;
+            try {
+              const result = await handleRequest(
                 message.request,
-                { threadId, provider, model, cwd, turnId },
-              ).catch(() => {
+                { threadId, provider, model, cwd, turnId, signal: controller.signal },
+              );
+              response = controller.signal.aborted ? null : result;
+            } catch {
+              if (controller.signal.aborted) {
+                response = null;
+              } else {
                 console.error("[gateway] request handler failed:", message.request.method);
-                return jsonRpcError(message.request.id, JSON_RPC_INTERNAL_ERROR, "Internal error.");
-              }),
-            );
+                response = jsonRpcError(
+                  message.request.id,
+                  JSON_RPC_INTERNAL_ERROR,
+                  "Internal error.",
+                );
+              }
+            } finally {
+              unregister();
+            }
+            responses.push(response);
             break;
           }
-          case "notification":
+          case "notification": {
+            if (
+              message.notification.method === "notifications/cancelled" &&
+              (typeof message.notification.params.requestId === "string" ||
+                typeof message.notification.params.requestId === "number")
+            ) {
+              inFlight.cancel({
+                sessionKey: threadId,
+                requestId: message.notification.params.requestId,
+              });
+            }
+            responses.push(null);
+            break;
+          }
           case "response":
             responses.push(null);
             break;
