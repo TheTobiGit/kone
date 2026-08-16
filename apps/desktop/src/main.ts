@@ -7,7 +7,7 @@ import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index
 import { setUserDataDir } from "./agent/userDataDir.js";
 import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./fs.js";
-import { cancelClone, registerGitIpc } from "./git/index.js";
+import { cancelAllClones, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
 import { registerBoardIpc } from "./board/index.js";
 import { registerScratchpadIpc } from "./scratchpad/index.js";
@@ -254,18 +254,20 @@ if (gotSingleInstanceLock) {
     }
   });
 
-  // Quit path: don't leave a `git clone` running (and a half-written folder
-  // behind), and don't orphan agent CLI subprocesses or terminal PTY shells.
-  // before-quit is the only hook that can await: preventDefault, run the
-  // teardown, then quit again. A hard timeout stops the app even if a
-  // provider child refuses to die. Re-entry guard: the app.quit() below fires
-  // before-quit again, which must pass straight through.
+  // Quit path: don't leave `git clone` processes running (each would keep a
+  // half-written folder behind), and don't orphan agent CLI subprocesses or
+  // terminal PTY shells. Every in-flight clone — the user's GitHub clone and a
+  // concurrent skill-install clone alike — must be aborted, so this is the
+  // all-clones sweep, not a single slot. before-quit is the only hook that can
+  // await: preventDefault, run the teardown, then quit again. A hard timeout
+  // stops the app even if a provider child refuses to die. Re-entry guard: the
+  // app.quit() below fires before-quit again, which must pass straight through.
   let teardownStarted = false;
   app.on("before-quit", (event) => {
     if (teardownStarted) return;
     event.preventDefault();
     teardownStarted = true;
-    cancelClone();
+    cancelAllClones();
     const teardown = Promise.allSettled([shutdownAgents(), shutdownTerminals()]);
     const hardStop = new Promise<void>((resolve) =>
       setTimeout(resolve, QUIT_TEARDOWN_TIMEOUT_MS),
