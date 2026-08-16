@@ -144,7 +144,11 @@ async function createWindow() {
   if (windowState.isMaximized) {
     mainWindow.maximize();
   }
-  manageWindowState(mainWindow);
+  // Pass persistEnabled: when restore centered the window because the saved
+  // coordinates sat on an unplugged display, close must not rewrite those
+  // coordinates until the user actually moves the window — otherwise plugging
+  // the monitor back in can never restore the original placement.
+  manageWindowState(mainWindow, { persistEnabled: windowState.persistEnabled });
 
   // Push maximize/fullscreen transitions to the renderer's caption buttons.
   bindWindowChromeEvents(mainWindow);
