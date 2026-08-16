@@ -77,7 +77,12 @@ import type { TokenUsageSplits } from "../usage/report.js";
 //  2. `session/set_config_option` takes `configId` — not `configOptionId` — and
 //     answers with the *entire* refreshed config matrix (mode, model, effort,
 //     context, fast, thinking). There is no separate "list config options"
-//     method; that response is the only way to read the matrix from a session.
+//     method; that response is the only way to *refresh* the matrix from a
+//     session. The starting matrix is free: both `session/new` and
+//     `session/load` carry a `configOptions` bag, and startSession must seed
+//     `session.configOptions` from it — a session opened on the CLI's default
+//     model never goes through set_model, so its model id is only knowable
+//     from that starting matrix.
 //  3. Declaring `_meta.parameterizedModelPicker` at initialize changes the
 //     model catalog's shape: with it, `availableModels` are clean base ids
 //     (`claude-opus-5`) whose axes are separate config options; without it the
@@ -297,6 +302,32 @@ export function parseConfigOptions(value: unknown): CursorConfigOption[] {
 
 function findOption(options: readonly CursorConfigOption[], ids: readonly string[]): CursorConfigOption | undefined {
   return options.find((option) => ids.includes(option.id));
+}
+
+export type CursorSessionSeed = {
+  modeIds: string[];
+  configOptions: CursorConfigOption[];
+  defaultModel?: string;
+};
+
+/** Read the starting mode list and config matrix off a session/new or
+ *  session/load response. A session opened on the CLI's default model never
+ *  goes through set_model, so the model id (and later the context-window
+ *  fallback) is only knowable from this matrix. An empty or missing bag is a
+ *  valid response — later set_config_option / config_option_update still fill
+ *  it — so this must not throw. */
+export function seedFromSessionResponse(response: unknown): CursorSessionSeed {
+  const record = asRecord(response);
+  const modeIds = asArray(asRecord(asRecord(record)?.modes)?.availableModes)
+    .map((raw) => readString(raw, "id"))
+    .filter((id): id is string => id !== undefined);
+  const configOptions = parseConfigOptions(record?.configOptions);
+  const defaultModel = findOption(configOptions, ["model"])?.currentValue;
+  return {
+    modeIds,
+    configOptions,
+    ...(defaultModel ? { defaultModel } : {}),
+  };
 }
 
 /** Cursor names context windows `"300k"` / `"1m"` / `"272k"`. */
@@ -809,10 +840,13 @@ export class CursorAdapter implements ProviderAdapter {
         session.conversationId = sessionId;
       }
 
-      // `modes: { currentModeId, availableModes: [{ id, name }] }`.
-      session.modeIds = asArray(asRecord(asRecord(response)?.modes)?.availableModes)
-        .map((raw) => readString(raw, "id"))
-        .filter((id): id is string => id !== undefined);
+      // `modes: { currentModeId, availableModes: [{ id, name }] }` plus the
+      // starting `configOptions` matrix — seeding the matrix is what lets the
+      // default-model read below (and toSession's effort) actually fire
+      // (protocol fact 2).
+      const seeded = seedFromSessionResponse(response);
+      session.modeIds = seeded.modeIds;
+      session.configOptions = seeded.configOptions;
 
       await this.applyMode(session, mode);
       if (input.model) await this.applyModel(session, input.model);

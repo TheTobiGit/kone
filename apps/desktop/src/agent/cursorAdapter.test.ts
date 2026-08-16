@@ -8,6 +8,7 @@ import {
   parseStoredCursorContext,
   resolveContextWindow,
   resolveModeId,
+  seedFromSessionResponse,
   toModelDescriptor,
   toolCallDetail,
   toolCallStatus,
@@ -203,6 +204,14 @@ describe("Cursor plan translation", () => {
   });
 });
 
+// The `session/new` matrix for the CLI's default model (composer-2.5): no
+// context axis at all, so the window must come from the model catalog.
+const defaultSessionConfigOptions = [
+  { id: "mode", category: "mode", currentValue: "agent", options: [{ value: "agent" }, { value: "plan" }, { value: "ask" }] },
+  { id: "model", category: "model", currentValue: "composer-2.5", options: [{ value: "default" }, { value: "composer-2.5" }] },
+  { id: "fast", category: "model_config", currentValue: "true", options: [{ value: "false" }, { value: "true" }] },
+];
+
 // Cursor 2026.07.23 emits NO usage over ACP — the `usage_update` notification
 // never fired across five live sessions (multi-tool turns, big contexts,
 // follow-up turns), so there is no verbatim usage_update payload to paste here.
@@ -289,14 +298,6 @@ describe("Cursor context-window fallback", () => {
     },
   ];
 
-  // The `session/new` matrix for the CLI's default model (composer-2.5): no
-  // context axis at all, so the window must come from the model catalog.
-  const defaultSessionConfigOptions = [
-    { id: "mode", category: "mode", currentValue: "agent", options: [{ value: "agent" }, { value: "plan" }, { value: "ask" }] },
-    { id: "model", category: "model", currentValue: "composer-2.5", options: [{ value: "default" }, { value: "composer-2.5" }] },
-    { id: "fast", category: "model_config", currentValue: "true", options: [{ value: "false" }, { value: "true" }] },
-  ];
-
   test("reads the active window from the live `context` config option", () => {
     // Live config says 1m even though the catalog default is 300k — the live
     // value wins, and no `used`/`total` is ever invented.
@@ -333,6 +334,59 @@ describe("Cursor context-window fallback", () => {
     expect(usage).not.toHaveProperty("contextUsed");
     expect(usage).not.toHaveProperty("input");
     expect(usage).not.toHaveProperty("output");
+  });
+});
+
+// startSession reads the model/mode seed off the session/new (or session/load)
+// response — the same shape the context-window block parses — so the later
+// `findOption(session.configOptions, ["model"])` default-model read fires.
+describe("Cursor session response seed", () => {
+  const modelOption = { id: "model", name: undefined, category: "model", currentValue: "composer-2.5", options: [{ value: "default", name: undefined }, { value: "composer-2.5", name: undefined }] };
+  const fastOption = { id: "fast", name: undefined, category: "model_config", currentValue: "true", options: [{ value: "false", name: undefined }, { value: "true", name: undefined }] };
+
+  test("seeds the mode ids and default model from a session/new response", () => {
+    const seed = seedFromSessionResponse({
+      configOptions: defaultSessionConfigOptions,
+      modes: {
+        currentModeId: "agent",
+        availableModes: [
+          { id: "agent", name: "Agent" },
+          { id: "plan", name: "Plan" },
+          { id: "ask", name: "Ask" },
+        ],
+      },
+    });
+    expect(seed.modeIds).toEqual(["agent", "plan", "ask"]);
+    expect(seed.defaultModel).toBe("composer-2.5");
+    expect(seed.configOptions).toContainEqual(modelOption);
+    expect(seed.configOptions).toContainEqual(fastOption);
+  });
+
+  test("an empty or missing response seeds nothing and does not throw", () => {
+    for (const response of [undefined, {}, { configOptions: [] }, { configOptions: undefined }]) {
+      expect(seedFromSessionResponse(response)).toEqual({ modeIds: [], configOptions: [] });
+    }
+  });
+
+  test("a matrix without a model option leaves the default model unset", () => {
+    // Fail open: with no `model` option to read, any id we invented would aim
+    // set_model / the usage fallback at a catalog row the session never offered.
+    const seed = seedFromSessionResponse({
+      configOptions: [{ id: "fast", currentValue: "false", options: [{ value: "false" }] }],
+    });
+    expect(seed.configOptions).toHaveLength(1);
+    expect(seed.defaultModel).toBeUndefined();
+  });
+
+  test("a model option with no current value does not set the default model", () => {
+    const seed = seedFromSessionResponse({
+      configOptions: [
+        { id: "model", options: [{ value: "default" }, { value: "composer-2.5" }] },
+        { id: "fast", currentValue: "true", options: [{ value: "false" }, { value: "true" }] },
+      ],
+    });
+    expect(seed.configOptions).toHaveLength(2);
+    expect(seed.defaultModel).toBeUndefined();
   });
 });
 
