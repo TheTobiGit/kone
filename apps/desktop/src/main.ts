@@ -5,6 +5,8 @@ import { app, BrowserWindow, nativeTheme, net, protocol, shell } from "electron"
 
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { setUserDataDir } from "./agent/userDataDir.js";
+import { resolveAppProtocolPath } from "./appProtocol.js";
+import { isRendererOriginNavigation, parseSafeExternalUrl } from "./safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelAllClones, registerGitIpc } from "./git/index.js";
@@ -65,15 +67,17 @@ function getRendererPath() {
 }
 
 function registerAppProtocol() {
-  protocol.handle("app", (request) => {
-    const url = new URL(request.url);
-    let pathname = decodeURIComponent(url.pathname);
+  const rendererRoot = getRendererPath();
 
-    if (pathname === "/" || pathname === "") {
-      pathname = "/index.html";
+  protocol.handle("app", (request) => {
+    const filePath = resolveAppProtocolPath(rendererRoot, request.url);
+
+    if (filePath === null) {
+      // 404 instead of fetching: a request we cannot prove resolves inside the
+      // renderer must not be served.
+      return new Response("Not found", { status: 404 });
     }
 
-    const filePath = path.join(getRendererPath(), pathname);
     return net.fetch(pathToFileURL(filePath).toString());
   });
 }
@@ -206,9 +210,23 @@ async function createWindow() {
     }, 250);
   });
 
+  // Window-open and in-window navigations must use the same http(s)-only gate
+  // as github.open. will-navigate also has to let the renderer's own origin
+  // (dev server or app://) through so the initial loadURL and client routes
+  // still work, while anything else is kept out of the BrowserWindow.
+  const applicationUrl = isDev ? devServerUrl : "app://./";
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    const externalUrl = parseSafeExternalUrl(url);
+    if (externalUrl) void shell.openExternal(externalUrl);
     return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isRendererOriginNavigation(applicationUrl, url)) return;
+    event.preventDefault();
+    const externalUrl = parseSafeExternalUrl(url);
+    if (externalUrl) void shell.openExternal(externalUrl);
   });
 
   if (isDev) {

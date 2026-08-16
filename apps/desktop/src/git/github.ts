@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { shell } from "electron";
 
+import { parseSafeExternalUrl } from "../safeExternalUrl.js";
 import { GitError, lastStderrLine, repoRoot, run } from "./core.js";
 import { parseFileDiff } from "./diff.js";
 import { classifyGhError } from "./ghError.js";
@@ -971,8 +972,9 @@ export async function checkoutPr(dir: string, number: number): Promise<void> {
 
 /** Open a URL in the user's real browser. Refuses anything but http(s). */
 export async function open(url: string): Promise<void> {
-  if (!/^https?:\/\//i.test(url.trim())) {
+  const externalUrl = parseSafeExternalUrl(url);
+  if (!externalUrl) {
     throw GitError.classified("INVALID_INPUT", `Refusing to open a non-http URL: ${url}`, null);
   }
-  await shell.openExternal(url.trim());
+  await shell.openExternal(externalUrl);
 }
