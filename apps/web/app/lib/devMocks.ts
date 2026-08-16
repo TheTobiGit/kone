@@ -369,10 +369,12 @@ function tweak(line: string, seed: number): string {
   return `${line} //~`;
 }
 
-// The working-tree diff for one mock change.
+// The working-tree diff for one mock change. Paths outside MOCK_CHANGES still
+// get a diff — the demo thread's tool calls touch files the mock working tree
+// never listed, and the changes dock reads a diff for whatever they name.
 export function mockDiff(dir: string, relPath: string): GitFileDiff | null {
   const change = MOCK_CHANGES[dir]?.find((c) => c.path === relPath);
-  if (!change) return null;
+  if (!change) return synthDiff(relPath, "modified", 7, 4);
   return synthDiff(relPath, change.status, change.added ?? 0, change.removed ?? 0);
 }
 

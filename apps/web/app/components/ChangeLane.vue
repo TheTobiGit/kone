@@ -275,14 +275,17 @@ const bundleCards: BundleCard[] = [
     margin-top 340ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .lane__body--open {
-  margin-top: 15px;
+  margin-top: 5px;
   grid-template-rows: 1fr;
 }
 /* The inner pane fades (and eases down 6px) as the track opens, so the cards
-   breathe in rather than being unmasked by a moving clip edge. */
+   breathe in rather than being unmasked by a moving clip edge. Top padding gives
+   cards room to lift on hover without being clipped at the top boundary. */
 .lane__body-inner {
   overflow: hidden;
   min-height: 0;
+  padding-top: 10px;
+  padding-bottom: 6px;
   opacity: 0;
   transform: translateY(-6px);
   transition:
