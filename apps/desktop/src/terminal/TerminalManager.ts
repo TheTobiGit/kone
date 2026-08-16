@@ -399,9 +399,13 @@ export class TerminalManager {
     const s = this.sessions.get(input.terminalId);
     if (!s) throw new Error(`No terminal session '${input.terminalId}' to restart.`);
 
-    await this.killSession(s);
-    s.detachData();
-    s.detachExit();
+    // Detach the session's own observers before forcing the PTY to die, so the
+    // deliberate kill can't masquerade as a natural shell exit and emit a
+    // spurious `exited` event mid-restart.
+    if (s.flushTimer !== null) {
+      clearTimeout(s.flushTimer);
+      s.flushTimer = null;
+    }
     if (s.ackTimer !== null) {
       clearTimeout(s.ackTimer);
       s.ackTimer = null;
@@ -410,7 +414,10 @@ export class TerminalManager {
       clearTimeout(s.pollTimer);
       s.pollTimer = null;
     }
+    s.detachData();
+    s.detachExit();
     s.modeTracker.dispose();
+    await this.killSession(s);
     const carriedSequence = s.sequence;
 
     const spawn = await this.spawnSession({
@@ -447,10 +454,13 @@ export class TerminalManager {
       clearTimeout(s.pollTimer);
       s.pollTimer = null;
     }
-    await this.killSession(s);
+    // Detach the session's own observers before forcing the PTY to die, so the
+    // deliberate kill can't masquerade as a natural shell exit and emit a
+    // spurious `exited` event during a deliberate close.
     s.detachData();
     s.detachExit();
     s.modeTracker.dispose();
+    await this.killSession(s);
     s.status = "closed";
     if (input.deleteHistory) s.history = "";
     this.sessions.delete(input.terminalId);
