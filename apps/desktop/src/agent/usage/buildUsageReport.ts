@@ -115,23 +115,13 @@ async function buildFreshReport(
     cursorDashboard.status === "no-credential" ||
     cursorDashboard.status === "fetch-failed";
 
-  const sqlExclude =
-    projectPath === null
-      ? [
-          "claudeAgent",
-          "codex",
-          "opencode",
-          "droid",
-          "antigravity",
-          ...(useCursorStore ? [] : ["cursor"]),
-        ]
-      : ["claudeAgent", "opencode", "droid", "antigravity"];
+  const filter = resolveStoreProviderFilter(projectPath, useCursorStore);
 
   const sql = store.readStoreUsageReport({
     range: options.range,
     projectPath,
-    excludeProviders: sqlExclude,
-    onlyProviders: projectPath === null && useCursorStore ? ["cursor"] : undefined,
+    excludeProviders: filter.excludeProviders,
+    onlyProviders: filter.onlyProviders,
   });
 
   return mergeUsageReport({
@@ -146,6 +136,45 @@ async function buildFreshReport(
 
 function emptyCursorScan(): CursorDashboardScanResult {
   return { buckets: [], status: "ok", rowsRejected: 0 };
+}
+
+/** Which providers the store slice may contribute, per report scope. The store
+ *  (turn_usage) is never the primary source: the transcript scan and the Cursor
+ *  dashboard are authoritative for the providers they cover, and those are
+ *  excluded here so the store doesn't double-count them.
+ *
+ *  Global scope covers every provider from its transcript/dashboard source, so
+ *  the store contributes only Cursor — and only when the dashboard export isn't
+ *  available to stand in for it.
+ *
+ *  Project scope is narrower: the transcript scan is Claude-only there (every
+ *  other provider's local log is machine-wide, so it can't be scoped to a
+ *  project), which makes the store the sole project-scoped source for everything
+ *  else. Only claudeAgent is excluded — codex, opencode and cursor all record
+ *  their per-turn usage against the thread's project, and dropping opencode from
+ *  that list (as it once was) would silently erase OpenCode spend from every
+ *  project report while its transcript, being machine-wide, had nowhere else to
+ *  come from. Droid and Antigravity emit no per-turn usage kone can read, so
+ *  leaving them in the store slice costs nothing today and becomes correct the
+ *  day they do. */
+export function resolveStoreProviderFilter(
+  projectPath: string | null,
+  useCursorStore: boolean,
+): { excludeProviders: string[]; onlyProviders?: string[] } {
+  if (projectPath !== null) {
+    return { excludeProviders: ["claudeAgent"] };
+  }
+  return {
+    excludeProviders: [
+      "claudeAgent",
+      "codex",
+      "opencode",
+      "droid",
+      "antigravity",
+      ...(useCursorStore ? [] : ["cursor"]),
+    ],
+    ...(useCursorStore ? { onlyProviders: ["cursor"] } : {}),
+  };
 }
 
 type StoreSlice = StoreUsageReport;
