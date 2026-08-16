@@ -69,9 +69,10 @@ export function isRecoverableCodexResumeError(error: unknown): boolean {
  *  refusal-class errors — the stored session is gone, pruned, or foreign —
  *  deserve the fallback; a transport, auth or protocol failure must surface
  *  (silently starting fresh would reopen the thread on a blank conversation
- *  and the user would never know why). Shared by the ACP adapters (Cursor
- *  `session/load`, Droid `session/resume`/`session/load`); Codex uses the
- *  method-scoped isRecoverableCodexResumeError above. */
+ *  and the user would never know why). Shared by the adapters that resume a
+ *  stored session id: Cursor (`session/load`), Droid (`session/resume`/
+ *  `session/load`) and Claude (`query` resume). Codex uses the method-scoped
+ *  isRecoverableCodexResumeError above. */
 export function isResumeRefusalError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return [
@@ -81,6 +82,7 @@ export function isResumeRefusalError(error: unknown): boolean {
     "unknown provider session",
     "missing session",
     "no such session",
+    "no conversation found",
     "missing thread",
     "no such thread",
     "unknown thread",
