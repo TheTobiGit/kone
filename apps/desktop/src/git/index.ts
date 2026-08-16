@@ -30,6 +30,6 @@ export { stashes, stashApply, stashDrop, stashPush } from "./stash.js";
 export { remoteExists, remotes, repoState } from "./state.js";
 export { contributors, identity, logo, readme } from "./about.js";
 export * as github from "./github.js";
-export { cancelClone, clone } from "./clone.js";
+export { cancelAllClones, cancelClone, clone } from "./clone.js";
 export { createProject } from "./create.js";
 export { registerGitIpc } from "./ipc.js";

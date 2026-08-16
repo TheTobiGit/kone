@@ -1,7 +1,7 @@
 import { ipcMain } from "electron";
 
 import { withTimeout } from "../ipcTimeout.js";
-import { clone, cancelClone } from "./clone.js";
+import { clone } from "./clone.js";
 import { createProject } from "./create.js";
 import { contributors, identity, logo, readme } from "./about.js";
 import { content, diff } from "./diff.js";
@@ -79,6 +79,14 @@ function stopAllWatchers(id: number): void {
   for (const entry of map.values()) entry.stop();
   activeWatchers.delete(id);
 }
+
+// The one in-flight clone per renderer (webContents id → controller). Cancel
+// must be scoped to the sender's own clone: the modal's cancel button aborts
+// the clone that modal owns, not every clone in the process — a concurrent
+// skill-install clone (which calls clone() directly, with no renderer
+// controller) would be killed for no reason. One clone per renderer, so a
+// repeat git:clone supersedes the previous one for the same window.
+const activeClones = new Map<number, AbortController>();
 
 // Read-only git/github handlers are bounded by one deadline so a wedged read —
 // a `git status` waiting on a credential prompt, a file preview on a stalled
@@ -310,14 +318,45 @@ export function registerGitIpc(): void {
   // Clone streams progress back to the requesting renderer on a side channel
   // while the invoke stays pending; it resolves with the created folder (or
   // rejects, which surfaces as a rejected invoke in the renderer).
-  ipcMain.handle("git:clone", (event, url: string, dest: string) =>
-    clone(url, dest, (p) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send("git:clone-progress", p);
+  ipcMain.handle("git:clone", (event, url: string, dest: string) => {
+    const id = event.sender.id;
+    // One clone per renderer: a repeat start cancels the previous one rather
+    // than stacking a second clone into the same staging folder.
+    activeClones.get(id)?.abort();
+
+    const controller = new AbortController();
+    activeClones.set(id, controller);
+
+    // A crashed renderer can't cancel its own clone — the invoke dies with the
+    // process — so abort on destroyed or git keeps writing into the staging
+    // folder. Drop the entry too, so a reload of the same window starts fresh.
+    const onDestroyed = () => {
+      controller.abort();
+      activeClones.delete(id);
+    };
+    event.sender.once("destroyed", onDestroyed);
+
+    return clone(
+      url,
+      dest,
+      (p) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send("git:clone-progress", p);
+        }
+      },
+      { signal: controller.signal },
+    ).finally(() => {
+      event.sender.removeListener("destroyed", onDestroyed);
+      if (activeClones.get(id) === controller) {
+        activeClones.delete(id);
       }
-    }),
-  );
-  ipcMain.handle("git:cancel-clone", () => cancelClone());
+    });
+  });
+  // Cancel is scoped to this sender's clone, never the process-wide sweep:
+  // the modal's cancel button must not kill a concurrent skill-install clone.
+  ipcMain.handle("git:cancel-clone", (event) => {
+    activeClones.get(event.sender.id)?.abort();
+  });
   ipcMain.handle("git:create", (_event, opts: CreateProjectOptions) =>
     createProject(opts),
   );
