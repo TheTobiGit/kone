@@ -1,5 +1,7 @@
 import type { ThemeDefinition, ThemeKind, ThemeScheme } from "../roles";
 import { KONE_THEME } from "./kone";
+import { T3CHAT_THEME } from "./t3chat";
+import { SYNARA_THEME } from "./synara";
 import { GROVE_THEME } from "./grove";
 import { OCEAN_THEME } from "./ocean";
 import { EMBER_THEME } from "./ember";
@@ -22,6 +24,8 @@ import { CIRRUS_THEME } from "./cirrus";
  */
 export const BUILT_IN_THEMES: readonly ThemeDefinition[] = [
   KONE_THEME,
+  T3CHAT_THEME,
+  SYNARA_THEME,
   GROVE_THEME,
   OCEAN_THEME,
   EMBER_THEME,
