@@ -728,7 +728,7 @@ export class CursorAdapter implements ProviderAdapter {
     } catch {
       // Fall through to the CLI list below.
     } finally {
-      rpc.kill();
+      await rpc.kill();
     }
 
     const probeEnv = await buildCursorProbeEnv();
@@ -860,7 +860,7 @@ export class CursorAdapter implements ProviderAdapter {
         if (modelOption?.currentValue) session.model = modelOption.currentValue;
       }
     } catch (error) {
-      rpc.kill();
+      await rpc.kill();
       throw error;
     }
 
@@ -959,8 +959,8 @@ export class CursorAdapter implements ProviderAdapter {
     if (!session) return;
     this.drainApprovals(session);
     this.abortLiveTurn(session);
-    session.rpc.kill();
     this.sessions.delete(threadId);
+    await session.rpc.kill();
   }
 
   /** Seal a turn that's still live as we tear the session down. Killing the
@@ -977,15 +977,17 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   async stopAll(): Promise<void> {
+    const kills: Promise<void>[] = [];
     for (const session of this.sessions.values()) {
       this.drainApprovals(session);
       // Seal a still-live turn as `interrupted` BEFORE the kill: the child's
       // exit only seals as 'failed', and a deliberate stop is an interrupt,
       // not a failure. Same guard stopSession's kill path relies on.
       this.abortLiveTurn(session);
-      session.rpc.kill();
+      kills.push(session.rpc.kill());
     }
     this.sessions.clear();
+    await Promise.all(kills);
   }
 
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
