@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { git, repoRoot } from "./core.js";
+import { numstat } from "./numstat.js";
+import type { NumstatEntry } from "./numstat.js";
 import type {
   GitChange,
   GitFileStatus,
@@ -166,36 +168,32 @@ function changeFromXY(xy: string, filePath: string, from?: string): GitChange {
 // each change carries its own +/− — the working tree vs HEAD for tracked files,
 // and the whole file for untracked ones (nothing to diff against yet).
 
-/** Map of repo-relative path → {added, removed} for tracked changes vs HEAD. */
+/** Map of repo-relative path → {added, removed} for tracked changes vs HEAD.
+ *
+ *  Keyed by the path exactly as git emits it under `-z`, because the only thing
+ *  these counts are ever used for is a lookup by the path `status()` parsed out
+ *  of `--porcelain=v2 -z`. Both sides have to be the raw bytes for that lookup
+ *  to hit: ask git for `--numstat` without `-z` and it quotes and escapes any
+ *  path with a non-ASCII byte, a quote or a backslash, which matches nothing
+ *  here and leaves those files reading as +0/−0. */
 async function trackedLineCounts(
   root: string,
 ): Promise<Map<string, { added: number; removed: number }>> {
   const map = new Map<string, { added: number; removed: number }>();
-  let out: string;
+  let entries: NumstatEntry[];
   try {
     // vs HEAD covers staged + unstaged edits to tracked files in one pass.
-    out = await git(root, ["diff", "--numstat", "--no-renames", "HEAD"]);
+    entries = await numstat(root, ["--no-renames", "HEAD"]);
   } catch {
     // Unborn branch (no HEAD): only staged content exists to measure.
     try {
-      out = await git(root, ["diff", "--numstat", "--no-renames", "--cached"]);
+      entries = await numstat(root, ["--no-renames", "--cached"]);
     } catch {
       return map;
     }
   }
-  for (const line of out.split("\n")) {
-    if (!line.trim()) continue;
-    // "<added>\t<removed>\t<path>"; binary files report "-\t-".
-    const tab1 = line.indexOf("\t");
-    const tab2 = line.indexOf("\t", tab1 + 1);
-    if (tab1 < 0 || tab2 < 0) continue;
-    const a = line.slice(0, tab1);
-    const r = line.slice(tab1 + 1, tab2);
-    const filePath = line.slice(tab2 + 1);
-    map.set(filePath, {
-      added: a === "-" ? 0 : Number(a),
-      removed: r === "-" ? 0 : Number(r),
-    });
+  for (const entry of entries) {
+    map.set(entry.path, { added: entry.added, removed: entry.removed });
   }
   return map;
 }
