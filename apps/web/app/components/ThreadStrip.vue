@@ -19,7 +19,7 @@
 // closing are registry operations, so they go up to ProjectView as events. Column
 // *width* is purely presentational, so it lives here.
 
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import {
   useEventListener,
   usePreferredReducedMotion,
@@ -46,6 +46,8 @@ import {
 } from "~/utils/stripScroll";
 import { SESSION_BRAND } from "~/types/session";
 import ContextWindowMeter from "~/components/ContextWindowMeter.vue";
+import ThreadInfoPanel from "~/components/ThreadInfoPanel.vue";
+import type { ThreadSession } from "~/composables/useAgent";
 
 const props = defineProps<{
   /** Live panes in strip order (left to right). A pane's session may be null
@@ -67,6 +69,11 @@ const props = defineProps<{
    *  is deliberately NOT this case: that column shows plainly, with its trailing
    *  seam pill offering terminal / scratchpad. */
   chooser?: boolean;
+  /** The project's folder name — handed to a thread's info panel. */
+  repo?: string;
+  /** The project's current git branch, if any — handed to a thread's info
+   *  panel, where it marks the thread as living in a git project. */
+  branch?: string;
 }>();
 
 const emit = defineEmits<{
@@ -1064,6 +1071,30 @@ async function commitRename(c: Pane): Promise<void> {
   }
 }
 
+// The thread-info drop-down: clicking a column title toggles a panel anchored
+// beneath it. We keep the opening title's viewport rect as the anchor and the
+// session itself (its refs stay live while the panel is open).
+const infoPaneId = ref<string | null>(null);
+const infoAnchor = ref<DOMRect | null>(null);
+const infoSession = shallowRef<ThreadSession | null>(null);
+function toggleInfo(c: Pane, ev: Event): void {
+  if (c.kind !== "thread") return;
+  if (infoPaneId.value === c.id) {
+    closeInfo();
+    return;
+  }
+  const el = ev.currentTarget as HTMLElement | null;
+  if (!el || !c.session) return;
+  infoAnchor.value = el.getBoundingClientRect();
+  infoSession.value = c.session;
+  infoPaneId.value = c.id;
+}
+function closeInfo(): void {
+  infoPaneId.value = null;
+  infoAnchor.value = null;
+  infoSession.value = null;
+}
+
 function onInsertColumn(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   cue("press");
   emit("insert-column", seamIndex, kind);
@@ -1351,9 +1382,14 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                          is focused). Enter commits, Esc cancels, blur commits. -->
                     <h2
                       v-if="renamingKey !== c.id"
-                      class="col__title"
+                      class="col__title col__title--btn"
                       :title="c.session.title.value || 'New thread'"
-                      @dblclick="startRename(c)"
+                      role="button"
+                      tabindex="0"
+                      :aria-expanded="infoPaneId === c.id"
+                      @click.stop="toggleInfo(c, $event)"
+                      @keydown.enter.prevent="toggleInfo(c, $event)"
+                      @keydown.space.prevent="toggleInfo(c, $event)"
                     >{{ c.session.title.value || "New thread" }}</h2>
                     <input
                       v-else
@@ -1624,6 +1660,15 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
       :blank-thread-open="hasBlankThread"
       @close="closeJoint"
       @pick="onInsertPick"
+    />
+
+    <ThreadInfoPanel
+      v-if="infoSession && infoAnchor"
+      :session="infoSession"
+      :anchor="infoAnchor"
+      :repo="repo"
+      :branch="branch"
+      @close="closeInfo"
     />
   </div>
 </template>
@@ -2018,6 +2063,18 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
 }
 .col.is-focused .col__title {
   color: var(--ink);
+}
+
+.col__title--btn {
+  cursor: pointer;
+}
+.col__title--btn:hover {
+  color: var(--ink);
+}
+.col__title--btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* Inline rename — the pencil always sits in flow (18px slot, never shifts the
