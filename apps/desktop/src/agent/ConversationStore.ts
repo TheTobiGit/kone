@@ -3688,7 +3688,7 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
     tokens: row.tokens ?? undefined,
     contextUsed: row.context_used ?? undefined,
     contextWindow: row.context_window ?? undefined,
-    compactsAutomatically: row.compacts_auto ? true : undefined,
+    compactsAutomatically: row.compacts_auto === null ? undefined : row.compacts_auto === 1,
     title: row.title ?? undefined,
     /** Pins live in the DB (v18) so they follow the thread across profiles. */
     isPinned: row.is_pinned === 1,
