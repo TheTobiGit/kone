@@ -2244,14 +2244,6 @@ export class ConversationStore {
     }
   }
 
-  /** The most recently active thread for a project, fully reconstructed into the
-   *  same UserBlock | AssistantBlock shape the renderer timeline uses — so the
-   *  renderer can drop it straight into `blocks` on rehydrate. */
-  latestThread(projectPath: string): StoredThread | null {
-    const meta = this.latestThreadMeta(projectPath);
-    return meta ? this.loadThread(meta.threadId) : null;
-  }
-
   /** Fast indexed lookup for the ID of the most recent user block in a thread,
    *  avoiding full-transcript parsing on turn enqueues. */
   latestUserBlockId(threadId: string): string | null {
@@ -3674,6 +3666,8 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
   const selection = parseJsonObject<{ effort?: string; serviceTier?: string; contextWindow?: string }>(
     row.model_selection_json,
   );
+  const forkContext = parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json);
+  const lineage = parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json);
   return {
     threadId: row.thread_id,
     projectPath: row.project_path,
@@ -3698,12 +3692,8 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
     lastActivityAt: row.last_activity_at ?? row.updated_at,
     resumeSessionAt: row.resume_session_at ?? undefined,
     ...(selection ? { selection } : {}),
-    ...(parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json)
-      ? { forkContext: parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json) }
-      : {}),
-    ...(parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json)
-      ? { lineage: parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json) }
-      : {}),
+    ...(forkContext ? { forkContext } : {}),
+    ...(lineage ? { lineage } : {}),
   };
 }
 

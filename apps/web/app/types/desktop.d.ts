@@ -1422,8 +1422,9 @@ export type StoredThreadPage = {
 };
 
 export type KoneAgentHistoryApi = {
-  /** The project's most recently active thread, fully reconstructed — or null. */
-  latest: (projectPath: string) => Promise<StoredThread | null>;
+  /** The project's most recently active thread, metadata only (no transcript) —
+   *  or null. Resolve the transcript separately via `threadPage`/`thread`. */
+  latest: (projectPath: string) => Promise<StoredThreadMeta | null>;
   /** One stored thread by id, fully reconstructed — or null. */
   thread: (threadId: string) => Promise<StoredThread | null>;
   /** One windowed page of a stored thread, newest window first: first page

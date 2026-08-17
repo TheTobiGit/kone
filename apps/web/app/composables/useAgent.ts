@@ -1048,29 +1048,33 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (rehydratedOnce || options.rehydrate === false) return;
     rehydratedOnce = true;
     try {
-      const stored = await api.history.latest(ctx.resolveCwd());
-      if (stored && stored.blocks.length > 0) {
-        threadId.value = stored.threadId;
-        // Windowed read: `latest` identifies the thread (and is the fallback),
-        // but the transcript comes from the first page when pagination is
-        // available — a very long thread then ships only its newest window and
-        // pages the rest on demand (see PAGE_LIMIT). A missing/failed page API
-        // falls back to the full transcript, byte-for-byte the old path.
-        const page =
-          typeof api.history.threadPage === "function"
-            ? await api.history.threadPage(stored.threadId, { limit: PAGE_LIMIT }).catch(
-                () => null,
-              )
-            : null;
-        if (page && page.blocks.length > 0) {
-          blocks.value = markHistorical(page.blocks as ThreadBlock[]);
-          olderCursor.value = page.nextCursor;
-        } else {
-          blocks.value = markHistorical(stored.blocks as ThreadBlock[]);
-          olderCursor.value = null;
-        }
-        title.value = stored.title?.trim() || title.value;
-        adoptStoredThread(stored);
+      // `latest` is metadata only — it just identifies the thread. The
+      // transcript comes from the windowed first page (see PAGE_LIMIT): a very
+      // long thread then ships only its newest window and pages the rest on
+      // demand. Only if that windowed read is unavailable or comes back empty
+      // do we pay for a full reconstruction, to tell "paging failed" apart
+      // from "this thread genuinely has nothing yet".
+      const meta = await api.history.latest(ctx.resolveCwd());
+      if (!meta) return;
+      const page =
+        typeof api.history.threadPage === "function"
+          ? await api.history.threadPage(meta.threadId, { limit: PAGE_LIMIT }).catch(() => null)
+          : null;
+      let resolvedBlocks: ThreadBlock[] | null = null;
+      let nextCursor: string | null = null;
+      if (page && page.blocks.length > 0) {
+        resolvedBlocks = page.blocks as ThreadBlock[];
+        nextCursor = page.nextCursor;
+      } else {
+        const full = await api.history.thread(meta.threadId).catch(() => null);
+        if (full && full.blocks.length > 0) resolvedBlocks = full.blocks as ThreadBlock[];
+      }
+      if (resolvedBlocks && resolvedBlocks.length > 0) {
+        threadId.value = meta.threadId;
+        blocks.value = markHistorical(resolvedBlocks);
+        olderCursor.value = nextCursor;
+        title.value = meta.title?.trim() || title.value;
+        adoptStoredThread(meta);
         seedSpawnedChildren();
         // The queue rows survive crashes — rebuild the chips from the bridge.
         seedQueuedTurns(api);

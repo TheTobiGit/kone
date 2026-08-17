@@ -326,9 +326,12 @@ export function registerAgentIpc(): void {
   // be archived (hidden, recoverable) or deleted (gone).
   // History reads return the same shapes but with tool-call bodies bounded for
   // the wire — the store keeps the full payloads (projectStoredThreadForIpc).
+  // `history-latest` is metadata only: rehydrate() resolves the transcript
+  // itself via the windowed `history-thread-page` (falling back to
+  // `history-thread` only if paging comes back empty), so a full-thread
+  // reconstruction here would be built and thrown away on every project open.
   ipcMain.handle("agent:history-latest", (_event, projectPath: string) => {
-    const thread = store.latestThread(projectPath);
-    return thread ? projectStoredThreadForIpc(thread) : null;
+    return store.latestThreadMeta(projectPath);
   });
   ipcMain.handle("agent:history-thread", (_event, threadId: string) => {
     const thread = store.loadThread(threadId);
@@ -336,9 +339,8 @@ export function registerAgentIpc(): void {
   });
   // Windowed thread read (user-anchored keyset pages): first page when no
   // cursor is given, then the next strictly older page per cursor. The
-  // renderer treats `nextCursor` as opaque and echoes it back. (Renderer
-  // integration is pending the bridge type + load-older UI; see the store's
-  // loadThreadPage doc.)
+  // renderer treats `nextCursor` as opaque and echoes it back — this is
+  // rehydrate()'s primary read path (see useAgent.ts).
   ipcMain.handle(
     "agent:history-thread-page",
     (_event, threadId: string, options?: { limit?: number; cursor?: string }) => {

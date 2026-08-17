@@ -362,7 +362,7 @@ const api = {
     // Persisted conversation history (read-only): rehydrate a project's last
     // thread on open, or list past ones. Null when nothing is stored yet.
     history: {
-      latest: (projectPath: string): Promise<StoredThread | null> =>
+      latest: (projectPath: string): Promise<StoredThreadMeta | null> =>
         ipcRenderer.invoke("agent:history-latest", projectPath),
       thread: (threadId: string): Promise<StoredThread | null> =>
         ipcRenderer.invoke("agent:history-thread", threadId),
