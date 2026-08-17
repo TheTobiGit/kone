@@ -398,6 +398,37 @@ describe("pins, selection and rename", () => {
   });
 });
 
+describe("latestThreadMeta", () => {
+  test("picks the most recently active thread for a project, metadata only", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.ensureThread({ threadId: "b", projectPath: "/p", provider: "codex" });
+    store.ensureThread({ threadId: "other-project", projectPath: "/q", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "first", at: 100 });
+    store.recordUserBlock({ threadId: "b", text: "second", at: 200 });
+
+    const meta = store.latestThreadMeta("/p");
+    expect(meta?.threadId).toBe("b");
+    expect(meta?.projectPath).toBe("/p");
+    // Metadata only — no transcript field, unlike `loadThread`'s StoredThread.
+    expect(meta && "blocks" in meta).toBe(false);
+
+    expect(store.latestThreadMeta("/q")?.threadId).toBe("other-project");
+    expect(store.latestThreadMeta("/does-not-exist")).toBeNull();
+  });
+
+  test("ignores archived threads", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.ensureThread({ threadId: "b", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "first", at: 100 });
+    store.recordUserBlock({ threadId: "b", text: "second", at: 200 });
+    store.setArchived("b", true);
+
+    expect(store.latestThreadMeta("/p")?.threadId).toBe("a");
+  });
+});
+
 describe("delete/archive subtree cascade with busy guard", () => {
   test("deleteThread cascades to spawned children and every row kind, and refuses while busy", () => {
     const store = freshStore();
