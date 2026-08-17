@@ -369,6 +369,35 @@ export function createProcessTreeKiller(
   return { capture, inspect, signal };
 }
 
+/** Union of a remembered SIGTERM-time capture and a fresh one, for the escalating
+ *  SIGKILL — neither alone is the whole tree. The remembered capture holds
+ *  descendants that outlived the root and were reparented to init, which a fresh
+ *  snapshot taken from the dead root cannot see. The fresh capture holds
+ *  descendants that did not exist yet at SIGTERM: a shell handed a grace period
+ *  goes on working through it, and anything it starts in that window is absent
+ *  from the older capture and would be left running.
+ *
+ *  A pid in both keeps the fresh command: a pid sitting under the root in the
+ *  live table belongs to this tree however it got there, while the older reading
+ *  may name a command that has since been replaced. The root's identity is the
+ *  remembered one — that is the process the caller decided to escalate on, and
+ *  comparing it against the live table is what catches a root pid recycled
+ *  during the grace period. */
+export function mergeProcessTreeCaptures(
+  remembered: ProcessTreeCapture | undefined,
+  fresh: ProcessTreeCapture,
+): ProcessTreeCapture {
+  if (remembered === undefined) return fresh;
+  const byPid = new Map<number, CapturedProcess>();
+  for (const descendant of remembered.descendants) byPid.set(descendant.pid, descendant);
+  for (const descendant of fresh.descendants) byPid.set(descendant.pid, descendant);
+  return {
+    descendants: [...byPid.values()],
+    captureComplete: remembered.captureComplete && fresh.captureComplete,
+    rootCommand: remembered.rootCommand ?? fresh.rootCommand,
+  };
+}
+
 // SIGTERM captures are kept so the follow-up SIGKILL can find descendants that
 // survived and got reparented to init — re-capturing from the now-dead root
 // sees nothing. Capped so a series of SIGTERMs without SIGKILLs cannot grow
@@ -480,13 +509,15 @@ export async function inspectSubprocessActivityAsync(rootPid: number): Promise<S
 }
 
 /** Kill `rootPid` and every descendant. SIGTERM captures the tree and remembers
- *  it; the follow-up SIGKILL reuses that capture, because children which ignore
- *  SIGTERM are reparented to init once the root dies — re-capturing from the
- *  dead root finds nothing. SIGKILL re-reads current commands and only signals
- *  pids whose command still matches, so a recycled pid running a different
- *  command is never killed. Windows hands the tree to `taskkill /T /F`, which
- *  owns descendant traversal natively. Per-pid errors (already dead) are
- *  swallowed. */
+ *  it; the follow-up SIGKILL kills the union of that capture and a fresh one,
+ *  because each holds descendants the other cannot see — children which ignored
+ *  SIGTERM have been reparented to init, so a fresh snapshot taken from the dead
+ *  root misses them, while anything the root started during its grace period is
+ *  missing from the older capture. SIGKILL re-reads current commands and only
+ *  signals pids whose command still matches, so a recycled pid running a
+ *  different command is never killed. Windows hands the tree to
+ *  `taskkill /T /F`, which owns descendant traversal natively. Per-pid errors
+ *  (already dead) are swallowed. */
 export function killProcessTree(rootPid: number, signal: TerminalKillSignal): void {
   if (!Number.isInteger(rootPid) || rootPid <= 0) return;
   if (process.platform === "win32") {
@@ -510,7 +541,11 @@ export function killProcessTree(rootPid: number, signal: TerminalKillSignal): vo
     defaultProcessTreeKiller.signal({ rootPid, signal: "SIGTERM", tree, includeRoot: true });
     return;
   }
-  const tree = pendingTrees.get(rootPid) ?? defaultProcessTreeKiller.capture(rootPid);
+  const remembered = pendingTrees.get(rootPid);
   pendingTrees.delete(rootPid);
+  const tree = mergeProcessTreeCaptures(
+    remembered,
+    defaultProcessTreeKiller.capture(rootPid),
+  );
   defaultProcessTreeKiller.signal({ rootPid, signal: "SIGKILL", tree, includeRoot: true });
 }

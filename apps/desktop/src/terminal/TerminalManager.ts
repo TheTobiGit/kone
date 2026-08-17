@@ -468,9 +468,10 @@ export class TerminalManager {
   }
 
   /** SIGTERM on the whole process tree with a 1s grace, then SIGKILL on the
-   *  tree — the tree capture happens again at signal time so reparented
-   *  children (a `npm run dev` grandchild) are caught too. The one-shot exit
-   *  listener disposes itself, so repeated kills can't leak listeners. */
+   *  tree — which reaps both the children that ignored SIGTERM and any the shell
+   *  started during the grace period, so no `npm run dev` grandchild outlives
+   *  the tab. The one-shot exit listener disposes itself, so repeated kills can't
+   *  leak listeners. */
   private async killSession(s: TerminalSession): Promise<void> {
     if (s.paused) {
       s.paused = false;
