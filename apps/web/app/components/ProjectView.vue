@@ -1816,6 +1816,8 @@ function onDiscardFile(path: string) {
         :inert="Boolean(activeFile)"
         :visible="surface === 'board'"
         :chooser="showChooser"
+        :repo="project.name"
+        :branch="g.branch.value ?? undefined"
         @choose="onChoosePane"
         @focus="focusPane"
         @shift="shiftPaneFocus"
