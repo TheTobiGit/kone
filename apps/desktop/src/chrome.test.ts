@@ -8,7 +8,7 @@ import {
 
 describe("getMacTrafficLightPosition", () => {
   test("positions the traffic-light row with compact top inset", () => {
-    expect(getMacTrafficLightPosition()).toEqual({ x: 16, y: 10 });
+    expect(getMacTrafficLightPosition()).toEqual({ x: 16, y: 6 });
   });
 });
 
@@ -16,7 +16,7 @@ describe("titleBarOptions", () => {
   test("darwin keeps the native traffic lights and insets them in the content", () => {
     expect(titleBarOptions("darwin")).toEqual({
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 16, y: 10 },
+      trafficLightPosition: { x: 16, y: 6 },
     });
   });
 
