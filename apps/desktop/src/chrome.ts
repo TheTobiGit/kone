@@ -1,6 +1,6 @@
 export const CHROME_HEADER_HEIGHT_PX = 46;
 export const MAC_TRAFFIC_LIGHT_INSET_X_PX = 16;
-export const MAC_TRAFFIC_LIGHT_INSET_Y_PX = 10;
+export const MAC_TRAFFIC_LIGHT_INSET_Y_PX = 6;
 
 export function getMacTrafficLightPosition(): { x: number; y: number } {
   return {
