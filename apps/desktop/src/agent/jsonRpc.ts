@@ -82,6 +82,12 @@ export class JsonRpcClient {
 
     this.child.on("error", () => this.handleExit(null));
     this.child.on("close", (code) => this.handleExit(code));
+
+    // A write landing between the child's pipe breaking and its `close` event
+    // emits an error on the stdin stream itself, not on the child handle. With
+    // no listener that error is uncaught and kills the main process, so treat a
+    // broken pipe as the child being gone: reject in-flight calls and exit.
+    this.child.stdin.on("error", () => this.handleExit(null));
   }
 
   private handleExit(code: number | null): void {
@@ -176,7 +182,11 @@ export class JsonRpcClient {
 
   private writeRaw(msg: object): void {
     if (this.exited) return;
-    this.child.stdin.write(`${JSON.stringify(msg)}\n`);
+    const stdin = this.child.stdin;
+    if (!stdin.writable || stdin.destroyed) return;
+    // The callback swallows a late EPIPE; the stream's `error` listener above is
+    // the real guard, but a terminating write can still surface the error here.
+    stdin.write(`${JSON.stringify(msg)}\n`, () => {});
   }
 
   /** Send a request; resolves with its result. Rejects on an error response,
@@ -237,9 +247,12 @@ export class JsonRpcClient {
     return () => this.stderrHandlers.delete(handler);
   }
 
-  /** Terminate the child process (and its process group). Idempotent. */
-  kill(): void {
+  /** Terminate the child process (and its process group). Idempotent.
+   *  Resolves only once the process is confirmed gone, so a caller that
+   *  awaits this before starting a replacement session doesn't spawn the new
+   *  child while the old one still holds the CLI's on-disk session store. */
+  async kill(): Promise<void> {
     if (this.exited) return;
-    killTree(this.child.pid);
+    await killTree(this.child.pid);
   }
 }

@@ -364,6 +364,9 @@ function runCli(input: {
     child.on("close", (code) => {
       finish(code === 0 ? stdout : null);
     });
+    // The try/catch below only guards a synchronous throw; a broken pipe surfaces
+    // as an async error on the stream, which would otherwise go uncaught.
+    child.stdin.on("error", () => finish(null));
 
     try {
       child.stdin.write(input.stdin);
