@@ -4,10 +4,10 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Add01Icon, PuzzleIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import type { SkillEntry } from "~/types/desktop";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
-import AgentSpaceSkills from "~/components/AgentSpaceSkills.vue";
+import AgentSettingsSkills from "~/components/AgentSettingsSkills.vue";
 import SkillDetailView from "~/components/SkillDetailView.vue";
 import SkillAddSheet from "~/components/SkillAddSheet.vue";
-import { useAgentSpace } from "~/composables/useAgentSpace";
+import { useAgentSettings } from "~/composables/useAgentSettings";
 import { useSkills } from "~/composables/useSkills";
 
 defineProps<{ open: boolean }>();
@@ -19,7 +19,7 @@ defineEmits<{ back: [] }>();
 // the way out of everything else.
 
 const projectPath = () => null;
-const space = useAgentSpace(projectPath);
+const space = useAgentSettings(projectPath);
 const skills = useSkills(projectPath);
 
 const selected = ref<SkillEntry | null>(null);
@@ -104,7 +104,7 @@ const atList = computed(() => !selected.value && !adding.value);
       :project-path="null"
       @removed="rescan"
     />
-    <AgentSpaceSkills v-else :space="space" :skills="skills" @open="show" />
+    <AgentSettingsSkills v-else :space="space" :skills="skills" @open="show" />
 
     <template #foot>
       Every skill found on this machine across Claude, Codex, OpenCode, Cursor, Factory, and Agents.

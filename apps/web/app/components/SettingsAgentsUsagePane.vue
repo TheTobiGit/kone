@@ -2,7 +2,7 @@
 import { onMounted } from "vue";
 import { Analytics01Icon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
-import AgentSpaceUsage from "~/components/AgentSpaceUsage.vue";
+import AgentSettingsUsage from "~/components/AgentSettingsUsage.vue";
 
 // Agent usage in settings — the same panel as the agents space, but global by
 // default and without a project scope rail. The drawer widens for it (see
@@ -12,7 +12,7 @@ import AgentSpaceUsage from "~/components/AgentSpaceUsage.vue";
 defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
 
-const space = useAgentSpace(() => null);
+const space = useAgentSettings(() => null);
 
 onMounted(() => {
   space.setUsageScope("global");
@@ -28,7 +28,7 @@ onMounted(() => {
     label="Agent usage settings"
     @back="$emit('back')"
   >
-    <AgentSpaceUsage :space="space" :show-project-scope="false" :foot="false" />
+    <AgentSettingsUsage :space="space" :show-project-scope="false" :foot="false" />
 
     <template #foot>
       What your agent CLIs have spent on this machine — read from each CLI's own local logs, and

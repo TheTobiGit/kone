@@ -21,11 +21,11 @@ export default defineNuxtPlugin(() => {
   // Prime the global usage report in the background so the Agents / Usage
   // settings pane opens instantly instead of paying a cold transcript scan +
   // Cursor read on first sight. This fills both cache layers — the main
-  // process's report memo and useAgentSpace's cross-instance cache — so the pane
+  // process's report memo and useAgentSettings's cross-instance cache — so the pane
   // paints its last-good numbers with no skeleton at all. Switching the scope is
   // what kicks the fetch (the pane opens on the global view); reads Cursor's
   // local session store only, so it can never surface a keychain prompt. Fire-
   // and-forget, and a no-op with no desktop bridge (nuxt dev).
-  const space = useAgentSpace(() => null);
+  const space = useAgentSettings(() => null);
   space.setUsageScope("global");
 });

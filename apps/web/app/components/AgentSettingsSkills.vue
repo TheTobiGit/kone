@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { SkillEntry, SkillState } from "~/types/desktop";
-import type { useAgentSpace } from "~/composables/useAgentSpace";
+import type { useAgentSettings } from "~/composables/useAgentSettings";
 import type { useSkills } from "~/composables/useSkills";
 import { writableStates } from "~/composables/useSkills";
 import SkillMark from "~/components/SkillMark.vue";
@@ -16,7 +16,7 @@ import type { BrandKey } from "~/utils/modelCatalog";
 // pointer rather than sitting on forty rows at once.
 
 const props = defineProps<{
-  space: ReturnType<typeof useAgentSpace>;
+  space: ReturnType<typeof useAgentSettings>;
   skills: ReturnType<typeof useSkills>;
 }>();
 

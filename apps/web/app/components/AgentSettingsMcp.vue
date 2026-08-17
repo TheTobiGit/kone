@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { useAgentSpace } from "~/composables/useAgentSpace";
+import type { useAgentSettings } from "~/composables/useAgentSettings";
 
 // Every MCP server any agent CLI on this machine would read at startup — user
 // config, project config, wherever it's declared. Grouped by the file it came
@@ -8,7 +8,7 @@ import type { useAgentSpace } from "~/composables/useAgentSpace";
 // a read of what's on disk: nothing here starts, stops, or reconfigures a
 // server.
 
-const props = defineProps<{ space: ReturnType<typeof useAgentSpace> }>();
+const props = defineProps<{ space: ReturnType<typeof useAgentSettings> }>();
 
 // `space.inventory` comes back through Vue's `readonly()`, so every array
 // nested inside it (args, envKeys, …) is a `readonly` array — not assignable

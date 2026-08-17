@@ -11,7 +11,7 @@ import type {
   WritableSkillState,
 } from "~/types/desktop";
 
-// The state half of the skills surface. The inventory scan (useAgentSpace) says
+// The state half of the skills surface. The inventory scan (useAgentSettings) says
 // what is on disk; this says whether each one is actually switched on — a
 // separate read per skill, because the answer lives in whichever settings file
 // that skill's own CLI keeps, not in the skill folder.
