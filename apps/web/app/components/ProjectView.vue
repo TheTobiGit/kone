@@ -101,6 +101,11 @@ const scratchpad = useScratchpad({ projectPath: () => props.project.path });
 // The composer, ref'd here (ahead of its template mount) so board.dispatch can
 // pre-fill it for the draft-thread intent. Its wake watcher lives further down.
 const composerRef = ref<{ wake: () => Promise<void>; setDraft: (text: string) => Promise<void> } | null>(null);
+// Whether the composer is expanded into its input. A narrow window leaves the
+// centred card and the corner docks sharing the same strip of screen, so an open
+// composer rides above them — while the resting orb stays under them, where the
+// docks are the thing you're reading.
+const composerOpen = ref(false);
 
 // A pad pane briefly pulses its index dash after a thread → pad append.
 const pulseScratchpadKey = ref<string | null>(null);
@@ -2061,10 +2066,12 @@ function onDiscardFile(path: string) {
       enter-from-class="opacity-0"
       leave-active-class="transition-opacity duration-150 ease-in"
       leave-to-class="opacity-0"
+      @after-leave="composerOpen = false"
     >
       <div
         v-if="!focusedPendingUserInput && !focusedPendingApproval && surface === 'board' && activePaneIsThread && !showChooser && !stripOverview"
-        class="pointer-events-none fixed inset-x-0 bottom-8 z-30 flex justify-center"
+        class="composer-dock pointer-events-none fixed inset-x-0 bottom-8 flex justify-center"
+        :class="{ 'composer-dock--open': composerOpen }"
         :inert="Boolean(activeFile)"
       >
         <AgentComposer
@@ -2094,6 +2101,7 @@ function onDiscardFile(path: string) {
           @update:context-window="onComposerContextWindow"
           @open-models="modelPickerOpen = true"
           @open-branch="openBranchPicker"
+          @update:open="composerOpen = $event"
         />
       </div>
     </Transition>
@@ -2282,6 +2290,20 @@ function onDiscardFile(path: string) {
 </template>
 
 <style scoped>
+/* ── Composer dock ────────────────────────────────────────────────────────── */
+/* Centred at the bottom of the board. At rest it sits below the corner docks (46
+   > 40/45 only once it opens): the resting orb is small and out of their way, and
+   the docks are what you're reading. Open, the card is the thing being typed
+   into, so it takes the higher layer and the docks pass underneath — the two
+   stop competing for the same strip once the window is too narrow to hold both
+   side by side. Stays under a file detail (50), which covers the board whole. */
+.composer-dock {
+  z-index: 30;
+}
+.composer-dock--open {
+  z-index: 46;
+}
+
 /* ── Corner dock stack ────────────────────────────────────────────────────── */
 /* Fixed to the bottom-right corner, holding the agent's live side-panels
    (Changes above Tasks) as a single column so the two folder-picker cards stack

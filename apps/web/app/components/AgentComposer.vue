@@ -111,6 +111,10 @@ const emit = defineEmits<{
   "open-models": [];
   /** Ask the host to open the branch picker (the tray's branch chip). */
   "open-branch": [];
+  /** Whether the surface is expanded into the input. The host lifts the
+   *  composer's layer while it's open so the corner docks can't sit over it on
+   *  a narrow window. */
+  "update:open": [open: boolean];
 }>();
 
 const { cue } = useSound();
@@ -228,6 +232,7 @@ function cycleMode() {
 }
 
 const open = ref(false);
+watch(open, (v) => emit("update:open", v));
 // `text` is the serialized value the composer sends: plain prose with each
 // completed mention written back as its full @path token. The editable field is
 // a contenteditable surface (below) whose DOM holds text nodes + atomic chip
