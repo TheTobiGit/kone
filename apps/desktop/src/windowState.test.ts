@@ -5,9 +5,10 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 
 // windowState.ts imports electron bindings at module top (only used inside
 // functions), and Bun cannot load the electron package outside Electron — so
-// stub the package before importing the module under test. `shell` is required
-// even though this file never calls it: an electron mock that omits the key
-// leaks into later files that do. `displayError` lets tests simulate a broken
+// stub the package before importing the module under test. `shell`, `ipcMain`,
+// and `nativeTheme` are required even though this file never calls them: an
+// electron mock that omits a key leaks into later files that do. `displayError`
+// lets tests simulate a broken
 // display list so the getInitialWindowState fallback path is exercised.
 type Rect = { x: number; y: number; width: number; height: number };
 
@@ -23,7 +24,12 @@ mock.module("electron", () => ({
       return displays;
     },
   },
-  shell: {},
+  ipcMain: { handle: () => {} },
+  nativeTheme: { themeSource: "system" },
+  shell: {
+    openPath: async () => "",
+    showItemInFolder: () => {},
+  },
 }));
 
 const {
