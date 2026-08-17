@@ -161,6 +161,20 @@ async function runProviderQuota(
       // The account or credential changed — drop the remembered snapshot so a
       // later backoff can't serve numbers for a provider that is gone.
       resilience.forget(provider);
+      return result.report;
+    }
+
+    if (result.report.connection === "transientFailure") {
+      // Not a formatted 429, but also not "the provider is gone" — a timeout,
+      // a 5xx, or a token-refresh problem. Serve the last clean snapshot
+      // (flagged stale) when there is one, so a brief network blip can't blank
+      // the whole card to an error row.
+      const stale = resilience.serveOnFailure(
+        provider,
+        Date.now(),
+        result.report.message ?? "Could not refresh this provider's usage.",
+      );
+      if (stale) return stale;
     }
     return result.report;
   } catch (error) {
@@ -168,12 +182,18 @@ async function runProviderQuota(
     // is a last-resort guard so a defect there still can't escape
     // fetchProviderQuota's "always resolves to a report" contract.
     console.warn(`Provider quota unavailable: ${sanitizeError(error)}`);
+    cache.delete(provider);
+    const stale = resilience.serveOnFailure(
+      provider,
+      Date.now(),
+      "Something went wrong reading this provider's usage.",
+    );
+    if (stale) return stale;
     const report = emptyReport(
       provider,
       "transientFailure",
       "Something went wrong reading this provider's usage.",
     );
-    cache.delete(provider);
     return report;
   }
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   MAX_RATE_LIMIT_COOLDOWN_SECONDS,
+  MAX_STALE_SERVE_AGE_MS,
   MIN_RATE_LIMIT_COOLDOWN_SECONDS,
   createRateLimitResilience,
 } from "./rateLimitResilience.js";
@@ -139,5 +140,47 @@ describe("createRateLimitResilience", () => {
 
     expect(resilience.serveDuringCooldown("codex", NOW + 119_999)).not.toBeNull();
     expect(resilience.serveDuringCooldown("codex", NOW + 120_001)).toBeNull();
+  });
+
+  test("serveOnFailure after a clean read returns the last-good report, flagged stale", () => {
+    const resilience = createRateLimitResilience();
+    const good = connectedReport();
+    resilience.rememberLastGood("codex", good);
+
+    const report = resilience.serveOnFailure(
+      "codex",
+      NOW,
+      "Could not reach Codex's usage endpoint.",
+    );
+
+    expect(report).not.toBeNull();
+    expect(report!.stale).toBe(true);
+    expect(report!.rateLimited).toBeUndefined();
+    expect(report!.windows).toEqual(good.windows);
+    expect(report!.spend).toEqual(good.spend);
+    expect(report!.trend).toEqual(good.trend);
+    expect(report!.planLabel).toBe("Plus");
+    expect(report!.message).toMatch(/Showing the last known numbers\.$/);
+  });
+
+  test("serveOnFailure with nothing remembered returns null", () => {
+    const resilience = createRateLimitResilience();
+
+    const report = resilience.serveOnFailure("codex", NOW, "Could not reach Codex.");
+
+    expect(report).toBeNull();
+  });
+
+  test("serveOnFailure with a snapshot older than MAX_STALE_SERVE_AGE_MS returns null", () => {
+    const resilience = createRateLimitResilience();
+    resilience.rememberLastGood("codex", connectedReport());
+
+    const report = resilience.serveOnFailure(
+      "codex",
+      NOW + MAX_STALE_SERVE_AGE_MS + 1,
+      "Could not reach Codex.",
+    );
+
+    expect(report).toBeNull();
   });
 });

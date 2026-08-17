@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { emptyReport, percent as percentValue } from "./types.js";
 import type { QuotaProviderReport } from "./types.js";
 
-let mode: "ok" | "ratelimited" | "disconnected" = "ok";
+let mode: "ok" | "ratelimited" | "disconnected" | "networkError" = "ok";
 let calls = 0;
 
 // index.ts re-exports opencode.ts, which imports node:sqlite (an
@@ -69,6 +69,13 @@ mock.module(fileURLToPath(new URL("./codex.ts", import.meta.url)), () => ({
           rateLimited: true,
         },
         retryAfterSeconds: 60,
+      };
+    }
+    if (mode === "networkError") {
+      // The key difference from `ratelimited`: no `retryAfterSeconds` at all —
+      // this is a plain fetch failure, not a formatted 429.
+      return {
+        report: emptyReport("codex", "transientFailure", "Could not reach Codex's usage endpoint."),
       };
     }
     if (mode === "disconnected") {
@@ -135,5 +142,36 @@ describe("fetchProviderQuota 429 resilience", () => {
     const report = await fetchProviderQuota("codex", { force: true });
     expect(report.connection).toBe("transientFailure");
     expect(report.windows).toHaveLength(0);
+  });
+
+  test("a network error after a clean read keeps the last-good meters, flagged stale", async () => {
+    mode = "ok";
+    calls = 0;
+
+    const first = await fetchProviderQuota("codex");
+    expect(first.connection).toBe("connected");
+    expect(first.windows).toHaveLength(1);
+
+    mode = "networkError";
+    const second = await fetchProviderQuota("codex", { force: true });
+
+    // Same spirit as the 429 case: the card must not collapse to an empty
+    // error row, but the flag is `stale` — nothing here says the provider is
+    // throttling us.
+    expect(second.connection).toBe("connected");
+    expect(second.windows).toHaveLength(1);
+    expect(second.stale).toBe(true);
+    expect(second.rateLimited).toBeFalsy();
+    expect(second.message).toContain("Showing the last known numbers");
+  });
+
+  test("a network error with no prior clean read returns the honest bare error", async () => {
+    mode = "networkError";
+    calls = 0;
+
+    const report = await fetchProviderQuota("codex");
+    expect(report.connection).toBe("transientFailure");
+    expect(report.windows).toHaveLength(0);
+    expect(report.stale).toBeFalsy();
   });
 });

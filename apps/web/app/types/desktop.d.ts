@@ -1672,6 +1672,11 @@ export type QuotaProviderReport = {
   /** True when the report reflects a 429 backoff rather than a fresh read, so
    *  the UI can say the figures may be stale instead of a vague "waiting". */
   rateLimited?: boolean;
+  /** Set when this report re-serves a last-known-good snapshot after a fetch
+   *  failed for a reason other than a formatted rate limit, so the UI can say
+   *  the figures might be behind instead of passing off old numbers as fresh.
+   *  Never set together with `rateLimited`. */
+  stale?: boolean;
   fetchedAt: number;
   /** Why, when `connection` isn't "connected" — rendered as the row's line. */
   message?: string;
