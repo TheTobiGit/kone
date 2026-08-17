@@ -134,6 +134,13 @@ export type QuotaProviderReport = {
   /** Set when this report reflects a 429 backoff window rather than a fresh
    *  fetch, so the UI can say so honestly instead of a generic "waiting". */
   rateLimited?: boolean;
+  /** Set when this report re-serves a last-known-good snapshot after a fetch
+   *  failed for a reason other than a formatted rate limit (a timeout, a 5xx,
+   *  a thrown exception) — so the UI can say the figures might be behind
+   *  instead of quietly passing off old numbers as fresh. Never set together
+   *  with `rateLimited`: that flag names a different reason the read didn't
+   *  happen. */
+  stale?: boolean;
   /** ms epoch this report was produced. */
   fetchedAt: number;
   /** Human-readable reason when `connection` isn't `"connected"` — shown as

@@ -11,7 +11,7 @@ import type {
   SpendTile,
   TrendPoint,
 } from "~/types/desktop";
-import type { QuotaProvider, useAgentSpace } from "~/composables/useAgentSpace";
+import type { QuotaProvider, useAgentSettings } from "~/composables/useAgentSettings";
 
 // The Limits section: one card per provider the picker offers, so a provider is
 // never silently missing from the page. Every *number* on a card comes from
@@ -26,7 +26,7 @@ import type { QuotaProvider, useAgentSpace } from "~/composables/useAgentSpace";
 // free. Zero and unknown look identical on a meter and mean opposite things.
 
 const props = withDefaults(
-  defineProps<{ space: ReturnType<typeof useAgentSpace>; foot?: boolean }>(),
+  defineProps<{ space: ReturnType<typeof useAgentSettings>; foot?: boolean }>(),
   { foot: true },
 );
 
@@ -424,6 +424,10 @@ const ERROR_FALLBACK = "Couldn't read this provider's limits.";
 
           <p v-if="card.state.report.rateLimited" class="card__note">
             {{ card.label }}'s own usage endpoint is rate-limiting us right now — these figures may be stale.
+          </p>
+
+          <p v-if="card.state.report.stale" class="card__note">
+            {{ card.state.report.message }}
           </p>
 
           <!-- A connected read can legitimately carry no windows (a provider

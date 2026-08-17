@@ -17,6 +17,8 @@ export const DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300;
 export const MAX_RATE_LIMIT_COOLDOWN_SECONDS = 900;
 /** Lower bound so the very next poll can't immediately re-trigger a throttle. */
 export const MIN_RATE_LIMIT_COOLDOWN_SECONDS = 60;
+/** A snapshot old enough would mislead rather than help. */
+export const MAX_STALE_SERVE_AGE_MS = 15 * 60 * 1000;
 
 interface ResilienceEntry {
   lastGood: QuotaProviderReport | null;
@@ -27,6 +29,16 @@ export interface RateLimitResilience {
   /** The report to serve while `provider` is cooling down, or null when no
    *  cooldown is active for it. */
   serveDuringCooldown(provider: QuotaCapableProvider, nowMs: number): QuotaProviderReport | null;
+  /** The last clean snapshot to serve after a failure that was NOT a
+   *  formatted rate limit — flagged `stale`, not `rateLimited`, since nothing
+   *  here says the provider is throttling us. Null when there is nothing
+   *  remembered for `provider`, or the remembered snapshot is older than
+   *  `MAX_STALE_SERVE_AGE_MS`. */
+  serveOnFailure(
+    provider: QuotaCapableProvider,
+    nowMs: number,
+    reason: string,
+  ): QuotaProviderReport | null;
   /** Record a clean fetch and clear any cooldown for `provider`. */
   rememberLastGood(provider: QuotaCapableProvider, report: QuotaProviderReport): void;
   /** Begin a cooldown for `provider` honouring Retry-After (clamped), then
@@ -94,6 +106,12 @@ export function createRateLimitResilience(options: {
       const entry = store.get(provider);
       if (!entry || nowMs >= entry.cooldownUntilMs) return null;
       return snapshotForCooldown(provider, entry, nowMs);
+    },
+    serveOnFailure(provider, nowMs, reason) {
+      const entry = store.get(provider);
+      const lastGood = entry?.lastGood;
+      if (!lastGood || nowMs - lastGood.fetchedAt > MAX_STALE_SERVE_AGE_MS) return null;
+      return { ...lastGood, stale: true, message: `${reason} Showing the last known numbers.` };
     },
     rememberLastGood(provider, report) {
       const entry = entryFor(provider);
