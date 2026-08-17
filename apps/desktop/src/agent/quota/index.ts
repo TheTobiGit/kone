@@ -45,11 +45,18 @@ export type {
 } from "./types.js";
 
 const CACHE_TTL_MS = 60_000;
+// A failed read is cached far more briefly than a clean one: long enough that a
+// burst of surface opens or repeated refreshes during a provider blip can't
+// re-spawn the CLI / re-hit the network on every single call, short enough that
+// recovery is picked up quickly once the provider is healthy again. Only a
+// transient failure earns this — a `disconnected`/`terminalFailure` read stays
+// uncached so a fresh login (or a repaired credential) shows the moment it lands.
+const DEGRADED_CACHE_TTL_MS = 15_000;
 
 const CODEX_AUTH_PATH = `${process.env.HOME ?? ""}/.codex/auth.json`;
 const CODEX_OPENAI_AUTH_PATH = `${process.env.HOME ?? ""}/Library/Application Support/com.openai.codex/auth.json`;
 
-type CacheEntry = { at: number; report: QuotaProviderReport };
+type CacheEntry = { at: number; report: QuotaProviderReport; ttlMs: number };
 const cache = new Map<QuotaCapableProvider, CacheEntry>();
 
 /** In-flight fetches, keyed by provider — a second request for a provider whose
@@ -59,6 +66,13 @@ const cache = new Map<QuotaCapableProvider, CacheEntry>();
 const inFlight = new Map<QuotaCapableProvider, Promise<QuotaProviderReport>>();
 
 const resilience = createRateLimitResilience();
+
+/** Cache a failed read for a short degraded window so a run of refreshes through
+ *  an outage doesn't re-run the fetch on every call, while recovery is still
+ *  picked up far sooner than a healthy entry's full TTL. */
+function cacheDegraded(provider: QuotaCapableProvider, report: QuotaProviderReport): void {
+  cache.set(provider, { at: Date.now(), report, ttlMs: DEGRADED_CACHE_TTL_MS });
+}
 
 /** The provider kinds the Agents page can show a quota card for, in the order
  *  they appear. OpenCode leads because it is the only one that needs neither a
@@ -109,7 +123,7 @@ export async function fetchProviderQuota(
   opts: { allowKeychain?: boolean; signal?: AbortSignal; force?: boolean } = {},
 ): Promise<QuotaProviderReport> {
   const cached = cache.get(provider);
-  if (!opts.force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.report;
+  if (!opts.force && cached && Date.now() - cached.at < cached.ttlMs) return cached.report;
 
   const backoff = resilience.serveDuringCooldown(provider, Date.now());
   if (backoff) return backoff;
@@ -148,7 +162,7 @@ async function runProviderQuota(
     // user actually signed in (or clicked Refresh), which reads as kone
     // asking them to re-authenticate for no reason.
     if (result.report.connection === "connected") {
-      cache.set(provider, { at: Date.now(), report: result.report });
+      cache.set(provider, { at: Date.now(), report: result.report, ttlMs: CACHE_TTL_MS });
       resilience.rememberLastGood(provider, result.report);
       return result.report;
     }
@@ -168,13 +182,17 @@ async function runProviderQuota(
       // Not a formatted 429, but also not "the provider is gone" — a timeout,
       // a 5xx, or a token-refresh problem. Serve the last clean snapshot
       // (flagged stale) when there is one, so a brief network blip can't blank
-      // the whole card to an error row.
-      const stale = resilience.serveOnFailure(
-        provider,
-        Date.now(),
-        result.report.message ?? "Could not refresh this provider's usage.",
-      );
-      if (stale) return stale;
+      // the whole card to an error row. Either way the served report is held
+      // for a short degraded window so a run of refreshes through the outage
+      // doesn't re-spawn the fetch on every call.
+      const served =
+        resilience.serveOnFailure(
+          provider,
+          Date.now(),
+          result.report.message ?? "Could not refresh this provider's usage.",
+        ) ?? result.report;
+      cacheDegraded(provider, served);
+      return served;
     }
     return result.report;
   } catch (error) {
@@ -183,18 +201,19 @@ async function runProviderQuota(
     // fetchProviderQuota's "always resolves to a report" contract.
     console.warn(`Provider quota unavailable: ${sanitizeError(error)}`);
     cache.delete(provider);
-    const stale = resilience.serveOnFailure(
-      provider,
-      Date.now(),
-      "Something went wrong reading this provider's usage.",
-    );
-    if (stale) return stale;
-    const report = emptyReport(
-      provider,
-      "transientFailure",
-      "Something went wrong reading this provider's usage.",
-    );
-    return report;
+    const served =
+      resilience.serveOnFailure(
+        provider,
+        Date.now(),
+        "Something went wrong reading this provider's usage.",
+      ) ??
+      emptyReport(
+        provider,
+        "transientFailure",
+        "Something went wrong reading this provider's usage.",
+      );
+    cacheDegraded(provider, served);
+    return served;
   }
 }
 
