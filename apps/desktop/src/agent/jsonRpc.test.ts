@@ -27,6 +27,15 @@ rl.on("line", (line) => {
 });
 `;
 
+// A child that closes its own read end and then stays alive, so the parent's
+// stdin pipe is broken while the process — and thus the `exited` guard — is
+// not. Announces readiness on stdout only after the pipe is dead.
+const DEAD_STDIN_CHILD = `
+process.stdin.destroy();
+process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\\n");
+setTimeout(() => {}, 10_000);
+`;
+
 type JsonRpcModule = typeof import("./jsonRpc.js");
 let JsonRpcClientCtor: JsonRpcModule["JsonRpcClient"];
 let JsonRpcErrorCtor: JsonRpcModule["JsonRpcError"];
@@ -67,6 +76,21 @@ describe("JsonRpcClient stdout envelope validation", () => {
     try {
       const result = await rpc.call<{ ok: boolean }>("initialize", {}, 5_000);
       expect(result).toEqual({ ok: true });
+    } finally {
+      rpc.kill();
+    }
+  });
+
+  test("a write to a broken stdin pipe is swallowed, not thrown", async () => {
+    const rpc = spawnFakeChild(DEAD_STDIN_CHILD);
+    try {
+      await new Promise<void>((resolve) => {
+        rpc.onNotification("ready", () => resolve());
+      });
+      // The read end is gone but the child is alive, so this write hits a dead
+      // pipe with `exited` still false — the race that previously crashed the
+      // main process. It must return without throwing.
+      expect(() => rpc.notify("ping", {})).not.toThrow();
     } finally {
       rpc.kill();
     }
