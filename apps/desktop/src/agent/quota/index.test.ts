@@ -174,4 +174,48 @@ describe("fetchProviderQuota 429 resilience", () => {
     expect(report.windows).toHaveLength(0);
     expect(report.stale).toBeFalsy();
   });
+
+  test("a transient failure is held for a short degraded window so a follow-up read doesn't re-run the fetch", async () => {
+    mode = "ok";
+    calls = 0;
+    await fetchProviderQuota("codex");
+
+    mode = "networkError";
+    const failed = await fetchProviderQuota("codex", { force: true });
+    expect(failed.connection).toBe("connected");
+    expect(failed.stale).toBe(true);
+
+    // A non-forced read inside the degraded window is served from the cache
+    // instead of re-spawning the fetch on a provider that's still down.
+    const before = calls;
+    const again = await fetchProviderQuota("codex");
+    expect(calls).toBe(before);
+    expect(again.stale).toBe(true);
+  });
+
+  test("a transient failure with no prior clean read is still degraded-cached so repeated reads don't re-spawn the fetch", async () => {
+    mode = "networkError";
+    calls = 0;
+
+    const first = await fetchProviderQuota("codex");
+    expect(first.connection).toBe("transientFailure");
+
+    const before = calls;
+    const second = await fetchProviderQuota("codex");
+    expect(calls).toBe(before);
+    expect(second.connection).toBe("transientFailure");
+  });
+
+  test("a forced refresh bypasses the degraded cache so a recovered provider is picked up at once", async () => {
+    mode = "networkError";
+    calls = 0;
+    await fetchProviderQuota("codex");
+
+    // The provider comes back; an explicit refresh must not be answered from the
+    // degraded snapshot — it re-fetches and shows the live numbers.
+    mode = "ok";
+    const recovered = await fetchProviderQuota("codex", { force: true });
+    expect(recovered.connection).toBe("connected");
+    expect(recovered.windows).toHaveLength(1);
+  });
 });
