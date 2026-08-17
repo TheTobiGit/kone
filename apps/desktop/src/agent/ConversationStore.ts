@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
@@ -60,6 +60,29 @@ function addColumn(db: DatabaseSync, table: string, column: string, ddl: string)
   }
 }
 
+/** Open the transaction one rung of the migration ladder runs in. Pairs with
+ *  `commitStep`; `migrate` rolls back whatever is open if a rung throws. */
+function beginStep(db: DatabaseSync): void {
+  db.exec("BEGIN");
+}
+
+/** Record the rung and commit it, in that order and in one transaction, so the
+ *  schema version and the writes it describes can never disagree: either the
+ *  rung and its number both land, or neither does.
+ *
+ *  Stamping per rung is what makes a failed upgrade resumable. A ladder that
+ *  stamps once at the end throws away every rung it did finish — a failure at
+ *  rung 18 leaves the database carrying the work of 1-17 while still calling
+ *  itself the version it started at, so the next open replays all of them over
+ *  a database that has already moved past them. That only survives while every
+ *  step happens to be re-runnable, which is a property nothing checks and a
+ *  future step is free to break. */
+function commitStep(db: DatabaseSync, target: number): number {
+  db.exec(`PRAGMA user_version = ${target}`);
+  db.exec("COMMIT");
+  return target;
+}
+
 /** Run `fn` inside a transaction, rolling back and rethrowing on failure. */
 function withTransaction(db: DatabaseSync, fn: () => void): void {
   db.exec("BEGIN");
@@ -76,35 +99,99 @@ function withTransaction(db: DatabaseSync, fn: () => void): void {
   }
 }
 
-/** Snapshot the database file before a destructive migration step (the v2/v5
-  *  transcript wipes) — the same "never upgrade without a restorable copy"
-  *  but doesn't abort the upgrade, because refusing to migrate would leave the
-  *  app stuck on an old schema instead of just degraded. */
-function backupBeforeDestructiveStep(dbFile: string): void {
+/** How long a failed open is left alone before another attempt. Long enough that
+ *  a streaming turn's thousands of writes cost one attempt between them, short
+ *  enough that a lock held by a backup or a file-sync client clears well within
+ *  a session. */
+const REOPEN_COOLDOWN_MS = 30_000;
+
+/** A database this build must not touch, because a newer build wrote it. Unlike
+ *  a busy file or a full disk, no amount of waiting makes this openable, so it's
+ *  the one failure the store stops retrying entirely. */
+class UnsupportedSchemaError extends Error {}
+
+/** Whether any conversation exists — the test for "this destructive step has
+ *  something to lose". `!= null` rather than `!== undefined` because a driver
+ *  that reports "no row" as null would otherwise read as a hit, and the step
+ *  would snapshot an already-empty database instead of skipping the copy. */
+function hasAnyThread(db: DatabaseSync): boolean {
+  return db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() != null;
+}
+
+/** How many `.bak-<millis>` snapshots to keep. Three spans enough upgrades to
+ *  recover from a bad one without keeping a full copy of the database for every
+ *  destructive step the app has ever shipped. */
+const MIGRATION_BACKUP_RETENTION = 3;
+
+/** Delete all but the newest `MIGRATION_BACKUP_RETENTION` snapshots of `dbFile`.
+ *  Age comes from the timestamp in the name rather than mtime, because copying
+ *  or restoring a snapshot rewrites mtime and would make the newest one look
+ *  like the oldest. A name whose suffix isn't a plain timestamp is left alone:
+ *  not being able to date a file is no licence to delete it. */
+function pruneMigrationBackups(dbFile: string): void {
+  const prefix = `${path.basename(dbFile)}.bak-`;
+  const dir = path.dirname(dbFile);
   try {
+    const dated = readdirSync(dir)
+      .filter((name) => name.startsWith(prefix) && /^\d+$/.test(name.slice(prefix.length)))
+      .map((name) => ({ name, at: Number(name.slice(prefix.length)) }))
+      .sort((a, b) => b.at - a.at);
+    for (const stale of dated.slice(MIGRATION_BACKUP_RETENTION)) {
+      rmSync(path.join(dir, stale.name), { force: true });
+    }
+  } catch (err) {
+    console.error("[conversation-store] could not prune old database backups:", err);
+  }
+}
+
+/** Snapshot the database file before a destructive migration step (the v2/v5
+  *  transcript wipes) — never destroy data without leaving a restorable copy.
+  *  A snapshot that can't be taken logs and doesn't abort the upgrade, because
+  *  refusing to migrate would leave the app stuck on an old schema instead of
+  *  just degraded.
+  *
+  *  The checkpoint is part of taking the snapshot, not something the caller
+  *  remembers to do first: only the main file gets copied, so pages still living
+  *  in the WAL have to be folded into it or the "restorable copy" is whatever
+  *  state was last checkpointed. */
+function backupBeforeDestructiveStep(db: DatabaseSync, dbFile: string): void {
+  try {
+    try {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      /* Best-effort: a snapshot of the main file alone still beats no snapshot. */
+    }
     copyFileSync(dbFile, `${dbFile}.bak-${Date.now()}`);
   } catch (err) {
     console.error(
       "[conversation-store] could not back up the database before a destructive migration:",
       err,
     );
+    return;
   }
+  pruneMigrationBackups(dbFile);
 }
 
 /** Bring the database up to the current schema. A tiny migration ladder — each
- *  step moves user_version forward by one, so future changes append a case
- *  rather than rewriting existing tables. */
+ *  rung moves user_version forward by one, so future changes append a case
+ *  rather than rewriting existing tables.
+ *
+ *  Each rung runs in its own transaction and records its own version, rather
+ *  than the ladder running as one all-or-nothing unit: two rungs snapshot the
+ *  file before they destroy anything, and a WAL checkpoint plus a file copy
+ *  can't happen inside an open write transaction. A rung that throws unwinds
+ *  out of here with its transaction still open; handle() rolls it back on the
+ *  way out, leaving the database on the last rung that fully landed. */
 function migrate(db: DatabaseSync, dbFile: string): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   let version = row?.user_version ?? 0;
 
   // A database written by a NEWER app build must never be rewound: downgrading
   // the schema would silently drop rows the older code doesn't know about.
-  // Refuse loudly instead — handle() catches this and disables persistence for
-  // the process (the app keeps running, just without disk history), the same
-  // degraded mode a corrupt DB already lands in.
+  // Refuse loudly instead — handle() catches this and gives up on persistence for
+  // the process (the app keeps running, just without disk history).
   if (version > SCHEMA_VERSION) {
-    throw new Error(
+    throw new UnsupportedSchemaError(
       `[conversation-store] database schema v${version} is newer than this build supports ` +
         `(v${SCHEMA_VERSION}); refusing to migrate. Upgrade the app, or remove the database ` +
         "to start fresh.",
@@ -112,6 +199,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
   }
 
   if (version < 1) {
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS threads (
         thread_id       TEXT PRIMARY KEY,
@@ -158,7 +246,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
       );
       CREATE INDEX IF NOT EXISTS idx_items_turn ON items (thread_id, turn_id, seq);
     `);
-    version = 1;
+    version = commitStep(db, 1);
   }
 
   if (version < 2) {
@@ -169,35 +257,27 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // Destructive: snapshot the file first (only when there's actually data to
     // lose), and run the wipe + column adds atomically so a crash mid-step
     // can't leave a half-migrated DB.
-    const hasRows = db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() !== undefined;
-    if (hasRows) {
-      try {
-        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      } catch {
-        /* checkpoint is best-effort — the backup below still captures the main file */
-      }
-      backupBeforeDestructiveStep(dbFile);
-    }
-    withTransaction(db, () => {
-      db.exec(`
-        DELETE FROM items;
-        DELETE FROM blocks;
-        DELETE FROM threads;
-      `);
-      addColumn(db, "threads", "branch", "TEXT");
-      addColumn(db, "threads", "added", "INTEGER");
-      addColumn(db, "threads", "removed", "INTEGER");
-      addColumn(db, "threads", "tokens", "INTEGER");
-    });
-    version = 2;
+    if (hasAnyThread(db)) backupBeforeDestructiveStep(db, dbFile);
+    beginStep(db);
+    db.exec(`
+      DELETE FROM items;
+      DELETE FROM blocks;
+      DELETE FROM threads;
+    `);
+    addColumn(db, "threads", "branch", "TEXT");
+    addColumn(db, "threads", "added", "INTEGER");
+    addColumn(db, "threads", "removed", "INTEGER");
+    addColumn(db, "threads", "tokens", "INTEGER");
+    version = commitStep(db, 2);
   }
 
   if (version < 3) {
     // v3 lets a thread be hidden from the "recent conversations" block without
     // being destroyed — `archived` is a timestamp (NULL = active). Kept as a
     // nullable column so existing rows read as active with no backfill.
+    beginStep(db);
     addColumn(db, "threads", "archived", "INTEGER");
-    version = 3;
+    version = commitStep(db, 3);
   }
 
   if (version < 4) {
@@ -207,6 +287,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // at read time. Backfill existing rows
     // from their first user prompt (word-capped) so upgraded installs don't
     // flash "Untitled session" for every prior conversation.
+    beginStep(db);
     addColumn(db, "threads", "title", "TEXT");
     db.exec(`
       UPDATE threads
@@ -222,7 +303,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
       )
       WHERE title IS NULL
     `);
-    version = 4;
+    version = commitStep(db, 4);
   }
 
   if (version < 5) {
@@ -234,24 +315,20 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // archived alike) and start the corrected, per-conversation history fresh.
     // `base_tree` holds the working-tree snapshot taken when a thread starts;
     // the settled diff is measured against it, not against HEAD.
-    const hasRows = db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() !== undefined;
-    if (hasRows) {
-      try {
-        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      } catch {
-        /* best-effort */
-      }
-      backupBeforeDestructiveStep(dbFile);
-    }
-    withTransaction(db, () => {
-      db.exec(`
-        DELETE FROM items;
-        DELETE FROM blocks;
-        DELETE FROM threads;
-      `);
-      addColumn(db, "threads", "base_tree", "TEXT");
-    });
-    version = 5;
+    //
+    // Upgrading through v2 empties the table, so this check fails and only one
+    // snapshot is taken per run. A step added between the two that repopulated
+    // `threads` would arm both, and two snapshots in the same millisecond share a
+    // filename — give the second one a distinct name if that ever happens.
+    if (hasAnyThread(db)) backupBeforeDestructiveStep(db, dbFile);
+    beginStep(db);
+    db.exec(`
+      DELETE FROM items;
+      DELETE FROM blocks;
+      DELETE FROM threads;
+    `);
+    addColumn(db, "threads", "base_tree", "TEXT");
+    version = commitStep(db, 5);
   }
 
   if (version < 6) {
@@ -263,13 +340,15 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // on, so reopening a thread showed the prompts with no responses. Unlike v2
     // and v5, the data is reconstructable (the items are still here, in arrival
     // order), so we rebuild the affected threads in place rather than wiping.
+    beginStep(db);
     backfillOrphanedTurns(db);
-    version = 6;
+    version = commitStep(db, 6);
   }
 
   if (version < 7) {
+    beginStep(db);
     addColumn(db, "items", "tasks_json", "TEXT");
-    version = 7;
+    version = commitStep(db, 7);
   }
 
   if (version < 8) {
@@ -279,6 +358,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // files. The attachment *metadata* is also denormalized onto the owning
     // user block (`attachments_json`) so a reloaded thread rebuilds its chips
     // without a per-block join.
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS attachments (
         attachment_id TEXT PRIMARY KEY,
@@ -293,13 +373,14 @@ function migrate(db: DatabaseSync, dbFile: string): void {
       CREATE INDEX IF NOT EXISTS idx_attachments_thread ON attachments (thread_id);
     `);
     addColumn(db, "blocks", "attachments_json", "TEXT");
-    version = 8;
+    version = commitStep(db, 8);
   }
 
   if (version < 9) {
     // v9 — per-project scratchpad documents (markdown source, one row per pad),
     // as first-class rows so a project can hold several open pads with stable
     // ids across reloads.
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS scratchpads (
         id          TEXT PRIMARY KEY,
@@ -313,13 +394,14 @@ function migrate(db: DatabaseSync, dbFile: string): void {
       CREATE INDEX IF NOT EXISTS idx_scratchpads_project
         ON scratchpads (project_path, sort_index);
     `);
-    version = 9;
+    version = commitStep(db, 9);
   }
 
   if (version < 10) {
     // v10 — the project board layout, one JSON blob per project. The board is
     // always read and written whole (§6.1), so a normalised panes table would
     // only cost a migration each time a pane field is added — the blob doesn't.
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS project_boards (
         project_path TEXT PRIMARY KEY,
@@ -327,7 +409,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
         updated_at   INTEGER NOT NULL
       );
     `);
-    version = 10;
+    version = commitStep(db, 10);
   }
 
   if (version < 11) {
@@ -335,10 +417,11 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // conversation restores its meter fill straight away, rather than showing an
     // empty ring until the next turn re-reports usage. Unlike `tokens` (a spend
     // tally), these are a live snapshot — overwritten each token-usage event.
+    beginStep(db);
     addColumn(db, "threads", "context_used", "INTEGER");
     addColumn(db, "threads", "context_window", "INTEGER");
     addColumn(db, "threads", "compacts_auto", "INTEGER");
-    version = 11;
+    version = commitStep(db, 11);
   }
 
   if (version < 12) {
@@ -349,6 +432,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // (thread_id, turn_id, tool_use_id) — the parent item id is stored rather
     // than derived, because a streamed tool call's item id is positional
     // (`turn:msg:index`) and isn't recoverable from the tool-use id.
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS subagents (
         seq            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,10 +459,8 @@ function migrate(db: DatabaseSync, dbFile: string): void {
       CREATE INDEX IF NOT EXISTS idx_subagents_turn ON subagents (thread_id, turn_id, seq);
     `);
     addColumn(db, "items", "subagent_tool_use_id", "TEXT");
-    version = 12;
+    version = commitStep(db, 12);
   }
-
-  // Future migrations append here: `if (version < 13) { …; version = 13; }`
 
   if (version < 13) {
     // v13 adds side chats. A side chat is a root thread with a fork pointer
@@ -389,12 +471,13 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // key. Blocks gain a `source` column ('native' | 'fork-import') so
     // imported rows render as history rather than activity: they keep their
     // original `at` and never refresh a thread's updated_at.
+    beginStep(db);
     addColumn(db, "threads", "source_thread_id", "TEXT");
     addColumn(db, "threads", "fork_context_json", "TEXT");
     addColumn(db, "threads", "lineage_json", "TEXT");
     addColumn(db, "threads", "request_id", "TEXT");
     addColumn(db, "blocks", "source", "TEXT NOT NULL DEFAULT 'native'");
-    version = 13;
+    version = commitStep(db, 13);
   }
 
   if (version < 14) {
@@ -405,6 +488,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // carry at most one fork. Guarded: installs that already hold duplicate
     // side chats (from the pre-v14 lax round) keep the app-level join rule and
     // log instead of failing the migration.
+    beginStep(db);
     const dupes = db
       .prepare(
         `SELECT COUNT(*) AS n FROM (
@@ -425,7 +509,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
           "skipping the v14 unique index — the app-level join rule still applies",
       );
     }
-    version = 14;
+    version = commitStep(db, 14);
   }
 
   if (version < 15) {
@@ -437,6 +521,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // read as already-written. `gateway_ops` is the idempotency reserve for
     // all future gateway tools (kind = "scratchpad.write" today): agent-side
     // write retries replay the stored result instead of re-applying.
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS gateway_ops (
         thread_id   TEXT NOT NULL,
@@ -452,7 +537,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
         ON gateway_ops (kind, created_at);
     `);
     addColumn(db, "scratchpads", "revision", "INTEGER NOT NULL DEFAULT 1");
-    version = 15;
+    version = commitStep(db, 15);
   }
 
   if (version < 16) {
@@ -463,12 +548,13 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // JSON scan of every thread row. No backfill: no thread has ever carried a
     // `subagent` lineage (side chats are roots, parentThreadId null), so the
     // column ships empty, written only by the feature that owns it.
+    beginStep(db);
     addColumn(db, "threads", "parent_thread_id", "TEXT");
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_threads_parent
         ON threads (parent_thread_id, created_at);
     `);
-    version = 16;
+    version = commitStep(db, 16);
   }
 
   if (version < 17) {
@@ -480,12 +566,13 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // reads terminal instead of projecting idle forever. No backfill: rows
     // written before this migration predate the crash window's meaning, and
     // sealing them would mislabel already-recovered children.
+    beginStep(db);
     addColumn(db, "gateway_ops", "dispatched", "INTEGER NOT NULL DEFAULT 0");
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_gateway_ops_undispatched
         ON gateway_ops (kind, dispatched);
     `);
-    version = 17;
+    version = commitStep(db, 17);
   }
 
   if (version < 18) {
@@ -511,6 +598,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     //    threads for one request key. Existing duplicates are deduped first,
     //    keeping the OLDEST row (the idempotency authority) and nulling the
     //    newer ones.
+    beginStep(db);
     addColumn(db, "threads", "is_pinned", "INTEGER NOT NULL DEFAULT 0");
     addColumn(db, "threads", "model_selection_json", "TEXT");
     addColumn(db, "threads", "resume_session_at", "TEXT");
@@ -529,40 +617,38 @@ function migrate(db: DatabaseSync, dbFile: string): void {
         PRIMARY KEY (thread_id, turn_id)
       );
     `);
-    withTransaction(db, () => {
-      // Dedupe first: for every request_id, only the row that is oldest by
-      // (created_at, thread_id) keeps the key; newer duplicates lose it.
-      db.exec(`
-        UPDATE threads
-           SET request_id = NULL
-         WHERE request_id IS NOT NULL
-           AND thread_id NOT IN (
-             SELECT t.thread_id FROM threads t
-              WHERE t.request_id IS NOT NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM threads t2
-                   WHERE t2.request_id = t.request_id
-                     AND (t2.created_at < t.created_at
-                       OR (t2.created_at = t.created_at AND t2.thread_id < t.thread_id))
-                )
-           )
-      `);
-      try {
-        db.exec(
-          `CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_request_id
-             ON threads (request_id) WHERE request_id IS NOT NULL`,
-        );
-      } catch (err) {
-        // A duplicate that slipped past the dedupe must not brick the upgrade —
-        // the app-level join in createSidechatThread still applies, same
-        // posture as the v14 side chat index.
-        console.warn(
-          "[conversation-store] could not create the request_id unique index:",
-          err,
-        );
-      }
-    });
-    version = 18;
+    // Dedupe first: for every request_id, only the row that is oldest by
+    // (created_at, thread_id) keeps the key; newer duplicates lose it.
+    db.exec(`
+      UPDATE threads
+         SET request_id = NULL
+       WHERE request_id IS NOT NULL
+         AND thread_id NOT IN (
+           SELECT t.thread_id FROM threads t
+            WHERE t.request_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM threads t2
+                 WHERE t2.request_id = t.request_id
+                   AND (t2.created_at < t.created_at
+                     OR (t2.created_at = t.created_at AND t2.thread_id < t.thread_id))
+              )
+         )
+    `);
+    try {
+      db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_request_id
+           ON threads (request_id) WHERE request_id IS NOT NULL`,
+      );
+    } catch (err) {
+      // A duplicate that slipped past the dedupe must not brick the upgrade —
+      // the app-level join in createSidechatThread still applies, same
+      // posture as the v14 side chat index.
+      console.warn(
+        "[conversation-store] could not create the request_id unique index:",
+        err,
+      );
+    }
+    version = commitStep(db, 18);
   }
 
   if (version < 19) {
@@ -571,11 +657,12 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // (thread_id, seq) index cannot serve that order, forcing a temp B-tree
     // over all of a thread's blocks before the page LIMIT applies. With this
     // index the candidates scan is genuinely bounded by the page size.
+    beginStep(db);
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_blocks_keyset
         ON blocks (thread_id, at, block_id);
     `);
-    version = 19;
+    version = commitStep(db, 19);
   }
 
   if (version < 20) {
@@ -592,6 +679,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // the ACTIVE states is the replay-safety guard: a replayed enqueue of the
     // same prompt is a no-op, and a row that has settled (promoted/cancelled)
     // no longer blocks anything.
+    beginStep(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS queued_turns (
         queue_id         TEXT PRIMARY KEY,
@@ -619,7 +707,7 @@ function migrate(db: DatabaseSync, dbFile: string): void {
         ON queued_turns (thread_id, user_block_id)
         WHERE state IN ('queued', 'promoting');
     `);
-    version = 20;
+    version = commitStep(db, 20);
   }
 
   if (version < 21) {
@@ -640,13 +728,27 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     // rather than NULL standing in for "unknown". Going forward every insert
     // supplies a real count where the provider has one and an explicit 0
     // (never a guess) where it doesn't.
+    beginStep(db);
     addColumn(db, "turn_usage", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
     addColumn(db, "turn_usage", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
     addColumn(db, "turn_usage", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0");
-    version = 21;
+    version = commitStep(db, 21);
   }
 
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  // Future migrations append here:
+  // `if (version < 22) { beginStep(db); …; version = commitStep(db, 22); }`
+
+  // Every rung stamps itself, so the ladder ending anywhere but the current
+  // version means a rung is missing for it — a bumped SCHEMA_VERSION that
+  // nobody wrote a step for. Harmless to the running app (the schema simply
+  // stays where the last real rung left it), but it silently disables the
+  // upgrade the bump was meant to ship, so say so.
+  if (version !== SCHEMA_VERSION) {
+    console.error(
+      `[conversation-store] migration ladder ended at v${version} but this build ` +
+        `declares v${SCHEMA_VERSION}; no step exists for the gap.`,
+    );
+  }
 }
 
 // ── windowed thread reads (user-anchored keyset cursor) ───────────────────────
@@ -861,6 +963,17 @@ function backfillOrphanedTurns(db: DatabaseSync): void {
 
 export class ConversationStore {
   private db: DatabaseSync | null = null;
+  /** Set when the database can never be opened by this build (see
+   *  UnsupportedSchemaError). Nothing is retried after this. */
+  private unusable = false;
+  /** When a failed open may be attempted again. Every other failure — a file a
+   *  backup or sync client has locked, a momentarily full disk, a migration step
+   *  that threw — gets to heal, but not at the cost of a retry per call:
+   *  `handle()` sits on every read and write here and the streaming path reaches
+   *  it per event, so an unguarded retry would re-run the whole migration ladder
+   *  thousands of times in a turn. Persistence is a convenience, so the app runs
+   *  on without it until the cooldown expires. */
+  private retryOpenAfter = 0;
   private readonly statements = new Map<string, StatementSync>();
 
   /** @param userDataDir per-user state dir; defaults to the one the host
@@ -888,11 +1001,17 @@ export class ConversationStore {
    *  is a convenience, never a hard dependency. */
   private handle(): DatabaseSync | null {
     if (this.db) return this.db;
+    if (this.unusable || Date.now() < this.retryOpenAfter) return null;
+    let opened: DatabaseSync | null = null;
     try {
       const file = path.join(this.userDataDir ?? getUserDataDir(), "conversations.sqlite");
       const db = new DatabaseSync(file);
-      db.exec("PRAGMA journal_mode = WAL");
+      opened = db;
+      // Timeout first: switching journal mode takes a lock, so it is the earliest
+      // statement that can lose a race with another reader and the first that
+      // wants the patience configured here.
       db.exec("PRAGMA busy_timeout = 2000");
+      db.exec("PRAGMA journal_mode = WAL");
       // WAL's default `synchronous = NORMAL` doesn't fsync on commit: the file
       // stays consistent through a crash, but transactions committed since the
       // last checkpoint can be *rolled back* by a power cut (SIGKILL is safe —
@@ -925,7 +1044,34 @@ export class ConversationStore {
       this.releaseOrphanedClaims(db);
       return db;
     } catch (err) {
-      console.error("[conversation-store] could not open database:", err);
+      // The constructor opens the file, so anything that throws after it — a
+      // rejected schema, a migration step — leaves a live connection holding the
+      // WAL. Close it before giving up, and forget the half-open handle so no
+      // caller can reach a database we never finished migrating.
+      if (err instanceof UnsupportedSchemaError) this.unusable = true;
+      else this.retryOpenAfter = Date.now() + REOPEN_COOLDOWN_MS;
+      this.db = null;
+      this.statements.clear();
+      // A migration rung that threw is still inside its transaction. Discard it
+      // explicitly rather than leaving it to the close below: a driver is free
+      // to hold the write lock it took until the handle is actually collected,
+      // and then the next open blocks on a database this process already gave
+      // up on. Rolling back here also fixes the version the file reports at the
+      // last rung that committed.
+      try {
+        opened?.exec("ROLLBACK");
+      } catch {
+        /* The rung committed, or never opened one — nothing to unwind. */
+      }
+      try {
+        opened?.close();
+      } catch {
+        /* Never opened, or already closed by the failure itself. */
+      }
+      console.error(
+        "[conversation-store] could not open database; continuing without persistence:",
+        err,
+      );
       return null;
     }
   }
@@ -3389,6 +3535,9 @@ export class ConversationStore {
         /* best-effort */
       }
       this.db = null;
+      // Cached statements belong to the connection that compiled them; leaving
+      // them behind would hand a reopened store handles into a closed database.
+      this.statements.clear();
     }
   }
 }

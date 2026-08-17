@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -294,8 +294,85 @@ describe("v18 migration", () => {
     raw.close();
   });
 
-  test("a v1 DB with rows takes the destructive v2/v5 path and leaves a dated backup", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-backup-"));
+  /** A v17-shape database carrying a table that squats on the name rung 20 wants
+   *  for its unique index. `CREATE UNIQUE INDEX IF NOT EXISTS` still fails on a
+   *  name collision, so rung 20 throws *after* its `CREATE TABLE queued_turns`
+   *  has already run — a rung that dies with some of its own work behind it,
+   *  two rungs above where the ladder started. */
+  function seedV17DbThatFailsAtRung20(dir: string): void {
+    const legacy = new Database(path.join(dir, "conversations.sqlite"));
+    legacy.exec(V17_THREADS);
+    legacy.exec(`CREATE TABLE idx_queued_turns_active_user_block (x INTEGER)`);
+    legacy.exec(`PRAGMA user_version = 17`);
+    legacy.close();
+  }
+
+  function tableNames(db: Database): string[] {
+    return (
+      db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name);
+  }
+
+  test("a rung that throws keeps the rungs below it and rolls back its own work", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-partial-"));
+    seedV17DbThatFailsAtRung20(dir);
+
+    useUserDataDir(dir);
+    // The migration fails, so this process gets no persistence at all — what's
+    // being asserted is the state the failed upgrade left on disk.
+    new ConversationStoreCtor().ensureThread({
+      threadId: "t-1",
+      projectPath: "/p",
+      provider: "opencode",
+    });
+
+    const raw = rawDb();
+    // 18 and 19 each committed with their own stamp, so the file records the
+    // ladder standing at 19 — not rewound to the 17 it started from.
+    const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
+    expect(version.user_version).toBe(19);
+    expect(columnNames(raw, "threads")).toContain("is_pinned");
+    expect(tableNames(raw)).toContain("turn_usage");
+    // Rung 20 created its table before it hit the collision; the stamp and the
+    // table go back together, so neither survives.
+    expect(tableNames(raw)).not.toContain("queued_turns");
+    raw.close();
+  });
+
+  test("the next open resumes at the rung that failed", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-resume-"));
+    seedV17DbThatFailsAtRung20(dir);
+
+    useUserDataDir(dir);
+    new ConversationStoreCtor().ensureThread({
+      threadId: "t-1",
+      projectPath: "/p",
+      provider: "opencode",
+    });
+
+    // Clear what rung 20 tripped over. A fresh handle reads the recorded 19, so
+    // only 20 and 21 are left to run — 1-19 are never touched again.
+    const fix = rawDb();
+    fix.exec(`DROP TABLE idx_queued_turns_active_user_block`);
+    fix.close();
+
+    const store = new ConversationStoreCtor();
+    store.ensureThread({ threadId: "t-2", projectPath: "/p", provider: "opencode" });
+
+    const raw = rawDb();
+    const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
+    expect(version.user_version).toBe(21);
+    expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
+    raw.close();
+    // Persistence is live again on the completed schema.
+    expect(store.threadMeta("t-2")?.threadId).toBe("t-2");
+  });
+
+  /** A v1-shape database holding one thread — enough for the v2 wipe to have
+   *  something to lose, which is what arms the destructive-step backup. */
+  function seedV1DbWithRows(dir: string): void {
     const legacy = new Database(path.join(dir, "conversations.sqlite"));
     legacy.exec(`
       CREATE TABLE threads (
@@ -321,6 +398,11 @@ describe("v18 migration", () => {
       .run();
     legacy.exec(`PRAGMA user_version = 1`);
     legacy.close();
+  }
+
+  test("a v1 DB with rows takes the destructive v2/v5 path and leaves a dated backup", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-backup-"));
+    seedV1DbWithRows(dir);
 
     useUserDataDir(dir);
     const store = new ConversationStoreCtor();
@@ -345,6 +427,95 @@ describe("v18 migration", () => {
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(99);
     raw.close();
+  });
+
+  test("an unusable DB is opened once, not once per call", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-latch-"));
+    const legacy = new Database(path.join(dir, "conversations.sqlite"));
+    legacy.exec(`PRAGMA user_version = 99`);
+    legacy.close();
+
+    useUserDataDir(dir);
+    // Swapped by hand rather than with spyOn: importing spyOn into this file
+    // stops mock.module from intercepting node:sqlite, and every test here loses
+    // its database stub.
+    const logged: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(String(args[0]));
+    try {
+      const store = new ConversationStoreCtor();
+      // Every one of these routes through handle(). Without a latch each would
+      // reopen the file and re-run the whole migration ladder.
+      store.listThreads("/p");
+      store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+      store.threadMeta("t-1");
+      store.listThreads("/p");
+      store.setPinned("t-1", true);
+
+      const opens = logged.filter((line) => line.includes("could not open database"));
+      expect(opens.length).toBe(1);
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  test("a failure that isn't the schema stays retryable after its cooldown", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-transient-"));
+    // A file that isn't a database at all: opening it throws, but replacing it
+    // later must not require restarting the app.
+    writeFileSync(path.join(dir, "conversations.sqlite"), "not a database");
+
+    useUserDataDir(dir);
+    const logged: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(String(args[0]));
+    try {
+      const store = new ConversationStoreCtor();
+      store.listThreads("/p");
+      store.listThreads("/p");
+      // Still rate-limited to one attempt, but by a cooldown rather than for good.
+      expect(logged.filter((l) => l.includes("could not open database")).length).toBe(1);
+      expect((store as unknown as { unusable: boolean }).unusable).toBe(false);
+      expect(
+        (store as unknown as { retryOpenAfter: number }).retryOpenAfter,
+      ).toBeGreaterThan(Date.now());
+
+      // Once the file is a real database and the cooldown has passed, the store
+      // recovers on its own.
+      rmSync(path.join(dir, "conversations.sqlite"));
+      (store as unknown as { retryOpenAfter: number }).retryOpenAfter = 0;
+      store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+      expect(store.threadMeta("t-1")?.provider).toBe("opencode");
+      expect(logged.filter((l) => l.includes("could not open database")).length).toBe(1);
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  test("destructive-step backups are pruned to the newest few", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-prune-"));
+    seedV1DbWithRows(dir);
+
+    // Five snapshots from earlier upgrades, oldest first. An undated sibling
+    // stands in for a file we can't age — it must survive the sweep.
+    const stale = [1000, 2000, 3000, 4000, 5000].map((at) => `conversations.sqlite.bak-${at}`);
+    for (const name of stale) writeFileSync(path.join(dir, name), "old");
+    writeFileSync(path.join(dir, "conversations.sqlite.bak-manual"), "keep me");
+
+    useUserDataDir(dir);
+    const store = new ConversationStoreCtor();
+    expect(store.listThreads("/p")).toEqual([]);
+
+    const dated = readdirSync(dir)
+      .filter((f) => /^conversations\.sqlite\.bak-\d+$/.test(f))
+      .sort();
+    // The migration's own snapshot plus the newest survivors, capped.
+    expect(dated.length).toBe(3);
+    expect(dated).toContain("conversations.sqlite.bak-5000");
+    expect(dated).not.toContain("conversations.sqlite.bak-3000");
+    expect(dated).not.toContain("conversations.sqlite.bak-2000");
+    expect(dated).not.toContain("conversations.sqlite.bak-1000");
+    expect(readdirSync(dir)).toContain("conversations.sqlite.bak-manual");
   });
 });
 
