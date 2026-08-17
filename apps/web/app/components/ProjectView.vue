@@ -1818,6 +1818,7 @@ function onDiscardFile(path: string) {
         :chooser="showChooser"
         :repo="project.name"
         :branch="g.branch.value ?? undefined"
+        :origin="g.origin.value"
         @choose="onChoosePane"
         @focus="focusPane"
         @shift="shiftPaneFocus"
