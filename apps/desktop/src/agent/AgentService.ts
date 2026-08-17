@@ -50,6 +50,13 @@ const WEDGE_SWEEP_MS = 60_000;
  *  streaming turn — token-usage events fire continuously while a provider
  *  works — is never mistaken for a dead one. */
 const WEDGE_SILENCE_MS = 5 * 60_000;
+/** A thread with an in-progress item (a tool call whose result hasn't landed,
+ *  or a text block still streaming) is legitimately busy, not silent — a
+ *  single long-running tool call can go quiet for many minutes with zero
+ *  intermediate events while the provider works exactly as asked. The sweep
+ *  uses this much longer threshold whenever a thread has an open item, and
+ *  falls back to the short one only once every item has settled. */
+const WEDGE_ITEM_SILENCE_MS = 30 * 60_000;
 
 /** How often the idle session reaper sweeps inactive sessions (module constants
  *  so the tuning lives with the mechanism it tunes). */
@@ -77,6 +84,7 @@ export type PendingInteraction = {
 export type AgentServiceOptions = {
   wedgeSweepMs?: number;
   wedgeSilenceMs?: number;
+  wedgeItemSilenceMs?: number;
   idleSweepMs?: number;
   idleThresholdMs?: number;
   /** The conversation store's queue surface, injected by tests. Defaults to
@@ -119,6 +127,10 @@ export class AgentService {
   private readonly lastActivity = new Map<string, number>();
   /** Turns currently live per thread (turnId) — the wedge watchdog's scope. */
   private readonly activeTurns = new Map<string, string>();
+  /** itemIds currently in-progress per thread (item.started without a matching
+   *  item.completed yet) — the wedge sweep's "is this thread legitimately busy"
+   *  signal. */
+  private readonly openItems = new Map<string, Set<string>>();
   /** Threads with a queue-drain already in flight — one drain per thread at a
    *  time, so two settlement events can't double-claim the next row. */
   private readonly promotingThreads = new Set<string>();
@@ -553,9 +565,22 @@ export class AgentService {
       case "turn.started":
         this.activeTurns.set(threadId, event.turnId);
         break;
+      case "item.started": {
+        let items = this.openItems.get(threadId);
+        if (!items) {
+          items = new Set();
+          this.openItems.set(threadId, items);
+        }
+        items.add(event.item.itemId);
+        break;
+      }
+      case "item.completed":
+        this.openItems.get(threadId)?.delete(event.item.itemId);
+        break;
       case "turn.completed":
       case "turn.aborted":
         this.activeTurns.delete(threadId);
+        this.openItems.delete(threadId);
         // A turn settling frees the one-live-turn slot: promote the next
         // queued follow-up (fire-and-forget; drain is serialized per thread
         // and sends at most one turn, so the next settlement drains again).
@@ -607,6 +632,7 @@ export class AgentService {
   private forgetThreadState(threadId: string): void {
     this.parkedByThread.delete(threadId);
     this.activeTurns.delete(threadId);
+    this.openItems.delete(threadId);
     this.lastActivity.delete(threadId);
   }
 
@@ -616,14 +642,20 @@ export class AgentService {
    *  leaves its block `running` forever and the composer disabled. Resets via
    *  stopSession: the adapters' stop drains parked asks, seals the live turn
    *  as interrupted, and kills the child. Sessions parked on a human answer
-   *  are never touched — the parked-ask map is the precise waiting signal. */
+   *  are never touched — the parked-ask map is the precise waiting signal. A
+   *  thread with an open item (an in-progress tool call or text block) gets the
+   *  longer item threshold instead of the short one — that silence is a long
+   *  tool call doing its work, not a dead child. */
   private sweepWedgedSessions(): void {
     const now = Date.now();
     for (const threadId of [...this.activeTurns.keys()]) {
       // Waiting on the user is not wedged — the silence is the point.
       if (this.parkedByThread.get(threadId)?.size) continue;
       const last = this.lastActivity.get(threadId);
-      const silenceMs = this.options.wedgeSilenceMs ?? WEDGE_SILENCE_MS;
+      const hasOpenItem = (this.openItems.get(threadId)?.size ?? 0) > 0;
+      const silenceMs = hasOpenItem
+        ? (this.options.wedgeItemSilenceMs ?? WEDGE_ITEM_SILENCE_MS)
+        : (this.options.wedgeSilenceMs ?? WEDGE_SILENCE_MS);
       if (last !== undefined && now - last < silenceMs) continue;
       const provider = this.routing.get(threadId);
       if (!provider) {
