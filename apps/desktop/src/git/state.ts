@@ -84,14 +84,24 @@ export async function remoteExists(dir: string, remote: string): Promise<boolean
   }
 }
 
-/** Repo-relative paths with unresolved conflict entries in the index. */
+/** Repo-relative paths with unresolved conflict entries in the index.
+ *
+ *  Read from `-z` output, because the only use for these is membership tests
+ *  against the paths `status()` reported: without `-z` git quotes and escapes any
+ *  path holding a non-ASCII byte, a quote or a backslash, and a conflicted file
+ *  whose name came back quoted here would match nothing — losing its conflict
+ *  marking in the change list while still counting toward the conflict total.
+ *  Not trimmed, for the same reason: a leading or trailing space is a legal part
+ *  of a filename, and NUL delimiting means there is no stray whitespace to shed. */
 async function unmergedPaths(root: string): Promise<string[]> {
   try {
-    const out = await git(root, ["diff", "--name-only", "--diff-filter=U"]);
-    return out
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    const out = await git(root, [
+      "diff",
+      "--name-only",
+      "--diff-filter=U",
+      "-z",
+    ]);
+    return out.split("\0").filter((entry) => entry.length > 0);
   } catch {
     return [];
   }

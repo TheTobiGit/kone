@@ -1,5 +1,6 @@
 import { GitError, git, repoRoot, safeRepoPath } from "./core.js";
 import { parseFileDiff } from "./diff.js";
+import { numstat } from "./numstat.js";
 import type {
   GitBranch,
   GitCommit,
@@ -127,19 +128,16 @@ function statusFromCode(code: string): GitFileStatus {
 }
 
 /** Per-file diffstat between two commits. Statuses come from --name-status,
- *  counts from --numstat; both with -z so spaces (and tabs) in paths survive.
- *  With -z, numstat prints a rename as "added\tdeleted\t\0from\0to\0" — an
- *  entry whose path slot is empty, followed by two path records — while a
- *  plain entry is the single record "added\tdeleted\tpath\0". Binary files
- *  report "-\t-". */
+ *  counts from --numstat; both read from -z output so spaces, tabs and newlines
+ *  in paths survive. */
 async function commitFiles(
   root: string,
   base: string,
   head: string,
 ): Promise<GitCommitFile[]> {
-  const [nameOut, numOut] = await Promise.all([
+  const [nameOut, counts] = await Promise.all([
     git(root, ["diff", "--name-status", "-z", "--find-renames", base, head]),
-    git(root, ["diff", "--numstat", "-z", "--find-renames", base, head]),
+    numstat(root, ["--find-renames", base, head]),
   ]);
 
   const metaByPath = new Map<string, { status: GitFileStatus; from?: string }>();
@@ -162,34 +160,18 @@ async function commitFiles(
   }
 
   const files: GitCommitFile[] = [];
-  const numFields = numOut.split("\0");
-  for (let i = 0; i < numFields.length; i++) {
-    const record = numFields[i];
-    if (!record) continue;
-    const tab1 = record.indexOf("\t");
-    const tab2 = tab1 < 0 ? -1 : record.indexOf("\t", tab1 + 1);
-    if (tab1 < 0 || tab2 < 0) continue;
-    const addedRaw = record.slice(0, tab1);
-    const removedRaw = record.slice(tab1 + 1, tab2);
-    let path = record.slice(tab2 + 1);
-    let from: string | undefined;
-    if (path.length === 0) {
-      // Rename/copy head: the path slot is empty; the from and to paths are
-      // the next two records.
-      from = numFields[i + 1] ?? undefined;
-      path = numFields[i + 2] ?? "";
-      i += 2;
-    }
-    if (!path) continue;
-    const meta = metaByPath.get(path);
-    const binary = addedRaw === "-" && removedRaw === "-";
+  for (const entry of counts) {
+    // numstat counts lines; --name-status says what actually happened to the
+    // file. Both run --find-renames over the same pair of trees, so they agree
+    // on which paths are a rename — only the status letter is worth taking here.
+    const meta = metaByPath.get(entry.path);
     files.push({
-      path,
-      ...(from !== undefined ? { from } : {}),
+      path: entry.path,
+      ...(entry.from !== undefined ? { from: entry.from } : {}),
       status: meta?.status ?? "modified",
-      added: binary ? 0 : Number(addedRaw) || 0,
-      removed: binary ? 0 : Number(removedRaw) || 0,
-      binary,
+      added: entry.added,
+      removed: entry.removed,
+      binary: entry.binary,
     });
   }
   return files;
