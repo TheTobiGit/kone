@@ -576,6 +576,38 @@ describe("live capture contracts", () => {
     expect(usage.at).toBe(20); // latest event wins
     raw.close();
   });
+
+  test("an explicit compactsAutomatically: false survives the store round-trip", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.applyEvent({
+      type: "thread.token-usage.updated",
+      threadId: "t-1",
+      provider: "opencode",
+      at: 15,
+      source: "kone.store",
+      usage: { contextWindow: 200000, contextUsed: 120000, compactsAutomatically: false },
+    } as RuntimeEvent);
+
+    // The write path keeps a tri-state (null = unknown, 0 = false, 1 = true);
+    // the read path must preserve an explicit false rather than collapsing it
+    // into "unknown" (undefined).
+    expect(store.threadMeta("t-1")?.compactsAutomatically).toBe(false);
+  });
+
+  test("an explicit compactsAutomatically: true survives the store round-trip", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.applyEvent({
+      type: "thread.token-usage.updated",
+      threadId: "t-1",
+      provider: "opencode",
+      at: 15,
+      source: "kone.store",
+      usage: { contextWindow: 200000, contextUsed: 120000, compactsAutomatically: true },
+    } as RuntimeEvent);
+    expect(store.threadMeta("t-1")?.compactsAutomatically).toBe(true);
+  });
 });
 
 describe("v19 keyset index migration", () => {
