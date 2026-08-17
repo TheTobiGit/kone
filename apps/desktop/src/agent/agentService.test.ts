@@ -216,6 +216,7 @@ beforeAll(async () => {
   service = new AgentServiceCtor({
     wedgeSweepMs: 40,
     wedgeSilenceMs: 30,
+    wedgeItemSilenceMs: 200,
     idleSweepMs: 40,
     idleThresholdMs: 50,
     // The fake implements the queue slice the service needs (its loadThread
@@ -348,6 +349,63 @@ describe("AgentService wedge watchdog", () => {
     await new Promise((r) => setTimeout(r, 150));
     clearInterval(heartbeat);
     expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+
+  test("a thread with an open item is not reset at the short silence threshold", async () => {
+    const thread = "t-wedge-item-open";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-item" });
+    codexEmit({
+      ...base,
+      type: "item.started",
+      turnId: "turn-item",
+      item: { itemId: "item-1", kind: "tool_call", status: "in-progress", text: "npm test" },
+    });
+    // Silence > wedgeSilenceMs (30) but < wedgeItemSilenceMs (200) — the open
+    // item buys the thread the longer threshold, so it must not be reset.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(FakeAdapter.stopped).not.toContain(thread);
+  }, 5_000);
+
+  test("a thread with an open item is still reset once silence exceeds the item threshold", async () => {
+    const thread = "t-wedge-item-timeout";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-item" });
+    codexEmit({
+      ...base,
+      type: "item.started",
+      turnId: "turn-item",
+      item: { itemId: "item-1", kind: "tool_call", status: "in-progress", text: "npm test" },
+    });
+    // Silence past wedgeItemSilenceMs (200) — even with an open item the thread
+    // is genuinely wedged now.
+    await new Promise((r) => setTimeout(r, 260));
+    expect(FakeAdapter.stopped).toContain(thread);
+  }, 5_000);
+
+  test("item.completed clears the open item so the short threshold applies again", async () => {
+    const thread = "t-wedge-item-closed";
+    const base = { ...codexBase, threadId: thread };
+    await service.startSession({ threadId: thread, provider: "codex", cwd: "/tmp", mode: "ask" });
+    codexEmit({ ...base, type: "turn.started", turnId: "turn-item" });
+    codexEmit({
+      ...base,
+      type: "item.started",
+      turnId: "turn-item",
+      item: { itemId: "item-1", kind: "tool_call", status: "in-progress", text: "npm test" },
+    });
+    codexEmit({
+      ...base,
+      type: "item.completed",
+      turnId: "turn-item",
+      item: { itemId: "item-1", kind: "tool_call", status: "completed", text: "npm test" },
+    });
+    // The item settled, so the short threshold (30) governs again — 100ms of
+    // silence must reset the thread.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(FakeAdapter.stopped).toContain(thread);
   }, 5_000);
 });
 
