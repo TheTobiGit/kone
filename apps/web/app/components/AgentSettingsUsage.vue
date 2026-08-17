@@ -7,7 +7,7 @@ import UsageProviderChart from "~/components/usage/UsageProviderChart.vue";
 import { describeModelId } from "~/utils/modelCatalog";
 import { SESSION_BRAND } from "~/types/session";
 import type { ProviderKind, UsageDay, UsageRange } from "~/types/desktop";
-import type { useAgentSpace } from "~/composables/useAgentSpace";
+import type { useAgentSettings } from "~/composables/useAgentSettings";
 import {
   formatCount,
   formatDayShort,
@@ -24,7 +24,7 @@ import {
 
 const props = withDefaults(
   defineProps<{
-    space: ReturnType<typeof useAgentSpace>;
+    space: ReturnType<typeof useAgentSettings>;
     showProjectScope?: boolean;
     foot?: boolean;
   }>(),

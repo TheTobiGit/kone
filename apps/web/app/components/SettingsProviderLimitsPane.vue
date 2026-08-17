@@ -2,7 +2,7 @@
 import { onMounted } from "vue";
 import { GaugeIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
-import AgentSpaceLimits from "~/components/AgentSpaceLimits.vue";
+import AgentSettingsLimits from "~/components/AgentSettingsLimits.vue";
 
 // Provider limits in settings — the same panel as the agents space's Limits
 // section, global by nature (a quota belongs to the machine, not a project).
@@ -13,7 +13,7 @@ import AgentSpaceLimits from "~/components/AgentSpaceLimits.vue";
 defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
 
-const space = useAgentSpace(() => null);
+const space = useAgentSettings(() => null);
 
 onMounted(() => {
   void space.load();
@@ -28,7 +28,7 @@ onMounted(() => {
     label="Provider limits settings"
     @back="$emit('back')"
   >
-    <AgentSpaceLimits :space="space" :foot="false" />
+    <AgentSettingsLimits :space="space" :foot="false" />
 
     <template #foot>
       Every number is read locally — a provider's own usage API, or OpenCode's cost log — never

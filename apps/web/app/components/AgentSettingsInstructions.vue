@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { InstructionFile } from "~/types/desktop";
-import type { useAgentSpace } from "~/composables/useAgentSpace";
+import type { useAgentSettings } from "~/composables/useAgentSettings";
 
 // Every AGENTS.md / CLAUDE.md kone found in scope — global, this project, and
 // any nested ones a subfolder carries. A read-only preview: expanding a row
 // shows the first part of the file kone already scanned, never a live editor.
 
-const props = defineProps<{ space: ReturnType<typeof useAgentSpace> }>();
+const props = defineProps<{ space: ReturnType<typeof useAgentSettings> }>();
 
 const SCOPE_ORDER: Array<{ scope: InstructionFile["scope"]; label: string }> = [
   { scope: "user", label: "Global" },

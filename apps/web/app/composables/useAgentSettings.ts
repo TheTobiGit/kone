@@ -54,7 +54,7 @@ const CONNECTED_KEY = "kone:quota:connected";
 
 // ── stale-while-revalidate caches ────────────────────────────────────────────
 // Every pane that shows agent data (usage settings, provider limits, the agents
-// space) makes its own useAgentSpace, and Vue tears that state down the moment
+// space) makes its own useAgentSettings, and Vue tears that state down the moment
 // the pane closes — so without this, every reopen is a cold scan and the
 // skeleton reflashes while the disk is walked again. These module-level maps
 // outlive any single instance: a reopen (or a range/scope flip we've seen
@@ -88,7 +88,7 @@ function writeConnected(set: ReadonlySet<QuotaProvider>): void {
   }
 }
 
-export function useAgentSpace(projectPath: () => string | null) {
+export function useAgentSettings(projectPath: () => string | null) {
   const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
 
   // ── usage ──────────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ export function useAgentSpace(projectPath: () => string | null) {
       if (usageKey() === key) usage.value = fresh;
       usageReportCache.set(key, fresh);
     } catch (err) {
-      console.error("[useAgentSpace] usage report failed:", err);
+      console.error("[useAgentSettings] usage report failed:", err);
     } finally {
       usageLoading.value = false;
       usageLoaded.value = true;
@@ -226,7 +226,7 @@ export function useAgentSpace(projectPath: () => string | null) {
       quotas.value[provider] = report;
       quotaReportCache[provider] = report;
     } catch (err) {
-      console.error(`[useAgentSpace] quota fetch failed for ${provider}:`, err);
+      console.error(`[useAgentSettings] quota fetch failed for ${provider}:`, err);
     } finally {
       quotaLoading.value[provider] = false;
     }
@@ -279,7 +279,7 @@ export function useAgentSpace(projectPath: () => string | null) {
       if ((projectPath() ?? "") === key) inventory.value = fresh;
       if (fresh) inventoryCache.set(key, fresh);
     } catch (err) {
-      console.error("[useAgentSpace] inventory scan failed:", err);
+      console.error("[useAgentSettings] inventory scan failed:", err);
     } finally {
       inventoryLoading.value = false;
       inventoryLoaded.value = true;
