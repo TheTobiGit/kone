@@ -27,7 +27,7 @@ import {
 } from "@vueuse/core";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, PencilEdit01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
@@ -48,6 +48,7 @@ import { SESSION_BRAND } from "~/types/session";
 import ContextWindowMeter from "~/components/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/ThreadInfoPanel.vue";
 import type { ThreadSession } from "~/composables/useAgent";
+import type { GitRemote } from "~/types/desktop";
 
 const props = defineProps<{
   /** Live panes in strip order (left to right). A pane's session may be null
@@ -74,6 +75,9 @@ const props = defineProps<{
   /** The project's current git branch, if any — handed to a thread's info
    *  panel, where it marks the thread as living in a git project. */
   branch?: string;
+  /** The project's origin remote — handed to a thread's info panel, where it
+   *  names the hosted repo the thread's work belongs to. */
+  origin?: GitRemote | null;
 }>();
 
 const emit = defineEmits<{
@@ -1027,44 +1031,20 @@ function anchoredThreadId(c: Pane): string | null {
   return anchor.kind === "thread" ? anchor.threadId : null;
 }
 
-// ── inline thread rename ─────────────────────────────────────────────────────
-// The column title is a live ref on the session; renaming writes it
-// optimistically and reverts if the store's renameThread says no. Enter commits,
-// Esc cancels, blur commits (guarded so Enter's commit isn't double-run).
-const renamingKey = ref<string | null>(null);
-const renameDraft = ref("");
-const renameInput = ref<HTMLInputElement | null>(null);
-
-function startRename(c: Pane): void {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  if (!s || renamingKey.value === c.id) return;
-  cue("press");
-  renamingKey.value = c.id;
-  renameDraft.value = s.title.value;
-  void nextTick(() => {
-    renameInput.value?.focus();
-    renameInput.value?.select();
-  });
-}
-function cancelRename(): void {
-  renamingKey.value = null;
-  renameDraft.value = "";
-}
-async function commitRename(c: Pane): Promise<void> {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  if (!s || renamingKey.value !== c.id) return;
-  const draft = renameDraft.value.trim();
-  renamingKey.value = null;
-  if (!draft || draft === s.title.value) return;
+// ── thread rename ───────────────────────────────────────────────────────────
+// A thread is renamed from its info panel's Name row; the strip owns the write
+// because the column title is a live ref on the session. The new name lands
+// optimistically and reverts if the store's renameThread says no.
+async function onRename(title: string): Promise<void> {
+  const s = infoSession.value;
+  if (!s) return;
   const previous = s.title.value;
-  s.title.value = draft; // optimistic — the strip shows it immediately
+  s.title.value = title; // optimistic — the strip shows it immediately
   if (!import.meta.client) return;
   const api = window.koneDesktop?.agent;
   if (!api) return; // browser dev — no store to tell; the optimistic title stands
   try {
-    const ok = await api.renameThread(s.threadId.value, draft);
+    const ok = await api.renameThread(s.threadId.value, title);
     if (ok === false) s.title.value = previous;
   } catch {
     s.title.value = previous; // bridge hiccup — never keep a title the store lost
@@ -1376,12 +1356,9 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     >
                       <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="11" :stroke-width="2" aria-hidden="true" />
                     </span>
-                    <!-- Inline rename: the title edits in place (double-click
-                         or the pencil — which is always in flow so nothing ever
-                         shifts, and lights up on hover / focus / when the column
-                         is focused). Enter commits, Esc cancels, blur commits. -->
+                    <!-- The title opens the info panel — which is also where it
+                         gets renamed, so the header itself stays a read-out. -->
                     <h2
-                      v-if="renamingKey !== c.id"
                       class="col__title col__title--btn"
                       :title="c.session.title.value || 'New thread'"
                       role="button"
@@ -1391,27 +1368,6 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                       @keydown.enter.prevent="toggleInfo(c, $event)"
                       @keydown.space.prevent="toggleInfo(c, $event)"
                     >{{ c.session.title.value || "New thread" }}</h2>
-                    <input
-                      v-else
-                      ref="renameInput"
-                      v-model="renameDraft"
-                      class="col__rename-input"
-                      aria-label="Rename conversation"
-                      maxlength="120"
-                      @keydown.enter.prevent="commitRename(c)"
-                      @keydown.esc.prevent="cancelRename()"
-                      @blur="commitRename(c)"
-                    />
-                    <button
-                      v-show="renamingKey !== c.id"
-                      type="button"
-                      class="col__rename"
-                      aria-label="Rename conversation"
-                      title="Rename conversation"
-                      @click.stop="startRename(c)"
-                    >
-                      <HugeiconsIcon :icon="PencilEdit01Icon" :size="12" :stroke-width="2" aria-hidden="true" />
-                    </button>
                     <ContextWindowMeter
                       v-if="c.session.tokenUsage.value"
                       :usage="c.session.tokenUsage.value"
@@ -1668,7 +1624,9 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
       :anchor="infoAnchor"
       :repo="repo"
       :branch="branch"
+      :origin="origin"
       @close="closeInfo"
+      @rename="onRename"
     />
   </div>
 </template>
@@ -2075,60 +2033,6 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
   outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
   outline-offset: 2px;
   border-radius: 6px;
-}
-
-/* Inline rename — the pencil always sits in flow (18px slot, never shifts the
-   centered title) and lights up on hover / focus-within / when its column is
-   focused. Keyboard users tab to it like any other header tool. */
-.col__rename {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
-}
-.col__title-wrap:hover .col__rename,
-.col__title-wrap:focus-within .col__rename,
-.col.is-focused .col__rename {
-  opacity: 1;
-}
-.col__rename:hover,
-.col__rename:focus-visible {
-  background: var(--hover);
-  color: var(--ink);
-}
-.col__rename:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
-  outline-offset: 1px;
-}
-.col__rename-input {
-  flex: 0 1 auto;
-  min-width: 90px;
-  max-width: 220px;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: 7px;
-  background: var(--hover);
-  color: var(--ink);
-  font-family: var(--font-sans);
-  font-size: 13.5px;
-  font-weight: 620;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
-  text-align: center;
-  outline: none;
-}
-.col__rename-input:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
 }
 
 /* ── side chats: the temporary look ────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
-import type { GitChange, GitStatus } from "~/types/desktop";
+import type { GitChange, GitRemote, GitStatus } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import { createLatestWinsRun } from "~/utils/latestWins";
 
@@ -24,6 +24,20 @@ export function useProjectGit(project: Ref<Project>) {
   const ahead = ref(0);
   const behind = ref(0);
   const changes = ref<GitChange[]>([]);
+  // Where the project came from. Read once per project rather than on every
+  // status refresh: a remote changes about as often as a repo is re-cloned,
+  // while the watcher pushes a status on every keystroke that hits disk.
+  const origin = ref<GitRemote | null>(null);
+
+  async function readOrigin() {
+    origin.value = null;
+    try {
+      const list = await git.remotes(project.value.path);
+      origin.value = list.find((r) => r.name === "origin") ?? list[0] ?? null;
+    } catch {
+      /* no remote to name — the folder's own name is the whole story */
+    }
+  }
 
   // ── derived, so every surface stays in lockstep with `changes` ──────────────
   const added = computed(() => changes.value.reduce((s, c) => s + (c.added ?? 0), 0));
@@ -147,6 +161,7 @@ export function useProjectGit(project: Ref<Project>) {
 
   onMounted(() => {
     void refresh();
+    void readOrigin();
     startWatch();
   });
   // Re-read + re-watch if the open project changes under us (defensive — the
@@ -156,6 +171,7 @@ export function useProjectGit(project: Ref<Project>) {
     loaded.value = false;
     changes.value = [];
     void refresh();
+    void readOrigin();
     startWatch();
   });
   onBeforeUnmount(() => unwatch?.());
@@ -168,6 +184,7 @@ export function useProjectGit(project: Ref<Project>) {
     branch,
     ahead,
     behind,
+    origin,
     changes,
     added,
     removed,
