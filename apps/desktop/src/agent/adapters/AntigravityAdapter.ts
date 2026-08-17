@@ -927,7 +927,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     session.stopped = true;
     session.interrupted = true;
     if (session.activeProcess) {
-      killTree(session.activeProcess.pid);
+      await killTree(session.activeProcess.pid);
       if (session.activeTurnId && !session.turnTerminalEmitted) {
         this.settleActiveTurn(session, { state: "interrupted" });
       }
@@ -1171,7 +1171,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       // close handler can settle the turn.
       if (eventName === "stop" && session.activeProcess && !session.turnTerminalEmitted) {
         const child = session.activeProcess;
-        killTree(child.pid);
+        void killTree(child.pid);
       }
     }
     await this.readTranscript(session);

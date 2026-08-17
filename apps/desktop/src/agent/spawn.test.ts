@@ -69,7 +69,7 @@ describe("probe", () => {
 });
 
 describe("killTree", () => {
-  test("escalates to SIGKILL for a child that ignores SIGTERM", async () => {
+  test("escalates to SIGKILL for a child that ignores SIGTERM, proving exit before resolving", async () => {
     if (process.platform === "win32") return;
     // The child swallows SIGTERM and keeps running, so only the SIGKILL
     // escalation can actually reap it.
@@ -82,19 +82,35 @@ describe("killTree", () => {
       const pid = child.pid!;
       // Give the child a moment to install its SIGTERM handler.
       await new Promise((resolve) => setTimeout(resolve, 200));
-      killTree(pid);
-      const deadline = Date.now() + 8_000;
-      while (Date.now() < deadline) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-      throw new Error("killTree left the child alive past the deadline");
+      await killTree(pid);
+      // killTree only resolves once the process is confirmed gone, so this
+      // must already be true — no external poll needed.
+      expect(() => process.kill(pid, 0)).toThrow();
     } finally {
       child.kill("SIGKILL");
     }
+  }, 10_000);
+
+  test("resolves promptly for a child that exits cleanly on SIGTERM", async () => {
+    if (process.platform === "win32") return;
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+    const pid = child.pid!;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const start = Date.now();
+    await killTree(pid);
+    // No SIGKILL escalation needed — should settle well under the 1.5s grace period.
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(() => process.kill(pid, 0)).toThrow();
+  }, 5_000);
+
+  test("resolves immediately for an already-dead pid", async () => {
+    if (process.platform === "win32") return;
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    const start = Date.now();
+    await killTree(child.pid!);
+    expect(Date.now() - start).toBeLessThan(200);
   });
 });

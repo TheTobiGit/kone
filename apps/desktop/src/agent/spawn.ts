@@ -8,6 +8,13 @@ import { createInterface } from "node:readline";
 // Grace period between the polite SIGTERM group-kill and escalating to SIGKILL.
 const KILL_ESCALATION_MS = 1_500;
 
+// How long to keep polling for proof of death after SIGKILL before giving up.
+// SIGKILL is unblockable, so this only guards against polling past a reused
+// PID or a permission error masking the check — it should rarely be reached.
+const KILL_FORCE_WAIT_MS = 2_000;
+
+const KILL_POLL_MS = 50;
+
 // Cap on probe stdout accumulation; beyond this we keep draining but stop
 // appending, so a chatty CLI can't balloon memory over a long probe window.
 const PROBE_OUTPUT_CAP_BYTES = 1024 * 1024;
@@ -82,48 +89,92 @@ export function runStreaming(
     kill: () => {
       if (killed) return;
       killed = true;
-      killTree(child.pid);
+      // StreamingRun.kill() is a synchronous, fire-and-forget signal; no
+      // caller here needs proof of exit before proceeding.
+      void killTree(child.pid);
     },
   };
 }
 
-/** Kill a process and the tool subprocesses it spawned. Agent CLIs fork shells
- *  and tools; a plain SIGTERM to the parent can orphan them. */
-export function killTree(pid: number | undefined): void {
-  if (pid === undefined) return;
-  if (process.platform === "win32") {
-    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
-    return;
-  }
-  let signalDelivered = false;
+/** True if `pid` still names a live process (the zero-signal existence check —
+ *  it delivers nothing, it just tests whether `kill` would be allowed to). */
+function isProcessAlive(pid: number): boolean {
   try {
-    // Negative pid targets the process group (adapters spawn detached).
-    process.kill(-pid, "SIGTERM");
-    signalDelivered = true;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Signal the process group first (adapters spawn detached so this reaches
+ *  the tool subprocesses the CLI forked), falling back to the bare pid. */
+function signalTree(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
   } catch {
     try {
-      process.kill(pid, "SIGTERM");
-      signalDelivered = true;
+      process.kill(pid, signal);
+      return true;
     } catch {
-      // Already gone.
+      return false; // Already gone.
     }
   }
-  // A wedged CLI that ignores the polite signal would otherwise leak its whole
-  // process group, so escalate to SIGKILL after a grace period — but only when
-  // a signal actually landed (both failed means the tree is already gone).
-  if (signalDelivered) {
-    setTimeout(() => {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // Already gone.
-        }
+}
+
+/** Poll until `pid` is gone or `timeoutMs` elapses. Resolves `true` on proven
+ *  death, `false` on timeout — never rejects, so a caller can bound the wait
+ *  without a try/catch. */
+function waitWhileAlive(pid: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!isProcessAlive(pid)) {
+      resolve(true);
+      return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const poll = setInterval(() => {
+      if (!isProcessAlive(pid)) {
+        clearInterval(poll);
+        resolve(true);
+        return;
       }
-    }, KILL_ESCALATION_MS).unref?.();
+      if (Date.now() >= deadline) {
+        clearInterval(poll);
+        resolve(false);
+      }
+    }, KILL_POLL_MS);
+    // A caller that doesn't await killTree() (StreamingRun.kill(), the probe
+    // timeout path) must never keep the process alive just for this poll.
+    poll.unref?.();
+  });
+}
+
+/** Kill a process and the tool subprocesses it spawned, resolving only once
+ *  the process is actually gone — not merely signaled. Agent CLIs fork shells
+ *  and tools; a plain SIGTERM to the parent can orphan them. A caller that
+ *  awaits this before starting a replacement (same workspace, same lock
+ *  files) needs the previous child provably dead, not just asked to leave:
+ *  firing SIGKILL on a timer and returning immediately left a window where
+ *  the old and new child could both hold the same CLI's on-disk session
+ *  store. */
+export async function killTree(pid: number | undefined): Promise<void> {
+  if (pid === undefined) return;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      const tasked = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+      tasked.once("exit", () => resolve());
+      tasked.once("error", () => resolve());
+    });
+    return;
   }
+  if (!isProcessAlive(pid)) return;
+  signalTree(pid, "SIGTERM");
+  if (await waitWhileAlive(pid, KILL_ESCALATION_MS)) return;
+  // A wedged CLI that ignores the polite signal would otherwise leak its
+  // whole process group.
+  signalTree(pid, "SIGKILL");
+  await waitWhileAlive(pid, KILL_FORCE_WAIT_MS);
 }
 
 /** Run a short command to completion and return stdout. Returns null only when
@@ -158,7 +209,9 @@ export function probe(
       resolve(value);
     };
     const timer = setTimeout(() => {
-      killTree(child.pid);
+      // A timed-out probe resolves immediately with whatever it captured;
+      // nothing here waits on the teardown, so let it run in the background.
+      void killTree(child.pid);
       finish(stdout.length > 0 ? stdout : null);
     }, timeoutMs);
 
