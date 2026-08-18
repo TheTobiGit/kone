@@ -938,7 +938,7 @@ onClickOutside(greetWrap, () => (switcherOpen.value = false));
 function switchTo(p: RecentProject) {
   switcherOpen.value = false;
   if (p.path === props.project.path) return;
-  cue("press");
+  cue("open");
   // A turn in flight would be torn down by the remount anyway — stop it cleanly
   // first so the provider isn't left mid-stream.
   if (busy.value) void agent.interrupt();
@@ -1129,7 +1129,7 @@ const gitMounted = ref(false);
 const gitDepth = ref(0);
 function openGitSpace() {
   if (!g.repo.value) return;
-  cue("press");
+  cue("open");
   gitMounted.value = true;
   surface.value = "git";
   void space.load();
@@ -1507,6 +1507,40 @@ watch(
   },
 );
 
+// ── agent-turn completion cue ────────────────────────────────────────────────
+// A turn finishing is the one agent moment worth hearing: you can send, look
+// away at the working tree or another thread, and know from a soft resolve that
+// a reply has landed. We watch each thread's live turn settle out of `running`
+// and cue once on that edge — `ready` for a clean finish, `error` for a failed
+// one. An interrupt is the user's own doing (already cued at the click), so it
+// stays silent. Keyed by turn id so a single settle fires exactly once, never on
+// re-render, and a brand-new thread's first turn isn't mistaken for a finish.
+const settledTurns = ref<Record<string, string>>({});
+// The first pass only records what's already settled — a rehydrated project
+// mounts with every past turn in `completed`, and none of those just happened.
+// Real finishes are the transitions we see *after* that baseline.
+let settleWatcherPrimed = false;
+watch(
+  () => agent.threads.value.map((t) => `${t.threadId}:${t.block?.turnId ?? ""}:${t.block?.state ?? ""}`).join("|"),
+  () => {
+    const settled = { ...settledTurns.value };
+    let touched = false;
+    for (const t of agent.threads.value) {
+      const block = t.block;
+      if (!block || block.state === "running") continue;
+      if (settled[t.threadId] === block.turnId) continue;
+      settled[t.threadId] = block.turnId;
+      touched = true;
+      if (!settleWatcherPrimed) continue; // baseline: seed, don't announce
+      if (block.state === "completed") cue("ready");
+      else if (block.state === "failed") cue("error");
+    }
+    if (touched) settledTurns.value = settled;
+    settleWatcherPrimed = true;
+  },
+  { immediate: true },
+);
+
 // Pills the user has waved away, per thread → the turn they dismissed. Unlike
 // `seenTurns` this also silences a *running* turn: you've said you don't want to
 // be told about this one. The thread's next turn mints a new id, so a dismissal
@@ -1624,13 +1658,13 @@ function onCommit() {
 // Opened from outside the working-tree lanes — a commit's file list, or the
 // agent's changes dock. Tracked only when the path is in fact a live change.
 function onOpenFileFromGit(path: string, rect: DOMRect | null) {
-  cue("press");
+  cue("expand");
   originRect.value = rect;
   activeTracked.value = changeItems.value.some((c) => c.path === path);
   activePath.value = path;
 }
 function onOpenFile(item: ChangeItem, rect: DOMRect) {
-  cue("press");
+  cue("expand");
   // Picked from the peek: slide the stage back and grow the detail from the row.
   peekOpen.value = false;
   originRect.value = rect;
@@ -1639,10 +1673,11 @@ function onOpenFile(item: ChangeItem, rect: DOMRect) {
 }
 // Opening the peek from a lane's +N bundle — the stage steps aside for the list.
 function openPeek() {
-  cue("press");
+  cue("expand");
   peekOpen.value = true;
 }
 function onCloseFile() {
+  if (activePath.value) cue("collapse");
   activePath.value = null;
   activeTracked.value = false;
 }
@@ -1655,7 +1690,7 @@ onKeyStroke("Escape", () => {
   }
   if (peekOpen.value) {
     peekOpen.value = false;
-    cue("toggle");
+    cue("collapse");
     return;
   }
   // The branch picker owns its own Escape (it's a modal); nothing to do here.

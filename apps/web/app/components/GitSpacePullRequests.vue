@@ -231,7 +231,7 @@ const REVIEW: Record<string, string> = {
           type="button"
           class="gsp__main"
           :title="`Open #${pr.number}`"
-          @click="cue('press'); emit('open', pr.number)"
+          @click="emit('open', pr.number)"
         >
           <span class="gsp__num">#{{ pr.number }}</span>
 
