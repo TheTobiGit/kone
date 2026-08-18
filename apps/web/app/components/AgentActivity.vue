@@ -191,6 +191,15 @@ const masked = ref(false);
 
 const winEl = ref<HTMLElement | null>(null);
 const innerEl = ref<HTMLElement | null>(null);
+// The chip strip hugs its content and only fades at the right when the run
+// actually overflows the row — measured, since chips can outgrow the width at any
+// point in a long batch.
+const stripEl = ref<HTMLElement | null>(null);
+const stripOverflow = ref(false);
+function measureStrip(): void {
+  const el = stripEl.value;
+  stripOverflow.value = !!el && el.scrollWidth > el.clientWidth + 1;
+}
 // Bleed above the clip so the first row's 22px rail can still reach up into the
 // orb; folded flat there's no bleed, so nothing peeks out of a closed batch.
 const BLEED = 12;
@@ -315,8 +324,12 @@ onMounted(async () => {
   // Row content grows too — a thinking row streams its text — so watch the box
   // itself rather than only the entry list.
   if (innerEl.value && "ResizeObserver" in window) {
-    ro = new ResizeObserver(() => sync());
+    ro = new ResizeObserver(() => {
+      sync();
+      measureStrip();
+    });
     ro.observe(innerEl.value);
+    if (stripEl.value) ro.observe(stripEl.value);
   }
 
   // Taking over a batch that was live a moment ago: adopt the height *and* the
@@ -428,7 +441,7 @@ function stepProps(e: ActivityEntry) {
       :aria-expanded="canExpand ? (expanded ? 'true' : 'false') : undefined"
       @click="toggleExpanded"
     >
-      <span class="head__orb">
+      <span class="head__orb" :class="{ 'head__orb--capped': rowsAlive }">
         <TurnOrb
           state="working"
           :size="16"
@@ -442,7 +455,7 @@ function stepProps(e: ActivityEntry) {
            *above* the step rows, that shoves the whole batch — and everything
            below it in the thread — down by a line at the exact moment the batch
            is folding up. One row in, one row out, and the tree stays still. -->
-      <span class="head__strip">
+      <span ref="stripEl" class="head__strip" :class="{ 'head__strip--fade': stripOverflow }">
         <AnimatePresence :initial="false">
           <motion.span
             v-for="chip in historyChips"
@@ -525,11 +538,19 @@ function stepProps(e: ActivityEntry) {
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  /* Hug the orb · chips · arrow so the clickable area and hover background stop at
+     the arrow instead of running to the far edge; cap at the row so a long run
+     still shrinks the strip and lets its fade take over. */
+  width: fit-content;
+  max-width: 100%;
   min-height: 26px;
-  /* Pull the window up so the 22px rail reaches into the orb when rows follow. */
-  margin: 0 -6px -2px;
-  padding: 3px 6px 5px;
+  /* Pull the window up so the 22px rail reaches into the orb when rows follow.
+     No left bleed: the orb must sit at the content edge (x=0) to line up with the
+     rows' rail and the reply text, so the hover pill starts there too rather than
+     6px further left where the thread's scroll area would clip its rounded corner.
+     The orb's own transparent inset gives it breathing room without padding. */
+  margin: 0 -6px -2px 0;
+  padding: 3px 6px 5px 0;
   border: 0;
   background: transparent;
   border-radius: 8px;
@@ -551,21 +572,31 @@ function stepProps(e: ActivityEntry) {
   flex: none;
   width: 16px;
   height: 16px;
-  background: var(--ground);
   /* Keep the canvas orb out of any row-enter transforms below. */
   isolation: isolate;
   transform: translateZ(0);
 }
-/* The clipped one-line track. It takes the leftover width so the chevron keeps
-   its place at the right, and fades rather than cuts when a very long run
-   outgrows it — the toggle is there to see the full list. */
+/* Only when rows follow does the orb need an opaque ground to cap the first row's
+   rail; collapsed there's no rail, and a solid box would punch through the hover
+   pill. Round it so even over the pill it reads as the orb, not a tile. */
+.head__orb--capped {
+  background: var(--ground);
+  border-radius: 50%;
+}
+/* The clipped one-line track. It shrinks to its chips so the chevron trails
+   immediately after the last one, and fades rather than cuts when a very long
+   run outgrows the available width — the toggle is there to see the full list. */
 .head__strip {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
   overflow: hidden;
+}
+/* Only when the run actually outgrows the row — otherwise the fade would eat the
+   last chip of a strip that fits. */
+.head__strip--fade {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
   mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
 }
@@ -584,7 +615,6 @@ function stepProps(e: ActivityEntry) {
 }
 .head__chev {
   flex: none;
-  margin-left: auto;
   opacity: 0.5;
   transition: transform 0.22s ease;
 }

@@ -817,7 +817,7 @@ function dispatchDraft() {
   // (a screenshot with no words) is allowed.
   const files = attachments.value.map((a) => a.file);
   emit("send", draft, files.length ? files : undefined);
-  cue("success");
+  cue("send");
   clearEditor();
   clearAttachments();
   syncSoon();
@@ -846,7 +846,7 @@ function steer() {
   const files = attachments.value.map((a) => a.file);
   if (!draft && !files.length) return;
   emit("steer", draft, files.length ? files : undefined);
-  cue("success");
+  cue("send");
   clearEditor();
   clearAttachments();
   syncSoon();
@@ -1583,8 +1583,8 @@ html.dark .dock {
   background: transparent;
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 16px;
-  line-height: 25px;
+  font-size: 14px;
+  line-height: 22px;
   letter-spacing: normal;
   /* The card's width is fixed, so text simply wraps and the card grows down. */
   white-space: pre-wrap;
@@ -1607,8 +1607,8 @@ html.dark .dock {
   top: 0;
   color: var(--placeholder);
   font-family: var(--font-sans);
-  font-size: 16px;
-  line-height: 25px;
+  font-size: 14px;
+  line-height: 22px;
   white-space: nowrap;
   pointer-events: none;
   user-select: none;

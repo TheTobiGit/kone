@@ -17,6 +17,7 @@ import type { RuntimeItem } from "~/types/desktop";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
 import AgentActivity from "~/components/AgentActivity.vue";
+import TurnWorkFold from "~/components/TurnWorkFold.vue";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
@@ -109,16 +110,37 @@ if (import.meta.client) void useMarkdown().parse("");
 // *last* steps group is lifted out of `groups` while it's live and handed back as
 // `live`; once text takes over (or the turn ends) it rejoins the list and folds
 // into its horizontal strip.
-type BlockView = { groups: RenderGroup[]; live: { segments: Segment[] } | null };
+// `groups` + `live` drive a RUNNING turn — the settled batches inline plus the
+// one live tail.
+//
+// `foldedGroups` + `replyGroups` drive a SETTLED turn. Everything the agent did
+// AND said on the way to its answer — tool calls, thinking, and the narration
+// text between them — collapses behind a single "Worked for {duration}" fold;
+// only the turn's final reply stays open. The reply is the turn's trailing text
+// group (the last thing it said with no tool call after it). A turn that ends on
+// a tool call has no trailing reply, so everything folds and the fold opens by
+// default rather than collapsing to nothing.
+type TextGroup = Extract<RenderGroup, { kind: "text" }>;
+type BlockView = {
+  groups: RenderGroup[];
+  live: { segments: Segment[] } | null;
+  foldedGroups: RenderGroup[];
+  replyGroups: TextGroup[];
+};
 
 function buildView(block: AssistantBlock): BlockView {
   const all = renderGroups(block);
+  const last = all[all.length - 1];
+  const replyIsTrailingText = last?.kind === "text";
+  const foldedGroups = replyIsTrailingText ? all.slice(0, -1) : all;
+  const replyGroups = replyIsTrailingText ? [last as TextGroup] : [];
   const tail = all[all.length - 1];
   const tailIsSteps = tail?.kind === "steps";
   const live = block.state === "running" && (all.length === 0 || tailIsSteps);
-  if (!live) return { groups: all, live: null };
-  if (tailIsSteps) return { groups: all.slice(0, -1), live: { segments: tail.segments } };
-  return { groups: all, live: { segments: [] } };
+  if (!live) return { groups: all, live: null, foldedGroups, replyGroups };
+  if (tailIsSteps)
+    return { groups: all.slice(0, -1), live: { segments: tail.segments }, foldedGroups, replyGroups };
+  return { groups: all, live: { segments: [] }, foldedGroups, replyGroups };
 }
 
 // Built once per turn and kept until that turn's content actually changes.
@@ -161,7 +183,7 @@ const viewByBlock = computed(() => {
   return out;
 });
 
-const EMPTY_VIEW: BlockView = { groups: [], live: null };
+const EMPTY_VIEW: BlockView = { groups: [], live: null, foldedGroups: [], replyGroups: [] };
 function viewOf(block: AssistantBlock): BlockView {
   return viewByBlock.value.get(block.id) ?? EMPTY_VIEW;
 }
@@ -182,6 +204,14 @@ function statusOf(block: AssistantBlock): { text: string; tone: "live" | "muted"
   if (block.state === "failed") return { text: "couldn't finish", tone: "error" };
   if (block.state === "interrupted") return { text: "stopped", tone: "muted" };
   return { text: `replied in ${elapsed(block)}`, tone: "muted" };
+}
+// The receipt on a settled turn's work fold. Duration is the whole turn's span
+// (`elapsed` reads block.at → block.endedAt), phrased by how the turn ended.
+function workLabel(block: AssistantBlock): string {
+  const dur = elapsed(block);
+  if (block.state === "interrupted") return `Stopped · ${dur}`;
+  if (block.state === "failed") return `Ended · ${dur}`;
+  return dur;
 }
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -223,13 +253,13 @@ function userRequestText(block: Extract<ThreadBlock, { role: "user" }>): string 
 }
 function toggleUserRequest(block: Extract<ThreadBlock, { role: "user" }>): void {
   expandedUserRequests[block.id] = !expandedUserRequests[block.id];
-  cue("toggle");
+  cue(expandedUserRequests[block.id] ? "expand" : "collapse");
 }
 async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
   if (!block.text || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(block.text);
-    cue("toggle");
+    cue("success");
     copied.value = block.id;
     window.setTimeout(() => {
       if (copied.value === block.id) copied.value = null;
@@ -248,7 +278,7 @@ async function copy(block: AssistantBlock) {
   if (!text || !import.meta.client) return;
   try {
     await navigator.clipboard.writeText(text);
-    cue("toggle");
+    cue("success");
     copied.value = block.id;
     window.setTimeout(() => {
       if (copied.value === block.id) copied.value = null;
@@ -308,7 +338,7 @@ function retryTurn(block: AssistantBlock): void {
 }
 function dismissTurnError(block: AssistantBlock): void {
   dismissedTurnErrors[block.id] = true;
-  cue("toggle");
+  cue("collapse");
 }
 
 // ── edit-and-resend (last user turn only) ─────────────────────────────────────
@@ -387,7 +417,7 @@ function retryLoad(): void {
 }
 function dismissLoad(): void {
   loadDismissed.value = true;
-  cue("toggle");
+  cue("collapse");
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────────
@@ -455,7 +485,7 @@ watch(
 // Reveal without moving the ground: history mounts *above* the viewport, so pin
 // the distance to the bottom and let the scroll offset absorb the new content.
 async function revealEarlier(): Promise<void> {
-  cue("toggle");
+  cue("expand");
   const sc = import.meta.client ? scroller() : null;
   const fromBottom = sc ? sc.scrollHeight - sc.scrollTop : 0;
   showAllExchanges.value = true;
@@ -497,7 +527,7 @@ watch(
  *  and the prepend are the session's; this is the affordance for it. */
 function requestOlder(): void {
   if (props.loadingOlder) return;
-  cue("toggle");
+  cue("expand");
   emit("load-older");
 }
 </script>
@@ -714,45 +744,66 @@ function requestOlder(): void {
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
       <template v-else>
         <div class="stack selectable">
-          <template v-for="grp in viewOf(block).groups" :key="grp.kind === 'text' ? grp.seg.key : grp.key">
-            <!-- Steps — done batches only. The live tail (or the opening beat
-                 before the first step lands) is a single AgentActivity below with
-                 a stable key so the working orb never hands off; `viewOf` has
-                 already lifted that batch out of this list. -->
+          <!-- RUNNING — the live read: settled batches inline, in arrival order,
+               plus the one live tail orb below. Steps and text interleave exactly
+               as they land so tools-after-text read correctly while the turn is
+               in flight. -->
+          <template v-if="block.state === 'running'">
+            <template
+              v-for="grp in viewOf(block).groups"
+              :key="grp.kind === 'text' ? grp.seg.key : grp.key"
+            >
+              <AgentActivity
+                v-if="grp.kind === 'steps'"
+                :segments="grp.segments"
+                :running="true"
+                :is-tail="false"
+                :historical="block.historical"
+              />
+              <div
+                v-else-if="grp.kind === 'text'"
+                class="answer-wrap"
+                :data-markdown-source="segText(grp.seg)"
+              >
+                <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
+              </div>
+            </template>
+
+            <!-- Live activity — one orb for the whole run: from send through every
+                 thinking step and tool call until text takes over. -->
             <AgentActivity
-              v-if="grp.kind === 'steps'"
-              :segments="grp.segments"
-              :running="block.state === 'running'"
-              :is-tail="false"
+              v-if="viewOf(block).live"
+              :key="`${block.id}:live-activity`"
+              :segments="viewOf(block).live!.segments"
+              :running="true"
+              :is-tail="true"
               :historical="block.historical"
             />
+          </template>
 
-            <!-- Text — rendered as rich Markdown the whole way through, streaming
-                 or settled, so the reply reads as a proper preview as it grows
-                 (never a raw block that only formats once complete). -->
+          <!-- SETTLED — the calm read: everything the agent did and said on the
+               way to its answer (tool calls, thinking, and the narration between
+               them) collapses behind one "Worked for {duration}" fold, and only
+               the final reply stays open. A turn that ended on a tool call has no
+               trailing reply, so the fold opens by default rather than collapsing
+               to nothing. -->
+          <template v-else>
+            <TurnWorkFold
+              v-if="viewOf(block).foldedGroups.length"
+              :groups="viewOf(block).foldedGroups"
+              :label="workLabel(block)"
+              :historical="block.historical"
+              :default-open="viewOf(block).replyGroups.length === 0"
+            />
             <div
-              v-else-if="grp.kind === 'text'"
+              v-for="grp in viewOf(block).replyGroups"
+              :key="grp.seg.key"
               class="answer-wrap"
               :data-markdown-source="segText(grp.seg)"
             >
-              <MarkdownMessage
-                class="answer"
-                :source="segText(grp.seg)"
-                :historical="block.historical"
-              />
+              <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
             </div>
           </template>
-
-          <!-- Live activity — one orb for the whole run: from send through every
-               thinking step and tool call until text takes over. -->
-          <AgentActivity
-            v-if="viewOf(block).live"
-            :key="`${block.id}:live-activity`"
-            :segments="viewOf(block).live!.segments"
-            :running="block.state === 'running'"
-            :is-tail="true"
-            :historical="block.historical"
-          />
 
           <!-- Failure note — the error plus Retry (re-sends the request that
                preceded it) and Dismiss (presentational: the block stays failed
@@ -779,9 +830,12 @@ function requestOlder(): void {
                header carries the status then). -->
           <div v-if="block.state !== 'running'" class="foot">
             <span class="foot__time">{{ clock(block.at) }}</span>
-            <span class="foot__status" :class="`foot__status--${statusOf(block).tone}`">{{
-              statusOf(block).text
-            }}</span>
+            <span
+              v-if="block.state !== 'completed'"
+              class="foot__status"
+              :class="`foot__status--${statusOf(block).tone}`"
+              >{{ statusOf(block).text }}</span
+            >
             <button
               v-if="block.state === 'completed' && assistantText(block)"
               type="button"
@@ -858,7 +912,7 @@ function requestOlder(): void {
 }
 .empty__line {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.5;
   color: var(--muted);
   text-wrap: pretty;
@@ -950,8 +1004,8 @@ function requestOlder(): void {
 /* ── Message body ──────────────────────────────────────────────────────────── */
 .body {
   margin: 0;
-  font-size: 16px;
-  line-height: 1.68;
+  font-size: 14px;
+  line-height: 1.62;
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -960,8 +1014,8 @@ function requestOlder(): void {
 .body--you {
   text-align: left;
   max-width: 80%;
-  padding: 12px 17px;
-  border-radius: 18px 18px 6px 18px;
+  padding: 10px 15px;
+  border-radius: 16px 16px 5px 16px;
   background: linear-gradient(
     135deg,
     color-mix(in oklab, var(--accent) 12%, var(--ground)) 0%,
@@ -1161,7 +1215,7 @@ function requestOlder(): void {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: -7px;
   width: 100%;
   max-width: 42rem;
   font-family: var(--font-mono);

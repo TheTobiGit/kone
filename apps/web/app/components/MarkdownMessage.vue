@@ -333,8 +333,8 @@ const Rendered = defineComponent({
 
 <style scoped>
 .md {
-  font-size: 16px;
-  line-height: 27px;
+  font-size: 14px;
+  line-height: 23px;
   color: var(--ink);
 }
 .md__raw {
@@ -381,16 +381,16 @@ const Rendered = defineComponent({
 .md :deep(h2),
 .md :deep(h3),
 .md :deep(h4) {
-  margin: 22px 0 9px;
+  margin: 18px 0 8px;
   font-weight: 640;
   line-height: 1.32;
   letter-spacing: -0.012em;
   color: var(--ink);
 }
-.md :deep(h1) { font-size: 21px; }
-.md :deep(h2) { font-size: 18px; }
-.md :deep(h3) { font-size: 16px; }
-.md :deep(h4) { font-size: 15px; color: var(--ink-soft); }
+.md :deep(h1) { font-size: 18px; }
+.md :deep(h2) { font-size: 16px; }
+.md :deep(h3) { font-size: 14.5px; }
+.md :deep(h4) { font-size: 13.5px; color: var(--ink-soft); }
 .md :deep(h1:first-child),
 .md :deep(h2:first-child),
 .md :deep(h3:first-child) { margin-top: 0; }
@@ -500,14 +500,14 @@ const Rendered = defineComponent({
 .md :deep(table) {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 19px;
 }
 .md :deep(thead th) {
-  padding: 7px 14px;
+  padding: 6px 12px;
   text-align: left;
   font-weight: 620;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--muted);
@@ -515,7 +515,7 @@ const Rendered = defineComponent({
   white-space: nowrap;
 }
 .md :deep(tbody td) {
-  padding: 8px 14px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--hover);
   color: var(--ink);
   vertical-align: top;
