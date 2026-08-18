@@ -31,5 +31,8 @@
     "typescript": "catalog:",
     "web": "workspace:*"
   },
-  "packageManager": "bun@1.3.13"
+  "packageManager": "bun@1.3.13",
+  "dependencies": {
+    "cuelume": "^0.2.2"
+  }
 }

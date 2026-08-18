@@ -54,14 +54,14 @@ function onPicked(folder: { path: string; name: string }) {
 }
 
 function onOpenRecent(recent: RecentProject) {
-  cue("press");
+  cue("open");
   openProject({ path: recent.path, name: recent.name });
 }
 
 // Opening a conversation from the cross-project sessions list: switch to its
 // project and hand ProjectView the thread to resume once it mounts.
 function onOpenSession(target: { path: string; name: string; threadId: string }) {
-  cue("press");
+  cue("open");
   openProject({ path: target.path, name: target.name }, target.threadId);
 }
 

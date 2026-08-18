@@ -42,8 +42,8 @@ watch(
 );
 
 function toggle(hash: string) {
-  cue("toggle");
   openHash.value = openHash.value === hash ? null : hash;
+  cue(openHash.value === hash ? "expand" : "collapse");
 }
 
 // Auto-page: the foot of the list coming into view is the request.

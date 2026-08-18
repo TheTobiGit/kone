@@ -108,7 +108,7 @@ async function readDiff(path: string): Promise<void> {
 
 function openPeek(file: ChangedFile, e: MouseEvent | KeyboardEvent): void {
   if (!canPeek.value) return;
-  cue("press");
+  cue("expand");
   const el = e.currentTarget as HTMLElement | null;
   peekRect.value = el?.getBoundingClientRect() ?? null;
   peekPath.value = file.path;
@@ -124,7 +124,7 @@ function closePeek(): void {
   peekDiff.value = null;
   peekNote.value = null;
   peekLoading.value = false;
-  cue("toggle");
+  cue("collapse");
 }
 
 function openFull(): void {
@@ -164,7 +164,7 @@ function syncHeight(): void {
 
 function toggle(): void {
   expanded.value = !expanded.value;
-  cue("toggle");
+  cue(expanded.value ? "expand" : "collapse");
 }
 
 // A live write opens the body; from there it stays open until the user collapses

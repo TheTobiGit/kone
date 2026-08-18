@@ -75,7 +75,7 @@ const scrollTops = new Map<Section, number>();
 
 function go(next: Section) {
   if (section.value === next) return;
-  cue("toggle");
+  cue("select");
   const el = panelEl.value;
   if (el) scrollTops.set(section.value, el.scrollTop);
   section.value = next;
@@ -139,16 +139,16 @@ const stack = ref<Detail[]>([]);
 const detail = computed<Detail | null>(() => stack.value.at(-1) ?? null);
 
 function openCommit(hash: string) {
-  cue("press");
+  cue("open");
   stack.value = [...stack.value, { kind: "commit", hash }];
 }
 function openPr(number: number) {
-  cue("press");
+  cue("open");
   stack.value = [...stack.value, { kind: "pr", number }];
 }
 function back() {
   if (!stack.value.length) return;
-  cue("toggle");
+  cue("collapse");
   stack.value = stack.value.slice(0, -1);
 }
 

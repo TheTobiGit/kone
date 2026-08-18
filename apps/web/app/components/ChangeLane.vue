@@ -55,7 +55,7 @@ const expanded = useStorage(
 );
 function toggle(): void {
   expanded.value = !expanded.value;
-  cue("toggle");
+  cue(expanded.value ? "expand" : "collapse");
 }
 
 const total = computed(() => props.items.length);

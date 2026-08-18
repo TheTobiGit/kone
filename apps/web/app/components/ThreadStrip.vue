@@ -933,14 +933,14 @@ function onColumnClick(key: string): void {
   // if it changed) so exitOverview lands on the right column.
   if (overview.value) {
     if (key !== props.focusedId) {
-      cue("press");
+      cue("select");
       emit("focus", key);
     }
     void exitOverview();
     return;
   }
   if (key === props.focusedId) return;
-  cue("press");
+  cue("select");
   emit("focus", key);
 }
 
@@ -973,7 +973,7 @@ function onTerminalRestart(pane: Pane): void {
 }
 
 function onClose(key: string): void {
-  cue("press");
+  cue("collapse");
   emit("close", key);
 }
 
@@ -1093,7 +1093,7 @@ function toggleJoint(i: number, target: EventTarget | null): void {
   if (!el) return;
   if (openSeam.value === i) {
     closeJoint();
-    cue("toggle");
+    cue("collapse");
     return;
   }
   const rect = el.getBoundingClientRect();
@@ -1104,7 +1104,7 @@ function toggleJoint(i: number, target: EventTarget | null): void {
     y: rect.top + rect.height / 2,
   };
   openSeam.value = i;
-  cue("toggle");
+  cue("expand");
 }
 
 function onInsertPick(kind: "thread" | "terminal" | "scratchpad"): void {
