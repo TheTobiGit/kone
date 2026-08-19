@@ -1060,6 +1060,10 @@ function requestOlder(): void {
   gap: 8px;
   min-height: 26px;
   line-height: 1;
+  /* Chrome, not content: the reply body opts into selection via .selectable, but
+     the speaker line (name + duration) shouldn't drag-highlight. */
+  -webkit-user-select: none;
+  user-select: none;
   /* Pulled back in from the stack's 15px: the line belongs to the reply beneath
      it, and at full gap it floats between two turns instead. */
   margin-bottom: -6px;
@@ -1362,6 +1366,10 @@ function requestOlder(): void {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+  /* Chrome, not content — the "replied in 52s" status + timestamp shouldn't
+     drag-highlight even though the turn body is .selectable. */
+  -webkit-user-select: none;
+  user-select: none;
   opacity: 0;
   transform: translateY(-2px);
   transition: opacity 0.45s ease, transform 0.3s ease;
