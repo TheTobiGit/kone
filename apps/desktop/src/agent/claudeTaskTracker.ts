@@ -49,6 +49,9 @@ function readStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+// A tool result is opaque JSON text; this unwraps it one level. What it holds is
+// the caller's to narrow — there is no single domain type at this layer.
+// eslint-disable-next-line anti-slop/no-unknown-returns
 function parseToolResultValue(value: unknown): unknown {
   if (typeof value === "string") {
     try {

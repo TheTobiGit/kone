@@ -39,7 +39,11 @@ type CloneApi = {
   resetCloneForTests: () => void;
 };
 
+// The clone module's frozen API may not be implemented yet; these views assert
+// its exports exist and are callable before the suite trusts them.
+// eslint-disable-next-line anti-slop/no-chained-type-assertions
 const api = cloneModule as unknown as CloneApi;
+// eslint-disable-next-line anti-slop/no-chained-type-assertions
 const raw = cloneModule as unknown as Record<string, unknown>;
 
 function requireExport(name: string): void {

@@ -92,6 +92,9 @@ type Route =
   | { kind: "status"; status: number };
 
 function installFetch(routes: (url: string, init?: RequestInit) => Route | null): void {
+  // A mock request handler can't satisfy `fetch`'s full overload set; this
+  // stands one in for the duration of a test.
+  // eslint-disable-next-line anti-slop/no-chained-type-assertions
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const route = routes(String(input), init);
     if (!route) return new Response("not found", { status: 404 });
@@ -114,12 +117,14 @@ function installFetch(routes: (url: string, init?: RequestInit) => Route | null)
 afterEach(() => {
   // fetch is reassigned per test; restoring to a no-op is enough because every
   // test installs its own router.
+  // eslint-disable-next-line anti-slop/no-chained-type-assertions
   globalThis.fetch = (() => Promise.resolve(new Response("unrouted", { status: 500 }))) as unknown as typeof fetch;
 });
 
 describe("Open VSX theme import", () => {
   /** The standard happy-path router: manifest, checksum, and package. */
   function installPackageFetch(pkg: { bytes: Uint8Array; sha256: string }, manifest: unknown = MANIFEST) {
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === `${ASSET_ROOT}/package.json`) return new Response(JSON.stringify(manifest), { status: 200 });
@@ -183,6 +188,7 @@ describe("Open VSX theme import", () => {
     const pkg = await happyPackage();
     installPackageFetch(pkg);
     const original = globalThis.fetch;
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === `${ASSET_ROOT}/demo.theme-1.0.0.sha256`) {
         return new Response(`${"0".repeat(64)}\n`, { status: 200 });

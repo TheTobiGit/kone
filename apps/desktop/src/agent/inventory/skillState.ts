@@ -133,6 +133,9 @@ function stripJsoncComments(contents: string): string {
   return out;
 }
 
+// Parses arbitrary JSONC into whatever it held; the caller narrows it to the
+// shape it expects. There is no domain type to name at the parse itself.
+// eslint-disable-next-line anti-slop/no-unknown-returns
 function parseJsonc(contents: string): unknown | null {
   try {
     return JSON.parse(stripJsoncComments(contents).replace(/,(\s*[}\]])/g, "$1"));

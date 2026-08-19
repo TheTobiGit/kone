@@ -127,6 +127,9 @@ export function agentIdentity(seed: string | null | undefined): AgentIdentity {
       backgroundColor: [mix(body, PAPER, TILE_TINT)],
       // Circular, to stay in the same family as kone's other round marks.
       radius: 50,
+      // `shapeColor`/`shapeRotation` are the option names the `thumbs` face
+      // (imported above) reads; they're its contract, not ours to rename.
+      // eslint-disable-next-line anti-slop/no-shape-in-symbol-names
       shapeColor: [body],
       eyesColor: FEATURES,
       mouthColor: FEATURES,
@@ -136,6 +139,7 @@ export function agentIdentity(seed: string | null | undefined): AgentIdentity {
       scale: 72,
       translateY: 8,
       faceRotation: [-8, 8],
+      // eslint-disable-next-line anti-slop/no-shape-in-symbol-names
       shapeRotation: [-6, 6],
       // Inlined avatars share one document, so their internal ids have to be
       // unique or the first one on the page clips all the others.

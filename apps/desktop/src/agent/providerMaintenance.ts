@@ -422,6 +422,9 @@ function latestSourceFor(
 
 const latestCache = new Map<string, { expiresAt: number; version: string | null }>();
 
+// Fetches and decodes a JSON body; its shape is the caller's to validate, so
+// this low-level helper names no domain type.
+// eslint-disable-next-line anti-slop/no-unknown-returns
 async function fetchJson(url: string): Promise<unknown | null> {
   try {
     const response = await fetch(url, {

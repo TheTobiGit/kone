@@ -48,7 +48,7 @@ interface Preset {
   extra?: ModeOpts;
 }
 
-const PRESETS: Record<ModeKey, Record<OrbSize, Preset>> = {
+const PRESETS = {
   orbits: {
     64: { speed: 1.885, count: 1, size: 1 },
     20: { speed: 3.9, count: 0.238, size: 2.4 },
@@ -93,7 +93,7 @@ const PRESETS: Record<ModeKey, Record<OrbSize, Preset>> = {
     64: { speed: 1.0, count: 1, size: 1.2 },
     20: { speed: 1.0, count: 1, size: 1.8 },
   },
-};
+} satisfies Record<ModeKey, Record<OrbSize, Preset>>;
 
 export interface Resolved {
   mode: ModeKey;
@@ -114,7 +114,7 @@ export function resolveMode(mode: ModeKey, size: number): Resolved {
   const hit = cache.get(key);
   if (hit) return hit;
 
-  const preset = PRESETS[mode][presetSizeOf(size)];
+  const preset: Preset = PRESETS[mode][presetSizeOf(size)];
   let opts: ModeOpts = { ...BASE_PROFILES[mode] };
   if (preset.count !== 1) opts = scaleCounts(opts, preset.count);
   if (preset.size !== 1) opts = scaleRadii(opts, preset.size);

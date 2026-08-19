@@ -139,7 +139,7 @@ describe("buildModelCatalog — malformed descriptors never become garbage entri
       { id: "", label: "Empty id" },
       { id: "   ", label: "Whitespace id" },
       { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    ] as unknown as ModelDescriptor[];
+    ] satisfies ModelDescriptor[];
     expect(buildModelCatalog(models).map((o) => o.key)).toEqual(["gpt-5.6-terra"]);
   });
 
@@ -147,7 +147,7 @@ describe("buildModelCatalog — malformed descriptors never become garbage entri
     const models = [
       { id: "gemini-3.6-flash", label: "" },
       { id: "claude-sonnet-4-6", label: "   " },
-    ] as unknown as ModelDescriptor[];
+    ] satisfies ModelDescriptor[];
     const catalog = buildModelCatalog(models);
     expect(catalog.map((o) => o.label)).toEqual(["Gemini 3.6 Flash", "Claude Sonnet 4.6"]);
   });

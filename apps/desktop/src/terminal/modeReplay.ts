@@ -100,6 +100,9 @@ export function createModeReplayTracker(cols: number, rows: number): ModeReplayT
     scrollback: 1,
     allowProposedApi: true,
   });
+  // The public terminal type hides `_core`; this names its private internals to
+  // reach the write buffer. Their presence is checked below before any use.
+  // eslint-disable-next-line anti-slop/no-chained-type-assertions
   const internals = terminal as unknown as HeadlessTerminalInternals;
   const rawOptions = internals._core?.optionsService?.rawOptions;
   const writeBuffer = internals._core?._writeBuffer;
