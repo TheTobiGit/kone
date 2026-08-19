@@ -16,7 +16,11 @@ const props = defineProps<{
   days: readonly string[];
   daily: readonly UsageDay[];
   metric: UsageChartMetric;
+  focus?: string | null;
 }>();
+
+const isDimmed = (provider: (typeof PROVIDER_ORDER)[number]): boolean =>
+  props.focus != null && props.focus !== provider;
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 260;
@@ -174,13 +178,25 @@ const chart = computed(() => {
   const toY = (value: number) =>
     max === 0 ? VIEW_HEIGHT : VIEW_HEIGHT - (value / max) * (VIEW_HEIGHT - PLOT_TOP);
 
+  // A single-day window (the "Today" range) is one data point, and a line needs
+  // two — so we lay that day flat across the full width. The value reads as a
+  // level line with its area fill, and every downstream path/hover stays intact.
+  const pointsFor = (providerIndex: number): Point[] => {
+    if (columns.length === 1) {
+      const y = toY(columns[0]?.bands[providerIndex]?.value ?? 0);
+      return [
+        { x: 0, y },
+        { x: VIEW_WIDTH, y },
+      ];
+    }
+    return columns.map((column, dayIndex) => ({
+      x: dayIndex * step,
+      y: toY(column.bands[providerIndex]?.value ?? 0),
+    }));
+  };
+
   const built = PROVIDER_ORDER.map((provider, providerIndex) => {
-    const curve = smoothCurve(
-      columns.map((column, dayIndex) => ({
-        x: dayIndex * step,
-        y: toY(column.bands[providerIndex]?.value ?? 0),
-      })),
-    );
+    const curve = smoothCurve(pointsFor(providerIndex));
     const line = curvePath(curve, "M");
     return {
       provider,
@@ -220,6 +236,18 @@ const activeProviders = computed(() =>
     chart.value.paths.some((path) => path.provider === provider && path.total > 0),
   ),
 );
+
+const hoverRows = computed(() => {
+  const column = hoveredColumn.value;
+  return activeProviders.value
+    .map((provider) => ({
+      provider,
+      value: column?.bands.find((band) => band.provider === provider)?.value ?? 0,
+    }))
+    // Rank each day on its own spend — the leader that day sits on top, and the
+    // idle agents fall to the bottom where they already read as dimmed.
+    .sort((a, b) => b.value - a.value);
+});
 </script>
 
 <template>
@@ -281,6 +309,8 @@ const activeProviders = computed(() =>
             :key="`fill-${provider}`"
             :d="area"
             :fill="`url(#upc-grad-${provider})`"
+            class="upc__area"
+            :class="{ 'upc__area--dim': isDimmed(provider) }"
           />
           <path
             v-for="{ provider, line } in chart.paths"
@@ -288,8 +318,10 @@ const activeProviders = computed(() =>
             :d="line"
             fill="none"
             :stroke="PROVIDER_COLOR[provider]"
-            stroke-width="2"
+            :stroke-width="focus === provider ? 2.5 : 2"
             vector-effect="non-scaling-stroke"
+            class="upc__line"
+            :class="{ 'upc__line--dim': isDimmed(provider) }"
           />
 
           <line
@@ -311,36 +343,45 @@ const activeProviders = computed(() =>
             transform: hoverLeft > 60 ? 'translateX(-100%)' : 'translateX(0)',
           }"
         >
-          <div class="upc__tip-day">{{ formatDayShort(hoveredDay) }}</div>
-          <div
-            v-for="provider in activeProviders"
-            :key="provider"
-            class="upc__tip-row"
-          >
-            <span class="upc__tip-label">
-              <ProviderLogo
-                :brand="SESSION_BRAND[provider]"
-                :size="12"
-                class="upc__tip-mark"
-              />
-              {{ PROVIDER_LABEL[provider] }}
-            </span>
-            <span class="upc__tip-val">
-              {{ format(hoveredColumn?.bands.find((b) => b.provider === provider)?.value ?? 0) }}
-            </span>
+          <div class="upc__tip-head">
+            <span class="upc__tip-day">{{ formatDayShort(hoveredDay) }}</span>
+            <span class="upc__tip-total">{{ format(hoveredColumn?.total ?? 0) }}</span>
           </div>
-          <div class="upc__tip-total">
-            <span class="upc__tip-label">Total</span>
-            <span class="upc__tip-val">{{ format(hoveredColumn?.total ?? 0) }}</span>
+          <div class="upc__tip-rows">
+            <div
+              v-for="row in hoverRows"
+              :key="row.provider"
+              class="upc__tip-row"
+              :class="{ 'upc__tip-row--idle': row.value === 0 }"
+            >
+              <span class="upc__tip-label">
+                <span
+                  class="upc__tip-dot"
+                  :style="{ backgroundColor: PROVIDER_COLOR[row.provider] }"
+                />
+                <ProviderLogo
+                  :brand="SESSION_BRAND[row.provider]"
+                  :size="12"
+                  class="upc__tip-mark"
+                />
+                {{ PROVIDER_LABEL[row.provider] }}
+              </span>
+              <span class="upc__tip-val">{{ format(row.value) }}</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="upc__dates">
-      <span>{{ days[0] ? formatDayShort(days[0]) : "" }}</span>
-      <span>{{ days[Math.floor(days.length / 2)] ? formatDayShort(days[Math.floor(days.length / 2)]!) : "" }}</span>
-      <span>{{ days[days.length - 1] ? formatDayShort(days[days.length - 1]!) : "" }}</span>
+    <div class="upc__dates" :class="{ 'upc__dates--single': days.length === 1 }">
+      <template v-if="days.length === 1">
+        <span>{{ days[0] ? formatDayShort(days[0]) : "" }}</span>
+      </template>
+      <template v-else>
+        <span>{{ days[0] ? formatDayShort(days[0]) : "" }}</span>
+        <span>{{ days[Math.floor(days.length / 2)] ? formatDayShort(days[Math.floor(days.length / 2)]!) : "" }}</span>
+        <span>{{ days[days.length - 1] ? formatDayShort(days[days.length - 1]!) : "" }}</span>
+      </template>
     </div>
   </div>
 </template>
@@ -393,40 +434,92 @@ const activeProviders = computed(() =>
   stroke: var(--muted);
   stroke-width: 1;
 }
+/* Focusing one agent from the legend fades the rest of the field so the chosen
+   curve reads alone, without redrawing the plot. */
+.upc__area,
+.upc__line {
+  transition: opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.upc__area--dim {
+  opacity: 0.12;
+}
+.upc__line--dim {
+  opacity: 0.16;
+}
+@media (prefers-reduced-motion: reduce) {
+  .upc__area,
+  .upc__line {
+    transition: none;
+  }
+}
+/* The read-out floats over a busy plot, so it leans on kone's usual quiet
+   surface — a blurred wash of the ground, a hairline ring and one soft drop
+   instead of a boxed card. The day's total headlines it; each agent below is
+   keyed by the same colour dot that draws its line, so the eye ties tooltip to
+   curve without hunting. It glides between day anchors rather than snapping. */
 .upc__tip {
   pointer-events: none;
   position: absolute;
   top: 0;
   z-index: 1;
-  min-width: 9rem;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background-color: color-mix(in srgb, var(--ground) 92%, transparent);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 6px 20px color-mix(in srgb, var(--ink) 12%, transparent);
+  min-width: 11rem;
+  padding: 11px 13px;
+  border-radius: 13px;
+  background-color: color-mix(in srgb, var(--ground) 90%, transparent);
+  backdrop-filter: blur(12px) saturate(1.3);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent),
+    0 10px 28px -10px color-mix(in srgb, var(--ink) 24%, transparent);
   font-size: 12px;
+  transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.upc__tip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 9px;
 }
 .upc__tip-day {
-  margin-bottom: 4px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--muted);
 }
-.upc__tip-row,
 .upc__tip-total {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.upc__tip-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.upc__tip-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
 }
-.upc__tip-total {
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+/* Providers idle on the hovered day stay in the list to hold row order steady
+   as the cursor tracks across, but recede so the day's real spend reads first. */
+.upc__tip-row--idle {
+  opacity: 0.38;
 }
 .upc__tip-label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   color: var(--muted);
+}
+.upc__tip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 .upc__tip-mark {
   flex-shrink: 0;
@@ -436,6 +529,11 @@ const activeProviders = computed(() =>
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
+@media (prefers-reduced-motion: reduce) {
+  .upc__tip {
+    transition: none;
+  }
+}
 .upc__dates {
   display: flex;
   justify-content: space-between;
@@ -443,5 +541,8 @@ const activeProviders = computed(() =>
   font-size: 10px;
   text-transform: uppercase;
   color: var(--muted);
+}
+.upc__dates--single {
+  justify-content: center;
 }
 </style>
