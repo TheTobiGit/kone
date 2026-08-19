@@ -21,6 +21,7 @@ import type {
   RuntimeItem,
   RuntimeItemKind,
   RuntimeItemStatus,
+  RuntimeEvent,
   Session,
   SendTurnInput,
   SessionStartInput,
@@ -35,7 +36,7 @@ import {
   isNonFatalCodexError,
   isRecoverableCodexResumeError,
 } from "./errors.js";
-import { buildCodexTurnCollaborationMode } from "../gateway/appContext.js";
+import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from "../gateway/appContext.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks } from "../planTasks.js";
 import {
   buildCodexAttachmentInput,
@@ -159,35 +160,40 @@ function buildApprovalRequest(kind: ApprovalRequestKind, params: unknown): Appro
   switch (kind) {
     case "command": {
       const command = readString(params, "command")?.trim();
-      return {
+      const request: ApprovalRequest = {
         kind,
         title: command ?? "Run a command",
-        ...(reason ? { detail: reason } : {}),
       };
+      if (reason) request.detail = reason;
+      return request;
     }
     case "file-change": {
       const grantRoot = readString(params, "grantRoot")?.trim();
-      return {
+      const request: ApprovalRequest = {
         kind,
         title: grantRoot ?? "Change files",
-        ...(reason ? { detail: reason } : {}),
       };
+      if (reason) request.detail = reason;
+      return request;
     }
     case "file-read": {
       const path = readString(params, "path")?.trim() ?? readString(params, "grantRoot")?.trim();
-      return {
+      const request: ApprovalRequest = {
         kind,
         title: path ?? "Read files",
-        ...(reason ? { detail: reason } : {}),
       };
+      if (reason) request.detail = reason;
+      return request;
     }
     case "permission":
-    default:
-      return {
+    default: {
+      const request: ApprovalRequest = {
         kind,
         title: "Grant expanded permissions",
-        ...(reason ? { detail: reason } : {}),
       };
+      if (reason) request.detail = reason;
+      return request;
+    }
   }
 }
 
@@ -255,9 +261,15 @@ function parseCodexUserInputQuestions(params: unknown): UserInputQuestion[] {
 // turn) regardless — it's always "user" here since kone's ladder has no "auto"
 // rung (the only one that would set it to "auto_review").
 
+type CodexThreadModeOverrides = {
+  approvalPolicy: string;
+  sandbox: string;
+  approvalsReviewer: string;
+};
+
 function mapModeToThreadOverrides(
   mode: InteractionMode,
-): { approvalPolicy: string; sandbox: string; approvalsReviewer: string } {
+): CodexThreadModeOverrides {
   switch (mode) {
     case "ask":
       return { approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" };
@@ -269,11 +281,10 @@ function mapModeToThreadOverrides(
   }
 }
 
-function mapModeToTurnOverrides(mode: InteractionMode): {
-  approvalPolicy: string;
-  approvalsReviewer: string;
-  sandboxPolicy: { type: string };
-} {
+function mapModeToTurnOverrides(mode: InteractionMode): Pick<
+  CodexTurnStartParams,
+  "approvalPolicy" | "approvalsReviewer" | "sandboxPolicy"
+> {
   switch (mode) {
     case "ask":
       return { approvalPolicy: "untrusted", approvalsReviewer: "user", sandboxPolicy: { type: "readOnly" } };
@@ -284,6 +295,22 @@ function mapModeToTurnOverrides(mode: InteractionMode): {
       return { approvalPolicy: "on-request", approvalsReviewer: "user", sandboxPolicy: { type: "workspaceWrite" } };
   }
 }
+
+// The codex-rs turn/start payload. Always-present keys come from the envelope
+// and the mode overrides; model/effort/serviceTier/collaborationMode are
+// optional per the app-server protocol (only those four ride a turn, see the
+// context-window note at the call site).
+type CodexTurnStartParams = {
+  threadId: string;
+  input: Array<{ type: "text"; text: string; text_elements: [] } | CodexImageItem>;
+  approvalPolicy: string;
+  approvalsReviewer: string;
+  sandboxPolicy: { type: string };
+  model?: string;
+  effort?: string;
+  serviceTier?: string;
+  collaborationMode?: CodexTurnCollaborationMode;
+};
 
 // ── item type canonicalization ───────────────────────────────────────────────
 // Codex's raw item.type spellings vary (camelCase/kebab/etc.); normalize then
@@ -455,11 +482,10 @@ function parseModelListResponse(response: Record<string, unknown> | undefined): 
         const tierId = typeof r?.id === "string" ? r.id : undefined;
         const name = typeof r?.name === "string" ? r.name : undefined;
         if (!tierId) return undefined;
-        return {
-          id: tierId,
-          label: name ?? tierId,
-          ...(typeof r?.description === "string" && r.description ? { description: r.description } : {}),
-        };
+        const tier = { id: tierId, label: name ?? tierId };
+        return typeof r?.description === "string" && r.description
+          ? { ...tier, description: r.description }
+          : tier;
       })
       .filter((v): v is { id: string; label: string; description?: string } => v !== undefined);
     if (!serviceTiers.length && Array.isArray(record.additionalSpeedTiers)) {
@@ -472,14 +498,15 @@ function parseModelListResponse(response: Record<string, unknown> | undefined): 
     // fast-mode toggle to the provider's default instead of guessing.
     const defaultServiceTier =
       typeof record.defaultServiceTier === "string" ? record.defaultServiceTier : undefined;
-    models.push({
+    const model: ModelDescriptor = {
       id,
       label: label ?? id,
-      ...(reasoningEfforts.length ? { reasoningEfforts } : {}),
-      ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
-      ...(serviceTiers.length ? { serviceTiers } : {}),
-      ...(defaultServiceTier ? { defaultServiceTier } : {}),
-    });
+    };
+    if (reasoningEfforts.length) model.reasoningEfforts = reasoningEfforts;
+    if (defaultReasoningEffort) model.defaultReasoningEffort = defaultReasoningEffort;
+    if (serviceTiers.length) model.serviceTiers = serviceTiers;
+    if (defaultServiceTier) model.defaultServiceTier = defaultServiceTier;
+    models.push(model);
   }
   return models;
 }
@@ -712,6 +739,10 @@ export class CodexAdapter implements ProviderAdapter {
 
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const session = this.requireSession(input.threadId);
+    // startSession throws unless the open call returned a thread id, so a live
+    // session always carries one; re-check it here to keep turn/start typed.
+    const conversationId = session.conversationId;
+    if (!conversationId) throw new Error(`No Codex conversation for thread ${input.threadId}`);
     const mode = input.mode ?? session.mode;
     session.mode = mode;
     if (input.model) session.model = input.model;
@@ -742,20 +773,21 @@ export class CodexAdapter implements ProviderAdapter {
       effort: input.effort,
       gatewayControlAvailable: session.gatewayConnection !== undefined,
     });
-    const response = await session.rpc.call<Record<string, unknown>>("turn/start", {
-      threadId: session.conversationId,
+    const turnStartInput: CodexTurnStartParams = {
+      threadId: conversationId,
       input: inputItems,
       ...mapModeToTurnOverrides(mode),
-      ...(session.model ? { model: session.model } : {}),
-      ...(input.effort ? { effort: input.effort } : {}),
-      ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-      // `contextWindow` is deliberately not sent: the app-server's turn/start
-      // protocol has no context-window axis (verified against the generated
-      // schema — only model/effort/serviceTier ride a turn). The model's
-      // window is fixed by the catalog, so a per-turn value could only be a
-      // stale selection.
-      ...(collaborationMode ? { collaborationMode } : {}),
-    });
+    };
+    if (session.model) turnStartInput.model = session.model;
+    if (input.effort) turnStartInput.effort = input.effort;
+    if (input.serviceTier) turnStartInput.serviceTier = input.serviceTier;
+    // `contextWindow` is deliberately not sent: the app-server's turn/start
+    // protocol has no context-window axis (verified against the generated
+    // schema — only model/effort/serviceTier ride a turn). The model's
+    // window is fixed by the catalog, so a per-turn value could only be a
+    // stale selection.
+    if (collaborationMode) turnStartInput.collaborationMode = collaborationMode;
+    const response = await session.rpc.call<Record<string, unknown>>("turn/start", turnStartInput);
     const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
     if (!turnId) throw new Error("turn/start response did not include a turn id.");
     // Codex accepts queued follow-ups while the current turn is still
@@ -966,13 +998,15 @@ export class CodexAdapter implements ProviderAdapter {
           numberOrUndefined(breakdown.output_tokens) ??
           numberOrUndefined(breakdown.output),
         total,
-        ...(contextUsed !== undefined ? { contextUsed } : {}),
-        ...(contextWindow !== undefined ? { contextWindow } : {}),
-        ...(contextWindow !== undefined ? { compactsAutomatically: true } : {}),
         cacheReadTokens: cacheReadTokens ?? 0,
         cacheCreationTokens: 0,
         reasoningTokens: reasoningTokens ?? 0,
       };
+      if (contextUsed !== undefined) usageWithSplits.contextUsed = contextUsed;
+      if (contextWindow !== undefined) {
+        usageWithSplits.contextWindow = contextWindow;
+        usageWithSplits.compactsAutomatically = true;
+      }
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
@@ -1038,13 +1072,14 @@ export class CodexAdapter implements ProviderAdapter {
       const reason = readString(params, "reason");
       if (session.model === toModel) return;
       session.model = toModel;
-      this.emit({
+      const reroutedEvent: RuntimeEvent = {
         ...this.base(session),
         type: "model.rerouted",
         fromModel,
         toModel,
-        ...(reason ? { reason } : {}),
-      });
+      };
+      if (reason) reroutedEvent.reason = reason;
+      this.emit(reroutedEvent);
     });
   }
 
@@ -1261,26 +1296,27 @@ export class CodexAdapter implements ProviderAdapter {
       status,
       text: buffer.text,
       name: buffer.name,
-      ...(buffer.tasks?.length ? { tasks: buffer.tasks } : {}),
-      ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
     };
+    if (buffer.tasks?.length) item.tasks = buffer.tasks;
+    if (buffer.detail.length > 0) item.detail = buffer.detail;
     this.emit({ ...this.base(session), type, turnId, item });
   }
 
   // ── shared helpers ───────────────────────────────────────────────────────
 
   private base(session: CodexSession) {
-    return {
+    const envelope = {
       threadId: session.threadId,
       provider: this.provider,
       at: Date.now(),
       source: "codex.rpc.notification" as const,
-      // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
-      // never completes still leaves the thread resumable.
-      ...(session.conversationId
-        ? { refs: { conversationId: session.conversationId } }
-        : {}),
     };
+    // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
+    // never completes still leaves the thread resumable.
+    if (session.conversationId) {
+      return { ...envelope, refs: { conversationId: session.conversationId } };
+    }
+    return envelope;
   }
 
   private toSession(session: CodexSession): Session {

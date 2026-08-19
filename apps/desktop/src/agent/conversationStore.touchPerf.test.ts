@@ -44,7 +44,7 @@ class InstrumentedDatabase {
   }
 }
 
-mock.module("node:sqlite", () => ({ DatabaseSync: InstrumentedDatabase }));
+mock.module("./sqlite.js", () => ({ DatabaseSync: InstrumentedDatabase }));
 
 // Loaded dynamically so the shim is in place first (same pattern as the other
 // store tests).

@@ -78,10 +78,14 @@ function spawnLateChildTree(): ChildProcess {
   );
 }
 
-/** Collect the root's stdout, resolving each time `pattern` first matches. */
-function watchStdout(child: ChildProcess): {
+/** A process's accumulated stdout plus a helper that resolves each time a
+ *  pattern first matches the collected buffer. */
+type StdoutWatcher = {
   waitFor: (pattern: RegExp, timeoutMs?: number) => Promise<RegExpMatchArray>;
-} {
+};
+
+/** Collect the root's stdout, resolving each time `pattern` first matches. */
+function watchStdout(child: ChildProcess): StdoutWatcher {
   let buf = "";
   child.stdout?.on("data", (chunk: Buffer | string) => {
     buf += chunk.toString();

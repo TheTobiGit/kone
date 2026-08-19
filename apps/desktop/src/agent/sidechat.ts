@@ -215,15 +215,16 @@ function buildImportedBlocks(
 }> {
   return source.blocks
     .filter((b) => b.source !== "fork-import")
-    .map((b) => ({
-      id: randomUUID(),
-      role: b.role,
-      text: blockText(b),
-      at: b.at,
-      ...(b.role === "user" && b.attachments?.length
-        ? { attachments: b.attachments }
-        : {}),
-    }));
+    .map((b) => {
+      const imported: ReturnType<typeof buildImportedBlocks>[number] = {
+        id: randomUUID(),
+        role: b.role,
+        text: blockText(b),
+        at: b.at,
+      };
+      if (b.role === "user" && b.attachments?.length) imported.attachments = b.attachments;
+      return imported;
+    });
 }
 
 /** The id of the source's last native block at import time — provenance for
@@ -236,13 +237,21 @@ function forkPointOf(source: StoredThread): string | null {
   return null;
 }
 
+/** The child's resolved provider and model — an explicit target wins,
+ *  otherwise the source thread's provider (model kept only while staying on
+ *  that provider, since a foreign model id means nothing to another CLI). */
+type ResolvedSideChatTarget = {
+  provider: CreateSideChatResult["provider"];
+  model?: string;
+};
+
 /** Resolve the child's provider/model: explicit target wins; otherwise the
  *  source thread's provider (and its model only while staying on that
  *  provider — a foreign model id means nothing to another CLI). */
 function resolveTarget(
   input: CreateSideChatInput,
   source: StoredThread,
-): { provider: CreateSideChatResult["provider"]; model?: string } {
+): ResolvedSideChatTarget {
   const provider = input.target?.provider ?? source.provider;
   const model = input.target?.model ?? (provider === source.provider ? source.model : undefined);
   return { provider, model };
@@ -340,11 +349,10 @@ export function createSidechatThread(input: CreateSideChatInput): CreateSideChat
     rootThreadId: input.threadId,
   };
 
-  const written = store.writeForkThread({
+  const forkInput: Parameters<typeof store.writeForkThread>[0] = {
     threadId: input.threadId,
     projectPath: source.projectPath,
     provider,
-    ...(model ? { model } : {}),
     createdAt,
     title: input.title ?? defaultTitle(input, source),
     sourceThreadId: input.sourceThreadId,
@@ -352,7 +360,9 @@ export function createSidechatThread(input: CreateSideChatInput): CreateSideChat
     lineage,
     requestId: input.requestId,
     importedBlocks: buildImportedBlocks(source),
-  });
+  };
+  if (model) forkInput.model = model;
+  const written = store.writeForkThread(forkInput);
   if (!written) {
     // A concurrent duplicate (the threadExists check raced) reads as a replay;
     // a concurrent first fork (the sidechatForSource check raced) joins it;

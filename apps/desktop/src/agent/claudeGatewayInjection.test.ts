@@ -22,7 +22,7 @@ import { Database } from "bun:sqlite";
 // throwaway dir, the same pattern gateway.test.ts uses; ClaudeAdapter itself is imported dynamically
 // below so the stubs are in place first.
 const testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-claude-gateway-"));
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 setUserDataDir(testUserDataDir);
@@ -36,7 +36,13 @@ type CapturedOptions = {
   resume?: string;
 };
 
-const captured: { options: CapturedOptions | null } = { options: null };
+/** The gateway config the stubbed SDK query was called with — null until one
+ *  has been captured. */
+type CapturedState = {
+  options: CapturedOptions | null;
+};
+
+const captured: CapturedState = { options: null };
 
 const stubQuery = mock((input: { options: CapturedOptions }) => {
   captured.options = input.options;

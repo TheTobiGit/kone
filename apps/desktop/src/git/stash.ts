@@ -12,11 +12,18 @@ import type { GitStashEntry } from "./types.js";
 // Push/apply/drop all take the index lock, so they run under the repo mutation
 // queue and must not overlap other kone git writes.
 
+/** A stash message split into the branch it was made on and its stripped
+ *  subject, with no branch when the prefix is unrecognized. */
+type ParsedStashMessage = {
+  message: string;
+  branch: string | null;
+};
+
 /** "WIP on main: b6afb12 subject" / "On main: message" → message + branch.
  *  Branch names may contain spaces, so the branch is the non-greedy span up to
  *  the first ": <sha> " / ": " delimiter; anything unrecognized is kept whole
  *  with no branch. */
-function parseStashMessage(raw: string): { message: string; branch: string | null } {
+function parseStashMessage(raw: string): ParsedStashMessage {
   const wip = /^WIP on (.+?): [0-9a-f]{7,40} (.*)$/.exec(raw);
   if (wip) return { message: wip[2] ?? "", branch: wip[1] ?? null };
   const on = /^On (.+?): (.*)$/.exec(raw);

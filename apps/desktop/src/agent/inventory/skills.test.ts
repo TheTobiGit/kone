@@ -195,14 +195,14 @@ describe("discoverSkills manualOnly", () => {
       writeSkill(path.join(project, ".claude", "skills", `${prefix}-${key}`), `${fm}\nname: ${prefix}-${key}`);
     }
 
-    const expected: Record<string, boolean> = {
+    const expected = {
       absent: false,
       "kebab-true": true,
       "kebab-upper": true,
       "camel-true": true,
       "kebab-false": false,
       "kebab-yes": false,
-    };
+    } satisfies Record<string, boolean>;
     const { skills } = await discoverSkills(project);
     for (const { key } of cases) {
       const entry = skills.find((s) => s.name === `${prefix}-${key}`);

@@ -421,18 +421,18 @@ export function matchesShortcut(id: string, e: KeyboardEvent): boolean {
 }
 
 // ── display ────────────────────────────────────────────────────────────────────
-const MAC_MOD_GLYPH: Record<ModToken, string> = {
+const MAC_MOD_GLYPH = {
   mod: "⌘",
   ctrl: "⌃",
   alt: "⌥",
   shift: "⇧",
-};
-const OTHER_MOD_LABEL: Record<ModToken, string> = {
+} satisfies Record<ModToken, string>;
+const OTHER_MOD_LABEL = {
   mod: "Ctrl",
   ctrl: "Ctrl",
   alt: "Alt",
   shift: "Shift",
-};
+} satisfies Record<ModToken, string>;
 
 // Pretty key labels for a binding's last token — used by the kbd chips in the
 // settings list.

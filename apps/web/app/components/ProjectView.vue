@@ -612,8 +612,8 @@ const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
 // apply to a running session — it needs a fresh one. Codex takes model/effort
 // per turn, so it changes in place. Mirrors each adapter's `sessionModelSwitch`.
 const RESTART_ON_MODEL_CHANGE = new Set<ProviderKind>(["claudeAgent", "opencode", "antigravity"]);
-const PROVIDER_VENDOR: Record<ProviderKind, string> = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode", droid: "Factory", antigravity: "Google" };
-const PROVIDER_BRAND: Record<ProviderKind, BrandKey> = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode", droid: "droid", antigravity: "antigravity" };
+const PROVIDER_VENDOR = { codex: "OpenAI", claudeAgent: "Anthropic", cursor: "Cursor", opencode: "OpenCode", droid: "Factory", antigravity: "Google" } satisfies Record<ProviderKind, string>;
+const PROVIDER_BRAND = { codex: "codex", claudeAgent: "claude", cursor: "cursor", opencode: "opencode", droid: "droid", antigravity: "antigravity" } satisfies Record<ProviderKind, BrandKey>;
 
 // The provider + model + reasoning effort are remembered GLOBALLY — one app-wide
 // "last used" choice that every project opens with (not per-project). The

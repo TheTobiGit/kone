@@ -384,10 +384,7 @@ function sanitizeThemeObject(value: Record<string, unknown>): Record<string, unk
       }
     }
   }
-  return {
-    ...(typeof value.include === "string" ? { include: value.include } : {}),
-    colors,
-  };
+  return typeof value.include === "string" ? { include: value.include, colors } : { colors };
 }
 
 /** Resolve a theme path inside the package, resolving `..` without ever
@@ -616,13 +613,12 @@ async function loadThemeObject(
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(path);
   const base = await loadThemeObject(zip, includePath, cache, budget, nextAncestors, signal);
+  const baseColors = isRecord(base.colors) ? base.colors : {};
+  const valueColors = isRecord(value.colors) ? value.colors : {};
   const resolved = {
     ...base,
     ...value,
-    colors: {
-      ...(isRecord(base.colors) ? base.colors : {}),
-      ...(isRecord(value.colors) ? value.colors : {}),
-    },
+    colors: { ...baseColors, ...valueColors },
   };
   cache.set(path, resolved);
   return resolved;
@@ -782,11 +778,9 @@ export async function importOpenVsxThemeExtension(
         typeof contribution.label === "string" && contribution.label.trim()
           ? contribution.label.trim()
           : extension.name;
-      const decorated = {
-        ...themeValue,
-        displayName: label,
-        ...(type ? { type } : {}),
-      };
+      const decorated = type
+        ? { ...themeValue, displayName: label, type }
+        : { ...themeValue, displayName: label };
       if (!isVsCodeThemeFile(decorated)) throw new Error("not a VS Code colour theme");
       entries.push(parseVsCodeThemeEntry(decorated, path.split("/").at(-1)!));
     } catch (cause) {

@@ -22,12 +22,19 @@ const GIT_STATE_MARKERS: { name: string; operation: GitRepoState["operation"] }[
   { name: "BISECT_LOG", operation: "bisecting" },
 ];
 
+/** A remote URL reduced to its identity: the host and the owner/repo slug,
+ *  each null when the URL doesn't carry one. */
+type ParsedRemoteUrl = {
+  host: string | null;
+  slug: string | null;
+};
+
 /** Parse a remote URL into host + owner/repo slug. Handles the two common
  *  forms — ssh (`git@host:owner/repo.git`) and https
  *  (`https://host/owner/repo.git`) — plus ssh:// and git:// variants. A
  *  non-GitHub host still yields its host; the slug is only set when the path
  *  unambiguously parses as exactly one owner/repo pair. */
-function parseRemoteUrl(url: string): { host: string | null; slug: string | null } {
+function parseRemoteUrl(url: string): ParsedRemoteUrl {
   const m =
     /^(?:git@([^:]+):|ssh:\/\/git@([^/]+)\/|https?:\/\/([^/]+)\/|git:\/\/([^/]+)\/)(.+)$/i.exec(
       url.trim(),

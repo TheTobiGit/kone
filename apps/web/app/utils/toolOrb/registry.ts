@@ -14,7 +14,7 @@ import { drawDelegate } from "./delegate";
 import { drawErode } from "./erode";
 import { drawNeutral } from "./neutral";
 
-export const MODE_DRAWS: Record<ModeKey, ModeDraw> = {
+export const MODE_DRAWS = {
   orbits: drawOrbits,
   globe: drawGlobe,
   rubik: drawRubik,
@@ -27,4 +27,4 @@ export const MODE_DRAWS: Record<ModeKey, ModeDraw> = {
   delegate: drawDelegate,
   erode: drawErode,
   neutral: drawNeutral,
-};
+} satisfies Record<ModeKey, ModeDraw>;

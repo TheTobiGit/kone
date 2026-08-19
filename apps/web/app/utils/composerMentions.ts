@@ -36,12 +36,19 @@ export function formatFileMention(path: string): string {
   return `@"${normalized.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
+/** A composer buffer after a range replacement, plus the caret position that
+ *  follows the inserted text. */
+export type ComposerTextReplacement = {
+  text: string;
+  cursor: number;
+};
+
 export function replaceComposerTextRange(
   text: string,
   rangeStart: number,
   rangeEnd: number,
   replacement: string,
-): { text: string; cursor: number } {
+): ComposerTextReplacement {
   const start = Math.max(0, Math.min(text.length, rangeStart));
   const end = Math.max(start, Math.min(text.length, rangeEnd));
   const nextText = `${text.slice(0, start)}${replacement}${text.slice(end)}`;

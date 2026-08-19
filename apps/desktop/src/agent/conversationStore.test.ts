@@ -23,7 +23,7 @@ function useUserDataDir(dir: string): string {
 }
 useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-store-test-")));
 
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 
@@ -459,6 +459,11 @@ describe("v18 migration", () => {
     }
   });
 
+  /** A ConversationStore's private unusable flag, reached through a cast. */
+  type StoreUnusable = { unusable: boolean };
+  /** A ConversationStore's private retry cooldown, reached through a cast. */
+  type StoreRetryOpenAfter = { retryOpenAfter: number };
+
   test("a failure that isn't the schema stays retryable after its cooldown", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-transient-"));
     // A file that isn't a database at all: opening it throws, but replacing it
@@ -475,15 +480,15 @@ describe("v18 migration", () => {
       store.listThreads("/p");
       // Still rate-limited to one attempt, but by a cooldown rather than for good.
       expect(logged.filter((l) => l.includes("could not open database")).length).toBe(1);
-      expect((store as unknown as { unusable: boolean }).unusable).toBe(false);
+      expect((store as unknown as StoreUnusable).unusable).toBe(false);
       expect(
-        (store as unknown as { retryOpenAfter: number }).retryOpenAfter,
+        (store as unknown as StoreRetryOpenAfter).retryOpenAfter,
       ).toBeGreaterThan(Date.now());
 
       // Once the file is a real database and the cooldown has passed, the store
       // recovers on its own.
       rmSync(path.join(dir, "conversations.sqlite"));
-      (store as unknown as { retryOpenAfter: number }).retryOpenAfter = 0;
+      (store as unknown as StoreRetryOpenAfter).retryOpenAfter = 0;
       store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
       expect(store.threadMeta("t-1")?.provider).toBe("opencode");
       expect(logged.filter((l) => l.includes("could not open database")).length).toBe(1);

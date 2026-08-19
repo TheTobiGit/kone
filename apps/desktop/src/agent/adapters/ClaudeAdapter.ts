@@ -32,12 +32,15 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ApprovalRequestKind,
+  BaseEvent,
   EmitEvent,
   InteractionMode,
   ModelDescriptor,
   PlanTask,
   ProviderAdapter,
+  ProviderRefs,
   ProviderStatus,
+  RuntimeEvent,
   RuntimeItem,
   RuntimeItemKind,
   RuntimeItemStatus,
@@ -342,13 +345,14 @@ type PendingApproval = {
 };
 
 function newScope(subagentToolUseId?: string): ClaudeScope {
-  return {
-    ...(subagentToolUseId ? { subagentToolUseId } : {}),
+  const scope: ClaudeScope = {
     msgOrdinal: 0,
     blocks: new Map(),
     toolItems: new Map(),
     sawStreamEvent: false,
   };
+  if (subagentToolUseId) scope.subagentToolUseId = subagentToolUseId;
+  return scope;
 }
 
 /** Item ids are scoped so a subagent's block 0 can't collide with the parent's:
@@ -420,11 +424,12 @@ function claudeApprovalRequest(
         : /^(write|edit|multi_edit|notebook_edit)$/i.test(toolName)
           ? "file-change"
           : "tool";
-  return {
+  const request: ApprovalRequest = {
     kind,
     title: subject ?? toolName,
-    ...(subject ? { detail: toolName } : {}),
   };
+  if (subject) request.detail = toolName;
+  return request;
 }
 
 function parseAskUserQuestions(input: unknown): UserInputQuestion[] {
@@ -488,7 +493,7 @@ function toPermissionMode(mode: InteractionMode): PermissionMode {
 /** A short inline summary for a tool call, dug out of its (parsed) input — the
  *  command run, the file touched, the query searched — mirroring Codex's
  *  itemDetail(). Everything else becomes the expandable body. */
-function summarizeToolInput(toolName: string | undefined, rawInput: string): { text: string; detail: string } {
+function summarizeToolInput(toolName: string | undefined, rawInput: string): Pick<ClaudeItemBuffer, "text" | "detail"> {
   let parsed: Record<string, unknown> | undefined;
   try {
     parsed = asRecord(JSON.parse(rawInput));
@@ -745,21 +750,22 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       const env = await buildClaudeEnv();
       const executable = resolveClaudeExecutable();
+      const probeOptions: ClaudeQueryOptions = {
+        cwd: homedir(),
+        env: env as Record<string, string | undefined>,
+        abortController: controller,
+        // Plan mode + a deny-all callback guarantee no tool ever executes even
+        // if a turn somehow started; the idle prompt means none will.
+        permissionMode: "plan",
+        canUseTool: async () => ({ behavior: "deny", message: "kone discovery probe" }),
+        settingSources: [],
+        includePartialMessages: false,
+        systemPrompt: { type: "preset", preset: "claude_code" },
+      };
+      if (executable) probeOptions.pathToClaudeCodeExecutable = executable;
       const q = query({
         prompt: idlePrompt(controller.signal),
-        options: {
-          cwd: homedir(),
-          env: env as Record<string, string | undefined>,
-          abortController: controller,
-          // Plan mode + a deny-all callback guarantee no tool ever executes even
-          // if a turn somehow started; the idle prompt means none will.
-          permissionMode: "plan",
-          canUseTool: async () => ({ behavior: "deny", message: "kone discovery probe" }),
-          settingSources: [],
-          includePartialMessages: false,
-          systemPrompt: { type: "preset", preset: "claude_code" },
-          ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
-        },
+        options: probeOptions,
       });
       const init = await q.initializationResult();
       return { account: init.account, models: init.models };
@@ -822,23 +828,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       additionalDirectories: [input.cwd],
       env: env as Record<string, string | undefined>,
       abortController: abort,
-      ...(input.model ? { model: input.model } : {}),
-      ...(effort ? { effort } : {}),
-      // Resume a prior Claude Code conversation by its session id so the new
-      // query continues with its full transcript/context (the SDK's supported
-      // resume surface). The resumed run reports its own session id via
-      // system/init, which refreshes the stored conversationId on the next
-      // turn.completed.
-      ...(input.resume ? { resume: input.resume } : {}),
-      // Anchor the resume at the last assistant message: the SDK cannot
-      // passes the same `resumeSessionAt: lastAssistantUuid` pair). The anchor
-      // is the persisted StoredThreadMeta.resumeSessionAt, refreshed live from
-      // assistant messages (see handleMessage).
-      ...(input.resume && input.resumeSessionAt
-        ? { resumeSessionAt: input.resumeSessionAt }
-        : {}),
       permissionMode,
-      ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
       // Session-bound so the callback knows which thread asked — a shared arrow
       // can't tell sessions apart. Only `AskUserQuestion` parks for a real
       // answer; every other tool auto-allows (see canUseTool below).
@@ -873,15 +863,27 @@ export class ClaudeAdapter implements ProviderAdapter {
       },
       settingSources: ["user", "project", "local"],
       includePartialMessages: true,
-      // The kone MCP gateway (docs/mcp-gateway-design.md): the session's
-      // loopback connection, minted at startSession. The agent gets the
-      // scratchpad tools and — later — spawn/theme/panes. Token is per-session
-      // and revoked at stopSession.
-      ...(input.gatewayConnection
-        ? { mcpServers: claudeMcpServers(input.gatewayConnection) }
-        : {}),
-      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     };
+    if (input.model) options.model = input.model;
+    if (effort) options.effort = effort;
+    // Resume a prior Claude Code conversation by its session id so the new
+    // query continues with its full transcript/context (the SDK's supported
+    // resume surface). The resumed run reports its own session id via
+    // system/init, which refreshes the stored conversationId on the next
+    // turn.completed.
+    if (input.resume) options.resume = input.resume;
+    // Anchor the resume at the last assistant message: the SDK cannot
+    // passes the same `resumeSessionAt: lastAssistantUuid` pair). The anchor
+    // is the persisted StoredThreadMeta.resumeSessionAt, refreshed live from
+    // assistant messages (see handleMessage).
+    if (input.resume && input.resumeSessionAt) options.resumeSessionAt = input.resumeSessionAt;
+    if (permissionMode === "bypassPermissions") options.allowDangerouslySkipPermissions = true;
+    // The kone MCP gateway (docs/mcp-gateway-design.md): the session's
+    // loopback connection, minted at startSession. The agent gets the
+    // scratchpad tools and — later — spawn/theme/panes. Token is per-session
+    // and revoked at stopSession.
+    if (input.gatewayConnection) options.mcpServers = claudeMcpServers(input.gatewayConnection);
+    if (executable) options.pathToClaudeCodeExecutable = executable;
 
     const q = query({ prompt: prompt.iterable(), options });
     const session: ClaudeSession = {
@@ -990,14 +992,15 @@ export class ClaudeAdapter implements ProviderAdapter {
       : undefined;
     const decision = await new Promise<ApprovalDecision>((resolve) => {
       session.pendingApprovals.set(requestId, { approval, resolve });
-      this.emit({
+      const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = {
         ...this.base(session),
         type: "approval.requested",
         requestId,
         turnId: session.activeTurnId,
         approval,
-        ...(subagentToolUseId ? { subagentToolUseId } : {}),
-      });
+      };
+      if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId;
+      this.emit(approvalRequested);
       // Unblock if the turn aborts mid-approval so the query can settle.
       const signal = options?.signal;
       if (signal) {
@@ -1013,11 +1016,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       // the top of canUseTool) and, where the SDK offered one, its persistent
       // suggestion rides back so the CLI also stops re-prompting in-session.
       session.approvalsAlwaysAllowed = true;
-      return {
+      const allowAlways: Awaited<ReturnType<CanUseTool>> = {
         behavior: "allow",
         updatedInput: input,
-        ...(options.suggestions ? { updatedPermissions: [...options.suggestions] } : {}),
       };
+      if (options.suggestions) allowAlways.updatedPermissions = [...options.suggestions];
+      return allowAlways;
     }
     if (decision === "reject-and-stop") {
       return {
@@ -1460,13 +1464,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (session.model === toModel) return;
     session.model = toModel;
     const content = readString(message, "content")?.trim();
-    this.emit({
+    const rerouted: Extract<RuntimeEvent, { type: "model.rerouted" }> = {
       ...this.base(session),
       type: "model.rerouted",
       fromModel,
       toModel,
-      ...(content ? { reason: content } : {}),
-    });
+    };
+    if (content) rerouted.reason = content;
+    this.emit(rerouted);
   }
 
   private handleStreamEvent(session: ClaudeSession, scope: ClaudeScope, rawEvent: unknown): void {
@@ -1503,8 +1508,8 @@ export class ClaudeAdapter implements ProviderAdapter {
           text: "",
           detail: "",
           toolName,
-          ...(toolUseId ? { toolUseId } : {}),
         };
+        if (toolUseId) buffer.toolUseId = toolUseId;
         // A streaming tool_use opens with an empty `{}` (or "") placeholder and
         // fills its input in via input_json_delta; seeding detail with that
         // placeholder would corrupt the concatenated JSON ("{}" + "{...}" =
@@ -1648,13 +1653,13 @@ export class ClaudeAdapter implements ProviderAdapter {
           // The tool-use id is already unique and is what the result references.
           itemId: toolUseId ?? itemId,
           kind: isPlan ? "plan_text" : "tool_call",
-          ...(isPlan ? {} : { name: toolName }),
           text: "",
           detail: "",
-          ...(toolName ? { toolName } : {}),
-          ...(toolUseId ? { toolUseId } : {}),
           toolInputRaw: rawInput,
         };
+        if (!isPlan) buffer.name = toolName;
+        if (toolName) buffer.toolName = toolName;
+        if (toolUseId) buffer.toolUseId = toolUseId;
         if (isPlan) {
           applyPlanSnapshot(buffer, rawInput);
           this.emitItem(session, scope, "item.completed", buffer, "completed");
@@ -1801,12 +1806,15 @@ export class ClaudeAdapter implements ProviderAdapter {
         input,
         output,
         total,
-        ...(contextUsed !== undefined ? { contextUsed } : {}),
-        ...(contextWindow !== undefined ? { contextWindow, compactsAutomatically: true } : {}),
         cacheReadTokens: cacheRead ?? 0,
         cacheCreationTokens: cacheCreation ?? 0,
         reasoningTokens: 0,
       };
+      if (contextUsed !== undefined) usageWithSplits.contextUsed = contextUsed;
+      if (contextWindow !== undefined) {
+        usageWithSplits.contextWindow = contextWindow;
+        usageWithSplits.compactsAutomatically = true;
+      }
       this.emit({
         ...this.base(session),
         type: "thread.token-usage.updated",
@@ -1832,14 +1840,15 @@ export class ClaudeAdapter implements ProviderAdapter {
       // turnId, so no consumer could attribute it — and it would flip the
       // still folded in above; the lifecycle event is dropped. Tripwire so the
       // upstream trigger stays measurable in the field.
-      console.warn("[claude] turn result with no active turn", {
+      const orphanDetail: Record<string, unknown> = {
         status: message.subtype,
         numTurns: readNumber(message, "num_turns"),
         hasUsage: usage !== undefined,
-        ...("errors" in message && Array.isArray(message.errors) && message.errors.length > 0
-          ? { errors: message.errors }
-          : {}),
-      });
+      };
+      if ("errors" in message && Array.isArray(message.errors) && message.errors.length > 0) {
+        orphanDetail.errors = message.errors;
+      }
+      console.warn("[claude] turn result with no active turn", orphanDetail);
       return;
     }
 
@@ -1859,13 +1868,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     const errors = "errors" in message && Array.isArray(message.errors) ? message.errors : [];
     const reason = interrupting || isInterruptedResult(message, errors) ? "interrupted" : "failed";
     const detail = errors.join("; ") || readString(message, "result");
-    this.emit({
+    const aborted: Extract<RuntimeEvent, { type: "turn.aborted" }> = {
       ...this.base(session),
       type: "turn.aborted",
       turnId,
       reason,
-      ...(detail ? { message: detail } : {}),
-    });
+    };
+    if (detail) aborted.message = detail;
+    this.emit(aborted);
   }
 
   // ── subagents ────────────────────────────────────────────────────────────
@@ -2196,45 +2206,49 @@ export class ClaudeAdapter implements ProviderAdapter {
       kind: buffer.kind,
       status,
       text: buffer.text,
-      ...(buffer.tasks?.length ? { tasks: buffer.tasks } : {}),
-      ...(buffer.name ? { name: buffer.name } : {}),
-      ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
     };
+    if (buffer.tasks?.length) item.tasks = buffer.tasks;
+    if (buffer.name) item.name = buffer.name;
+    if (buffer.detail.length > 0) item.detail = buffer.detail;
     // Items produced inside a subagent run carry its tool-use id, so consumers
     // nest them under the spawning tool call instead of the parent turn's body.
-    this.emit({
+    const itemEvent: Extract<
+      RuntimeEvent,
+      { type: "item.started" | "item.updated" | "item.completed" }
+    > = {
       ...this.base(session),
       type,
       turnId,
       item,
-      ...(scope.subagentToolUseId ? { subagentToolUseId: scope.subagentToolUseId } : {}),
-    });
+    };
+    if (scope.subagentToolUseId) itemEvent.subagentToolUseId = scope.subagentToolUseId;
+    this.emit(itemEvent);
   }
 
-  private base(session: ClaudeSession, source: "claude.sdk.message" | "claude.sdk.lifecycle" = "claude.sdk.message") {
-    return {
+  private base(
+    session: ClaudeSession,
+    source: "claude.sdk.message" | "claude.sdk.lifecycle" = "claude.sdk.message",
+  ): BaseEvent {
+    const envelope: BaseEvent = {
       threadId: session.threadId,
       provider: this.provider,
       at: Date.now(),
       source,
-      // Carry the Claude session id on every envelope so the store can persist
-      // the thread's resume id as soon as system/init reports it, instead of
-      // waiting for turn.completed — a turn killed mid-flight used to leave the
-      // thread with no resume id at all. The resume anchor rides alongside it:
-      // the store persists refs.resumeSessionAt exactly like conversationId,
-      // so a thread always has the anchor it needs to resume reliably at the
-      // last assistant message — even when the latest turn never completed.
-      ...(session.sessionId || session.lastAssistantUuid
-        ? {
-            refs: {
-              ...(session.sessionId ? { conversationId: session.sessionId } : {}),
-              ...(session.lastAssistantUuid
-                ? { resumeSessionAt: session.lastAssistantUuid }
-                : {}),
-            },
-          }
-        : {}),
     };
+    // Carry the Claude session id on every envelope so the store can persist
+    // the thread's resume id as soon as system/init reports it, instead of
+    // waiting for turn.completed — a turn killed mid-flight used to leave the
+    // thread with no resume id at all. The resume anchor rides alongside it:
+    // the store persists refs.resumeSessionAt exactly like conversationId,
+    // so a thread always has the anchor it needs to resume reliably at the
+    // last assistant message — even when the latest turn never completed.
+    if (session.sessionId || session.lastAssistantUuid) {
+      const refs: ProviderRefs = {};
+      if (session.sessionId) refs.conversationId = session.sessionId;
+      if (session.lastAssistantUuid) refs.resumeSessionAt = session.lastAssistantUuid;
+      envelope.refs = refs;
+    }
+    return envelope;
   }
 
   private toSession(session: ClaudeSession): Session {
@@ -2283,17 +2297,19 @@ function mapClaudeModels(models: ModelInfo[]): ModelDescriptor[] {
     if (!id || !id.startsWith("claude") || seen.has(id)) continue;
     seen.add(id);
     const efforts = model.supportsEffort && model.supportedEffortLevels?.length ? [...model.supportedEffortLevels] : undefined;
-    out.push({
+    const descriptor: ModelDescriptor = {
       id,
       label: model.displayName || id,
-      ...(efforts ? { reasoningEfforts: efforts } : {}),
-      // The SDK's model list is authoritative for fast-mode support — surface it
-      // as the generic `fast` service tier the composer's toggle keys off.
-      ...(model.supportsFastMode ? { serviceTiers: [FAST_SERVICE_TIER] } : {}),
-      // ModelInfo carries no context-window field, so the 200k/1m auto-compact
-      // choice is derived from the id (every current non-Haiku Claude is 1M).
-      ...(contextWindowsForModel(id) ? { contextWindows: contextWindowsForModel(id) } : {}),
-    });
+    };
+    if (efforts) descriptor.reasoningEfforts = efforts;
+    // The SDK's model list is authoritative for fast-mode support — surface it
+    // as the generic `fast` service tier the composer's toggle keys off.
+    if (model.supportsFastMode) descriptor.serviceTiers = [FAST_SERVICE_TIER];
+    // ModelInfo carries no context-window field, so the 200k/1m auto-compact
+    // choice is derived from the id (every current non-Haiku Claude is 1M).
+    const contextWindows = contextWindowsForModel(id);
+    if (contextWindows) descriptor.contextWindows = contextWindows;
+    out.push(descriptor);
   }
   return out;
 }

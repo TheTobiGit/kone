@@ -15,7 +15,7 @@
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "../../sqlite.js";
 
 import type { UsageRecord } from "../transcripts/transcripts.js";
 

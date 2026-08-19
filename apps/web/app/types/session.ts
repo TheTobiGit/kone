@@ -11,14 +11,14 @@ import type { BrandKey } from "~/utils/modelCatalog";
 
 /** Vendor logomark for a thread row / sticky chat title — OpenAI's blossom for
  *  Codex (not the Codex product C), Claude's mark for Claude. */
-export const SESSION_BRAND: Record<ProviderKind, BrandKey> = {
+export const SESSION_BRAND = {
   codex: "gpt",
   claudeAgent: "claude",
   cursor: "cursor",
   opencode: "opencode",
   droid: "droid",
   antigravity: "antigravity",
-};
+} satisfies Record<ProviderKind, BrandKey>;
 
 export type SessionSummary = {
   threadId: string;

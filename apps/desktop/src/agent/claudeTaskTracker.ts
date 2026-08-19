@@ -269,10 +269,13 @@ function toPlanStatus(status: ClaudeTrackedTaskStatus): PlanTaskStatus {
 
 /** Convert tracked Claude tasks to kone PlanTask rows for the dock. */
 export function planTasksFromClaudeTracked(tasks: ReadonlyMap<string, ClaudeTrackedTask>): PlanTask[] {
-  return Array.from(tasks.values(), (task) => ({
-    id: task.id,
-    content: task.subject,
-    ...(task.activeForm ? { activeForm: task.activeForm } : {}),
-    status: toPlanStatus(task.status),
-  }));
+  return Array.from(tasks.values(), (task) => {
+    const entry: PlanTask = {
+      id: task.id,
+      content: task.subject,
+      status: toPlanStatus(task.status),
+    };
+    if (task.activeForm) entry.activeForm = task.activeForm;
+    return entry;
+  });
 }

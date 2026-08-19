@@ -15,16 +15,20 @@ import {
 // readCurrentCommands fakes make the reuse logic testable without touching the
 // host process table (that is processTree.test.ts's job).
 
+/** A killer wired to recording fakes and the two recordings each test asserts
+ *  on: every signalled pid + signal, and every pid list handed to the re-read. */
+type FakeKiller = {
+  killer: ProcessTreeKiller;
+  signaled: Array<{ pid: number; signal: TerminalKillSignal }>;
+  readPidLists: number[][];
+};
+
 /** Build a killer wired to recording fakes. `readCurrentCommands` is passed
  *  through so each test controls what the identity re-read returns; every
  *  signalled pid and every pid list handed to the re-read is recorded. */
 function makeFakeKiller(
   readCurrentCommands: (pids: readonly number[]) => Map<number, string> | null,
-): {
-  killer: ProcessTreeKiller;
-  signaled: Array<{ pid: number; signal: TerminalKillSignal }>;
-  readPidLists: number[][];
-} {
+): FakeKiller {
   const signaled: Array<{ pid: number; signal: TerminalKillSignal }> = [];
   const readPidLists: number[][] = [];
   const killer = createProcessTreeKiller({

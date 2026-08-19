@@ -27,12 +27,13 @@ export function reconcilePlanTasks(
     }
     const id = matched?.id ?? mintPlanTaskId();
     claimed.add(id);
-    return {
+    const task: PlanTask = {
       id,
       content: entry.content,
-      ...(entry.activeForm ? { activeForm: entry.activeForm } : {}),
       status: entry.status,
     };
+    if (entry.activeForm) task.activeForm = entry.activeForm;
+    return task;
   });
 }
 
@@ -76,7 +77,9 @@ export function parseTodoWriteInput(rawJson: string): Omit<PlanTask, "id">[] | u
           : statusRaw === "in_progress"
             ? "in-progress"
             : "pending";
-      out.push({ content, ...(activeForm ? { activeForm } : {}), status });
+      const task: Omit<PlanTask, "id"> = { content, status };
+      if (activeForm) task.activeForm = activeForm;
+      out.push(task);
     }
     return out.length > 0 ? out : undefined;
   } catch {

@@ -264,12 +264,9 @@ async function refresh(auth: AuthDoc, deps: CodexDeps, signal?: AbortSignal): Pr
   if (typeof next.access_token !== "string" || !next.access_token) return null;
   const latest = await readAuth(deps);
   if (!latest || latest.auth_mode !== "chatgpt") return null;
-  latest.tokens = {
-    ...latest.tokens,
-    access_token: next.access_token,
-    ...(typeof next.refresh_token === "string" ? { refresh_token: next.refresh_token } : {}),
-    ...(typeof next.id_token === "string" ? { id_token: next.id_token } : {}),
-  };
+  latest.tokens = { ...latest.tokens, access_token: next.access_token };
+  if (typeof next.refresh_token === "string") latest.tokens.refresh_token = next.refresh_token;
+  if (typeof next.id_token === "string") latest.tokens.id_token = next.id_token;
   latest.last_refresh = new Date(deps.now()).toISOString();
   // The only place this module ever writes a token to disk — and only back to
   // the source (the Codex CLI's own auth.json) whose rotation kone owns.

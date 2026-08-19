@@ -135,11 +135,9 @@ export function parseAntigravityLanguageServerLine(
   ].filter((port): port is number => port !== undefined);
   const match = line.trim().match(/^(\d+)\s+(.+)$/);
   const pid = match ? Number(match[1]) : undefined;
-  return {
-    csrfToken,
-    ports,
-    ...(pid !== undefined && Number.isInteger(pid) && pid > 0 ? { pid } : {}),
-  };
+  const server: AntigravityLanguageServer = { csrfToken, ports };
+  if (pid !== undefined && Number.isInteger(pid) && pid > 0) server.pid = pid;
+  return server;
 }
 
 /** Parse `ps` output into the first matching app language server. */
@@ -310,43 +308,46 @@ function postLsRpc(
 ): Promise<{ status: number; body: string } | null> {
   const body = JSON.stringify({ metadata: LS_METADATA });
   return new Promise((resolve) => {
-    const req = (scheme === "https" ? https : http).request(
-      {
-        hostname: "127.0.0.1",
-        port,
-        path: `/${LS_SERVICE}/${method}`,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Connect-Protocol-Version": "1",
-          // The agy in-process server needs no CSRF token — only the app's
-          // language_server process has one.
-          ...(server.csrfToken ? { "x-codeium-csrf-token": server.csrfToken } : {}),
-          "Content-Length": Buffer.byteLength(body),
-        },
-        // The language server serves a self-signed cert; the endpoint is
-        // loopback-only, so trusting it is the point.
-        ...(scheme === "https" ? { rejectUnauthorized: false } : {}),
-        timeout: LS_TIMEOUT_MS,
+    const requestOptions: https.RequestOptions = {
+      hostname: "127.0.0.1",
+      port,
+      path: `/${LS_SERVICE}/${method}`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Connect-Protocol-Version": "1",
+        "Content-Length": Buffer.byteLength(body),
       },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let total = 0;
-        res.on("data", (chunk: Buffer) => {
-          total += chunk.length;
-          if (total > MAX_RESPONSE_BYTES) {
-            res.destroy();
-            resolve(null);
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on("end", () => {
-          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") });
-        });
-        res.on("error", () => resolve(null));
-      },
-    );
+      timeout: LS_TIMEOUT_MS,
+    };
+    if (server.csrfToken) {
+      // The agy in-process server needs no CSRF token — only the app's
+      // language_server process has one.
+      requestOptions.headers = {
+        ...requestOptions.headers,
+        "x-codeium-csrf-token": server.csrfToken,
+      };
+    }
+    // The language server serves a self-signed cert; the endpoint is
+    // loopback-only, so trusting it is the point.
+    if (scheme === "https") requestOptions.rejectUnauthorized = false;
+    const req = (scheme === "https" ? https : http).request(requestOptions, (res) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      res.on("data", (chunk: Buffer) => {
+        total += chunk.length;
+        if (total > MAX_RESPONSE_BYTES) {
+          res.destroy();
+          resolve(null);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => {
+        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") });
+      });
+      res.on("error", () => resolve(null));
+    });
     req.on("error", () => resolve(null));
     req.on("timeout", () => {
       req.destroy();

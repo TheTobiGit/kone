@@ -288,6 +288,13 @@ type TrackedChild = {
   lastProjection: SpawnedThread | null;
 };
 
+/** Live spawned-thread counts: how many live threads belong to a given parent
+ *  and how many are live overall. */
+type LiveSpawnCounts = {
+  liveChildrenOfParent: number;
+  liveSpawnedTotal: number;
+};
+
 type Waiter = {
   ids: string[];
   /** Positionally paired with `ids`; undefined = wait on the child's latest. */
@@ -442,8 +449,8 @@ class SpawnEngineImpl implements SpawnEngine {
       effort,
       mode,
       status: "dispatched",
-      ...(adjustments.length > 0 ? { adjustments } : {}),
     };
+    if (adjustments.length > 0) result.adjustments = adjustments;
     this.store.setGatewayOpResult({
       threadId: caller.threadId,
       turnId: caller.turnId,
@@ -579,24 +586,34 @@ class SpawnEngineImpl implements SpawnEngine {
     // truth a model plans against.
     const surface = this.providers.cachedSurface();
     const { liveChildrenOfParent, liveSpawnedTotal } = this.liveCounts(caller.threadId);
-    return {
-      providers: surface.statuses.map((s) => ({
+    const providers = surface.statuses.map((s) => {
+      const entry: SpawnTargetsReport["providers"][number] = {
         provider: s.provider,
         label: s.label,
         available: s.available,
-        ...(s.message ? { hint: s.message } : {}),
-        models: (surface.models[s.provider] ?? []).map((m) => ({
-          id: m.id,
-          label: m.label,
-          ...(m.reasoningEfforts && m.reasoningEfforts.length > 0 ? { efforts: m.reasoningEfforts } : {}),
-          ...(m.defaultReasoningEffort ? { defaultEffort: m.defaultReasoningEffort } : {}),
-        })),
-      })),
-      caller: {
-        provider: caller.provider,
-        ...(caller.model ? { model: caller.model } : {}),
-        mode: await this.resolveParentMode(caller.threadId),
-      },
+        models: (surface.models[s.provider] ?? []).map((m) => {
+          const modelEntry: SpawnTargetsReport["providers"][number]["models"][number] = {
+            id: m.id,
+            label: m.label,
+          };
+          if (m.reasoningEfforts && m.reasoningEfforts.length > 0) {
+            modelEntry.efforts = m.reasoningEfforts;
+          }
+          if (m.defaultReasoningEffort) modelEntry.defaultEffort = m.defaultReasoningEffort;
+          return modelEntry;
+        }),
+      };
+      if (s.message) entry.hint = s.message;
+      return entry;
+    });
+    const callerEntry: SpawnTargetsReport["caller"] = {
+      provider: caller.provider,
+      mode: await this.resolveParentMode(caller.threadId),
+    };
+    if (caller.model) callerEntry.model = caller.model;
+    return {
+      providers,
+      caller: callerEntry,
       limits: {
         depth: this.store.spawnDepth(caller.threadId),
         maxDepth: MAX_SPAWN_DEPTH,
@@ -641,13 +658,14 @@ class SpawnEngineImpl implements SpawnEngine {
           span.lastState === "interrupted" || span.lastState === "failed"
             ? span.lastState
             : "completed";
-        turns.push({
+        const recoveredTurn: SpawnProjectionTurn = {
           turnId: "<recovered>",
           state,
           at: span.startedAt,
           endedAt: span.endedAt,
-          ...(span.lastError ? { error: span.lastError } : {}),
-        });
+        };
+        if (span.lastError) recoveredTurn.error = span.lastError;
+        turns.push(recoveredTurn);
       }
     }
     return projectSpawnedThread({
@@ -863,7 +881,9 @@ class SpawnEngineImpl implements SpawnEngine {
       turn.endedAt = endedAt;
       if (error !== undefined) turn.error = error;
     } else {
-      child.turns.push({ turnId, state, at: endedAt, endedAt, ...(error !== undefined ? { error } : {}) });
+      const settledTurn: SpawnProjectionTurn = { turnId, state, at: endedAt, endedAt };
+      if (error !== undefined) settledTurn.error = error;
+      child.turns.push(settledTurn);
     }
     // Any turn settling clears the gate — a parked child that answered its own
     // question (or got interrupted) must not keep reading "waiting".
@@ -935,7 +955,7 @@ class SpawnEngineImpl implements SpawnEngine {
     });
   }
 
-  private liveCounts(parentThreadId: string): { liveChildrenOfParent: number; liveSpawnedTotal: number } {
+  private liveCounts(parentThreadId: string): LiveSpawnCounts {
     const liveUnion = new Set([...this.store.liveSpawnedThreadIds(), ...this.liveChildren]);
     const childrenOfParent = new Set(this.store.spawnedChildren(parentThreadId).map((t) => t.threadId));
     let liveChildrenOfParent = 0;

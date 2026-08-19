@@ -77,7 +77,7 @@ export type EffortTier =
 
 export type EffortMeta = { label: string; hue: string; hint: string; brains: number; glow: boolean };
 
-export const EFFORT_META: Record<EffortTier, EffortMeta> = {
+export const EFFORT_META = {
   base: { label: "Standard", hue: "#71717a", hint: "no effort dial", brains: 2, glow: false },
   none: { label: "None", hue: "#a1a1aa", hint: "no reasoning", brains: 1, glow: false },
   minimal: { label: "Minimal", hue: "#71717a", hint: "fastest, least reasoning", brains: 1, glow: false },
@@ -88,7 +88,7 @@ export const EFFORT_META: Record<EffortTier, EffortMeta> = {
   max: { label: "Max", hue: "#d946ef", hint: "maximum reasoning", brains: 4, glow: true },
   ultra: { label: "Ultra", hue: "#ec4899", hint: "heaviest reasoning available", brains: 5, glow: true },
   thinking: { label: "Thinking", hue: "#8b5cf6", hint: "extended thinking", brains: 3, glow: true },
-};
+} satisfies Record<EffortTier, EffortMeta>;
 
 const EFFORT_ORDER: EffortTier[] = [
   "none",
@@ -212,7 +212,7 @@ const GATEWAY_VENDORS: [RegExp, BrandKey, string][] = [
  *  first and the gateway is only a fallback. The OpenCode mark itself is for
  *  the provider (the rail, the picker's provider row) and for models OpenCode
  *  actually originates. */
-function brandOf(core: string): { brand: BrandKey; vendor: string } {
+function brandOf(core: string): Pick<ModelOption, "brand" | "vendor"> {
   const slash = core.indexOf("/");
   const gateway = slash > 0 ? core.slice(0, slash).toLowerCase() : "";
   // Cursor's ids carry a bracketed turn-parameter suffix
@@ -268,13 +268,20 @@ function prettifyModelId(core: string): string {
   return out.join(" ") || core;
 }
 
+/** A resolved model identity: the logomark brand to show and the display name
+ *  to render for a raw model id outside any built catalog. */
+export type ModelDescription = {
+  brand: BrandKey;
+  name: string;
+};
+
 /** The logomark brand + display name for a raw model id, independent of any live
  *  catalog — for surfaces that hold an id but not the built family (e.g. a nested
  *  subagent's `model`). Prefers a real catalog label when one is passed. */
 export function describeModelId(
   id: string | undefined,
   catalog?: ModelOption[],
-): { brand: BrandKey; name: string } {
+): ModelDescription {
   if (!id) return { brand: "generic", name: "Default model" };
   const fam = catalog ? familyForId(catalog, id) : undefined;
   const { core } = splitEffort(id);
@@ -282,9 +289,15 @@ export function describeModelId(
   return { brand: fam?.brand ?? brand, name: fam?.label ?? prettifyModelId(core) };
 }
 
+/** A raw model id peeled into its family core and its trailing effort tier. */
+type EffortSplit = {
+  core: string;
+  tier: EffortTier;
+};
+
 /** Peel a trailing effort tier off a raw id → { core, tier }. Ids with no
  *  recognised suffix are their own core with a `base` tier. */
-function splitEffort(id: string): { core: string; tier: EffortTier } {
+function splitEffort(id: string): EffortSplit {
   // Defensive: a non-string (or missing) id must never throw — it degrades to
   // its own core with no effort axis, and the caller can skip it if it wants.
   const m = String(id ?? "").match(/^(.*)-(none|minimal|low|medium|high|xhigh|max|ultra|thinking)$/i);
@@ -434,16 +447,20 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
     // The provider's catalog default tier (Codex `defaultServiceTier`) pre-sets
     // the toggle — a model whose default is "fast" opens with fast mode on.
     const fastDefault = fastTier !== undefined && defaultServiceTier?.toLowerCase() === "fast";
-    return {
+    const option: ModelOption = {
       key: core,
       label,
       brand,
       vendor,
       efforts,
       defaultEffortIndex,
-      ...(fastTier ? { fastTier, ...(fastDefault ? { fastDefault: true } : {}) } : {}),
-      ...(contextWindows && contextWindows.length > 1 ? { contextWindows } : {}),
     };
+    if (fastTier) {
+      option.fastTier = fastTier;
+      if (fastDefault) option.fastDefault = true;
+    }
+    if (contextWindows && contextWindows.length > 1) option.contextWindows = contextWindows;
+    return option;
   });
 }
 

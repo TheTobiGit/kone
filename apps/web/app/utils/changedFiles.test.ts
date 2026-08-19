@@ -11,7 +11,9 @@ function toolItem(
   status: RuntimeItemStatus = "completed",
   detail?: string,
 ): RuntimeItem {
-  return { itemId: `i${n++}`, kind: "tool_call", status, name, text, ...(detail ? { detail } : {}) };
+  const item: RuntimeItem = { itemId: `i${n++}`, kind: "tool_call", status, name, text };
+  if (detail) item.detail = detail;
+  return item;
 }
 
 function assistant(items: RuntimeItem[]): AssistantBlock {

@@ -52,6 +52,14 @@ export interface TranscriptAggregateOptions {
   untilDay: string;
 }
 
+/** The summary a TranscriptAggregator hands back once every record is folded:
+ *  the per-bucket table plus the run's drop/out-of-window tallies. */
+export type TranscriptAggregateResult = {
+  buckets: TranscriptBucket[];
+  duplicatesDropped: number;
+  outOfWindow: number;
+};
+
 export class TranscriptAggregator {
   readonly #buckets = new Map<string, MutableBucket>();
   readonly #seen = new Set<string>();
@@ -104,7 +112,7 @@ export class TranscriptAggregator {
     return true;
   }
 
-  finish(): { buckets: TranscriptBucket[]; duplicatesDropped: number; outOfWindow: number } {
+  finish(): TranscriptAggregateResult {
     const buckets: TranscriptBucket[] = [];
     for (const [key, bucket] of this.#buckets) {
       const [day = "", provider = "", model = ""] = key.split("\0");
@@ -134,11 +142,15 @@ export class TranscriptAggregator {
   }
 }
 
-function priceTranscriptRecord(record: UsageRecord): {
+/** The pricing verdict for one transcript record: its USD cost and how that
+ *  figure was reached — a price-sheet lookup or the provider's own number. */
+type TranscriptPriceResult = {
   costUsd: number;
   priced: boolean;
   providerReported: boolean;
-} {
+};
+
+function priceTranscriptRecord(record: UsageRecord): TranscriptPriceResult {
   if (record.reportedCostUsd !== null && Number.isFinite(record.reportedCostUsd)) {
     return { costUsd: record.reportedCostUsd, priced: true, providerReported: true };
   }

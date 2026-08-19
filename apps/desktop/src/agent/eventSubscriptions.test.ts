@@ -59,10 +59,15 @@ function fakeSink(): FakeSink {
   };
 }
 
+type SubsHarness = {
+  subs: EventSubscriptions;
+  delayed: (() => void)[];
+};
+
 function makeSubs(
   pending: () => PendingInteraction[],
   delayed: (() => void)[] = [],
-): { subs: EventSubscriptions; delayed: (() => void)[] } {
+): SubsHarness {
   const subs = new EventSubscriptions({
     pendingInteractions: pending,
     parentTurnIdFor: () => undefined,

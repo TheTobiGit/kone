@@ -29,7 +29,7 @@ const canPush = computed(() => props.space.origin.value !== null);
 
 // One letter per status, in git's own alphabet — familiar, and it costs a column
 // instead of a word.
-const LETTER: Record<GitChange["status"], string> = {
+const LETTER = {
   modified: "M",
   added: "A",
   deleted: "D",
@@ -39,7 +39,7 @@ const LETTER: Record<GitChange["status"], string> = {
   untracked: "U",
   ignored: "I",
   conflicted: "!",
-};
+} satisfies Record<GitChange["status"], string>;
 
 function dirOf(path: string) {
   const i = path.lastIndexOf("/");

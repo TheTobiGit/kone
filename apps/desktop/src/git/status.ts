@@ -260,9 +260,12 @@ export async function status(dir: string): Promise<GitStatus | null> {
   return parsed;
 }
 
+/** Lines inserted/deleted in a `git diff --shortstat` run. */
+type ShortStat = { added: number; removed: number };
+
 /** Parse `git diff --shortstat` output, e.g.
  *  " 3 files changed, 42 insertions(+), 13 deletions(-)". */
-function parseShortStat(out: string): { added: number; removed: number } {
+function parseShortStat(out: string): ShortStat {
   const added = out.match(/(\d+) insertion/);
   const removed = out.match(/(\d+) deletion/);
   return {

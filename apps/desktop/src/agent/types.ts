@@ -954,7 +954,7 @@ export type RuntimeEventSource =
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
-type BaseEvent = {
+export type BaseEvent = {
   threadId: string;
   provider: ProviderKind;
   /** Epoch millis when the event was produced. */

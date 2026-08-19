@@ -64,12 +64,9 @@ export function reconcilePlanTasks(
     }
     const id = matched?.id ?? mintPlanTaskId();
     claimed.add(id);
-    return {
-      id,
-      content: entry.content,
-      ...(entry.activeForm ? { activeForm: entry.activeForm } : {}),
-      status: entry.status,
-    };
+    const task: PlanTask = { id, content: entry.content, status: entry.status };
+    if (entry.activeForm) task.activeForm = entry.activeForm;
+    return task;
   });
 }
 
@@ -111,11 +108,13 @@ export function formatPlanTasks(tasks: readonly PlanTask[]): string {
   return tasks.map((t) => `- ${markerForStatus(t.status)} ${labelForTask(t)}`).join("\n");
 }
 
-export function planTaskCounts(tasks: readonly PlanTask[]): {
+export type PlanTaskCounts = {
   total: number;
   completed: number;
   inProgress: number;
-} {
+};
+
+export function planTaskCounts(tasks: readonly PlanTask[]): PlanTaskCounts {
   let completed = 0;
   let inProgress = 0;
   for (const t of tasks) {

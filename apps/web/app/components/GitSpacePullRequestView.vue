@@ -3,7 +3,12 @@ import { computed, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowTurnBackwardIcon, ArrowUpRight01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import MarkdownMessage from "~/components/MarkdownMessage.vue";
-import type { GitFileDiff, GitHubPerson, GitHubPullRequestDetail } from "~/types/desktop";
+import type {
+  GitFileDiff,
+  GitHubMergeability,
+  GitHubPerson,
+  GitHubPullRequestDetail,
+} from "~/types/desktop";
 import type { useGitSpace } from "~/composables/useGitSpace";
 
 // One pull request, in full.
@@ -108,7 +113,9 @@ const REVIEW: Record<string, string> = {
 
 /** Why it can't merge, in the words GitHub means rather than its enum. Only
  *  said for an open pull request: a merged one's mergeability is history. */
-const MERGEABILITY: Record<string, string> = {
+// Partial on purpose: `clean`, `draft` and `unknown` aren't obstacles, so they
+// have nothing to say and fall through to null below.
+const MERGEABILITY: Partial<Record<GitHubMergeability, string>> = {
   conflicting: "conflicts with the base branch",
   blocked: "blocked — a required check or review is missing",
   behind: "behind the base branch",

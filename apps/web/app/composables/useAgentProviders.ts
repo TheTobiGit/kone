@@ -89,7 +89,7 @@ const MOCK_STATUSES: ProviderStatus[] = [
 // Real ids + display names + reasoning efforts, captured live from
 // `codex app-server`'s `model/list` — no baked effort suffix, so browser dev
 // exercises the same real-per-model ladder buildModelCatalog() builds.
-const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
+const MOCK_MODELS = {
   codex: [
     {
       id: "gpt-5.6-terra",
@@ -303,7 +303,7 @@ const MOCK_MODELS: Record<ProviderKind, ModelDescriptor[]> = {
       defaultReasoningEffort: "thinking",
     },
   ],
-};
+} satisfies Record<ProviderKind, ModelDescriptor[]>;
 
 export function useAgentProviders() {
   const ready = computed(() => statuses.value.filter((s) => s.readiness === "ready"));

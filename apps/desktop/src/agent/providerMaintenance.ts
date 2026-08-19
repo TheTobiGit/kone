@@ -91,7 +91,7 @@ function cursorOwnsPath(commandPath: string): boolean {
   return p.includes("/.local/share/cursor-agent/") || p.endsWith("/.local/bin/cursor-agent");
 }
 
-const DEFINITIONS: Record<ProviderKind, MaintenanceDefinition> = {
+const DEFINITIONS = {
   codex: {
     provider: "codex",
     binary: "codex",
@@ -164,7 +164,7 @@ const DEFINITIONS: Record<ProviderKind, MaintenanceDefinition> = {
     latestSource: null,
     native: { args: () => ["update"], strategy: "always" },
   },
-};
+} satisfies Record<ProviderKind, MaintenanceDefinition>;
 
 // ── versions ──────────────────────────────────────────────────────────────────
 
@@ -480,17 +480,19 @@ function standingFor(current: string | null, latest: string | null): VersionStan
  *  is deliberately separable: discovery must never wait on a registry, so the
  *  probe path passes `checkLatest: false` and the settings pane asks for the
  *  real answer when the user is actually looking at it. */
+type InspectedInstall = {
+  located: ReturnType<typeof locate>;
+  source: ProviderInstallSource;
+  command: UpdateCommand | null;
+};
+
 /** Everything that can be worked out about an install without touching the
  *  network: where it is, which channel owns it, and what would update it. */
 function inspect(
   definition: MaintenanceDefinition,
   binary: string,
   env: NodeJS.ProcessEnv,
-): {
-  located: ReturnType<typeof locate>;
-  source: ProviderInstallSource;
-  command: UpdateCommand | null;
-} {
+): InspectedInstall {
   const located = locate(binary, env);
   // Detection reads the real path first (a versioned install directory names
   // its channel), then the PATH entry that pointed at it (a `~/.bun/bin` shim

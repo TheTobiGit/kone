@@ -24,6 +24,10 @@ export function mcpToolResultText(text: string): GatewayToolResult {
 /** A tool-level failure: successful JSON-RPC, isError: true, machine-readable
  *  code in structuredContent. */
 export function gatewayToolErrorResult(error: GatewayToolError): GatewayToolResult {
+  const errorContent =
+    error.details === undefined
+      ? { code: error.code, message: error.message }
+      : { code: error.code, message: error.message, details: error.details };
   return {
     content: [
       {
@@ -34,13 +38,7 @@ export function gatewayToolErrorResult(error: GatewayToolError): GatewayToolResu
       },
     ],
     isError: true,
-    structuredContent: {
-      error: {
-        code: error.code,
-        message: error.message,
-        ...(error.details === undefined ? {} : { details: error.details }),
-      },
-    },
+    structuredContent: { error: errorContent },
   };
 }
 

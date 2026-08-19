@@ -8,7 +8,7 @@ import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSuppor
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { buildOpenCodeMcpServer } from "../gateway/injection.js";
-import type { ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion } from "../types.js";
+import type { ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
 type RecordLike = Record<string, any>;
@@ -101,7 +101,12 @@ export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
        const efforts = variants ? Object.keys(variants) : [];
         const limit = record(model.limit);
         const contextWindowTokens = typeof limit?.context === "number" && Number.isFinite(limit.context) && limit.context > 0 ? limit.context : undefined;
-        models.push({ id, label: name, ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}), ...(efforts.length ? { reasoningEfforts: efforts } : {}), ...(efforts.includes("medium") ? { defaultReasoningEffort: "medium" } : efforts.includes("high") ? { defaultReasoningEffort: "high" } : {}) });
+        const descriptor: ModelDescriptor = { id, label: name };
+        if (contextWindowTokens !== undefined) descriptor.contextWindowTokens = contextWindowTokens;
+        if (efforts.length) descriptor.reasoningEfforts = efforts;
+        if (efforts.includes("medium")) descriptor.defaultReasoningEffort = "medium";
+        else if (efforts.includes("high")) descriptor.defaultReasoningEffort = "high";
+        models.push(descriptor);
     } catch { /* skip one malformed block */ }
   };
   for (const line of stdout.split(/\r?\n/)) {
@@ -113,14 +118,16 @@ export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
   return models;
 }
 
-export function reconcileOpenCodeText(previous: string | undefined, snapshot: string): { text: string; delta: string } {
+export type OpenCodeTextDelta = { text: string; delta: string };
+
+export function reconcileOpenCodeText(previous: string | undefined, snapshot: string): OpenCodeTextDelta {
   const old = previous ?? "";
   const text = old.startsWith(snapshot) ? old : snapshot;
   let common = 0; while (common < old.length && common < text.length && old[common] === text[common]) common += 1;
   return { text, delta: text.slice(common) };
 }
 
-export function appendOpenCodeTextDelta(previous: string, delta: string): { text: string; delta: string } {
+export function appendOpenCodeTextDelta(previous: string, delta: string): OpenCodeTextDelta {
   return { text: previous + delta, delta };
 }
 
@@ -136,7 +143,9 @@ export function isOpenCodeNotFound(value: unknown): boolean {
   return false;
 }
 
-export function accumulateOpenCodeTokens(current: { input: number; output: number }, tokens: unknown): { input: number; output: number } {
+export type OpenCodeTokenTally = { input: number; output: number };
+
+export function accumulateOpenCodeTokens(current: { input: number; output: number }, tokens: unknown): OpenCodeTokenTally {
   const t = record(tokens); if (!t) return current;
   return { input: current.input + (typeof t.input === "number" ? t.input : 0), output: current.output + (typeof t.output === "number" ? t.output : 0) + (typeof t.reasoning === "number" ? t.reasoning : 0) };
 }
@@ -210,12 +219,11 @@ export function normalizeOpenCodeTokenUsage(
     ? contextWindow
     : undefined;
   const contextUsed = normalizedContextWindow !== undefined ? Math.min(total, normalizedContextWindow) : total;
-  return {
+  const usage: TokenUsage & TokenUsageSplits = {
     input: inputTokens,
     output: outputTokens + reasoningOutputTokens,
     total,
     contextUsed,
-    ...(normalizedContextWindow !== undefined ? { contextWindow: normalizedContextWindow } : {}),
     // Unlike Claude (which only ever reports the combined input total),
     // OpenCode's `tokens` payload already carries the prompt-cache split and
     // the reasoning-token count as their own fields on every usage update —
@@ -225,6 +233,8 @@ export function normalizeOpenCodeTokenUsage(
     cacheCreationTokens: cacheWriteTokens,
     reasoningTokens: reasoningOutputTokens,
   };
+  if (normalizedContextWindow !== undefined) usage.contextWindow = normalizedContextWindow;
+  return usage;
 }
 
 export function buildOpenCodeTokenUsageKey(input: {
@@ -393,19 +403,24 @@ export function buildOpenCodeSubagentSnapshot(input: {
   variant?: string;
 }): SubagentRunSnapshot {
   const { toolUseId, status, toolInput, toolMetadata, stateTitle, childSessionId, variant } = input;
-  return {
+  const snapshot: SubagentRunSnapshot = {
     toolUseId,
     parentItemId: toolUseId,
     status,
     startedAt: Date.now(),
-    ...(childSessionId ? { taskId: childSessionId } : {}),
-    ...(subagentType(toolInput) ? { agentType: subagentType(toolInput) } : {}),
-    ...(subagentDescription(toolInput, stateTitle) ? { description: subagentDescription(toolInput, stateTitle) } : {}),
-    ...(stringField(toolInput, "prompt") ? { prompt: stringField(toolInput, "prompt") } : {}),
-    ...(openCodeModelName(toolMetadata) ? { model: openCodeModelName(toolMetadata) } : {}),
-    ...(toolMetadata.background === true || toolInput.background === true ? { background: true } : {}),
-    ...(variant ? { effort: variant } : {}),
   };
+  if (childSessionId) snapshot.taskId = childSessionId;
+  const agentType = subagentType(toolInput);
+  if (agentType) snapshot.agentType = agentType;
+  const description = subagentDescription(toolInput, stateTitle);
+  if (description) snapshot.description = description;
+  const prompt = stringField(toolInput, "prompt");
+  if (prompt) snapshot.prompt = prompt;
+  const model = openCodeModelName(toolMetadata);
+  if (model) snapshot.model = model;
+  if (toolMetadata.background === true || toolInput.background === true) snapshot.background = true;
+  if (variant) snapshot.effort = variant;
+  return snapshot;
 }
 
 export class OpenCodeAdapter implements ProviderAdapter {
@@ -545,7 +560,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // model surface advertises no fast/context axes, so the picker never
     // offers them — a per-turn value could only arrive from a stale selection.
     const steering = session.activeTurnId; const turnId = steering ?? `opencode-turn-${randomUUID()}`; if (!steering) { session.activeTurnId = turnId; session.lastEmittedTokenUsageKey = undefined; this.emit({ ...base(session), type: "turn.started", turnId }); }
-    try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/prompt_async`, { model, ...(input.effort || session.variant ? { variant: input.effort ?? session.variant } : {}), parts: [...(prompt ? [{ type: "text", text: prompt }] : []), ...files] }); }
+    const parts = [...(prompt ? [{ type: "text", text: prompt }] : []), ...files];
+    const variant = input.effort ?? session.variant;
+    const requestBody = variant ? { model, parts, variant } : { model, parts };
+    try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/prompt_async`, requestBody); }
     catch (error) { if (!steering) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "failed", message: errorMessage(error) }); } throw error; }
     return { threadId: input.threadId, turnId };
   }
@@ -583,7 +601,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   async hasSession(threadId: string): Promise<boolean> { return this.sessions.has(threadId); }
 
   private require(threadId: string): OpenCodeSession { const session = this.sessions.get(threadId); if (!session) throw new Error(`No OpenCode session for thread ${threadId}`); return session; }
-  private toSession(s: OpenCodeSession): Session { return { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, resumedFrom: s.resumedFrom, activeTurnId: s.activeTurnId, model: s.model, ...(s.variant ? { effort: s.variant } : {}), mode: s.mode }; }
+  private toSession(s: OpenCodeSession): Session { const result: Session = { threadId: s.threadId, provider: "opencode", cwd: s.cwd, status: s.activeTurnId ? "running" : "ready", conversationId: s.openCodeSessionId, resumedFrom: s.resumedFrom, activeTurnId: s.activeTurnId, model: s.model, mode: s.mode }; if (s.variant) result.effort = s.variant; return result; }
   private drain(s: OpenCodeSession): void { for (const [id, pending] of s.pendingUserInputs) { s.pendingUserInputs.delete(id); pending.resolve({}); } for (const [id, pending] of s.pendingApprovals) { s.pendingApprovals.delete(id); pending.resolve("reject-once"); } }
   private abortLiveTurn(s: OpenCodeSession): void { const turnId = s.activeTurnId; if (!turnId) return; s.activeTurnId = undefined; s.interrupting = false; this.emit({ ...base(s, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "interrupted" }); }
 
@@ -624,8 +642,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const turnId = session.activeTurnId;
     session.activeTurnId = undefined;
     this.settleLiveSubagents(session, "failed");
-    if (turnId) this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "failed", ...(message ? { message } : {}) });
-    this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", ...(message ? { message } : {}) });
+    if (turnId) {
+      const aborted: Extract<RuntimeEvent, { type: "turn.aborted" }> = { ...base(session, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "failed" };
+      if (message) aborted.message = message;
+      this.emit(aborted);
+    }
+    const stateChanged: Extract<RuntimeEvent, { type: "session.state.changed" }> = { ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error" };
+    if (message) stateChanged.message = message;
+    this.emit(stateChanged);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code });
     this.sessions.delete(session.threadId);
     session.eventsAbort.abort();
@@ -688,11 +712,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
      // it would orphan items under a tool-use id no run nests anymore (the same
      // rule as ClaudeAdapter's settledSubagents tail drop).
      if (subagentToolUseId && session.settledSubagentToolUseIds.has(subagentToolUseId)) return;
-     if (part.type === "text" || part.type === "reasoning") { const role = part.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(part.id); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(part.id), String(part.text ?? "")); session.emittedTextByPartId.set(part.id, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) this.emit({ ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: part.id, kind, status: "in-progress", text: merged.text }, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); if (part.time?.end && !session.completedTextPartIds.has(part.id)) { session.completedTextPartIds.add(part.id); this.emit({ ...base(session), type: "item.completed", turnId, item: { itemId: part.id, kind, status: "completed", text: merged.text }, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); } return; }
+     if (part.type === "text" || part.type === "reasoning") { const role = part.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(part.id); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(part.id), String(part.text ?? "")); session.emittedTextByPartId.set(part.id, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) { const updated: Extract<RuntimeEvent, { type: "item.started" | "item.updated" }> = { ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: part.id, kind, status: "in-progress", text: merged.text } }; if (subagentToolUseId) updated.subagentToolUseId = subagentToolUseId; this.emit(updated); } if (part.time?.end && !session.completedTextPartIds.has(part.id)) { session.completedTextPartIds.add(part.id); const completed: Extract<RuntimeEvent, { type: "item.completed" }> = { ...base(session), type: "item.completed", turnId, item: { itemId: part.id, kind, status: "completed", text: merged.text } }; if (subagentToolUseId) completed.subagentToolUseId = subagentToolUseId; this.emit(completed); } return; }
     if (part.type !== "tool") return; const state = record(part.state) ?? {}; const kind = toolKind(String(part.tool ?? "tool"));
-    if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(state.status), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); return; }
-    const item: RuntimeItem = { itemId: String(part.callID ?? part.id), kind: "tool_call", status: toolStatus(String(state.status)), text: String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool"), ...(detailForTool(state) ? { detail: detailForTool(state) } : {}) };
-    this.emit({ ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item, ...(subagentToolUseId ? { subagentToolUseId } : {}) });
+    if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(state.status), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; const planEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item }; if (subagentToolUseId) planEvent.subagentToolUseId = subagentToolUseId; this.emit(planEvent); return; }
+    const item: RuntimeItem = { itemId: String(part.callID ?? part.id), kind: "tool_call", status: toolStatus(String(state.status)), text: String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool") };
+    const detail = detailForTool(state);
+    if (detail) item.detail = detail;
+    const toolEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item };
+    if (subagentToolUseId) toolEvent.subagentToolUseId = subagentToolUseId;
+    this.emit(toolEvent);
     // The child's own tool calls are progress hints on the run; the parent's
     // `task` call is the run itself.
     if (subagentToolUseId) {
@@ -855,9 +883,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }
-  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask that still fires (a tool outside the allow-all ruleset, e.g. an MCP tool the rules don't name) is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); this.emit({ ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval, ...(subagentToolUseId ? { subagentToolUseId } : {}) }); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
+  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask that still fires (a tool outside the allow-all ruleset, e.g. an MCP tool the rules don't name) is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval }; if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId; this.emit(approvalRequested); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
   /** Settle one parked permission approval (idempotent — a no-op once drained). */
   private resolveApproval(session: OpenCodeSession, requestId: string, decision: ApprovalDecision): void { const pending = session.pendingApprovals.get(requestId); if (!pending) return; session.pendingApprovals.delete(requestId); pending.resolve(decision); }
-  private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((q: RecordLike, i: number) => ({ id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((o: RecordLike) => ({ label: String(o.label ?? ""), ...(o.description ? { description: String(o.description) } : {}) })) : [], multiSelect: q.multiple === true })); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }
+  private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((q: RecordLike, i: number) => ({ id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((o: RecordLike) => { const option: UserInputQuestionOption = { label: String(o.label ?? "") }; if (o.description) option.description = String(o.description); return option; }) : [], multiSelect: q.multiple === true })); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }
   private questionResolved(session: OpenCodeSession, requestId: string, answers: string[][]): void { const pending = session.pendingUserInputs.get(requestId); if (!pending) return; const mapped: UserInputAnswers = {}; pending.questions.forEach((q, i) => { mapped[q.id] = answers[i]?.join(", ") ?? ""; }); session.pendingUserInputs.delete(requestId); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped }); }
 }

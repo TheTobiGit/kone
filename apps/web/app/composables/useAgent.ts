@@ -13,6 +13,7 @@ import type {
   RuntimeSessionState,
   SendTurnInput,
   Session,
+  SessionStartInput,
   SpawnedThread,
   StoredBlock,
   StoredThread,
@@ -552,7 +553,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // it — later updates to the call itself (its result, status) must not drop
     // the child's transcript.
     if (idx === -1) block.items.push(item);
-    else block.items[idx] = { ...item, ...(block.items[idx]!.subagent ? { subagent: block.items[idx]!.subagent } : {}) };
+    else {
+      const merged: RuntimeItem = { ...item };
+      const existingSubagent = block.items[idx]!.subagent;
+      if (existingSubagent) merged.subagent = existingSubagent;
+      block.items[idx] = merged;
+    }
     // Reassign so the shallow array ref stays reactive on nested edits.
     block.items = [...block.items];
   }
@@ -749,14 +755,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       case "approval.requested": {
         const block = event.turnId ? currentAssistant(event.turnId) : undefined;
         const origin = originSubagentOfApproval(block);
-        pendingApprovals.value = [
-          ...pendingApprovals.value,
-          {
-            requestId: event.requestId,
-            approval: event.approval,
-            ...(origin ? { originToolUseId: origin } : {}),
-          },
-        ];
+        const entry: PendingApproval = {
+          requestId: event.requestId,
+          approval: event.approval,
+        };
+        if (origin) entry.originToolUseId = origin;
+        pendingApprovals.value = [...pendingApprovals.value, entry];
         break;
       }
       case "approval.resolved":
@@ -786,8 +790,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           input: anchorText,
           createdAt: event.at,
           position: event.position,
-          ...(blockId ? { blockId } : {}),
         };
+        if (blockId) entry.blockId = blockId;
         // A re-seed may already hold this queueId — replace, never duplicate.
         queuedTurnsRaw.value = [
           ...queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId),
@@ -988,11 +992,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
             const byId = blocks.value.find(
               (b) => b.role === "user" && b.id === row.userBlockId,
             );
-            return {
-              ...row,
-              position: i + 1,
-              ...(byId && !anchored.has(byId.id) ? { blockId: byId.id } : {}),
-            };
+            const entry: QueuedTurnEntry = { ...row, position: i + 1 };
+            if (byId && !anchored.has(byId.id)) entry.blockId = byId.id;
+            return entry;
           });
         queuedTurnsRaw.value = entries;
       })
@@ -1167,7 +1169,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     pendingResumeProvider = undefined;
     pendingResumeSessionAt = undefined;
     try {
-      session.value = await api.startSession({
+      const startInput: SessionStartInput = {
         threadId: threadId.value,
         provider: provider.value,
         cwd: ctx.resolveCwd(),
@@ -1177,11 +1179,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         // read it here; flag-based ones (Codex) ignore it and take effort per
         // turn instead. Safe to always send — the adapter picks what it needs.
         effort: reasoning.value,
-        // Resume the stored thread's provider conversation so continued turns
-        // keep its full context (rehydrate/openStored set this).
-        ...(resume ? { resume } : {}),
-        ...(resumeSessionAt ? { resumeSessionAt } : {}),
-      });
+      };
+      // Resume the stored thread's provider conversation so continued turns
+      // keep its full context (rehydrate/openStored set this).
+      if (resume) startInput.resume = resume;
+      if (resumeSessionAt) startInput.resumeSessionAt = resumeSessionAt;
+      session.value = await api.startSession(startInput);
       sessionState.value = session.value.status;
     } catch (e) {
       error.value = peelIpcError(e, "Could not start the agent");
@@ -1292,16 +1295,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (!trimmed && files.length === 0) return;
     touch();
     const blockId = uid();
-    blocks.value = [
-      ...blocks.value,
-      {
-        id: blockId,
-        role: "user",
-        text: trimmed,
-        at: Date.now(),
-        ...(files.length ? { attachments: files } : {}),
-      },
-    ];
+    const block: UserBlock = {
+      id: blockId,
+      role: "user",
+      text: trimmed,
+      at: Date.now(),
+    };
+    if (files.length) block.attachments = files;
+    blocks.value = [...blocks.value, block];
     // Instant label for a brand-new thread; desktop may refine it via
     // thread.title.updated once the agent rename lands. An attachment-only turn
     // seeds the label from the first file name.
@@ -1330,16 +1331,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // Only bail on a start we actually performed — a stale error from an
       // earlier turn must not wedge every later send.
       if (wasDeferred && !session.value) return;
-      const result = await api.sendTurn({
+      const turn: SendTurnInput = {
         threadId: threadId.value,
         input: trimmed,
-        ...(files.length ? { attachments: files } : {}),
         model: model.value,
         mode: mode.value,
         effort: reasoning.value,
         serviceTier: serviceTier.value,
         contextWindow: contextWindow.value,
-      });
+      };
+      if (files.length) turn.attachments = files;
+      const result = await api.sendTurn(turn);
       // A busy send was durably enqueued — the ack's turnId IS the queue id.
       // Remember which local block it belongs to so the turn.queued chip can
       // anchor to it (the store journals the block under its own id).
@@ -1364,16 +1366,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (!trimmed && files.length === 0) return;
     touch();
     const blockId = uid();
-    blocks.value = [
-      ...blocks.value,
-      {
-        id: blockId,
-        role: "user",
-        text: trimmed,
-        at: Date.now(),
-        ...(files.length ? { attachments: files } : {}),
-      },
-    ];
+    const block: UserBlock = {
+      id: blockId,
+      role: "user",
+      text: trimmed,
+      at: Date.now(),
+    };
+    if (files.length) block.attachments = files;
+    blocks.value = [...blocks.value, block];
     if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
 
     const api = bridge();
@@ -1397,28 +1397,30 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (!steer) {
         // Older bridge without the steer channel — fall back to a plain send
         // (the backend's own steer-without-live-turn semantics).
-        await api.sendTurn({
+        const turn: SendTurnInput = {
           threadId: threadId.value,
           input: trimmed,
-          ...(files.length ? { attachments: files } : {}),
           model: model.value,
           mode: mode.value,
           effort: reasoning.value,
           serviceTier: serviceTier.value,
           contextWindow: contextWindow.value,
-        });
+        };
+        if (files.length) turn.attachments = files;
+        await api.sendTurn(turn);
         return;
       }
-      const result = await steer({
+      const turn: SendTurnInput = {
         threadId: threadId.value,
         input: trimmed,
-        ...(files.length ? { attachments: files } : {}),
         model: model.value,
         mode: mode.value,
         effort: reasoning.value,
         serviceTier: serviceTier.value,
         contextWindow: contextWindow.value,
-      });
+      };
+      if (files.length) turn.attachments = files;
+      const result = await steer(turn);
       // A steer that fell back to the durable queue acks with the queue id —
       // record the anchor so its chip finds this block (a live-steer ack is
       // the adapter's turn id and never produces a queue event; it's pruned
@@ -1836,12 +1838,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         parentItemId,
         agentType: opts.agentType,
         description: opts.description,
-        ...(opts.model ? { model: opts.model } : {}),
-        ...(opts.effort ? { effort: opts.effort } : {}),
         status: "starting",
         startedAt,
         toolUses: 0,
       };
+      if (opts.model) snapshot.model = opts.model;
+      if (opts.effort) snapshot.effort = opts.effort;
       const emitRun = (type: "subagent.started" | "subagent.updated" | "subagent.completed") =>
         reduce({ ...base(type), type, turnId, subagent: { ...snapshot } } as RuntimeEvent);
       // 2 — the run is recognized and nested onto its parent tool call.
@@ -1860,8 +1862,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           kind: step.kind,
           status: "in-progress",
           text: step.kind === "tool_call" && step.name ? `${step.name}: ${step.text}` : step.text,
-          ...(step.name ? { name: step.name } : {}),
         };
+        if (step.name) child.name = step.name;
         reduce({ ...base("item.started"), type: "item.started", turnId, item: { ...child }, subagentToolUseId: toolUseId } as RuntimeEvent);
         if (step.kind === "tool_call") {
           toolUses += 1;
@@ -2742,6 +2744,11 @@ export function useAgent(options: UseAgentOptions) {
     return fresh.key;
   }
 
+  type ThreadHandle = {
+    key: string;
+    ready: Promise<void>;
+  };
+
   /** Bring a specific stored thread on-screen, handing back its column's stable
    *  key *immediately* — before a byte of transcript has been read — alongside a
    *  `ready` promise that settles once the load has. The split is what lets the
@@ -2750,7 +2757,7 @@ export function useAgent(options: UseAgentOptions) {
    *
    *  If the thread is already resident (still running in the background, say),
    *  just activate it — no reload, no teardown. */
-  function openThreadHandle(id: string): { key: string; ready: Promise<void> } {
+  function openThreadHandle(id: string): ThreadHandle {
     const existing = sessions.value.find((x) => x.threadId.value === id);
     if (existing) {
       activeKey.value = existing.key;

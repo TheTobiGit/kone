@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // the Claude adapter test uses. (The pure helpers below never touch that chain, so the existing
 // tests are unaffected.)
 const testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-opencode-adapter-"));
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 setUserDataDir(testUserDataDir);

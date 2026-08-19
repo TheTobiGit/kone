@@ -26,7 +26,7 @@ export type ModeKey =
 // own "Thinking…" ring for kone's quiet thinking beat. The
 // tool families with no reference counterpart (read / write / run / agent /
 // del / neutral) are their own modes at the same quality.
-export const STATE_TO_MODE: Record<TurnOrbState, ModeKey> = {
+export const STATE_TO_MODE = {
   working: "orbits",
   thinking: "ring",
   read: "folio",
@@ -38,7 +38,7 @@ export const STATE_TO_MODE: Record<TurnOrbState, ModeKey> = {
   agent: "delegate",
   del: "erode",
   neutral: "neutral",
-};
+} satisfies Record<TurnOrbState, ModeKey>;
 
 interface Preset {
   speed: number;

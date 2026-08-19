@@ -34,11 +34,18 @@ export function markKind(kind: IpcErrorKind, message: string): string {
   return `[kone:${kind}] ${message}`;
 }
 
+/** A message split by `parseKind`: the recovered machine-readable kind (null
+ *  when the message was unmarked) plus the human remainder. */
+export type ParsedIpcMessage = {
+  kind: IpcErrorKind | null;
+  message: string;
+};
+
 /** Split a (possibly marked) message into its kind and the human remainder.
  *  Unmarked messages come back with `kind: null` and the message untouched. */
 export function parseKind(
   message: string,
-): { kind: IpcErrorKind | null; message: string } {
+): ParsedIpcMessage {
   const match = KIND_MARKER.exec(message);
   if (!match) return { kind: null, message };
   return { kind: match[1] as IpcErrorKind, message: message.slice(match[0].length) };

@@ -124,7 +124,12 @@ function curvePath(segments: readonly CurveSegment[], startCommand: "M" | "L"): 
   return path;
 }
 
-function niceScale(peak: number, count: number): { max: number; ticks: number[] } {
+type NiceScale = {
+  max: number;
+  ticks: number[];
+};
+
+function niceScale(peak: number, count: number): NiceScale {
   if (peak <= 0) return { max: 0, ticks: [0] };
 
   const rawStep = peak / count;

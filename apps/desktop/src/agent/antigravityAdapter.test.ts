@@ -22,7 +22,7 @@ class DatabaseSyncShim {
     this.db.close();
   }
 }
-mock.module("node:sqlite", () => ({ DatabaseSync: DatabaseSyncShim }));
+mock.module("./sqlite.js", () => ({ DatabaseSync: DatabaseSyncShim }));
 
 import {
   ANTGRAVITY_BINARY,

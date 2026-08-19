@@ -26,16 +26,23 @@ import type { QuotaCapableProvider, SpendTile, TrendPoint } from "./types.js";
  *  "~". OpenCode never reaches this module. Cursor is estimated too: its daily
  *  spend comes from either its dashboard export or a kone-store fallback, and
  *  this layer can't tell which, so the conservative "may be estimated" wins. */
-const DOLLARS_ARE_ESTIMATED: Record<QuotaCapableProvider, boolean> = {
+const DOLLARS_ARE_ESTIMATED = {
   claudeAgent: true, // priced from measured tokens at API rates (openusage's ⓘ)
   codex: true, //       same
   cursor: true, //      dashboard export or store fallback — mark as estimated
   opencode: false, //   unused — has its own authoritative source
   antigravity: true, // priced from measured tokens like claudeAgent/codex
   droid: true, //       has no authoritative cost of its own (sidecar is zeros) — kone's estimate
-};
+} satisfies Record<QuotaCapableProvider, boolean>;
 
 const round4 = (n: number) => Math.round(n * 10000) / 10000;
+
+/** One provider's measured spend on one local day: the dollar figure rounded
+ *  to four decimal places and the raw token count. */
+type DaySpendSlice = {
+  dollars: number;
+  tokens: number;
+};
 
 /** The provider's spend on one local day. Zero when the day had no usage — a
  *  real measured zero, not "No data": the strip only builds when the 30-day scan
@@ -44,7 +51,7 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000;
 function sliceFor(
   day: { byProvider: { provider: string; costUsd: number; tokens: number }[] } | undefined,
   provider: QuotaCapableProvider,
-): { dollars: number; tokens: number } {
+): DaySpendSlice {
   const p = day?.byProvider.find((x) => x.provider === provider);
   return { dollars: round4(p?.costUsd ?? 0), tokens: p?.tokens ?? 0 };
 }

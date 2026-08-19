@@ -6,7 +6,7 @@ import { setUserDataDir } from "./userDataDir.js";
 // built-in this bun can't load) — stub it, then import the module under test
 // dynamically so the stub is in place first. The pure functions under test
 // never touch the database.
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: class DatabaseSync {
     exec(): void {}
     prepare(): never {

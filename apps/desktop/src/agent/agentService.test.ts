@@ -32,7 +32,7 @@ setUserDataDir(userDataDir);
 // The real ConversationStore (reachable through the adapters' promptAttachments
 // chain) imports node:sqlite — an Electron-runtime builtin this bun can't load.
 // Stand it in with bun:sqlite, the same pattern the store tests use.
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 
@@ -106,9 +106,18 @@ class FakeAdapter {
  *  userBlockId: seeded blocks, plus a synthetic block appended per accepted
  *  enqueue (the real dispatch.recordUserBlock journals a fresh block per
  *  send, so consecutive sends derive distinct ids). */
+/** The block shape the queue path reads back; `id` is what a row's userBlockId
+ *  is derived from. */
+type FakeUserBlock = { id: string; role: "user"; text: string; at: number };
+
+/** Only the slice of a stored thread the queue path reads — deliberately
+ *  narrower than the real `StoredThread`, which carries metadata the fake has
+ *  no reason to invent. */
+type FakeStoredThread = { threadId: string; blocks: FakeUserBlock[] };
+
 class FakeQueueStore {
   rows: QueuedTurnRow[] = [];
-  private blocksByThread = new Map<string, Array<{ id: string; role: "user"; text: string; at: number }>>();
+  private blocksByThread = new Map<string, FakeUserBlock[]>();
   private journaled = 0;
 
   seedUserBlocks(threadId: string, ids: string[]): void {
@@ -124,7 +133,7 @@ class FakeQueueStore {
     this.journaled = 0;
   }
 
-  loadThread(threadId: string): unknown {
+  loadThread(threadId: string): FakeStoredThread | null {
     const blocks = this.blocksByThread.get(threadId);
     if (!blocks) return null;
     return { threadId, blocks: [...blocks] };

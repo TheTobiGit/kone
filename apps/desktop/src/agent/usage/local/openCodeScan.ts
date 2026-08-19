@@ -2,7 +2,7 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "../../sqlite.js";
 
 import { listOpenCodeDatabasePaths, resolveOpenCodeDataDirs } from "../../quota/opencode.js";
 import {

@@ -13,7 +13,7 @@ import { Database } from "bun:sqlite";
 // at a throwaway temp dir per test. ConversationStore is imported *dynamically*
 // below so the stub is in place first (static imports hoist above mock.module,
 // defeating it — the same pattern sidechat.test.ts uses).
-mock.module("node:sqlite", () => ({
+mock.module("../sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 

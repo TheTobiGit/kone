@@ -29,11 +29,11 @@ const { mode, modeLocked, themeId, theme, scheme, setMode, setTheme, importTheme
 
 const MODES = ["system", "light", "dark"] as const satisfies readonly AppearanceMode[];
 
-const MODE_LABEL: Record<AppearanceMode, string> = {
+const MODE_LABEL = {
   system: "System",
   light: "Light",
   dark: "Dark",
-};
+} satisfies Record<AppearanceMode, string>;
 
 function chooseMode(m: AppearanceMode) {
   if (modeLocked.value || mode.value === m) return;

@@ -50,9 +50,16 @@ export function parseCursorVersion(stdout: string): string | undefined {
   return calendar ?? (stdout.trim().split("\n")[0]?.trim() || undefined);
 }
 
+/** The parsed `cursor-agent status` result: whether the CLI is authenticated
+ *  and, when it is, the account email it printed. */
+export type CursorAuthState = {
+  authenticated: boolean;
+  label?: string;
+};
+
 /** Read `cursor-agent status` output. It prints `✓ Logged in as <email>` when
  *  authenticated and an error/hint line when not. */
-export function parseCursorAuth(stdout: string): { authenticated: boolean; label?: string } {
+export function parseCursorAuth(stdout: string): CursorAuthState {
   const text = stdout.trim();
   const lower = text.toLowerCase();
   if (lower.includes("not logged in") || lower.includes("authentication required") || lower.includes("cursor-agent login")) {
