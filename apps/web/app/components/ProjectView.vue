@@ -343,40 +343,22 @@ function syncDockSnapshot(): void {
 }
 
 // Switching threads used to morph one thread's docks into another's *in place* —
-// file rows and card height reflowed mid-flight and it read as broken. So a
-// switch is treated as a context swap: fade the whole stack out (still showing
-// the thread you're leaving), swap the data at the invisible midpoint, then fade
-// the new thread's docks in. The reflow still runs — it's just hidden behind the
-// fade. Streaming *within* a thread keeps updating the snapshot in place (no
-// fade), so a live turn's docks still tick along.
+// file rows and card height reflowed mid-flight under a flat container fade, and
+// it read as broken. So a switch is now a hard swap: each dock is keyed to the
+// focused thread, so leaving a thread unmounts its docks (each plays its own
+// scale+fade exit) and the new thread's docks mount fresh (playing their enter).
+// The snapshot swaps synchronously with the key, so the newly-mounted docks carry
+// the right data from their first frame. Streaming *within* a thread keeps the
+// same key, so a live turn's docks tick along in place (no remount).
 const focusedKey = computed(() => focusedThread.value?.key ?? null);
-const docksSwapping = ref(false);
-let dockSwapTimer: ReturnType<typeof setTimeout> | undefined;
 
 watchDebounced(
   [activePlanRaw, activeChangesRaw, activeSubagentsRaw, activeDelegatesRaw],
-  () => {
-    if (docksSwapping.value) return; // mid-swap: the timer owns the snapshot
-    syncDockSnapshot();
-  },
+  () => syncDockSnapshot(),
   { debounce: 100, maxWait: 200 },
 );
 
-watch(focusedKey, (key, prev) => {
-  // First focus, or leaving / re-entering the board (null on either side): no
-  // crossfade — snap so the docks are right the instant a thread takes focus.
-  if (key === prev || prev == null || key == null) {
-    syncDockSnapshot();
-    return;
-  }
-  docksSwapping.value = true;
-  clearTimeout(dockSwapTimer);
-  dockSwapTimer = setTimeout(() => {
-    syncDockSnapshot();
-    docksSwapping.value = false;
-  }, 165);
-});
-onBeforeUnmount(() => clearTimeout(dockSwapTimer));
+watch(focusedKey, () => syncDockSnapshot());
 
 // ── the open subagent shell ──────────────────────────────────────────────────
 // Clicking a row in the Subagents dock (or the activity feed's subagent step)
@@ -2171,14 +2153,13 @@ function onDiscardFile(path: string) {
          home) instead of crowding the right-hand stack. It steps aside while
          its shell is open — the shell is the zoom-in of this same dock. -->
     <div
-      v-if="surface === 'board' && !activeFile && focusedThread && !activeShell"
+      v-if="surface === 'board' && !activeFile && focusedThread && !activeShell && !stripOverview"
       class="sub-dock-corner"
-      :class="{ 'sub-dock-corner--swapping': docksSwapping }"
     >
-      <AnimatePresence :initial="false">
+      <AnimatePresence :initial="false" mode="wait">
         <AgentSubagentDock
           v-if="activeDelegates.rows.length"
-          key="agent-subagents-dock"
+          :key="`agent-subagents-dock-${focusedKey}`"
           :rows="activeDelegates.rows"
           :streaming="activeDelegates.streaming"
           @open="onOpenDelegate"
@@ -2192,17 +2173,14 @@ function onDiscardFile(path: string) {
          thread) rides above Tasks (the model's TodoWrite checklist); the column
          lifts clear of the away-from-thread pill when one is perched below. -->
     <div
-      v-if="surface === 'board' && !activeFile && focusedThread"
+      v-if="surface === 'board' && !activeFile && focusedThread && !stripOverview"
       class="dock-stack"
-      :class="{
-        'dock-stack--lifted': pillThreads.length > 0,
-        'dock-stack--swapping': docksSwapping,
-      }"
+      :class="{ 'dock-stack--lifted': pillThreads.length > 0 }"
     >
-      <AnimatePresence :initial="false">
+      <AnimatePresence :initial="false" mode="wait">
         <ChangedFilesList
           v-if="activeChanges.files.length"
-          key="agent-changes-dock"
+          :key="`agent-changes-dock-${focusedKey}`"
           :files="activeChanges.files"
           :total-added="activeChanges.totalAdded"
           :total-removed="activeChanges.totalRemoved"
@@ -2211,10 +2189,10 @@ function onDiscardFile(path: string) {
           @open-file="onOpenFileFromGit"
         />
       </AnimatePresence>
-      <AnimatePresence :initial="false">
+      <AnimatePresence :initial="false" mode="wait">
         <PlanTaskList
           v-if="activePlan"
-          key="agent-plan-dock"
+          :key="`agent-plan-dock-${focusedKey}`"
           :tasks="activePlan.tasks"
           :streaming="activePlan.streaming"
         />
@@ -2363,14 +2341,6 @@ function onDiscardFile(path: string) {
 }
 .dock-stack--lifted {
   bottom: 5.25rem;
-}
-/* Thread switch: the whole stack fades/settles out so the data swap and its row
-   reflow happen while invisible, then the new thread's docks fade back in. */
-.dock-stack--swapping,
-.sub-dock-corner--swapping {
-  opacity: 0;
-  transform: translateY(6px) scale(0.985);
-  pointer-events: none;
 }
 
 /* ── Subagents dock (bottom-left) ─────────────────────────────────────────── */

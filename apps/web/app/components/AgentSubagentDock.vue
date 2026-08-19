@@ -83,7 +83,11 @@ function decideRowApproval(row: DelegateRow, decision: ApprovalDecision): void {
   void decideChildApproval(row.target.threadId, pending.requestId, decision);
 }
 
-const expanded = ref(true);
+// Open only when the dock mounts into a live turn — the user is here watching
+// work happen. Reopening a settled thread mounts collapsed: they came back to
+// read the response, not to re-scan the run list. The streaming watch below
+// still opens it when a turn starts mid-thread.
+const expanded = ref(props.streaming ?? false);
 const shellEl = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
