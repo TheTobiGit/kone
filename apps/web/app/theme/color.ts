@@ -23,6 +23,12 @@ export type Oklch = readonly [number, number, number];
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
+/** Map each channel, keeping the three-tuple in the type rather than letting
+ *  `Array.map` widen it to `number[]`. */
+function mapRgb(rgb: Rgb, f: (v: number, i: number) => number): Rgb {
+  return [f(rgb[0], 0), f(rgb[1], 1), f(rgb[2], 2)];
+}
+
 // ── sRGB ────────────────────────────────────────────────────────────────────
 function srgbToLinear(c: number): number {
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -64,7 +70,7 @@ export function toHex(rgb: Rgb): string {
 export function mixHex(a: string, b: string, t: number): string {
   const ca = parseHex(a);
   const cb = parseHex(b);
-  return toHex(ca.map((v, i) => v + (cb[i]! - v) * t) as unknown as Rgb);
+  return toHex(mapRgb(ca, (v, i) => v + (cb[i]! - v) * t));
 }
 
 // ── OKLab / OKLCh ───────────────────────────────────────────────────────────
@@ -99,7 +105,7 @@ function oklabToLinear(lab: Rgb): Rgb {
 }
 
 export function hexToOklch(hex: string): Oklch {
-  const lin = parseHex(hex).map(srgbToLinear) as unknown as Rgb;
+  const lin = mapRgb(parseHex(hex), srgbToLinear);
   const [L, a, b] = linearToOklab(lin);
   const C = Math.sqrt(a * a + b * b);
   // A neutral has no meaningful hue; report 0 rather than an artefact of noise.
@@ -120,12 +126,12 @@ export function oklchToHex([L, C, h]: Oklch): string {
     const lab: Rgb = [L, chroma * Math.cos(rad), chroma * Math.sin(rad)];
     const lin = oklabToLinear(lab);
     if (lin.every((v) => v >= -1e-4 && v <= 1 + 1e-4)) {
-      return toHex(lin.map(linearToSrgb).map(clamp01) as unknown as Rgb);
+      return toHex(mapRgb(mapRgb(lin, linearToSrgb), clamp01));
     }
     chroma *= 0.92;
   }
   const lin = oklabToLinear([L, 0, 0]);
-  return toHex(lin.map(linearToSrgb).map(clamp01) as unknown as Rgb);
+  return toHex(mapRgb(mapRgb(lin, linearToSrgb), clamp01));
 }
 
 /**

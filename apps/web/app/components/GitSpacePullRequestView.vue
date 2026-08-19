@@ -115,16 +115,16 @@ const REVIEW: Record<string, string> = {
  *  said for an open pull request: a merged one's mergeability is history. */
 // Partial on purpose: `clean`, `draft` and `unknown` aren't obstacles, so they
 // have nothing to say and fall through to null below.
-const MERGEABILITY: Partial<Record<GitHubMergeability, string>> = {
-  conflicting: "conflicts with the base branch",
-  blocked: "blocked — a required check or review is missing",
-  behind: "behind the base branch",
-  unstable: "merges, but a check is failing",
-};
+const MERGEABILITY = new Map<GitHubMergeability, string>([
+  ["conflicting", "conflicts with the base branch"],
+  ["blocked", "blocked — a required check or review is missing"],
+  ["behind", "behind the base branch"],
+  ["unstable", "merges, but a check is failing"],
+]);
 const obstacle = computed(() => {
   const p = pr.value;
   if (!p || p.state !== "open" || p.isDraft) return null;
-  return MERGEABILITY[p.mergeability] ?? null;
+  return MERGEABILITY.get(p.mergeability) ?? null;
 });
 
 const REVIEW_STATE: Record<string, string> = {

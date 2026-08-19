@@ -270,6 +270,9 @@ function typePlainScalar(text: string): string | number | boolean | null {
 
 // Flow collections `{...}` / `[...]` for the metadata field: the shape rules
 // need to see whether a flow value is a map, a list, or a scalar.
+// A flow value is a scalar, a list, or a map, decided only at runtime; the shape
+// rules that consume it narrow it. This parser layer names no domain type.
+// eslint-disable-next-line anti-slop/no-unknown-returns
 function parseFlow(text: string): unknown {
   let i = 0;
 
@@ -319,6 +322,7 @@ function parseFlow(text: string): unknown {
     while (i < text.length && !",]}{".includes(text[i]!) && !/\s/.test(text[i]!)) i++;
     return text.slice(start, i);
   };
+  // eslint-disable-next-line anti-slop/no-unknown-returns
   const parseValue = (): unknown => {
     skipWs();
     if (i >= text.length) throw new YamlSyntaxError("unexpected end of flow collection");
@@ -328,6 +332,7 @@ function parseFlow(text: string): unknown {
     if (c === '"' || c === "'") return readQuoted();
     return typePlainScalar(readBare());
   };
+  // eslint-disable-next-line anti-slop/no-unknown-returns
   const parseMap = (): unknown => {
     i++;
     const map = new Map<string, unknown>();
@@ -389,6 +394,7 @@ function parseFlow(text: string): unknown {
   return result;
 }
 
+// eslint-disable-next-line anti-slop/no-unknown-returns
 function parseInlineValue(text: string): unknown {
   if (text === "") return null;
   if (text.startsWith('"')) return parseDoubleQuoted(text);
@@ -625,6 +631,7 @@ function parseFrontmatterYaml(text: string): ParsedFrontmatter {
 
 // Containers are built as Maps and arrays; the lint consumes plain records,
 // so nested maps are converted depth-first before the parse result escapes.
+// eslint-disable-next-line anti-slop/no-unknown-returns
 function toPlainValue(value: unknown): unknown {
   if (value instanceof Map) {
     const out: Record<string, unknown> = {};

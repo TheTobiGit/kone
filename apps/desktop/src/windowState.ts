@@ -39,6 +39,9 @@ function stateFilePath() {
   return cachedPath;
 }
 
+// Reads the persisted window-state JSON as-is; the caller validates it before
+// trusting any field, so this reader names no domain type.
+// eslint-disable-next-line anti-slop/no-unknown-returns
 function readState(): unknown {
   try {
     return JSON.parse(fs.readFileSync(stateFilePath(), "utf8"));

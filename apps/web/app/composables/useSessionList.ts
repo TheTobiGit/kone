@@ -24,7 +24,9 @@ export interface SessionListSource {
   fetch: () => Promise<Array<{ meta: StoredThreadMeta; project?: SessionProjectTag }>>;
   /** Browser-dev stand-in list, used when there's no desktop bridge. */
   mock: () => SessionSummary[];
-  /** Optional reactive dependency — reload when its value changes. */
+  /** Optional reactive dependency — reload when its value changes. Only the
+   *  value's identity is watched, never read, so its type is deliberately open. */
+  // eslint-disable-next-line anti-slop/no-unknown-returns
   trigger?: () => unknown;
 }
 

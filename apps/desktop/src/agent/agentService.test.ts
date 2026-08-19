@@ -72,12 +72,17 @@ class FakeAdapter {
     FakeAdapter.stopped.push(threadId);
   }
   async stopAll(): Promise<void> {}
+  // The fake is injected as a `ProviderAdapter` wholesale (see the cast where
+  // `adapters` is built); these stub methods are never called by the tests, so
+  // they return the emptiest thing that reads as "nothing here".
+  // eslint-disable-next-line anti-slop/no-unknown-returns
   async discover(): Promise<unknown> {
     return [];
   }
   async listModels(): Promise<unknown[]> {
     return [];
   }
+  // eslint-disable-next-line anti-slop/no-unknown-returns
   async startSession(): Promise<unknown> {
     return {};
   }
@@ -232,11 +237,13 @@ beforeAll(async () => {
     // only backs latestUserBlockId's user-block walk, so it is not a full
     // StoredThread) — cast at the boundary, the same contract the module mock
     // used to stand in for.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
     store: fakeStore as unknown as QueuedTurnStore,
     // The fakes are constructed inside the service with its real emit closure,
     // exactly like the real adapters — FakeAdapter.emits records them so the
     // tests below can drive the merged event stream.
     adapters: (emit) =>
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
       [
         new FakeAdapter(emit, "codex"),
         new FakeAdapter(emit, "claudeAgent"),

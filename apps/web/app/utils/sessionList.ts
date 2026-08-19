@@ -55,7 +55,7 @@ export function byRecency(a: SessionSummary, b: SessionSummary): number {
  *  the localStorage key only after a full success — a failed migration retries
  *  on the next load. */
 export async function liftLegacyPins(
-  api: { setPinned: (threadId: string, pinned: boolean) => Promise<unknown> },
+  api: { setPinned: (threadId: string, pinned: boolean) => Promise<void> },
   legacyIds: string[],
 ): Promise<boolean> {
   if (legacyIds.length === 0) return true;

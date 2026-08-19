@@ -300,6 +300,9 @@ export function useGitSpace(
   async function act(
     tag: GitSpaceOp,
     run: () => Promise<void>,
+    // Runs whatever a mutation invalidated; its result is deliberately ignored,
+    // and callers pass varied `Promise.all` shapes, so the thunk stays open.
+    // eslint-disable-next-line anti-slop/no-unknown-returns
     after: () => Promise<unknown> = () => Promise.resolve(),
   ): Promise<boolean> {
     if (op.value !== null) return false;

@@ -51,7 +51,8 @@ type SoundName =
 // ambient lifecycle cues sit softly beneath the foreground gestures rather than
 // competing with them. Volume defaults to 1 (the global multiplier below still
 // applies on top).
-const VOICES: Record<Cue, { sound: SoundName; volume?: number }> = {
+type Voice = { sound: SoundName; volume?: number };
+const VOICES = {
   press: { sound: "press" },
   toggle: { sound: "toggle" },
   select: { sound: "tick" },
@@ -63,7 +64,7 @@ const VOICES: Record<Cue, { sound: SoundName; volume?: number }> = {
   error: { sound: "error" },
   working: { sound: "loading", volume: 0.6 },
   ready: { sound: "ready", volume: 0.7 },
-};
+} satisfies Record<Cue, Voice>;
 
 // A calm ceiling on the whole layer — the recipes are already gentle, and this
 // keeps the softest gestures from ever feeling loud on top of that.
@@ -101,7 +102,7 @@ export function useSound() {
   // surface into the UI, so anything that goes wrong is swallowed quietly.
   function cue(name: Cue): void {
     if (!import.meta.client || muted.value) return;
-    const voice = VOICES[name];
+    const voice: Voice = VOICES[name];
     void load()
       .then((mod) => mod.play(voice.sound, voice.volume != null ? { volume: voice.volume } : undefined))
       .catch((err) => console.debug("[sound] cue failed", name, err));

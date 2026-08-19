@@ -14,6 +14,14 @@ type JsonRpcId = number | string;
 
 type JsonRpcRequest = { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: unknown };
 
+/** Every frame this client writes to the child's stdin: an outbound request or
+ *  notification, or a response to a server→client request. */
+type JsonRpcOutbound =
+  | { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: unknown }
+  | { jsonrpc: "2.0"; method: string; params?: unknown }
+  | { jsonrpc: "2.0"; id: JsonRpcId; result: unknown }
+  | { jsonrpc: "2.0"; id: JsonRpcId; error: { code: number; message: string } };
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
@@ -44,7 +52,11 @@ export class JsonRpcError extends Error {
 }
 
 /** Handles a server→client request; the returned/thrown value becomes the
- *  response result/error sent back over stdin. */
+ *  response result/error sent back over stdin. The result is domain-free here —
+ *  it is whatever the handler produced, on its way to `JSON.stringify` — so this
+ *  transport primitive names no return type; its callers own the shape.
+ */
+// eslint-disable-next-line anti-slop/no-unknown-returns
 export type JsonRpcRequestHandler = (params: unknown) => Promise<unknown>;
 
 /** A persistent JSON-RPC-over-stdio child process. */
@@ -131,7 +143,11 @@ export class JsonRpcClient {
 
     if (typeof msg.method === "string") {
       if ("id" in msg) {
-        void this.handleIncomingRequest(msg as unknown as JsonRpcRequest);
+        // SAFETY: `isJsonRpcEnvelope` verified `method` is a string and `id` is
+        // present; a JSON-RPC id is a number or string. A malformed id from a
+        // buggy child is only echoed back in the response, never trusted.
+        const id = msg.id as JsonRpcId;
+        void this.handleIncomingRequest({ jsonrpc: "2.0", id, method: msg.method, params: msg.params });
         return;
       }
       const handlers = this.notificationHandlers.get(msg.method);
@@ -180,7 +196,7 @@ export class JsonRpcClient {
     }
   }
 
-  private writeRaw(msg: object): void {
+  private writeRaw(msg: JsonRpcOutbound): void {
     if (this.exited) return;
     const stdin = this.child.stdin;
     if (!stdin.writable || stdin.destroyed) return;

@@ -54,11 +54,11 @@ function coverOrigins(skill: SkillEntry): string[] {
 
 /** The short word a row wears for a state that is not plain "on". `enabled` is
  *  absent on purpose: the common case earns no ink. */
-const STATE_CHIP: Partial<Record<SkillState, string>> = {
-  disabled: "Off",
-  "name-only": "Name only",
-  "user-invocable-only": "When asked",
-};
+const STATE_CHIP = new Map<SkillState, string>([
+  ["disabled", "Off"],
+  ["name-only", "Name only"],
+  ["user-invocable-only", "When asked"],
+]);
 
 const query = ref("");
 const origin = ref<string | null>(null);
@@ -107,7 +107,8 @@ function stateOf(skill: SkillEntry): SkillState | undefined {
  *  skill really is held back, and the reason is in the file itself. */
 function chipFor(skill: SkillEntry): string | null {
   const state = stateOf(skill);
-  if (state && STATE_CHIP[state]) return STATE_CHIP[state]!;
+  const chip = state ? STATE_CHIP.get(state) : undefined;
+  if (chip) return chip;
   if (!state || state === "unsupported") return skill.manualOnly ? "When asked" : null;
   return null;
 }
