@@ -13,6 +13,8 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "@dicebear/collection": "^9.4.2",
+    "@dicebear/core": "^9",
     "@hugeicons/core-free-icons": "^4.2.2",
     "@hugeicons/vue": "^1.0.7",
     "@iconify-json/vscode-icons": "^1.2.67",

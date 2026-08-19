@@ -11,7 +11,7 @@ import {
   GitBranchIcon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
-import ParticleOrb from "~/components/ParticleOrb.vue";
+import SphereFace from "~/components/SphereFace.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
 import MentionChip from "~/components/MentionChip.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
@@ -971,10 +971,12 @@ defineExpose({ wake, setDraft });
       :aria-label="open ? undefined : 'Wake the agent'"
       @click="onSurfaceClick"
     >
-      <!-- Resting particle bead: the marble broken into a turning cloud of
-           light. Fades out as the surface morphs into the field. -->
+      <!-- Resting bead: a face that looks up at you and follows the pointer in.
+           It keeps its own size and place through the wake — the card simply
+           grows out of it and closes over it, and it's still sitting there
+           underneath when the card folds back down. -->
       <div class="orbfx" aria-hidden="true">
-        <ParticleOrb :size="55" :energy="busy ? 1 : 0" :active="!open" />
+        <SphereFace :size="REST" :covered="open" />
       </div>
 
       <!-- White panel: the sleeping face and the field share it, cross-fading. -->
@@ -1414,9 +1416,9 @@ html.dark .dock {
     padding 0.22s ease 0.16s,
     border-radius 0.26s ease 0.18s;
 }
-/* At rest the surface carries no gradient — the particle orb IS the mark, and it
-   bleeds past the box (no circular clip). The rim returns only as the pill edge
-   once it opens. */
+/* At rest the surface carries no gradient — the face IS the mark, and it bleeds
+   past the box (no circular clip). The rim returns only as the pill edge once it
+   opens. */
 .surface:not(.is-open) {
   overflow: visible;
   background-image: none;
@@ -1470,6 +1472,8 @@ html.dark .dock {
    even thickness all the way through the morph. */
 .panel {
   position: relative;
+  /* Over the bead, so the opening card closes across the face. */
+  z-index: 1;
   height: 100%;
   border-radius: inherit;
   background: transparent;
@@ -1479,30 +1483,27 @@ html.dark .dock {
   display: flex;
   flex-direction: column;
   background: var(--field);
+  /* Opaque from the first frame of the wake, so the card is a solid thing
+     growing over the face rather than a haze the face shows through; the slower
+     base curve then lets the face come back gently on the way in. */
+  transition: background-color 0.06s ease, border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 26px;
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
 }
 
-/* ── Resting particle bead ────────────────────────────────────────────────── */
-/* The turning cloud sits centred over the surface at rest. It fades and scales
-   away the instant the surface starts to open, so the morph into the field
-   isn't cluttered by a lingering orb. */
+/* ── Resting bead ─────────────────────────────────────────────────────────── */
+/* Pinned to the bead's own footprint at the bottom of the surface — the edge
+   that doesn't move as the card grows — so the face holds still while the card
+   opens out of it. It sits under the field, not over it: the card covering the
+   face is the whole effect. */
 .orbfx {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  opacity: 1;
-  transform: scale(1);
-  transition: opacity 0.18s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
-  z-index: 1;
-}
-.surface.is-open .orbfx {
-  opacity: 0;
-  transform: scale(0.7);
-  transition: opacity 0.14s ease, transform 0.2s ease;
+  bottom: 0;
+  left: 50%;
+  z-index: 0;
+  transform: translateX(-50%);
   pointer-events: none;
 }
 
@@ -1556,6 +1557,10 @@ html.dark .dock {
   transition: opacity 0.2s ease 0.08s;
 }
 .surface:not(.is-open) .field { flex: none; }
+/* Closed, the panel is an invisible sheet lying over the face — its editor would
+   otherwise hand the bead a text cursor. Nothing in it is reachable until the
+   card is open anyway, so it stops taking the pointer entirely. */
+.surface:not(.is-open) .panel { pointer-events: none; }
 /* The contenteditable field. It flows text nodes + atomic chip spans, wrapping
    at the card's fixed width and growing its own height — no textarea, no
    overlay, and no per-keystroke width chase. */
