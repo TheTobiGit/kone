@@ -63,6 +63,7 @@ docs/
 # Prototype capture scripts
 /*.mjs
 /.*.mjs
+.shots/
 
 # Local agent artifacts
 .factory/
@@ -72,3 +73,6 @@ docs/
 .cache
 tmp
 temp
+
+# Local UI demos (throwaway design prototypes)
+.ui-demos/
