@@ -18,6 +18,8 @@ import MarkdownMessage from "~/components/MarkdownMessage.vue";
 import FileChip from "~/components/FileChip.vue";
 import AgentActivity from "~/components/AgentActivity.vue";
 import TurnWorkFold from "~/components/TurnWorkFold.vue";
+import AgentFace from "~/components/AgentFace.vue";
+import { agentIdentity } from "~/utils/agentIdentity";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
@@ -58,6 +60,11 @@ const props = defineProps<{
    *  conversation. Its presence is what distinguishes "transcript didn't load"
    *  from a fresh blank thread (which carries no id yet). */
   threadId?: string | null;
+  /** The session's own durable thread id — what this thread's agent is derived
+   *  from. Distinct from `threadId` above, which is deliberately absent on a
+   *  blank column; the agent has to have a face before its first reply, so it
+   *  is seeded from the id the session carries from the moment it exists. */
+  agentSeed?: string | null;
   /** The session is still starting / rehydrating — no retry while it is. */
   loading?: boolean;
   /** A turn is in flight — retry / resend are disabled while one is. */
@@ -93,6 +100,10 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+
+/** This thread's agent. A blank column has no id yet, so it falls back to the
+ *  house name until its session has one. */
+const agent = computed(() => agentIdentity(props.agentSeed));
 
 // Warm the Markdown parser on mount: markdown-it is code-split behind a dynamic
 // import, so the very first streamed reply would otherwise flash raw source for a
@@ -209,9 +220,18 @@ function statusOf(block: AssistantBlock): { text: string; tone: "live" | "muted"
 // (`elapsed` reads block.at → block.endedAt), phrased by how the turn ended.
 function workLabel(block: AssistantBlock): string {
   const dur = elapsed(block);
-  if (block.state === "interrupted") return `Stopped · ${dur}`;
-  if (block.state === "failed") return `Ended · ${dur}`;
+  if (block.state === "interrupted") return `Stopped ${dur}`;
+  if (block.state === "failed") return `Ended ${dur}`;
   return dur;
+}
+const openFolds = reactive<Record<string, boolean>>({});
+function isFoldOpen(blockId: string, defaultOpen = false): boolean {
+  return openFolds[blockId] ?? defaultOpen;
+}
+function toggleFold(blockId: string, defaultOpen = false): void {
+  const next = !isFoldOpen(blockId, defaultOpen);
+  openFolds[blockId] = next;
+  cue(next ? "expand" : "collapse");
 }
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -744,6 +764,36 @@ function requestOlder(): void {
       <!-- ── Assistant (kone) turn — parts, in the order they arrived ────── -->
       <template v-else>
         <div class="stack selectable">
+          <!-- Who answered. Agent turns only — giving the user's own turns a
+               face would make the transcript a group chat instead of a
+               document, and the asymmetry is what keeps it one. -->
+          <div class="speaker">
+            <AgentFace :seed="agentSeed" :size="26" />
+            <button
+              v-if="block.state !== 'running' && viewOf(block).foldedGroups.length"
+              type="button"
+              class="speaker__head speaker__head--toggle"
+              :aria-expanded="isFoldOpen(block.id, viewOf(block).replyGroups.length === 0)"
+              :aria-label="`${isFoldOpen(block.id, viewOf(block).replyGroups.length === 0) ? 'Hide' : 'Show'} agent work (${workLabel(block)})`"
+              @click="toggleFold(block.id, viewOf(block).replyGroups.length === 0)"
+            >
+              <span class="speaker__name">{{ agent.name }}</span>
+              <span class="speaker__meta">
+                <span class="speaker__label">{{ workLabel(block) }}</span>
+                <HugeiconsIcon
+                  class="speaker__chev"
+                  :class="{ 'speaker__chev--open': isFoldOpen(block.id, viewOf(block).replyGroups.length === 0) }"
+                  :icon="ArrowDown01Icon"
+                  :size="12"
+                  :stroke-width="2"
+                />
+              </span>
+            </button>
+            <div v-else class="speaker__head">
+              <span class="speaker__name">{{ agent.name }}</span>
+            </div>
+          </div>
+
           <!-- RUNNING — the live read: settled batches inline, in arrival order,
                plus the one live tail orb below. Steps and text interleave exactly
                as they land so tools-after-text read correctly while the turn is
@@ -783,17 +833,15 @@ function requestOlder(): void {
 
           <!-- SETTLED — the calm read: everything the agent did and said on the
                way to its answer (tool calls, thinking, and the narration between
-               them) collapses behind one "Worked for {duration}" fold, and only
-               the final reply stays open. A turn that ended on a tool call has no
-               trailing reply, so the fold opens by default rather than collapsing
-               to nothing. -->
+               them) collapses behind the agent-name toggler, and only the final
+               reply stays open. A turn that ended on a tool call has no trailing
+               reply, so the fold opens by default rather than collapsing to nothing. -->
           <template v-else>
             <TurnWorkFold
               v-if="viewOf(block).foldedGroups.length"
               :groups="viewOf(block).foldedGroups"
-              :label="workLabel(block)"
+              :open="isFoldOpen(block.id, viewOf(block).replyGroups.length === 0)"
               :historical="block.historical"
-              :default-open="viewOf(block).replyGroups.length === 0"
             />
             <div
               v-for="grp in viewOf(block).replyGroups"
@@ -999,6 +1047,94 @@ function requestOlder(): void {
   gap: 15px;
   align-items: flex-start;
   width: 100%;
+}
+
+/* ── Speaker line — who answered ───────────────────────────────────────────── */
+.speaker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  line-height: 1;
+  /* Pulled back in from the stack's 15px: the line belongs to the reply beneath
+     it, and at full gap it floats between two turns instead. */
+  margin-bottom: -6px;
+}
+.speaker__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+}
+.speaker__head--toggle {
+  padding: 3px 6px;
+  margin-left: -5px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+  transition: background-color 0.15s ease;
+}
+.speaker__head--toggle:hover {
+  background: var(--hover);
+}
+.speaker__head--toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 1px;
+}
+.speaker__name {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink-soft);
+  transition: color 0.15s ease;
+}
+.speaker__head--toggle:hover .speaker__name {
+  color: var(--ink);
+}
+.speaker__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+.speaker__head--toggle:hover .speaker__meta {
+  color: var(--ink-soft);
+}
+.speaker__label {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+}
+.speaker__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  opacity: 0.75;
+  transition: transform 0.24s ease, opacity 0.15s ease;
+}
+.speaker__head--toggle:hover .speaker__chev {
+  opacity: 1;
+}
+.speaker__chev--open {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .speaker__chev {
+    transition: none;
+  }
 }
 
 /* ── Message body ──────────────────────────────────────────────────────────── */

@@ -1477,6 +1477,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     :session-error="c.session.error.value"
                     :source-key="c.id"
                     :thread-id="anchoredThreadId(c)"
+                    :agent-seed="c.session.threadId.value"
                     :loading="c.session.sessionState.value === 'starting'"
                     :busy="c.session.busy.value"
                     :queued="c.session.queuedTurns.value"

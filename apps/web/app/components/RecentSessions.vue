@@ -13,6 +13,8 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import HoldToConfirm from "~/components/HoldToConfirm.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
+import AgentFace from "~/components/AgentFace.vue";
+import { agentIdentity } from "~/utils/agentIdentity";
 import { Magnet } from "~/components/ui/magnet";
 import { sessionBrand } from "~/utils/modelCatalog";
 import { prefetchThread } from "~/composables/useAgent";
@@ -330,6 +332,15 @@ function hasDiff(s: SessionSummary): boolean {
             </div>
 
             <div class="rs__meta">
+              <!-- Whose thread this is. It rides in the meta line rather than
+                   the title, where the provider logo already sits: the row
+                   should say which agent owns the conversation without growing
+                   a second mark next to the first. -->
+              <span class="rs__agent">
+                <AgentFace :seed="s.threadId" :size="14" />
+                {{ agentIdentity(s.threadId).name }}
+              </span>
+
               <span v-if="s.projectName" class="rs__project" :title="s.projectPath">
                 <HugeiconsIcon :icon="Folder01Icon" :size="12" :stroke-width="1.7" aria-hidden="true" />
                 {{ s.projectName }}
@@ -748,6 +759,13 @@ function hasDiff(s: SessionSummary): boolean {
 /* Project chip — only on the App Home aggregate, where a row can come from any
    project. Reads a shade firmer than the branch/diff metadata beside it so the
    "which project" answer leads the line. */
+.rs__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  color: var(--ink-soft);
+}
 .rs__project {
   display: inline-flex;
   align-items: center;
