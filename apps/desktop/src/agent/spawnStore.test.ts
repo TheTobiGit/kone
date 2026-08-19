@@ -24,7 +24,7 @@ function useUserDataDir(dir: string): string {
 }
 useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-spawn-store-")));
 
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 

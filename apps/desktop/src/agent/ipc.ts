@@ -147,16 +147,16 @@ export function registerAgentIpc(): void {
    *  spawning turn's id for a spawned child's events, registered at dispatch —
    *  F10). */
   function broadcast(event: RuntimeEvent, journal = true): void {
-    const stamped: RuntimeEvent =
-      event.eventId !== undefined && event.parentTurnId !== undefined
-        ? event
-        : {
-            ...event,
-            ...(event.eventId === undefined ? { eventId: randomUUID() } : {}),
-            ...(event.parentTurnId === undefined
-              ? { parentTurnId: dispatcher.spawnParentTurnId(event.threadId) }
-              : {}),
-          };
+    let stamped: RuntimeEvent;
+    if (event.eventId !== undefined && event.parentTurnId !== undefined) {
+      stamped = event;
+    } else {
+      stamped = { ...event };
+      if (event.eventId === undefined) stamped.eventId = randomUUID();
+      if (event.parentTurnId === undefined) {
+        stamped.parentTurnId = dispatcher.spawnParentTurnId(event.threadId);
+      }
+    }
     if (journal) store.applyEvent(stamped);
     // Slim before the wire: the journal keeps the FULL payload; the renderer
     // copy gets bounded tool-call bodies (see projectRuntimeEventForIpc).

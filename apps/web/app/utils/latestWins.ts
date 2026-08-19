@@ -14,7 +14,11 @@
  *  arrive while a run is executing resolve with that run's outcome when the
  *  run is still queued, or with a fresh follow-up's outcome once the run's
  *  reads have started. */
-export function createLatestWinsRun<T>(fn: () => Promise<T>): { run: () => Promise<T> } {
+export type LatestWinsRun<T> = {
+  run: () => Promise<T>;
+};
+
+export function createLatestWinsRun<T>(fn: () => Promise<T>): LatestWinsRun<T> {
   type Entry = {
     /** False only while queued behind another run — joinable. */
     started: boolean;
@@ -78,11 +82,13 @@ export interface SectionReadEntry {
  *  superseded queued read is skipped entirely (latest-wins), and any read that
  *  did execute lands its result before its successor's, so results always
  *  reflect the newest request. */
-export function createSectionSerializer(): {
+export type SectionSerializer = {
   schedule: (key: string, run: () => Promise<void>) => Promise<void>;
   /** The live entries, keyed by section — for tests. */
   entries: () => ReadonlyMap<string, SectionReadEntry>;
-} {
+};
+
+export function createSectionSerializer(): SectionSerializer {
   const inflight = new Map<string, SectionReadEntry>();
 
   function schedule(key: string, run: () => Promise<void>): Promise<void> {

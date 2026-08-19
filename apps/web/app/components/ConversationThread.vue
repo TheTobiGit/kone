@@ -210,7 +210,11 @@ function elapsed(block: AssistantBlock): string {
   const end = block.endedAt ?? props.now;
   return fmt(Math.max(0, Math.round((end - block.at) / 1000)));
 }
-function statusOf(block: AssistantBlock): { text: string; tone: "live" | "muted" | "error" } {
+type StatusLabel = {
+  text: string;
+  tone: "live" | "muted" | "error";
+};
+function statusOf(block: AssistantBlock): StatusLabel {
   if (block.state === "running") return { text: `working · ${elapsed(block)}`, tone: "live" };
   if (block.state === "failed") return { text: "couldn't finish", tone: "error" };
   if (block.state === "interrupted") return { text: "stopped", tone: "muted" };

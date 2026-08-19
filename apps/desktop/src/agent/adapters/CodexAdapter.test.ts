@@ -18,7 +18,7 @@ import { Database } from "bun:sqlite";
 // So the adapter is loaded from a temp copy of its source with every relative
 // import rewritten to an absolute file URL: a resolved path no mock can
 // intercept, evaluated by the same bun compiler as the real thing.
-mock.module("node:sqlite", () => ({
+mock.module("../sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 setUserDataDir("/tmp/kone-codex-adapter-test");

@@ -70,12 +70,12 @@ export type CodexSkillEntry = {
 type JsonKey = { key: string; keyStart: number; valueStart: number; valueEnd: number };
 type ScannedObject = { open: number; close: number; keys: JsonKey[] };
 
-const CLAUDE_VALUE: Record<WritableSkillState, string> = {
+const CLAUDE_VALUE = {
   enabled: "on",
   "name-only": "name-only",
   "user-invocable-only": "user-invocable-only",
   disabled: "off",
-};
+} satisfies Record<WritableSkillState, string>;
 
 // ── JSONC helpers ───────────────────────────────────────────────────────────
 
@@ -546,13 +546,21 @@ export function matchOpenCodePattern(pattern: string, name: string): boolean {
   return new RegExp(`^${regex}$`, "s").test(name);
 }
 
+/** One skill name's opencode verdict: the state it resolves to plus the
+ *  pattern and action that decided it (both null when nothing matched). */
+export type ResolvedSkillState = {
+  state: SkillState;
+  pattern: string | null;
+  action: string | null;
+};
+
 /** Effective opencode state for one skill name: the LAST matching pattern in
  *  file order decides (opencode evaluates rules last-match-wins); `deny`
  *  hides the skill from the agent, anything else leaves it reachable. */
 export function resolveOpenCodeSkillState(
   patterns: Record<string, string>,
   skillName: string,
-): { state: SkillState; pattern: string | null; action: string | null } {
+): ResolvedSkillState {
   let matched: { pattern: string; action: string } | null = null;
   for (const [pattern, action] of Object.entries(patterns)) {
     if (matchOpenCodePattern(pattern, skillName)) matched = { pattern, action };

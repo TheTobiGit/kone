@@ -272,7 +272,7 @@ export function schemesOf(theme: ThemeDefinition): readonly ThemeScheme[] {
  * the property names stay stable if a role is ever renamed, and so the existing
  * vocabulary (`--ground`, `--ink-soft`, `--accent`) survives untouched.
  */
-export const THEME_VARIABLES: Readonly<Record<ThemeRole, string>> = {
+export const THEME_VARIABLES = {
   sunken: "--sunken",
   ground: "--ground",
   band: "--band",
@@ -328,4 +328,4 @@ export const THEME_VARIABLES: Readonly<Record<ThemeRole, string>> = {
   termInk: "--term-ink",
   termCursor: "--term-cursor",
   termSelection: "--term-selection",
-};
+} satisfies Readonly<Record<ThemeRole, string>>;

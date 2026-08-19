@@ -25,7 +25,7 @@ class DatabaseSyncShim {
     this.db.close();
   }
 }
-mock.module("node:sqlite", () => ({ DatabaseSync: DatabaseSyncShim }));
+mock.module("../../sqlite.js", () => ({ DatabaseSync: DatabaseSyncShim }));
 
 // The scanner itself must load AFTER the mock is registered — a static import
 // would hoist above it and pull the real node:sqlite.

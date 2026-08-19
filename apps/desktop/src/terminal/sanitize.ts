@@ -107,6 +107,10 @@ function findEscapeSequenceEndIndex(input: string, start: number): number | null
   return isEscapeFinalByte(input.charCodeAt(cursor)) ? cursor + 1 : start + 1;
 }
 
+/** One chunk of sanitized PTY history: the replay-safe text plus any control
+ *  sequence still incomplete at the chunk's end. */
+export type SanitizedHistoryChunk = { visibleText: string; pendingControlSequence: string };
+
 /** Sanitize one chunk of raw PTY output being appended to stored history.
  *
  *  Returns the text safe to keep for replay (`visibleText`) plus any control
@@ -118,7 +122,7 @@ function findEscapeSequenceEndIndex(input: string, start: number): number | null
 export function sanitizeTerminalHistoryChunk(
   pendingControlSequence: string,
   data: string,
-): { visibleText: string; pendingControlSequence: string } {
+): SanitizedHistoryChunk {
   const input = `${pendingControlSequence}${data}`;
   let visibleText = "";
   let index = 0;

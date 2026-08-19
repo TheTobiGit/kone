@@ -22,13 +22,13 @@ const AUTH_FAILURE =
 // the Electron main process for the full command timeout when a credential
 // helper misbehaves; pinning these makes a missing credential fail fast so the
 // UI can surface the auth error instead of hanging.
-const NON_INTERACTIVE_NETWORK_ENV: Record<string, string> = {
+const NON_INTERACTIVE_NETWORK_ENV = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "",
   GCM_INTERACTIVE: "never",
   SSH_ASKPASS: "",
   SSH_ASKPASS_REQUIRE: "never",
-};
+} satisfies Record<string, string>;
 
 /** Whether a git network failure message is a credential problem — the
  *  discriminator `rewordNetworkError` uses to reword git's raw auth stderr into

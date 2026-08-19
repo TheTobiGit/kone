@@ -153,26 +153,27 @@ export function projectSpawnedThread(input: SpawnProjectionInput): SpawnedThread
       : latestText
     : undefined;
 
-  return {
+  const projection: SpawnedThread = {
     threadId: thread.threadId,
     parentThreadId: thread.parentThreadId,
     title: thread.title,
     provider: thread.provider,
-    ...(thread.model ? { model: thread.model } : {}),
-    ...(thread.effort ? { effort: thread.effort } : {}),
     status,
     terminal,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
-    ...(elapsedMs !== undefined ? { elapsedMs } : {}),
-    ...(summary ? { summary } : {}),
-    ...(detail ? { detail } : {}),
-    // An approval gate rides its parked ask through to the consumer — the
-    // parent agent sees it (via the wait tool) and the renderer can answer it
-    // via agent:respond without routing through the parent.
-    ...(gate && gate.kind === "approval" && gate.requestId && gate.approval
-      ? { gate: { requestId: gate.requestId, approval: gate.approval } }
-      : {}),
-    ...(input.tokens !== undefined ? { tokens: input.tokens } : {}),
   };
+  if (thread.model) projection.model = thread.model;
+  if (thread.effort) projection.effort = thread.effort;
+  if (elapsedMs !== undefined) projection.elapsedMs = elapsedMs;
+  if (summary) projection.summary = summary;
+  if (detail) projection.detail = detail;
+  // An approval gate rides its parked ask through to the consumer — the
+  // parent agent sees it (via the wait tool) and the renderer can answer it
+  // via agent:respond without routing through the parent.
+  if (gate && gate.kind === "approval" && gate.requestId && gate.approval) {
+    projection.gate = { requestId: gate.requestId, approval: gate.approval };
+  }
+  if (input.tokens !== undefined) projection.tokens = input.tokens;
+  return projection;
 }

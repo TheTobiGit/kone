@@ -11,11 +11,15 @@
 // first entry, and consumed once.
 const carriedHeights = new Map<string, number>();
 
+// One announcement plus the wall-clock time it was made — the key the
+// module-scope dedupe compares against.
+type Announcement = { text: string; at: number };
+
 // The screen-reader announcer is shared across instances too: one turn renders
 // several AgentActivity instances (the live tail plus every settled step batch),
 // and they all see the same `running`→false transition in a single Vue flush.
 // The module-scope dedupe turns that into one announcement, not one per batch.
-const lastAnnounce: { text: string; at: number } = { text: "", at: 0 };
+const lastAnnounce: Announcement = { text: "", at: 0 };
 </script>
 
 <script setup lang="ts">

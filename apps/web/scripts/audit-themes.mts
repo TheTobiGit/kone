@@ -191,7 +191,15 @@ function parseValue(raw: string, ctx: ResolveContext): Rgba {
   throw new Error("not a supported colour expression");
 }
 
-function parseMixComponent(arg: string, ctx: ResolveContext): { color: Rgba; pct: number | null } {
+/** One parsed `color-mix()` component: its resolved color and optional
+ *  percentage weight as a 0..1 fraction (null when the component has no
+ *  percentage). */
+type MixComponent = {
+  color: Rgba;
+  pct: number | null;
+};
+
+function parseMixComponent(arg: string, ctx: ResolveContext): MixComponent {
   const m = arg.match(/^(.*?)\s+(\d+(?:\.\d+)?)%$/);
   if (m) return { color: parseValue(m[1], ctx), pct: parseFloat(m[2]) / 100 };
   return { color: parseValue(arg, ctx), pct: null };

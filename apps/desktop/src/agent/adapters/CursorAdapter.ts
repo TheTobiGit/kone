@@ -249,11 +249,12 @@ function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
     readString(toolCall, "title")?.trim() ??
     "Request permission";
   const detail = readString(toolCall, "detail")?.trim();
-  return {
+  const request: ApprovalRequest = {
     kind,
     title,
-    ...(detail ? { detail } : {}),
   };
+  if (detail) request.detail = detail;
+  return request;
 }
 
 /** Pick the reply option for a decision, matching the option's `kind` prefix
@@ -323,11 +324,12 @@ export function seedFromSessionResponse(response: unknown): CursorSessionSeed {
     .filter((id): id is string => id !== undefined);
   const configOptions = parseConfigOptions(record?.configOptions);
   const defaultModel = findOption(configOptions, ["model"])?.currentValue;
-  return {
+  const seed: CursorSessionSeed = {
     modeIds,
     configOptions,
-    ...(defaultModel ? { defaultModel } : {}),
   };
+  if (defaultModel) seed.defaultModel = defaultModel;
+  return seed;
 }
 
 /** Cursor names context windows `"300k"` / `"1m"` / `"272k"`. */
@@ -479,19 +481,16 @@ export function toModelDescriptor(raw: unknown): ModelDescriptor | undefined {
   if (context && context.options.length > 0) {
     const windows = context.options.flatMap((option) => {
       const tokens = contextWindowTokens(option.value);
-      return tokens === undefined
-        ? []
-        : [
-            {
-              id: option.value,
-              label: option.name?.trim() || option.value.toUpperCase(),
-              tokens,
-              ...(option.value === context.currentValue ? { isDefault: true } : {}),
-            },
-          ];
+      if (tokens === undefined) return [];
+      const entry = {
+        id: option.value,
+        label: option.name?.trim() || option.value.toUpperCase(),
+        tokens,
+      };
+      return option.value === context.currentValue ? [{ ...entry, isDefault: true }] : [entry];
     });
     if (windows.length > 0) descriptor.contextWindows = windows;
-    const current = windows.find((window) => window.isDefault);
+    const current = windows.find((window) => "isDefault" in window && window.isDefault);
     if (current) descriptor.contextWindowTokens = current.tokens;
   }
 
@@ -1385,13 +1384,16 @@ export class CursorAdapter implements ProviderAdapter {
     // The ACP `usage_update` shape is only ever `used`/`size` — no
     // input/output split, so no cache/reasoning split either.
     const usage: TokenUsage & TokenUsageSplits = {
-      ...(used === undefined ? {} : { contextUsed: used, total: used }),
-      ...(size === undefined ? {} : { contextWindow: size }),
       compactsAutomatically: true,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
       reasoningTokens: 0,
     };
+    if (used !== undefined) {
+      usage.contextUsed = used;
+      usage.total = used;
+    }
+    if (size !== undefined) usage.contextWindow = size;
     this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
   }
 
@@ -1443,13 +1445,13 @@ export class CursorAdapter implements ProviderAdapter {
         // reaching the store — pass the whole split through, still 0 when this
         // speculative `result.usage` bag doesn't carry a given count.
         const usage: TokenUsage & TokenUsageSplits = {
-          ...(input !== undefined ? { input } : {}),
-          ...(output !== undefined ? { output } : {}),
-          ...(total !== undefined ? { total } : {}),
           cacheReadTokens: cacheRead ?? 0,
           cacheCreationTokens: cacheWrite ?? 0,
           reasoningTokens: reasoning ?? 0,
         };
+        if (input !== undefined) usage.input = input;
+        if (output !== undefined) usage.output = output;
+        if (total !== undefined) usage.total = total;
         this.emit({
           ...this.base(session),
           type: "thread.token-usage.updated",
@@ -1533,24 +1535,25 @@ export class CursorAdapter implements ProviderAdapter {
       status,
       text: buffer.text,
       name: buffer.name,
-      ...(buffer.tasks?.length ? { tasks: buffer.tasks } : {}),
-      ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
     };
+    if (buffer.tasks?.length) item.tasks = buffer.tasks;
+    if (buffer.detail.length > 0) item.detail = buffer.detail;
     this.emit({ ...this.base(session), type, turnId, item });
   }
 
   private base(session: CursorSession) {
-    return {
+    const envelope = {
       threadId: session.threadId,
       provider: this.provider,
       at: Date.now(),
       source: "cursor.acp.notification" as const,
-      // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
-      // never completes still leaves the thread resumable.
-      ...(session.conversationId
-        ? { refs: { conversationId: session.conversationId } }
-        : {}),
     };
+    // The resume id rides every envelope so a turn that never completes still
+    // leaves the thread resumable.
+    if (session.conversationId) {
+      return { ...envelope, refs: { conversationId: session.conversationId } };
+    }
+    return envelope;
   }
 
   private toSession(session: CursorSession): Session {
@@ -1558,7 +1561,7 @@ export class CursorAdapter implements ProviderAdapter {
     // spawn option — the `effort`/`reasoning` option's currentValue is the
     // honest read, absent when the current model exposes no effort axis.
     const effort = findOption(session.configOptions, EFFORT_OPTION_IDS)?.currentValue;
-    return {
+    const result: Session = {
       threadId: session.threadId,
       provider: this.provider,
       cwd: session.cwd,
@@ -1567,9 +1570,10 @@ export class CursorAdapter implements ProviderAdapter {
       resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
-      ...(effort ? { effort } : {}),
       mode: session.mode,
     };
+    if (effort) result.effort = effort;
+    return result;
   }
 
   private requireSession(threadId: string): CursorSession {

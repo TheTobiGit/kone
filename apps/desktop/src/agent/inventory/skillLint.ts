@@ -360,7 +360,7 @@ function parseFlow(text: string): unknown {
       throw new YamlSyntaxError("expected `,` or `}` in flow mapping");
     }
   };
-  const parseSeq = (): unknown => {
+  const parseSeq = (): unknown[] => {
     i++;
     const items: unknown[] = [];
     for (;;) {
@@ -439,6 +439,8 @@ function splitKeyValue(
   return null;
 }
 
+type BlockScalar = { value: string; next: number };
+
 // Reads the indented lines under a `|` or `>` header. Literal scalars keep
 // every newline; folded scalars turn single line breaks between non-blank
 // lines into spaces, with each blank line becoming a newline — so a blank
@@ -449,7 +451,7 @@ function readBlockScalar(
   start: number,
   keyIndent: number,
   header: string,
-): { value: string; next: number } {
+): BlockScalar {
   const folded = header.startsWith(">");
   const chomping = header.includes("+") ? "keep" : header.includes("-") ? "strip" : "clip";
   const explicitIndent = header.match(/[0-9]/);
@@ -501,10 +503,12 @@ function attachValue(parent: YamlContainer, key: string, value: YamlContainer | 
   parent.entries.set(key, value === null ? null : value.kind === "map" ? value.entries : value.items);
 }
 
+type ParsedFrontmatter = { mapping: Record<string, unknown>; blockScalarKeys: string[] };
+
 // Parses the frontmatter text between the `---` delimiters. Indentation-aware
 // enough for nested `metadata:` maps and one level of block sequences; a
 // top-level sequence is rejected because the frontmatter must be a mapping.
-function parseFrontmatterYaml(text: string): { mapping: Record<string, unknown>; blockScalarKeys: string[] } {
+function parseFrontmatterYaml(text: string): ParsedFrontmatter {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const root: YamlContainer = { kind: "map", entries: new Map() };
   const stack: { indent: number; node: YamlContainer }[] = [{ indent: -1, node: root }];

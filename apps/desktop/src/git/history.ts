@@ -165,14 +165,15 @@ async function commitFiles(
     // file. Both run --find-renames over the same pair of trees, so they agree
     // on which paths are a rename — only the status letter is worth taking here.
     const meta = metaByPath.get(entry.path);
-    files.push({
+    const file: GitCommitFile = {
       path: entry.path,
-      ...(entry.from !== undefined ? { from: entry.from } : {}),
       status: meta?.status ?? "modified",
       added: entry.added,
       removed: entry.removed,
       binary: entry.binary,
-    });
+    };
+    if (entry.from !== undefined) file.from = entry.from;
+    files.push(file);
   }
   return files;
 }

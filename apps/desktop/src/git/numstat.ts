@@ -45,13 +45,14 @@ export function parseNumstat(out: string): NumstatEntry[] {
     }
     if (!filePath) continue;
     const binary = addedRaw === "-" && removedRaw === "-";
-    entries.push({
+    const entry: NumstatEntry = {
       path: filePath,
-      ...(from !== undefined ? { from } : {}),
       added: binary ? 0 : Number(addedRaw) || 0,
       removed: binary ? 0 : Number(removedRaw) || 0,
       binary,
-    });
+    };
+    if (from !== undefined) entry.from = from;
+    entries.push(entry);
   }
   return entries;
 }

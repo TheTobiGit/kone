@@ -26,6 +26,7 @@ import type {
   ProviderStatus,
   RuntimeItem,
   RuntimeItemKind,
+  RuntimeEvent,
   Session,
   SendTurnInput,
   SessionStartInput,
@@ -241,16 +242,15 @@ export function parseAntigravityModelLines(output: string): ModelDescriptor[] {
       );
     });
     const defaultEffort = DEFAULT_EFFORT_BY_MODEL[model] ?? efforts[0];
-    return {
+    const descriptor: ModelDescriptor = {
       id: model,
       label: model,
-      ...(efforts.length > 0
-        ? {
-            reasoningEfforts: efforts,
-            ...(defaultEffort ? { defaultReasoningEffort: defaultEffort } : {}),
-          }
-        : {}),
     };
+    if (efforts.length > 0) {
+      descriptor.reasoningEfforts = efforts;
+      if (defaultEffort) descriptor.defaultReasoningEffort = defaultEffort;
+    }
+    return descriptor;
   });
 }
 
@@ -710,9 +710,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       cwd: input.cwd,
       model: input.model ?? DEFAULT_MODEL,
       mode: "full-access",
-      ...(conversationId ? { conversationId, resumedFrom: conversationId } : {}),
       gatewayConnection: input.gatewayConnection,
-      ...(input.effort ? { modelOptions: { reasoningEffort: input.effort } } : {}),
       binary: this.binary,
       homeDir: this.homeDir,
       processedHookBytes: 0,
@@ -724,8 +722,13 @@ export class AntigravityAdapter implements ProviderAdapter {
       interrupted: false,
       stopped: false,
       turnTerminalEmitted: false,
-      ...(conversationId ? { transcriptPath: antigravityTranscriptPath(conversationId, this.homeDir) } : {}),
     };
+    if (conversationId) {
+      session.conversationId = conversationId;
+      session.resumedFrom = conversationId;
+      session.transcriptPath = antigravityTranscriptPath(conversationId, this.homeDir);
+    }
+    if (input.effort) session.modelOptions = { reasoningEffort: input.effort };
     this.sessions.set(input.threadId, session);
     this.emit({ ...this.base(session), source: "antigravity.cli.lifecycle", type: "session.started" });
     return this.toSession(session);
@@ -994,13 +997,14 @@ export class AntigravityAdapter implements ProviderAdapter {
         conversationId: session.conversationId,
       });
     } else {
-      this.emit({
+      const event: Extract<RuntimeEvent, { type: "turn.aborted" }> = {
         ...this.base(session),
         type: "turn.aborted",
         turnId,
         reason: input.state === "interrupted" ? "interrupted" : "failed",
-        ...(input.message ? { message: input.message } : {}),
-      });
+      };
+      if (input.message) event.message = input.message;
+      this.emit(event);
     }
   }
 
@@ -1199,21 +1203,19 @@ export class AntigravityAdapter implements ProviderAdapter {
   // ── shared helpers ────────────────────────────────────────────────────────
 
   private base(session: AntigravitySession) {
-    return {
+    const envelope = {
       threadId: session.threadId,
       provider: this.provider,
       at: Date.now(),
       source: "antigravity.cli.event" as const,
-      // The resume id rides every envelope so a turn that never completes
-      // still leaves the thread resumable.
-      ...(session.conversationId
-        ? { refs: { conversationId: session.conversationId } }
-        : {}),
     };
+    // The resume id rides every envelope so a turn that never completes
+    // still leaves the thread resumable.
+    return session.conversationId ? { ...envelope, refs: { conversationId: session.conversationId } } : envelope;
   }
 
   private toSession(session: AntigravitySession): Session {
-    return {
+    const result: Session = {
       threadId: session.threadId,
       provider: this.provider,
       cwd: session.cwd,
@@ -1222,9 +1224,10 @@ export class AntigravityAdapter implements ProviderAdapter {
       resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
-      ...(session.modelOptions?.reasoningEffort ? { effort: session.modelOptions.reasoningEffort } : {}),
       mode: session.mode,
     };
+    if (session.modelOptions?.reasoningEffort) result.effort = session.modelOptions.reasoningEffort;
+    return result;
   }
 
   private requireSession(threadId: string): AntigravitySession {

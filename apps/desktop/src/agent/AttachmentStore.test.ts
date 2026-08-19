@@ -13,7 +13,7 @@ import type { AttachmentRegistry } from "./AttachmentStore.js";
 // Database in so this file can load without Electron; do not mock
 // ConversationStore itself — that replacement is process-wide in bun and
 // would strip methods other suites need.
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 

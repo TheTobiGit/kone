@@ -103,10 +103,7 @@ export async function listDir(dir: unknown, signal?: AbortSignal): Promise<DirLi
     throw new Error(`Not a directory: ${abs}`);
   }
 
-  const dirents = await readdir(abs, {
-    withFileTypes: true,
-    ...(signal ? { signal } : {}),
-  });
+  const dirents = await readdir(abs, { withFileTypes: true });
 
   const dirs: { name: string; path: string }[] = [];
   for (const dirent of dirents) {

@@ -1,4 +1,8 @@
-import type { CreateSideChatResult, CreateSideChatTarget } from "~/types/desktop";
+import type {
+  CreateSideChatInput,
+  CreateSideChatResult,
+  CreateSideChatTarget,
+} from "~/types/desktop";
 
 // Side chat creation, renderer side (docs/side-chat-design.md §5). The desktop
 // IPC channel (`agent:create-side-chat`) is one-shot and idempotent on the
@@ -93,14 +97,15 @@ export async function createOrJoinSidechat(
       // semantics hold, but no fork exists on any disk.
       return { threadId, status: "created" };
     }
-    const result: CreateSideChatResult = await api.createSideChat({
+    const input: CreateSideChatInput = {
       requestId,
       threadId,
       sourceThreadId,
-      ...(trimmed ? { prompt: trimmed } : {}),
-      ...(title ? { title } : {}),
-      ...(target ? { target } : {}),
-    });
+    };
+    if (trimmed) input.prompt = trimmed;
+    if (title) input.title = title;
+    if (target) input.target = target;
+    const result: CreateSideChatResult = await api.createSideChat(input);
     return { threadId: result.threadId, status: result.status };
   })();
 

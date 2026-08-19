@@ -30,28 +30,28 @@ const props = withDefaults(
   { foot: true },
 );
 
-const PROVIDER_LABEL: Record<ProviderKind, string> = {
+const PROVIDER_LABEL = {
   codex: "Codex",
   claudeAgent: "Claude",
   opencode: "OpenCode",
   cursor: "Cursor",
   droid: "Factory Droid",
   antigravity: "Antigravity",
-};
+} satisfies Record<ProviderKind, string>;
 const providerLabel = (p: ProviderKind) => PROVIDER_LABEL[p] ?? p;
 const providerBrand = (p: ProviderKind) => SESSION_BRAND[p] ?? "generic";
 
 /** Why each provider is worth connecting, in its own terms — the generic
  *  sentence the old version used ("kone can read the token…") was true of every
  *  row and therefore told the user nothing about the one in front of them. */
-const CONNECT_COPY: Record<QuotaProvider, string> = {
+const CONNECT_COPY = {
   opencode: "OpenCode records what each request cost to a database on this machine. kone can read it directly — no network call, no credential.",
   claudeAgent: "Ask Anthropic for your remaining 5-hour and weekly limits, using the token Claude's CLI already stored on this machine.",
   codex: "Ask OpenAI for your remaining Codex limits, using the token the Codex CLI already stored on this machine.",
   cursor: "Ask Cursor for your remaining credits and included usage, using the session Cursor already stored on this machine.",
   antigravity: "Ask the language server the Antigravity app (or `agy`) is running for your Session and Weekly pool quotas — no network, and kone never stores a credential.",
   droid: "Ask Factory for your 5-hour, weekly and monthly token-rate limits, using a Factory API key you already hold (FACTORY_API_KEY or ~/.factory/.env) — kone never stores it.",
-};
+} satisfies Record<QuotaProvider, string>;
 
 /** Why there is no meter at all — per provider, in its own terms. The point is
  *  to explain the *absence* honestly, so a user who expects a Limits card here

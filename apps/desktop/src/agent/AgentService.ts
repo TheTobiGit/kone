@@ -331,18 +331,18 @@ export class AgentService {
     const env = await buildAgentEnv();
     const settings = readProviderSettings();
     return Promise.all(
-      [...this.adapters.keys()].map((provider) =>
-        resolveProviderMaintenance({
+      [...this.adapters.keys()].map((provider) => {
+        const input: Parameters<typeof resolveProviderMaintenance>[0] = {
           provider,
-          ...(settings[provider]?.binaryPath
-            ? { binaryOverride: settings[provider]?.binaryPath }
-            : {}),
           currentVersion: this.knownVersion(provider),
           env,
           checkLatest: options?.checkLatest ?? true,
           force: options?.force ?? false,
-        }),
-      ),
+        };
+        const binaryPath = settings[provider]?.binaryPath;
+        if (binaryPath) input.binaryOverride = binaryPath;
+        return resolveProviderMaintenance(input);
+      }),
     );
   }
 
@@ -357,25 +357,27 @@ export class AgentService {
     const override = settings[provider]?.binaryPath;
     const before = this.knownVersion(provider);
 
-    const run = await runProviderUpdate({
+    const updateInput: Parameters<typeof runProviderUpdate>[0] = {
       provider,
-      ...(override ? { binaryOverride: override } : {}),
       env,
-    });
+    };
+    if (override) updateInput.binaryOverride = override;
+    const run = await runProviderUpdate(updateInput);
 
     if (run.outcome === "unsupported") {
+      const maintenanceInput: Parameters<typeof resolveProviderMaintenance>[0] = {
+        provider,
+        currentVersion: before,
+        env,
+        checkLatest: false,
+      };
+      if (override) maintenanceInput.binaryOverride = override;
       return {
         provider,
         outcome: run.outcome,
         message: run.message,
         output: run.output,
-        maintenance: await resolveProviderMaintenance({
-          provider,
-          ...(override ? { binaryOverride: override } : {}),
-          currentVersion: before,
-          env,
-          checkLatest: false,
-        }),
+        maintenance: await resolveProviderMaintenance(maintenanceInput),
         statuses: readProviderCache().statuses,
       };
     }
@@ -387,14 +389,15 @@ export class AgentService {
     const after = statuses.find((s) => s.provider === provider)?.version ?? null;
     void this.listModels(provider).catch(() => []);
 
-    const maintenance = await resolveProviderMaintenance({
+    const maintenanceInput: Parameters<typeof resolveProviderMaintenance>[0] = {
       provider,
-      ...(override ? { binaryOverride: override } : {}),
       currentVersion: after,
       env,
       checkLatest: true,
       force: true,
-    });
+    };
+    if (override) maintenanceInput.binaryOverride = override;
+    const maintenance = await resolveProviderMaintenance(maintenanceInput);
 
     const outcome =
       run.outcome === "succeeded" && before && after && before === after ? "unchanged" : run.outcome;
@@ -990,15 +993,16 @@ export class AgentService {
         if (!claimed) return;
         this.dropQueuedCount(threadId);
         if (provider) {
-          this.dispatch({
+          const promoted: Extract<RuntimeEvent, { type: "turn.promoted" }> = {
             type: "turn.promoted",
             threadId,
             provider,
             queueId: row.queueId,
-            ...(result?.turnId ? { turnId: result.turnId } : {}),
             at: Date.now(),
             source: "kone.store",
-          });
+          };
+          if (result?.turnId) promoted.turnId = result.turnId;
+          this.dispatch(promoted);
         }
       } catch (err) {
         // The turn was not accepted — put the row back for a later drain and
@@ -1035,16 +1039,17 @@ export class AgentService {
         // rather than dropping the whole queued turn.
       }
     }
-    return {
+    const input: SendTurnInput = {
       threadId: row.threadId,
       input: row.input,
-      ...(attachments?.length ? { attachments } : {}),
-      ...(row.model ? { model: row.model } : {}),
-      ...(row.mode ? { mode: row.mode } : {}),
-      ...(row.effort ? { effort: row.effort } : {}),
-      ...(row.serviceTier ? { serviceTier: row.serviceTier } : {}),
-      ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
     };
+    if (attachments?.length) input.attachments = attachments;
+    if (row.model) input.model = row.model;
+    if (row.mode) input.mode = row.mode;
+    if (row.effort) input.effort = row.effort;
+    if (row.serviceTier) input.serviceTier = row.serviceTier;
+    if (row.contextWindow) input.contextWindow = row.contextWindow;
+    return input;
   }
 
   /** Cancel every queued/promoting row for a thread whose session is stopping,

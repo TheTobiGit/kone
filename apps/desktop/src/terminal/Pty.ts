@@ -78,16 +78,18 @@ export type NodePtyEventSource = {
   ): nodePty.IDisposable;
 };
 
+/** The event subscription surface createPtySubscriptions builds: each method
+ *  registers one listener and returns its own unsubscribe closure. */
+export type PtySubscriptions = {
+  onData(listener: (data: string) => void): () => void;
+  onExit(listener: (ev: { exitCode: number; signal?: number }) => void): () => void;
+};
+
 /** Wrap a PTY's event registrations so each unsubscribe owns exactly its own
  *  registration. Each returned closure captures the IDisposable handed back by
  *  that single onData/onExit call, so disposing one handler can never release
  *  a handler registered later (or earlier) on the same event. */
-export function createPtySubscriptions(source: NodePtyEventSource): {
-  onData(listener: (data: string) => void): () => void;
-  onExit(
-    listener: (ev: { exitCode: number; signal?: number }) => void,
-  ): () => void;
-} {
+export function createPtySubscriptions(source: NodePtyEventSource): PtySubscriptions {
   return {
     onData: (listener) => {
       const disposer = source.onData(listener);

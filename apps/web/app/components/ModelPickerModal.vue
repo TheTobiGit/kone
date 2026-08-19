@@ -118,18 +118,21 @@ const realProviders = computed<MProvider[]>(() =>
     sub: p.sub,
     brand: p.brand,
     ready: p.ready,
-    models: p.models.map((o) => ({
-      key: `${p.id}:${o.key}`,
-      label: o.label,
-      brand: o.brand,
-      vendor: o.vendor,
-      efforts: o.efforts.map((e) => ({ id: `${p.id}:${e.id}`, modelId: e.modelId, tier: e.tier })),
-      defaultEffortIndex: o.defaultEffortIndex,
-      providerId: p.id,
-      ...(o.fastTier ? { fastTier: o.fastTier } : {}),
-      ...(o.fastDefault ? { fastDefault: o.fastDefault } : {}),
-      ...(o.contextWindows ? { contextWindows: o.contextWindows } : {}),
-    })),
+    models: p.models.map((o) => {
+      const model: MModel = {
+        key: `${p.id}:${o.key}`,
+        label: o.label,
+        brand: o.brand,
+        vendor: o.vendor,
+        efforts: o.efforts.map((e) => ({ id: `${p.id}:${e.id}`, modelId: e.modelId, tier: e.tier })),
+        defaultEffortIndex: o.defaultEffortIndex,
+        providerId: p.id,
+      };
+      if (o.fastTier) model.fastTier = o.fastTier;
+      if (o.fastDefault) model.fastDefault = o.fastDefault;
+      if (o.contextWindows) model.contextWindows = o.contextWindows;
+      return model;
+    }),
   })),
 );
 

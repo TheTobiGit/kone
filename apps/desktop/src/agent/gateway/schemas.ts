@@ -103,12 +103,12 @@ export const ScratchpadWriteInputSchema = z.object({
   clientRequestId: z.string().min(1).max(200).optional(),
 });
 
-export const SCRATCHPAD_READ_JSON_SCHEMA: Record<string, unknown> = {
+export const SCRATCHPAD_READ_JSON_SCHEMA = {
   type: "object",
   properties: { scratchpadId: { type: "string" } },
-};
+} satisfies Record<string, unknown>;
 
-export const SCRATCHPAD_WRITE_JSON_SCHEMA: Record<string, unknown> = {
+export const SCRATCHPAD_WRITE_JSON_SCHEMA = {
   type: "object",
   properties: {
     title: { type: "string" },
@@ -118,7 +118,7 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA: Record<string, unknown> = {
     clientRequestId: { type: "string" },
   },
   required: ["title", "body"],
-};
+} satisfies Record<string, unknown>;
 
 // ── spawn tool inputs (docs/thread-spawning-design.md) ───────────────────────
 // Schemas for the four thread-spawning tools. The zod `inputSchema` validates
@@ -168,12 +168,12 @@ export const ReadThreadInputSchema = z.object({
   maxTextChars: z.number().int().min(200).optional(),
 });
 
-export const SPAWN_TARGETS_JSON_SCHEMA: Record<string, unknown> = {
+export const SPAWN_TARGETS_JSON_SCHEMA = {
   type: "object",
   properties: {},
-};
+} satisfies Record<string, unknown>;
 
-export const SPAWN_THREAD_JSON_SCHEMA: Record<string, unknown> = {
+export const SPAWN_THREAD_JSON_SCHEMA = {
   type: "object",
   properties: {
     prompt: { type: "string" },
@@ -191,9 +191,9 @@ export const SPAWN_THREAD_JSON_SCHEMA: Record<string, unknown> = {
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
   required: ["prompt", "requestId", "target"],
-};
+} satisfies Record<string, unknown>;
 
-export const WAIT_FOR_THREADS_JSON_SCHEMA: Record<string, unknown> = {
+export const WAIT_FOR_THREADS_JSON_SCHEMA = {
   type: "object",
   properties: {
     threadIds: { type: "array", items: { type: "string" } },
@@ -201,9 +201,9 @@ export const WAIT_FOR_THREADS_JSON_SCHEMA: Record<string, unknown> = {
     timeoutMs: { type: "integer" },
   },
   required: ["threadIds"],
-};
+} satisfies Record<string, unknown>;
 
-export const READ_THREAD_JSON_SCHEMA: Record<string, unknown> = {
+export const READ_THREAD_JSON_SCHEMA = {
   type: "object",
   properties: {
     threadId: { type: "string" },
@@ -211,4 +211,4 @@ export const READ_THREAD_JSON_SCHEMA: Record<string, unknown> = {
     maxTextChars: { type: "integer" },
   },
   required: ["threadId"],
-};
+} satisfies Record<string, unknown>;

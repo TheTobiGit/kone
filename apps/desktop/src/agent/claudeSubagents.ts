@@ -23,7 +23,7 @@ const CLAUDE_WORKER_PROMPT =
 
 /** kone's curated role agents. Keyed by the agent name the Agent tool's
  *  `subagent_type` takes. */
-const CLAUDE_ROLE_AGENTS: Record<string, AgentDefinition> = {
+const CLAUDE_ROLE_AGENTS = {
   explore: {
     description:
       "Read-only codebase explorer. Use for file discovery, code search, and gathering context before implementation.",
@@ -56,7 +56,7 @@ const CLAUDE_ROLE_AGENTS: Record<string, AgentDefinition> = {
     tools: ["Read", "Grep", "Glob"],
     model: "sonnet",
   },
-};
+} satisfies Record<string, AgentDefinition>;
 
 /** Build the `agents` map for the SDK's query options: the curated roles plus
  *  the effort-tier workers (workers never override a role of the same name). */

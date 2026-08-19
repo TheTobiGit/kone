@@ -25,14 +25,14 @@ onMounted(() => {
 });
 
 // ── formatting ────────────────────────────────────────────────────────────
-const PROVIDER_LABEL: Record<ProviderKind, string> = {
+const PROVIDER_LABEL = {
   codex: "Codex",
   claudeAgent: "Claude",
   opencode: "OpenCode",
   cursor: "Cursor",
   droid: "Factory Droid",
   antigravity: "Antigravity",
-};
+} satisfies Record<ProviderKind, string>;
 const providerLabel = (p: ProviderKind) => PROVIDER_LABEL[p] ?? p;
 
 // The vendor logomark for a provider row (its own mark) and for a model row

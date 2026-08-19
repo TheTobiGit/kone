@@ -86,7 +86,7 @@ function pathFromText(text: string, name: string | undefined): string {
   return head.trim();
 }
 
-function splitPath(path: string): { name: string; dir: string } {
+function splitPath(path: string): Pick<ChangedFile, "name" | "dir"> {
   const parts = path.split("/").filter(Boolean);
   const name = parts.length ? parts[parts.length - 1]! : path;
   const dir = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
@@ -96,7 +96,7 @@ function splitPath(path: string): { name: string; dir: string } {
 // Count added/removed lines from a tool's diff body — unified-diff `+`/`-`
 // lines, ignoring the `+++`/`---` file headers. Bodies that aren't diffs
 // (command stdout) simply contribute nothing meaningful, which is fine.
-function countDiff(detail: string | undefined): { added: number; removed: number } {
+function countDiff(detail: string | undefined): Pick<ChangedFile, "added" | "removed"> {
   if (!detail) return { added: 0, removed: 0 };
   let added = 0;
   let removed = 0;

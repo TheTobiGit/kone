@@ -49,7 +49,7 @@ let inFlight: Promise<void> | null = null;
 /** Dev fallback (browser, no bridge): a plausible spread of install channels so
  *  the pane's states — behind, current, self-updating, bundled, unrecognised —
  *  are all exercised without an Electron shell. Never used in the app. */
-const MOCK: Record<ProviderKind, ProviderMaintenance> = {
+const MOCK = {
   codex: {
     provider: "codex",
     installSource: "npm",
@@ -140,7 +140,7 @@ const MOCK: Record<ProviderKind, ProviderMaintenance> = {
     canUpdate: true,
     checkedAt: Date.now(),
   },
-};
+} satisfies Record<ProviderKind, ProviderMaintenance>;
 
 export function useProviderMaintenance() {
   const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);

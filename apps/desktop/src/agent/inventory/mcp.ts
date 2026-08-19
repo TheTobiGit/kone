@@ -77,7 +77,7 @@ function normalizeTransport(raw: Record<string, unknown>): McpTransport {
 
 // opencode's `command` is an argv array (`["bun", "x", "pkg"]`); every other
 // source splits `command` (a string) + `args` (an array). Handle both.
-function normalizeCommand(command: unknown, extraArgs: string[]): { command: string | null; args: string[] } {
+function normalizeCommand(command: unknown, extraArgs: string[]): Pick<McpServerEntry, "command" | "args"> {
   if (Array.isArray(command)) {
     const parts = command.filter((item): item is string => typeof item === "string");
     const [first, ...rest] = parts;

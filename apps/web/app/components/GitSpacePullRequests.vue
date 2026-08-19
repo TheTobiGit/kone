@@ -113,11 +113,11 @@ function open(url: string) {
   void props.space.openExternal(url);
 }
 
-const REVIEW: Record<string, string> = {
+const REVIEW = {
   approved: "approved",
   "changes-requested": "changes requested",
   "review-required": "review needed",
-};
+} satisfies Record<string, string>;
 </script>
 
 <template>

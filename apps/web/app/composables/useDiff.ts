@@ -63,9 +63,13 @@ function toChunks(tokens: CodeLine, mask: boolean[] | null): DiffChunk[] {
   return out;
 }
 
+// Which UTF-16 units of each side of a deletion/addition pair fall inside a
+// changed span — `del` for the old string, `add` for the new.
+type WordMasks = { del: boolean[]; add: boolean[] };
+
 // Word-level masks for a deletion/addition pair: which UTF-16 units of each side
 // belong to a changed (added/removed) span. Whitespace is kept so code aligns.
-function wordMasks(oldStr: string, newStr: string): { del: boolean[]; add: boolean[] } {
+function wordMasks(oldStr: string, newStr: string): WordMasks {
   const del: boolean[] = [];
   const add: boolean[] = [];
   for (const part of diffWordsWithSpace(oldStr, newStr)) {

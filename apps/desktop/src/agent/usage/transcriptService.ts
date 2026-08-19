@@ -56,7 +56,9 @@ function resolveTimeZone(): string {
   }
 }
 
-function windowForRange(range: UsageRange): { sinceDay: string; untilDay: string; timeZone: string } {
+function windowForRange(
+  range: UsageRange,
+): Pick<TranscriptScanResult, "sinceDay" | "untilDay" | "timeZone"> {
   const timeZone = resolveTimeZone();
   const untilDay = localDateLabel(startOfLocalDay(Date.now()));
   const startMs = rangeStart(range);

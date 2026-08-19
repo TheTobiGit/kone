@@ -227,12 +227,15 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
   //    status is NOT a refusal: kone simply hasn't probed yet, and refusing on
   //    absent knowledge would make a cold launch unspawnable.
   if (input.providerStatus && !input.providerStatus.available) {
-    return {
+    const refusal: SpawnGuardResult = {
       ok: false,
       code: "provider_unavailable",
       message: spawnRefusalProviderUnavailable(input.target.provider, input.providerStatus.error),
-      ...(input.providerStatus.error ? { details: { error: input.providerStatus.error } } : {}),
     };
+    if (input.providerStatus.error) {
+      refusal.details = { error: input.providerStatus.error };
+    }
+    return refusal;
   }
 
   // 6. Model — a deliberate choice, so it is refused, never silently swapped.

@@ -28,13 +28,13 @@ import {
 import type { TranscriptProviderKind } from "./transcripts/types.js";
 import type { UsageTokenTotals } from "./transcripts/types.js";
 
-const TRANSCRIPT_PROVIDERS: Record<TranscriptProviderKind, string> = {
+const TRANSCRIPT_PROVIDERS = {
   claude: "claudeAgent",
   codex: "codex",
   opencode: "opencode",
   droid: "droid",
   antigravity: "antigravity",
-};
+} satisfies Record<TranscriptProviderKind, string>;
 
 // Report-level memoization. Even with the per-file transcript scan cache, a full
 // report still walks every transcript directory, re-reads the Cursor CSV and
@@ -138,6 +138,13 @@ function emptyCursorScan(): CursorDashboardScanResult {
   return { buckets: [], status: "ok", rowsRejected: 0 };
 }
 
+/** Which providers the store slice may contribute — the exclusion/inclusion
+ *  pair the store query is told to respect. */
+export type StoreProviderFilter = {
+  excludeProviders: string[];
+  onlyProviders?: string[];
+};
+
 /** Which providers the store slice may contribute, per report scope. The store
  *  (turn_usage) is never the primary source: the transcript scan and the Cursor
  *  dashboard are authoritative for the providers they cover, and those are
@@ -160,21 +167,19 @@ function emptyCursorScan(): CursorDashboardScanResult {
 export function resolveStoreProviderFilter(
   projectPath: string | null,
   useCursorStore: boolean,
-): { excludeProviders: string[]; onlyProviders?: string[] } {
+): StoreProviderFilter {
   if (projectPath !== null) {
     return { excludeProviders: ["claudeAgent"] };
   }
-  return {
-    excludeProviders: [
-      "claudeAgent",
-      "codex",
-      "opencode",
-      "droid",
-      "antigravity",
-      ...(useCursorStore ? [] : ["cursor"]),
-    ],
-    ...(useCursorStore ? { onlyProviders: ["cursor"] } : {}),
-  };
+  const excludeProviders = [
+    "claudeAgent",
+    "codex",
+    "opencode",
+    "droid",
+    "antigravity",
+    ...(useCursorStore ? [] : ["cursor"]),
+  ];
+  return useCursorStore ? { excludeProviders, onlyProviders: ["cursor"] } : { excludeProviders };
 }
 
 type StoreSlice = StoreUsageReport;

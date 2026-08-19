@@ -68,25 +68,24 @@ export function decodeCompact(file: CompactFile): PricingTable {
 export function encodeCompact(table: PricingTable, source?: string): CompactFile {
   const models: Record<string, CompactModel> = {};
   for (const [key, r] of Object.entries(table.entries)) {
-    models[key] = {
+    const model: CompactModel = {
       i: r.inputPerMillion,
       o: r.outputPerMillion,
       cw: r.cacheWritePerMillion,
       cr: r.cacheReadPerMillion,
-      ...(r.cacheReadIsExplicit ? {} : { cre: false }),
-      ...(r.fastMultiplier !== 1 ? { fast: r.fastMultiplier } : {}),
-      ...(r.longContext
-        ? {
-            lc: {
-              t: r.longContext.thresholdTokens,
-              i: r.longContext.inputPerMillion,
-              o: r.longContext.outputPerMillion,
-              cw: r.longContext.cacheWritePerMillion,
-              cr: r.longContext.cacheReadPerMillion,
-            },
-          }
-        : {}),
     };
+    if (!r.cacheReadIsExplicit) model.cre = false;
+    if (r.fastMultiplier !== 1) model.fast = r.fastMultiplier;
+    if (r.longContext) {
+      model.lc = {
+        t: r.longContext.thresholdTokens,
+        i: r.longContext.inputPerMillion,
+        o: r.longContext.outputPerMillion,
+        cw: r.longContext.cacheWritePerMillion,
+        cr: r.longContext.cacheReadPerMillion,
+      };
+    }
+    models[key] = model;
   }
   return { retrievedAt: table.retrievedAt, source, models };
 }

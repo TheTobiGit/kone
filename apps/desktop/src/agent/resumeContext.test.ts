@@ -4,14 +4,15 @@ import { buildResumeContext } from "./resumeContext.js";
 import type { RuntimeItem, StoredBlock } from "./types.js";
 
 function item(partial: Partial<RuntimeItem> & Pick<RuntimeItem, "kind">): RuntimeItem {
-  return {
+  const out: RuntimeItem = {
     itemId: partial.itemId ?? `item-${Math.random().toString(36).slice(2)}`,
     kind: partial.kind,
     status: partial.status ?? "completed",
     text: partial.text ?? "",
-    ...(partial.name ? { name: partial.name } : {}),
-    ...(partial.tasks ? { tasks: partial.tasks } : {}),
   };
+  if (partial.name) out.name = partial.name;
+  if (partial.tasks) out.tasks = partial.tasks;
+  return out;
 }
 
 function user(text: string, at = 1): StoredBlock {

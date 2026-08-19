@@ -59,6 +59,10 @@ const themeBootScript = {
   tagPosition: "head",
 } as const;
 
+const appConfig = isDesktop
+  ? { head: { script: [themeBootScript] }, baseURL: "./", buildAssetsDir: "_nuxt/" }
+  : { head: { script: [themeBootScript] } };
+
 export default defineNuxtConfig({
   compatibilityDate: "latest",
   devtools: { enabled: false },
@@ -79,15 +83,7 @@ export default defineNuxtConfig({
     port: 3001,
   },
   ssr: isDesktop ? false : undefined,
-  app: {
-    head: { script: [themeBootScript] },
-    ...(isDesktop
-      ? {
-          baseURL: "./",
-          buildAssetsDir: "_nuxt/",
-        }
-      : {}),
-  },
+  app: appConfig,
   runtimeConfig: {
     public: {
       isDesktop,

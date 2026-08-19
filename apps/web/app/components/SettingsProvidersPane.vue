@@ -67,7 +67,7 @@ type ProviderMeta = {
   docs: { href: string; label: string } | null;
 };
 
-const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
+const PROVIDER_META = {
   codex: {
     label: "Codex",
     vendor: "OpenAI",
@@ -132,7 +132,7 @@ const PROVIDER_META: Record<ProviderKind, ProviderMeta> = {
     signIn: "agy login",
     docs: { href: "https://antigravity.google", label: "Antigravity" },
   },
-};
+} satisfies Record<ProviderKind, ProviderMeta>;
 
 const ORDER: ProviderKind[] = ["codex", "claudeAgent", "cursor", "opencode", "droid", "antigravity"];
 
@@ -265,8 +265,16 @@ watch(
 
 // ── the provider's page ───────────────────────────────────────────────────────
 
+/** One line about a provider's readiness: the sentence, plus the two flags the
+ *  masthead needs to style it. */
+type ReadinessLine = {
+  text: string;
+  ready: boolean;
+  bad: boolean;
+};
+
 /** Readiness as a sentence, not a badge. */
-function readinessLine(row: Row): { text: string; ready: boolean; bad: boolean } {
+function readinessLine(row: Row): ReadinessLine {
   const status = row.status;
   if (!status) return { text: "Checking this machine…", ready: false, bad: false };
   switch (status.readiness) {
@@ -281,7 +289,7 @@ function readinessLine(row: Row): { text: string; ready: boolean; bad: boolean }
   }
 }
 
-const INSTALL_SOURCE_LABEL: Record<string, string> = {
+const INSTALL_SOURCE_LABEL = {
   npm: "npm (global)",
   bun: "bun (global)",
   pnpm: "pnpm (global)",
@@ -289,7 +297,7 @@ const INSTALL_SOURCE_LABEL: Record<string, string> = {
   native: "the CLI's own channel",
   bundled: "bundled with kone",
   unknown: "unrecognised",
-};
+} satisfies Record<string, string>;
 
 /** What the version block should say about standing, in words. The distinction
  *  that matters: a CLI kone *can't* look up is not "up to date" and not "behind"

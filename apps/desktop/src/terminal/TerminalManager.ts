@@ -322,7 +322,6 @@ export class TerminalManager {
       terminalId: input.terminalId,
       process,
       cwd: input.cwd,
-      ...(input.env ? { env: input.env } : {}),
       cols,
       rows,
       status: "ready",
@@ -344,6 +343,7 @@ export class TerminalManager {
       pollTimer: null,
       modeTracker: createModeReplayTracker(cols, rows),
     };
+    if (input.env) session.env = input.env;
 
     session.detachData = process.onData((data) => {
       // Raw bytes feed the mode tracker (it must see queries to track kitty
@@ -420,13 +420,14 @@ export class TerminalManager {
     await this.killSession(s);
     const carriedSequence = s.sequence;
 
-    const spawn = await this.spawnSession({
+    const restartInput: TerminalOpenInput = {
       terminalId: input.terminalId,
       cwd: input.cwd ?? s.cwd,
       cols: input.cols ?? s.cols,
       rows: input.rows ?? s.rows,
-      ...(s.env ? { env: s.env } : {}),
-    });
+    };
+    if (s.env) restartInput.env = s.env;
+    const spawn = await this.spawnSession(restartInput);
     spawn.sequence = carriedSequence;
 
     const snap = this.snapshot(spawn);

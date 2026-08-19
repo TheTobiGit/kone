@@ -69,7 +69,9 @@ function fakePty(): FakePty {
   };
 }
 
-function makeManager(fake: FakePty): { mgr: TerminalManager; events: TerminalEvent[] } {
+type ManagerHarness = { mgr: TerminalManager; events: TerminalEvent[] };
+
+function makeManager(fake: FakePty): ManagerHarness {
   const mgr = new TerminalManager({ spawn: async () => fake.process });
   const events: TerminalEvent[] = [];
   mgr.onEvent((e) => events.push(e));

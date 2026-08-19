@@ -27,10 +27,10 @@ import { userDataPath } from "../../userDataDir.js";
 
 type SourceId = "litellm" | "modelsDev";
 
-const SOURCE_URLS: Record<SourceId, string> = {
+const SOURCE_URLS = {
   litellm: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
   modelsDev: "https://models.dev/api.json",
-};
+} satisfies Record<SourceId, string>;
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 /** Don't hammer a source that just failed — retry sooner than the normal

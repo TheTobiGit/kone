@@ -75,13 +75,7 @@ export function parsePersistedWindowState(value: unknown): {
     return null;
   }
 
-  const state: {
-    width: number;
-    height: number;
-    x?: number;
-    y?: number;
-    isMaximized?: boolean;
-  } = {
+  const state: Pick<WindowState, "width" | "height" | "x" | "y" | "isMaximized"> = {
     width: record.width,
     height: record.height,
     isMaximized: record.isMaximized === true,

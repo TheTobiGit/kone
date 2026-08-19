@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "../sqlite.js";
 
 import { sanitizeError } from "./security.js";
 import { dollars, emptyReport } from "./types.js";
@@ -136,12 +136,19 @@ export async function detectOpenCodeDatabase(): Promise<boolean> {
   }
 }
 
+/** The hosted-usage rows inside a scan window, plus the earliest hosted
+ *  timestamp ever recorded (unbounded), read from one channel database. */
+type HostedUsageRead = {
+  rows: UsageRow[];
+  earliestMs: number | null;
+};
+
 /** Read one channel database read-only and return its hosted-usage rows
  *  inside the scan window, plus its own earliest-ever hosted timestamp
  *  (unbounded) for the monthly anchor. Never mutates the file — `readOnly`
  *  lets kone open a database OpenCode's own CLI has open and writing to
  *  concurrently without risking a lock conflict or a stray write. */
-function readDatabase(dbPath: string, cutoffMs: number): { rows: UsageRow[]; earliestMs: number | null } {
+function readDatabase(dbPath: string, cutoffMs: number): HostedUsageRead {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const rawRows = db.prepare(HOSTED_ROWS_SQL).all(cutoffMs) as Array<{
@@ -250,6 +257,13 @@ function anchoredMonthStart(year: number, month: number, anchor: Date): number {
   ).getTime();
 }
 
+/** A [start, end) pair of local-time epoch ms delimiting one anchored monthly
+ *  billing cycle. */
+type AnchoredMonthBounds = {
+  start: number;
+  end: number;
+};
+
 /** The current anchored monthly cycle's [start, end) in local time. Anchored
  *  to the day-of-month of the earliest-ever hosted usage — e.g. a user whose
  *  first-ever OpenCode Go message landed on the 14th resets on the 14th of
@@ -257,7 +271,7 @@ function anchoredMonthStart(year: number, month: number, anchor: Date): number {
  *  actually turns over. `earliestMs === null` (a database that exists but has
  *  never logged hosted usage) falls back to the plain calendar month — there
  *  is no anchor day to honor yet. */
-function anchoredMonthBounds(nowMs: number, earliestMs: number | null): { start: number; end: number } {
+function anchoredMonthBounds(nowMs: number, earliestMs: number | null): AnchoredMonthBounds {
   const now = new Date(nowMs);
   if (earliestMs === null) {
     const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
@@ -331,13 +345,19 @@ function localDateLabel(ms: number): string {
   return new Date(ms).toLocaleDateString("en-CA");
 }
 
+/** Cost and token totals for a half-open time span. */
+type SpendTally = {
+  dollars: number;
+  tokens: number;
+};
+
 export function computeSpendTiles(rows: UsageRow[], nowMs: number): SpendTile[] {
   const todayStart = startOfLocalDay(nowMs);
   const yesterdayStart = daysAgoStart(nowMs, 1);
   const last30Start = daysAgoStart(nowMs, 29); // today + the 29 days before it
   const upperBound = nowMs + 1; // inclusive of "now" — nothing has happened later yet
 
-  const tally = (start: number, end: number): { dollars: number; tokens: number } => {
+  const tally = (start: number, end: number): SpendTally => {
     let cost = 0;
     let tokens = 0;
     for (const row of rows) {

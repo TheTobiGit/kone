@@ -199,14 +199,15 @@ class FakeDispatcher implements ThreadDispatcher {
     if (this.failStart) throw new Error("provider CLI crashed on boot");
     this.started.push(input);
     this.startedParentTurns.push(options?.parentTurnId);
-    return {
+    const session: Session = {
       threadId: input.threadId,
       provider: input.provider,
       cwd: input.cwd,
       status: "ready",
       mode: input.mode ?? "ask",
-      ...(input.model ? { model: input.model } : {}),
     };
+    if (input.model) session.model = input.model;
+    return session;
   }
 
   async sendThreadTurn(
@@ -263,13 +264,15 @@ const REQUEST: SpawnRequest = {
   target: { provider: "opencode", model: "deepseek-v4", effort: "high" },
 };
 
-function makeEngine(): {
+type EngineHarness = {
   engine: SpawnEngine;
   store: FakeStore;
   providers: FakeProviders;
   dispatcher: FakeDispatcher;
   bus: EventBus;
-} {
+};
+
+function makeEngine(): EngineHarness {
   const store = new FakeStore();
   const providers = new FakeProviders();
   const dispatcher = new FakeDispatcher();

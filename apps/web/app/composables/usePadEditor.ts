@@ -21,6 +21,15 @@ import { isHighlightId, isTextColorId } from "~/utils/padColors";
 
 export type PadMarkKind = "bold" | "italic" | "strike" | "code" | "highlight";
 
+/** Which marks the current selection already carries — the lit format-bar buttons. */
+export type ActiveMarks = {
+  bold: boolean;
+  italic: boolean;
+  strike: boolean;
+  code: boolean;
+  highlight: boolean;
+};
+
 /** The block kinds the format bar can set a line to. */
 export type PadBlockKind = "p" | "h1" | "h2" | "h3" | "ul" | "ol" | "task" | "quote";
 
@@ -266,7 +275,7 @@ export function usePadEditor(options: UsePadEditorOptions) {
     return true;
   }
 
-  function activeMarks(): Record<PadMarkKind, boolean> {
+  function activeMarks(): ActiveMarks {
     if (!import.meta.client) {
       return { bold: false, italic: false, strike: false, code: false, highlight: false };
     }

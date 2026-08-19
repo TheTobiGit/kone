@@ -33,13 +33,13 @@ const emit = defineEmits<{
 }>();
 
 // The kind chip: icon + short verb per approval kind.
-const KIND_META: Record<ApprovalRequestKind, { label: string; icon: typeof TerminalIcon }> = {
+const KIND_META = {
   command: { label: "Run command", icon: TerminalIcon },
   "file-read": { label: "Read file", icon: FileIcon },
   "file-change": { label: "Change files", icon: PenTool01Icon },
   permission: { label: "Request permission", icon: SecurityIcon },
   tool: { label: "Tool call", icon: ToolsIcon },
-};
+} satisfies Record<ApprovalRequestKind, { label: string; icon: typeof TerminalIcon }>;
 const kindMeta = computed(() => KIND_META[props.approval.kind] ?? KIND_META.tool);
 
 // Commands read best in mono — the headline is a command line or a path for

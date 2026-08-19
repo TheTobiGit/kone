@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 // opencode.ts imports node:sqlite (an Electron-runtime built-in this bun can't
 // load) — stand it in for bun:sqlite. The functions under test never open a
 // database, so the stand-in only needs to exist for the import to resolve.
-mock.module("node:sqlite", () => ({
+mock.module("../sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 

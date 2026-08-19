@@ -32,10 +32,15 @@ const { scheme, extras } = useTheme();
 // --term-bg, --term-cursor, --term-selection) so a theme's designed terminal
 // comes through as-is. The theme is rebuilt when the resolved scheme flips.
 
+type ColorResolver = {
+  resolve: (expr: string, fallback: string) => string;
+  dispose: () => void;
+};
+
 /** Resolve a CSS colour expression (a token ref or color-mix) to a concrete
  *  rgb()/rgba() string xterm accepts, by reading it back off a probe element —
  *  this handles var(), color-mix(), and the active theme automatically. */
-function makeResolver(): { resolve: (expr: string, fallback: string) => string; dispose: () => void } {
+function makeResolver(): ColorResolver {
   const probe = document.createElement("span");
   probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
   document.body.appendChild(probe);

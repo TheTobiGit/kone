@@ -109,15 +109,19 @@ export function claudeMcpServers(connection: GatewayConnection): Record<string, 
   };
 }
 
-/** The opencode remote-server config, registered at runtime via the server's
- *  a live `opencode serve` — the route returns a per-server status map). */
-export function buildOpenCodeMcpServer(connection: GatewayConnection): {
+/** One entry of opencode's remote-MCP config: where the server is, how to
+ *  authorize against it, and whether it is live. */
+export type OpenCodeMcpServer = {
   type: string;
   url: string;
   enabled: boolean;
   headers: Record<string, string>;
   oauth: boolean;
-} {
+};
+
+/** The gateway as an opencode remote server, registered at runtime against a
+ *  live `opencode serve`. */
+export function buildOpenCodeMcpServer(connection: GatewayConnection): OpenCodeMcpServer {
   return {
     type: "remote",
     url: connection.url,

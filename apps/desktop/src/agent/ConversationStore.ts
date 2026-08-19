@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "./sqlite.js";
 
 import type {
   ChatAttachment,
@@ -829,13 +829,20 @@ function assistantBlockId(threadId: string, turnId: string): string {
   return `${threadId}::${turnId}`;
 }
 
+/** A day-streak tally: how many consecutive days lead up to the most recent
+ *  active day, and the longest such run anywhere in the set. */
+type Streak = {
+  current: number;
+  longest: number;
+};
+
 /** Current + longest run of consecutive local days from a sorted-ascending set
  *  of `YYYY-MM-DD` date strings. "Current" counts back from today; a gap of one
  *  day (activity yesterday but not today) still counts as live, so the streak
  *  doesn't reset the instant a new day begins before the first prompt. Days are
  *  compared as UTC-midnight epochs of the local date label, which sidesteps DST
  *  arithmetic (we only ever step by whole days). */
-function computeStreaks(datesAsc: string[]): { current: number; longest: number } {
+function computeStreaks(datesAsc: string[]): Streak {
   if (datesAsc.length === 0) return { current: 0, longest: 0 };
   const DAY = 86_400_000;
   const toDay = (d: string) => Date.parse(`${d}T00:00:00Z`) / DAY;
@@ -2439,7 +2446,7 @@ export class ConversationStore {
     db: DatabaseSync,
     threadId: string,
     turnIds?: string[],
-  ): { itemRows: ItemRow[]; subagentRows: SubagentRow[] } {
+  ): TurnPartRows {
     if (turnIds && turnIds.length === 0) {
       return { itemRows: [], subagentRows: [] };
     }
@@ -3205,16 +3212,7 @@ export class ConversationStore {
    *  see the live projection (the spawn engine's boot fallback after a restart)
    *  can tell a turn sealed 'interrupted' by sealOrphanedTurns from a turn that
    *  genuinely completed. Null when the thread has no assistant blocks at all. */
-  threadTurnSpan(threadId: string): {
-    startedAt: number;
-    endedAt: number | null;
-    runningTurns: number;
-    lastState: "running" | "interrupted" | "failed" | "completed" | null;
-    /** The NEWEST assistant block's `error`, when it has one — carried up so
-     *  the boot-fallback projection can surface the reason a child failed
-     *  (e.g. the undispatched-spawn seal), not just the bare status. */
-    lastError?: string;
-  } | null {
+  threadTurnSpan(threadId: string): TurnSpan | null {
     const db = this.handle();
     if (!db) return null;
     try {
@@ -3242,13 +3240,14 @@ export class ConversationStore {
           }
         | undefined;
       if (!row || row.started_at === null) return null;
-      return {
+      const span: TurnSpan = {
         startedAt: row.started_at,
         endedAt: row.running > 0 ? null : row.ended_at,
         runningTurns: row.running,
         lastState: row.last_state,
-        ...(row.last_error ? { lastError: row.last_error } : {}),
       };
+      if (row.last_error) span.lastError = row.last_error;
+      return span;
     } catch (err) {
       console.error("[conversation-store] threadTurnSpan failed:", err);
       return null;
@@ -3759,24 +3758,25 @@ type QueuedTurnDbRow = {
 
 function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   const attachments = parseAttachments(row.attachments_json);
-  return {
+  const queued: QueuedTurnRow = {
     queueId: row.queue_id,
     threadId: row.thread_id,
     userBlockId: row.user_block_id,
     dispatchMode: row.dispatch_mode,
     state: row.state,
     input: row.input,
-    ...(attachments?.length ? { attachments } : {}),
-    ...(row.model ? { model: row.model } : {}),
-    ...(row.mode ? { mode: row.mode } : {}),
-    ...(row.effort ? { effort: row.effort } : {}),
-    ...(row.service_tier ? { serviceTier: row.service_tier } : {}),
-    ...(row.context_window ? { contextWindow: row.context_window } : {}),
     attemptCount: row.attempt_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    ...(row.promoted_at !== null ? { promotedAt: row.promoted_at } : {}),
   };
+  if (attachments?.length) queued.attachments = attachments;
+  if (row.model) queued.model = row.model;
+  if (row.mode) queued.mode = row.mode;
+  if (row.effort) queued.effort = row.effort;
+  if (row.service_tier) queued.serviceTier = row.service_tier;
+  if (row.context_window) queued.contextWindow = row.context_window;
+  if (row.promoted_at !== null) queued.promotedAt = row.promoted_at;
+  return queued;
 }
 
 type ItemRow = {
@@ -3811,13 +3811,32 @@ type SubagentRow = {
   ended_at: number | null;
 };
 
+/** The item and subagent rows of a thread's turns, fetched together. */
+type TurnPartRows = {
+  itemRows: ItemRow[];
+  subagentRows: SubagentRow[];
+};
+
+/** A thread's elapsed-time readout: when its turns started and ended, how many
+ *  are still running, and how the newest assistant block settled. */
+type TurnSpan = {
+  startedAt: number;
+  endedAt: number | null;
+  runningTurns: number;
+  lastState: "running" | "interrupted" | "failed" | "completed" | null;
+  /** The NEWEST assistant block's `error`, when it has one — carried up so
+   *  the boot-fallback projection can surface the reason a child failed
+   *  (e.g. the undispatched-spawn seal), not just the bare status. */
+  lastError?: string;
+};
+
 function rowToMeta(row: ThreadRow): StoredThreadMeta {
   const selection = parseJsonObject<{ effort?: string; serviceTier?: string; contextWindow?: string }>(
     row.model_selection_json,
   );
   const forkContext = parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json);
   const lineage = parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json);
-  return {
+  const meta: StoredThreadMeta = {
     threadId: row.thread_id,
     projectPath: row.project_path,
     provider: row.provider as ProviderKind,
@@ -3840,10 +3859,11 @@ function rowToMeta(row: ThreadRow): StoredThreadMeta {
      *  updated_at for pre-v18 rows. */
     lastActivityAt: row.last_activity_at ?? row.updated_at,
     resumeSessionAt: row.resume_session_at ?? undefined,
-    ...(selection ? { selection } : {}),
-    ...(forkContext ? { forkContext } : {}),
-    ...(lineage ? { lineage } : {}),
   };
+  if (selection) meta.selection = selection;
+  if (forkContext) meta.forkContext = forkContext;
+  if (lineage) meta.lineage = lineage;
+  return meta;
 }
 
 /** Parse a JSON blob column, tolerating bad/absent JSON (a corrupt row reads
@@ -3868,15 +3888,16 @@ function rowToItem(row: ItemRow): RuntimeItem {
       tasks = undefined;
     }
   }
-  return {
+  const item: RuntimeItem = {
     itemId: row.item_id,
     kind: row.kind as RuntimeItem["kind"],
     status: row.status as RuntimeItem["status"],
     text: row.text,
     name: row.name ?? undefined,
     detail: row.detail ?? undefined,
-    ...(tasks?.length ? { tasks } : {}),
   };
+  if (tasks?.length) item.tasks = tasks;
+  return item;
 }
 
 // ── IPC wire projection ───────────────────────────────────────────────────────
@@ -3920,7 +3941,10 @@ export function projectRuntimeItemForIpc(item: RuntimeItem): RuntimeItem {
     }
   }
   if (detail === item.detail && subagent === item.subagent) return item;
-  return { ...item, ...(detail !== item.detail ? { detail } : {}), ...(subagent ? { subagent } : {}) };
+  const projected: RuntimeItem = { ...item };
+  if (detail !== item.detail) projected.detail = detail;
+  if (subagent) projected.subagent = subagent;
+  return projected;
 }
 
 /** Project a runtime event for the wire. Only the item-carrying events can
@@ -4017,30 +4041,32 @@ function assembleBlocks(
     }
   }
 
-  return blockRows.map((b) =>
-    b.role === "user"
-      ? {
-          id: b.block_id,
-          role: "user",
-          text: b.text ?? "",
-          at: b.at,
-          ...(parseAttachments(b.attachments_json)?.length
-            ? { attachments: parseAttachments(b.attachments_json) }
-            : {}),
-          ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
-        }
-      : {
-          id: b.block_id,
-          role: "assistant",
-          turnId: b.turn_id ?? b.block_id,
-          items: itemsByTurn.get(b.turn_id ?? "") ?? [],
-          state: (b.state as StoredAssistantState | null) ?? "completed",
-          error: b.error ?? undefined,
-          at: b.at,
-          endedAt: b.ended_at ?? undefined,
-          ...(b.source === "fork-import" ? { source: "fork-import" } : {}),
-        },
-  );
+  return blockRows.map((b) => {
+    if (b.role === "user") {
+      const block: StoredBlock = {
+        id: b.block_id,
+        role: "user",
+        text: b.text ?? "",
+        at: b.at,
+      };
+      const attachments = parseAttachments(b.attachments_json);
+      if (attachments?.length) block.attachments = attachments;
+      if (b.source === "fork-import") block.source = "fork-import";
+      return block;
+    }
+    const block: StoredBlock = {
+      id: b.block_id,
+      role: "assistant",
+      turnId: b.turn_id ?? b.block_id,
+      items: itemsByTurn.get(b.turn_id ?? "") ?? [],
+      state: (b.state as StoredAssistantState | null) ?? "completed",
+      error: b.error ?? undefined,
+      at: b.at,
+      endedAt: b.ended_at ?? undefined,
+    };
+    if (b.source === "fork-import") block.source = "fork-import";
+    return block;
+  });
 }
 
 // ── singleton ────────────────────────────────────────────────────────────────

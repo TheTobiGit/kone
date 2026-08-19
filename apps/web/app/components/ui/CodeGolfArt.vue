@@ -27,8 +27,10 @@ const SIZE_BOOST = 1.12;
 
 const mag = (x: number, y: number) => Math.sqrt(x * x + y * y);
 
+type Centroid = { x: number; y: number };
+
 /** Static centroid at t=0 so the blob sits on the canvas center. */
-function measureCentroid(): { x: number; y: number } {
+function measureCentroid(): Centroid {
   let sumX = 0;
   let sumY = 0;
   const n = 10000;

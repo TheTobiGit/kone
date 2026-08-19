@@ -166,11 +166,11 @@ const MODE_CONFIG_IDS = ["autonomy_level", "mode"] as const;
  *  Each rung lists its fallbacks in *descending* autonomy order, so a droid
  *  build that drops a mode id degrades to a narrower rung (the agent asks more
  *  often) and never to a wider one. */
-const DROID_MODE_PREFERENCES: Record<InteractionMode, readonly string[]> = {
+const DROID_MODE_PREFERENCES = {
   ask: ["normal"],
   "accept-edits": ["auto-low", "normal"],
   "full-access": ["auto-high", "auto-low", "normal"],
-};
+} satisfies Record<InteractionMode, readonly string[]>;
 
 type DroidItemBuffer = {
   itemId: string;
@@ -305,11 +305,12 @@ function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
     readString(toolCall, "title")?.trim() ??
     "Request permission";
   const detail = readString(toolCall, "detail")?.trim();
-  return {
+  const request: ApprovalRequest = {
     kind,
     title,
-    ...(detail ? { detail } : {}),
   };
+  if (detail) request.detail = detail;
+  return request;
 }
 
 /** Pick the reply option for a decision, matching the option's `kind` prefix
@@ -606,7 +607,7 @@ export class DroidAdapter implements ProviderAdapter {
       cwd: homedir(),
       env,
     });
-    const state: { configOptions: DroidConfigOption[] } = { configOptions: [] };
+    const state: Pick<DroidSession, "configOptions"> = { configOptions: [] };
     rpc.onNotification("session/update", (params) => {
       const update = asRecord(asRecord(params)?.update);
       if (readString(update, "sessionUpdate") !== "config_option_update") return;
@@ -1381,13 +1382,16 @@ export class DroidAdapter implements ProviderAdapter {
     // on-disk `tokenUsage` (fact 2) is always zeros too, so there is no
     // other source to fall back to for this provider.
     const usage: TokenUsage & TokenUsageSplits = {
-      ...(used === undefined ? {} : { contextUsed: used, total: used }),
-      ...(size === undefined ? {} : { contextWindow: size }),
       compactsAutomatically: true,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
       reasoningTokens: 0,
     };
+    if (used !== undefined) {
+      usage.contextUsed = used;
+      usage.total = used;
+    }
+    if (size !== undefined) usage.contextWindow = size;
     this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
   }
 
@@ -1487,24 +1491,25 @@ export class DroidAdapter implements ProviderAdapter {
       status,
       text: buffer.text,
       name: buffer.name,
-      ...(buffer.tasks?.length ? { tasks: buffer.tasks } : {}),
-      ...(buffer.detail.length > 0 ? { detail: buffer.detail } : {}),
     };
+    if (buffer.tasks?.length) item.tasks = buffer.tasks;
+    if (buffer.detail.length > 0) item.detail = buffer.detail;
     this.emit({ ...this.base(session), type, turnId, item });
   }
 
   private base(session: DroidSession) {
-    return {
+    const envelope = {
       threadId: session.threadId,
       provider: this.provider,
       at: Date.now(),
       source: "droid.acp.notification" as const,
-      // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
-      // never completes still leaves the thread resumable.
-      ...(session.conversationId
-        ? { refs: { conversationId: session.conversationId } }
-        : {}),
     };
+    // See ClaudeAdapter.base: the resume id rides every envelope so a turn that
+    // never completes still leaves the thread resumable.
+    if (session.conversationId) {
+      return { ...envelope, refs: { conversationId: session.conversationId } };
+    }
+    return envelope;
   }
 
   private toSession(session: DroidSession): Session {
@@ -1512,7 +1517,7 @@ export class DroidAdapter implements ProviderAdapter {
     // `reasoning_effort` option's currentValue is the honest read, absent when
     // the current model exposes no effort axis.
     const effort = findOption(session.configOptions, EFFORT_CONFIG_IDS)?.currentValue;
-    return {
+    const result: Session = {
       threadId: session.threadId,
       provider: this.provider,
       cwd: session.cwd,
@@ -1521,9 +1526,10 @@ export class DroidAdapter implements ProviderAdapter {
       resumedFrom: session.resumedFrom,
       activeTurnId: session.activeTurnId,
       model: session.model,
-      ...(effort ? { effort } : {}),
       mode: session.mode,
     };
+    if (effort) result.effort = effort;
+    return result;
   }
 
   private requireSession(threadId: string): DroidSession {

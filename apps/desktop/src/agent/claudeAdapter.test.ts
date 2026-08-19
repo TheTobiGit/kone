@@ -19,7 +19,7 @@ import { Database } from "bun:sqlite";
 // Stand it in with bun:sqlite and point the agent layer's state dir at a
 // throwaway dir, the same pattern claudeGatewayInjection.test.ts uses.
 const testUserDataDir = mkdtempSync(path.join(tmpdir(), "kone-claude-adapter-"));
-mock.module("node:sqlite", () => ({
+mock.module("./sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 setUserDataDir(testUserDataDir);
@@ -60,7 +60,7 @@ class MessageFeed {
   }
 }
 
-const state: {
+type AdapterHarnessState = {
   feed: MessageFeed | null;
   stopTask: ReturnType<typeof mock> | null;
   interrupt: ReturnType<typeof mock> | null;
@@ -72,7 +72,9 @@ const state: {
   /** The stubbed SDK's initializationResult — the adapter's request/ack point.
    *  Tests drive resume failures here (transport vs. refusal). */
   initializationResult: ReturnType<typeof mock> | null;
-} = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null };
+};
+
+const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null };
 
 const stubQuery = mock((input: unknown) => {
   state.promptIterable =

@@ -53,7 +53,14 @@ function resolveTimeZone(): string {
   }
 }
 
-function windowForRange(range: UsageRange): { startMs: number; endMs: number; sinceDay: string; untilDay: string } {
+type UsageWindow = {
+  startMs: number;
+  endMs: number;
+  sinceDay: string;
+  untilDay: string;
+};
+
+function windowForRange(range: UsageRange): UsageWindow {
   const endMs = Date.now();
   const untilDay = localDateLabel(startOfLocalDay(endMs));
   const rangeStartMs = rangeStart(range);

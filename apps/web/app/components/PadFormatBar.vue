@@ -161,7 +161,7 @@ const open = ref<Pop | null>(null);
 
 /** Fixed layouts, so their heights are known without measuring: eight menu rows,
  *  or one row of swatches. Both include the panel's padding and its offset. */
-const POP_HEIGHT: Record<Pop, number> = { block: 249, highlight: 40, text: 40 };
+const POP_HEIGHT = { block: 249, highlight: 40, text: 40 } satisfies Record<Pop, number>;
 
 function toggle(pop: Pop): void {
   open.value = open.value === pop ? null : pop;

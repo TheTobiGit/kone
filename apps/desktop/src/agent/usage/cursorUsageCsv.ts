@@ -80,7 +80,7 @@ function splitCsvLine(line: string): string[] {
   return out;
 }
 
-function priceRow(model: string, totals: UsageTokenTotals): { costUsd: number; priced: boolean } {
+function priceRow(model: string, totals: UsageTokenTotals): Pick<CursorCsvRow, "costUsd" | "priced"> {
   const outcome = priceModel(currentPricingSnapshot(), model, {
     input: totals.uncachedInputTokens,
     output: totals.outputTokens,

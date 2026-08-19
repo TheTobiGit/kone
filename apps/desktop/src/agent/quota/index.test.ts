@@ -20,7 +20,7 @@ let calls = 0;
 // index.ts re-exports opencode.ts, which imports node:sqlite (an
 // Electron-runtime built-in this bun can't load) — stand it in for bun:sqlite
 // so the shell is importable at all. None of these tests touch OpenCode.
-mock.module("node:sqlite", () => ({
+mock.module("../sqlite.js", () => ({
   DatabaseSync: Database,
 }));
 

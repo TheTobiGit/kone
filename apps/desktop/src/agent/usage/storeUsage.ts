@@ -2,7 +2,7 @@
 // (OpenCode, Cursor, Droid, and project-scoped rows). Claude/Codex overall
 // usage is merged from CLI transcript scanning in buildUsageReport.ts.
 
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "../sqlite.js";
 
 import { priceModel, currentPricingSnapshot } from "./pricing/index.js";
 import { rangeStart, type UsageRange } from "./report.js";

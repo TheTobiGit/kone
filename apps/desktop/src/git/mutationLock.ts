@@ -47,7 +47,14 @@ async function mutationKey(cwd: string): Promise<string> {
   }
 }
 
-function enqueue(key: string): { previous: Promise<void>; release: () => void } {
+/** One queued mutation's slot: the gate to await before running, and the
+ *  release that hands the queue on when the mutation is done. */
+type MutationSlot = {
+  previous: Promise<void>;
+  release: () => void;
+};
+
+function enqueue(key: string): MutationSlot {
   let gate = gates.get(key);
   if (!gate) {
     gate = { tail: Promise.resolve(), queued: 0 };

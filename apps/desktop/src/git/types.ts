@@ -273,6 +273,18 @@ export type GitHubStatus = {
   message: string | null;
 };
 
+/** Whether GitHub could merge a pull request, reduced to the one word worth
+ *  saying. Named rather than inlined so a table keyed by it — the obstacle
+ *  copy, say — is checked against the real set instead of accepting any string. */
+export type GitHubMergeability =
+  | "clean"
+  | "conflicting"
+  | "blocked"
+  | "behind"
+  | "unstable"
+  | "draft"
+  | "unknown";
+
 export type GitHubPullRequest = {
   number: number;
   title: string;
@@ -473,14 +485,7 @@ export type GitHubPullRequestDetail = {
   deletions: number;
   changedFiles: number;
   /** Whether GitHub could merge it, reduced to the one word worth saying. */
-  mergeability:
-    | "clean"
-    | "conflicting"
-    | "blocked"
-    | "behind"
-    | "unstable"
-    | "draft"
-    | "unknown";
+  mergeability: GitHubMergeability;
   reviewDecision: "approved" | "changes-requested" | "review-required" | null;
   /** The rollup verdict, as the list row shows it. */
   checks: "passing" | "failing" | "pending" | "none";

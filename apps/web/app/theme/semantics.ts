@@ -15,7 +15,7 @@ import type { AnsiPalette, ThemeHues, ThemeScheme } from "./roles";
  */
 
 /** Status colours, in the two schemes they have to survive. */
-export const STATUS: Readonly<Record<ThemeScheme, Readonly<Record<string, string>>>> = {
+export const STATUS = {
   light: {
     ok: "#059669",
     warn: "#a57c2b",
@@ -26,14 +26,14 @@ export const STATUS: Readonly<Record<ThemeScheme, Readonly<Record<string, string
     warn: "#c99b45",
     danger: "#f43f5e",
   },
-};
+} satisfies Readonly<Record<ThemeScheme, Readonly<Record<string, string>>>>;
 
 /**
  * Diffstat. The crisp pair carries numbers, dots and badges; the soft pair is the
  * warmer, lower-contrast one that meta rows use so a file listing doesn't read as
  * a scoreboard.
  */
-export const DIFF: Readonly<Record<ThemeScheme, Readonly<Record<string, string>>>> = {
+export const DIFF = {
   light: {
     diffAdd: "#059669",
     diffDel: "#e11d48",
@@ -46,14 +46,14 @@ export const DIFF: Readonly<Record<ThemeScheme, Readonly<Record<string, string>>
     diffAddSoft: "#7fb98a",
     diffDelSoft: "#dc8a6f",
   },
-};
+} satisfies Readonly<Record<ThemeScheme, Readonly<Record<string, string>>>>;
 
 /**
  * The terminal's 16 slots. A theme inherits these unless it supplies its own:
  * programs choose ANSI slots by number for reasons of their own, and a palette
  * that retints all sixteen toward one hue makes `ls` harder to read, not prettier.
  */
-export const ANSI: Readonly<Record<ThemeScheme, AnsiPalette>> = {
+export const ANSI = {
   light: {
     black: "#3f3f46",
     red: "#c81e3a",
@@ -90,7 +90,7 @@ export const ANSI: Readonly<Record<ThemeScheme, AnsiPalette>> = {
     brightCyan: "#8ce8da",
     brightWhite: "#ffffff",
   },
-};
+} satisfies Readonly<Record<ThemeScheme, AnsiPalette>>;
 
 /**
  * The lit state of a boost — fast mode and its kin. Gold in both schemes because
@@ -100,10 +100,10 @@ export const ANSI: Readonly<Record<ThemeScheme, AnsiPalette>> = {
 export const BOOST = "#f5b300";
 
 /** The Shiki theme that sits correctly on each scheme's `codeBg`. */
-export const SYNTAX: Readonly<Record<ThemeScheme, string>> = {
+export const SYNTAX = {
   light: "light-plus",
   dark: "dark-plus",
-};
+} satisfies Readonly<Record<ThemeScheme, string>>;
 
 /**
  * Tool-family and turn-orb hues. Mid-tone on purpose, so one table reads on a

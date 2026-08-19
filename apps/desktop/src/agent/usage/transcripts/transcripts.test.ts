@@ -144,25 +144,26 @@ describe("parseCodexLine", () => {
       timestamp: string;
       forkedFromId?: string;
       spawnParentId?: string;
-    }) =>
-      JSON.stringify({
+    }) => {
+      let payload = {
+        type: "session_meta",
+        id: overrides.id,
+      };
+      if (overrides.forkedFromId !== undefined) {
+        payload = { ...payload, forked_from_id: overrides.forkedFromId };
+      }
+      if (overrides.spawnParentId !== undefined) {
+        payload = {
+          ...payload,
+          source: { subagent: { thread_spawn: { parent_thread_id: overrides.spawnParentId } } },
+        };
+      }
+      return JSON.stringify({
         type: "session_meta",
         timestamp: overrides.timestamp,
-        payload: {
-          type: "session_meta",
-          id: overrides.id,
-          ...(overrides.forkedFromId === undefined
-            ? {}
-            : { forked_from_id: overrides.forkedFromId }),
-          ...(overrides.spawnParentId === undefined
-            ? {}
-            : {
-                source: {
-                  subagent: { thread_spawn: { parent_thread_id: overrides.spawnParentId } },
-                },
-              }),
-        },
+        payload,
       });
+    };
     const stamped = (timestamp: string, line: string) => {
       const parsed = JSON.parse(line) as { timestamp: string };
       parsed.timestamp = timestamp;

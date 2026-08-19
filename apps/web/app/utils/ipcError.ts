@@ -61,13 +61,15 @@ export function peelIpcErrorLine(error: unknown, fallback: string): string {
   return lines[lines.length - 1] ?? fallback;
 }
 
+export type ClassifiedIpcError = { kind: IpcErrorKind | null; message: string };
+
 /** Unwrap the same layers `peelIpcError` does, but recover the kind marker
  *  instead of discarding it. Unmarked messages come back with `kind: null` and
  *  their peeled text as `message`; `fallback` stands in when nothing remains. */
 export function classifyIpcError(
   error: unknown,
   fallback: string,
-): { kind: IpcErrorKind | null; message: string } {
+): ClassifiedIpcError {
   const cleaned = peel(error);
   const match = KIND_MARKER.exec(cleaned);
   const kind = match ? (match[1] as IpcErrorKind) : null;

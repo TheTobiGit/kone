@@ -63,7 +63,7 @@ export function scaleRadii(opts: ModeOpts, scale: number): ModeOpts {
 }
 
 /** Base (fine) profiles per mode, before preset multipliers. */
-export const BASE_PROFILES: Record<string, ModeOpts> = {
+export const BASE_PROFILES = {
   globe: {
     latRings: 17,
     lonDensity: 44,
@@ -176,4 +176,4 @@ export const BASE_PROFILES: Record<string, ModeOpts> = {
     rsPow: 0.6,
     rMin: 0.3,
   },
-};
+} satisfies Record<string, ModeOpts>;

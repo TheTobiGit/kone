@@ -151,6 +151,11 @@ export type DelegateRow = {
   target: { kind: "run"; toolUseId: string } | { kind: "thread"; threadId: string };
 };
 
+/** Just the hint half of a row — what the per-status helpers below decide,
+ *  before the rest of the row is assembled. Taken from the row rather than
+ *  restated so the two can't drift apart. */
+export type DelegateRowHint = Pick<DelegateRow, "hint" | "hintFull">;
+
 export type DelegatesState = { rows: DelegateRow[]; running: number; streaming: boolean };
 
 // A spawned child's rolled-up status → one delegate state. Approval/input gates
@@ -158,7 +163,7 @@ export type DelegatesState = { rows: DelegateRow[]; running: number; streaming: 
 // the user, so it still counts as live and keeps the dock open. An interrupted
 // child stopped mid-flight, the same way the dock already renders a `stopped`
 // run — so it reads "failed", not a state of its own.
-const THREAD_STATUS_TO_STATE: Record<SpawnedThreadStatus, DelegateState> = {
+const THREAD_STATUS_TO_STATE = {
   starting: "working",
   working: "working",
   "waiting-for-approval": "parked",
@@ -168,7 +173,7 @@ const THREAD_STATUS_TO_STATE: Record<SpawnedThreadStatus, DelegateState> = {
   interrupted: "failed",
   stillborn: "failed",
   idle: "idle",
-};
+} satisfies Record<SpawnedThreadStatus, DelegateState>;
 
 /** Wall-clock millis → the conversation view's "replied in 52s" compact form,
  *  plus the hour unit that view's local formatter skips: `52s`, `1m 20s`,
@@ -194,7 +199,7 @@ function singleLineDetail(detail: string): string {
  *  said "Failed"). A detail that won't fit on one row is capped at 80 characters
  *  (trailing whitespace trimmed, then a single `…`) with the untruncated line
  *  carried in `hintFull` for the tooltip. */
-function failedThreadHint(thread: SpawnedThread): { hint: string; hintFull?: string } {
+function failedThreadHint(thread: SpawnedThread): DelegateRowHint {
   const detail = thread.detail;
   if (!detail) return { hint: "" };
   const oneLine = singleLineDetail(detail);
@@ -207,7 +212,7 @@ function failedThreadHint(thread: SpawnedThread): { hint: string; hintFull?: str
  *  `statusText` now — the hint carries only the *extra* facts: how long a
  *  working child has been at it, what a failure said. A parked child's ask is
  *  the status word itself, so its hint is empty. */
-function threadHint(thread: SpawnedThread): { hint: string; hintFull?: string } {
+function threadHint(thread: SpawnedThread): DelegateRowHint {
   switch (thread.status) {
     case "starting":
       return { hint: "" };
@@ -270,42 +275,44 @@ function runRow(run: SubagentRunView): DelegateRow {
       : run.status === "failed" || run.status === "stopped"
         ? "failed"
         : "idle";
-  return {
+  const row: DelegateRow = {
     id: `run:${run.toolUseId}`,
     kind: "run",
     title: subagentTitle(run),
     state,
     live: run.live,
     startedAt: run.startedAt,
-    ...(run.model ? { model: run.model } : {}),
-    ...(run.effort ? { effort: run.effort } : {}),
     thinking: run.live ? runThinking(run) : false,
     statusText: runStatusText(run),
     // The live progress line — the dock's exact current wording, kept.
     hint: run.live && run.lastToolName ? `Running ${run.lastToolName}…` : "",
     target: { kind: "run", toolUseId: run.toolUseId },
   };
+  if (run.model) row.model = run.model;
+  if (run.effort) row.effort = run.effort;
+  return row;
 }
 
 /** A spawned child thread → delegate row. */
 function threadRow(thread: SpawnedThread): DelegateRow {
   const state = THREAD_STATUS_TO_STATE[thread.status];
   const { hint, hintFull } = threadHint(thread);
-  return {
+  const row: DelegateRow = {
     id: `thread:${thread.threadId}`,
     kind: "thread",
     title: thread.title,
     state,
     live: state === "working" || state === "parked",
     startedAt: thread.createdAt,
-    ...(thread.model ? { model: thread.model } : {}),
-    ...(thread.effort ? { effort: thread.effort } : {}),
     provider: thread.provider,
     statusText: threadStatusText(thread),
     hint,
-    ...(hintFull ? { hintFull } : {}),
     target: { kind: "thread", threadId: thread.threadId },
   };
+  if (thread.model) row.model = thread.model;
+  if (thread.effort) row.effort = thread.effort;
+  if (hintFull) row.hintFull = hintFull;
+  return row;
 }
 
 /** The run's status word, thinking read included. */

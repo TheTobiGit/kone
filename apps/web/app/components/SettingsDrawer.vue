@@ -114,10 +114,11 @@ const { pane, isPage, revealWidth } = useSettingsSurface();
 // only rides the column state.
 const drawerScroll = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(drawerScroll);
-const asideStyle = computed(() => ({
-  width: `${revealWidth.value}px`,
-  ...(isPage.value ? {} : maskStyle.value),
-}));
+const asideStyle = computed(() =>
+  isPage.value
+    ? { width: `${revealWidth.value}px` }
+    : { width: `${revealWidth.value}px`, ...maskStyle.value },
+);
 watch(pane, () => void nextTick(measure));
 
 function openShortcuts() {
