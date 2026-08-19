@@ -64,6 +64,13 @@ const CONNECTED_KEY = "kone:quota:connected";
 // into each other. Cleared implicitly by a forceRefresh, which always refetches.
 const usageReportCache = new Map<string, AgentUsageReport>();
 const inventoryCache = new Map<string, AgentInventory>();
+/** Every range the pane offers — the warmer walks this to pre-fill the ones the
+ *  user hasn't clicked yet. */
+const USAGE_RANGES: readonly UsageRange[] = ["1d", "7d", "30d", "all"];
+/** Scopes whose sibling ranges have already been warmed, so the background pull
+ *  fires once per scope rather than on every load. Module-level to survive a
+ *  pane reopen; a forced refresh clears the relevant tag to re-arm it. */
+const warmedScopes = new Set<string>();
 const credentialProbeCache: Partial<Record<QuotaProvider, boolean>> = {};
 const quotaReportCache: Partial<Record<QuotaProvider, QuotaProviderReport>> = {};
 
@@ -100,11 +107,15 @@ export function useAgentSettings(projectPath: () => string | null) {
    *  the agents spent" means *here* until the user widens it. */
   const usageScope = ref<"project" | "global">("project");
 
-  /** The cache key a usage read maps to — the exact triplet that changes the
-   *  numbers, so 7d-project and 30d-global keep their own last-good copy. */
-  function usageKey(): string {
+  /** The cache key for a given range under the current scope — the exact triplet
+   *  that changes the numbers, so 7d-project and 30d-global keep their own
+   *  last-good copy. */
+  function keyFor(forRange: UsageRange): string {
     const scoped = usageScope.value === "project" ? projectPath() ?? "" : "";
-    return `${usageScope.value}:${range.value}:${scoped}`;
+    return `${usageScope.value}:${forRange}:${scoped}`;
+  }
+  function usageKey(): string {
+    return keyFor(range.value);
   }
 
   async function loadUsage(options?: { forceRefresh?: boolean }): Promise<void> {
@@ -139,10 +150,49 @@ export function useAgentSettings(projectPath: () => string | null) {
       usageLoading.value = false;
       usageLoaded.value = true;
     }
+    // With the visible range settled, quietly pull the other three so their
+    // first click paints from cache instead of paying a cold scan. Kept off the
+    // critical path and to one pass per scope, so flipping ranges feels instant
+    // without turning every open into four disk walks.
+    void warmOtherRanges();
+  }
+
+  /** Prime the sibling ranges' caches in the background. Best-effort and serial
+   *  — it reuses the same per-file scan cache the visible read just warmed, so
+   *  each sibling is mostly aggregation, and a failure only costs that range its
+   *  head start. Runs once per scope; a forced refresh re-arms it. */
+  async function warmOtherRanges(): Promise<void> {
+    const api = bridge()?.usage;
+    if (!api?.report) return;
+    const scopeTag = keyFor(range.value).replace(`:${range.value}:`, "::");
+    if (warmedScopes.has(scopeTag)) return;
+    warmedScopes.add(scopeTag);
+    for (const sibling of USAGE_RANGES) {
+      if (sibling === range.value) continue;
+      const key = keyFor(sibling);
+      if (usageReportCache.has(key)) continue;
+      try {
+        const report = await api.report({
+          range: sibling,
+          projectPath: usageScope.value === "project" ? projectPath() : null,
+        });
+        usageReportCache.set(key, report);
+      } catch {
+        // A warm miss just means that range pays its own scan when first opened.
+      }
+    }
   }
 
   /** Re-scan transcripts / Cursor CSV and bypass usage memoization. */
   async function refreshUsage(): Promise<void> {
+    // A manual refresh nukes the backend scan caches, so every range's last-good
+    // copy is now stale — drop the sibling entries and re-arm warming so they
+    // reprime from fresh data rather than serving the pre-refresh numbers.
+    const scopeTag = keyFor(range.value).replace(`:${range.value}:`, "::");
+    warmedScopes.delete(scopeTag);
+    for (const sibling of USAGE_RANGES) {
+      if (sibling !== range.value) usageReportCache.delete(keyFor(sibling));
+    }
     await loadUsage({ forceRefresh: true });
   }
 
