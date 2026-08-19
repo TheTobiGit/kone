@@ -43,6 +43,14 @@ const RANGES: { id: UsageRange; label: string }[] = [
 const metric = ref<"tokens" | "cost">("cost");
 const breakdown = ref<"model" | "day">("model");
 
+// Clicking an agent in the legend focuses it — the share bar and the chart fade
+// every other agent so the chosen one reads alone. Clicking it again, or picking
+// another, releases the focus.
+const focusedProvider = ref<ProviderKind | null>(null);
+function toggleProvider(provider: ProviderKind): void {
+  focusedProvider.value = focusedProvider.value === provider ? null : provider;
+}
+
 const days = computed(() => report.value?.days ?? []);
 const dayLabels = computed(() => days.value.map((d) => d.date));
 const recentDays = computed(() => [...days.value].reverse().slice(0, 8));
@@ -272,6 +280,10 @@ const SKELETON_METRICS = [
             v-show="(metric === 'cost' ? provider.costShare : provider.tokenShare) > 0"
             :key="`seg-${provider.provider}`"
             class="usage__split-seg"
+            :class="{
+              'usage__split-seg--dim':
+                focusedProvider !== null && focusedProvider !== provider.provider,
+            }"
             :style="{
               flexGrow: metric === 'cost' ? provider.costShare : provider.tokenShare,
               backgroundColor: PROVIDER_COLOR[provider.provider],
@@ -281,11 +293,19 @@ const SKELETON_METRICS = [
         </div>
 
         <div class="usage__split-legend">
-          <div
+          <button
             v-for="provider in orderedProviders"
             v-show="(metric === 'cost' ? provider.costShare : provider.tokenShare) > 0"
             :key="`leg-${provider.provider}`"
+            type="button"
             class="usage__leg"
+            :class="{
+              'usage__leg--on': focusedProvider === provider.provider,
+              'usage__leg--dim':
+                focusedProvider !== null && focusedProvider !== provider.provider,
+            }"
+            :aria-pressed="focusedProvider === provider.provider"
+            @click="toggleProvider(provider.provider)"
           >
             <span class="usage__leg-name">
               <span
@@ -305,7 +325,7 @@ const SKELETON_METRICS = [
                   : `${formatPercent(provider.tokenShare)} · ${formatUsd(provider.costUsd)}`
               }}
             </span>
-          </div>
+          </button>
         </div>
       </section>
 
@@ -315,7 +335,12 @@ const SKELETON_METRICS = [
             Daily {{ metric === "tokens" ? "processed tokens" : "cost" }}
           </h2>
         </div>
-        <UsageProviderChart :days="dayLabels" :daily="days" :metric="metric" />
+        <UsageProviderChart
+          :days="dayLabels"
+          :daily="days"
+          :metric="metric"
+          :focus="focusedProvider"
+        />
       </section>
 
       <section class="usage__metrics" aria-label="Token breakdown">
@@ -687,7 +712,11 @@ const SKELETON_METRICS = [
   /* So a Cost/Tokens flip glides the segment widths instead of jumping. */
   transition:
     flex-grow 0.55s var(--usage-ease),
-    background-color 0.3s ease;
+    background-color 0.3s ease,
+    opacity 0.28s var(--usage-ease);
+}
+.usage__split-seg--dim {
+  opacity: 0.24;
 }
 
 /* One reveal for every meter that carries a proportion — the hero split, the
@@ -713,16 +742,43 @@ const SKELETON_METRICS = [
 /* Each agent is a compact stat: name label on top, its spend as the headline
    number right beneath it, share + tokens underneath. Stacking binds the money
    to the provider it belongs to — no far-floated figure to trace back. */
+/* A legend entry is a focus toggle — pick one and the chart + share bar isolate
+   it. Reset the button chrome so it stays the same quiet stat card, then let the
+   states carry the meaning: hover warms, on wears the accent wash, dim recedes. */
 .usage__leg {
   display: flex;
   flex-direction: column;
   gap: 5px;
   padding: 11px 12px;
+  border: none;
   border-radius: 12px;
-  transition: background-color 140ms ease;
+  background-color: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    opacity 220ms var(--usage-ease);
 }
 .usage__leg:hover {
   background-color: var(--hover);
+}
+.usage__leg:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.usage__leg--on {
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.usage__leg--on:hover {
+  background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.usage__leg--dim {
+  opacity: 0.42;
+}
+.usage__leg--dim:hover {
+  opacity: 1;
 }
 .usage__leg-name {
   display: inline-flex;
