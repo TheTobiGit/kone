@@ -6,10 +6,12 @@ import {
   AiBrain01Icon,
   BubbleChatTemporaryIcon,
   CornerDownRightIcon,
+  DiceFaces05Icon,
   FlashIcon,
   Folder01Icon,
   GitBranchIcon,
   PlusSignIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import SphereFace from "~/components/SphereFace.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
@@ -18,6 +20,8 @@ import ProviderLogo from "~/components/ProviderLogo.vue";
 import type { AttachmentKind, GitProjectFile, InteractionMode } from "~/types/desktop";
 import { useProjectFiles } from "~/composables/useProjectFiles";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
+import { agentIdentity } from "~/utils/agentIdentity";
+import { GUEST_LABEL, type Agent } from "~/utils/agents";
 import {
   detectFileMentionTrigger,
   formatFileMention,
@@ -60,8 +64,11 @@ const props = defineProps<{
    *  has already started, the host turns this off so the chip is only a label. */
   branchSwitchable?: boolean;
   /** The focused thread's title, parked on the far right of the tray so the
-   *  left stays project + branch. Empty / missing falls back to "New thread". */
+   *  left stays who and where. Empty / missing falls back to "New thread". */
   threadName?: string;
+  /** The focused thread's durable id — the seed its identity is rolled from.
+   *  Empty until the thread's first send, which is when it acquires a face. */
+  threadId?: string | null;
   /** A turn is running — the send seed becomes a stop, Enter is inert. */
   busy?: boolean;
   /** Follow-ups durably queued behind the running turn (AgentService). The
@@ -71,6 +78,15 @@ const props = defineProps<{
   /** The full model picker is open (hosted by the parent, outside our dock).
    *  While it is, a click in it — or on its scrim — must NOT collapse us. */
   picking?: boolean;
+  /** Who you can hand the turn to. Guest is never in here — it is the absence of
+   *  a choice, so the menu adds it itself and an empty roster still offers it. */
+  agents?: Agent[];
+  /** The agent the next turn goes to, or null/undefined for a guest. */
+  agentId?: string | null;
+  /** When true (the default), the agent slot opens the roster. A thread has one
+   *  agent for its whole life, so once it has started the host turns this off and
+   *  the slot only names who is on it. */
+  agentSwitchable?: boolean;
   /** The provider's models, grouped into families with real efforts. */
   models?: ModelOption[];
   /** The selected raw model id (carries the effort for a baked-suffix provider),
@@ -102,6 +118,8 @@ const emit = defineEmits<{
   /** Drop one durably queued follow-up (the chips' ✕). */
   "remove-queued": [queueId: string];
   interrupt: [];
+  /** null hands the turn to a guest — see `agentId`. */
+  "update:agentId": [id: string | null];
   "update:modelId": [id: string];
   "update:reasoning": [tier: EffortTier];
   "update:mode": [mode: InteractionMode];
@@ -121,6 +139,77 @@ const { cue } = useSound();
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 const canSwitchBranch = computed(() => props.branchSwitchable !== false);
+
+// ── agent (leading the context tray) ─────────────────────────────────────────
+// Who the turn goes to. It sits in the tray with the project and the branch
+// rather than on the button rail, because it belongs with the facts about where
+// the turn lands, not with the knobs that shape it. The roster is a small
+// popover rather than a cycle — you pick a colleague deliberately, you don't
+// step through them.
+//
+// You pick on a blank thread only, the same rule the branch follows. One thread
+// is one agent's work from end to end: swapping halfway would leave a transcript
+// where the speaker changes but the history doesn't, and every line above the
+// swap would be attributed to somebody who never wrote it.
+const roster = computed<Agent[]>(() => props.agents ?? []);
+/** undefined when the turn goes to a guest. Deliberately no fall back to the
+ *  first of the roster: an agent is opt-in, so nobody is assigned by default. */
+const currentAgent = computed(() => roster.value.find((a) => a.id === props.agentId));
+const canSwitchAgent = computed(() => props.agentSwitchable !== false);
+
+/**
+ * Who is already on this thread, once it is no longer yours to change. Null while
+ * the choice is still open, so the slot is a picker on a blank thread and a label
+ * after that.
+ *
+ * A settled thread never reads "Guest": the moment it starts it is handed a name
+ * and a face rolled from its own id, and that is a real identity to name, not the
+ * absence of one. Guest is the word for a choice you haven't made yet — after the
+ * first send there is no choice left to describe.
+ */
+const settledIdentity = computed(() => {
+  if (canSwitchAgent.value) return null;
+  const identity = agentIdentity(props.threadId);
+  // A face is the proof the roll happened. Without a seed there is nothing to
+  // name, so keep offering the picker rather than labelling the slot with a
+  // placeholder.
+  return identity.svg ? identity : null;
+});
+
+const agentMenu = ref(false);
+const agentPop = ref<HTMLElement>();
+
+/** The tray clips its own contents so it can collapse to nothing, which would
+ *  also cut off a menu opening out of it. This lifts the clip for as long as the
+ *  menu needs it — raised the moment it opens, dropped only once the leave
+ *  transition has finished, so the menu fades out whole instead of vanishing. */
+const spilling = ref(false);
+
+function toggleAgentMenu() {
+  agentMenu.value = !agentMenu.value;
+  if (agentMenu.value) spilling.value = true;
+  cue("toggle");
+}
+
+function pickAgent(id: string | null) {
+  agentMenu.value = false;
+  if (id === (currentAgent.value?.id ?? null)) return;
+  emit("update:agentId", id);
+  cue("select");
+}
+
+onClickOutside(agentPop, () => {
+  agentMenu.value = false;
+});
+
+// A thread settling while the roster is up takes the popover down with it, and
+// the clip it lifted would never be dropped, because the leave transition that
+// drops it no longer has anything to run on.
+watch(canSwitchAgent, (can) => {
+  if (can) return;
+  agentMenu.value = false;
+  spilling.value = false;
+});
 
 // ── model + effort pickers (both on the right) ─────────────────────────────────
 // The family comes from the model id; the effort within it comes from the
@@ -771,6 +860,12 @@ onClickOutside(dock, () => {
   close();
 });
 onKeyStroke("Escape", () => {
+  // Escape walks out one layer at a time: a popover over the bar goes first, so
+  // dismissing the roster doesn't also throw away the draft behind it.
+  if (agentMenu.value) {
+    agentMenu.value = false;
+    return;
+  }
   close();
 });
 
@@ -1210,14 +1305,113 @@ defineExpose({ wake, setDraft });
       </div>
     </div>
 
-    <!-- Context tray — where the turn will land: project, branch, thread. It's
-         tucked BEHIND the card and only its bottom strip shows, so it reads as
-         the ground the composer is standing on rather than another control bar.
-         The branch is a picker only on a blank thread; once the thread has
-         started it is just a label, same as the project. The thread name sits
-         on the far right so the left stays place and the right names the
-         conversation. -->
-    <div class="tray" :class="{ 'is-shown': open }" :inert="!open" aria-label="Turn context">
+    <!-- Context tray — who takes the turn and where it lands: agent, project,
+         branch, thread. It's tucked BEHIND the card and only its bottom strip
+         shows, so it reads as the ground the composer is standing on rather than
+         another control bar. The agent and the branch are pickers on a blank
+         thread only; once the thread has started they are labels, same as the
+         project. The thread name sits on the far right so the left stays who and
+         where, and the right names the conversation. -->
+    <div
+      class="tray"
+      :class="{ 'is-shown': open, 'is-spilling': spilling }"
+      :inert="!open"
+      aria-label="Turn context"
+    >
+      <!-- Who takes the turn. It leads the tray because a person is a bigger
+           fact about a turn than a place is. Guest is a row in the menu rather
+           than an empty state: not handing the work to anybody in particular is
+           a choice you make on purpose, and it is the one you start with.
+
+           On a thread that has already started this is just a label — one agent
+           per thread — and it names the face the thread is actually wearing, so
+           a thread nobody was picked for reads as the agent it was rolled, not
+           as a guest slot that is still open. -->
+      <span
+        v-if="settledIdentity"
+        class="tray__item"
+        :title="`${settledIdentity.name} is on this thread`"
+      >
+        <!-- Decorative: the name is right beside it, and a rolled face carries the
+             generator's own title and licence text inside the SVG, which is read
+             out in full otherwise. -->
+        <span class="tray__face" aria-hidden="true" v-html="settledIdentity.svg" />
+        <span class="tray__label tray__label--strong">{{ settledIdentity.name }}</span>
+      </span>
+      <div v-else ref="agentPop" class="tray__who">
+        <Transition name="menu" @after-leave="spilling = false">
+          <div v-if="agentMenu" class="menu menu--agent" role="menu">
+            <button
+              type="button"
+              class="opt"
+              :class="{ 'opt--on': !currentAgent }"
+              role="menuitemradio"
+              :aria-checked="!currentAgent"
+              @click.stop="pickAgent(null)"
+            >
+              <span class="opt__logo">
+                <HugeiconsIcon :icon="DiceFaces05Icon" :size="15" :stroke-width="1.8" />
+              </span>
+              <span class="opt__stack">
+                <span class="opt__label">{{ GUEST_LABEL }}</span>
+                <span class="opt__vendor">A name and face for this thread</span>
+              </span>
+              <HugeiconsIcon
+                v-if="!currentAgent"
+                class="opt__check"
+                :icon="Tick02Icon"
+                :size="14"
+                :stroke-width="2.2"
+                aria-hidden="true"
+              />
+            </button>
+            <button
+              v-for="a in roster"
+              :key="a.id"
+              type="button"
+              class="opt"
+              :class="{ 'opt--on': a.id === currentAgent?.id }"
+              role="menuitemradio"
+              :aria-checked="a.id === currentAgent?.id"
+              @click.stop="pickAgent(a.id)"
+            >
+              <span class="opt__face" aria-hidden="true" v-html="a.svg" />
+              <span class="opt__stack">
+                <span class="opt__label">{{ a.name }}</span>
+                <span class="opt__vendor">{{ a.role }}</span>
+              </span>
+              <HugeiconsIcon
+                v-if="a.id === currentAgent?.id"
+                class="opt__check"
+                :icon="Tick02Icon"
+                :size="14"
+                :stroke-width="2.2"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </Transition>
+        <button
+          type="button"
+          class="tray__item tray__item--action"
+          :tabindex="open ? 0 : -1"
+          aria-haspopup="menu"
+          :aria-expanded="agentMenu"
+          :aria-label="`${currentAgent?.name ?? GUEST_LABEL} is taking the turn. Change who takes it.`"
+          :title="
+            currentAgent
+              ? `${currentAgent.name} — ${currentAgent.role}`
+              : `${GUEST_LABEL} — a name and face for this thread only`
+          "
+          @click.stop="toggleAgentMenu"
+        >
+          <span v-if="currentAgent" class="tray__face" aria-hidden="true" v-html="currentAgent.svg" />
+          <HugeiconsIcon v-else :icon="DiceFaces05Icon" :size="13" :stroke-width="1.8" />
+          <span class="tray__label tray__label--strong">
+            {{ currentAgent?.name ?? GUEST_LABEL }}
+          </span>
+        </button>
+      </div>
       <span v-if="projectName" class="tray__item">
         <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">{{ projectName }}</span>
@@ -1678,9 +1872,9 @@ html.dark .dock {
 .barbtn:active { transform: scale(0.95); }
 
 /* ── Context tray ─────────────────────────────────────────────────────────── */
-/* Where the turn will land — project, branch, thread — tucked in behind the
-   card so only its bottom strip shows. It's ground, not chrome: a quieter
-   surface, smaller type, and no hairline anywhere. */
+/* Who takes the turn and where it lands — agent, project, branch, thread —
+   tucked in behind the card so only its bottom strip shows. It's ground, not
+   chrome: a quieter surface, smaller type, and no hairline anywhere. */
 .tray {
   display: flex;
   align-items: center;
@@ -1688,7 +1882,11 @@ html.dark .dock {
   /* Narrower than the card, so it reads as something the card is standing on
      rather than a second bar bolted to its bottom. */
   width: calc(100% - 26px);
-  z-index: 0;
+  /* No z-index of its own, on purpose. A flex item honours z-index even while
+     it is statically positioned, so any value here makes the tray a stacking
+     context — and the roster opening out of it would then be pinned under the
+     card no matter how high its own layer went. The card is already lifted above
+     the tray by its own z-index, which is all the tuck needs. */
   overflow: hidden;
   height: 0;
   margin-top: 0;
@@ -1757,6 +1955,31 @@ html.dark .dock {
 .tray__item--end .tray__label {
   max-width: 220px;
 }
+
+/* The one tray slot that opens something. It's a positioning frame only — the
+   button inside keeps the row's own metrics, so the agent lines up with the
+   project and the branch instead of sitting a pixel off them. */
+.tray__who {
+  position: relative;
+  display: flex;
+  /* The offset that keeps every tray slot on the strip that shows has to live on
+     the frame, not the button: the tray centres its items with their margins
+     counted in, so leaving it inside would set the agent a row above the rest. */
+  margin-top: 12px;
+}
+.tray__who > .tray__item { margin-top: 0; }
+/* Big enough to read as a face rather than a dot, and level with the glyphs
+   beside it: the marble has no stroke and no counters, so at their nominal size
+   it reads optically smaller than they do. */
+.tray__face {
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.tray__face :deep(svg) { display: block; width: 100%; height: 100%; }
+/* Lifted only while the roster is up — see `spilling`. */
+.tray.is-spilling { overflow: visible; }
 
 /* ── Send seed ────────────────────────────────────────────────────────────── */
 .seed {
@@ -1984,7 +2207,7 @@ html.dark .dock {
 .stack > :deep(svg:first-child) { margin-left: 0; }
 .stack--glow > :deep(svg) { filter: drop-shadow(0 0 3px currentColor); }
 
-/* ── Popovers (model picker · reasoning dial) ─────────────────────────────── */
+/* ── Popovers (agent roster · model picker · reasoning dial) ──────────────── */
 .pop { position: relative; display: flex; }
 .menu {
   position: absolute;
@@ -2002,6 +2225,12 @@ html.dark .dock {
     var(--line) 0 0 0 1px;
 }
 .menu--model { right: 0; min-width: 232px; max-width: 320px; max-height: 340px; overflow-y: auto; }
+/* The roster opens from the tray's own left edge and grows rightward, so it
+   stays over the composer it belongs to rather than hanging off it. Wide enough
+   that no row's description wraps: every row here carries one, and a two-line
+   row beside a one-line row makes an even list look ragged. */
+.menu--agent { left: 0; min-width: 274px; max-width: 320px; }
+.menu--agent .opt__vendor { white-space: nowrap; }
 .menu__empty {
   margin: 0;
   padding: 10px 12px;
@@ -2033,6 +2262,16 @@ html.dark .dock {
   border-radius: 8px;
   background: var(--hover);
 }
+/* An agent's face takes the slot a provider logomark would, at the same measure
+   but with no tile behind it — the marble is already a solid round shape, and
+   putting it on a tile would read as a logo in a box. */
+.opt__face {
+  display: block;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+}
+.opt__face :deep(svg) { display: block; width: 100%; height: 100%; }
 .opt__stack { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
 .opt__label { flex: 1 1 auto; color: var(--ink); font-size: 13.5px; font-weight: 500; }
 .opt__stack .opt__label { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

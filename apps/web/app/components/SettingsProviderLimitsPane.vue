@@ -23,7 +23,7 @@ onMounted(() => {
 <template>
   <SettingsPageShell
     :open="open"
-    breadcrumb="Agents / Provider limits"
+    breadcrumb="Ecosystem / Provider limits"
     :breadcrumb-icon="GaugeIcon"
     label="Provider limits settings"
     @back="$emit('back')"

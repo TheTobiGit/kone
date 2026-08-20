@@ -696,6 +696,25 @@ export type ModelDescriptor = {
  *  (an AI-reviewed middle ground) — see CodexAdapter.ts. */
 export type InteractionMode = "ask" | "accept-edits" | "full-access";
 
+/** The named agent a thread was handed to, reduced to what the provider session
+ *  has to be told (gateway/appContext renderAgentIdentity). The roster's faces
+ *  and ordering mean nothing to a model, so only the name and the agent's own
+ *  instructions cross the boundary. Absent runs the session as a guest, told
+ *  nothing. */
+export type AgentPersona = {
+  /** The agent's name as the user has it — renameable, so never the shipped one
+   *  by assumption. */
+  name: string;
+  /** Who the agent is — its temperament and voice. Optional. Rendered after the
+   *  name in the identity block; character, not conduct — it colours how the
+   *  agent reads, where `instructions` set what it does. */
+  personality?: string;
+  /** The agent's standing instructions: how it should work, in its own words.
+   *  Optional — an agent can be nothing but a name. Rendered after the name in
+   *  the identity block; behavioural only, never a provider/model/effort pick. */
+  instructions?: string;
+};
+
 export type SessionStartInput = {
   threadId: string;
   provider: ProviderKind;
@@ -721,6 +740,10 @@ export type SessionStartInput = {
    *  it into the provider session's mcpServers config so the agent can call
    *  kone tools. Renderer code never sets this. */
   gatewayConnection?: GatewayConnection;
+  /** Who this session works as, when the thread was handed to a named agent.
+   *  On the session rather than per turn: a thread has one agent from end to
+   *  end. Absent runs it as a guest. */
+  agent?: AgentPersona;
 };
 
 /** Loopback MCP gateway connection for one provider session

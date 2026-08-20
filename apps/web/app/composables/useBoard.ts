@@ -37,12 +37,15 @@ import type { ThreadSession, useAgent } from "~/composables/useAgent";
 import type { TerminalSession, useTerminal } from "~/composables/useTerminal";
 import type { ScratchpadSession, useScratchpad } from "~/composables/useScratchpad";
 
-type Agent = ReturnType<typeof useAgent>;
+// The registry of live provider sessions, not one of them — and deliberately not
+// called `Agent`: that name belongs to the person a thread was handed to, and a
+// local alias would quietly shadow it for the whole file.
+type SessionRegistry = ReturnType<typeof useAgent>;
 type Terminal = ReturnType<typeof useTerminal>;
 type Scratchpad = ReturnType<typeof useScratchpad>;
 
 export interface UseBoardOptions {
-  agent: Agent;
+  agent: SessionRegistry;
   terminal: Terminal;
   scratchpad: Scratchpad;
   /** UI-only side effects the dispatcher fires but doesn't own. The board runs

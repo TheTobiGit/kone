@@ -33,10 +33,10 @@ type IconGlyph = readonly (readonly [string, Readonly<Record<string, string | nu
 const props = withDefaults(
   defineProps<{
     open: boolean;
-    /** The breadcrumb trail, e.g. "Agents / Providers". */
+    /** The breadcrumb trail, e.g. "Ecosystem / Providers". */
     breadcrumb: string;
     /** Glyph of the settings row that opened this pane. Sits in front of the pane
-     *  name, not the whole trail — so "Agents / Providers" reads as a tree with
+     *  name, not the whole trail — so "Ecosystem / Providers" reads as a tree with
      *  the mark on the leaf, not as a third object before the path. */
     breadcrumbIcon?: IconGlyph;
     /** Section aria-label; falls back to the breadcrumb. */
@@ -84,7 +84,7 @@ function toggleNote() {
   noteOpen.value = !noteOpen.value;
 }
 
-/** "Agents / Skills / foo" → the mark belongs on Skills (the pane), not on foo
+/** "Ecosystem / Skills / foo" → the mark belongs on Skills (the pane), not on foo
  *  (a nested leaf) and not on Agents (the group). One segment is the pane itself. */
 const crumb = computed(() => {
   const parts = props.breadcrumb.split(" / ").filter(Boolean);

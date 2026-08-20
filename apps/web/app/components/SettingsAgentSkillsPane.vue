@@ -14,7 +14,7 @@ defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
 
 // The pane is two views on one page: the list, and one skill's own page. The
-// breadcrumb carries which — "Agents / Skills" or "Agents / Skills / <name>" —
+// breadcrumb carries which — "Ecosystem / Skills" or "Ecosystem / Skills / <name>" —
 // and the shell's back glyph walks the same path, so the way out of a skill is
 // the way out of everything else.
 
@@ -55,9 +55,9 @@ async function added() {
 }
 
 const breadcrumb = computed(() => {
-  if (adding.value) return "Agents / Skills / New";
-  if (selected.value) return `Agents / Skills / ${selected.value.displayName ?? selected.value.name}`;
-  return "Agents / Skills";
+  if (adding.value) return "Ecosystem / Skills / New";
+  if (selected.value) return `Ecosystem / Skills / ${selected.value.displayName ?? selected.value.name}`;
+  return "Ecosystem / Skills";
 });
 
 const atList = computed(() => !selected.value && !adding.value);
