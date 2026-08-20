@@ -10,6 +10,7 @@ import Keyboard from "~/components/icons/animated/Keyboard.vue";
 import Puzzle from "~/components/icons/animated/Puzzle.vue";
 import Swatch from "~/components/icons/animated/Swatch.vue";
 import User from "~/components/icons/animated/User.vue";
+import UserMultiple from "~/components/icons/animated/UserMultiple.vue";
 import VolumeHigh from "~/components/icons/animated/VolumeHigh.vue";
 import VolumeMute01 from "~/components/icons/animated/VolumeMute01.vue";
 import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
@@ -72,6 +73,14 @@ const providerSummary = computed(() => {
   return readyEnabledCount.value ? `${readyEnabledCount.value} ready` : "";
 });
 
+// ── agents ───────────────────────────────────────────────────────────────────
+// The row names who answers rather than counting the roster: with one agent a
+// count says nothing, and even with eight the useful fact is which of them the
+// composer is pointed at. No agent means the next turn goes to a guest, which is
+// worth stating outright rather than leaving the row blank.
+const { selected: selectedAgent } = useAgentRoster();
+const agentSummary = computed(() => selectedAgent.value?.name ?? GUEST_LABEL);
+
 function onSoundToggle() {
   toggleMuted();
   // If we just switched sound back on, confirm it with a soft cue (a no-op the
@@ -108,14 +117,21 @@ function setVolumeIcon(el: unknown): void {
 // how far to move.
 const { pane, isPage, revealWidth } = useSettingsSurface();
 
+// Any pane built on SettingsPageShell owns its own frame — padding, scroll smoke,
+// the lot — so the aside must not pad it a second time. That's every page, plus
+// the agent roster, which wears the shell but keeps the narrow column width
+// rather than widening. Only the root list (and the strip pane) let the aside do
+// the padding and the edge smoke.
+const shellFramed = computed(() => isPage.value || pane.value === "agentRoster");
+
 // The narrow column (the root list) scrolls the aside itself. It smokes its
 // top/bottom edges exactly like the pages do rather than showing a scrollbar.
-// Pages manage their own inner smoke and are overflow-hidden here, so the mask
-// only rides the column state.
+// Shell-framed panes manage their own inner smoke and are overflow-hidden here,
+// so the mask only rides the column state.
 const drawerScroll = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(drawerScroll);
 const asideStyle = computed(() =>
-  isPage.value
+  shellFramed.value
     ? { width: `${revealWidth.value}px` }
     : { width: `${revealWidth.value}px`, ...maskStyle.value },
 );
@@ -161,6 +177,11 @@ function openAgentSkills() {
   cue("press");
 }
 
+function openAgentRoster() {
+  pane.value = "agentRoster";
+  cue("press");
+}
+
 function backToRoot() {
   pane.value = "root";
   cue("toggle");
@@ -203,7 +224,7 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
   <aside
     ref="drawerScroll"
     class="settings-scroll fixed inset-y-0 left-0 z-0 flex flex-col bg-sunken"
-    :class="isPage ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-5 pb-7'"
+    :class="shellFramed ? 'overflow-hidden' : 'overflow-y-auto px-5 pt-5 pb-7'"
     :style="asideStyle"
     :aria-hidden="!open"
     @scroll.passive="measure"
@@ -228,6 +249,8 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
     <SettingsProviderLimitsPane v-if="pane === 'providerLimits'" :open="open" @back="backToRoot" />
 
     <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
+
+    <SettingsAgentsPane v-if="pane === 'agentRoster'" :open="open" @back="backToRoot" />
 
     <!-- Root list (and Thread strip, which still mounts from here). Pages above
          take the widened aside themselves. -->
@@ -353,11 +376,38 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
           </button>
         </div>
 
-        <!-- Agents -->
+        <!-- Ecosystem -->
         <div class="flex flex-col gap-1.5">
           <p class="px-3 text-[10px] font-medium uppercase tracking-[0.08em] text-muted">
-            Agents
+            Ecosystem
           </p>
+
+          <!-- Agents — who you work with. First in the group because the people
+               outrank the machinery: which agent answers is a bigger choice than
+               which CLI carries them. -->
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open agents settings"
+            @mouseenter="playNavIcon('agentRoster')"
+            @click="openAgentRoster"
+          >
+            <UserMultiple
+              :ref="(el) => setNavIcon('agentRoster', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+              Agents
+            </span>
+            <span class="shrink-0 text-[12px] leading-tight text-muted">
+              {{ agentSummary }}
+            </span>
+          </button>
 
           <!-- Providers — opens the widened provider page (each CLI kone
                can drive: status, version, install channel, executable, whether

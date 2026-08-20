@@ -26,6 +26,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from "~/types/desktop";
+import { agentPersonaForThread, carryThreadAgent } from "~/utils/agents";
 import { peelIpcError } from "~/utils/ipcError";
 import { EFFORT_META, type EffortTier } from "~/utils/modelCatalog";
 import {
@@ -1212,6 +1213,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         // turn instead. Safe to always send — the adapter picks what it needs.
         effort: reasoning.value,
       };
+      // Who the session answers as. Read here rather than passed in, because
+      // this is the moment the provider process comes up and the identity is
+      // fixed on a system channel for the life of it — a value captured earlier
+      // could be from before the thread settled who was working it. Undefined
+      // for a guest thread, which is every thread nobody was picked for: the
+      // field is then absent and the session runs exactly as it always has.
+      const persona = agentPersonaForThread(threadId.value);
+      if (persona) startInput.agent = persona;
       // Resume the stored thread's provider conversation so continued turns
       // keep its full context (rehydrate/openStored set this).
       if (resume) startInput.resume = resume;
@@ -1695,7 +1704,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       deferStart();
       return;
     }
+    const previousThreadId = threadId.value;
     threadId.value = uid();
+    // A restart is the same work under a new id, so it keeps the same colleague.
+    // Carried rather than re-read from the current selection: the user may have
+    // pointed the composer at somebody else since, and switching provider is not
+    // a decision about who is working the thread. It has to happen before start()
+    // below — the providers that carry an identity on a system channel fix theirs
+    // when the process spawns, so a session that comes up nameless stays nameless.
+    carryThreadAgent(previousThreadId, threadId.value);
     tokenUsage.value = null;
     // The re-born thread is a fresh conversation — no stored pages to walk.
     olderCursor.value = null;

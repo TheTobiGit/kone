@@ -1,10 +1,13 @@
 /**
  * Who answered — one face and one name per thread.
  *
- * A thread's agent is derived entirely from its durable thread id, so the same
- * conversation wears the same face on every launch, on every surface, with
- * nothing stored alongside it. No identity table, no migration, no way for the
- * face to drift out of sync with the thread it belongs to.
+ * A named agent answers for themselves: when a thread has been handed to one,
+ * this gives back their name and their face, unchanged from thread to thread.
+ * Everything below is for a thread that was never handed to anybody — a guest,
+ * derived entirely from the thread's durable id, so the same conversation wears
+ * the same face on every launch, on every surface, with nothing stored
+ * alongside it. No identity table, no migration, no way for the face to drift
+ * out of sync with the thread it belongs to.
  *
  * The face is `thumbs`: one rounded body and two eyes, which is the same
  * anatomy as the composer's resting mark — a thread's agent reads as a sibling
@@ -14,6 +17,7 @@
  */
 import { createAvatar } from "@dicebear/core";
 import { thumbs } from "@dicebear/collection";
+import { agentForThread } from "~/utils/agents";
 
 export interface AgentIdentity {
   /** The id this identity was derived from. */
@@ -106,6 +110,16 @@ const ANONYMOUS: AgentIdentity = { seed: "", name: "kone", svg: "" };
 const cache = new Map<string, AgentIdentity>();
 
 export function agentIdentity(seed: string | null | undefined): AgentIdentity {
+  // A thread handed to an agent wears that agent's face, not one drawn from its
+  // id — the identity belongs to the person, not to the conversation. A thread
+  // nobody was assigned to falls through to the guest below, so the derived face
+  // stays what you get unless you asked for otherwise.
+  //
+  // Deliberately not memoised: an agent can be renamed, and the new name has to
+  // reach every speaker line already on screen.
+  const agent = agentForThread(seed);
+  if (agent) return { seed: seed ?? "", name: agent.name, svg: agent.svg };
+
   if (!seed) return ANONYMOUS;
   const hit = cache.get(seed);
   if (hit) return hit;

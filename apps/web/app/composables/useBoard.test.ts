@@ -100,7 +100,9 @@ function harness() {
     append: async () => {},
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // SAFETY: these three fakes implement exactly the agent/terminal/scratchpad
+  // surface useBoard touches; the cast supplies the rest of the deps shape the
+  // tests never exercise.
   const board = useBoard({ agent, terminal, scratchpad } as any);
   return { board, agentSessions, termSessions, padSessions, closedTerminalKeys };
 }

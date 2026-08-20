@@ -21,7 +21,8 @@ export type SettingsPane =
   | "providers"
   | "agentsUsage"
   | "providerLimits"
-  | "agentSkills";
+  | "agentSkills"
+  | "agentRoster";
 
 /** The drawer as a list: a column beside the launcher, which stays the subject. */
 const COLUMN_WIDTH = 320;

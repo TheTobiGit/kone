@@ -199,6 +199,10 @@ const focusedPendingApproval = computed(
   () => focusedThread.value?.pendingApproval.value ?? null,
 );
 const activePaneIsThread = computed(() => focusedThread.value !== null);
+/** Nothing has been asked of this thread yet, so the choices that fix its shape
+ *  for good — which branch it works on, which agent works it — are still open.
+ *  The first block is the point of no return for both. */
+const threadIsBlank = computed(() => (focusedThread.value?.blocks.value.length ?? 0) === 0);
 
 // ── bare-board chooser ───────────────────────────────────────────────────────
 // The board is a desktop and its panes are windows: closing the last one leaves
@@ -1264,6 +1268,24 @@ function onComposerMode(next: InteractionMode) {
   void syncComposerTarget().then(() => agent.setMode(next));
 }
 
+// ── who answers ──────────────────────────────────────────────────────────────
+// Two different facts, deliberately kept apart. The app-wide *selection* is who
+// your next new thread will go to, and it is yours to change whenever you like.
+// A thread's *agent* is who is working it, and that is settled once, on its first
+// send, and never revised — one agent per thread, so the transcript above a turn
+// is always the work of whoever the thread names.
+//
+// Which is why picking only moves the selection: on a blank thread the selection
+// is what the composer shows, and there is nothing durable to write against yet.
+//
+// null all the way through means a guest: no agent named, so the thread keeps the
+// name and face rolled from its own id.
+const { roster: agents, selected: pickedAgent, selectAgent, settleThreadAgent } = useAgentRoster();
+
+function onAgentPick(id: string | null) {
+  selectAgent(id);
+}
+
 async function onSend(text: string, files?: File[]) {
   // The composer only docks under a focused thread pane on the board, so the
   // send target is that focused thread. Settle it first: never send on top of
@@ -1273,6 +1295,11 @@ async function onSend(text: string, files?: File[]) {
   // conversation id. Settling the target first is what makes the model shown
   // in the composer the model that actually runs.
   await syncComposerTarget();
+  // Now that the target is settled it has a durable id, so who is working it can
+  // be recorded against it — this is the moment the thread acquires a face. Every
+  // send runs this and only the first one lands: the record is write-once, so a
+  // second message can't hand the thread to whoever is selected by then.
+  settleThreadAgent(focusedThread.value?.threadId.value, pickedAgent.value?.id ?? null);
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
   // carries; a failed upload is dropped rather than sinking the whole send.
@@ -1290,6 +1317,8 @@ async function onSend(text: string, files?: File[]) {
  *  provider consumes the nudge when it builds its next request. */
 async function onSteer(text: string, files?: File[]) {
   await syncComposerTarget();
+  // No agent to settle here: a steer only exists inside a running turn, and the
+  // send that started that turn already settled the thread.
   let attachments: ChatAttachment[] | undefined;
   if (files?.length) {
     const results = await Promise.allSettled(files.map((f) => agent.uploadAttachment(f)));
@@ -2198,11 +2227,15 @@ function onDiscardFile(path: string) {
           :project-path="project.path"
           :project-name="project.name"
           :branch="g.branch.value ?? undefined"
-          :branch-switchable="(focusedThread?.blocks.value.length ?? 0) === 0"
+          :branch-switchable="threadIsBlank"
           :thread-name="focusedThread?.title.value"
+          :thread-id="focusedThread?.threadId.value"
           :busy="busy"
           :queued="queuedTurns"
           :picking="modelPickerOpen"
+          :agents="agents"
+          :agent-id="pickedAgent?.id ?? null"
+          :agent-switchable="threadIsBlank"
           :models="modelOptions"
           :model-id="model"
           :reasoning="reasoning"
@@ -2213,6 +2246,7 @@ function onDiscardFile(path: string) {
           @steer="onSteer"
           @remove-queued="onRemoveQueued"
           @interrupt="onInterrupt"
+          @update:agent-id="onAgentPick"
           @update:model-id="onComposerModelId"
           @update:reasoning="onComposerReasoning"
           @update:mode="onComposerMode"

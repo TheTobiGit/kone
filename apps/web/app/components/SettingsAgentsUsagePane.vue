@@ -23,7 +23,7 @@ onMounted(() => {
 <template>
   <SettingsPageShell
     :open="open"
-    breadcrumb="Agents / Usage"
+    breadcrumb="Ecosystem / Usage"
     :breadcrumb-icon="Analytics01Icon"
     label="Agent usage settings"
     @back="$emit('back')"

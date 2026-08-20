@@ -583,7 +583,7 @@ async function copy(text: string) {
 <template>
   <SettingsPageShell
     :open="open"
-    breadcrumb="Agents / Providers"
+    breadcrumb="Ecosystem / Providers"
     :breadcrumb-icon="AiChipIcon"
     label="Providers settings"
     :scroll="false"
