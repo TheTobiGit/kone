@@ -20,6 +20,7 @@ import type { CursorImageBlock } from "../promptAttachments.js";
 import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
+  AgentPersona,
   ApprovalDecision,
   ApprovalRequest,
   ApprovalRequestKind,
@@ -162,6 +163,10 @@ type CursorSession = {
   /** The kone gateway connection minted at startSession — the agent's app
    *  tools (kone_scratchpad_read/write via the gateway's MCP server). */
   gatewayConnection?: GatewayConnection;
+  /** The named agent this session works as, when the thread was handed to one.
+   *  Rides the first prompt beside the host-context block (this provider has no
+   *  system-instruction surface), so it is held here for that one turn. */
+  agent?: AgentPersona;
   /** User turns sent so far; the kone host-context block rides the first one. */
   runOrdinal: number;
   activeTurnId?: string;
@@ -757,6 +762,7 @@ export class CursorAdapter implements ProviderAdapter {
       configOptions: [],
       modeIds: [],
       gatewayConnection: input.gatewayConnection,
+      agent: input.agent,
       runOrdinal: 0,
       interrupting: false,
       usageReported: false,
@@ -896,6 +902,7 @@ export class CursorAdapter implements ProviderAdapter {
       prompt: promptText,
       runOrdinal: session.runOrdinal + 1,
       gatewayControlAvailable: session.gatewayConnection !== undefined,
+      agent: session.agent,
     });
     session.runOrdinal += 1;
     const prompt: Array<{ type: "text"; text: string } | CursorImageBlock> = [];

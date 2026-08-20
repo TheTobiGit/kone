@@ -17,6 +17,7 @@ import { STDIO_PROXY_PATH } from "../gateway/injection.js";
 import { probe, killTree } from "../spawn.js";
 import type {
   AdapterCapabilities,
+  AgentPersona,
   EmitEvent,
   GatewayConnection,
   InteractionMode,
@@ -117,6 +118,9 @@ type AntigravitySession = {
   /** The kone gateway connection minted at startSession — the plugin's MCP
    *  config routes the agent's kone tools to it (bootstrap-exchanged). */
   gatewayConnection?: GatewayConnection;
+  /** The named agent this session works as, when the thread was handed to one.
+   *  Rides the prompt, since print mode has no system-instruction surface. */
+  agent?: AgentPersona;
   /** The user's configured per-session effort (modelOptions.reasoningEffort). */
   modelOptions?: { reasoningEffort?: string };
   /** The CLI executable to spawn. */
@@ -711,6 +715,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       model: input.model ?? DEFAULT_MODEL,
       mode: "full-access",
       gatewayConnection: input.gatewayConnection,
+      agent: input.agent,
       binary: this.binary,
       homeDir: this.homeDir,
       processedHookBytes: 0,
@@ -762,6 +767,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       prompt: promptText,
       runOrdinal: 1,
       gatewayControlAvailable: session.gatewayConnection !== undefined,
+      agent: session.agent,
     });
 
     const promptIssue = antigravityPromptCommandLineIssue(promptText);

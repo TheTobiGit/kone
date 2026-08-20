@@ -11,7 +11,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-import { KONE_HOST_CONTEXT_MARKER } from "./gateway/appContext.js";
+import { KONE_AGENT_IDENTITY_MARKER, KONE_HOST_CONTEXT_MARKER } from "./gateway/appContext.js";
 import { KONE_GATEWAY_TOKEN_ENV, KONE_GATEWAY_URL_ENV, STDIO_PROXY_PATH } from "./gateway/injection.js";
 import type { EmitEvent, SessionStartInput } from "./types.js";
 
@@ -197,5 +197,72 @@ describe("Cursor gateway injection", () => {
     const first = sessionRpc!.calls.find((c) => c.method === "session/prompt");
     const firstText = (first?.params as RecordLike).prompt as { type: string; text: string }[];
     expect(firstText[0].text).toBe("plain");
+  });
+});
+
+describe("Cursor agent identity", () => {
+  const MAYA = { name: "Maya" };
+
+  /** The text of the nth session/prompt this adapter sent, in order. */
+  function promptText(index: number): string {
+    const prompts = sessionRpc!.calls.filter((c) => c.method === "session/prompt");
+    const parts = (prompts[index].params as RecordLike).prompt as { type: string; text: string }[];
+    return parts[0].text;
+  }
+
+  test("a thread handed to an agent says who it is on the first turn, and once", async () => {
+    httpCapable = true;
+    const adapter = new CursorAdapter((() => {}) as EmitEvent);
+    sessionRpc = null;
+    await adapter.startSession({
+      threadId: "thread-4",
+      provider: "cursor",
+      cwd: "/tmp/kone-test-project",
+      gatewayConnection: CONNECTION,
+      agent: MAYA,
+    });
+
+    await adapter.sendTurn({ threadId: "thread-4", input: "hello world" });
+    const first = promptText(0);
+    expect(first).toContain("<kone_agent_identity>");
+    expect(first).toContain(KONE_AGENT_IDENTITY_MARKER);
+    expect(first).toContain("in kone you are Maya");
+    expect(first).toContain("hello world");
+
+    await adapter.sendTurn({ threadId: "thread-4", input: "again" });
+    expect(promptText(1)).toBe("again");
+  });
+
+  test("a guest thread's turns are the plain prompt, exactly as before agents existed", async () => {
+    httpCapable = true;
+    const adapter = new CursorAdapter((() => {}) as EmitEvent);
+    sessionRpc = null;
+    await adapter.startSession({
+      threadId: "thread-5",
+      provider: "cursor",
+      cwd: "/tmp/kone-test-project",
+      agent: undefined,
+    });
+
+    await adapter.sendTurn({ threadId: "thread-5", input: "plain" });
+    expect(promptText(0)).toBe("plain");
+  });
+
+  test("an agent keeps its name with no gateway to talk to", async () => {
+    httpCapable = true;
+    const adapter = new CursorAdapter((() => {}) as EmitEvent);
+    sessionRpc = null;
+    await adapter.startSession({
+      threadId: "thread-6",
+      provider: "cursor",
+      cwd: "/tmp/kone-test-project",
+      agent: MAYA,
+    });
+
+    await adapter.sendTurn({ threadId: "thread-6", input: "hello" });
+    const first = promptText(0);
+    expect(first).toContain(KONE_AGENT_IDENTITY_MARKER);
+    expect(first).not.toContain(KONE_HOST_CONTEXT_MARKER);
+    expect(first).toContain("<user_request>\nhello\n</user_request>");
   });
 });

@@ -7,6 +7,7 @@ import { buildAgentEnv } from "../processEnv.js";
 import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
+  AgentPersona,
   ApprovalDecision,
   ApprovalRequest,
   ApprovalRequestKind,
@@ -108,6 +109,11 @@ type CodexSession = {
    *  present exactly when the kone MCP server is live for this thread — gates
    *  the collaborationMode/developer_instructions injection in sendTurn. */
   gatewayConnection?: GatewayConnection;
+  /** The named agent this session works as, when the thread was handed to one.
+   *  Held on the session because codex takes its developer instructions per
+   *  turn: every turn re-states who is answering, so a resumed conversation
+   *  keeps its name without kone having to replay anything. */
+  agent?: AgentPersona;
   activeTurnId?: string;
   rpc: JsonRpcClient;
   items: Map<string, CodexItemBuffer>;
@@ -646,6 +652,7 @@ export class CodexAdapter implements ProviderAdapter {
       model: input.model,
       mode,
       gatewayConnection: input.gatewayConnection,
+      agent: input.agent,
       rpc,
       items: new Map(),
       pendingUserInputs: new Map(),
@@ -772,6 +779,7 @@ export class CodexAdapter implements ProviderAdapter {
       model: session.model,
       effort: input.effort,
       gatewayControlAvailable: session.gatewayConnection !== undefined,
+      agent: session.agent,
     });
     const turnStartInput: CodexTurnStartParams = {
       threadId: conversationId,

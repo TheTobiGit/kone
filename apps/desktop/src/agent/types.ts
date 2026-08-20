@@ -91,6 +91,36 @@ export type ModelDescriptor = {
  *  have that second toggle yet. */
 export type InteractionMode = "ask" | "accept-edits" | "full-access";
 
+/**
+ * The named agent a thread was handed to, reduced to what the model has to be
+ * told (gateway/appContext renderAgentIdentity).
+ *
+ * The roster itself is the renderer's — an agent has a face, a place in a list,
+ * a row in a drawer, and none of that means anything to a provider session. What
+ * crosses this boundary is the name it answers to and its standing instructions
+ * for how to work; the rest stays in the renderer.
+ *
+ * Absent means the thread is running as a guest, which is every thread that
+ * predates the roster and every thread the user didn't hand to anybody. A guest
+ * session is told nothing, so it behaves exactly as it did before agents
+ * existed.
+ */
+export type AgentPersona = {
+  /** The agent's name as the user has it. Renameable, so never assume the name
+   *  the agent shipped with. */
+  name: string;
+  /** Who the agent is — its temperament and voice, in a few words, rendered
+   *  after the name in the identity block (renderAgentIdentity). Absent for an
+   *  agent that is only a name. This is character, not conduct: it colours how
+   *  the agent comes across, where `instructions` set what it does. */
+  personality?: string;
+  /** The agent's standing instructions — how it should work, in its own words,
+   *  rendered after the name in the identity block (renderAgentIdentity). Absent
+   *  for an agent that is only a name. Behavioural only: it says how to act, not
+   *  which provider/model/effort to run — those stay the thread's own picks. */
+  instructions?: string;
+};
+
 export type SessionStartInput = {
   /** Caller-chosen thread id — kone owns this; the CLI's native id is mapped
    *  onto it via ProviderRefs. */
@@ -125,6 +155,12 @@ export type SessionStartInput = {
    *  it into the provider session's mcpServers config so the agent can call
    *  kone tools. Renderer code never sets this. */
   gatewayConnection?: GatewayConnection;
+  /** Who this session is working as, when the thread was handed to a named
+   *  agent. Set on the session rather than per turn because that is what it is:
+   *  a thread has one agent from end to end, and the providers that carry it on
+   *  a system channel fix theirs when the process spawns. Absent runs the
+   *  session as a guest. */
+  agent?: AgentPersona;
 };
 
 export type Session = {

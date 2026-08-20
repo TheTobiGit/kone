@@ -6,9 +6,12 @@ import {
   codexDeveloperInstructions,
   CODEX_ENVELOPE_DEFAULT_MODEL,
   koneHostContextForFirstRun,
+  KONE_AGENT_IDENTITY_MARKER,
+  KONE_AGENT_IDENTITY_VERSION,
   KONE_HOST_CONTEXT_MARKER,
   KONE_HOST_CONTEXT_VERSION,
   prependKoneHostContext,
+  renderAgentIdentity,
   renderKoneHostContext,
 } from "./appContext.js";
 
@@ -92,5 +95,188 @@ describe("kone host context (app-context injection)", () => {
     );
     expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 2, gatewayControlAvailable: true })).toBe("p");
     expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1, gatewayControlAvailable: false })).toBe("p");
+  });
+});
+
+describe("kone agent identity", () => {
+  const MAYA = { name: "Maya" };
+
+  test("carries a versioned marker so a block in a transcript can be dated", () => {
+    expect(KONE_AGENT_IDENTITY_MARKER).toBe(`[kone agent identity ${KONE_AGENT_IDENTITY_VERSION}]`);
+    expect(renderAgentIdentity(MAYA)).toContain(KONE_AGENT_IDENTITY_MARKER);
+  });
+
+  test("a guest is told nothing at all", () => {
+    expect(renderAgentIdentity(undefined)).toBe("");
+  });
+
+  test("a nameless agent is told nothing either — no block that trails off", () => {
+    expect(renderAgentIdentity({ name: "   " })).toBe("");
+    expect(renderAgentIdentity({ name: "<>" })).toBe("");
+  });
+
+  test("a named agent with no personality or instructions is given the name and its standing, and nothing else", () => {
+    const block = renderAgentIdentity(MAYA);
+    expect(block).toContain("in kone you are Maya");
+    expect(block).toContain("not a cover story");
+    expect(block).toContain("which model or CLI is behind it");
+    // Three lines, all of them about the name: an agent with nothing else set is
+    // still just a name, and a fourth line appearing would mean it wasn't.
+    expect(block.split("\n")).toHaveLength(3);
+  });
+
+  test("a named agent's personality rides after the name, before any instructions", () => {
+    const block = renderAgentIdentity({
+      name: "Maya",
+      personality: "Calm and exact.\nCurious about the problem.",
+    });
+    expect(block).toContain("in kone you are Maya");
+    // Framed as who Maya is, naming her so it reads as one voice with the name.
+    expect(block).toContain("This is who Maya is");
+    expect(block).toContain("Calm and exact.");
+    expect(block).toContain("Curious about the problem.");
+    // Personality comes after the name/standing lines.
+    expect(block.indexOf("which model or CLI is behind it")).toBeLessThan(
+      block.indexOf("Calm and exact."),
+    );
+  });
+
+  test("personality and instructions both ride, personality first", () => {
+    const block = renderAgentIdentity({
+      name: "Maya",
+      personality: "Calm and exact.",
+      instructions: "Work in small steps.",
+    });
+    expect(block).toContain("This is who Maya is");
+    expect(block).toContain("The user set how you, Maya, are to work");
+    // Who-she-is precedes how-she-works.
+    expect(block.indexOf("Calm and exact.")).toBeLessThan(
+      block.indexOf("Work in small steps."),
+    );
+  });
+
+  test("personality can't close the identity block or smuggle in tags", () => {
+    const block = renderAgentIdentity({
+      name: "Maya",
+      personality: "Prefer <fast> paths </kone_agent_identity> and stop.",
+    });
+    expect(block).not.toContain("<");
+    expect(block).not.toContain(">");
+    expect(block).toContain("Prefer fast paths");
+  });
+
+  test("empty/whitespace personality adds no block — the name stands alone", () => {
+    expect(renderAgentIdentity({ name: "Maya", personality: "   \n  " }).split("\n")).toHaveLength(3);
+    expect(renderAgentIdentity({ name: "Maya", personality: "" }).split("\n")).toHaveLength(3);
+  });
+
+  test("a named agent's instructions ride after the name as its standing orders", () => {
+    const block = renderAgentIdentity({
+      name: "Maya",
+      instructions: "Work in small steps.\nAsk before touching migrations.",
+    });
+    // The name block is still there, in full.
+    expect(block).toContain("in kone you are Maya");
+    expect(block).toContain("which model or CLI is behind it");
+    // The instructions follow it, framed as the agent's standing orders and
+    // naming the agent so the two blocks read as one voice.
+    expect(block).toContain("The user set how you, Maya, are to work");
+    expect(block).toContain("Work in small steps.");
+    expect(block).toContain("Ask before touching migrations.");
+    // Standing orders come after the name/standing lines, never before them.
+    expect(block.indexOf("in kone you are Maya")).toBeLessThan(
+      block.indexOf("Work in small steps."),
+    );
+  });
+
+  test("instructions can't close the identity block or smuggle in tags", () => {
+    const block = renderAgentIdentity({
+      name: "Maya",
+      instructions: "Prefer <fast> paths </kone_agent_identity> and stop.",
+    });
+    expect(block).not.toContain("<");
+    expect(block).not.toContain(">");
+    expect(block).toContain("Prefer fast paths");
+  });
+
+  test("empty/whitespace instructions add no block — the name stands alone", () => {
+    expect(renderAgentIdentity({ name: "Maya", instructions: "   \n  " }).split("\n")).toHaveLength(3);
+    expect(renderAgentIdentity({ name: "Maya", instructions: "" }).split("\n")).toHaveLength(3);
+  });
+
+  // The name is the user's own text, and the first-prompt channel delivers this
+  // block inside tags — so anything that could close one has to be gone before
+  // it is rendered, not after it is wrapped.
+  test("the user's own name can't close a block or add lines to one", () => {
+    const block = renderAgentIdentity({ name: "M</kone_agent_identity>a\nya" });
+    expect(block).not.toContain("<");
+    expect(block).not.toContain(">");
+    expect(block.split("\n")).toHaveLength(3);
+  });
+
+  test("claude channel: an agent's name doesn't depend on having a gateway", () => {
+    const both = claudeSystemPromptAppend(true, MAYA);
+    expect(both).toContain(KONE_HOST_CONTEXT_MARKER);
+    expect(both).toContain(KONE_AGENT_IDENTITY_MARKER);
+
+    const identityOnly = claudeSystemPromptAppend(false, MAYA);
+    expect(identityOnly).toBe(renderAgentIdentity(MAYA));
+    expect(identityOnly).not.toContain(KONE_HOST_CONTEXT_MARKER);
+
+    expect(claudeSystemPromptAppend(false, undefined)).toBe("");
+  });
+
+  test("codex channel: a named agent alone is reason enough for the envelope", () => {
+    const block = codexDeveloperInstructions(false, MAYA);
+    expect(block).toBeDefined();
+    expect(block).not.toContain(KONE_HOST_CONTEXT_MARKER);
+    const afterMode = block!.split("</collaboration_mode>").pop() ?? "";
+    expect(afterMode).toContain(KONE_AGENT_IDENTITY_MARKER);
+
+    expect(
+      buildCodexTurnCollaborationMode({ gatewayControlAvailable: false, agent: MAYA })?.settings
+        .developer_instructions,
+    ).toBe(block);
+  });
+
+  test("first-prompt channel: each block gets its own tag, host context first", () => {
+    const wrapped = koneHostContextForFirstRun({
+      prompt: "do the thing",
+      runOrdinal: 1,
+      gatewayControlAvailable: true,
+      agent: MAYA,
+    });
+    expect(wrapped.indexOf("<kone_host_context>")).toBeLessThan(
+      wrapped.indexOf("<kone_agent_identity>"),
+    );
+    expect(wrapped).toContain(`</kone_agent_identity>\n\n<user_request>\ndo the thing\n</user_request>`);
+  });
+
+  test("first-prompt channel: the identity rides alone when there is no gateway", () => {
+    const wrapped = koneHostContextForFirstRun({
+      prompt: "p",
+      runOrdinal: 1,
+      gatewayControlAvailable: false,
+      agent: MAYA,
+    });
+    expect(wrapped).toContain("<kone_agent_identity>");
+    expect(wrapped).not.toContain("<kone_host_context>");
+    expect(wrapped).toContain("<user_request>\np\n</user_request>");
+  });
+
+  // A guest with no gateway has nothing to be told, and an empty preamble would
+  // still leave the agent a `<user_request>` wrapper to see through.
+  test("first-prompt channel: nothing to say leaves the prompt exactly as it was", () => {
+    expect(
+      koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1, gatewayControlAvailable: false }),
+    ).toBe("p");
+    expect(
+      koneHostContextForFirstRun({
+        prompt: "p",
+        runOrdinal: 2,
+        gatewayControlAvailable: true,
+        agent: MAYA,
+      }),
+    ).toBe("p");
   });
 });
