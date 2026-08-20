@@ -27,7 +27,7 @@ mock.module("./sqlite.js", () => ({
 }));
 setUserDataDir(testUserDataDir);
 
-import { KONE_HOST_CONTEXT_MARKER } from "./gateway/appContext.js";
+import { KONE_AGENT_IDENTITY_MARKER, KONE_HOST_CONTEXT_MARKER } from "./gateway/appContext.js";
 import { CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND } from "./claudeSubagents.js";
 
 type CapturedOptions = {
@@ -118,6 +118,39 @@ describe("Claude gateway injection", () => {
     expect(captured.options?.mcpServers).toBeUndefined();
     const append = captured.options?.systemPrompt?.append ?? "";
     expect(append).toContain(CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND);
+    expect(append).not.toContain(KONE_HOST_CONTEXT_MARKER);
+  });
+});
+
+describe("Claude agent identity", () => {
+  const MAYA = { name: "Maya" };
+
+  test("a thread handed to an agent starts a session that knows whose it is", async () => {
+    await start({ gatewayConnection: CONNECTION, agent: MAYA });
+    const append = captured.options?.systemPrompt?.append ?? "";
+    expect(append).toContain(KONE_AGENT_IDENTITY_MARKER);
+    expect(append).toContain("in kone you are Maya");
+    // The subagent and host-context appends are still there beside it: identity
+    // is another block on the channel, not a replacement for it.
+    expect(append).toContain(CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND);
+    expect(append).toContain(KONE_HOST_CONTEXT_MARKER);
+  });
+
+  test("a guest session is told nothing at all", async () => {
+    await start({ gatewayConnection: CONNECTION });
+    const append = captured.options?.systemPrompt?.append ?? "";
+    expect(append).not.toContain(KONE_AGENT_IDENTITY_MARKER);
+    expect(append).not.toContain("Maya");
+  });
+
+  // Claude fixes its system prompt when the process spawns, so getting this
+  // wrong isn't a degraded session — it's a session that can never learn its
+  // own name. Whose thread it is has nothing to do with which tools it got.
+  test("an agent keeps its name with no gateway to talk to", async () => {
+    await start({ agent: MAYA });
+    const append = captured.options?.systemPrompt?.append ?? "";
+    expect(append).toContain(KONE_AGENT_IDENTITY_MARKER);
+    expect(append).toContain("in kone you are Maya");
     expect(append).not.toContain(KONE_HOST_CONTEXT_MARKER);
   });
 });

@@ -8,7 +8,7 @@ import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSuppor
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { buildOpenCodeMcpServer } from "../gateway/injection.js";
-import type { ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
+import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
 type RecordLike = Record<string, any>;
@@ -29,6 +29,9 @@ type OpenCodeSession = {
   client: OpenCodeClient; server: OpenCodeServer; openCodeSessionId: string; activeTurnId?: string;
   /** The kone gateway connection minted at startSession — the agent's app tools. */
   gatewayConnection?: GatewayConnection;
+  /** The named agent this session works as, when the thread was handed to one —
+   *  rides the first prompt beside the host-context block. */
+  agent?: AgentPersona;
   /** User turns sent so far; the kone host-context block rides the first one. */
   runOrdinal: number;
   /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
@@ -516,7 +519,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         console.error("[opencode] kone MCP registration failed:", errorMessage(error));
       }
     }
-    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), pendingApprovals: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), settledSubagentToolUseIds: new Set(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
+    const session: OpenCodeSession = { threadId: input.threadId, cwd: input.cwd, model: input.model, variant: input.effort, contextWindow: input.model ? this.modelContextWindows.get(input.model) : undefined, mode, baseUrl: server.baseUrl, client, server, openCodeSessionId: sessionId, resumedFrom, gatewayConnection: input.gatewayConnection, agent: input.agent, runOrdinal: 0, eventsAbort: new AbortController(), messageRoleById: new Map(), partById: new Map(), emittedTextByPartId: new Map(), completedTextPartIds: new Set(), pendingPermissions: new Map(), pendingUserInputs: new Map(), pendingApprovals: new Map(), subagentRuns: new Map(), subagentChildSessions: new Map(), settledSubagentToolUseIds: new Set(), disposed: false, interrupting: false, planTasks: [], exitNotified: false };
     server.child.once("exit", (code) => this.unexpectedExit(session, code));
     this.sessions.set(input.threadId, session); void this.consumeEvents(session);
     this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.started" });
@@ -551,6 +554,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       prompt: composed,
       runOrdinal: session.runOrdinal + 1,
       gatewayControlAvailable: session.gatewayConnection !== undefined,
+      agent: session.agent,
     });
     session.runOrdinal += 1;
     if (!prompt && !files.length) throw new Error("Turn input must include text or an attachment.");

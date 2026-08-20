@@ -21,6 +21,8 @@
 // Everything is gated on the session actually having a gateway connection:
 // never promise tools the agent doesn't have.
 
+import type { AgentPersona } from "../types.js";
+
 /** Versioned marker so a host-context block in a transcript can be dated —
  */
 export const KONE_HOST_CONTEXT_VERSION = "2026-08-08.2";
@@ -47,12 +49,125 @@ export function renderKoneHostContext(gatewayControlAvailable: boolean): string 
   ].join("\n");
 }
 
-/** Claude system channel: the block layered onto the stock claude_code preset
+// ── who the session is working as ────────────────────────────────────────────
+// A thread handed to a named agent has to arrive at the model knowing whose name
+// is on it. Without this the transcript is the only party that knows: kone labels
+// the turn, the user writes "Maya, can you take another look", and the agent on
+// the other end has never heard the name — so it either ignores it or invents
+// what it is being asked to be.
+//
+// The name is not a costume — the block says it is a presentation and tells the
+// agent to answer plainly when asked what is behind it, because a model denying
+// its own provider is a worse failure than a thread with no name at all. After
+// the name come two optional blocks, in this order: the agent's personality —
+// who it is, its temperament and voice — then its instructions — how it should
+// work, in the user's words, framed as standing orders rather than this turn's
+// request. An agent may have either, both, or neither; with neither it is still
+// just a name.
+//
+// A guest session is told none of this, which is the point. A guest name belongs
+// to the conversation rather than to anybody — it is rolled from the thread's id
+// so a column has a face — and telling a model it "is Alder" would make an actor
+// out of a label. A guest behaves exactly as it did before any of this existed.
+
+export const KONE_AGENT_IDENTITY_VERSION = "2026-08-20.4";
+export const KONE_AGENT_IDENTITY_MARKER = `[kone agent identity ${KONE_AGENT_IDENTITY_VERSION}]`;
+
+const MAX_NAME_LENGTH = 48;
+/** A generous ceiling for an agent's instructions — room for real standing
+ *  orders, short of a field that could crowd the turn out of its own context. */
+const MAX_INSTRUCTIONS_LENGTH = 4000;
+/** Personality is a sketch of who the agent is, not a rulebook — a tighter
+ *  ceiling keeps it to a few lines of character rather than a second set of
+ *  instructions wearing a different hat. */
+const MAX_PERSONALITY_LENGTH = 1200;
+
+/**
+ * One line of plain text with nothing in it that could close a block.
+ *
+ * The name is the user's own text, and on the first-prompt channel this block is
+ * delivered inside tags — so a name carrying `</kone_agent_identity>` would end
+ * the block early and leave the rest of it reading as the user's request.
+ * Brackets go, whitespace collapses, and what survives is a single line.
+ */
+function oneLine(value: string, limit: number): string {
+  return value
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+/**
+ * A multi-line prose field — an agent's personality or instructions — made safe
+ * to sit inside the identity block.
+ *
+ * Same tag concern as the name: on the first-prompt channel this block is
+ * delivered inside `<kone_agent_identity>` tags, so a `>` in the text would
+ * close it early. Angle brackets go — but the newlines stay, because unlike the
+ * name these are multi-line prose. Runs of blank lines and trailing spaces are
+ * tidied so the block reads cleanly however the field was typed, and the whole
+ * thing is capped.
+ */
+function sanitizeProse(value: string, limit: number): string {
+  return value
+    .replace(/[<>]/g, "")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, limit);
+}
+
+/** The agent's identity block, or "" for a guest — see the note above. Empty
+ *  for a nameless agent too: a block that has to say "you are" and then trail
+ *  off is worse than no block. The agent's personality and instructions, when it
+ *  has them, follow the name — personality (who it is) before instructions (how
+ *  it works). */
+export function renderAgentIdentity(agent: AgentPersona | undefined): string {
+  if (!agent) return "";
+  const name = oneLine(agent.name, MAX_NAME_LENGTH);
+  if (!name) return "";
+  const lines = [
+    KONE_AGENT_IDENTITY_MARKER,
+    `The user handed this thread to a named agent, and you are it: in kone you are ${name}. kone labels your turns with that name and the user will address you by it, so answer to it, and use it when you refer to yourself.`,
+    "That name is how you are presented here, not a cover story — if the user asks which model or CLI is behind it, tell them plainly.",
+  ];
+  const personality = agent.personality
+    ? sanitizeProse(agent.personality, MAX_PERSONALITY_LENGTH)
+    : "";
+  if (personality) {
+    lines.push(
+      `This is who ${name} is — the temperament and voice to carry through the thread. Let it colour how you come across, without overriding anything the user asks for:`,
+      personality,
+    );
+  }
+  const instructions = agent.instructions
+    ? sanitizeProse(agent.instructions, MAX_INSTRUCTIONS_LENGTH)
+    : "";
+  if (instructions) {
+    lines.push(
+      `The user set how you, ${name}, are to work. Treat this as your standing orders for the whole thread, above your defaults but below anything they ask for directly:`,
+      instructions,
+    );
+  }
+  return lines.join("\n");
+}
+
+/** Claude system channel: the blocks layered onto the stock claude_code preset
  *  via the SDK's preset `append` (sdk.d.ts: "Use default prompt with appended
- *  instructions"). Empty when the session has no gateway connection — the
- *  adapter then appends nothing, keeping the preset pristine. */
-export function claudeSystemPromptAppend(gatewayControlAvailable: boolean): string {
-  return gatewayControlAvailable ? renderKoneHostContext(true) : "";
+ *  instructions"). Empty when there is nothing to say — no gateway and no named
+ *  agent — and the adapter then appends nothing, keeping the preset pristine.
+ *
+ *  The two blocks are independently optional on purpose: an agent's name is not
+ *  a gateway capability, so a session that came up without a gateway connection
+ *  still knows who it is. */
+export function claudeSystemPromptAppend(
+  gatewayControlAvailable: boolean,
+  agent?: AgentPersona,
+): string {
+  return [gatewayControlAvailable ? renderKoneHostContext(true) : "", renderAgentIdentity(agent)]
+    .filter(Boolean)
+    .join("\n");
 }
 
 /** Codex envelope default when kone hasn't selected a model. The app-server
@@ -80,8 +195,9 @@ export function buildCodexTurnCollaborationMode(input: {
   model?: string;
   effort?: string;
   gatewayControlAvailable: boolean;
+  agent?: AgentPersona;
 }): CodexTurnCollaborationMode | undefined {
-  const developerInstructions = codexDeveloperInstructions(input.gatewayControlAvailable);
+  const developerInstructions = codexDeveloperInstructions(input.gatewayControlAvailable, input.agent);
   if (developerInstructions === undefined) return undefined;
   return {
     mode: "default",
@@ -98,9 +214,17 @@ export function buildCodexTurnCollaborationMode(input: {
  *  block pins codex's collaboration-mode state to Default (kone never uses
  *  Plan); the app context rides after it, outside the tags, as in both
  *  references. */
-export function codexDeveloperInstructions(gatewayControlAvailable: boolean): string | undefined {
-  if (!gatewayControlAvailable) return undefined;
-  return [
+export function codexDeveloperInstructions(
+  gatewayControlAvailable: boolean,
+  agent?: AgentPersona,
+): string | undefined {
+  const identity = renderAgentIdentity(agent);
+  // Nothing to deliver, so no envelope at all. The collaboration-mode preamble
+  // is not reason enough on its own: it only restates the mode kone always runs
+  // in, and sending it alone would put a mode declaration on every turn of a
+  // session that has nothing else to be told.
+  if (!gatewayControlAvailable && !identity) return undefined;
+  const collaborationMode = [
     "<collaboration_mode># Collaboration Mode: Default",
     "",
     "You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.",
@@ -113,16 +237,40 @@ export function codexDeveloperInstructions(gatewayControlAvailable: boolean): st
     "",
     "In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.",
     "</collaboration_mode>",
-    "",
-    renderKoneHostContext(true),
   ].join("\n");
+  return [collaborationMode, gatewayControlAvailable ? renderKoneHostContext(true) : "", identity]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
-/** Phase B first-prompt channel: the block wrapped so it can't be mistaken
+/** Phase B first-prompt channel: the blocks wrapped so they can't be mistaken
  *  for user text and prepended to the first user prompt — for providers
- *  prependT3OrchestrationInstructions. */
-export function prependKoneHostContext(prompt: string): string {
-  return `<kone_host_context>${renderKoneHostContext(true).trim()}</kone_host_context>\n\n<user_request>\n${prompt}\n</user_request>`;
+ *  prependT3OrchestrationInstructions. Each block carries its own tag, so an
+ *  agent's identity is a thing the model can tell apart from the app it is
+ *  running in rather than one long preamble. */
+export function prependKoneHostContext(prompt: string, agent?: AgentPersona): string {
+  return wrapFirstPrompt({ prompt, gatewayControlAvailable: true, agent });
+}
+
+/** The wrapped first prompt, with whichever blocks this session actually has.
+ *  Nothing to say leaves the prompt alone — an empty preamble would still cost
+ *  the agent a `<user_request>` wrapper to see through. */
+function wrapFirstPrompt(input: {
+  prompt: string;
+  gatewayControlAvailable: boolean;
+  agent?: AgentPersona;
+}): string {
+  const identity = renderAgentIdentity(input.agent);
+  const preamble = [
+    input.gatewayControlAvailable
+      ? `<kone_host_context>${renderKoneHostContext(true).trim()}</kone_host_context>`
+      : "",
+    identity ? `<kone_agent_identity>${identity}</kone_agent_identity>` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  if (!preamble) return input.prompt;
+  return `${preamble}\n\n<user_request>\n${input.prompt}\n</user_request>`;
 }
 
 /** Phase B helper: fire the first-prompt channel once per session, on the
@@ -131,8 +279,12 @@ export function koneHostContextForFirstRun(input: {
   prompt: string;
   runOrdinal: number;
   gatewayControlAvailable: boolean;
+  agent?: AgentPersona;
 }): string {
-  return input.runOrdinal === 1 && input.gatewayControlAvailable
-    ? prependKoneHostContext(input.prompt)
-    : input.prompt;
+  if (input.runOrdinal !== 1) return input.prompt;
+  return wrapFirstPrompt({
+    prompt: input.prompt,
+    gatewayControlAvailable: input.gatewayControlAvailable,
+    agent: input.agent,
+  });
 }

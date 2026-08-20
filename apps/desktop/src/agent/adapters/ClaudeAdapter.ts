@@ -844,9 +844,13 @@ export class ClaudeAdapter implements ProviderAdapter {
         // mcpServers injection below so an agent is never told about tools it
         // doesn't have. Delivered on resumed sessions too: this is the one
         // options builder fresh and resume paths share.
+        //
+        // The agent's own identity rides the same channel, but on its own gate:
+        // whose name a thread carries has nothing to do with which tools the
+        // session got. Absent for a guest thread, which appends nothing.
         append: [
           CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND,
-          claudeSystemPromptAppend(input.gatewayConnection !== undefined),
+          claudeSystemPromptAppend(input.gatewayConnection !== undefined, input.agent),
         ]
           .filter(Boolean)
           .join("\n"),
