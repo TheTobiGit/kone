@@ -25,6 +25,7 @@ import type { RecentProject } from "~/composables/useRecentProjects";
 import { buildModelCatalog, effortForTier, familyForId, sessionBrand, EFFORT_META } from "~/utils/modelCatalog";
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import { SESSION_BRAND } from "~/types/session";
+import { childApprovalsInbox, type ThreadAttentionKind } from "~/composables/useAgent";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
 import {
@@ -1566,6 +1567,107 @@ const pillThreads = computed(() => {
     .sort((a, b) => (a.block?.at ?? 0) - (b.block?.at ?? 0));
 });
 
+// ── blocked-thread attention ─────────────────────────────────────────────────
+// The one signal that overrides the surface gate above: a thread parked on a
+// person. Two sources feed it — resident threads waiting on a permission or a
+// question, and spawned children parked on their own gate (headless here, so
+// they never had a summary). A blocked thread is never dismissed and, unlike the
+// completion pills, never hidden by the surface you're on — the moment you stop
+// staring at it is exactly when an unanswered prompt would otherwise vanish.
+const attentionThreads = computed<
+  { key: string; threadId: string; title: string; brand: BrandKey; kind: ThreadAttentionKind; detail?: string }[]
+>(() => {
+  if (activeFile.value) return []; // the file overlay owns the whole screen
+  const out: { key: string; threadId: string; title: string; brand: BrandKey; kind: ThreadAttentionKind; detail?: string }[] = [];
+  for (const t of agent.threads.value) {
+    if (!t.attention) continue;
+    // On the board the focused thread shows its gate inline in the composer, so
+    // a corner pill would only echo it. Anywhere else — the working tree, the
+    // repository surface — no conversation is on screen, so even the active
+    // thread's gate has to be surfaced here or it's invisible.
+    if (surface.value === "board" && t.isActive) continue;
+    out.push({
+      key: t.key,
+      threadId: t.threadId,
+      title: t.title,
+      brand: sessionBrand(t.provider, SESSION_BRAND[t.provider] ?? "generic", t.model),
+      kind: t.attention.kind,
+      detail: t.attention.detail,
+    });
+  }
+  for (const [childId, pending] of childApprovalsInbox.value) {
+    out.push({
+      key: `spawn:${childId}`,
+      threadId: childId,
+      title: "Spawned thread",
+      brand: "generic",
+      kind: "parked-spawn",
+      detail: pending.approval.title,
+    });
+  }
+  return out;
+});
+
+// When each wait was first seen — a fresh one wears the pastille (`notify`); once
+// it's sat unanswered past this, the orb escalates to the "!" (`exclaim`). A
+// view-side freshness timer (the same shape as seenTurns): seeded when a key
+// appears, dropped when it clears, never persisted.
+const STALE_AFTER_MS = 30_000;
+const attentionSince = ref<Record<string, number>>({});
+watch(
+  () => attentionThreads.value.map((a) => a.key).join("|"),
+  () => {
+    const now = Date.now();
+    const live = new Set(attentionThreads.value.map((a) => a.key));
+    const next = { ...attentionSince.value };
+    let touched = false;
+    for (const key of live) {
+      if (next[key] === undefined) {
+        next[key] = now;
+        touched = true;
+      }
+    }
+    for (const key of Object.keys(next)) {
+      if (!live.has(key)) {
+        delete next[key];
+        touched = true;
+      }
+    }
+    if (touched) attentionSince.value = next;
+  },
+  { immediate: true },
+);
+function attentionOrb(key: string): "notify" | "exclaim" {
+  const since = attentionSince.value[key];
+  if (since === undefined) return "notify";
+  return agentNow.value - since > STALE_AFTER_MS ? "exclaim" : "notify";
+}
+
+// The beacon's items — the away-thread asks, each with its own freshness orb
+// folded in so the beacon can escalate as a whole and each bloomed row can show
+// its own state.
+const attentionBeaconItems = computed(() =>
+  attentionThreads.value.map((a) => ({ ...a, orbState: attentionOrb(a.key) })),
+);
+// The centre-bottom is already spoken for — by the composer, or by the focused
+// thread's own ask cue — whenever a thread column is focused on the board. There
+// the beacon lifts to float just above that dock; elsewhere (overview, repo
+// surface) it takes the true bottom-centre.
+const centerDockActive = computed(
+  () => surface.value === "board" && activePaneIsThread.value && !stripOverview.value,
+);
+
+// The focused thread's own ask answers in place — it raises its shell (the
+// question / approval modal) straight over the composer, the way it always has.
+// The bloub is NOT for the thread you're looking at; it's the away-signal below,
+// for the threads that park while your eyes are elsewhere. When that focused
+// modal is up it owns the centre-bottom, so the beacon steps aside for it.
+const centerModalOpen = computed(
+  () =>
+    !!focusedPendingUserInput.value ||
+    (!!focusedPendingApproval.value && !shellSuppressesApproval.value),
+);
+
 function onOpenThread(threadId: string) {
   cue("press");
   // The pill's thread is usually already a pane (adopted while it ran); focus it.
@@ -2123,9 +2225,10 @@ function onDiscardFile(path: string) {
       </div>
     </Transition>
 
-    <!-- Mid-turn question: while the agent is asking, the composer's orb/input
-         gives way to this modal in the same spot, in the picker-family shell.
-         Answering resolves the parked tool call and the turn continues. -->
+    <!-- Mid-turn question on the focused thread: it raises straight over the
+         composer in the picker-family shell. Answering resolves the parked tool
+         call and the turn continues. This is the in-thread path — the away
+         signal is the centre-bottom beacon, not this. -->
     <UserInputModal
       v-if="focusedPendingUserInput"
       :request-id="focusedPendingUserInput.requestId"
@@ -2134,11 +2237,10 @@ function onDiscardFile(path: string) {
       @cancel="onCancelUserInput"
     />
 
-    <!-- Tool approval: the turn is parked on the agent wanting to run something
-         (a command, a file change, a permission grant) in a restrictive mode.
-         The composer steps aside for this decision in the same spot — unless the
-         subagent shell is already showing the very same ask inline, in which
-         case the shell IS the answer spot and this modal steps aside. -->
+    <!-- Tool approval on the focused thread: the turn is parked on the agent
+         wanting to run something in a restrictive mode. The subagent shell, when
+         it's already showing this same ask inline, is the answer spot instead —
+         and then this modal stays down. -->
     <ApprovalModal
       v-if="focusedPendingApproval && !shellSuppressesApproval"
       :request-id="focusedPendingApproval.requestId"
@@ -2204,6 +2306,9 @@ function onDiscardFile(path: string) {
          names the conversation and what it's on — the current plan task when the
          thread has a checklist ("Wiring the pill stack", 2/5), else the live tool
          status ("Reading example.vue") — and reopens the thread on click. -->
+    <!-- Running / settled turn pills — dismissible notices, so the corner is
+         right for them. The blocked-on-a-human indicator no longer lives here;
+         it's the centre-bottom beacon below. -->
     <div v-if="pillThreads.length" class="pill-stack">
       <TurnStatusPill
         v-for="t in pillThreads"
@@ -2216,6 +2321,23 @@ function onDiscardFile(path: string) {
         @open="onOpenThread(t.threadId)"
         @dismiss="onDismissThread(t.threadId, t.turnId)"
       />
+    </div>
+
+    <!-- Needs-a-human beacon: a big bloub at the bottom-centre for every OTHER
+         thread parked on you. It lifts above the composer/cue when a thread
+         column is focused, and takes the true centre elsewhere. Hover or click
+         blooms the parked threads; picking one jumps to it. -->
+    <div
+      class="attn-beacon"
+      :class="{ 'attn-beacon--lifted': centerDockActive }"
+    >
+      <AnimatePresence :initial="true">
+        <AttentionBeacon
+          v-if="attentionBeaconItems.length && !centerModalOpen"
+          :items="attentionBeaconItems"
+          @open="onOpenThread"
+        />
+      </AnimatePresence>
     </div>
 
     <!-- A file's detail: it grows out of the clicked card (origin --ox/--oy) to
@@ -2378,6 +2500,25 @@ function onDiscardFile(path: string) {
   align-items: flex-end;
   gap: 10px;
   pointer-events: none;
+}
+
+/* The attention beacon rides the bottom-centre — the app's action locus. It's
+   pointer-transparent across its gaps; the orb/pills re-enable their own hits.
+   When a thread column owns the composer/cue at the very bottom, the beacon
+   lifts clear of it. */
+.attn-beacon {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 2rem;
+  z-index: 46;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  transition: bottom 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.attn-beacon--lifted {
+  bottom: 7.5rem;
 }
 
 /* ── Titlebar ─────────────────────────────────────────────────────────────── */
