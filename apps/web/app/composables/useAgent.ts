@@ -99,6 +99,22 @@ export type PendingApproval = {
   originToolUseId?: string;
 };
 
+/** Why a thread is parked on a person. A permission gate outranks a question
+ *  when somehow both are up — you can't answer a question the turn is blocked
+ *  behind. `parked-spawn` is a spawned child waiting on its own gate. */
+export type ThreadAttentionKind = "permission" | "question" | "parked-spawn";
+
+/** A thread waiting on a human — the state the unmissable indicator reads. It's
+ *  derived live from the parked requests, never a stored flag: a crash-resume
+ *  rebuilds it from the same events that drive the pane, so it can't be stranded
+ *  the way a side flag written only at settle-time could. */
+export type ThreadAttention = {
+  kind: ThreadAttentionKind;
+  /** The headline of what's being asked — the tool/command for a permission,
+   *  the question's header — so the indicator can name it, not just flag it. */
+  detail?: string;
+};
+
 /** A durably queued follow-up row, as the IPC bridge reports it
  *  (agent:queued-turns). Structural twin of the desktop QueuedTurnRow —
  *  the KoneAgentApi mirror lands with the parallel IPC agent, so until then
@@ -184,6 +200,10 @@ export type ThreadSummary = {
    *  what the pill names while you're away from the conversation. */
   task: ActivePlanTask | null;
   busy: boolean;
+  /** Set when the thread is parked on a person (permission / question). Null
+   *  otherwise. Surfaced everywhere, on every surface — a blocked thread you've
+   *  stepped away from is the one thing that must never go quiet. */
+  attention: ThreadAttention | null;
   /** True once a live turn has actually started here — rehydrated history alone
    *  doesn't count, so a freshly reloaded thread never pills. */
   everRan: boolean;
@@ -455,6 +475,18 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  seedSpawnedChildren). */
   const spawnedChildren = ref<SpawnedThread[]>([]);
   const pendingApproval = computed<PendingApproval | null>(() => pendingApprovals.value[0] ?? null);
+
+  /** The one "needs a human" signal for this thread, derived straight from the
+   *  live parked requests. A permission gate outranks a question — the turn is
+   *  blocked behind the gate, so that's the ask to answer first. Null the moment
+   *  both clear; nothing here is stored, so a resume can't strand it. */
+  const attention = computed<ThreadAttention | null>(() => {
+    const gate = pendingApprovals.value[0];
+    if (gate) return { kind: "permission", detail: gate.approval.title };
+    const q = pendingUserInput.value;
+    if (q) return { kind: "question", detail: q.questions[0]?.header };
+    return null;
+  });
 
   /** Follow-ups durably queued behind the running turn (the AgentService queue
    *  slice: a send while busy is enqueued, promoted on settle, cancelled on
@@ -2268,6 +2300,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     pendingUserInput,
     pendingApproval,
     pendingApprovals,
+    attention,
     unstarted,
     model,
     mode,
@@ -2633,6 +2666,7 @@ export function useAgent(options: UseAgentOptions) {
       block: latestAssistant(s.timelineBlocks.value),
       task: activePlanTask(s.timelineBlocks.value),
       busy: s.busy.value,
+      attention: s.attention.value,
       everRan: s.everRan.value,
       isActive: s.key === activeKey.value,
     })),
