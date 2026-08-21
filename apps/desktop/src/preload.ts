@@ -1,10 +1,13 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type {
+  AgentRecord,
   QueuedTurnRow,
   ScratchpadRecord,
   StoredBoardLayout,
   StoredThreadPage,
+  SubagentPresetRecord,
+  ThreadAgentBinding,
 } from "./agent/ConversationStore.js";
 import type { AgentInventory } from "./agent/inventory/types.js";
 import type { SkillDetail } from "./agent/inventory/skillDetail.js";
@@ -64,6 +67,24 @@ import type {
   ScratchpadSaveInput,
   ScratchpadSaveResult,
 } from "./scratchpad/index.js";
+import type {
+  RosterBindInput,
+  RosterCarryInput,
+  RosterCreateInput,
+  RosterDeleteInput,
+  RosterDuplicateInput,
+  RosterHydrateInput,
+  RosterSelectInput,
+  RosterSnapshot,
+  RosterTeamInput,
+  RosterTeamMemberInput,
+  RosterUpdateInput,
+} from "./roster/index.js";
+import type {
+  PresetCreateInput,
+  PresetDeleteInput,
+  PresetUpdateInput,
+} from "./presets/index.js";
 import type { DirListing } from "./fs.js";
 import type { ThemeMode } from "./system.js";
 import type {
@@ -505,6 +526,39 @@ const api = {
       ipcRenderer.invoke("board:load", input),
     save: (input: BoardSaveInput): Promise<{ savedAt: number } | null> =>
       ipcRenderer.invoke("board:save", input),
+  },
+  roster: {
+    hydrate: (input: RosterHydrateInput): Promise<RosterSnapshot> =>
+      ipcRenderer.invoke("roster:hydrate", input),
+    create: (input: RosterCreateInput): Promise<AgentRecord | null> =>
+      ipcRenderer.invoke("roster:create", input),
+    update: (input: RosterUpdateInput): Promise<AgentRecord | null> =>
+      ipcRenderer.invoke("roster:update", input),
+    delete: (input: RosterDeleteInput): Promise<boolean> =>
+      ipcRenderer.invoke("roster:delete", input),
+    duplicate: (input: RosterDuplicateInput): Promise<AgentRecord | null> =>
+      ipcRenderer.invoke("roster:duplicate", input),
+    team: (input: RosterTeamInput): Promise<AgentRecord[]> =>
+      ipcRenderer.invoke("roster:team", input),
+    addToTeam: (input: RosterTeamMemberInput): Promise<boolean> =>
+      ipcRenderer.invoke("roster:team-add", input),
+    removeFromTeam: (input: RosterTeamMemberInput): Promise<void> =>
+      ipcRenderer.invoke("roster:team-remove", input),
+    bind: (input: RosterBindInput): Promise<ThreadAgentBinding | null> =>
+      ipcRenderer.invoke("roster:bind", input),
+    carry: (input: RosterCarryInput): Promise<ThreadAgentBinding | null> =>
+      ipcRenderer.invoke("roster:carry", input),
+    select: (input: RosterSelectInput): Promise<void> =>
+      ipcRenderer.invoke("roster:select", input),
+  },
+  presets: {
+    list: (): Promise<SubagentPresetRecord[]> => ipcRenderer.invoke("presets:list"),
+    create: (input: PresetCreateInput): Promise<SubagentPresetRecord | null> =>
+      ipcRenderer.invoke("presets:create", input),
+    update: (input: PresetUpdateInput): Promise<SubagentPresetRecord | null> =>
+      ipcRenderer.invoke("presets:update", input),
+    delete: (input: PresetDeleteInput): Promise<boolean> =>
+      ipcRenderer.invoke("presets:delete", input),
   },
 };
 
