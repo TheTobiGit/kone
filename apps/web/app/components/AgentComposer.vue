@@ -1599,6 +1599,7 @@ html.dark .dock {
   isolation: isolate;
   width: 55px;
   padding: 0;
+  border: 1px solid transparent;
   border-radius: 50%;
   cursor: pointer;
   pointer-events: auto;
@@ -1608,7 +1609,8 @@ html.dark .dock {
     width 0.4s cubic-bezier(0.22, 1, 0.36, 1),
     height 0.4s cubic-bezier(0.22, 1, 0.36, 1),
     padding 0.22s ease 0.16s,
-    border-radius 0.26s ease 0.18s;
+    border-radius 0.26s ease 0.18s,
+    border-color 0.22s ease;
 }
 /* At rest the surface carries no gradient — the face IS the mark, and it bleeds
    past the box (no circular clip). The rim returns only as the pill edge once it
@@ -1624,6 +1626,7 @@ html.dark .dock {
   width: 100%;
   padding: 0;
   border-radius: 26px;
+  border-color: var(--line);
   background-image: none;
   /* Soft and low — just enough to lift the card off the page and read the tray
      as sitting under it. Never a heavy drop. */
@@ -1640,7 +1643,8 @@ html.dark .dock {
     border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
     padding 0.13s ease,
     width 0.12s cubic-bezier(0.4, 0, 0.2, 1),
-    height 0.14s cubic-bezier(0.4, 0, 0.2, 1);
+    height 0.14s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.2s ease;
 }
 /* Big/structural moves (paste, drop, first/last wrap, pill↔card) overshoot and
    settle back — a little spring so a large size change feels physical. */
@@ -1649,7 +1653,8 @@ html.dark .dock {
     border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
     padding 0.13s ease,
     width 0.34s cubic-bezier(0.34, 1.56, 0.64, 1),
-    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.2s ease;
 }
 /* Only through the wake expand: corners square off to the input's radius first,
    then the body stretches out — so it never passes through an ellipse. Placed
@@ -1659,7 +1664,8 @@ html.dark .dock {
     border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1),
     padding 0.13s ease,
     width 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
-    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s;
+    height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.09s,
+    border-color 0.2s ease;
 }
 /* White field body. Transparent at rest so the orb reads as a solid marble.
    Its corners track the surface's on the same curve so the gradient rim keeps an
