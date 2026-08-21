@@ -13,16 +13,46 @@
  * and nothing beyond it. Picking an agent is how you say you want the same
  * colleague back, and eventually the settings that come with them.
  *
- * The name, the agent's personality and its instructions are the fields that
- * reach a provider session — see `agentPersonaForThread`, the one door out of
- * this file. The role and the face are for the person reading the drawer.
+ * The name and the agent's instructions are the fields that reach a provider
+ * session — see `agentPersonaForThread`, the one door out of this file. The role
+ * and the face are for the person reading the drawer.
  *
- * Personality is who the agent is — its temperament and voice; instructions are
- * how it works. Neither picks a provider, a model or an effort — those stay the
- * thread's own per-turn picks. The built-in `kone` agent ships with both; a
- * user-made agent has only what its maker wrote.
+ * Instructions are how an agent works — its standing orders, in its own words.
+ * They do not pick a provider, a model or an effort: those stay the thread's own
+ * per-turn picks. The built-in `kone` agent ships with a set; a user-made agent
+ * has only what its maker wrote.
+ *
+ * Where an agent lives: the two built-ins below are prose in this build, and a
+ * *row* in the store carries whatever the user changed about them — see
+ * `~/utils/agentStore`. A field the row leaves null is still this file's to
+ * answer, which is what keeps a later build free to improve the wording for
+ * everyone who never edited it. A user-made agent is a row and nothing else.
  */
-import { useStorage } from "@vueuse/core";
+import type {
+  AgentDuplicateInput,
+  AgentModelRef,
+  AgentPatch,
+  AgentRecord,
+  AgentSkillRef,
+  ProviderKind,
+} from "~/types/desktop";
+import {
+  addTeamMember,
+  agentRows,
+  bindThread,
+  carryThread,
+  forkAgentRow,
+  hydrateAgentRows,
+  insertAgentRow,
+  fetchProjectTeam as loadTeam,
+  patchAgentRow,
+  projectTeams,
+  removeAgentRow,
+  removeTeamMember,
+  selectAgentId,
+  selectedAgentId,
+  threadBindings,
+} from "~/utils/agentStore";
 import { sampleFace } from "~/utils/sphereFace";
 
 /**
@@ -37,6 +67,37 @@ export interface FacePaint {
   ink: string;
 }
 
+/**
+ * An agent's capabilities: what it is equipped with and what it runs on. Skills
+ * are additive — the ones this agent is given — so an empty list is "none".
+ * `model` is the one model the agent uses: a ref pins it there, and `null` is no
+ * preference at all, which is the shipped default (a thread picks whatever it
+ * likes, per turn). The provider is implied by the model ref, so there is no
+ * separate provider axis.
+ *
+ * Reasoning is deliberately absent: it is a per-turn choice made when a model is
+ * actually being used, not a standing capability of the agent. And so are
+ * fallbacks — an agent runs on one model, and when it can't run the spawn is
+ * refused rather than quietly swapped.
+ */
+export interface AgentCapabilities {
+  skills: AgentSkillRef[];
+  model: AgentModelRef | null;
+}
+
+/**
+ * An agent's policies: the standing prohibitions, the mirror image of a
+ * capability. A capability says what the agent may reach for; a policy says
+ * what it may never do, however it got there. Both lists are additive
+ * restrictions — an empty list forbids nothing, and each new entry closes off
+ * one more command or path. The object grows new keys as new kinds of
+ * restriction arrive; it never turns into a column.
+ */
+export interface AgentPolicies {
+  deniedCommands: string[];
+  deniedPaths: string[];
+}
+
 /** An agent as shipped — the built-in definition, before any user edits. */
 export interface AgentPreset {
   id: string;
@@ -45,14 +106,17 @@ export interface AgentPreset {
    *  sent anywhere. */
   role: string;
   face: FacePaint;
-  /** Who the agent is — its temperament and voice. Reaches the model ahead of
-   *  the instructions (see `agentPersonaForThread`). Optional: character, where
-   *  `instructions` are conduct. */
-  personality?: string;
   /** How the agent works, in its own words — reaches the model as the agent's
    *  standing orders (see `agentPersonaForThread`). Optional: an agent can be
    *  nothing but a name and a face. */
   instructions?: string;
+  /** What the agent is equipped with. Optional: a preset that names none ships
+   *  an agent with no skills and no provider/model restriction, which is what
+   *  both built-ins do today. */
+  capabilities?: Partial<AgentCapabilities>;
+  /** What the agent is forbidden to do. Optional: the built-ins ship none, so
+   *  an unedited built-in prohibits nothing. */
+  policies?: Partial<AgentPolicies>;
 }
 
 /**
@@ -63,7 +127,6 @@ export interface AgentPreset {
  */
 export interface AgentPersona {
   name: string;
-  personality?: string;
   instructions?: string;
 }
 
@@ -75,12 +138,20 @@ export interface Agent {
   /** Inline SVG, ready to mount. Same contract as a guest's face, so one
    *  component can render either. */
   svg: string;
-  /** The agent's personality, when it has one — carried through so the send path
-   *  can hand it to the session. */
-  personality?: string;
   /** The agent's standing instructions, when it has any — carried through so
    *  the send path can hand them to the session. */
   instructions?: string;
+  /** The agent's resolved capabilities. Concrete on a resolved agent — the
+   *  null-is-inherit of a stored row is answered here, against the preset — so a
+   *  reader never has to resolve inheritance a second time. A null `model` means
+   *  no preference; an empty `skills` means none assigned. Host-side only:
+   *  capabilities never reach a provider session (see `agentPersonaForThread`). */
+  capabilities: AgentCapabilities;
+  /** The agent's resolved policies, on the same terms as `capabilities`: the
+   *  null-is-inherit of a stored row is answered here against the preset, so a
+   *  reader gets concrete lists. Empty lists forbid nothing. Host-side only —
+   *  the enforcer reads these, a provider session never sees them. */
+  policies: AgentPolicies;
 }
 
 /** What a thread with no agent on it is called. */
@@ -101,13 +172,16 @@ export const GUEST_LABEL = "Guest";
 /**
  * How the kone agent works — the one thing besides its name that reaches the
  * model. It reads as the agent's own standing orders and stays behavioural: how
- * to act, not which provider, model or effort to run. Each line is a habit good
- * engineers already expect of each other and that agents are most often faulted
- * for missing — plain talk, honesty over agreement, verifying before claiming,
- * staying in scope, fitting the codebase, and asking before the moves that can't
- * be taken back.
+ * to act, not which provider, model or effort to run. It opens with the
+ * temperament to carry through a thread, then the habits good engineers already
+ * expect of each other and that agents are most often faulted for missing —
+ * plain talk, honesty over agreement, verifying before claiming, staying in
+ * scope, fitting the codebase, and asking before the moves that can't be taken
+ * back.
  */
 const KONE_INSTRUCTIONS = `Work like a senior engineer a teammate trusts.
+
+Stay calm and even-keeled — the teammate who stays level when the build is red and the clock is against you. Be conscientious: keep the details straight and follow through, without being fussy about it. Stay curious about the codebase and genuinely interested in the problem, not just closing the task. Keep a low ego — take the work seriously without taking yourself too seriously, share credit freely, and own a mistake the moment you spot it.
 
 **Talk plainly.** Direct and concrete, the way one good engineer talks to another. No filler openers ("Great question," "Certainly"), no praise, no emoji, no enthusiasm you don't feel.
 
@@ -121,23 +195,11 @@ const KONE_INSTRUCTIONS = `Work like a senior engineer a teammate trusts.
 
 **Ask before one-way moves.** Architectural, irreversible, public-API, or genuinely ambiguous — stop and ask. Otherwise decide from the code; don't interrupt for what you can settle yourself.`;
 
-/**
- * Who the kone agent is, as opposed to how it works (that is `KONE_INSTRUCTIONS`).
- * A steady, low-ego peer rather than an eager helper: the traits that earn a
- * developer's trust are consistency and calm, not warmth turned up loud. Kept to
- * a few lines of temperament — a personality is a sketch of a character, not a
- * second rulebook.
- */
-const KONE_PERSONALITY = `Calm and even-keeled — the teammate who stays level when the build is red and the clock is against you. Conscientious by nature: you keep the details straight and follow through, without being fussy about it.
-
-Curious about the codebase and genuinely interested in the problem, not just closing the task. Low-ego — you take the work seriously without taking yourself too seriously, share credit freely, and own a mistake the moment you spot it.`;
-
 export const KONE: AgentPreset = {
   id: "kone",
   name: "kone",
   role: "Agent assistant",
   face: { body: "var(--agent)", ink: "var(--accent-ink)" },
-  personality: KONE_PERSONALITY,
   instructions: KONE_INSTRUCTIONS,
 };
 
@@ -145,15 +207,13 @@ export const KONE: AgentPreset = {
  * Gideon — the user's own agent, drawn from how they actually work in this repo
  * rather than from any one brief: design-led and slop-averse, prototyping on
  * screen before arguing in the abstract, casual in tone but exacting about the
- * craft underneath. It ships with a personality and no instructions, which is
- * the shape a user-made agent takes when its maker gave it a character to be but
- * no standing orders to follow.
+ * craft underneath.
  *
  * It wears the second accent voice, not the house accent — a different hue with
  * its own legible ink — so it reads as a colleague beside kone rather than
  * another copy of it.
  */
-const GIDEON_PERSONALITY = `A design-led engineer with sharp taste and no patience for slop. You care how a thing looks and feels as much as whether it works: clean borderless interfaces, careful typography, motion that means something and none that doesn't.
+const GIDEON_INSTRUCTIONS = `A design-led engineer with sharp taste and no patience for slop. You care how a thing looks and feels as much as whether it works: clean borderless interfaces, careful typography, motion that means something and none that doesn't.
 
 You'd rather build it than argue it. Put the real thing on screen and work on what's actually there instead of debating in the abstract, and use what you build. Casual and a bit playful when you talk, but exacting about the craft underneath.
 
@@ -161,17 +221,32 @@ You trust ground truth over guesses. Check the real code, the real render, the r
 
 How you write: keep it simple and natural, like talking to a teammate. Plain everyday words, not fancy ones. Shorthand is fine when it reads easy (btw, tbh, prob, repo, config). And don't sweat the odd grammar slip or typo, you're not fussy about it and won't stop to fix one when the meaning is already clear.
 
-One hard rule, no exceptions: never use an em dash. Not one, anywhere, ever. This is the single tell that gives away AI writing and you don't do it. Break the thought into two sentences, or use a comma, a colon, or parentheses instead. If you catch an em dash in something you wrote, it's wrong, rewrite it.`;
+One hard rule, no exceptions: never use an em dash. Not one, anywhere, ever. This is the single tell that gives away AI writing and you don't do it. The ban lives in your fingers, not your judgement: when you feel a dash coming mid-sentence, break the thought into two sentences, or use a comma, a colon, or parentheses instead. And before you send a reply, reread it once hunting dashes only. Catching one after writing beats hoping while writing; a slip you sent is a promise broken in public.`;
 
 export const GIDEON: AgentPreset = {
   id: "gideon",
   name: "Gideon",
   role: "Coding agent",
   face: { body: "var(--accent-2)", ink: "var(--accent-2-ink)" },
-  personality: GIDEON_PERSONALITY,
+  instructions: GIDEON_INSTRUCTIONS,
 };
 
 const PRESETS: readonly AgentPreset[] = [KONE, GIDEON];
+
+/** What the store is asked to keep a row for, in the order the roster wants
+ *  them. A preset dropped from a later build leaves its row behind — see
+ *  `resolveRow`, which declines to render an agent it has no definition for. */
+const PRESET_IDS: readonly string[] = PRESETS.map((preset) => preset.id);
+
+/**
+ * The paint a user-made agent wears until somebody picks a hue for it.
+ *
+ * Deliberately none of the three accent voices: kone wears the first and Gideon
+ * the second, and an agent made in a hurry should not arrive claiming either.
+ * Soft ink with the ground punched through it reads as a face with no colour
+ * chosen yet, which is exactly what it is.
+ */
+const UNPAINTED_FACE: FacePaint = { body: "var(--ink-soft)", ink: "var(--ground)" };
 
 // ── the face ────────────────────────────────────────────────────────────────
 /**
@@ -240,79 +315,159 @@ export function agentFace(paint: FacePaint): string {
   return svg;
 }
 
-// ── what the user has changed ───────────────────────────────────────────────
-// Module scope, so the drawer that renames an agent and the transcript that
-// prints their name are reading one source without a prop threaded between them.
-
-/** Renames, by agent id. An agent you have renamed keeps that name. */
-const names = useStorage<Record<string, string>>("kone.agents.names", {}, undefined, {
-  listenToStorageChanges: true,
-});
-
 /**
- * Who answers the next turn you send, or null to send it to a guest.
+ * The row a shipped preset reads through before the store has one for it: no
+ * name, no role, no prose — every field still this file's to answer.
  *
- * Null is the shipped default. Handing work to a named agent is a decision the
- * user makes — it is how they ask for the same colleague and the settings that
- * come with them — so nothing is picked on their behalf.
+ * It stands in for the moment before `hydrateRoster` returns, and for the first
+ * paint of a fresh install. Its position is the preset's own index, which is the
+ * position `hydrateRoster` will give the real row, so nothing jumps when the
+ * store answers.
  */
-const selectedId = useStorage<string | null>("kone.agents.selected", null, undefined, {
-  listenToStorageChanges: true,
-});
-
-/**
- * Which agent worked a given thread, by thread id — settled when the thread
- * starts and never revised.
- *
- * A thread is one agent's work from end to end, so this is the record of a
- * decision, not a setting. Changing who you work with has to leave started
- * conversations alone: a transcript records who actually did the work, so it
- * cannot re-read itself against the current selection.
- *
- * A thread that started as a guest records `GUEST_BINDING`, not nothing. That
- * distinction is what makes the record safe — *absence* means the thread hasn't
- * started, so a guest thread can't be claimed later by an agent picked after the
- * fact. Absence also covers every thread from before any of this existed, which
- * correctly reads as a guest.
- */
-const bound = useStorage<Record<string, string>>("kone.agents.threads", {}, undefined, {
-  listenToStorageChanges: true,
-});
-
-/** What a thread handed to nobody in particular records — see `bound`. It is not
- *  an agent id, so it resolves to a guest everywhere an id is looked up. */
-const GUEST_BINDING = "";
-
-function resolve(preset: AgentPreset): Agent {
-  const agent: Agent = {
-    id: preset.id,
-    name: names.value[preset.id]?.trim() || preset.name,
-    role: preset.role,
-    svg: agentFace(preset.face),
+function implicitRow(presetId: string, index: number): AgentRecord {
+  return {
+    agentId: presetId,
+    presetId,
+    name: null,
+    role: null,
+    instructions: null,
+    faceBody: null,
+    faceInk: null,
+    skills: null,
+    model: null,
+    policies: null,
+    sortOrder: index,
+    createdAt: 0,
+    updatedAt: 0,
+    deletedAt: null,
   };
-  if (preset.personality) agent.personality = preset.personality;
-  if (preset.instructions) agent.instructions = preset.instructions;
+}
+
+/**
+ * Every row the roster resolves through: what the store has, plus an implicit
+ * row for any shipped preset it hasn't got one for yet.
+ *
+ * The union is what makes the pre-hydrate state safe. A build ships two
+ * built-ins; if the roster read only stored rows, the instant the first of them
+ * was edited it would be the only agent in the app. Rows are still the truth
+ * wherever there is one — an edit, a fork's position, a tombstone all come from
+ * the store — and a preset with nothing stored about it simply reads as
+ * unedited, which it is.
+ */
+function rosterRows(): AgentRecord[] {
+  const rows = agentRows.value;
+  const stored = new Set(rows.map((row) => row.agentId));
+  const missing = PRESETS.flatMap((preset, index) =>
+    stored.has(preset.id) ? [] : [implicitRow(preset.id, index)],
+  );
+  return [...rows, ...missing].sort(
+    (a, b) =>
+      a.sortOrder - b.sortOrder || a.createdAt - b.createdAt || a.agentId.localeCompare(b.agentId),
+  );
+}
+
+/**
+ * A stored row, read as an agent.
+ *
+ * Every null on the row is a question this file answers: the preset it overlays
+ * says what the user never changed. `''` is a different answer and is honoured
+ * as one — a field somebody deliberately emptied stays empty.
+ *
+ * Returns undefined for a row this build cannot render: one that inherits
+ * everything from a preset the build no longer ships. Rather than invent a name
+ * for it, the roster leaves it out and it reads as a guest wherever it is
+ * looked up — the row survives untouched for a build that knows what it is.
+ */
+function resolveRow(row: AgentRecord): Agent | undefined {
+  const preset = row.presetId ? PRESETS.find((p) => p.id === row.presetId) : undefined;
+  const name = row.name?.trim() || preset?.name;
+  if (!name) return undefined;
+
+  const instructions = row.instructions ?? preset?.instructions;
+  const paint: FacePaint = {
+    body: row.faceBody || preset?.face.body || UNPAINTED_FACE.body,
+    ink: row.faceInk || preset?.face.ink || UNPAINTED_FACE.ink,
+  };
+
+  // Each capability is its own overlay: null on the row hands it back to the
+  // preset, and a preset that names none lands on the empty default — no skills,
+  // no model. `[]`/a ref on the row is a real answer (the user set it) and is
+  // kept, never re-inherited.
+  const capabilities: AgentCapabilities = {
+    skills: row.skills ?? preset?.capabilities?.skills ?? [],
+    model: row.model ?? preset?.capabilities?.model ?? null,
+  };
+
+  // Policies resolve the same way, but the whole object is the overlay unit:
+  // null on the row inherits the preset's prohibitions, an object is the row's
+  // own answer. A preset that names none lands on empty lists — forbids nothing.
+  const policies: AgentPolicies = {
+    deniedCommands: row.policies?.deniedCommands ?? preset?.policies?.deniedCommands ?? [],
+    deniedPaths: row.policies?.deniedPaths ?? preset?.policies?.deniedPaths ?? [],
+  };
+
+  const agent: Agent = {
+    id: row.agentId,
+    name,
+    role: row.role ?? preset?.role ?? "",
+    svg: agentFace(paint),
+    capabilities,
+    policies,
+  };
+  if (instructions) agent.instructions = instructions;
   return agent;
 }
 
 /** Everyone you can hand a turn to, in roster order. */
 export function agentRoster(): Agent[] {
-  return PRESETS.map(resolve);
+  return rosterRows()
+    .filter((row) => row.deletedAt === null)
+    .map(resolveRow)
+    .filter((agent): agent is Agent => agent !== undefined);
 }
 
+/** Load the roster from the store, and give every shipped preset a row to hang
+ *  the user's edits on. Idempotent; call it wherever the roster is first read. */
+export function hydrateRoster(): Promise<void> {
+  return hydrateAgentRows(PRESET_IDS);
+}
+
+/** Somebody in the roster, by id — nobody for an agent who has left it. Use
+ *  this for anything the user picks from. */
 export function agentById(id: string | null | undefined): Agent | undefined {
-  const preset = PRESETS.find((p) => p.id === id);
-  return preset ? resolve(preset) : undefined;
+  if (!id) return undefined;
+  const row = rosterRows().find((r) => r.agentId === id && r.deletedAt === null);
+  return row ? resolveRow(row) : undefined;
+}
+
+/**
+ * Anybody who has ever been in the roster, by id — including an agent who has
+ * since left it.
+ *
+ * A transcript records who did the work, so deleting an agent cannot rewrite the
+ * threads they worked: their row outlives them precisely so the conversations
+ * still have a name and a face on them.
+ */
+function agentOrDeparted(id: string | null | undefined): Agent | undefined {
+  if (!id) return undefined;
+  const row = rosterRows().find((r) => r.agentId === id);
+  return row ? resolveRow(row) : undefined;
+}
+
+/** Whether an agent can be handed the next turn — in the roster, not merely
+ *  remembered. Picking or settling on somebody who has left it is refused. */
+function isPickable(id: string): boolean {
+  return agentById(id) !== undefined;
 }
 
 /** Who the next turn goes to, or undefined for a guest. */
 export function selectedAgent(): Agent | undefined {
-  return agentById(selectedId.value);
+  return agentById(selectedAgentId.value);
 }
 
 /** Point the next turn at an agent, or at a guest with null. */
 export function selectAgent(id: string | null): void {
-  if (id === null || PRESETS.some((p) => p.id === id)) selectedId.value = id;
+  if (id === null || isPickable(id)) selectAgentId(id);
 }
 
 /**
@@ -323,7 +478,7 @@ export function selectAgent(id: string | null): void {
  * work they never did.
  */
 export function agentForThread(threadId: string | null | undefined): Agent | undefined {
-  return agentById(threadId ? bound.value[threadId] : undefined);
+  return agentOrDeparted(threadId ? threadBindings.value[threadId] : undefined);
 }
 
 /**
@@ -335,9 +490,9 @@ export function agentForThread(threadId: string | null | undefined): Agent | und
  * the thread to being claimed by an agent picked afterwards.
  */
 export function settleThreadAgent(threadId: string | null | undefined, id: string | null): void {
-  if (!threadId || threadId in bound.value) return;
-  if (id !== null && !PRESETS.some((p) => p.id === id)) return;
-  bound.value = { ...bound.value, [threadId]: id ?? GUEST_BINDING };
+  if (!threadId || threadId in threadBindings.value) return;
+  if (id !== null && !isPickable(id)) return;
+  bindThread(threadId, id);
 }
 
 /**
@@ -354,9 +509,52 @@ export function carryThreadAgent(
   fromThreadId: string | null | undefined,
   toThreadId: string | null | undefined,
 ): void {
-  if (!fromThreadId || !toThreadId || !(fromThreadId in bound.value)) return;
-  if (toThreadId in bound.value) return;
-  bound.value = { ...bound.value, [toThreadId]: bound.value[fromThreadId]! };
+  if (!fromThreadId || !toThreadId) return;
+  carryThread(fromThreadId, toThreadId);
+}
+
+// ── project teams ───────────────────────────────────────────────────────────
+// A project's team is the slice of the roster made available to work within it:
+// who you can hand a thread to there, and who a teammate can delegate to. An
+// agent stays one global entity that joins many teams; membership is per project
+// and set by hand, so a fresh project's team is empty until the user builds it.
+
+/**
+ * A project's team, in the order they were added — resolved to agents, with any
+ * who have left the roster dropped.
+ *
+ * A team can outlive the agent (the membership row survives a delete, so
+ * restoring one restores every team they were on), but you cannot hand work to
+ * somebody who is gone, so a departed member is not returned here.
+ */
+export function projectTeam(projectPath: string | null | undefined): Agent[] {
+  if (!projectPath) return [];
+  return (projectTeams.value[projectPath] ?? [])
+    .map((id) => agentById(id))
+    .filter((agent): agent is Agent => agent !== undefined);
+}
+
+/** Whether an agent is on a project's team right now. */
+export function isOnProjectTeam(projectPath: string | null | undefined, id: string): boolean {
+  if (!projectPath) return false;
+  return (projectTeams.value[projectPath] ?? []).includes(id);
+}
+
+/** Read a project's team from the store. Call it when a project becomes active. */
+export function loadProjectTeam(projectPath: string | null | undefined): Promise<void> {
+  return projectPath ? loadTeam(projectPath) : Promise.resolve();
+}
+
+/** Put an agent on a project's team. Refused, like a pick, for one who has left
+ *  the roster — you cannot staff a project with somebody who is gone. */
+export function addAgentToProject(projectPath: string, id: string): Promise<boolean> {
+  if (!isPickable(id)) return Promise.resolve(false);
+  return addTeamMember(projectPath, id);
+}
+
+/** Take an agent off a project's team. */
+export function removeAgentFromProject(projectPath: string, id: string): Promise<void> {
+  return removeTeamMember(projectPath, id);
 }
 
 /**
@@ -364,9 +562,9 @@ export function carryThreadAgent(
  * undefined when it runs as a guest.
  *
  * This is the one place an agent stops being a face in a list and becomes
- * something the model hears about. The name goes, and the agent's personality
- * and instructions when it has them: the face, the role and the roster order are
- * for the person reading the drawer, and a model has no use for any of them.
+ * something the model hears about. The name goes, and the agent's instructions
+ * when it has them: the face, the role and the roster order are for the person
+ * reading the drawer, and a model has no use for any of them.
  *
  * Read from the thread's settled binding rather than from the current
  * selection: the session belongs to a thread, and the thread's agent is a
@@ -377,18 +575,140 @@ export function agentPersonaForThread(threadId: string | null | undefined): Agen
   const agent = agentForThread(threadId);
   if (!agent) return undefined;
   const persona: AgentPersona = { name: agent.name };
-  if (agent.personality) persona.personality = agent.personality;
   if (agent.instructions) persona.instructions = agent.instructions;
   return persona;
 }
 
-/** Rename an agent. An empty name drops back to the one they shipped with. */
-export function renameAgent(id: string, name: string): void {
+// ── changing the roster ─────────────────────────────────────────────────────
+// Every one of these is a write to the store (see `~/utils/agentStore`), and
+// every one speaks in this file's own terms — a face is a `FacePaint`, not two
+// loose colour strings. They resolve to the agent as it now reads, so a caller
+// can put the result straight on screen.
+
+/** What you fill in to make an agent: a name, and whatever else you have.
+ *  Everything but the name is optional — an agent can be a name and a face. */
+export interface AgentDraft {
+  name: string;
+  role?: string;
+  instructions?: string;
+  face?: FacePaint;
+  skills?: AgentSkillRef[];
+  model?: AgentModelRef;
+  policies?: AgentPolicies;
+}
+
+/** An edit to an existing agent. A field left out is left alone; an explicit
+ *  null clears it — which on a built-in hands that field back to the shipped
+ *  preset, and on a user-made agent unsets it. A capability list clears the
+ *  same way: null re-inherits, `[]` is a kept empty. A null `model` re-inherits
+ *  the preset's; a ref sets it. */
+export interface AgentEdit {
+  name?: string | null;
+  role?: string | null;
+  instructions?: string | null;
+  face?: FacePaint | null;
+  skills?: AgentSkillRef[] | null;
+  model?: AgentModelRef | null;
+  policies?: AgentPolicies | null;
+}
+
+/** The preset's own values, for a fork that has to keep no inheritance. A row
+ *  overlaying a built-in answers half its fields with null, and the copy has to
+ *  read the same as what was copied — capabilities included. */
+function inheritedFrom(preset: AgentPreset | undefined) {
+  if (!preset) return undefined;
+  return {
+    name: preset.name,
+    role: preset.role,
+    instructions: preset.instructions ?? null,
+    faceBody: preset.face.body,
+    faceInk: preset.face.ink,
+    skills: preset.capabilities?.skills ?? null,
+    model: preset.capabilities?.model ?? null,
+    policies: preset.policies
+      ? {
+          deniedCommands: preset.policies.deniedCommands ?? [],
+          deniedPaths: preset.policies.deniedPaths ?? [],
+        }
+      : null,
+  };
+}
+
+/** Rename an agent. An empty name — or the one they shipped with — drops the
+ *  override, handing the name back to the preset. */
+export function renameAgent(id: string, name: string): Promise<Agent | undefined> {
   const preset = PRESETS.find((p) => p.id === id);
-  if (!preset) return;
-  const next = { ...names.value };
   const trimmed = name.trim();
-  if (!trimmed || trimmed === preset.name) delete next[id];
-  else next[id] = trimmed.slice(0, 24);
-  names.value = next;
+  const cleared = !trimmed || trimmed === preset?.name;
+  // A user-made agent has no preset to fall back to, so clearing its name is
+  // not a rename at all: it would leave them with nothing to be called.
+  if (cleared && !preset) return Promise.resolve(undefined);
+  return updateAgent(id, { name: cleared ? null : trimmed });
+}
+
+/** Add an agent. Returns the agent as stored, or undefined if it was refused —
+ *  which only happens for a draft with nothing to be called. */
+export async function createAgent(draft: AgentDraft): Promise<Agent | undefined> {
+  const row = await insertAgentRow({
+    name: draft.name,
+    role: draft.role ?? null,
+    instructions: draft.instructions ?? null,
+    faceBody: draft.face?.body ?? null,
+    faceInk: draft.face?.ink ?? null,
+    skills: draft.skills ?? null,
+    model: draft.model ?? null,
+    policies: draft.policies ?? null,
+  });
+  return row ? resolveRow(row) : undefined;
+}
+
+/** Edit an agent. Returns them as they now read, or undefined if the edit was
+ *  refused — an agent who has left the roster, or one this would leave with no
+ *  name at all. */
+export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | undefined> {
+  const preset = PRESETS.find((p) => p.id === id);
+  const patch: AgentPatch = {};
+  if (edit.name !== undefined) patch.name = edit.name;
+  if (edit.role !== undefined) patch.role = edit.role;
+  if (edit.instructions !== undefined) patch.instructions = edit.instructions;
+  // A face is one decision, so both halves of it move together — repainting the
+  // marble and leaving last week's ink on it is how a face goes unreadable.
+  if (edit.face !== undefined) {
+    patch.faceBody = edit.face?.body ?? null;
+    patch.faceInk = edit.face?.ink ?? null;
+  }
+  if (edit.skills !== undefined) patch.skills = edit.skills;
+  if (edit.model !== undefined) patch.model = edit.model;
+  if (edit.policies !== undefined) patch.policies = edit.policies;
+  const row = await patchAgentRow(id, patch, preset ? { presetId: preset.id } : undefined);
+  return row ? resolveRow(row) : undefined;
+}
+
+/**
+ * Take an agent out of the roster.
+ *
+ * They are not erased: the threads they worked keep their name and face, which
+ * is why `agentForThread` reads tombstones and the roster does not. What has to
+ * change is anything pointing at them for *future* work — a selection left on a
+ * departed agent would send the next turn to nobody.
+ */
+export async function deleteAgent(id: string): Promise<boolean> {
+  const removed = await removeAgentRow(id);
+  if (removed && selectedAgentId.value === id) selectAgentId(null);
+  return removed;
+}
+
+/** Fork an agent into a user-made copy of itself, sitting straight below the
+ *  original. A built-in forks into an ordinary agent: the copy carries the
+ *  preset's words but none of its inheritance, so a later build cannot rewrite
+ *  what somebody kept. */
+export async function duplicateAgent(id: string, name?: string): Promise<Agent | undefined> {
+  const presetId = agentRows.value.find((row) => row.agentId === id)?.presetId ?? id;
+  const inherited = inheritedFrom(PRESETS.find((p) => p.id === presetId));
+  const fork: AgentDuplicateInput = { agentId: id };
+  const trimmed = name?.trim();
+  if (trimmed) fork.name = trimmed;
+  if (inherited) fork.inherited = inherited;
+  const row = await forkAgentRow(fork);
+  return row ? resolveRow(row) : undefined;
 }
