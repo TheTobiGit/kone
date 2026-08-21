@@ -12,6 +12,8 @@ import { registerFsIpc } from "./fs.js";
 import { cancelAllClones, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
 import { registerBoardIpc } from "./board/index.js";
+import { registerRosterIpc } from "./roster/index.js";
+import { registerPresetIpc } from "./presets/index.js";
 import { registerScratchpadIpc } from "./scratchpad/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./terminal/index.js";
 import {
@@ -124,6 +126,12 @@ function registerIpc() {
 
   // Per-project board layout (pane order, kinds, widths, focus).
   registerBoardIpc();
+
+  // The roster: the agents you can hand work to, and each project's team.
+  registerRosterIpc();
+
+  // Preset sub-agents: reusable definitions a spawn is cut from.
+  registerPresetIpc();
 
   // Window chrome: minimize/maximize/close for the renderer's caption buttons.
   registerWindowControlsIpc(() => mainWindow);
