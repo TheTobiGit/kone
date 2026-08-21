@@ -11,6 +11,7 @@ import Puzzle from "~/components/icons/animated/Puzzle.vue";
 import Swatch from "~/components/icons/animated/Swatch.vue";
 import User from "~/components/icons/animated/User.vue";
 import UserMultiple from "~/components/icons/animated/UserMultiple.vue";
+import WorkflowSquare01 from "~/components/icons/animated/WorkflowSquare01.vue";
 import VolumeHigh from "~/components/icons/animated/VolumeHigh.vue";
 import VolumeMute01 from "~/components/icons/animated/VolumeMute01.vue";
 import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
@@ -118,11 +119,9 @@ function setVolumeIcon(el: unknown): void {
 const { pane, isPage, revealWidth } = useSettingsSurface();
 
 // Any pane built on SettingsPageShell owns its own frame — padding, scroll smoke,
-// the lot — so the aside must not pad it a second time. That's every page, plus
-// the agent roster, which wears the shell but keeps the narrow column width
-// rather than widening. Only the root list (and the strip pane) let the aside do
-// the padding and the edge smoke.
-const shellFramed = computed(() => isPage.value || pane.value === "agentRoster");
+// the lot — so the aside must not pad it a second time. That's every page. Only
+// the root list (and the strip pane) let the aside do the padding and the edge smoke.
+const shellFramed = computed(() => isPage.value);
 
 // The narrow column (the root list) scrolls the aside itself. It smokes its
 // top/bottom edges exactly like the pages do rather than showing a scrollbar.
@@ -179,6 +178,11 @@ function openAgentSkills() {
 
 function openAgentRoster() {
   pane.value = "agentRoster";
+  cue("press");
+}
+
+function openAgentPresets() {
+  pane.value = "agentPresets";
   cue("press");
 }
 
@@ -251,6 +255,8 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
     <SettingsAgentSkillsPane v-if="pane === 'agentSkills'" :open="open" @back="backToRoot" />
 
     <SettingsAgentsPane v-if="pane === 'agentRoster'" :open="open" @back="backToRoot" />
+
+    <SettingsSubagentsPane v-if="pane === 'agentPresets'" :open="open" @back="backToRoot" />
 
     <!-- Root list (and Thread strip, which still mounts from here). Pages above
          take the widened aside themselves. -->
@@ -406,6 +412,31 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             </span>
             <span class="shrink-0 text-[12px] leading-tight text-muted">
               {{ agentSummary }}
+            </span>
+          </button>
+
+          <!-- Sub-agents — the reusable presets an agent cuts a spawn from
+               (Explorer, Code Reviewer, …). Sits under Agents because it's the
+               same people-not-machinery layer: a standing definition an agent
+               invokes, not a CLI it runs on. -->
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open sub-agents settings"
+            @mouseenter="playNavIcon('agentPresets')"
+            @click="openAgentPresets"
+          >
+            <WorkflowSquare01
+              :ref="(el) => setNavIcon('agentPresets', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
+              Sub-agents
             </span>
           </button>
 

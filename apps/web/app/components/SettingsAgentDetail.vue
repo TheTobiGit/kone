@@ -1,19 +1,29 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
-import { UserGroupIcon } from "@hugeicons/core-free-icons";
+import { computed, ref, watch } from "vue";
+import { Copy01Icon, Delete02Icon, UserGroupIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import AgentCapabilitiesEditor from "~/components/AgentCapabilitiesEditor.vue";
+import AgentPoliciesEditor from "~/components/AgentPoliciesEditor.vue";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
+import { useSound } from "~/composables/useSound";
+import type { AgentModelRef } from "~/types/desktop";
 
 // One agent, opened out of the roster: the face big, the name and role up top,
-// and the two fields a model actually hears — personality and instructions —
-// read back as prose. Read-only for now: the roster is still a set of shipped
-// presets, so there is nothing here to type over until the agent library lands.
+// and the one field a model actually hears — its instructions — read back as
+// prose.
 
 const props = defineProps<{ open: boolean; agentId: string }>();
-const emit = defineEmits<{ back: [] }>();
+const emit = defineEmits<{
+  back: [];
+  switched: [agentId: string];
+}>();
 
-const { agentById } = useAgentRoster();
+const { agentById, duplicateAgent, deleteAgent, updateAgent } = useAgentRoster();
+const { cue } = useSound();
 const agent = computed(() => agentById(props.agentId));
+const isCustom = computed(() => agent.value?.id !== "kone" && agent.value?.id !== "gideon");
+const isDeleting = ref(false);
 
 // An id that resolves to nobody has no frame to fill — step back to the list
 // rather than render an empty page (a stale id, or an agent removed later on).
@@ -25,6 +35,50 @@ watch(
   { immediate: true },
 );
 
+async function handleDuplicate() {
+  if (!agent.value) return;
+  const copy = await duplicateAgent(agent.value.id, `${agent.value.name} Copy`);
+  if (copy) {
+    cue("press");
+    emit("switched", copy.id);
+  }
+}
+
+async function handleDelete() {
+  if (!agent.value) return;
+  const ok = await deleteAgent(agent.value.id);
+  if (ok) {
+    cue("press");
+    emit("back");
+  }
+}
+
+// Capability edits persist as they happen — the editor hands back the whole
+// model each time, so there is nothing to save separately. On a built-in this
+// writes an overlay over the shipped preset; on a user-made agent it is the
+// agent's own row.
+function setModel(next: AgentModelRef | null) {
+  if (agent.value) void updateAgent(agent.value.id, { model: next });
+}
+
+// Policies persist the same way — the editor hands back a whole list per change.
+// Each setter carries the other list unchanged so the stored object always has
+// both, mirroring the resolved shape the agent already reads.
+function setDeniedCommands(next: string[]) {
+  if (agent.value) {
+    void updateAgent(agent.value.id, {
+      policies: { deniedCommands: next, deniedPaths: agent.value.policies.deniedPaths },
+    });
+  }
+}
+function setDeniedPaths(next: string[]) {
+  if (agent.value) {
+    void updateAgent(agent.value.id, {
+      policies: { deniedCommands: agent.value.policies.deniedCommands, deniedPaths: next },
+    });
+  }
+}
+
 interface Directive {
   lead: string;
   body: string;
@@ -33,8 +87,9 @@ interface Directive {
 /**
  * A prose field split into paragraphs, with a `**lead.**` opener pulled out of
  * each when it has one. The lead is set apart by colour rather than weight —
- * Geist ships a single weight here, so bold renders as regular. Personality has
- * no leads and reads as plain paragraphs; kone's instructions each open with one.
+ * Geist ships a single weight here, so bold renders as regular. A paragraph with
+ * no `**lead**` reads as plain prose; kone's instruction directives each open
+ * with one.
  */
 function toDirectives(text: string | undefined): Directive[] {
   if (!text) return [];
@@ -49,9 +104,8 @@ function toDirectives(text: string | undefined): Directive[] {
     });
 }
 
-const personality = computed(() => toDirectives(agent.value?.personality));
 const instructions = computed(() => toDirectives(agent.value?.instructions));
-const bare = computed(() => personality.value.length === 0 && instructions.value.length === 0);
+const bare = computed(() => instructions.value.length === 0);
 </script>
 
 <template>
@@ -63,6 +117,33 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
     :label="agent.name"
     @back="$emit('back')"
   >
+    <template #actions>
+      <div class="det__actions">
+        <button
+          type="button"
+          class="det__action-btn"
+          title="Fork a copy of this agent"
+          :tabindex="open ? 0 : -1"
+          @click="handleDuplicate"
+        >
+          <HugeiconsIcon :icon="Copy01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          <span>Duplicate</span>
+        </button>
+
+        <button
+          v-if="isCustom"
+          type="button"
+          class="det__action-btn det__action-btn--danger"
+          title="Remove agent from roster"
+          :tabindex="open ? 0 : -1"
+          @click="isDeleting ? handleDelete() : (isDeleting = true)"
+        >
+          <HugeiconsIcon :icon="Delete02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          <span>{{ isDeleting ? "Confirm Delete" : "Delete" }}</span>
+        </button>
+      </div>
+    </template>
+
     <article class="det">
       <header class="det__head">
         <span class="det__face" v-html="agent.svg" />
@@ -71,15 +152,6 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
           <p class="det__role">{{ agent.role }}</p>
         </span>
       </header>
-
-      <section v-if="personality.length" class="det__sec" aria-label="Personality">
-        <p class="det__eyebrow">Personality</p>
-        <div class="det__prose">
-          <p v-for="(d, i) in personality" :key="i" class="det__para">
-            <span v-if="d.lead" class="det__lead">{{ d.lead }}</span>{{ d.body }}
-          </p>
-        </div>
-      </section>
 
       <section v-if="instructions.length" class="det__sec" aria-label="How it works">
         <p class="det__eyebrow">How it works</p>
@@ -91,13 +163,31 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
       </section>
 
       <p v-if="bare" class="det__bare">
-        Just a name and a face for now — no personality or instructions to carry into a thread.
+        Just a name and a face for now — no instructions to carry into a thread.
       </p>
+
+      <section class="det__sec" aria-label="Capabilities">
+        <p class="det__eyebrow">Capabilities</p>
+        <AgentCapabilitiesEditor
+          :model="agent.capabilities.model"
+          @update:model="setModel"
+        />
+      </section>
+
+      <section class="det__sec" aria-label="Policies">
+        <p class="det__eyebrow">Policies</p>
+        <AgentPoliciesEditor
+          :denied-commands="agent.policies.deniedCommands"
+          :denied-paths="agent.policies.deniedPaths"
+          @update:denied-commands="setDeniedCommands"
+          @update:denied-paths="setDeniedPaths"
+        />
+      </section>
     </article>
 
     <template #foot>
-      What a model is told: the name, and the personality and instructions when the agent has them.
-      The role and the face stay here in the drawer. Editing an agent arrives with the agent library.
+      What a model is told: the name, and the instructions when the agent has them.
+      The role and the face stay here in the drawer.
     </template>
   </SettingsPageShell>
 </template>
@@ -107,6 +197,40 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
   display: flex;
   flex-direction: column;
   gap: 26px;
+  max-width: 48rem;
+  padding-bottom: 2.5rem;
+}
+
+/* ── actions in shell masthead ────────────────────────────────────────────── */
+.det__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.det__action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 27px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+.det__action-btn:hover {
+  background-color: var(--hover);
+  color: var(--ink);
+}
+.det__action-btn--danger:hover {
+  background-color: color-mix(in srgb, #e05252 14%, transparent);
+  color: #e05252;
 }
 
 /* Face and name as one unit, no card around them — the spacing sets the head
@@ -114,13 +238,15 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
 .det__head {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
 }
 .det__face {
   display: block;
   flex: none;
-  width: 52px;
-  height: 52px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.14));
 }
 .det__face :deep(svg) {
   display: block;
@@ -135,7 +261,9 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
 }
 .det__name {
   margin: 0;
-  font-size: 19px;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
   line-height: 1.15;
   color: var(--ink);
 }
@@ -169,7 +297,7 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
   margin: 0;
   font-size: 13.5px;
   line-height: 1.6;
-  color: color-mix(in oklab, var(--ink) 74%, transparent);
+  color: color-mix(in oklab, var(--ink) 78%, transparent);
   text-wrap: pretty;
 }
 /* The directive's opener, set in full ink so it reads ahead of its own line
@@ -188,3 +316,5 @@ const bare = computed(() => personality.value.length === 0 && instructions.value
   text-wrap: pretty;
 }
 </style>
+
+
