@@ -166,7 +166,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     // spawn crash-recovery ledger) is in place.
     const raw = new Database(dbPath());
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(21);
+    expect(version.user_version).toBe(26);
     const idx = raw
       .prepare(
         `SELECT 1 FROM sqlite_master
