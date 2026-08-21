@@ -66,6 +66,15 @@ function getRendererPath() {
   return getResourcesPath("renderer");
 }
 
+// Packaged builds carry the icon in the bundle itself (electron-builder writes
+// it from `build.mac.icon` / `build.linux.icon`), so only a run from source
+// needs to set one — otherwise dev shows Electron's own logo in the dock and
+// the alt-tab switcher, which makes it hard to tell kone from any other
+// Electron app you have open.
+function getDevIconPath() {
+  return isDev ? path.resolve(__dirname, "..", "icons", "icon.png") : null;
+}
+
 function registerAppProtocol() {
   const rendererRoot = getRendererPath();
 
@@ -122,8 +131,11 @@ function registerIpc() {
 
 async function createWindow() {
   const windowState = getInitialWindowState();
+  // Windows and Linux take the icon per-window; macOS takes it on the dock.
+  const devIcon = getDevIconPath();
 
   mainWindow = new BrowserWindow({
+    ...(devIcon && process.platform !== "darwin" ? { icon: devIcon } : {}),
     width: windowState.width,
     height: windowState.height,
     x: windowState.x,
@@ -258,6 +270,11 @@ if (gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     if (!isDev) {
       registerAppProtocol();
+    }
+
+    const devIcon = getDevIconPath();
+    if (devIcon) {
+      app.dock?.setIcon(devIcon);
     }
 
     registerIpc();

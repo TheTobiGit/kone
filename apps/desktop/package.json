@@ -32,7 +32,8 @@
     "appId": "dev.kone.desktop",
     "productName": "Kone",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "icons"
     },
     "files": [
       "dist/**/*",
@@ -46,6 +47,7 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "icons/icon.icns",
       "target": [
         "dir"
       ],
@@ -54,6 +56,7 @@
       "entitlementsInherit": "resources/entitlements.mac.inherit.plist"
     },
     "linux": {
+      "icon": "icons/icon.png",
       "target": [
         "dir"
       ]
