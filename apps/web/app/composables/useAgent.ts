@@ -2871,9 +2871,10 @@ export function useAgent(options: UseAgentOptions) {
 
   /** Drop a thread from the registry entirely — for when it's archived or
    *  deleted from the recent-sessions list. Tears the session down so its pill
-   *  can't linger and stay clickable. If the forgotten thread was on screen,
-   *  fall back to a fresh empty thread so the view never points at a disposed
-   *  session (and `active` never falls back to a stale one). */
+   *  can't linger and stay clickable. If the forgotten thread was active, focus
+   *  moves to a neighbour; no replacement is spawned — the board owns what's on
+   *  screen, and a minted blank session would be adopted as a phantom empty
+   *  column. */
   async function forgetThread(id: string): Promise<void> {
     // A thread whose open is still in flight hasn't adopted `id` yet, so it
     // can't be found by threadId — fall back to the loading session the open
@@ -2885,16 +2886,11 @@ export function useAgent(options: UseAgentOptions) {
       sessions.value.find((x) => x.threadId.value === id) ??
       (pending ? sessions.value.find((x) => x.key === pending.key) : undefined);
     if (!s) return;
-    const wasActive = s.key === activeKey.value;
-    // Stand up the replacement BEFORE evicting, so `active` never falls back to
-    // an undefined session mid-teardown (evict removes `s` before its dispose()
-    // resolves). Inherit the forgotten thread's settings so the replacement
-    // keeps the composer's provider/model/reasoning/mode, not the boot defaults.
-    if (wasActive) {
-      const fresh = spawn({ rehydrate: false });
-      inheritSettings(s, fresh);
-      activeKey.value = fresh.key;
-      fresh.deferStart();
+    if (s.key === activeKey.value) {
+      const list = sessions.value;
+      const i = list.findIndex((x) => x.key === s.key);
+      const neighbour = list[i + 1] ?? list[i - 1];
+      activeKey.value = neighbour ? neighbour.key : "";
     }
     await evict(s);
   }
