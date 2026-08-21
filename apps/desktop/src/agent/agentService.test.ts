@@ -94,7 +94,12 @@ class FakeAdapter {
   /** Optional per-adapter live-steer channel, exactly like the interface. */
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
   async interruptTurn(): Promise<void> {}
-  async respondToRequest(): Promise<void> {}
+  /** Every approval decision the service handed back — the policy-enforcement
+   *  tests assert an auto-reject reaches the adapter as `reject-and-stop`. */
+  static responded: Array<{ threadId: string; requestId: string; decision: string }> = [];
+  async respondToRequest(threadId: string, requestId: string, decision: string): Promise<void> {
+    FakeAdapter.responded.push({ threadId, requestId, decision });
+  }
   async respondToUserInput(): Promise<void> {}
   async listSessions(): Promise<unknown[]> {
     return [];
@@ -700,5 +705,107 @@ describe("AgentService durable turn queue + steering", () => {
       (e) => e.threadId === thread && e.type === "turn.queued",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
     expect(queued?.dispatchMode).toBe("steer");
+  });
+});
+
+// The enforcer sits in `dispatch`: a policy-violating `approval.requested` is
+// auto-rejected and swallowed before any listener sees it, while an allowed one
+// parks like normal. A dedicated service is built here with a store that
+// answers the policy slice (getThreadAgent/getAgent) — the shared FakeQueueStore
+// above answers neither, which is exactly why those tests park freely.
+describe("AgentService policy enforcement", () => {
+  type PolicyRow = { policies: import("./ConversationStore.js").AgentPolicies | null };
+  const bindings = new Map<string, string | null>();
+  const agents = new Map<string, PolicyRow>();
+  const policyStore = {
+    getThreadAgent(threadId: string) {
+      return bindings.has(threadId) ? { agentId: bindings.get(threadId) ?? null } : null;
+    },
+    getAgent(agentId: string) {
+      return agents.get(agentId) ?? null;
+    },
+  };
+
+  let policed: AgentServiceType;
+  let emit: EmitEvent;
+  const seen: import("./types.js").RuntimeEvent[] = [];
+
+  beforeAll(async () => {
+    FakeAdapter.responded.length = 0;
+    FakeAdapter.emits.length = 0;
+    policed = new AgentServiceCtor({
+      // Answers the policy slice only; the queue slice is absent, so busy sends
+      // would degrade — irrelevant here, no turn is ever queued.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: policyStore as unknown as QueuedTurnStore,
+      adapters: (e) =>
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [new FakeAdapter(e, "codex")] as unknown as ProviderAdapter[],
+    });
+    const codexFake = FakeAdapter.emits.find((f) => f.provider === "codex");
+    if (!codexFake) throw new Error("codex fake was not constructed");
+    emit = codexFake.emit;
+    policed.onEvent((e) => seen.push(e));
+
+    // A bound agent whose policies forbid `rm -rf`; a thread with no binding.
+    agents.set("blocked", { policies: { deniedCommands: ["rm -rf"], deniedPaths: [".env"] } });
+    bindings.set("t-blocked", "blocked");
+    // Both threads need a live session so the auto-reject's respondToRequest can
+    // route to an adapter.
+    await policed.startSession({ threadId: "t-blocked", provider: "codex", cwd: userDataDir });
+    await policed.startSession({ threadId: "t-free", provider: "codex", cwd: userDataDir });
+  });
+
+  afterAll(async () => {
+    await policed.stopAll();
+  });
+
+  const approval = (threadId: string, requestId: string, title: string, kind = "command") =>
+    ({
+      threadId,
+      provider: "codex" as const,
+      at: Date.now(),
+      source: "codex.app-server" as const,
+      type: "approval.requested" as const,
+      requestId,
+      turnId: "turn-x",
+      approval: { kind: kind as "command", title },
+    });
+
+  test("auto-rejects a policy-violating approval and never parks it", () => {
+    emit(approval("t-blocked", "r-deny", "rm -rf /tmp/build"));
+    // Swallowed: no prompt parked, and the request never reached a listener.
+    expect(policed.pendingInteractions().some((p) => p.requestId === "r-deny")).toBe(false);
+    expect(seen.some((e) => e.type === "approval.requested" && e.requestId === "r-deny")).toBe(
+      false,
+    );
+    // Rejected at the adapter as a hard stop.
+    expect(FakeAdapter.responded).toContainEqual({
+      threadId: "t-blocked",
+      requestId: "r-deny",
+      decision: "reject-and-stop",
+    });
+  });
+
+  test("parks an allowed approval on a policed thread as normal", () => {
+    emit(approval("t-blocked", "r-allow", "ls -la"));
+    expect(policed.pendingInteractions().some((p) => p.requestId === "r-allow")).toBe(true);
+    expect(FakeAdapter.responded.some((r) => r.requestId === "r-allow")).toBe(false);
+  });
+
+  test("a denied path is enforced on the file-read kind", () => {
+    emit(approval("t-blocked", "r-env", "/proj/.env.local", "file-read"));
+    expect(policed.pendingInteractions().some((p) => p.requestId === "r-env")).toBe(false);
+    expect(FakeAdapter.responded).toContainEqual({
+      threadId: "t-blocked",
+      requestId: "r-env",
+      decision: "reject-and-stop",
+    });
+  });
+
+  test("a thread bound to no agent is unrestricted — the approval parks", () => {
+    emit(approval("t-free", "r-free", "rm -rf /tmp/build"));
+    expect(policed.pendingInteractions().some((p) => p.requestId === "r-free")).toBe(true);
+    expect(FakeAdapter.responded.some((r) => r.requestId === "r-free")).toBe(false);
   });
 });
