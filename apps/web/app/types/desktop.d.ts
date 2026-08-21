@@ -705,10 +705,6 @@ export type AgentPersona = {
   /** The agent's name as the user has it — renameable, so never the shipped one
    *  by assumption. */
   name: string;
-  /** Who the agent is — its temperament and voice. Optional. Rendered after the
-   *  name in the identity block; character, not conduct — it colours how the
-   *  agent reads, where `instructions` set what it does. */
-  personality?: string;
   /** The agent's standing instructions: how it should work, in its own words.
    *  Optional — an agent can be nothing but a name. Rendered after the name in
    *  the identity block; behavioural only, never a provider/model/effort pick. */
@@ -2260,6 +2256,253 @@ export type KoneBoardApi = {
   save: (input: BoardSaveInput) => Promise<{ savedAt: number } | null>;
 };
 
+/** A skill an agent is assigned, keyed by the path the skills inventory uses.
+ *  Name and origin ride along so a chip renders without a fresh scan (mirrors
+ *  the desktop `AgentSkillRef`). */
+export type AgentSkillRef = {
+  path: string;
+  name: string;
+  origin: string;
+};
+
+/** A model an agent may run on — a provider and a model id within it, with a
+ *  label for display (mirrors the desktop `AgentModelRef`). */
+export type AgentModelRef = {
+  provider: ProviderKind;
+  model: string;
+  label?: string;
+};
+
+/** What an agent is prohibited from doing, the opposite of a capability
+ *  (mirrors the desktop `AgentPolicies`). Empty lists forbid nothing; the
+ *  object grows new keys as new kinds of restriction are added. */
+export type AgentPolicies = {
+  /** Commands the agent may not run, matched case-insensitively. */
+  deniedCommands: string[];
+  /** Paths the agent may not read or change. */
+  deniedPaths: string[];
+};
+
+/**
+ * An agent as it lives in the store (mirrors the desktop `AgentRecord`,
+ * store v24).
+ *
+ * Every prose field is nullable and the null carries meaning: on a row with a
+ * `presetId` it means "inherit whatever the shipped preset says", which this
+ * side resolves — the presets live here, in `~/utils/agents`. `''` is a
+ * different answer: a field the user deliberately emptied, which stays empty.
+ *
+ * Capabilities follow the same null-is-inherit rule: `skills` is additive so
+ * `[]` is "none assigned", and `model` is the single model the agent runs on —
+ * null inherits the preset's, a ref is the model it uses, and an agent that
+ * names none lets the thread pick per turn.
+ */
+export type AgentRecord = {
+  agentId: string;
+  /** The shipped preset this row overlays, or null for a user-made agent. */
+  presetId: string | null;
+  name: string | null;
+  /** One line under the name in the roster. Never sent to a provider. */
+  role: string | null;
+  instructions: string | null;
+  /** The marble the face is drawn in, and the ink drawn on it. */
+  faceBody: string | null;
+  faceInk: string | null;
+  /** The skills assigned to the agent; null inherits, `[]` is none. */
+  skills: AgentSkillRef[] | null;
+  /** The one model the agent runs on; null inherits the preset's, a ref is the
+   *  model it uses, and no model named means the thread picks per turn. */
+  model: AgentModelRef | null;
+  /** What the agent is forbidden to do; null inherits, an object with empty
+   *  lists forbids nothing. */
+  policies: AgentPolicies | null;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+  /** When the agent left the roster, or null while they're still in it. The row
+   *  outlives the deletion so a finished thread can still name who worked it. */
+  deletedAt: number | null;
+};
+
+export type AgentCreateInput = {
+  agentId?: string;
+  name: string;
+  role?: string | null;
+  instructions?: string | null;
+  faceBody?: string | null;
+  faceInk?: string | null;
+  skills?: AgentSkillRef[] | null;
+  model?: AgentModelRef | null;
+  policies?: AgentPolicies | null;
+};
+
+/** An edit. A key left out is left alone; an explicit null clears the field —
+ *  back to the shipped preset on an overlay row, unset on a user-made agent. */
+export type AgentPatch = {
+  name?: string | null;
+  role?: string | null;
+  instructions?: string | null;
+  faceBody?: string | null;
+  faceInk?: string | null;
+  skills?: AgentSkillRef[] | null;
+  model?: AgentModelRef | null;
+  policies?: AgentPolicies | null;
+};
+
+/** A fork of an existing agent. `inherited` carries the shipped preset's values
+ *  for whatever the source row leaves null, because a fork keeps no inheritance
+ *  of its own: it copies what the source reads as. */
+export type AgentDuplicateInput = {
+  agentId: string;
+  newAgentId?: string;
+  name?: string;
+  inherited?: {
+    name?: string | null;
+    role?: string | null;
+    instructions?: string | null;
+    faceBody?: string | null;
+    faceInk?: string | null;
+    skills?: AgentSkillRef[] | null;
+    model?: AgentModelRef | null;
+    policies?: AgentPolicies | null;
+  };
+};
+
+export type RosterHydrateInput = {
+  /** The built-ins this build ships, in the order it wants them. The store
+   *  gives each one an overlay row if it hasn't got one, and never resurrects
+   *  one the user deleted. */
+  presetIds: string[];
+};
+
+export type RosterUpdateInput = {
+  agentId: string;
+  patch: AgentPatch;
+};
+
+export type RosterDeleteInput = {
+  agentId: string;
+};
+
+export type RosterTeamInput = {
+  projectPath: string;
+};
+
+export type RosterTeamMemberInput = {
+  projectPath: string;
+  agentId: string;
+};
+
+/**
+ * Who worked a thread. `agentId` is null when it ran as a guest — a recorded
+ * decision, not a missing one; a thread that never started has no binding at
+ * all.
+ */
+export type ThreadAgentBinding = {
+  threadId: string;
+  agentId: string | null;
+};
+
+/** The whole roster layer in one reply: who exists, who worked what, and who is
+ *  up next. `agents` includes deleted ones, so a thread they worked can still be
+ *  captioned with their name. */
+export type RosterSnapshot = {
+  agents: AgentRecord[];
+  bindings: ThreadAgentBinding[];
+  selectedAgentId: string | null;
+};
+
+/** Settle who works a thread. Write-once: an already-settled thread keeps what
+ *  it settled on, and the reply says what that is. A null `agentId` is a guest. */
+export type RosterBindInput = {
+  threadId: string;
+  agentId: string | null;
+};
+
+/** Carry a binding onto a thread reborn under a new id. */
+export type RosterCarryInput = {
+  fromThreadId: string;
+  toThreadId: string;
+};
+
+/** Point the next turn at an agent, or at a guest with null. */
+export type RosterSelectInput = {
+  agentId: string | null;
+};
+
+/** The roster: the agents you can hand work to, and each project's team.
+ *  Separate from `agent` — that surface drives provider sessions, and an agent
+ *  in this sense is somebody you work with, not a process. */
+export type KoneRosterApi = {
+  /** Ensure-and-list, in one round trip. */
+  hydrate: (input: RosterHydrateInput) => Promise<RosterSnapshot>;
+  create: (input: AgentCreateInput) => Promise<AgentRecord | null>;
+  update: (input: RosterUpdateInput) => Promise<AgentRecord | null>;
+  delete: (input: RosterDeleteInput) => Promise<boolean>;
+  duplicate: (input: AgentDuplicateInput) => Promise<AgentRecord | null>;
+  team: (input: RosterTeamInput) => Promise<AgentRecord[]>;
+  addToTeam: (input: RosterTeamMemberInput) => Promise<boolean>;
+  removeFromTeam: (input: RosterTeamMemberInput) => Promise<void>;
+  bind: (input: RosterBindInput) => Promise<ThreadAgentBinding | null>;
+  carry: (input: RosterCarryInput) => Promise<ThreadAgentBinding | null>;
+  select: (input: RosterSelectInput) => Promise<void>;
+};
+
+/**
+ * A preset sub-agent as it lives in the store (mirrors the desktop
+ * `SubagentPresetRecord`, store v26).
+ *
+ * A lightweight, globally-available definition an agent cuts a spawn from:
+ * a name, standing instructions, and one model. Unlike an `AgentRecord` there
+ * is no preset above it to inherit from, so nothing here is null-means-inherit
+ * — `instructions` null is simply "none", and `model` null is "no model, let
+ * the caller's own stand".
+ */
+export type SubagentPresetRecord = {
+  presetId: string;
+  name: string;
+  instructions: string | null;
+  /** The model a spawn from this preset runs on, or null for no preference. */
+  model: AgentModelRef | null;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SubagentPresetCreateInput = {
+  presetId?: string;
+  name: string;
+  instructions?: string | null;
+  model?: AgentModelRef | null;
+};
+
+/** An edit to a preset. A key left out is left alone; the name is the one field
+ *  that can't be cleared, since a preset with no name is not one. */
+export type SubagentPresetPatch = {
+  name?: string;
+  instructions?: string | null;
+  model?: AgentModelRef | null;
+};
+
+export type PresetUpdateInput = {
+  presetId: string;
+  patch: SubagentPresetPatch;
+};
+
+export type PresetDeleteInput = {
+  presetId: string;
+};
+
+/** The preset sub-agents: reusable definitions a spawn is cut from. Separate
+ *  from `roster` — a preset is a standing definition any agent can invoke, not
+ *  a person you hand a thread to. */
+export type KonePresetsApi = {
+  list: () => Promise<SubagentPresetRecord[]>;
+  create: (input: SubagentPresetCreateInput) => Promise<SubagentPresetRecord | null>;
+  update: (input: PresetUpdateInput) => Promise<SubagentPresetRecord | null>;
+  delete: (input: PresetDeleteInput) => Promise<boolean>;
+};
+
 export type KoneDesktopApi = {
   platform: string;
   /** Hands the chosen appearance to the shell so native chrome follows it. */
@@ -2271,6 +2514,8 @@ export type KoneDesktopApi = {
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
   board: KoneBoardApi;
+  roster: KoneRosterApi;
+  presets: KonePresetsApi;
 };
 
 declare global {
