@@ -13,6 +13,7 @@ import { Magnet } from "~/components/ui/magnet";
 import type { FolderFile } from "~/types/folder";
 import type { ChangeItem } from "~/types/change";
 import type {
+  AgentModelRef,
   ApprovalDecision,
   ChatAttachment,
   GitFileStatus,
@@ -584,15 +585,35 @@ watch(
     // the board is real.
     if (!boardReady.value) return;
     const current = agent.model.value;
-    const options = catalogs.value[agent.provider.value] ?? [];
+    // modelOptions, not the raw catalog: a refresh must heal onto a model the
+    // selected agent is allowed, never restore one its allowlist rules out.
+    const options = modelOptions.value;
     if (!current || options.some((o) => o.efforts.some((e) => e.modelId === current))) return;
     const first = options[0];
     const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
     agent.setModel(eff ? eff.modelId : undefined);
   },
 );
-// The active provider's catalog feeds the composer's own model name + effort dial.
-const modelOptions = computed(() => catalogs.value[agent.provider.value] ?? []);
+// The selected agent's pinned model gates what the pickers may offer. No model
+// is unrestricted — every provider and every model stays open. A pinned model
+// is a hard pin: only its provider is offered, and only that one model within
+// it, so the composer can only answer there.
+const capModel = computed<AgentModelRef | null>(() => pickedForProject.value?.capabilities.model ?? null);
+function providerAllowed(p: ProviderKind): boolean {
+  return capModel.value === null || capModel.value.provider === p;
+}
+function modelAllowed(provider: ProviderKind, key: string): boolean {
+  const pinned = capModel.value;
+  return pinned === null || (pinned.provider === provider && pinned.model === key);
+}
+
+// The active provider's catalog feeds the composer's own model name + effort
+// dial, narrowed to the models the selected agent may run. A disallowed current
+// model is moved off by the self-heal watcher above, which reads this list.
+const modelOptions = computed(() => {
+  const provider = agent.provider.value;
+  return (catalogs.value[provider] ?? []).filter((m) => modelAllowed(provider, m.key));
+});
 
 // A model change on a provider that bakes model/effort at spawn (Claude,
 // OpenCode, Antigravity — the effort rides the print `--model` label) can't
@@ -623,17 +644,21 @@ const enabledReady = computed(() =>
 // providers pane's per-model toggles write, so hiding a model there drops it here.
 const pickerProviders = computed<PickerProvider[]>(() => {
   const visible = providerSettings.modelVisiblePredicate.value;
-  return enabledReady.value.map((s) => {
-    const models = (catalogs.value[s.provider] ?? []).filter((m) => visible(s.provider, m.key));
-    return {
-      id: s.provider,
-      label: s.label,
-      sub: `${PROVIDER_VENDOR[s.provider]} · ${models.length} model${models.length === 1 ? "" : "s"}`,
-      brand: PROVIDER_BRAND[s.provider],
-      ready: s.readiness === "ready",
-      models,
-    };
-  });
+  return enabledReady.value
+    .filter((s) => providerAllowed(s.provider))
+    .map((s) => {
+      const models = (catalogs.value[s.provider] ?? []).filter(
+        (m) => visible(s.provider, m.key) && modelAllowed(s.provider, m.key),
+      );
+      return {
+        id: s.provider,
+        label: s.label,
+        sub: `${PROVIDER_VENDOR[s.provider]} · ${models.length} model${models.length === 1 ? "" : "s"}`,
+        brand: PROVIDER_BRAND[s.provider],
+        ready: s.readiness === "ready",
+        models,
+      };
+    });
 });
 
 // Three views over the same page: the working tree ("overview"), the
@@ -1280,11 +1305,57 @@ function onComposerMode(next: InteractionMode) {
 //
 // null all the way through means a guest: no agent named, so the thread keeps the
 // name and face rolled from its own id.
-const { roster: agents, selected: pickedAgent, selectAgent, settleThreadAgent } = useAgentRoster();
+const {
+  team: agents,
+  selected: pickedAgent,
+  selectAgent,
+  settleThreadAgent,
+  isOnTeam,
+} = useAgentRoster();
+
+// The composer answers as somebody on this project's team — that is what a team
+// is for. The selection is app-wide, so it can be carrying an agent who is a
+// teammate on another project and a stranger here; here that reads as a guest,
+// rather than quietly working a project it was never added to. On-team members
+// pass straight through, so nothing changes for the project they belong to.
+const pickedForProject = computed(() =>
+  pickedAgent.value && isOnTeam(pickedAgent.value.id) ? pickedAgent.value : undefined,
+);
 
 function onAgentPick(id: string | null) {
   selectAgent(id);
 }
+
+// Make a pin actually hold for the next send, not just narrow the picker. When
+// the selection moves to an agent whose allowlist rules out the provider or
+// model the composer currently shows, snap onto an allowed one — the same
+// seeding boot does, so a provider-pinned agent answers on its provider without
+// the user reopening the picker. Only a blank thread is touched: a settled
+// thread keeps the agent it was sent to, so the selection has no say over it,
+// and this never tears down a running turn.
+watch(pickedForProject, async () => {
+  if (!boardReady.value || busy.value || !threadIsBlank.value) return;
+  await syncComposerTarget();
+  let providerChanged = false;
+  if (!providerAllowed(agent.provider.value)) {
+    const next = enabledReady.value.find((s) => providerAllowed(s.provider));
+    if (next && next.provider !== agent.provider.value) {
+      agent.setProvider(next.provider);
+      providerChanged = true;
+    }
+  }
+  // modelOptions reflects the (possibly just-switched) provider narrowed to the
+  // allowed models, so a model that fell outside the allowlist reads as unowned.
+  const current = agent.model.value;
+  const owned = Boolean(current) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === current));
+  if (!owned) {
+    const first = modelOptions.value[0];
+    const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+    agent.setModel(eff ? eff.modelId : undefined);
+  }
+  if (providerChanged) await agent.restart();
+  persistThreadSelection();
+});
 
 async function onSend(text: string, files?: File[]) {
   // The composer only docks under a focused thread pane on the board, so the
@@ -1299,7 +1370,7 @@ async function onSend(text: string, files?: File[]) {
   // be recorded against it — this is the moment the thread acquires a face. Every
   // send runs this and only the first one lands: the record is write-once, so a
   // second message can't hand the thread to whoever is selected by then.
-  settleThreadAgent(focusedThread.value?.threadId.value, pickedAgent.value?.id ?? null);
+  settleThreadAgent(focusedThread.value?.threadId.value, pickedForProject.value?.id ?? null);
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
   // carries; a failed upload is dropped rather than sinking the whole send.
@@ -2234,7 +2305,7 @@ function onDiscardFile(path: string) {
           :queued="queuedTurns"
           :picking="modelPickerOpen"
           :agents="agents"
-          :agent-id="pickedAgent?.id ?? null"
+          :agent-id="pickedForProject?.id ?? null"
           :agent-switchable="threadIsBlank"
           :models="modelOptions"
           :model-id="model"
