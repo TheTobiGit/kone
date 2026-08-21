@@ -150,6 +150,35 @@ export const SpawnThreadInputSchema = z.object({
   mode: z.enum(INTERACTION_MODES).optional(),
 });
 
+export const SpawnFromPresetInputSchema = z.object({
+  /** The preset sub-agent to cut this spawn from — its name or its id. */
+  preset: z.string().min(1).max(200),
+  /** The specific work for this spawn, laid under the preset's standing
+   *  instructions to form the child's opening brief. */
+  task: z.string().min(1),
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
+  requestId: z.string().min(1).max(200),
+  /** Overrides the task-derived working title. */
+  title: z.string().min(1).optional(),
+  /** Clamped to the caller's mode — privilege never escalates across a spawn. */
+  mode: z.enum(INTERACTION_MODES).optional(),
+});
+
+export const DelegateInputSchema = z.object({
+  /** The project-team agent to hand this work to — its name or its id. */
+  agent: z.string().min(1).max(200),
+  /** The specific work being delegated — the child's opening brief. The agent's
+   *  own standing instructions reach it separately (it runs as that agent), so
+   *  this is just the ask, not a re-statement of who it is. */
+  task: z.string().min(1),
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
+  requestId: z.string().min(1).max(200),
+  /** Overrides the task-derived working title. */
+  title: z.string().min(1).optional(),
+  /** Clamped to the caller's mode — privilege never escalates across a spawn. */
+  mode: z.enum(INTERACTION_MODES).optional(),
+});
+
 export const WaitForThreadsInputSchema = z.object({
   threadIds: z.array(z.string().min(1)).min(1).max(12),
   /** Positionally paired with `threadIds`: the exact turn of that child to wait
@@ -191,6 +220,38 @@ export const SPAWN_THREAD_JSON_SCHEMA = {
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
   required: ["prompt", "requestId", "target"],
+} satisfies Record<string, unknown>;
+
+export const SPAWN_FROM_PRESET_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    preset: {
+      type: "string",
+      description:
+        "The preset sub-agent to spawn, by name (e.g. \"Explorer\") or id. Call kone_spawn_targets for the presets that actually exist and what each is for; a name that matches none is refused rather than guessed at.",
+    },
+    task: { type: "string" },
+    requestId: { type: "string" },
+    title: { type: "string" },
+    mode: { type: "string", enum: [...INTERACTION_MODES] },
+  },
+  required: ["preset", "task", "requestId"],
+} satisfies Record<string, unknown>;
+
+export const DELEGATE_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    agent: {
+      type: "string",
+      description:
+        "The teammate to hand the work to, by name or id. It must be on THIS project's team — call kone_spawn_targets for who is, and their roles; a name that is not on the team is refused exactly like a nonexistent one.",
+    },
+    task: { type: "string" },
+    requestId: { type: "string" },
+    title: { type: "string" },
+    mode: { type: "string", enum: [...INTERACTION_MODES] },
+  },
+  required: ["agent", "task", "requestId"],
 } satisfies Record<string, unknown>;
 
 export const WAIT_FOR_THREADS_JSON_SCHEMA = {

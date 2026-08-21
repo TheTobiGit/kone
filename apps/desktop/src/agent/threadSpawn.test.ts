@@ -86,6 +86,14 @@ class FakeStore implements SpawnEngineStore {
     return this.lineages.get(threadId) ?? null;
   }
 
+  /** threadId → the agent it was bound to at spawn (delegation). */
+  readonly bound = new Map<string, string>();
+
+  bindThreadAgent(threadId: string, agentId: string): unknown {
+    this.bound.set(threadId, agentId);
+    return { threadId, agentId };
+  }
+
   spawnedChildren(parentThreadId: string): StoredThreadMeta[] {
     return (this.childrenByParent.get(parentThreadId) ?? [])
       .map((id) => this.metas.get(id))
@@ -447,6 +455,41 @@ describe("spawn engine", () => {
       status: "dispatched",
     });
     expect(result.adjustments).toBeUndefined();
+  });
+
+  test("a delegation stamps delegation lineage, binds the agent, and carries its persona into the session", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+
+    const persona = { name: "Backend", instructions: "You own the API layer." };
+    const result = await engine.spawn(CALLER, {
+      ...REQUEST,
+      delegateToAgentId: "agent-backend",
+      persona,
+    });
+
+    // A delegation is a spawned child, but its lineage records that the work
+    // went to a named agent rather than an anonymous worker.
+    expect(store.lineages.get(result.threadId)?.relationshipToParent).toBe("delegation");
+
+    // The child is bound to its agent BEFORE the first turn — so the approval
+    // seam resolves that agent's policies from the first action.
+    expect(store.bound.get(result.threadId)).toBe("agent-backend");
+
+    // And it runs AS that agent: the persona rode to the session.
+    expect(dispatcher.started).toHaveLength(1);
+    expect(dispatcher.started[0].agent).toEqual(persona);
+  });
+
+  test("a plain spawn is an anonymous guest — no binding, no persona", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+
+    const result = await engine.spawn(CALLER, REQUEST);
+
+    expect(store.lineages.get(result.threadId)?.relationshipToParent).toBe("subagent");
+    expect(store.bound.has(result.threadId)).toBe(false);
+    expect(dispatcher.started[0].agent).toBeUndefined();
   });
 
   test("an explicit title wins over the prompt fallback", async () => {

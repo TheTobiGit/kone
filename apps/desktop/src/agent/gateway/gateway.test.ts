@@ -212,6 +212,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_scratchpad_write",
       "kone_spawn_targets",
       "kone_spawn_thread",
+      "kone_spawn_from_preset",
+      "kone_delegate",
       "kone_wait_for_threads",
       "kone_read_thread",
     ]);

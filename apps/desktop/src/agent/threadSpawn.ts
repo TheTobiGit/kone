@@ -9,11 +9,13 @@ import {
 } from "./spawnProjection.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import {
+  isSpawnedRelationship,
   MAX_LIVE_CHILDREN_PER_PARENT,
   MAX_LIVE_SPAWNED_THREADS,
   MAX_SPAWN_DEPTH,
 } from "./types.js";
 import type {
+  AgentPersona,
   InteractionMode,
   ModelDescriptor,
   ProviderKind,
@@ -49,6 +51,10 @@ export interface SpawnEngineStore {
     lineage: ThreadLineage;
   }): boolean;
   threadLineage(threadId: string): ThreadLineage | null;
+  /** Bind a delegated child to the agent it runs as, before its first turn
+   *  dispatches. The return value is ignored — the engine only needs the write
+   *  to land so the approval seam resolves the agent's policies. */
+  bindThreadAgent(threadId: string, agentId: string): unknown;
   spawnedChildren(parentThreadId: string): StoredThreadMeta[];
   spawnDepth(threadId: string): number;
   liveSpawnedThreadIds(): string[];
@@ -129,6 +135,17 @@ export type SpawnRequest = {
   title?: string;
   target: SpawnTarget;
   mode?: InteractionMode;
+  /** When this spawn is a delegation to a persistent project-team agent: the
+   *  agent to bind the child to, so it runs AS that agent. The engine stamps
+   *  the child's lineage `"delegation"` (not `"subagent"`), binds the thread to
+   *  this agent before dispatch (so its policies apply at the approval seam),
+   *  and delivers `persona` to the session (so its instructions reach the
+   *  model). Absent for an anonymous sub-agent spawn. */
+  delegateToAgentId?: string;
+  /** The delegated agent's identity — its name and standing instructions — set
+   *  on the child's session so the model works as that agent. Only meaningful
+   *  alongside `delegateToAgentId`; ignored otherwise. */
+  persona?: AgentPersona;
 };
 
 export type SpawnErrorCode =
@@ -168,6 +185,29 @@ export type SpawnTargetsReport = {
     remainingChildren: number;
     remainingAppWide: number;
   };
+  /** The preset sub-agents `kone_spawn_from_preset` can invoke by name, in the
+   *  order the user keeps them. Filled by the gateway tool, not the engine —
+   *  presets live outside the engine's store — so it is optional: absent means
+   *  the report was built without them (the engine's own `targets`), and `[]`
+   *  means the user has saved none. */
+  presets?: Array<{
+    name: string;
+    /** A one-line gist of the preset's instructions, for choosing between them. */
+    summary?: string;
+    /** The model the preset runs on, or absent when it names none and the
+     *  runtime picks. */
+    model?: { provider: ProviderKind; model: string };
+  }>;
+  /** The teammates `kone_delegate` can hand work to on the caller's own project,
+   *  in team order. Same provenance as `presets`. A nameless agent is left out —
+   *  delegation resolves by name, so one with no name cannot be reached. */
+  teammates?: Array<{
+    id: string;
+    name: string;
+    role?: string;
+    /** A one-line gist of the teammate's standing instructions. */
+    summary?: string;
+  }>;
 };
 
 export const SPAWN_WAIT_DEFAULT_MS = 30_000;
@@ -351,6 +391,9 @@ class SpawnEngineImpl implements SpawnEngine {
       request.target.effort,
       request.mode,
       request.title,
+      // A delegation and a plain spawn with the same prompt are different ops —
+      // fold the bound agent in so a retry only replays the same kind.
+      request.delegateToAgentId,
     ]);
     const reserve = this.store.reserveGatewayOp({
       threadId: caller.threadId,
@@ -420,7 +463,9 @@ class SpawnEngineImpl implements SpawnEngine {
     //    are a single lookup.
     const lineage: ThreadLineage = {
       parentThreadId: caller.threadId,
-      relationshipToParent: "subagent",
+      // A delegation is a spawned child like any other, but its lineage records
+      // that the work went to a named agent rather than an anonymous worker.
+      relationshipToParent: request.delegateToAgentId ? "delegation" : "subagent",
       rootThreadId: parent.lineage?.rootThreadId ?? caller.threadId,
     };
     if (
@@ -435,6 +480,14 @@ class SpawnEngineImpl implements SpawnEngine {
       })
     ) {
       throw new SpawnError("internal", "Failed to persist the spawned thread row.");
+    }
+
+    // Bind the child to the agent it was delegated to BEFORE its first turn
+    // dispatches, so the approval seam resolves that agent's policies from the
+    // very first action. The persona (below) carries its instructions into the
+    // session; the binding is what makes its standing prohibitions bite.
+    if (request.delegateToAgentId) {
+      this.store.bindThreadAgent(threadId, request.delegateToAgentId);
     }
 
     // 9. Record the result BEFORE dispatching — a crash mid-dispatch must not
@@ -507,6 +560,10 @@ class SpawnEngineImpl implements SpawnEngine {
           model,
           effort,
           mode,
+          // A delegated child runs as its agent: the persona reaches the session
+          // so the model works under that name and its standing instructions.
+          // Absent for an anonymous sub-agent spawn, which stays a guest.
+          agent: request.persona,
         },
         // The child's events carry the spawning turn's id (F10), so a consumer
         // can correlate the child's whole traffic to the parent turn without
@@ -640,7 +697,7 @@ class SpawnEngineImpl implements SpawnEngine {
     // working — feed hasLiveSession: false and the projection does the rest.
     const meta = this.store.threadMeta(threadId);
     const lineage = meta ? this.store.threadLineage(threadId) : null;
-    if (!meta || !lineage || lineage.relationshipToParent !== "subagent") return null;
+    if (!meta || !lineage || !isSpawnedRelationship(lineage.relationshipToParent)) return null;
     const span = this.store.threadTurnSpan(threadId);
     const turns: SpawnProjectionTurn[] = [];
     if (span) {
@@ -701,8 +758,9 @@ class SpawnEngineImpl implements SpawnEngine {
     for (let hops = 0; hops < 64; hops++) {
       const lineage = this.store.threadLineage(current);
       // A side chat carries lineage too and is NOT a spawned descendant — the
-      // discriminator gates it out before we step anywhere.
-      if (!lineage || lineage.relationshipToParent !== "subagent") return false;
+      // discriminator gates it out before we step anywhere. A delegation IS a
+      // spawned descendant, so it stays in the subtree the parent can reach.
+      if (!lineage || !isSpawnedRelationship(lineage.relationshipToParent)) return false;
       const parent = lineage.parentThreadId;
       if (parent === rootThreadId) return true;
       if (!parent || visited.has(parent)) return false;
