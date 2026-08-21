@@ -3,11 +3,13 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "./sqlite.js";
 
+import { isSpawnedRelationship } from "./types.js";
 import type {
   ChatAttachment,
   ForkContext,
   ProfileStats,
   ProviderKind,
+  RelationshipToParent,
   RuntimeEvent,
   RuntimeItem,
   StoredBlock,
@@ -37,7 +39,7 @@ import { getUserDataDir } from "./userDataDir.js";
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 26;
 
 /** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
  *  partially-applied migration — a crash between statements — re-runs
@@ -735,8 +737,192 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     version = commitStep(db, 21);
   }
 
+  if (version < 22) {
+    // v22 — the roster gets rows. An agent is a persistent actor: an identity
+    // that outlives any one conversation, which is exactly the thing browser
+    // storage is the wrong home for. Two kinds of row share the table.
+    //
+    // A row WITH a `preset_id` overlays a built-in the app ships: every column
+    // it leaves NULL is inherited from that shipped definition at read time, so
+    // a later build's improved wording still reaches a user who never touched
+    // that field, and only what they did edit is frozen. A row WITHOUT one is a
+    // user-made agent and every column on it is authoritative — which is what
+    // the CHECK enforces: a row that inherits nothing must at least carry a
+    // name. NULL therefore means "inherit"; '' means "deliberately blank"; the
+    // two are different answers and nothing here may collapse them.
+    //
+    // The shipped definitions are deliberately NOT stored. They live in the
+    // renderer — the layer that renders them and the layer the user edits them
+    // through — so this table holds only the delta, and no rung ever has to
+    // rewrite a copy of prose that shipped in the binary.
+    //
+    // `deleted_at` is a soft delete because a transcript has to keep naming
+    // whoever wrote it. Deleting an agent takes them out of the roster; it can't
+    // retroactively orphan the threads they worked, so the row survives as the
+    // record of a name and a face that once did work. It also keeps a dismissed
+    // built-in dismissed: `ensurePresetAgents` re-seeds a missing row, never a
+    // deleted one.
+    //
+    // Team membership is its own table rather than a column, because an agent
+    // belongs to as many projects as you add them to. The join filters on
+    // `deleted_at`, so a deleted agent leaves every team without a cascade and
+    // comes back to all of them if the row is ever restored.
+    beginStep(db);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agents (
+        agent_id     TEXT PRIMARY KEY,
+        preset_id    TEXT,
+        name         TEXT,
+        role         TEXT,
+        instructions TEXT,
+        face_body    TEXT,
+        face_ink     TEXT,
+        sort_order   INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        deleted_at   INTEGER,
+        CHECK (preset_id IS NOT NULL OR name IS NOT NULL)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agents_roster_order
+        ON agents (deleted_at, sort_order, created_at, agent_id);
+
+      CREATE TABLE IF NOT EXISTS project_agents (
+        project_path TEXT NOT NULL,
+        agent_id     TEXT NOT NULL,
+        sort_order   INTEGER NOT NULL DEFAULT 0,
+        added_at     INTEGER NOT NULL,
+        PRIMARY KEY (project_path, agent_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_agents_agent
+        ON project_agents (agent_id);
+    `);
+    version = commitStep(db, 22);
+  }
+
+  if (version < 23) {
+    // v23 — who worked a thread, and who the composer is pointing at.
+    //
+    // A binding is the record of a decision, not a setting: a thread is one
+    // agent's work end to end, so it is written once when the thread starts and
+    // never revised. Changing who you work with has to leave started
+    // conversations alone, or a transcript would rewrite itself to name whoever
+    // was picked last.
+    //
+    // Three states, and all three are needed. A row with an `agent_id` is that
+    // agent's thread. A row with NULL ran as a *guest*, which is a decision like
+    // any other — recording it is what stops a guest conversation being claimed
+    // later by an agent picked after the fact. No row at all means the thread
+    // hasn't started, which is also every thread from before any of this
+    // existed, and those correctly read as guests.
+    //
+    // Deliberately not a column on `threads` and deliberately no foreign key:
+    // the binding settles at the moment of the send, which can be ahead of the
+    // thread's own row, and it has to outlive the agent it names (an agent's row
+    // is soft-deleted precisely so a finished thread still has a name on it).
+    //
+    // The selection is a single row because it is a single answer: who the next
+    // turn goes to. NULL means a guest, and no row means nobody has chosen — the
+    // shipped default, which sends work to a guest, so the two behave alike
+    // without being written down as the same thing.
+    beginStep(db);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS thread_agents (
+        thread_id  TEXT PRIMARY KEY,
+        agent_id   TEXT,
+        settled_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_thread_agents_agent
+        ON thread_agents (agent_id);
+
+      CREATE TABLE IF NOT EXISTS roster_selection (
+        id         INTEGER PRIMARY KEY CHECK (id = 0),
+        agent_id   TEXT,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    version = commitStep(db, 23);
+  }
+
+  if (version < 24) {
+    // v24 — an agent's capabilities: the skills it is assigned, and the
+    // providers and models it is allowed to run on.
+    //
+    // All three are JSON arrays held as TEXT, and each is an overlay field like
+    // the prose beside it: NULL means "inherit whatever the shipped preset
+    // says", which the renderer resolves — the presets live on the web side.
+    // The three are shaped differently on purpose. Skills are additive: an
+    // agent is given the ones it needs, so an empty list is a real answer ("no
+    // skills"). Providers and models are the opposite — a list is a restriction
+    // to exactly those, and having none means no restriction at all, so an
+    // empty list reads the same as NULL. A one-entry model list is how "the
+    // specific model this agent must use" is written down: a menu of one.
+    //
+    // Added as columns rather than a table because a capability set is part of
+    // one agent's definition, not a relation between agents and skills — it
+    // overlays a preset exactly the way the prose does, and a fork copies it by
+    // value like everything else on the row.
+    beginStep(db);
+    addColumn(db, "agents", "skills", "TEXT");
+    addColumn(db, "agents", "providers", "TEXT");
+    addColumn(db, "agents", "models", "TEXT");
+    version = commitStep(db, 24);
+  }
+
+  if (version < 25) {
+    // v25 — an agent's policies: the things it is permanently forbidden to do,
+    // held as one JSON object in TEXT beside the capability columns.
+    //
+    // Policies are the opposite of capabilities: capabilities say what an agent
+    // has available, policies say what it may never do, whatever the thread's
+    // interaction mode allows. The object carries two lists today — command
+    // lines it may never run and file paths it may never touch — and grows new
+    // keys rather than new columns, so a later kind of restriction needs no
+    // migration.
+    //
+    // An overlay field like the rest: NULL means "inherit whatever the shipped
+    // preset says", which the renderer resolves. An object with empty lists is a
+    // real answer that forbids nothing, the way an empty provider list restricts
+    // nothing — and a fork copies the whole object by value like the prose.
+    beginStep(db);
+    addColumn(db, "agents", "policies", "TEXT");
+    version = commitStep(db, 25);
+  }
+
+  if (version < 26) {
+    // v26 — preset sub-agents: reusable, globally-available definitions an
+    // agent can hand a piece of work to. A preset is not a roster member and
+    // works no thread of its own — it is a saved shape (a name, a set of
+    // instructions, and a model preference) that a spawn is cut from.
+    //
+    // Its own table rather than columns on `agents` because it is a different
+    // kind of thing: an agent is someone work is bound to and who outlives the
+    // threads they worked; a preset is a template with no thread history to
+    // keep, so it hard-deletes and needs no tombstone.
+    //
+    // `models` is the ordered model preference held as JSON TEXT: the runtime
+    // walks it in order and takes the first model that is available, falling
+    // down the list rather than failing when one is unreachable or spent. An
+    // empty list is a real answer — no preference, let the runtime choose. It
+    // rides in one column as a list, not a relation, the way a capability does.
+    beginStep(db);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS subagent_presets (
+        preset_id    TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        instructions TEXT,
+        models       TEXT,
+        sort_order   INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_subagent_presets_order
+        ON subagent_presets (sort_order, created_at, preset_id);
+    `);
+    version = commitStep(db, 26);
+  }
+
   // Future migrations append here:
-  // `if (version < 22) { beginStep(db); …; version = commitStep(db, 22); }`
+  // `if (version < 27) { beginStep(db); …; version = commitStep(db, 27); }`
 
   // Every rung stamps itself, so the ladder ending anywhere but the current
   // version means a rung is missing for it — a bumped SCHEMA_VERSION that
@@ -1193,13 +1379,16 @@ export class ConversationStore {
           childId = undefined;
         }
         if (!childId) continue;
-        // The child row must still exist with subagent lineage and no real
-        // turns yet — never clobber a child that actually ran.
+        // The child row must still exist with spawned lineage (an anonymous
+        // subagent or a delegation to a named agent) and no real turns yet —
+        // never clobber a child that actually ran.
         const meta = childMeta.get(childId) as { lineage_json: string } | undefined;
         if (!meta) continue;
         try {
-          const lineage = JSON.parse(meta.lineage_json) as { relationshipToParent?: string };
-          if (lineage.relationshipToParent !== "subagent") continue;
+          const lineage = JSON.parse(meta.lineage_json) as {
+            relationshipToParent?: RelationshipToParent | null;
+          };
+          if (!isSpawnedRelationship(lineage.relationshipToParent)) continue;
         } catch {
           continue;
         }
@@ -2307,6 +2496,12 @@ export class ConversationStore {
         // on the stop path — the rows are gone either way, so no in-flight
         // release can bring them back).
         db.prepare(`DELETE FROM queued_turns WHERE thread_id IN (${placeholders})`).run(...ids);
+        // Who worked the thread goes with it. The binding is kept past an
+        // agent's own departure so a transcript can still name them, but that
+        // reason dies with the transcript: with no conversation left there is
+        // nothing to caption, and a row that outlived its thread would be
+        // reported by listThreadAgents forever.
+        db.prepare(`DELETE FROM thread_agents WHERE thread_id IN (${placeholders})`).run(...ids);
         db.prepare(`DELETE FROM threads     WHERE thread_id IN (${placeholders})`).run(...ids);
       });
       for (const id of ids) this.knownConversationIds.delete(id);
@@ -3476,6 +3671,615 @@ export class ConversationStore {
     }
   }
 
+  // ── the roster: agents, and each project's team ────────────────────────────
+  // See the v22 rung for the shape. The rule that governs every method here:
+  // NULL is returned verbatim, never resolved. A NULL on an overlay row means
+  // "inherit from the shipped preset", and only the renderer holds the shipped
+  // presets — a store that guessed a default would be inventing an agent's
+  // character.
+
+  /** Give every shipped preset an overlay row, in the order they were handed
+   *  over. Idempotent, and deliberately unable to resurrect a deleted built-in:
+   *  a user who dismissed one does not find it back on next launch.
+   *
+   *  Called on hydrate rather than from a migration rung, so a built-in added
+   *  by a later build gets its row without a schema change — the renderer is
+   *  the only layer that knows which presets exist, so it is the layer that
+   *  says so. A built-in that arrives that way appends like anything else,
+   *  landing after the agents the user already had rather than inserting itself
+   *  above them. */
+  ensurePresetAgents(presetIds: readonly string[]): void {
+    const db = this.handle();
+    if (!db) return;
+    if (presetIds.length === 0) return;
+    try {
+      const now = Date.now();
+      withTransaction(db, () => {
+        const insert = db.prepare(
+          `INSERT INTO agents (agent_id, preset_id, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(agent_id) DO NOTHING`,
+        );
+        for (const presetId of presetIds) {
+          // Read per insert, not once: the previous row of this loop is already
+          // visible inside the transaction, so the first launch lays the
+          // presets out in shipped order and no two rows share a position.
+          insert.run(presetId, presetId, this.nextAgentSortOrder(db), now, now);
+        }
+      });
+    } catch (err) {
+      console.error("[conversation-store] ensurePresetAgents failed:", err);
+    }
+  }
+
+  /** The roster, in order. Deleted agents are left out unless asked for — the
+   *  renderer wants them when it has to name whoever worked an old thread, and
+   *  never when it is drawing a list you can pick from. */
+  listAgents(options?: { includeDeleted?: boolean }): AgentRecord[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: `AGENT_COLUMNS` is the column list `AgentRow` is declared from,
+      // so the projection and the type are the same list in both directions.
+      const rows = db
+        .prepare(
+          `SELECT ${AGENT_COLUMNS} FROM agents
+            ${options?.includeDeleted ? "" : "WHERE deleted_at IS NULL"}
+            ORDER BY sort_order ASC, created_at ASC, agent_id ASC`,
+        )
+        .all() as AgentRow[];
+      return rows.map(rowToAgent);
+    } catch (err) {
+      console.error("[conversation-store] listAgents failed:", err);
+      return [];
+    }
+  }
+
+  /** One agent by id, deleted or not. A deleted agent still has to answer for
+   *  the threads they worked, so this read is deliberately not filtered — the
+   *  caller decides whether a tombstone belongs where it is going. */
+  getAgent(agentId: string): AgentRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: same column list `AgentRow` is declared from, and `agent_id` is
+      // the primary key, so this is at most one row of exactly that shape.
+      const row = db
+        .prepare(`SELECT ${AGENT_COLUMNS} FROM agents WHERE agent_id = ?`)
+        .get(agentId) as AgentRow | undefined;
+      return row ? rowToAgent(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] getAgent failed:", err);
+      return null;
+    }
+  }
+
+  /** Add a user-made agent to the end of the roster. The caller mints the id so
+   *  it can draw the new agent before the write lands. Fields are clamped, not
+   *  rejected: the editor is expected to hold the real limits, and this is the
+   *  floor that keeps a runaway paste out of the database. */
+  createAgent(input: AgentCreateInput): AgentRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    const name = clampAgentField(input.name, AGENT_NAME_MAX);
+    if (!name) return null;
+    try {
+      const now = Date.now();
+      const agentId = input.agentId ?? randomUUID();
+      db.prepare(
+        `INSERT INTO agents
+           (agent_id, preset_id, name, role, instructions,
+            face_body, face_ink, skills, providers, models, policies,
+            sort_order, created_at, updated_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        agentId,
+        name,
+        clampAgentField(input.role, AGENT_ROLE_MAX),
+        clampAgentField(input.instructions, AGENT_PROSE_MAX),
+        clampAgentField(input.faceBody, AGENT_PAINT_MAX),
+        clampAgentField(input.faceInk, AGENT_PAINT_MAX),
+        serializeAgentList(input.skills, normalizeSkillRef),
+        // The `providers` column is dormant since the collapse to one model —
+        // provider comes from the model ref — so it is always written null.
+        null,
+        serializeModelRef(input.model),
+        serializeAgentPolicies(input.policies),
+        this.nextAgentSortOrder(db),
+        now,
+        now,
+      );
+      return this.getAgent(agentId);
+    } catch (err) {
+      console.error("[conversation-store] createAgent failed:", err);
+      return null;
+    }
+  }
+
+  /** Edit an agent, one field at a time. A field left out of the patch is left
+   *  alone; an explicit `null` clears it, which on an overlay row means handing
+   *  the field back to the shipped preset and on a user-made agent means
+   *  unsetting it. Refuses a deleted agent — editing a tombstone would put an
+   *  agent back in the roster through the side door. */
+  updateAgent(agentId: string, patch: AgentPatch): AgentRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    const edits: Array<[column: string, value: string | null]> = [];
+    if (patch.name !== undefined) {
+      edits.push(["name", clampAgentField(patch.name, AGENT_NAME_MAX)]);
+    }
+    if (patch.role !== undefined) {
+      edits.push(["role", clampAgentField(patch.role, AGENT_ROLE_MAX)]);
+    }
+    if (patch.instructions !== undefined) {
+      edits.push(["instructions", clampAgentField(patch.instructions, AGENT_PROSE_MAX)]);
+    }
+    if (patch.faceBody !== undefined) {
+      edits.push(["face_body", clampAgentField(patch.faceBody, AGENT_PAINT_MAX)]);
+    }
+    if (patch.faceInk !== undefined) {
+      edits.push(["face_ink", clampAgentField(patch.faceInk, AGENT_PAINT_MAX)]);
+    }
+    if (patch.skills !== undefined) {
+      edits.push(["skills", serializeAgentList(patch.skills, normalizeSkillRef)]);
+    }
+    if (patch.model !== undefined) {
+      edits.push(["models", serializeModelRef(patch.model)]);
+    }
+    if (patch.policies !== undefined) {
+      edits.push(["policies", serializeAgentPolicies(patch.policies)]);
+    }
+    if (edits.length === 0) return this.getAgent(agentId);
+    try {
+      const assignments = edits.map(([column]) => `${column} = ?`).join(", ");
+      const values = edits.map(([, value]) => value);
+      // The CHECK is the guard, not a read-then-write: clearing the name of an
+      // agent that inherits nothing raises rather than storing a nameless row.
+      const result = db
+        .prepare(
+          `UPDATE agents SET ${assignments}, updated_at = ?
+            WHERE agent_id = ? AND deleted_at IS NULL`,
+        )
+        .run(...values, Date.now(), agentId);
+      return Number(result.changes) > 0 ? this.getAgent(agentId) : null;
+    } catch (err) {
+      console.error("[conversation-store] updateAgent failed:", err);
+      return null;
+    }
+  }
+
+  /** Take an agent out of the roster, keeping the row. Returns whether an agent
+   *  that was in the roster left it — deleting one twice is not a failure the
+   *  second time, it just changes nothing. */
+  deleteAgent(agentId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const now = Date.now();
+      let changes = 0;
+      withTransaction(db, () => {
+        const result = db
+          .prepare(
+            `UPDATE agents SET deleted_at = ?, updated_at = ?
+              WHERE agent_id = ? AND deleted_at IS NULL`,
+          )
+          .run(now, now, agentId);
+        changes = Number(result.changes);
+        // Nothing may be left pointing at them for work still to come: a
+        // selection on a departed agent would send the next turn to nobody.
+        // Their thread bindings are untouched — that is the past, and it keeps
+        // its record.
+        if (changes > 0) {
+          db.prepare(
+            `UPDATE roster_selection SET agent_id = NULL, updated_at = ?
+              WHERE id = 0 AND agent_id = ?`,
+          ).run(now, agentId);
+        }
+      });
+      return changes > 0;
+    } catch (err) {
+      console.error("[conversation-store] deleteAgent failed:", err);
+      return false;
+    }
+  }
+
+  /** Fork an agent into a new user-made one, sitting straight after the
+   *  original.
+   *
+   *  A copy is a fork, not a second overlay: it keeps no inheritance, so what
+   *  it copies is what the source *reads as*, and the fields the source leaves
+   *  to its preset have to be supplied by the caller — the renderer is the only
+   *  layer holding that text. `inherited` fills exactly those gaps and is
+   *  ignored wherever the source row has its own value.
+   *
+   *  The copy takes the position straight below its original, which means
+   *  shifting everybody under it down one. Deliberately not "same position,
+   *  younger, let the created-at tiebreak sort it out": a duplicate raised in
+   *  the same millisecond as its source has no tiebreak left but the id, and the
+   *  copy would land above the thing it was copied from. Renumbering a roster
+   *  of a handful of rows costs nothing and can't be ambiguous. */
+  duplicateAgent(input: AgentDuplicateInput): AgentRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    const source = this.getAgent(input.agentId);
+    if (!source || source.deletedAt !== null) return null;
+    const inherited = input.inherited ?? {};
+    const name = clampAgentField(input.name ?? source.name ?? inherited.name, AGENT_NAME_MAX);
+    if (!name) return null;
+    try {
+      const now = Date.now();
+      const agentId = input.newAgentId ?? randomUUID();
+      withTransaction(db, () => {
+        db.prepare(`UPDATE agents SET sort_order = sort_order + 1 WHERE sort_order > ?`).run(
+          source.sortOrder,
+        );
+        db.prepare(
+          `INSERT INTO agents
+             (agent_id, preset_id, name, role, instructions,
+              face_body, face_ink, skills, providers, models, policies,
+              sort_order, created_at, updated_at)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          agentId,
+          name,
+          clampAgentField(source.role ?? inherited.role, AGENT_ROLE_MAX),
+          clampAgentField(source.instructions ?? inherited.instructions, AGENT_PROSE_MAX),
+          clampAgentField(source.faceBody ?? inherited.faceBody, AGENT_PAINT_MAX),
+          clampAgentField(source.faceInk ?? inherited.faceInk, AGENT_PAINT_MAX),
+          serializeAgentList(source.skills ?? inherited.skills, normalizeSkillRef),
+          // Dormant since the collapse to one model — always null.
+          null,
+          serializeModelRef(source.model ?? inherited.model),
+          serializeAgentPolicies(source.policies ?? inherited.policies),
+          source.sortOrder + 1,
+          now,
+          now,
+        );
+      });
+      return this.getAgent(agentId);
+    } catch (err) {
+      console.error("[conversation-store] duplicateAgent failed:", err);
+      return null;
+    }
+  }
+
+  /** Put an agent on a project's team. Idempotent, and refuses an agent who
+   *  isn't in the roster — a team is a list of people you can actually hand work
+   *  to, so a missing or deleted id is a no. */
+  addAgentToProject(projectPath: string, agentId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const alive = db
+        .prepare(`SELECT 1 FROM agents WHERE agent_id = ? AND deleted_at IS NULL`)
+        .get(agentId);
+      if (alive == null) return false;
+      db.prepare(
+        `INSERT INTO project_agents (project_path, agent_id, sort_order, added_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(project_path, agent_id) DO NOTHING`,
+      ).run(projectPath, agentId, this.nextTeamSortOrder(db, projectPath), Date.now());
+      return true;
+    } catch (err) {
+      console.error("[conversation-store] addAgentToProject failed:", err);
+      return false;
+    }
+  }
+
+  /** Take an agent off a project's team. The agent itself is untouched — they
+   *  stay in the roster and on every other team. */
+  removeAgentFromProject(projectPath: string, agentId: string): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(`DELETE FROM project_agents WHERE project_path = ? AND agent_id = ?`).run(
+        projectPath,
+        agentId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] removeAgentFromProject failed:", err);
+    }
+  }
+
+  /** A project's team, in the order they were added. Deleted agents fall out
+   *  here rather than being cascaded away on delete, so restoring an agent
+   *  restores every team they were on. */
+  listProjectAgents(projectPath: string): AgentRecord[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: `a.*` is every column of `agents`, which is what `AgentRow`
+      // describes; the join adds no columns of its own.
+      const rows = db
+        .prepare(
+          `SELECT a.*
+             FROM project_agents m
+             JOIN agents a ON a.agent_id = m.agent_id
+            WHERE m.project_path = ? AND a.deleted_at IS NULL
+            ORDER BY m.sort_order ASC, m.added_at ASC, a.agent_id ASC`,
+        )
+        .all(projectPath) as AgentRow[];
+      return rows.map(rowToAgent);
+    } catch (err) {
+      console.error("[conversation-store] listProjectAgents failed:", err);
+      return [];
+    }
+  }
+
+  /** One past the last roster position, counting deleted rows: a restored agent
+   *  has to land back where it was rather than on top of somebody. */
+  private nextAgentSortOrder(db: DatabaseSync): number {
+    // SAFETY: an aggregate over an INTEGER column, wrapped in COALESCE, so the
+    // one row this returns has an integer under the name asked for.
+    const row = db.prepare(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM agents`).get() as
+      | { next: number }
+      | undefined;
+    return row?.next ?? 0;
+  }
+
+  private nextTeamSortOrder(db: DatabaseSync, projectPath: string): number {
+    // SAFETY: as above — a COALESCE'd aggregate over an INTEGER column.
+    const row = db
+      .prepare(
+        `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next
+           FROM project_agents WHERE project_path = ?`,
+      )
+      .get(projectPath) as { next: number } | undefined;
+    return row?.next ?? 0;
+  }
+
+  // ── preset sub-agents ───────────────────────────────────────────────────────
+
+  /** Every preset sub-agent, in the order they were made. Globally available,
+   *  so there is no project or team to scope by — one flat list. */
+  listSubagentPresets(): SubagentPresetRecord[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the columns `SubagentPresetRow` is declared from, of the table
+      // this schema creates at v26.
+      const rows = db
+        .prepare(
+          `SELECT ${SUBAGENT_PRESET_COLUMNS} FROM subagent_presets
+            ORDER BY sort_order ASC, created_at ASC, preset_id ASC`,
+        )
+        .all() as SubagentPresetRow[];
+      return rows.map(rowToSubagentPreset);
+    } catch (err) {
+      console.error("[conversation-store] listSubagentPresets failed:", err);
+      return [];
+    }
+  }
+
+  /** One preset by id, or null when there is no such preset. */
+  getSubagentPreset(presetId: string): SubagentPresetRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: same column list as `SubagentPresetRow`, keyed on the primary
+      // key, so at most one row of exactly that shape.
+      const row = db
+        .prepare(`SELECT ${SUBAGENT_PRESET_COLUMNS} FROM subagent_presets WHERE preset_id = ?`)
+        .get(presetId) as SubagentPresetRow | undefined;
+      return row ? rowToSubagentPreset(row) : null;
+    } catch (err) {
+      console.error("[conversation-store] getSubagentPreset failed:", err);
+      return null;
+    }
+  }
+
+  /** Add a preset to the end of the list. The caller mints the id so it can
+   *  draw the preset before the write lands. A preset must have a name; the
+   *  fields are clamped the way an agent's are — the editor holds the real
+   *  limits, this is the floor that keeps a runaway paste out of the database. */
+  createSubagentPreset(input: SubagentPresetCreateInput): SubagentPresetRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    const name = clampAgentField(input.name, AGENT_NAME_MAX);
+    if (!name) return null;
+    try {
+      const now = Date.now();
+      const presetId = input.presetId ?? randomUUID();
+      db.prepare(
+        `INSERT INTO subagent_presets
+           (preset_id, name, instructions, models, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        presetId,
+        name,
+        clampAgentField(input.instructions, AGENT_PROSE_MAX),
+        serializeModelRef(input.model),
+        this.nextSubagentPresetSortOrder(db),
+        now,
+        now,
+      );
+      return this.getSubagentPreset(presetId);
+    } catch (err) {
+      console.error("[conversation-store] createSubagentPreset failed:", err);
+      return null;
+    }
+  }
+
+  /** Edit a preset, one field at a time. A field left out of the patch is left
+   *  alone. The name is the one field that can't be cleared — a preset with no
+   *  name is not a preset, so a patch that would blank it changes nothing. */
+  updateSubagentPreset(
+    presetId: string,
+    patch: SubagentPresetPatch,
+  ): SubagentPresetRecord | null {
+    const db = this.handle();
+    if (!db) return null;
+    const edits: Array<[column: string, value: string | null]> = [];
+    if (patch.name !== undefined) {
+      const name = clampAgentField(patch.name, AGENT_NAME_MAX);
+      if (!name) return null;
+      edits.push(["name", name]);
+    }
+    if (patch.instructions !== undefined) {
+      edits.push(["instructions", clampAgentField(patch.instructions, AGENT_PROSE_MAX)]);
+    }
+    if (patch.model !== undefined) {
+      edits.push(["models", serializeModelRef(patch.model)]);
+    }
+    if (edits.length === 0) return this.getSubagentPreset(presetId);
+    try {
+      const assignments = edits.map(([column]) => `${column} = ?`).join(", ");
+      const values = edits.map(([, value]) => value);
+      const result = db
+        .prepare(
+          `UPDATE subagent_presets SET ${assignments}, updated_at = ? WHERE preset_id = ?`,
+        )
+        .run(...values, Date.now(), presetId);
+      return Number(result.changes) > 0 ? this.getSubagentPreset(presetId) : null;
+    } catch (err) {
+      console.error("[conversation-store] updateSubagentPreset failed:", err);
+      return null;
+    }
+  }
+
+  /** Remove a preset for good. A preset keeps no thread history — a spawn cut
+   *  from it copies the instructions and the resolved model by value — so there
+   *  is nothing a tombstone would answer for, and this deletes the row outright.
+   *  Returns whether a row was there to remove; deleting a gone preset changes
+   *  nothing and is not a failure. */
+  deleteSubagentPreset(presetId: string): boolean {
+    const db = this.handle();
+    if (!db) return false;
+    try {
+      const result = db
+        .prepare(`DELETE FROM subagent_presets WHERE preset_id = ?`)
+        .run(presetId);
+      return Number(result.changes) > 0;
+    } catch (err) {
+      console.error("[conversation-store] deleteSubagentPreset failed:", err);
+      return false;
+    }
+  }
+
+  private nextSubagentPresetSortOrder(db: DatabaseSync): number {
+    // SAFETY: a COALESCE'd aggregate over an INTEGER column, as the roster's.
+    const row = db
+      .prepare(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM subagent_presets`)
+      .get() as { next: number } | undefined;
+    return row?.next ?? 0;
+  }
+
+  // ── who worked a thread, and who is up next ─────────────────────────────────
+
+  /** Every binding there is, so the renderer can answer "who worked this?"
+   *  without a round trip per thread. Rows are tiny and one per conversation. */
+  listThreadAgents(): ThreadAgentBinding[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the two columns named, of the table this schema declares —
+      // `thread_id` is a TEXT primary key and `agent_id` is nullable TEXT.
+      const rows = db
+        .prepare(`SELECT thread_id, agent_id FROM thread_agents ORDER BY settled_at ASC`)
+        .all() as Array<{ thread_id: string; agent_id: string | null }>;
+      return rows.map((row) => ({ threadId: row.thread_id, agentId: row.agent_id }));
+    } catch (err) {
+      console.error("[conversation-store] listThreadAgents failed:", err);
+      return [];
+    }
+  }
+
+  /** Who worked one thread, or null if it never started. */
+  getThreadAgent(threadId: string): ThreadAgentBinding | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: as above, and `thread_id` is the primary key, so this is at most
+      // one row of exactly that shape.
+      const row = db
+        .prepare(`SELECT thread_id, agent_id FROM thread_agents WHERE thread_id = ?`)
+        .get(threadId) as { thread_id: string; agent_id: string | null } | undefined;
+      return row ? { threadId: row.thread_id, agentId: row.agent_id } : null;
+    } catch (err) {
+      console.error("[conversation-store] getThreadAgent failed:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Settle who works a thread, at the moment it starts.
+   *
+   * Write-once, in SQL rather than in a read-then-write the renderer could race:
+   * a thread that already has a binding keeps it, so a later send can never
+   * rewrite who wrote the lines already above it. `null` settles it on a guest,
+   * which closes the thread to being claimed afterwards.
+   *
+   * Returns what the thread is bound to now — which for an already-settled
+   * thread is what it was bound to before, not what was just asked for.
+   */
+  bindThreadAgent(threadId: string, agentId: string | null): ThreadAgentBinding | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      db.prepare(
+        `INSERT INTO thread_agents (thread_id, agent_id, settled_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(thread_id) DO NOTHING`,
+      ).run(threadId, agentId, Date.now());
+      return this.getThreadAgent(threadId);
+    } catch (err) {
+      console.error("[conversation-store] bindThreadAgent failed:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Hand a new thread the agent an old one had — for a thread reborn under a new
+   * id, which is what a provider or model switch does to a live session.
+   *
+   * The same work continuing under a new id is still the same colleague's, so
+   * the record follows it. It carries a guest binding too, and that matters as
+   * much: a guest thread restarted has to come back a guest rather than fall
+   * through to whoever is picked by then. Write-once at the far end.
+   */
+  carryThreadAgent(fromThreadId: string, toThreadId: string): ThreadAgentBinding | null {
+    const db = this.handle();
+    if (!db) return null;
+    const source = this.getThreadAgent(fromThreadId);
+    if (!source) return null;
+    return this.bindThreadAgent(toThreadId, source.agentId);
+  }
+
+  /** Who the next turn goes to, or null for a guest — which is also what nobody
+   *  having chosen yet reads as. */
+  readSelectedAgent(): string | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      // SAFETY: one nullable TEXT column of a table whose primary key is pinned
+      // to a single value, so this is at most one row of exactly that shape.
+      const row = db.prepare(`SELECT agent_id FROM roster_selection WHERE id = 0`).get() as
+        | { agent_id: string | null }
+        | undefined;
+      return row?.agent_id ?? null;
+    } catch (err) {
+      console.error("[conversation-store] readSelectedAgent failed:", err);
+      return null;
+    }
+  }
+
+  /** Point the next turn at an agent, or at a guest with null. */
+  writeSelectedAgent(agentId: string | null): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(
+        `INSERT INTO roster_selection (id, agent_id, updated_at)
+         VALUES (0, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           agent_id = excluded.agent_id,
+           updated_at = excluded.updated_at`,
+      ).run(agentId, Date.now());
+    } catch (err) {
+      console.error("[conversation-store] writeSelectedAgent failed:", err);
+    }
+  }
+
   // ── project board layout ────────────────────────────────────────────────────
 
   /** Read a project's persisted board layout. Never throws: a corrupt JSON blob
@@ -3549,6 +4353,411 @@ export type StoredBoardLayout = {
   panes: unknown[];
   focusedId: string | null;
 };
+
+// ── the roster (v22) ─────────────────────────────────────────────────────────
+
+/**
+ * An agent as it lives in the store.
+ *
+ * Every prose field is nullable and the null is meaningful: on a row with a
+ * `presetId` it means "inherit whatever the shipped preset says", so the
+ * renderer resolves it against the definition it holds. `''` is not the same
+ * answer — it is a field the user deliberately emptied, and it stays empty.
+ */
+/** A skill an agent is assigned, by the path the skills inventory keys on. The
+ *  name and origin ride along so a chip can be drawn without a fresh disk scan;
+ *  the path is the identity. */
+export type AgentSkillRef = {
+  path: string;
+  name: string;
+  origin: string;
+};
+
+/** A model an agent is allowed to run on: a provider and the model id within
+ *  it. The label rides along for display, the way a skill's name does. */
+export type AgentModelRef = {
+  provider: ProviderKind;
+  model: string;
+  label?: string;
+};
+
+/** An agent's permanent restrictions (v25). Where capabilities say what an
+ *  agent has available, policies say what it may never do, whatever the
+ *  thread's interaction mode would otherwise allow. Empty lists forbid nothing.
+ *  The matching that turns a stored string into a block lives with whatever
+ *  enforces it, not here — this is only the written-down set of restrictions. */
+export type AgentPolicies = {
+  /** Command lines the agent may never run. */
+  deniedCommands: string[];
+  /** File paths the agent may never read or write. */
+  deniedPaths: string[];
+};
+
+export type AgentRecord = {
+  agentId: string;
+  /** The shipped preset this row overlays, or null for a user-made agent. */
+  presetId: string | null;
+  name: string | null;
+  /** One line under the name in the roster. Never sent to a provider. */
+  role: string | null;
+  instructions: string | null;
+  /** The marble the face is drawn in, and the ink drawn on it — a colour or a
+   *  theme variable, opaque to the store. */
+  faceBody: string | null;
+  faceInk: string | null;
+  /** The agent's capabilities (v24). Each is an overlay: null inherits from the
+   *  preset. Skills are additive, so `[]` is "none assigned". `model` is the one
+   *  model the agent runs on: null inherits the preset's, and a resolved ref is
+   *  the model it uses (no model named means the thread picks per turn, as it
+   *  always has). */
+  skills: AgentSkillRef[] | null;
+  model: AgentModelRef | null;
+  /** The agent's permanent restrictions (v25), or null to inherit the preset's.
+   *  A resolved object forbids exactly what its lists name and nothing else. */
+  policies: AgentPolicies | null;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+  /** When the agent left the roster, or null while they're still in it. The row
+   *  outlives the deletion so a finished thread can still name who worked it. */
+  deletedAt: number | null;
+};
+
+/** The fields a user-made agent is created with. The id is the caller's to mint
+ *  so it can draw the agent before the write lands. */
+export type AgentCreateInput = {
+  agentId?: string;
+  name: string;
+  role?: string | null;
+  instructions?: string | null;
+  faceBody?: string | null;
+  faceInk?: string | null;
+  skills?: AgentSkillRef[] | null;
+  model?: AgentModelRef | null;
+  policies?: AgentPolicies | null;
+};
+
+/** An edit. A key left out is left alone; an explicit null clears the field —
+ *  back to the shipped preset on an overlay row, unset on a user-made agent. */
+export type AgentPatch = {
+  name?: string | null;
+  role?: string | null;
+  instructions?: string | null;
+  faceBody?: string | null;
+  faceInk?: string | null;
+  skills?: AgentSkillRef[] | null;
+  model?: AgentModelRef | null;
+  policies?: AgentPolicies | null;
+};
+
+/** A fork of an existing agent. `inherited` carries the shipped preset's values
+ *  for whatever the source row leaves null, because a fork keeps no inheritance
+ *  of its own — see `duplicateAgent`. */
+export type AgentDuplicateInput = {
+  agentId: string;
+  newAgentId?: string;
+  /** The copy's name; defaults to the source's, which the roster shows twice
+   *  over until the caller renames it. */
+  name?: string;
+  inherited?: {
+    name?: string | null;
+    role?: string | null;
+    instructions?: string | null;
+    faceBody?: string | null;
+    faceInk?: string | null;
+    skills?: AgentSkillRef[] | null;
+    model?: AgentModelRef | null;
+    policies?: AgentPolicies | null;
+  };
+};
+
+/**
+ * Who worked a thread. `agentId` is null when it ran as a guest — a recorded
+ * decision, not a missing one. A thread that never started has no binding at
+ * all, which is why this is only ever handed out for a row that exists.
+ */
+export type ThreadAgentBinding = {
+  threadId: string;
+  agentId: string | null;
+};
+
+/**
+ * A preset sub-agent (v26): a reusable, globally-available definition an agent
+ * can hand a piece of work to. Not a roster member, and bound to no thread —
+ * just a name, a set of instructions, and a model preference a spawn is cut
+ * from. Deliberately lightweight: it carries no skills, MCPs, or project
+ * membership of its own; the agent that invokes it owns the richer context.
+ */
+export type SubagentPresetRecord = {
+  presetId: string;
+  name: string;
+  /** What the sub-agent is told when a spawn is cut from this preset. */
+  instructions: string | null;
+  /** The one model a spawn from this preset runs on, or null for no preference
+   *  — the runtime then lets the caller's own model stand. Unlike an agent's
+   *  `model` there is no preset above this to inherit from, so null here means
+   *  "no model", not "inherit". */
+  model: AgentModelRef | null;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** The fields a preset sub-agent is created with. The id is the caller's to
+ *  mint so it can draw the preset before the write lands. */
+export type SubagentPresetCreateInput = {
+  presetId?: string;
+  name: string;
+  instructions?: string | null;
+  model?: AgentModelRef | null;
+};
+
+/** An edit to a preset sub-agent. A key left out is left alone; the name is the
+ *  one field that can't be cleared, since a preset with no name is not one. */
+export type SubagentPresetPatch = {
+  name?: string;
+  instructions?: string | null;
+  model?: AgentModelRef | null;
+};
+
+/** Room for a name the roster can lay out on one line. */
+const AGENT_NAME_MAX = 64;
+/** Room for the line under it. */
+const AGENT_ROLE_MAX = 120;
+/**
+ * Room for a set of instructions.
+ *
+ * A ceiling on the row rather than the product rule: the editor is where a
+ * sensible length is enforced, and the gateway caps again on the way to a model.
+ * This is only here so a runaway paste can't put a megabyte in the database.
+ */
+const AGENT_PROSE_MAX = 4000;
+/** Room for a colour or a theme variable reference. */
+const AGENT_PAINT_MAX = 64;
+
+const AGENT_COLUMNS =
+  "agent_id, preset_id, name, role, instructions, " +
+  "face_body, face_ink, skills, providers, models, policies, " +
+  "sort_order, created_at, updated_at, deleted_at";
+
+/** How long a stored capability list may get, and how long each string inside
+ *  one may be. A ceiling, not a rule: like `clampAgentField`, this is the floor
+ *  that keeps a runaway write out of the database, not the editor's own limit. */
+const AGENT_LIST_MAX = 128;
+const AGENT_REF_FIELD_MAX = 512;
+
+/** Trim and bound one stored field. Undefined and null both store as null —
+ *  "inherit" — while a string that trims to empty stores as '', which is the
+ *  user saying the field is blank on purpose. */
+function clampAgentField(
+  value: string | null | undefined,
+  max: number,
+): string | null {
+  if (value === null || value === undefined) return null;
+  return value.trim().slice(0, max);
+}
+
+/** Trim and bound one string inside a capability ref, dropping it to null when
+ *  it is empty — a ref with no path, or a model with no id, is not a ref. */
+function boundRefField(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().slice(0, AGENT_REF_FIELD_MAX);
+  return trimmed || null;
+}
+
+/** Serialize a capability list to the JSON a column holds. Null and undefined
+ *  both store as null ("inherit"); an array — even an empty one — is a real
+ *  answer and stores as JSON. Each entry is validated and bounded, and one that
+ *  can't be made valid is dropped rather than stored malformed, so a column
+ *  never holds a ref the reader has to guess at. */
+function serializeAgentList<T>(
+  value: readonly unknown[] | null | undefined,
+  normalize: (entry: unknown) => T | null,
+): string | null {
+  if (value === null || value === undefined) return null;
+  const clean: T[] = [];
+  for (const entry of value.slice(0, AGENT_LIST_MAX)) {
+    const normalized = normalize(entry);
+    if (normalized !== null) clean.push(normalized);
+  }
+  return JSON.stringify(clean);
+}
+
+function normalizeSkillRef(entry: unknown): AgentSkillRef | null {
+  if (!entry || typeof entry !== "object") return null;
+  const ref = entry as Record<string, unknown>;
+  const path = boundRefField(ref.path);
+  if (!path) return null;
+  return { path, name: boundRefField(ref.name) ?? "", origin: boundRefField(ref.origin) ?? "" };
+}
+
+function normalizeModelRef(entry: unknown): AgentModelRef | null {
+  if (!entry || typeof entry !== "object") return null;
+  const ref = entry as Record<string, unknown>;
+  const provider = boundRefField(ref.provider);
+  const model = boundRefField(ref.model);
+  if (!provider || !model) return null;
+  const out: AgentModelRef = { provider: provider as ProviderKind, model };
+  const label = boundRefField(ref.label);
+  if (label) out.label = label;
+  return out;
+}
+
+/** Serialize the single model an agent runs on to the JSON its column holds.
+ *  Null and undefined both store as null ("inherit"/"no model"); a ref stores
+ *  as a JSON object, validated and bounded. A ref that can't be made valid
+ *  stores as null rather than malformed. */
+function serializeModelRef(value: AgentModelRef | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const normalized = normalizeModelRef(value);
+  return normalized === null ? null : JSON.stringify(normalized);
+}
+
+/** Read the model column back into its single ref, or null when the column is
+ *  null ("inherit"/"no model"). Tolerates a legacy array (the column once held
+ *  an ordered preference list) by taking its first entry, so a row written
+ *  before the collapse to one model still reads. Unparseable JSON reads as null,
+ *  exactly as a malformed capability list does. */
+function parseModelRef(raw: string | null): AgentModelRef | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+    return normalizeModelRef(entry);
+  } catch {
+    return null;
+  }
+}
+
+/** Read a capability column back into its list, or null when the column is null
+ *  ("inherit"). A column that somehow holds unparseable or non-array JSON reads
+ *  as null rather than throwing — a malformed capability is no capability, and
+ *  the roster falls back to the preset exactly as it would for an absent one. */
+function parseAgentList<T>(raw: string | null, normalize: (entry: unknown) => T | null): T[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const out: T[] = [];
+    for (const entry of parsed) {
+      const normalized = normalize(entry);
+      if (normalized !== null) out.push(normalized);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Clean one list of strings inside a policy: drop anything that isn't a
+ *  string, trim and bound each, drop the ones that empty out, and cap the
+ *  count — the same floor `serializeAgentList` puts under a capability list. */
+function cleanStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const entry of value.slice(0, AGENT_LIST_MAX)) {
+    const bounded = boundRefField(entry);
+    if (bounded) out.push(bounded);
+  }
+  return out;
+}
+
+/** Normalize a policies object. Null and undefined both mean "inherit" and
+ *  come back as null; anything that isn't an object is not a policy set and
+ *  reads the same way. A real object always resolves to both lists, each
+ *  cleaned — a missing or malformed list is an empty one, never a throw. */
+function normalizePolicies(value: unknown): AgentPolicies | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  return {
+    deniedCommands: cleanStringList(obj.deniedCommands),
+    deniedPaths: cleanStringList(obj.deniedPaths),
+  };
+}
+
+/** Serialize the policies object to the JSON its column holds. Null and
+ *  undefined store as null ("inherit"); a real object stores as cleaned JSON. */
+function serializeAgentPolicies(value: AgentPolicies | null | undefined): string | null {
+  const normalized = normalizePolicies(value);
+  return normalized === null ? null : JSON.stringify(normalized);
+}
+
+/** Read the policies column back into its object, or null when the column is
+ *  null ("inherit"). Unparseable or non-object JSON reads as null — a malformed
+ *  policy is no policy, exactly as a malformed capability list is. */
+function parseAgentPolicies(raw: string | null): AgentPolicies | null {
+  if (raw === null) return null;
+  try {
+    return normalizePolicies(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+type AgentRow = {
+  agent_id: string;
+  preset_id: string | null;
+  name: string | null;
+  role: string | null;
+  instructions: string | null;
+  face_body: string | null;
+  face_ink: string | null;
+  skills: string | null;
+  providers: string | null;
+  models: string | null;
+  policies: string | null;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
+function rowToAgent(row: AgentRow): AgentRecord {
+  return {
+    agentId: row.agent_id,
+    presetId: row.preset_id,
+    name: row.name,
+    role: row.role,
+    instructions: row.instructions,
+    faceBody: row.face_body,
+    faceInk: row.face_ink,
+    skills: parseAgentList(row.skills, normalizeSkillRef),
+    model: parseModelRef(row.models),
+    policies: parseAgentPolicies(row.policies),
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+  };
+}
+
+const SUBAGENT_PRESET_COLUMNS =
+  "preset_id, name, instructions, models, sort_order, created_at, updated_at";
+
+type SubagentPresetRow = {
+  preset_id: string;
+  name: string;
+  instructions: string | null;
+  models: string | null;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+};
+
+function rowToSubagentPreset(row: SubagentPresetRow): SubagentPresetRecord {
+  return {
+    presetId: row.preset_id,
+    name: row.name,
+    instructions: row.instructions,
+    // A null column reads as "no model" because a preset has no preset above it
+    // to inherit from, unlike an agent's `model`.
+    model: parseModelRef(row.models),
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 export type ScratchpadRecord = {
   id: string;
