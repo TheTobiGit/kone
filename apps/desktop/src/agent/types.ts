@@ -109,11 +109,6 @@ export type AgentPersona = {
   /** The agent's name as the user has it. Renameable, so never assume the name
    *  the agent shipped with. */
   name: string;
-  /** Who the agent is — its temperament and voice, in a few words, rendered
-   *  after the name in the identity block (renderAgentIdentity). Absent for an
-   *  agent that is only a name. This is character, not conduct: it colours how
-   *  the agent comes across, where `instructions` set what it does. */
-  personality?: string;
   /** The agent's standing instructions — how it should work, in its own words,
    *  rendered after the name in the identity block (renderAgentIdentity). Absent
    *  for an agent that is only a name. Behavioural only: it says how to act, not
@@ -598,9 +593,23 @@ export type QueuedTurnStore = {
 // a message source. Mirror any change in apps/web/app/types/desktop.d.ts.
 
 /** How an app-owned thread relates to another thread. `"subagent"` =
- *  agent-initiated work unit (the spawn design's lineage, Phase 0 — not yet
- *  persisted by kone); `"side_chat"` = user-initiated fork. */
-export type RelationshipToParent = "subagent" | "side_chat";
+ *  agent-initiated work unit spawned as an anonymous worker; `"delegation"` =
+ *  agent-initiated work handed to a persistent project-team agent, bound to it
+ *  so the child runs as that agent (its identity, policies and model
+ *  preference); `"side_chat"` = user-initiated fork. Both agent-initiated kinds
+ *  are spawned children — the discriminator only records whether the work went
+ *  to a named agent (delegation) or a throwaway worker (subagent). */
+export type RelationshipToParent = "subagent" | "delegation" | "side_chat";
+
+/** Whether a lineage marks an agent-spawned child — one a parent can wait on
+ *  and read, and which counts toward the breadth caps. True for both spawn
+ *  kinds (an anonymous `"subagent"` worker and a `"delegation"` to a named
+ *  agent); false for a `"side_chat"` fork, which is a root, not a descendant. */
+export function isSpawnedRelationship(
+  relationship: RelationshipToParent | null | undefined,
+): boolean {
+  return relationship === "subagent" || relationship === "delegation";
+}
 
 /** Thread lineage for app-owned relationships. Side chats are roots:
  *  `parentThreadId` is null and archive/retention subtree walks ignore them. */

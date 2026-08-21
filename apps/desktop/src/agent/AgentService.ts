@@ -5,7 +5,8 @@ import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
 import { DroidAdapter } from "./adapters/DroidAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
-import { getConversationStore } from "./ConversationStore.js";
+import { getConversationStore, type AgentPolicies } from "./ConversationStore.js";
+import { evaluatePolicies } from "./policies.js";
 import { buildAgentEnv } from "./processEnv.js";
 import {
   cacheModels,
@@ -77,6 +78,15 @@ export type PendingInteraction = {
   /** The exact `approval.requested` / `user-input.requested` event to re-emit. */
   event: RuntimeEvent;
 };
+
+/** The slice of the conversation store the policy enforcer needs: which agent a
+ *  thread answers as, and that agent's standing prohibitions. Narrowed like
+ *  `QueuedTurnStore` so the enforcer degrades to allow-all when the store slice
+ *  hasn't landed rather than crashing the main process. */
+interface PolicyStore {
+  getThreadAgent(threadId: string): { agentId: string | null } | null;
+  getAgent(agentId: string): { policies: AgentPolicies | null } | null;
+}
 
 /** Constructor tuning for the wedge watchdog and idle session reaper — defaults
  *  to the module constants above; tests shrink them to exercise the sweep
@@ -214,6 +224,63 @@ export class AgentService {
       );
     }
     return null;
+  }
+
+  /** The conversation store's policy surface, or null when the store slice
+   *  hasn't landed yet (same landing-signal pattern as `queueStore`). Null
+   *  means the enforcer can't resolve an agent, so it allows everything — a
+   *  missing store never turns into a blanket denial. */
+  private get policyStore(): PolicyStore | null {
+    const store = this.options.store ?? (getConversationStore() as unknown);
+    if (
+      store &&
+      typeof (store as PolicyStore).getThreadAgent === "function" &&
+      typeof (store as PolicyStore).getAgent === "function"
+    ) {
+      return store as PolicyStore;
+    }
+    return null;
+  }
+
+  /** The prohibitions in force on a thread: the policies of the agent it answers
+   *  as, or null when nothing is bound / the store slice is absent. Reads the
+   *  stored row directly — the built-in presets ship no policies, so an
+   *  unedited built-in resolves to null (allow-all) with no preset lookup. */
+  private policiesForThread(threadId: string): AgentPolicies | null {
+    const store = this.policyStore;
+    if (!store) return null;
+    const binding = store.getThreadAgent(threadId);
+    if (!binding?.agentId) return null;
+    return store.getAgent(binding.agentId)?.policies ?? null;
+  }
+
+  /** Weigh an about-to-be-parked approval against the thread's policies. A
+   *  violation is not a question to put to the user — a policy is a standing no
+   *  — so this rejects the call and stops the turn, and returns true to tell
+   *  `dispatch` to swallow the `approval.requested` (the renderer never flashes
+   *  a prompt for something already decided).
+   *
+   *  A limit worth naming: this only fires when the provider actually asks. In
+   *  `full-access` the provider runs without asking, so nothing reaches this
+   *  seam — policies bind an agent that runs under an approval-gated mode, not
+   *  one handed the keys. */
+  private rejectByPolicy(
+    event: Extract<RuntimeEvent, { type: "approval.requested" }>,
+  ): boolean {
+    const policies = this.policiesForThread(event.threadId);
+    if (!policies) return false;
+    const verdict = evaluatePolicies(policies, {
+      kind: event.approval.kind,
+      target: event.approval.title,
+    });
+    if (verdict.allowed) return false;
+    console.warn(
+      `[agent] ${verdict.reason} — auto-rejected on ${event.threadId}: ${event.approval.title}`,
+    );
+    void this.respondToRequest(event.threadId, event.requestId, "reject-and-stop").catch((err) => {
+      console.error("[agent] policy auto-reject failed:", err);
+    });
+    return true;
   }
 
   /** Subscribe to the merged runtime event stream. Returns an unsubscribe fn. */
@@ -532,6 +599,10 @@ export class AgentService {
    *  adapters' closure and the service's own synthesized events (the wedge
    *  watchdog's reset announcement). */
   private dispatch(event: RuntimeEvent): void {
+    // A policy-violating approval is decided here, before the event reaches any
+    // listener: the enforcer auto-rejects it and we swallow the request so the
+    // renderer never parks a prompt for a call that was never allowed.
+    if (event.type === "approval.requested" && this.rejectByPolicy(event)) return;
     for (const listener of this.listeners) listener(event);
   }
 
