@@ -22,7 +22,8 @@ export type SettingsPane =
   | "agentsUsage"
   | "providerLimits"
   | "agentSkills"
-  | "agentRoster";
+  | "agentRoster"
+  | "agentPresets";
 
 /** The drawer as a list: a column beside the launcher, which stays the subject. */
 const COLUMN_WIDTH = 320;
@@ -45,6 +46,8 @@ const PAGE_PANES: SettingsPane[] = [
   "agentsUsage",
   "providerLimits",
   "agentSkills",
+  "agentRoster",
+  "agentPresets",
 ];
 
 export function useSettingsSurface() {
