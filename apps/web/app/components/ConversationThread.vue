@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -19,6 +19,7 @@ import FileChip from "~/components/FileChip.vue";
 import AgentActivity from "~/components/AgentActivity.vue";
 import TurnWorkFold from "~/components/TurnWorkFold.vue";
 import AgentFace from "~/components/AgentFace.vue";
+import ExchangeConnector from "~/components/ExchangeConnector.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
@@ -645,7 +646,21 @@ function requestOlder(): void {
       <span>{{ earlierCount }} earlier {{ earlierCount === 1 ? "exchange" : "exchanges" }}</span>
     </button>
 
-    <div v-for="ex in exchanges" :key="ex.key" class="exchange">
+    <div
+      v-for="ex in exchanges"
+      :key="ex.key"
+      class="exchange"
+      :class="{
+        'exchange--running': ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running'),
+        'exchange--paired': ex.blocks.length > 1,
+      }"
+    >
+      <!-- Curved branch line connecting user request bubble directly down to agent response -->
+      <ExchangeConnector
+        v-if="ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user') && ex.blocks.some((b) => b.role === 'assistant')"
+        :running="ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running')"
+      />
+
     <motion.div
       v-for="block in ex.blocks"
       :key="block.id"
@@ -662,6 +677,7 @@ function requestOlder(): void {
     >
       <!-- ── User turn — right-aligned ─────────────────────────────────── -->
       <template v-if="block.role === 'user'">
+
          <!-- Edit-and-resend: the request bubble stays the bubble — its text
               becomes a seamless auto-growing field (Enter saves, Shift+Enter
               newlines, Esc cancels). The actions live in the one footer below,
@@ -772,7 +788,7 @@ function requestOlder(): void {
                face would make the transcript a group chat instead of a
                document, and the asymmetry is what keeps it one. -->
           <div class="speaker">
-            <AgentFace :seed="agentSeed" :size="26" />
+            <AgentFace :seed="agentSeed" :size="26" class="speaker__face" />
             <button
               v-if="block.state !== 'running' && viewOf(block).foldedGroups.length"
               type="button"
@@ -1031,11 +1047,13 @@ function requestOlder(): void {
 
 /* An exchange = one request + its response, stacked with breathing room. */
 .exchange {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 34px;
 }
 .turn {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1067,6 +1085,12 @@ function requestOlder(): void {
   /* Pulled back in from the stack's 15px: the line belongs to the reply beneath
      it, and at full gap it floats between two turns instead. */
   margin-bottom: -6px;
+}
+.speaker__face {
+  position: relative;
+  z-index: 1;
+  border-radius: 50%;
+  background: var(--ground);
 }
 .speaker__head {
   display: inline-flex;
@@ -1156,6 +1180,8 @@ function requestOlder(): void {
 }
 /* You — a warm, accent-tinted surface (not a flat grey chip); soft, no shadow. */
 .body--you {
+  position: relative;
+  z-index: 1;
   text-align: left;
   max-width: 80%;
   padding: 10px 15px;
