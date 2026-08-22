@@ -26,11 +26,10 @@ const emit = defineEmits<{
 
 const { summaries, watchVisible } = useProjectSummaries();
 
-// The signed-in machine user — its initial rides the far-right of the top bar
-// as a profile chip. Resolved once (shared state); shown only once a name
-// comes back.
-const { displayName, initial, resolve: resolveUser } = useUser();
-onMounted(resolveUser);
+// The signed-in user — name and avatar ride the far-right of the top bar.
+// Resolved once (shared state); shown only once a name comes back.
+const { name, initial, image, avatarStyle, resolve: resolveProfile } = useProfile();
+onMounted(resolveProfile);
 
 // The cross-project "recent sessions" list below the grid — every recent
 // project's pinned + recent conversations pooled into one recency-ranked stream.
@@ -183,14 +182,15 @@ function onSideAction(
                far right — same ink-dot initial as the in-project corner and the
                Home greeting. Only shown once a machine name resolves. -->
           <button
-            v-if="displayName"
+            v-if="name"
             type="button"
-            class="ml-0.5 inline-flex size-[30px] shrink-0 cursor-pointer select-none items-center justify-center rounded-full bg-ink text-[13px] leading-none text-ground transition-transform duration-300 ease-out hover:scale-105 focus-visible:outline-none"
-            :title="displayName"
-            :aria-label="`Open profile — ${displayName}`"
+            class="ml-0.5 inline-flex size-[30px] shrink-0 cursor-pointer select-none items-center justify-center rounded-full text-[13px] leading-none transition-transform duration-300 ease-out hover:scale-105 focus-visible:outline-none"
+            :style="avatarStyle"
+            :title="name"
+            :aria-label="`Open profile — ${name}`"
             @click="emit('profile')"
           >
-            {{ initial }}
+            <template v-if="!image">{{ initial }}</template>
           </button>
         </div>
       </template>

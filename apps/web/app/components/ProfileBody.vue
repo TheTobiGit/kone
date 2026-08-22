@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, type CSSProperties } from "vue";
 import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { PencilEdit02Icon, Camera01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -15,7 +15,7 @@ import type { ProviderKind } from "~/types/desktop";
 // no telemetry. Rendered inside the settings profile page; the page chrome lives in
 // SettingsProfilePane.
 
-const { name, handle, initial, color, image, nameOverride, handleOverride, setColor, setImage, colors, resolve } =
+const { name, handle, initial, color, image, nameOverride, handleOverride, setColor, setImage, colors, avatarStyle, resolve } =
   useProfile();
 const { stats, loaded, load } = useProfileStats();
 
@@ -220,15 +220,59 @@ const fileEl = ref<HTMLInputElement | null>(null);
 
 const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
+const hostStyle = ref<CSSProperties>({});
+let anchorEl: HTMLElement | null = null;
+let anchorRO: ResizeObserver | null = null;
+let editOpener: HTMLElement | null = null;
+
+function anchorToDrawer() {
+  const drawer = document.querySelector<HTMLElement>(".settings-scroll");
+  if (drawer !== anchorEl) {
+    anchorRO?.disconnect();
+    anchorEl = drawer;
+    if (drawer) {
+      anchorRO = new ResizeObserver(anchorToDrawer);
+      anchorRO.observe(drawer);
+    }
+  }
+  if (!drawer) return;
+  const rect = drawer.getBoundingClientRect();
+  hostStyle.value = {
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  };
+}
+
+function teardownEditAnchor() {
+  window.removeEventListener("resize", onEditResize);
+  anchorRO?.disconnect();
+  anchorRO = null;
+  anchorEl = null;
+}
+
+function onEditResize() {
+  if (editing.value) anchorToDrawer();
+}
+
 async function openEdit(): Promise<void> {
+  editOpener = document.activeElement as HTMLElement | null;
   editing.value = true;
   await nextTick();
+  anchorToDrawer();
+  window.addEventListener("resize", onEditResize);
   requestAnimationFrame(() => (editShown.value = true));
 }
 function closeEdit(): void {
   if (!editing.value) return;
   editShown.value = false;
-  window.setTimeout(() => (editing.value = false), 240);
+  window.setTimeout(() => {
+    editing.value = false;
+    teardownEditAnchor();
+    editOpener?.focus();
+    editOpener = null;
+  }, 240);
 }
 function onEditKeydown(e: KeyboardEvent): void {
   if (editing.value && e.key === "Escape") {
@@ -237,13 +281,10 @@ function onEditKeydown(e: KeyboardEvent): void {
   }
 }
 onMounted(() => window.addEventListener("keydown", onEditKeydown));
-onBeforeUnmount(() => window.removeEventListener("keydown", onEditKeydown));
-
-const avatarStyle = computed(() =>
-  image.value
-    ? { backgroundImage: `url(${image.value})` }
-    : { backgroundColor: color.value || "var(--ink)", color: color.value ? "#fff" : "var(--ground)" },
-);
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onEditKeydown);
+  teardownEditAnchor();
+});
 
 function pickPhoto(): void {
   fileEl.value?.click();
@@ -406,14 +447,16 @@ function removePhoto(): void {
         </template>
     </div>
 
-    <!-- ── edit — the same scrim + elastic card the app's modals use, anchored
-         top-right where the Edit button sits (not centred) ───────────────── -->
+  </div>
+
+  <Teleport to="body">
     <div
       v-if="editing"
-      class="fixed inset-0 z-50 flex items-start justify-end overflow-hidden p-6"
+      class="edit-host pointer-events-none fixed inset-0 z-50"
+      :style="hostStyle"
     >
       <motion.div
-        class="modal-scrim absolute inset-0"
+        class="modal-scrim pointer-events-auto absolute inset-0"
         :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
         :animate="{
           opacity: editShown ? 1 : 0,
@@ -423,81 +466,80 @@ function removePhoto(): void {
         @click="closeEdit"
       />
 
-      <motion.div
-        class="modal-card edit-card relative z-20 w-full max-w-md overflow-hidden"
-        :style="{ transformOrigin: 'top right' }"
-        :initial="{ opacity: 0, y: -10, scale: 0.96 }"
-        :animate="{
-          opacity: editShown ? 1 : 0,
-          y: editShown ? 0 : -10,
-          scale: editShown ? 1 : 0.96,
-        }"
-        :transition="cardSpring"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Edit profile"
-      >
-        <div class="edit-inner">
-          <!-- header band — the curved band the pickers frame with -->
-          <div class="picker-header edit-head -mx-4 -mt-4 mb-4 flex items-center justify-between gap-4">
-            <span class="edit-head__title">Edit profile</span>
-            <button type="button" class="edit-head__close" aria-label="Close" @click="closeEdit">
-              <HugeiconsIcon :icon="Cancel01Icon" :size="16" :stroke-width="2" aria-hidden="true" />
-            </button>
-          </div>
+      <div class="pointer-events-none absolute inset-0 flex items-start justify-end p-6">
+        <motion.div
+          class="modal-card edit-card pointer-events-auto relative z-20 w-full max-w-md overflow-hidden"
+          :style="{ transformOrigin: 'top right' }"
+          :initial="{ opacity: 0, y: -10, scale: 0.96 }"
+          :animate="{
+            opacity: editShown ? 1 : 0,
+            y: editShown ? 0 : -10,
+            scale: editShown ? 1 : 0.96,
+          }"
+          :transition="cardSpring"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Edit profile"
+        >
+          <div class="edit-inner">
+            <div class="picker-header edit-head -mx-4 -mt-4 mb-4 flex items-center justify-between gap-4">
+              <span class="edit-head__title">Edit profile</span>
+              <button type="button" class="edit-head__close" aria-label="Close" @click="closeEdit">
+                <HugeiconsIcon :icon="Cancel01Icon" :size="16" :stroke-width="2" aria-hidden="true" />
+              </button>
+            </div>
 
-          <div class="edit-body">
-            <label class="edit__field">
-              <span class="edit__label">Display name</span>
-              <input v-model="nameOverride" type="text" class="edit__input" :placeholder="name" />
-            </label>
-            <label class="edit__field">
-              <span class="edit__label">Handle</span>
-              <input v-model="handleOverride" type="text" class="edit__input" :placeholder="handle" />
-            </label>
-            <div class="edit__field">
-              <span class="edit__label">Avatar</span>
-              <div class="edit__avatar-row">
-                <div class="edit__preview" :style="avatarStyle" aria-hidden="true">
-                  <template v-if="!image">{{ initial }}</template>
+            <div class="edit-body">
+              <label class="edit__field">
+                <span class="edit__label">Display name</span>
+                <input v-model="nameOverride" type="text" class="edit__input" :placeholder="name" />
+              </label>
+              <label class="edit__field">
+                <span class="edit__label">Handle</span>
+                <input v-model="handleOverride" type="text" class="edit__input" :placeholder="handle" />
+              </label>
+              <div class="edit__field">
+                <span class="edit__label">Avatar</span>
+                <div class="edit__avatar-row">
+                  <div class="edit__preview" :style="avatarStyle" aria-hidden="true">
+                    <template v-if="!image">{{ initial }}</template>
+                  </div>
+                  <button type="button" class="edit__photo" @click="pickPhoto">
+                    <HugeiconsIcon :icon="Camera01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
+                    <span>{{ image ? "Replace photo" : "Upload photo" }}</span>
+                  </button>
+                  <button v-if="image" type="button" class="edit__photo edit__photo--muted" @click="removePhoto">
+                    <HugeiconsIcon :icon="Cancel01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
+                    <span>Remove</span>
+                  </button>
+                  <input ref="fileEl" type="file" accept="image/*" class="sr-only" @change="onPhoto" />
                 </div>
-                <button type="button" class="edit__photo" @click="pickPhoto">
-                  <HugeiconsIcon :icon="Camera01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
-                  <span>{{ image ? "Replace photo" : "Upload photo" }}</span>
-                </button>
-                <button v-if="image" type="button" class="edit__photo edit__photo--muted" @click="removePhoto">
-                  <HugeiconsIcon :icon="Cancel01Icon" :size="14" :stroke-width="2" aria-hidden="true" />
-                  <span>Remove</span>
-                </button>
-                <input ref="fileEl" type="file" accept="image/*" class="sr-only" @change="onPhoto" />
-              </div>
-              <div v-if="!image" class="edit__swatches">
-                <button
-                  v-for="c in colors"
-                  :key="c.id"
-                  type="button"
-                  class="edit__swatch"
-                  :class="{ 'edit__swatch--on': color === c.value }"
-                  :style="{ backgroundColor: c.value || 'var(--ink)' }"
-                  :aria-label="c.label"
-                  @click="setColor(c.value)"
-                />
+                <div v-if="!image" class="edit__swatches">
+                  <button
+                    v-for="c in colors"
+                    :key="c.id"
+                    type="button"
+                    class="edit__swatch"
+                    :class="{ 'edit__swatch--on': color === c.value }"
+                    :style="{ backgroundColor: c.value || 'var(--ink)' }"
+                    :aria-label="c.label"
+                    @click="setColor(c.value)"
+                  />
+                </div>
               </div>
             </div>
-          </div>
 
-          <!-- footer band — right-aligned confirm with the accent submit arrow,
-               the same forward cue as the folder picker's Open action -->
-          <div class="picker-footer edit-foot -mx-4 -mb-4 mt-4 flex items-center justify-end">
-            <button type="button" class="edit-action" @click="closeEdit">
-              <span>Done</span>
-              <span class="edit-submit-arrow" aria-hidden="true">→</span>
-            </button>
+            <div class="picker-footer edit-foot -mx-4 -mb-4 mt-4 flex items-center justify-end">
+              <button type="button" class="edit-action" @click="closeEdit">
+                <span>Done</span>
+                <span class="edit-submit-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
           </div>
-        </div>
-      </motion.div>
+        </motion.div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -505,11 +547,11 @@ function removePhoto(): void {
   font-family: var(--font-sans);
 }
 .profile-inner {
-  max-width: 820px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 2.5rem;
+  max-width: 60rem;
+  padding-block: 4px 3rem;
 }
 
 /* ── identity ─────────────────────────────────────────────────────────────── */

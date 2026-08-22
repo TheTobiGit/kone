@@ -54,10 +54,10 @@ const space = useGitSpace(toRef(props, "project"), g);
 const { cue } = useSound();
 const { warm } = useHighlighter();
 
-// The signed-in machine user — its initial rides the far-right corner of the
-// top row as a profile chip, mirroring the back arrow at the left. Resolved
-// once (shared state); the chip only appears once a name comes back.
-const { displayName, initial, resolve: resolveUser } = useUser();
+// The signed-in user — name and avatar ride the far-right corner of the top
+// row, mirroring the back arrow at the left. Resolved once (shared state); the
+// chip only appears once a name comes back.
+const { name, initial, image, avatarStyle, resolve: resolveProfile } = useProfile();
 
 // ── the live agent session ────────────────────────────────────────────────────
 // One provider session, scoped to this project. The composer feeds it turns and
@@ -724,7 +724,7 @@ watch(surface, (s, prev) => {
   void board.wakeThreadPanes();
 });
 
-onMounted(resolveUser);
+onMounted(resolveProfile);
 onMounted(async () => {
   // Consume a launcher resume request the instant the mount starts. Reading it
   // after the async provider/catalog work left it sitting in the global state
@@ -2004,14 +2004,16 @@ function onDiscardFile(path: string) {
       <div class="project-avatar-slot">
         <Transition name="project-avatar">
           <button
-            v-if="displayName && !backIsAway && surface !== 'board'"
+            v-if="name && !backIsAway && surface !== 'board'"
             type="button"
             class="project-avatar"
-            :title="displayName"
-            :aria-label="`Open profile — ${displayName}`"
+            :title="name"
+            :aria-label="`Open profile — ${name}`"
             @click="emit('profile')"
           >
-            <span class="project-avatar__chip">{{ initial }}</span>
+            <span class="project-avatar__chip" :style="avatarStyle">
+              <template v-if="!image">{{ initial }}</template>
+            </span>
           </button>
         </Transition>
       </div>
@@ -2694,8 +2696,8 @@ function onDiscardFile(path: string) {
   width: 30px;
   height: 30px;
   border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--ground);
+  background-size: cover;
+  background-position: center;
   font-size: 13px;
   line-height: 1;
   user-select: none;

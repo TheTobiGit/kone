@@ -44,7 +44,7 @@ const emit = defineEmits<{ switch: []; profile: [] }>();
 // Only the leading segment (the project name) is the switcher trigger.
 const isTrigger = (i: number) => props.switchable && i === 0;
 
-const { displayName, initial, resolve } = useUser();
+const { name, initial, image, avatarStyle, resolve } = useProfile();
 onMounted(resolve);
 
 // ── segment helpers ───────────────────────────────────────────────────────
@@ -196,14 +196,16 @@ const body = computed<Seg[]>(() => {
     <p class="line line--hey">
       <span class="t-muted">Hey,</span>
       <button
-        v-if="displayName"
+        v-if="name"
         type="button"
         class="who"
-        :aria-label="`Open settings for ${displayName}`"
+        :aria-label="`Open settings for ${name}`"
         @click="emit('profile')"
       >
-        <span class="chip">{{ initial }}</span>
-        <span class="t-ink">{{ displayName }}</span>
+        <span class="chip" :style="avatarStyle" aria-hidden="true">
+          <template v-if="!image">{{ initial }}</template>
+        </span>
+        <span class="t-ink">{{ name }}</span>
       </button>
       <span v-else class="t-ink">there</span>
     </p>
@@ -425,7 +427,7 @@ const body = computed<Seg[]>(() => {
   transform: scale(1.06);
 }
 
-/* Avatar chip — ink on ground, inverted. */
+/* Avatar chip — colour and photo come from useProfile(). */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -434,8 +436,8 @@ const body = computed<Seg[]>(() => {
   width: 30px;
   height: 30px;
   border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--ground);
+  background-size: cover;
+  background-position: center;
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
