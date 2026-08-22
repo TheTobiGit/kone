@@ -18,12 +18,12 @@ import { useEdgeFade } from "~/composables/useEdgeFade";
 import {
   CENTER_MODES,
   JOINT_PX,
-  LADDER_PX,
-  columnLeftFor,
-  columnsInView,
-  maxScrollFor,
   MIN_ANIMATED_PX,
-  planeWidthFor,
+  PREVIEW_RUNGS,
+  columnLeftsFor,
+  maxScrollForWidths,
+  planeWidthForWidths,
+  previewColumnWidths,
   resolveScrollTarget,
   VISIBILITY_EPS,
   type CenterMode,
@@ -41,21 +41,16 @@ import {
 //
 //   1. They aren't animations. Each one calls `resolveScrollTarget` — the very
 //      function the board calls — over a modelled plane built by that module's own
-//      `columnLeftFor` / `planeWidthFor`. Same branches, same constants, same
+//      `columnLeftsFor` / `planeWidthForWidths`. Same branches, same constants, same
 //      clamps, no copy to drift. The columns you see are *positioned* by those
 //      functions too, so the picture and the maths can't disagree.
 //   2. The viewport they run against is this window. The board is full-bleed — the
 //      rail is `width: 100%` of a layer with no horizontal padding, so its
-//      `clientWidth` is the window's inner width — which means the page can predict
-//      what these settings will do on the display you're actually sitting at,
-//      including the cases where two of them do nothing different at all.
-//
-// That second point carries most of the honesty here. `on-overflow` can only
-// differ from `always` when a column is able to sit fully in view without
-// scrolling; below two columns' worth of width it has no room to hold, and the two
-// settings become the same setting. Rather than let the page imply a distinction
-// the user's window can't deliver, it runs a dry lap and folds the finding into the
-// one line under the title.
+//      `clientWidth` is the window's inner width. The modelled columns keep the
+//      ladder's proportions but not its 840px rungs: two of those don't fit a
+//      laptop, and `on-overflow` would have nothing to hold for, so When needed
+//      and Always would be the same picture. `previewColumnWidths` sizes the
+//      opening pair into the window so that hold-versus-recenter is visible here.
 //
 // The page carries almost no prose, and that's the design rather than an omission.
 // A sentence explaining a mode would be a slower, vaguer version of the caption
@@ -77,19 +72,33 @@ const { cue } = useSound();
 const { centerMode } = useStripPrefs();
 
 // ── the modelled strip ────────────────────────────────────────────────────────
-// Five columns at the default rung. Five is enough for the strip to overflow at
-// any window width while still fitting as a legible miniature, and the default
-// rung is what a new column actually opens at.
-const COUNT = 5;
-const COLUMN = LADDER_PX[0];
+// Five columns, each at its own rung of the ladder — a widened thread beside a
+// freshly opened one. The variety is doing real work: every mode measures its
+// move against the focused column's own width, so five equal slabs would hide
+// half the rule behind coincidence. Magnitudes come from `previewColumnWidths`
+// so the opening pair sits in this window; the walk over them must still settle
+// into laps that repeat rather than drift, and that's a property of those
+// numbers, pinned next to them.
+const COUNT = PREVIEW_RUNGS.length;
 
 const { width: windowWidth } = useWindowSize();
 /** The rail's viewport. See the note above on why this is the window's own width.
  *  Floored well below any real window so a hidden or freshly-mounted layer can't
  *  divide the geometry by something near zero. */
 const viewport = computed(() => Math.max(320, Math.round(windowWidth.value)));
-const planeWidth = computed(() => planeWidthFor(COUNT, COLUMN));
-const fitCount = computed(() => columnsInView(viewport.value, COLUMN));
+const widths = computed(() => previewColumnWidths(viewport.value));
+const lefts = computed(() => columnLeftsFor(widths.value));
+const planeWidth = computed(() => planeWidthForWidths(widths.value));
+const narrowest = computed(() => Math.min(...widths.value));
+/** How many columns sit fully in the window at rest — the number the opening
+ *  pair is sized to, and the reason When needed can hold while Always moves. */
+const fitCount = computed(() => {
+  const vp = viewport.value;
+  const L = lefts.value;
+  return widths.value.filter(
+    (w, i) => L[i]! >= -VISIBILITY_EPS && L[i]! + w <= vp + VISIBILITY_EPS,
+  ).length;
+});
 
 // The stage isn't the viewport here — if it were, a line drawn at either edge
 // would just trace the clip and show nothing. Instead the viewport is a centered
@@ -122,14 +131,15 @@ interface Step {
 
 function step(mode: CenterMode, index: number, from: number): Step {
   const vp = viewport.value;
-  const left = columnLeftFor(index, COLUMN);
+  const left = lefts.value[index]!;
+  const width = widths.value[index]!;
   const target = resolveScrollTarget({
     mode,
     left,
-    width: COLUMN,
+    width,
     viewport: vp,
     scrollLeft: from,
-    maxScroll: maxScrollFor(mode, COUNT, COLUMN, vp),
+    maxScroll: maxScrollForWidths(mode, widths.value, vp),
   });
 
   // Whether the column was *already* fully in view is a fact about the strip, not
@@ -138,7 +148,7 @@ function step(mode: CenterMode, index: number, from: number): Step {
   // world for nothing, and it's the only way the page can say "recentered" and mean
   // something by it.
   const wasVisible =
-    left >= from - VISIBILITY_EPS && left + COLUMN <= from + vp + VISIBILITY_EPS;
+    left >= from - VISIBILITY_EPS && left + width <= from + vp + VISIBILITY_EPS;
 
   if (target === null) return { scroll: from, verb: "held", delta: "—", sig: "held" };
 
@@ -161,12 +171,14 @@ function step(mode: CenterMode, index: number, from: number): Step {
 
 // ── the focus walk ────────────────────────────────────────────────────────────
 // Out and back along the strip: column 2, 3, 4, 5, then home again. Chosen over a
-// one-way sweep for two measured reasons. It's *periodic* — every mode ends a lap
-// exactly where it started it, at every window width, so the loop repeats instead
-// of quietly drifting into a second, different demo. And it's the walk that makes
-// the modes disagree most: on a wide window all three do something different on
-// every one of its eight steps, and it's the return leg that exposes it, because
-// coming back is when `never` and `on-overflow` find the column already in view.
+// one-way sweep for two measured reasons. It *settles* — with mixed widths the first
+// lap can end a few pixels off its start (the path-dependent modes hold on the way
+// home where they moved on the way out), but by the second lap every mode sits on a
+// fixed point and stays there, so the loop settles into repeating rather than
+// drifting into a different demo. And it's the walk that makes the modes disagree
+// most: on a wide window all three do something different on nearly every step, and
+// it's the return leg that exposes it, because coming back is when `never` and
+// `on-overflow` find the column already in view.
 const WALK = [1, 2, 3, 4, 3, 2, 1, 0] as const;
 
 const scrollOf = reactive<Record<CenterMode, number>>({
@@ -262,11 +274,16 @@ const collapsed = computed(() => {
  *  plus a separate notice saying the caption doesn't apply. */
 const deck = computed(() => {
   const vp = viewport.value;
-  if (collapsed.value === "all")
-    return `A ${COLUMN}px column is wider than this ${vp}px window, so all three land in the same place.`;
+  if (collapsed.value === "all") {
+    // Name the cause only when the widths prove it; a mixed strip can collapse for
+    // more than one reason, and a wrong "why" is worse than no why.
+    if (narrowest.value >= vp)
+      return `Every column is wider than this ${vp}px window, so all three land in the same place.`;
+    return `This ${vp}px window leaves the modes no room to differ, so all three land in the same place.`;
+  }
   if (collapsed.value === "centring")
-    return `Only one column fits this ${vp}px window, so “When needed” and “Always” behave identically here.`;
-  return `${fitCount.value} of ${COUNT} columns fit this ${vp}px window.`;
+    return `At most one of these columns fits this ${vp}px window, so “When needed” and “Always” behave identically here.`;
+  return `${fitCount.value} of ${COUNT} columns sit in this ${vp}px window at once.`;
 });
 
 // ── transport ─────────────────────────────────────────────────────────────────
@@ -358,8 +375,8 @@ const columns = computed(() =>
   Array.from({ length: COUNT }, (_, i) => ({
     n: i + 1,
     style: {
-      left: pct(columnLeftFor(i, COLUMN) / planeWidth.value),
-      width: pct(COLUMN / planeWidth.value),
+      left: pct(lefts.value[i]! / planeWidth.value),
+      width: pct(widths.value[i]! / planeWidth.value),
     },
   })),
 );
@@ -721,7 +738,7 @@ function offsetStyle(mode: CenterMode) {
   transition: transform var(--pp-t-scroll) var(--pp-ease-move);
 }
 /* Positioned, not flowed: every column's left edge is placed by the same
-   `columnLeftFor` the scroll maths reads, so the picture and the behaviour are
+   `columnLeftsFor` the scroll maths reads, so the picture and the behaviour are
    drawn from one source. Square at the foot, rounded at the head — a column
    standing on the rule rather than a chip floating over it. */
 .pp__col {
