@@ -146,8 +146,7 @@ async function createWindow() {
   // Windows and Linux take the icon per-window; macOS takes it on the dock.
   const devIcon = getDevIconPath();
 
-  mainWindow = new BrowserWindow({
-    ...(devIcon && process.platform !== "darwin" ? { icon: devIcon } : {}),
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
     width: windowState.width,
     height: windowState.height,
     x: windowState.x,
@@ -166,7 +165,10 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: true,
     },
-  });
+  };
+  if (devIcon && process.platform !== "darwin") windowOptions.icon = devIcon;
+
+  mainWindow = new BrowserWindow(windowOptions);
 
   // Remember size / position between launches.
   if (windowState.isMaximized) {
