@@ -29,6 +29,21 @@ const LANG_BY_EXT: Record<string, string> = {
 // Past this the file stays plain — highlighting a huge blob would jank the open.
 const MAX_HIGHLIGHT = 150_000;
 
+// Live-stream throttling for code inside an agent reply: short snippets re-tint
+// quickly as chunks land, while very large blocks cost real time per pass and
+// so update progressively less often. Linear from FAST at LIGHT up to SLOW at
+// MAX_HIGHLIGHT (the point where highlighting gives up entirely).
+const THROTTLE_FAST_MS = 40;
+const THROTTLE_SLOW_MS = 240;
+const THROTTLE_LIGHT_AT = 8_000;
+/** Interval between highlight passes for a code block of `codeLength` chars
+ *  while it is still streaming. */
+export function highlightThrottleMs(codeLength: number): number {
+  if (codeLength <= THROTTLE_LIGHT_AT) return THROTTLE_FAST_MS;
+  const t = Math.min(1, (codeLength - THROTTLE_LIGHT_AT) / (MAX_HIGHLIGHT - THROTTLE_LIGHT_AT));
+  return Math.round(THROTTLE_FAST_MS + t * (THROTTLE_SLOW_MS - THROTTLE_FAST_MS));
+}
+
 export type CodeLine = ThemedToken[];
 
 // ── singleton state (shared across every useHighlighter() call) ────────────────

@@ -2,6 +2,7 @@
 import { computed, defineComponent, Fragment, h, onBeforeUnmount, ref, watch } from "vue";
 import type { VNode } from "vue";
 import type Token from "markdown-it/lib/token.mjs";
+import { createStreamGate } from "~/composables/useStreamGate";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   InformationCircleIcon,
@@ -32,7 +33,11 @@ const { parse } = useMarkdown();
 
 const tokens = ref<Token[] | null>(null);
 let seq = 0;
-let rafId: number | null = null;
+
+// Live replies reparse at most once per gate window while chunks stream in;
+// the trailing run flushes the exact final source within one window of the
+// stream stopping. History and the first paint bypass the gate entirely.
+const gate = createStreamGate(45);
 
 async function updateTokens(src: string): Promise<void> {
   const mine = ++seq;
@@ -44,23 +49,19 @@ watch(
   () => props.source,
   (src) => {
     if (props.historical || !tokens.value || !import.meta.client) {
+      gate.cancel();
       void updateTokens(src);
       return;
     }
-    if (rafId !== null) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(() => {
-      rafId = null;
-      void updateTokens(src);
-    });
+    gate.request(() => void updateTokens(src));
   },
   { immediate: true },
 );
 
 onBeforeUnmount(() => {
-  if (rafId !== null && import.meta.client) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
+  // Kill any scheduled parse; bumping seq also strands one already in flight.
+  gate.cancel();
+  seq++;
 });
 
 // Every word gets its own stable key, so a streamed word mounts as a genuinely
