@@ -43,7 +43,9 @@ beforeAll(async () => {
   ConversationStoreCtor = storeModule.ConversationStore;
 });
 
-/** The two built-ins the renderer ships today, in roster order. */
+/** Two preset ids, in the order the renderer asks for them. The store holds no
+ *  preset definitions of its own — it takes the renderer's word for which ids
+ *  exist — so any two ids exercise the ordering the same way. */
 const PRESETS = ["kone", "gideon"];
 
 function seeded(): ConversationStoreType {
@@ -68,6 +70,8 @@ describe("the shipped presets", () => {
     expect(kone.instructions).toBeNull();
     expect(kone.faceBody).toBeNull();
     expect(kone.faceInk).toBeNull();
+    expect(kone.avatar).toBeNull();
+    expect(kone.bot).toBeNull();
   });
 
   test("hydrating twice changes nothing", () => {
@@ -510,6 +514,88 @@ describe("an agent's policies", () => {
   });
 });
 
+describe("how an agent looks", () => {
+  const PICTURE = { source: "generated", src: "data:image/jpeg;base64,AAAA" };
+  const BOT = { shape: "pebble", color: "teal", expression: "curious" };
+
+  test("an avatar and a bot are stored as answers; null hands each field back", () => {
+    const store = seeded();
+    store.updateAgent("kone", { avatar: PICTURE, bot: BOT });
+    expect(store.getAgent("kone")!.avatar).toEqual(PICTURE);
+    expect(store.getAgent("kone")!.bot).toEqual(BOT);
+
+    store.updateAgent("kone", { avatar: null, bot: null });
+    expect(store.getAgent("kone")!.avatar).toBeNull();
+    expect(store.getAgent("kone")!.bot).toBeNull();
+  });
+
+  test("one left out of a patch is left alone", () => {
+    const store = seeded();
+    store.updateAgent("kone", { avatar: PICTURE, bot: BOT });
+    store.updateAgent("kone", { bot: null });
+    expect(store.getAgent("kone")!.avatar).toEqual(PICTURE);
+    expect(store.getAgent("kone")!.bot).toBeNull();
+  });
+
+  test("a new agent keeps the appearance it was made with", () => {
+    const made = seeded().createAgent({ name: "Ada", avatar: PICTURE, bot: BOT })!;
+    expect(made.avatar).toEqual(PICTURE);
+    expect(made.bot).toEqual(BOT);
+  });
+
+  // The store keeps no catalogue, so an id it has never heard of is stored and
+  // handed back untouched — answering an unknown one with a default is the
+  // renderer's job, and is what lets a bot outlive the build that made it.
+  test("an unrecognised shape, colour or expression is kept, not corrected", () => {
+    const odd = { shape: "trefoil", color: "chartreuse", expression: "smug" };
+    expect(seeded().createAgent({ name: "Ada", bot: odd })!.bot).toEqual(odd);
+  });
+
+  // Half an avatar draws nothing, so it is no avatar rather than a picture that
+  // paints a blank where a face used to be.
+  test("an avatar or bot missing a field is no avatar or bot at all", () => {
+    const store = seeded();
+    store.updateAgent("kone", {
+      avatar: { source: "generated", src: "  " },
+      bot: { shape: "pebble", color: "", expression: "curious" },
+    });
+    expect(store.getAgent("kone")!.avatar).toBeNull();
+    expect(store.getAgent("kone")!.bot).toBeNull();
+  });
+
+  test("a fork carries the appearance the source reads as", () => {
+    const store = seeded();
+    store.updateAgent("kone", { bot: BOT });
+    const copy = store.duplicateAgent({
+      agentId: "kone",
+      newAgentId: "copy-1",
+      inherited: { name: "kone", avatar: PICTURE, bot: { shape: "circle", color: "ink", expression: "neutral" } },
+    })!;
+    // The row's own bot wins; the avatar it has none of comes from the preset.
+    expect(copy.bot).toEqual(BOT);
+    expect(copy.avatar).toEqual(PICTURE);
+  });
+
+  test("appearance survives a round trip through the database", () => {
+    const store = seeded();
+    store.updateAgent("kone", { avatar: PICTURE, bot: BOT });
+    store.close();
+
+    const reopened = new ConversationStoreCtor();
+    expect(reopened.getAgent("kone")!.avatar).toEqual(PICTURE);
+    expect(reopened.getAgent("kone")!.bot).toEqual(BOT);
+  });
+
+  // A generated face is carried by value, so the ceiling here is orders of
+  // magnitude above every other field's — and still a ceiling.
+  test("an avatar longer than the row allows is clamped, not refused", () => {
+    const store = seeded();
+    const huge = `data:image/jpeg;base64,${"A".repeat(600 * 1024)}`;
+    store.updateAgent("kone", { avatar: { source: "generated", src: huge } });
+    expect(store.getAgent("kone")!.avatar!.src.length).toBe(512 * 1024);
+  });
+});
+
 describe("preset sub-agents", () => {
   test("a fresh store carries no presets", () => {
     expect(freshStore().listSubagentPresets()).toEqual([]);
@@ -893,13 +979,13 @@ describe("who is up next", () => {
 });
 
 describe("the schema", () => {
-  test("a fresh database reports v26 and carries the roster's tables", () => {
+  test("a fresh database reports v27 and carries the roster's tables", () => {
     seeded();
     const db = rawDb();
     // SAFETY: `PRAGMA user_version` always answers one row with one integer
     // under that name.
     const version = db.prepare(`PRAGMA user_version`).get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
     // SAFETY: the projection names one column of a SQLite catalogue table, and
     // `sqlite_master.name` is TEXT.
     const named = db

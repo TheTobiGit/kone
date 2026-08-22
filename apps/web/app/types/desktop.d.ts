@@ -2284,8 +2284,32 @@ export type AgentPolicies = {
 };
 
 /**
+ * An agent's picture — what says who is speaking (mirrors the desktop
+ * `AgentAvatarRef`).
+ *
+ * `src` is anything an `<img>` can load, which is what keeps one field able to
+ * answer for every way of getting a picture: a data URL for one stored on the
+ * row, an app-relative path for one that ships with the build. `source` is not
+ * how to load it — it is where it came from, which is what a later "change
+ * picture" flow needs in order to offer the right thing again.
+ */
+export type AgentAvatarRef = {
+  source: "generated" | "upload" | "dicebear" | "shipped";
+  src: string;
+};
+
+/** An agent's bot — the creature it drives, as the three ids that make one
+ *  (mirrors the desktop `AgentBotRef`). Ids and nothing derived: the geometry
+ *  behind them is the renderer's, so a stored bot never freezes a copy of it. */
+export type AgentBotRef = {
+  shape: string;
+  color: string;
+  expression: string;
+};
+
+/**
  * An agent as it lives in the store (mirrors the desktop `AgentRecord`,
- * store v24).
+ * store v27).
  *
  * Every prose field is nullable and the null carries meaning: on a row with a
  * `presetId` it means "inherit whatever the shipped preset says", which this
@@ -2308,6 +2332,12 @@ export type AgentRecord = {
   /** The marble the face is drawn in, and the ink drawn on it. */
   faceBody: string | null;
   faceInk: string | null;
+  /** The agent's picture (v27); null inherits the preset's, and an agent with
+   *  none falls back to its drawn face. */
+  avatar: AgentAvatarRef | null;
+  /** The agent's bot (v27); null inherits the preset's, and an agent with none
+   *  has no bot at all — which is different from having the default one. */
+  bot: AgentBotRef | null;
   /** The skills assigned to the agent; null inherits, `[]` is none. */
   skills: AgentSkillRef[] | null;
   /** The one model the agent runs on; null inherits the preset's, a ref is the
@@ -2331,6 +2361,8 @@ export type AgentCreateInput = {
   instructions?: string | null;
   faceBody?: string | null;
   faceInk?: string | null;
+  avatar?: AgentAvatarRef | null;
+  bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
   policies?: AgentPolicies | null;
@@ -2344,6 +2376,8 @@ export type AgentPatch = {
   instructions?: string | null;
   faceBody?: string | null;
   faceInk?: string | null;
+  avatar?: AgentAvatarRef | null;
+  bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
   policies?: AgentPolicies | null;
@@ -2362,6 +2396,8 @@ export type AgentDuplicateInput = {
     instructions?: string | null;
     faceBody?: string | null;
     faceInk?: string | null;
+    avatar?: AgentAvatarRef | null;
+    bot?: AgentBotRef | null;
     skills?: AgentSkillRef[] | null;
     model?: AgentModelRef | null;
     policies?: AgentPolicies | null;
@@ -2449,6 +2485,25 @@ export type KoneRosterApi = {
 };
 
 /**
+ * Fetching a picture for an agent from the web.
+ *
+ * It lives in the main process rather than the renderer because a cross-origin
+ * image can be DISPLAYED in the renderer but not READ there: drawing one to a
+ * canvas taints it, so the bytes can never come back out, and the bytes are the
+ * whole point — a generated face is different on every request, so storing the
+ * URL would hand the agent a new face on every paint.
+ *
+ * Bytes, not a picture: what the picture is scaled to and stored as is the
+ * renderer's business (see `~/utils/agentAvatar`), and it is the only side with a
+ * canvas to do it with.
+ */
+export type KoneAvatarApi = {
+  /** Bytes and their MIME type, or null if the fetch failed — offline, or the
+   *  source declined to answer. */
+  fetch: (input: { url: string }) => Promise<{ mime: string; bytes: Uint8Array } | null>;
+};
+
+/**
  * A preset sub-agent as it lives in the store (mirrors the desktop
  * `SubagentPresetRecord`, store v26).
  *
@@ -2516,6 +2571,7 @@ export type KoneDesktopApi = {
   board: KoneBoardApi;
   roster: KoneRosterApi;
   presets: KonePresetsApi;
+  avatars: KoneAvatarApi;
 };
 
 declare global {

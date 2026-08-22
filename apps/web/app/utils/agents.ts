@@ -22,13 +22,14 @@
  * per-turn picks. The built-in `kone` agent ships with a set; a user-made agent
  * has only what its maker wrote.
  *
- * Where an agent lives: the two built-ins below are prose in this build, and a
- * *row* in the store carries whatever the user changed about them — see
+ * Where an agent lives: the built-in below is prose in this build, and a
+ * *row* in the store carries whatever the user changed about it — see
  * `~/utils/agentStore`. A field the row leaves null is still this file's to
  * answer, which is what keeps a later build free to improve the wording for
  * everyone who never edited it. A user-made agent is a row and nothing else.
  */
 import type {
+  AgentAvatarRef,
   AgentDuplicateInput,
   AgentModelRef,
   AgentPatch,
@@ -53,6 +54,7 @@ import {
   selectedAgentId,
   threadBindings,
 } from "~/utils/agentStore";
+import { readBot, type AgentBot } from "~/utils/bot";
 import { sampleFace } from "~/utils/sphereFace";
 
 /**
@@ -98,6 +100,37 @@ export interface AgentPolicies {
   deniedPaths: string[];
 }
 
+/**
+ * A picture of an agent — who is speaking, for a transcript or a roster row.
+ *
+ * `source` says where the picture came from, so an editor can offer to replace a
+ * generated face without having to inspect the bytes. `src` is whatever draws
+ * it: a path to an asset this build ships, or a data URL carrying a generated
+ * face by value. It has to be by value — the generator hands back a different
+ * face on every request, so a stored URL would give the agent a new face on
+ * every paint.
+ *
+ * Distinct from a bot (`~/utils/bot`), and worth keeping distinct: an avatar
+ * says who is speaking, a bot is a creature the agent drives.
+ */
+export type AgentAvatarSource = "generated" | "upload" | "dicebear" | "shipped";
+
+/** The sources a stored picture can name. A row from a build that offered one
+ *  this build doesn't is read as generated rather than dropped: the bytes are
+ *  still a picture of the agent, and only the label for where they came from is
+ *  lost. */
+const AVATAR_SOURCES: readonly AgentAvatarSource[] = [
+  "generated",
+  "upload",
+  "dicebear",
+  "shipped",
+];
+
+export interface AgentAvatar {
+  source: AgentAvatarSource;
+  src: string;
+}
+
 /** An agent as shipped — the built-in definition, before any user edits. */
 export interface AgentPreset {
   id: string;
@@ -112,11 +145,16 @@ export interface AgentPreset {
   instructions?: string;
   /** What the agent is equipped with. Optional: a preset that names none ships
    *  an agent with no skills and no provider/model restriction, which is what
-   *  both built-ins do today. */
+   *  the built-in does today. */
   capabilities?: Partial<AgentCapabilities>;
-  /** What the agent is forbidden to do. Optional: the built-ins ship none, so
+  /** What the agent is forbidden to do. Optional: the built-in ships none, so
    *  an unedited built-in prohibits nothing. */
   policies?: Partial<AgentPolicies>;
+  /** The picture of the agent, and the bot it drives. Both optional and
+   *  independent: an agent with no avatar is identified by its drawn face, and an
+   *  agent with no bot simply has none. */
+  avatar?: AgentAvatar;
+  bot?: AgentBot;
 }
 
 /**
@@ -138,6 +176,11 @@ export interface Agent {
   /** Inline SVG, ready to mount. Same contract as a guest's face, so one
    *  component can render either. */
   svg: string;
+  /** The colour the face is painted, carried alongside the drawn SVG so a
+   *  surface can tint something *around* the face — the roster's dither field —
+   *  in the agent's own hue instead of parsing it back out of the markup. Ink is
+   *  deliberately not here: nothing outside the face has needed it. */
+  hue: string;
   /** The agent's standing instructions, when it has any — carried through so
    *  the send path can hand them to the session. */
   instructions?: string;
@@ -152,6 +195,15 @@ export interface Agent {
    *  reader gets concrete lists. Empty lists forbid nothing. Host-side only —
    *  the enforcer reads these, a provider session never sees them. */
   policies: AgentPolicies;
+  /** The agent's picture, or null when it has none — at which point `svg` is how
+   *  it is identified. Resolved on the same terms as everything else here: null
+   *  on the row inherits the preset's. */
+  avatar: AgentAvatar | null;
+  /** The bot the agent drives, or null when it has none. Null is a real answer,
+   *  not a missing one: an agent without a bot is not an agent wearing the
+   *  default bot. Ids are resolved through the catalogue, so one stored by a
+   *  build offering a shape this one dropped still draws. */
+  bot: AgentBot | null;
 }
 
 /** What a thread with no agent on it is called. */
@@ -201,37 +253,17 @@ export const KONE: AgentPreset = {
   role: "Agent assistant",
   face: { body: "var(--agent)", ink: "var(--accent-ink)" },
   instructions: KONE_INSTRUCTIONS,
+  // A shipped asset rather than a data URL on the row: the house agent's picture
+  // is part of the build, so it belongs in the bundle where a later one can
+  // improve it, exactly as its instructions do.
+  avatar: { source: "shipped", src: "/agents/kone.jpg" },
+  // The house bot wears the accent's own hue, and the accent is the only colour
+  // it may claim — every bot made later reads as a colleague beside it. A sphere
+  // because that is the shape kone already is.
+  bot: { shape: "circle", color: "orange", expression: "attentive" },
 };
 
-/**
- * Gideon — the user's own agent, drawn from how they actually work in this repo
- * rather than from any one brief: design-led and slop-averse, prototyping on
- * screen before arguing in the abstract, casual in tone but exacting about the
- * craft underneath.
- *
- * It wears the second accent voice, not the house accent — a different hue with
- * its own legible ink — so it reads as a colleague beside kone rather than
- * another copy of it.
- */
-const GIDEON_INSTRUCTIONS = `A design-led engineer with sharp taste and no patience for slop. You care how a thing looks and feels as much as whether it works: clean borderless interfaces, careful typography, motion that means something and none that doesn't.
-
-You'd rather build it than argue it. Put the real thing on screen and work on what's actually there instead of debating in the abstract, and use what you build. Casual and a bit playful when you talk, but exacting about the craft underneath.
-
-You trust ground truth over guesses. Check the real code, the real render, the real reference before you lean on it. And you keep scope honest: the smallest change that really lands the idea, nothing bolted on for its own sake.
-
-How you write: keep it simple and natural, like talking to a teammate. Plain everyday words, not fancy ones. Shorthand is fine when it reads easy (btw, tbh, prob, repo, config). And don't sweat the odd grammar slip or typo, you're not fussy about it and won't stop to fix one when the meaning is already clear.
-
-One hard rule, no exceptions: never use an em dash. Not one, anywhere, ever. This is the single tell that gives away AI writing and you don't do it. The ban lives in your fingers, not your judgement: when you feel a dash coming mid-sentence, break the thought into two sentences, or use a comma, a colon, or parentheses instead. And before you send a reply, reread it once hunting dashes only. Catching one after writing beats hoping while writing; a slip you sent is a promise broken in public.`;
-
-export const GIDEON: AgentPreset = {
-  id: "gideon",
-  name: "Gideon",
-  role: "Coding agent",
-  face: { body: "var(--accent-2)", ink: "var(--accent-2-ink)" },
-  instructions: GIDEON_INSTRUCTIONS,
-};
-
-const PRESETS: readonly AgentPreset[] = [KONE, GIDEON];
+const PRESETS: readonly AgentPreset[] = [KONE];
 
 /** What the store is asked to keep a row for, in the order the roster wants
  *  them. A preset dropped from a later build leaves its row behind — see
@@ -241,8 +273,8 @@ const PRESET_IDS: readonly string[] = PRESETS.map((preset) => preset.id);
 /**
  * The paint a user-made agent wears until somebody picks a hue for it.
  *
- * Deliberately none of the three accent voices: kone wears the first and Gideon
- * the second, and an agent made in a hurry should not arrive claiming either.
+ * Deliberately none of the three accent voices: the house agent wears the first,
+ * and an agent made in a hurry should not arrive claiming one of the others.
  * Soft ink with the ground punched through it reads as a face with no colour
  * chosen yet, which is exactly what it is.
  */
@@ -316,6 +348,20 @@ export function agentFace(paint: FacePaint): string {
 }
 
 /**
+ * An avatar read back off a row. Anything without both halves is no avatar at
+ * all — a picture with nothing to draw would paint a blank where a face used to
+ * be — and an unrecognised `source` reads as generated, which loses only the
+ * label for where the bytes came from.
+ */
+function readAvatar(value: AgentAvatarRef | null): AgentAvatar | null {
+  const src = value?.src?.trim();
+  if (!src) return null;
+  const named = value?.source as AgentAvatarSource | undefined;
+  const source = named && AVATAR_SOURCES.includes(named) ? named : "generated";
+  return { source, src };
+}
+
+/**
  * The row a shipped preset reads through before the store has one for it: no
  * name, no role, no prose — every field still this file's to answer.
  *
@@ -336,6 +382,8 @@ function implicitRow(presetId: string, index: number): AgentRecord {
     skills: null,
     model: null,
     policies: null,
+    avatar: null,
+    bot: null,
     sortOrder: index,
     createdAt: 0,
     updatedAt: 0,
@@ -347,9 +395,10 @@ function implicitRow(presetId: string, index: number): AgentRecord {
  * Every row the roster resolves through: what the store has, plus an implicit
  * row for any shipped preset it hasn't got one for yet.
  *
- * The union is what makes the pre-hydrate state safe. A build ships two
- * built-ins; if the roster read only stored rows, the instant the first of them
- * was edited it would be the only agent in the app. Rows are still the truth
+ * The union is what makes the pre-hydrate state safe. If the roster read only
+ * stored rows, a fresh install would show no agents at all until the store
+ * answered, and a build shipping several would show only the first one edited
+ * the instant it was edited. Rows are still the truth
  * wherever there is one — an edit, a fork's position, a tombstone all come from
  * the store — and a preset with nothing stored about it simply reads as
  * unedited, which it is.
@@ -406,13 +455,24 @@ function resolveRow(row: AgentRecord): Agent | undefined {
     deniedPaths: row.policies?.deniedPaths ?? preset?.policies?.deniedPaths ?? [],
   };
 
+  // Appearance resolves as one overlay each, like the prose: null on the row is
+  // the preset's answer, and neither field lands on a default — an agent with no
+  // avatar is identified by its drawn face, and an agent with no bot has none.
+  // A stored bot is read through the catalogue so ids this build has dropped
+  // still draw something rather than nothing.
+  const avatar = readAvatar(row.avatar) ?? preset?.avatar ?? null;
+  const bot = readBot(row.bot) ?? preset?.bot ?? null;
+
   const agent: Agent = {
     id: row.agentId,
     name,
     role: row.role ?? preset?.role ?? "",
     svg: agentFace(paint),
+    hue: paint.body,
     capabilities,
     policies,
+    avatar,
+    bot,
   };
   if (instructions) agent.instructions = instructions;
   return agent;
@@ -534,10 +594,38 @@ export function projectTeam(projectPath: string | null | undefined): Agent[] {
     .filter((agent): agent is Agent => agent !== undefined);
 }
 
+/**
+ * Every project team known to this machine, as a path with its resolved
+ * members — the raw material for a cross-project overview of who works where.
+ *
+ * Only the teams that have been loaded show up (see `agentTeamPaths` for why),
+ * and a team with no resolvable member left is dropped: an empty section is a
+ * project that reads as having no team, which for this listing it does.
+ */
+export function projectTeamsList(): { path: string; agents: Agent[] }[] {
+  return Object.keys(projectTeams.value)
+    .map((path) => ({ path, agents: projectTeam(path) }))
+    .filter((team) => team.agents.length > 0);
+}
+
 /** Whether an agent is on a project's team right now. */
 export function isOnProjectTeam(projectPath: string | null | undefined, id: string): boolean {
   if (!projectPath) return false;
   return (projectTeams.value[projectPath] ?? []).includes(id);
+}
+
+/**
+ * Every project path whose team an agent is on, as far as this machine knows.
+ *
+ * Membership is read per project, so this only sees the projects whose teams
+ * have been loaded — the ones you've opened. It answers "where does this agent
+ * work", which is a hint, not a census: a project you've never opened here has
+ * no team in hand to check.
+ */
+export function agentTeamPaths(id: string): string[] {
+  return Object.keys(projectTeams.value).filter((path) =>
+    (projectTeams.value[path] ?? []).includes(id),
+  );
 }
 
 /** Read a project's team from the store. Call it when a project becomes active. */
@@ -595,6 +683,8 @@ export interface AgentDraft {
   skills?: AgentSkillRef[];
   model?: AgentModelRef;
   policies?: AgentPolicies;
+  avatar?: AgentAvatar;
+  bot?: AgentBot;
 }
 
 /** An edit to an existing agent. A field left out is left alone; an explicit
@@ -610,6 +700,10 @@ export interface AgentEdit {
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
   policies?: AgentPolicies | null;
+  /** Appearance clears the same way: null re-inherits the preset's picture or
+   *  bot, and on a user-made agent takes it away entirely. */
+  avatar?: AgentAvatar | null;
+  bot?: AgentBot | null;
 }
 
 /** The preset's own values, for a fork that has to keep no inheritance. A row
@@ -631,6 +725,8 @@ function inheritedFrom(preset: AgentPreset | undefined) {
           deniedPaths: preset.policies.deniedPaths ?? [],
         }
       : null,
+    avatar: preset.avatar ?? null,
+    bot: preset.bot ?? null,
   };
 }
 
@@ -658,6 +754,8 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
     skills: draft.skills ?? null,
     model: draft.model ?? null,
     policies: draft.policies ?? null,
+    avatar: draft.avatar ?? null,
+    bot: draft.bot ?? null,
   });
   return row ? resolveRow(row) : undefined;
 }
@@ -680,6 +778,8 @@ export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | 
   if (edit.skills !== undefined) patch.skills = edit.skills;
   if (edit.model !== undefined) patch.model = edit.model;
   if (edit.policies !== undefined) patch.policies = edit.policies;
+  if (edit.avatar !== undefined) patch.avatar = edit.avatar;
+  if (edit.bot !== undefined) patch.bot = edit.bot;
   const row = await patchAgentRow(id, patch, preset ? { presetId: preset.id } : undefined);
   return row ? resolveRow(row) : undefined;
 }

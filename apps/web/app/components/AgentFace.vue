@@ -22,8 +22,21 @@ const identity = computed(() => agentIdentity(props.seed));
 </script>
 
 <template>
+  <!-- An agent with a picture of itself is shown as itself. The drawn face is
+       still there behind it and is what a guest — or an agent nobody has given a
+       picture — gets, so this is one extra branch rather than a second
+       component. -->
+  <img
+    v-if="identity.avatar"
+    class="agent-face agent-face--photo"
+    :style="{ '--face-size': `${size}px` }"
+    :src="identity.avatar"
+    :alt="labelled ? `${identity.name}, this thread's agent` : ''"
+    :aria-hidden="labelled ? undefined : 'true'"
+    draggable="false"
+  />
   <span
-    v-if="identity.svg"
+    v-else-if="identity.svg"
     class="agent-face"
     :style="{ '--face-size': `${size}px` }"
     :role="labelled ? 'img' : undefined"
@@ -42,6 +55,14 @@ const identity = computed(() => agentIdentity(props.seed));
   width: var(--face-size);
   height: var(--face-size);
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.16));
+}
+/* Round, to stay in the same family as every other mark an agent wears, and
+   cropped rather than fitted — a face letterboxed into a circle reads as a
+   picture of a picture. */
+.agent-face--photo {
+  border-radius: 50%;
+  object-fit: cover;
+  user-select: none;
 }
 .agent-face :deep(svg) {
   display: block;

@@ -2,6 +2,7 @@ import { computed, onMounted, watch } from "vue";
 import {
   addAgentToProject,
   agentById,
+  agentTeamPaths,
   agentRoster,
   createAgent,
   deleteAgent,
@@ -10,6 +11,7 @@ import {
   isOnProjectTeam,
   loadProjectTeam,
   projectTeam,
+  projectTeamsList,
   removeAgentFromProject,
   renameAgent,
   selectAgent,
@@ -51,6 +53,9 @@ export function useAgentRoster() {
   const projectPath = computed<string | null>(() => project.value?.path ?? null);
   /** The active project's team — who can work within it. Empty off a project. */
   const team = computed<Agent[]>(() => projectTeam(projectPath.value));
+  /** Every project team known to this machine — each a path with its members.
+   *  The overview reads from this, not from the active project. */
+  const teams = computed(() => projectTeamsList());
 
   // Read the team back from the store whenever the active project changes. The
   // dev fallback is its own store, so this only does anything with a bridge.
@@ -81,10 +86,13 @@ export function useAgentRoster() {
     roster,
     selected,
     team,
+    teams,
     projectPath,
     isOnTeam,
     addToTeam,
     removeFromTeam,
+    loadProjectTeam,
+    agentTeamPaths,
     agentById,
     selectAgent,
     settleThreadAgent,

@@ -232,12 +232,12 @@ const V17_THREADS = `
 `;
 
 describe("v18 migration", () => {
-  test("fresh DB opens at the current schema (v26) with the new columns, table and indexes", () => {
+  test("fresh DB opens at the current schema (v27) with the new columns, table and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
 
     const threads = columnNames(raw, "threads");
     for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
@@ -363,7 +363,7 @@ describe("v18 migration", () => {
 
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
     expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
     raw.close();
     // Persistence is live again on the completed schema.
@@ -823,7 +823,7 @@ describe("v19 keyset index migration", () => {
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -843,7 +843,7 @@ describe("v19 keyset index migration", () => {
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -1117,7 +1117,7 @@ describe("v20 queued turns migration", () => {
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
     }>).map((r) => r.name);
@@ -1151,13 +1151,13 @@ describe("v20 queued turns migration", () => {
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(26);
+    expect(version.user_version).toBe(27);
     // A re-open (a second process) runs the ladder again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version2.user_version).toBe(26);
+    expect(version2.user_version).toBe(27);
     raw.close();
   });
 
