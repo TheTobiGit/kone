@@ -58,6 +58,7 @@ async function gh(cwd: string | undefined, args: string[]): Promise<string> {
     });
     return stdout;
   } catch (error) {
+    // SAFETY: spawn rejections are ErrnoException and carry stderr/stdout/code.
     const err = error as NodeJS.ErrnoException & {
       stderr?: string;
       stdout?: string;
@@ -131,7 +132,7 @@ function rollupChecks(rollup: unknown): "passing" | "failing" | "pending" | "non
   let pending = 0;
   let passing = 0;
   for (const item of rollup) {
-    const rec = item as Record<string, unknown> | null;
+    const rec = jsonRecord(item);
     if (!rec) continue;
     const state = typeof rec.state === "string" ? rec.state : "";
     const status = typeof rec.status === "string" ? rec.status : "";
@@ -214,6 +215,7 @@ function mapPullRequest(pr: Record<string, unknown>): GitHubPullRequest {
         ? "closed"
         : "open";
   const createdAt = typeof pr.createdAt === "string" ? pr.createdAt : "";
+  // SAFETY: pr came from parsed gh JSON; only login is read off author.
   const author = pr.author as { login?: unknown } | null;
   return {
     number,
@@ -270,6 +272,7 @@ export async function prs(
   const result: GitHubPullRequest[] = [];
   for (const entry of raw) {
     try {
+      // SAFETY: entry is one element of gh's parsed --json array.
       result.push(mapPullRequest(entry as Record<string, unknown>));
     } catch {
       // skip the malformed entry
@@ -291,21 +294,30 @@ function isRepoViewAbsence(error: unknown): boolean {
   );
 }
 
+/** A JSON object straight out of `gh --json` output, or null.
+ *  Every caller feeds this only freshly parsed gh CLI records and probes each
+ *  field with typeof/=== before trusting it. */
+function jsonRecord(raw: unknown): Record<string, unknown> | null {
+  return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : null;
+}
+
 /** Map one `gh repo view --json` record onto the flat About shape, unwrapping
  *  the nested licenseInfo/primaryLanguage/repositoryTopics/defaultBranchRef. */
 function mapRepoInfo(raw: unknown): GitHubRepoInfo | null {
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec || typeof rec.nameWithOwner !== "string" || !rec.nameWithOwner) return null;
-  const license = rec.licenseInfo as Record<string, unknown> | null;
-  const language = rec.primaryLanguage as Record<string, unknown> | null;
-  const branch = rec.defaultBranchRef as Record<string, unknown> | null;
+  const license = jsonRecord(rec.licenseInfo);
+  const language = jsonRecord(rec.primaryLanguage);
+  const branch = jsonRecord(rec.defaultBranchRef);
   // gh 2.96 reports repositoryTopics as a plain [{ name }] array (null when the
   // repo has no topics).
   const topics = Array.isArray(rec.repositoryTopics)
     ? rec.repositoryTopics
-        .map((t) => (t as Record<string, unknown> | null)?.name)
+        .map((t) => (jsonRecord(t))?.name)
         .filter((n): n is string => typeof n === "string")
     : [];
+  // SAFETY: gh's fields are probed above; visibility is one of its fixed
+  // lowercase tokens and every other read is typeof-guarded.
   return {
     nameWithOwner: rec.nameWithOwner,
     description: stringOrNull(rec.description),
@@ -367,7 +379,7 @@ export async function repo(dir: string): Promise<GitHubRepoInfo | null> {
 function mapContributor(
   raw: unknown,
 ): { login: string; commits: number; avatarUrl: string | null } | null {
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec) return null;
   // Bots (dependabot[bot], …) come through as `type: Bot` — a calm surface
   // shouldn't list them as top contributors, so only real Users count.
@@ -474,7 +486,7 @@ export async function me(): Promise<GitHubUser | null> {
   } catch {
     throw new GitError("The GitHub CLI returned unparseable user data.", null);
   }
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec || typeof rec.login !== "string" || !rec.login) return null;
   const avatarUrl = stringOrNull(rec.avatar_url);
   const user: GitHubUser = {
@@ -525,7 +537,7 @@ async function avatarFor(login: string, known?: string | null): Promise<string |
  *  faceless person. `fillAvatars` completes the whole set in one pass, so a
  *  view with forty comments makes one fetch per *person*, not per mention. */
 function actor(raw: unknown): GitHubPerson | null {
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec) return null;
   const login = typeof rec.login === "string" ? rec.login.trim() : "";
   if (!login) return null;
@@ -602,7 +614,7 @@ function checkStateOf(rec: Record<string, unknown>): GitHubCheck["state"] {
 }
 
 function mapCheck(raw: unknown): GitHubCheck | null {
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec) return null;
   // A CheckRun is named; a StatusContext carries its name in `context`.
   const name =
@@ -638,7 +650,7 @@ function reviewStateOf(value: unknown): GitHubReview["state"] {
 }
 
 function mapLabel(raw: unknown): GitHubLabel | null {
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec || typeof rec.name !== "string" || !rec.name) return null;
   const color = typeof rec.color === "string" ? rec.color.replace(/^#/, "") : "";
   return {
@@ -683,7 +695,7 @@ export async function prDetail(
   } catch {
     throw new GitError("The GitHub CLI returned unparseable pull request data.", null);
   }
-  const rec = raw as Record<string, unknown> | null;
+  const rec = jsonRecord(raw);
   if (!rec || !Number.isInteger(Number(rec.number))) return null;
 
   const isDraft = rec.isDraft === true;
@@ -708,7 +720,7 @@ export async function prDetail(
   // person too, and reads as pending rather than being left off the list.
   const reviews: GitHubReview[] = [];
   for (const entry of arrayOf(rec.latestReviews)) {
-    const row = entry as Record<string, unknown> | null;
+    const row = jsonRecord(entry);
     if (!row) continue;
     const submittedAt = stringOrNull(row.submittedAt);
     reviews.push({
@@ -731,7 +743,7 @@ export async function prDetail(
   // Repeating it in a calm surface would be the one thing on the page shouting.
   const comments: GitHubComment[] = [];
   for (const entry of arrayOf(rec.comments)) {
-    const row = entry as Record<string, unknown> | null;
+    const row = jsonRecord(entry);
     if (!row || row.isMinimized === true) continue;
     const at = typeof row.createdAt === "string" ? row.createdAt : "";
     comments.push({
@@ -745,11 +757,11 @@ export async function prDetail(
 
   const commits: GitHubPrCommit[] = [];
   for (const entry of arrayOf(rec.commits)) {
-    const row = entry as Record<string, unknown> | null;
+    const row = jsonRecord(entry);
     if (!row) continue;
     const oid = typeof row.oid === "string" ? row.oid : "";
     if (!oid) continue;
-    const first = arrayOf(row.authors)[0] as Record<string, unknown> | null;
+    const first = jsonRecord(arrayOf(row.authors)[0]);
     const date =
       stringOrNull(row.committedDate) ?? stringOrNull(row.authoredDate) ?? createdAt;
     commits.push({
@@ -768,9 +780,11 @@ export async function prDetail(
 
   const files: GitHubPrFile[] = [];
   for (const entry of arrayOf(rec.files)) {
-    const row = entry as Record<string, unknown> | null;
+    const row = jsonRecord(entry);
     if (!row || typeof row.path !== "string" || !row.path) continue;
     const change = typeof row.changeType === "string" ? row.changeType.toLowerCase() : "";
+    // SAFETY: the includes guard in the literal below narrows change to the
+    // union's members; path/additions/deletions are probed above.
     files.push({
       path: row.path,
       additions: nonNegative(row.additions),
@@ -782,7 +796,7 @@ export async function prDetail(
   }
 
   const rollup = arrayOf(rec.statusCheckRollup);
-  const milestone = rec.milestone as Record<string, unknown> | null;
+  const milestone = jsonRecord(rec.milestone);
   const headOwner = actor(rec.headRepositoryOwner);
 
   const detail: GitHubPullRequestDetail = {
@@ -899,12 +913,12 @@ export async function commitAuthors(dir: string): Promise<GitCommitAuthors | nul
   const byEmail = new Map<string, GitHubPerson>();
   const urls = new Map<string, string>();
   for (const entry of raw) {
-    const rec = entry as Record<string, unknown> | null;
+    const rec = jsonRecord(entry);
     if (!rec) continue;
-    const commit = rec.commit as Record<string, unknown> | null;
-    const committed = commit?.author as Record<string, unknown> | null;
+    const commit = jsonRecord(rec.commit);
+    const committed = jsonRecord(commit?.author);
     const email = typeof committed?.email === "string" ? committed.email.toLowerCase() : "";
-    const account = rec.author as Record<string, unknown> | null;
+    const account = jsonRecord(rec.author);
     const login = typeof account?.login === "string" ? account.login : "";
     if (!email || !login || byEmail.has(email)) continue;
     byEmail.set(email, { login, name: stringOrNull(committed?.name), avatarDataUrl: null });
