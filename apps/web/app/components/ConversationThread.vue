@@ -655,7 +655,7 @@ function requestOlder(): void {
         'exchange--paired': ex.blocks.length > 1,
       }"
     >
-      <!-- Curved branch line connecting user request bubble directly down to agent response -->
+      <!-- Thin elbow line: out of the request bubble's left edge, across to the avatar column, down to the reply -->
       <ExchangeConnector
         v-if="ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user') && ex.blocks.some((b) => b.role === 'assistant')"
         :running="ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running')"
