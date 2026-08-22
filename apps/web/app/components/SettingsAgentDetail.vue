@@ -1,21 +1,42 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { Copy01Icon, Delete02Icon, UserGroupIcon } from "@hugeicons/core-free-icons";
+import { computed, nextTick, ref, watch } from "vue";
+import {
+  AiChipIcon,
+  BotIcon,
+  Copy01Icon,
+  Delete02Icon,
+  IdIcon,
+  ImageAdd01Icon,
+  NoteIcon,
+  PaintBoardIcon,
+  Shield01Icon,
+  SparklesIcon,
+  UserGroupIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import AgentAvatarEditor from "~/components/AgentAvatarEditor.vue";
 import AgentBotEditor from "~/components/AgentBotEditor.vue";
 import AgentCapabilitiesEditor from "~/components/AgentCapabilitiesEditor.vue";
 import AgentPoliciesEditor from "~/components/AgentPoliciesEditor.vue";
+import ProviderLogo from "~/components/ProviderLogo.vue";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
+import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSound } from "~/composables/useSound";
+import { botGround, botMark, botSummary, type AgentBot } from "~/utils/bot";
+import { PROVIDER_LABEL } from "~/utils/usageProviders";
+import type { BrandKey } from "~/utils/modelCatalog";
 import type { AgentAvatar } from "~/utils/agents";
-import type { AgentBot } from "~/utils/bot";
-import type { AgentModelRef } from "~/types/desktop";
+import type { AgentModelRef, ProviderKind } from "~/types/desktop";
 
-// One agent, opened out of the roster: the face big, the name and role up top,
-// and the one field a model actually hears — its instructions — read back as
-// prose.
+// One agent, opened out of the roster.
+//
+// The page reads top to bottom as: who this is, what is true about it, what it
+// was told, and only then the controls for changing any of that. The editors
+// used to sit open all at once — four grids of faces, shapes, colours and
+// models stacked down a single column — which made every visit start with a
+// scroll past machinery nobody had asked for. They share one tabbed panel now,
+// so the page opens on the agent rather than on its settings.
 
 const props = defineProps<{ open: boolean; agentId: string }>();
 const emit = defineEmits<{
@@ -23,7 +44,9 @@ const emit = defineEmits<{
   switched: [agentId: string];
 }>();
 
-const { agentById, duplicateAgent, deleteAgent, updateAgent } = useAgentRoster();
+const { agentById, duplicateAgent, deleteAgent, updateAgent, teams, loadProjectTeam } =
+  useAgentRoster();
+const { recents } = useRecentProjects();
 const { cue } = useSound();
 const agent = computed(() => agentById(props.agentId));
 const isCustom = computed(() => agent.value?.id !== "kone");
@@ -35,6 +58,18 @@ watch(
   agent,
   (a) => {
     if (props.open && !a) emit("back");
+  },
+  { immediate: true },
+);
+
+// Teams are per project and only in hand once that project's team has been
+// read. The page can be reached without passing the roster's own load, so it
+// asks for every recent project's team itself before naming the ones this agent
+// is on.
+watch(
+  recents,
+  (list) => {
+    for (const p of list) void loadProjectTeam(p.path);
   },
   { immediate: true },
 );
@@ -122,6 +157,100 @@ function toDirectives(text: string | undefined): Directive[] {
 
 const instructions = computed(() => toDirectives(agent.value?.instructions));
 const bare = computed(() => instructions.value.length === 0);
+
+// ── what the details table reads back ──────────────────────────────────────
+// Each of these is one row's value, resolved once here so the template stays a
+// list of rows rather than a list of conditions.
+
+/** The provider's own logomark for a pinned model's row. */
+const PROVIDER_BRAND = {
+  codex: "codex",
+  claudeAgent: "claude",
+  opencode: "opencode",
+  cursor: "cursor",
+  droid: "droid",
+  antigravity: "antigravity",
+} satisfies Record<ProviderKind, BrandKey>;
+
+const model = computed(() => agent.value?.capabilities.model ?? null);
+const modelLabel = computed(() => {
+  const m = model.value;
+  if (!m) return "No preference";
+  return m.label || m.model;
+});
+const skills = computed(() => agent.value?.capabilities.skills ?? []);
+/** The projects this agent is a member of, by the name each was opened under. */
+const teamNames = computed<string[]>(() => {
+  const id = agent.value?.id;
+  if (!id) return [];
+  return teams.value
+    .filter((team) => team.agents.some((a) => a.id === id))
+    .map((team) => {
+      const known = recents.value.find((p) => p.path === team.path);
+      if (known?.name) return known.name;
+      return team.path.replace(/\/+$/, "").split("/").pop() || team.path;
+    })
+    .sort((a, b) => a.localeCompare(b));
+});
+const pictureLabel = computed(() => {
+  const avatar = agent.value?.avatar;
+  if (!avatar) return "Drawn face";
+  if (avatar.source === "upload") return "Uploaded";
+  if (avatar.source === "dicebear") return "Drawn";
+  if (avatar.source === "shipped") return "Shipped";
+  return "Generated";
+});
+// ── the tabs ──────────────────────────────────────────────────────────────
+// Everything below the head is one tabbed panel: what is true about the agent,
+// what it was told, and the three editors. They are alternatives — you come to
+// the page for one of them — and stacking all five down a column is the wall
+// the page had before.
+type TabKey = "details" | "instructions" | "appearance" | "model" | "policies";
+const tab = ref<TabKey>("details");
+const tabStrip = ref<HTMLElement>();
+
+const TABS = [
+  { key: "details", label: "Details", icon: IdIcon },
+  { key: "instructions", label: "Instructions", icon: NoteIcon },
+  { key: "appearance", label: "Appearance", icon: PaintBoardIcon },
+  { key: "model", label: "Model", icon: AiChipIcon },
+  { key: "policies", label: "Restrictions", icon: Shield01Icon },
+] as const satisfies readonly { key: TabKey; label: string; icon: unknown }[];
+
+function selectTab(key: TabKey) {
+  if (tab.value === key) return;
+  tab.value = key;
+  cue("select");
+}
+
+/** Left and right walk the strip, since only the live tab is in the tab order.
+ *  The moved-to tab takes focus with it — otherwise the arrows would keep
+ *  answering to a button that is no longer the one selected. */
+async function stepTab(delta: number) {
+  const keys = TABS.map((t) => t.key);
+  const at = keys.indexOf(tab.value);
+  const next = keys[(at + delta + keys.length) % keys.length];
+  if (!next) return;
+  selectTab(next);
+  await nextTick();
+  tabStrip.value?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+}
+
+/** The head's own way in: it names a tab rather than a place further down, so
+ *  all it has to do is turn the strip to it. */
+function openAppearance() {
+  selectTab("appearance");
+}
+
+// Switching agents puts the page back to its resting shape, so a tab left open
+// on one doesn't greet you inside the next.
+watch(
+  () => props.agentId,
+  () => {
+    tab.value = "details";
+    isDeleting.value = false;
+  },
+);
 </script>
 
 <template>
@@ -161,64 +290,216 @@ const bare = computed(() => instructions.value.length === 0);
     </template>
 
     <article class="det">
-      <header class="det__head">
-        <img
-          v-if="agent.avatar"
-          class="det__face det__face--photo"
-          :src="agent.avatar.src"
-          alt=""
-          draggable="false"
-        />
-        <span v-else class="det__face" v-html="agent.svg" />
-        <span class="det__id">
-          <h2 class="det__name">{{ agent.name }}</h2>
-          <p class="det__role">{{ agent.role }}</p>
+      <!-- The agent, at the size it deserves: the face large enough to be a
+           portrait rather than a list glyph, and the bot riding its corner the
+           way it does everywhere else. No panel behind it — the spacing sets the
+           head apart from the sections. -->
+      <header class="det__hero">
+        <span class="det__portrait" :class="{ 'det__portrait--photo': agent.avatar }">
+          <img
+            v-if="agent.avatar"
+            class="det__photo"
+            :src="agent.avatar.src"
+            alt=""
+            draggable="false"
+          />
+          <span v-else class="det__face" v-html="agent.svg" />
+          <span
+            v-if="agent.bot"
+            class="det__botmark"
+            :style="{ background: botGround(agent.bot) }"
+            aria-hidden="true"
+            v-html="botMark(agent.bot)"
+          />
         </span>
+
+        <span class="det__id">
+          <span class="det__nameline">
+            <h2 class="det__name">{{ agent.name }}</h2>
+            <span class="det__chip">{{ isCustom ? "Custom" : "Built-in" }}</span>
+          </span>
+          <p class="det__role">{{ agent.role || "Agent" }}</p>
+        </span>
+
+        <button
+          type="button"
+          class="det__hero-btn"
+          :tabindex="open ? 0 : -1"
+          @click="openAppearance"
+        >
+          <HugeiconsIcon :icon="PaintBoardIcon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+          <span>Change appearance</span>
+        </button>
       </header>
 
-      <section v-if="instructions.length" class="det__sec" aria-label="How it works">
-        <p class="det__eyebrow">How it works</p>
-        <div class="det__prose">
-          <p v-for="(d, i) in instructions" :key="i" class="det__para">
-            <span v-if="d.lead" class="det__lead">{{ d.lead }}</span>{{ d.body }}
+      <!-- One strip over one panel, starting where the page's first section
+           used to: what is true about the agent, what it was told, and the
+           three editors, each a tab rather than another thing to scroll past. -->
+      <div
+        ref="tabStrip"
+        class="det__tabs"
+        role="tablist"
+        aria-label="Agent"
+        @keydown.left.prevent="stepTab(-1)"
+        @keydown.right.prevent="stepTab(1)"
+      >
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          type="button"
+          role="tab"
+          class="det__tab"
+          :class="{ 'det__tab--on': tab === t.key }"
+          :aria-selected="tab === t.key"
+          :tabindex="open && tab === t.key ? 0 : -1"
+          @click="selectTab(t.key)"
+        >
+          <HugeiconsIcon
+            class="det__tab-glyph"
+            :icon="t.icon"
+            :size="14"
+            :stroke-width="1.6"
+            aria-hidden="true"
+          />
+          <span class="det__tab-label">{{ t.label }}</span>
+        </button>
+      </div>
+
+      <div class="det__panel" role="tabpanel" :aria-label="TABS.find((t) => t.key === tab)?.label">
+        <!-- Everything true about the agent, on one table: what it runs on, what
+             it is equipped with, where it works, and what it is called by the
+             store. Reading it should not mean opening an editor. -->
+        <dl v-if="tab === 'details'" class="det__table">
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon :icon="AiChipIcon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+              <span>Model</span>
+            </dt>
+            <dd class="det__val">
+              <template v-if="model">
+                <ProviderLogo :brand="PROVIDER_BRAND[model.provider]" :size="14" />
+                <span>{{ modelLabel }}</span>
+                <span class="det__aside">{{ PROVIDER_LABEL[model.provider] }}</span>
+              </template>
+              <span v-else class="det__none">No preference — the thread picks per turn</span>
+            </dd>
+          </div>
+
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon
+                :icon="SparklesIcon"
+                :size="14"
+                :stroke-width="1.6"
+                aria-hidden="true"
+              />
+              <span>Skills</span>
+            </dt>
+            <dd class="det__val det__val--wrap">
+              <template v-if="skills.length">
+                <span v-for="s in skills.slice(0, 8)" :key="s.path" class="det__tag">{{
+                  s.name
+                }}</span>
+                <span v-if="skills.length > 8" class="det__aside"
+                  >+{{ skills.length - 8 }} more</span
+                >
+              </template>
+              <span v-else class="det__none">None assigned</span>
+            </dd>
+          </div>
+
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon
+                :icon="UserGroupIcon"
+                :size="14"
+                :stroke-width="1.6"
+                aria-hidden="true"
+              />
+              <span>Teams</span>
+            </dt>
+            <dd class="det__val det__val--wrap">
+              <template v-if="teamNames.length">
+                <span v-for="name in teamNames" :key="name" class="det__tag">{{ name }}</span>
+              </template>
+              <span v-else class="det__none">On no team</span>
+            </dd>
+          </div>
+
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon :icon="BotIcon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+              <span>Bot</span>
+            </dt>
+            <dd class="det__val">
+              <span
+                v-if="agent.bot"
+                class="det__botchip"
+                :style="{ background: botGround(agent.bot) }"
+                aria-hidden="true"
+                v-html="botMark(agent.bot)"
+              />
+              <span v-if="agent.bot">{{ botSummary(agent.bot) }}</span>
+              <span v-else class="det__none">None</span>
+            </dd>
+          </div>
+
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon
+                :icon="ImageAdd01Icon"
+                :size="14"
+                :stroke-width="1.6"
+                aria-hidden="true"
+              />
+              <span>Picture</span>
+            </dt>
+            <dd class="det__val">{{ pictureLabel }}</dd>
+          </div>
+
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon :icon="IdIcon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+              <span>Identifier</span>
+            </dt>
+            <dd class="det__val det__val--mono">{{ agent.id }}</dd>
+          </div>
+        </dl>
+
+        <template v-else-if="tab === 'instructions'">
+          <div v-if="instructions.length" class="det__prose">
+            <p v-for="(d, i) in instructions" :key="i" class="det__para">
+              <span v-if="d.lead" class="det__lead">{{ d.lead }}</span>{{ d.body }}
+            </p>
+          </div>
+          <p v-else class="det__bare">
+            Just a name and a face for now — no instructions to carry into a thread.
           </p>
-        </div>
-      </section>
+        </template>
 
-      <p v-if="bare" class="det__bare">
-        Just a name and a face for now — no instructions to carry into a thread.
-      </p>
+        <template v-else-if="tab === 'appearance'">
+          <p class="det__sub">Picture <span class="det__what">the face it answers with</span></p>
+          <AgentAvatarEditor :avatar="agent.avatar" @update:avatar="setAvatar" />
+          <p class="det__sub det__sub--spaced">
+            Bot <span class="det__what">the creature it works through</span>
+          </p>
+          <AgentBotEditor :bot="agent.bot" @update:bot="setBot" />
+        </template>
 
-      <section class="det__sec" aria-label="Picture">
-        <!-- The one line each of these is for rides on its eyebrow rather than
-             sitting above the controls, so the section opens onto the thing it
-             is for. -->
-        <p class="det__eyebrow">Picture <span class="det__what">the face it answers with</span></p>
-        <AgentAvatarEditor :avatar="agent.avatar" @update:avatar="setAvatar" />
-      </section>
-
-      <section class="det__sec" aria-label="Bot">
-        <p class="det__eyebrow">Bot <span class="det__what">the creature it works through</span></p>
-        <AgentBotEditor :bot="agent.bot" @update:bot="setBot" />
-      </section>
-
-      <section class="det__sec" aria-label="Capabilities">
-        <p class="det__eyebrow">Capabilities</p>
         <AgentCapabilitiesEditor
+          v-else-if="tab === 'model'"
           :model="agent.capabilities.model"
           @update:model="setModel"
         />
-      </section>
 
-      <section class="det__sec" aria-label="Policies">
-        <p class="det__eyebrow">Policies</p>
         <AgentPoliciesEditor
+          v-else
           :denied-commands="agent.policies.deniedCommands"
           :denied-paths="agent.policies.deniedPaths"
           @update:denied-commands="setDeniedCommands"
           @update:denied-paths="setDeniedPaths"
         />
-      </section>
+      </div>
     </article>
 
     <template #foot>
@@ -230,11 +511,15 @@ const bare = computed(() => instructions.value.length === 0);
 
 <style scoped>
 .det {
+  --det-hair: color-mix(in srgb, var(--ink) 7%, transparent);
   display: flex;
   flex-direction: column;
-  gap: 26px;
+  gap: 30px;
   max-width: 48rem;
-  padding-bottom: 2.5rem;
+  padding-bottom: 3rem;
+  /* The tab strip drops its summaries against the page's own width, not the
+     window's — the drawer widens and narrows under it. */
+  container-type: inline-size;
 }
 
 /* ── actions in shell masthead ────────────────────────────────────────────── */
@@ -269,80 +554,236 @@ const bare = computed(() => instructions.value.length === 0);
   color: #e05252;
 }
 
-/* Face and name as one unit, no card around them — the spacing sets the head
-   apart from the sections, not a rule or a container. */
-.det__head {
+/* ── hero ─────────────────────────────────────────────────────────────────── */
+/* Portrait, name and role as one unit on the page itself — no panel, no rule.
+   The spacing is what sets the head apart from the sections below it. */
+.det__hero {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
+  padding-block: 2px;
+}
+
+.det__portrait {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+/* A picture is the portrait, so the disc it would sit on goes away rather than
+   showing as a rim around it. */
+.det__portrait--photo {
+  background-color: transparent;
+}
+.det__photo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  user-select: none;
 }
 .det__face {
   display: block;
-  flex: none;
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.14));
-}
-/* Cropped rather than fitted: a face letterboxed into a circle reads as a
-   picture of a picture. */
-.det__face--photo {
-  object-fit: cover;
-  user-select: none;
+  width: 68px;
+  height: 68px;
 }
 .det__face :deep(svg) {
   display: block;
   width: 100%;
   height: 100%;
 }
+/* Small, and on the ground its own colour needs — at this size a body that
+   sinks into the surface leaves nothing to see. */
+.det__botmark {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: block;
+  width: 28px;
+  height: 28px;
+  padding: 3px;
+  box-sizing: border-box;
+  border-radius: 50%;
+}
+.det__botmark :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
 .det__id {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  min-width: 0;
+  margin-right: auto;
+}
+.det__nameline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 .det__name {
   margin: 0;
-  font-size: 20px;
+  font-size: 26px;
   font-weight: 500;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
   color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Whose agent this is, said once and quietly — a built-in and a made one are
+   worth telling apart, but not with a colour that shouts. */
+.det__chip {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ink) 7%, transparent);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  color: var(--ink-soft);
 }
 .det__role {
   margin: 0;
-  font-size: 12.5px;
-  line-height: 1.2;
-  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  text-wrap: pretty;
 }
 
-/* ── a titled block of prose ─────────────────────────────────────────────── */
-.det__sec {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
+.det__hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  align-self: center;
+  height: 30px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ink) 4.5%, transparent);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
 }
-.det__eyebrow {
-  margin: 0;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  color: var(--muted);
+.det__hero-btn:hover {
+  background-color: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
 }
-/* Sentence case and unspaced beside the eyebrow's caps, so the two read as a
+.det__hero-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+
+/* Sentence case and unspaced beside the label's caps, so the two read as a
    label and an aside rather than one long heading. */
 .det__what {
   margin-left: 8px;
   font-size: 11px;
   letter-spacing: 0;
   text-transform: none;
-  opacity: 0.75;
+  color: var(--muted);
 }
+
+/* ── details table ────────────────────────────────────────────────────────── */
+/* Hairlines between rows, nothing around the block: the table is a rhythm, not
+   a container. */
+.det__table {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.det__row {
+  display: grid;
+  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding-block: 11px;
+}
+.det__row + .det__row {
+  border-top: 1px solid var(--det-hair);
+}
+.det__key {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.det__key :deep(svg) {
+  flex: none;
+}
+.det__val {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.det__val--wrap {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.det__val--mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.det__none {
+  color: var(--muted);
+}
+.det__aside {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+/* A name the agent carries rather than a control — soft ground, no outline. */
+.det__tag {
+  padding: 3px 9px;
+  border-radius: 8px;
+  background-color: color-mix(in srgb, var(--ink) 5%, transparent);
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--ink-soft);
+}
+.det__botchip {
+  display: block;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  box-sizing: border-box;
+  border-radius: 50%;
+}
+.det__botchip :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* ── prose ────────────────────────────────────────────────────────────────── */
 .det__prose {
   display: flex;
   flex-direction: column;
   gap: 13px;
+  max-width: 68ch;
 }
 .det__para {
   margin: 0;
@@ -358,14 +799,101 @@ const bare = computed(() => instructions.value.length === 0);
   margin-inline-end: 0.34em;
   color: var(--ink);
 }
-
 .det__bare {
   margin: 0;
+  max-width: 68ch;
   font-size: 13px;
   line-height: 1.6;
   color: var(--muted);
   text-wrap: pretty;
 }
+
+/* ── settings tabs ────────────────────────────────────────────────────────── */
+/* A strip of names over one panel, on a hairline rather than in a container:
+   the underline under the live tab is the only mark that carries weight. */
+.det__tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  box-shadow: inset 0 -1px 0 0 var(--det-hair);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.det__tabs::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.det__tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px 11px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+.det__tab:hover {
+  background-color: var(--hover);
+}
+.det__tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+/* The live tab's rule sits on the strip's hairline rather than beside it, so
+   the two read as one line with a segment inked in. */
+.det__tab--on::after {
+  content: "";
+  position: absolute;
+  inset-inline: 8px;
+  bottom: -1px;
+  height: 1.5px;
+  border-radius: 2px;
+  background-color: var(--ink);
+}
+.det__tab-glyph {
+  flex: none;
+  color: var(--muted);
+  transition: color 160ms ease;
+}
+.det__tab--on .det__tab-glyph {
+  color: var(--ink);
+}
+.det__tab-label {
+  font-size: 12.5px;
+  line-height: 1.2;
+  color: var(--muted);
+  transition: color 160ms ease;
+}
+.det__tab--on .det__tab-label {
+  color: var(--ink);
+}
+/* The strip is the page's own navigation, so it keeps its full width on a
+   narrow drawer and lets the names scroll rather than wrapping to two lines. */
+.det__panel {
+  padding-top: 4px;
+}
+.det__sub {
+  margin: 0 0 10px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.det__sub--spaced {
+  margin-top: 26px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .det__tab,
+  .det__tab-glyph,
+  .det__tab-label {
+    transition: none;
+  }
+}
 </style>
-
-
