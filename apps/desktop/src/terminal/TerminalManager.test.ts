@@ -61,10 +61,11 @@ function fakePty(): FakePty {
   return {
     process,
     emitData: (data) => {
-      for (const cb of [...dataListeners]) cb(data);
+      // Snapshot: a callback may subscribe or unsubscribe mid-emit.
+      for (const cb of Array.from(dataListeners)) cb(data);
     },
     emitExit: (exitCode, signal) => {
-      for (const cb of [...exitListeners]) cb({ exitCode: exitCode ?? 0, signal });
+      for (const cb of Array.from(exitListeners)) cb({ exitCode: exitCode ?? 0, signal });
     },
   };
 }

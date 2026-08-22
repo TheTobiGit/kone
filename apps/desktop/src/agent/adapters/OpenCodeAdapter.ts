@@ -871,7 +871,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   /** Settle anything still live — the turn ended or the session is going away. */
   private settleLiveSubagents(session: OpenCodeSession, status: SubagentStatus): void {
-    for (const run of [...session.subagentRuns.values()]) this.settleSubagent(session, run, status, {});
+    for (const run of session.subagentRuns.values()) this.settleSubagent(session, run, status, {});
   }
 
   /** Closes the active turn on idle. `session.abort` also lands as idle, so an

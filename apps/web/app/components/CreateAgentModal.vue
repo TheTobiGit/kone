@@ -81,7 +81,7 @@ const SECTIONS: { id: Section; label: string }[] = [
  * rather than at the top of the pane so the pane opens straight onto the thing
  * it is for — a hint above the fields pushes them down and is read once.
  */
-const HINTS: Record<Section, string> = {
+const HINTS = {
   identity: "What it is called, and what it is for.",
   picture: "The face it answers with.",
   bot: "The creature it works through.",
@@ -89,18 +89,18 @@ const HINTS: Record<Section, string> = {
   capabilities: "The model it thinks with.",
   policies: "What it may never run or reach.",
   teams: "The projects it joins.",
-};
+} satisfies Record<Section, string>;
 
 /** What a closed picture row says it is carrying. Where the picture came from,
  *  not what it looks like: it is the one thing a summary can say about a face
  *  without drawing it. "Shipped" can't be reached from this modal — nothing here
  *  hands out a build's own picture — but the type covers it, so this does too. */
-const PICTURE_LABELS: Record<AgentAvatarSource, string> = {
+const PICTURE_LABELS = {
   generated: "Generated face",
   upload: "Your own picture",
   dicebear: "Drawn portrait",
   shipped: "Shipped picture",
-};
+} satisfies Record<AgentAvatarSource, string>;
 
 // The open row, or none — every row closed is a legitimate resting state, and
 // the summaries carry the draft on their own.

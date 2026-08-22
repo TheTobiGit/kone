@@ -132,9 +132,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** 6-byte hash — enough to tell theme ids apart, short enough to read. */
 async function shortHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(new TextEncoder().encode(value)));
-  return [...new Uint8Array(digest).slice(0, 6)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return Array.from(new Uint8Array(digest).slice(0, 6), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 /** Only absolute URLs on the registry's own host are trusted — the detail

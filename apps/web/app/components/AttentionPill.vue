@@ -29,11 +29,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{ open: [] }>();
 
-const REASON: Record<ThreadAttentionKind, string> = {
+const REASON = {
   permission: "Needs your permission",
   question: "Waiting on your answer",
   "parked-spawn": "A spawned thread is parked",
-};
+} satisfies Record<ThreadAttentionKind, string>;
 
 const headline = computed(() => REASON[props.kind]);
 const title = computed(() => props.threadTitle?.trim() || "");

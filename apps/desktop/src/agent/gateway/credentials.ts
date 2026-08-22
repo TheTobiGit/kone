@@ -130,7 +130,7 @@ export class GatewayCredentials {
     this.authorities.delete(token);
     // Any bootstrap minted against a revoked session is dead too — a turn
     // racing the stop must not exchange its way into a ghost credential.
-    for (const [bootstrap, sessionToken] of [...this.bootstrapTokens]) {
+    for (const [bootstrap, sessionToken] of this.bootstrapTokens) {
       if (sessionToken === token) this.bootstrapTokens.delete(bootstrap);
     }
   }

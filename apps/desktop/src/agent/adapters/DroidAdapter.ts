@@ -1253,7 +1253,7 @@ export class DroidAdapter implements ProviderAdapter {
   /** Reject every parked permission request — on interrupt/stop so no RPC
    *  handler hangs and the renderer's pending prompt clears. */
   private drainApprovals(session: DroidSession): void {
-    for (const [requestId] of [...session.pendingApprovals]) {
+    for (const [requestId] of session.pendingApprovals) {
       this.resolveApproval(session, requestId, "reject-once");
     }
   }
@@ -1408,7 +1408,7 @@ export class DroidAdapter implements ProviderAdapter {
    *  then drop the turn's buffers so a long thread doesn't accumulate them. */
   private endTurn(session: DroidSession, turnId: string, status: RuntimeItemStatus): void {
     this.closeSegment(session);
-    for (const itemId of [...session.openItemIds]) {
+    for (const itemId of session.openItemIds) {
       const buffer = session.items.get(itemId);
       if (buffer) this.emitItem(session, "item.completed", buffer, status, turnId);
       else session.openItemIds.delete(itemId);

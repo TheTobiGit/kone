@@ -109,14 +109,13 @@ export function useCreateProject() {
 
     const bridge = import.meta.client ? window.koneDesktop?.git : undefined;
     return bridge?.create
-      ? realCreate(bridge, options, target)
+      ? realCreate(bridge, options)
       : mockCreate(target);
   }
 
   async function realCreate(
     bridge: NonNullable<Window["koneDesktop"]>["git"],
     options: CreateProjectOptions,
-    target: CreateTarget,
   ): Promise<CreateTarget | null> {
     try {
       const result = await bridge.create(options);

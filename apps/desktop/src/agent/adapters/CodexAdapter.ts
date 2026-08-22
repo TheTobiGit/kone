@@ -1159,7 +1159,7 @@ export class CodexAdapter implements ProviderAdapter {
   /** Reject every parked approval — on interrupt/stop so no RPC handler hangs
    *  and the renderer's pending prompt clears. */
   private drainApprovals(session: CodexSession): void {
-    for (const [requestId] of [...session.pendingApprovals]) {
+    for (const [requestId] of session.pendingApprovals) {
       this.resolveApproval(session, requestId, "reject-once");
     }
   }
@@ -1209,7 +1209,7 @@ export class CodexAdapter implements ProviderAdapter {
   /** Resolve every parked question empty — on interrupt/stop so no RPC handler
    *  hangs and the renderer's pending prompt clears. */
   private drainUserInputs(session: CodexSession): void {
-    for (const [requestId] of [...session.pendingUserInputs]) {
+    for (const [requestId] of session.pendingUserInputs) {
       this.resolveUserInput(session, requestId, {});
     }
   }

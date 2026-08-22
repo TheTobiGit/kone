@@ -366,7 +366,7 @@ describe("Claude steerTurn", () => {
   });
 
   test("stopSession after a steer closes the queue and drops the unconsumed steer", async () => {
-    const { adapter, events } = setup();
+    const { adapter } = setup();
     await start(adapter);
     await adapter.sendTurn({
       threadId: THREAD,

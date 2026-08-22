@@ -1,33 +1,16 @@
-import type { ComputedRef, Ref, ShallowRef } from "vue";
 import type {
-  ApprovalDecision,
   ApprovalRequest,
   ChatAttachment,
-  ForkContext,
   InteractionMode,
   KoneAgentApi,
   ProviderKind,
-  RuntimeEvent,
   RuntimeItem,
-  RuntimeItemKind,
-  RuntimeSessionState,
   SendTurnInput,
-  Session,
-  SessionStartInput,
-  SpawnedThread,
-  StoredBlock,
-  StoredThread,
-  StoredThreadMeta,
-  StoredThreadPage,
-  SubagentRun,
-  SubagentRunSnapshot,
-  TokenUsage,
   TurnStartResult,
-  UserInputAnswers,
   UserInputQuestion,
 } from "~/types/desktop";
 import type { EffortTier } from "~/utils/modelCatalog";
-import type { ActivePlanTask, PlanTask } from "~/utils/planTasks";
+import type { ActivePlanTask } from "~/utils/planTasks";
 
 /** Set on blocks bulk-loaded from storage (rehydrate/openThread) so the view
  *  renders them settled — no entry springs, no per-word blur-in. Live turns

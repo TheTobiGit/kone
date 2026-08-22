@@ -722,7 +722,7 @@ export class AgentService {
    *  tool call doing its work, not a dead child. */
   private sweepWedgedSessions(): void {
     const now = Date.now();
-    for (const threadId of [...this.activeTurns.keys()]) {
+    for (const threadId of this.activeTurns.keys()) {
       // Waiting on the user is not wedged — the silence is the point.
       if (this.parkedByThread.get(threadId)?.size) continue;
       const last = this.lastActivity.get(threadId);
@@ -783,7 +783,7 @@ export class AgentService {
   async sweepIdleSessions(): Promise<void> {
     const now = Date.now();
     const thresholdMs = this.options.idleThresholdMs ?? IDLE_THRESHOLD_MS;
-    for (const threadId of [...this.routing.keys()]) {
+    for (const threadId of this.routing.keys()) {
       // Never reap while a turn is in flight.
       if (this.activeTurns.has(threadId)) continue;
       // Never reap while waiting on user approval or question answer.

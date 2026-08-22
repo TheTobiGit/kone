@@ -208,7 +208,8 @@ function pause() {
   raf = 0
 }
 function sync() {
-  shouldRun() ? play() : pause()
+  if (shouldRun()) play()
+  else pause()
 }
 
 watch([() => props.rings, () => props.density], buildPoints)

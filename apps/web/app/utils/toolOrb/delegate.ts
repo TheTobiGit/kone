@@ -62,7 +62,6 @@ export const drawDelegate: ModeDraw = (ctx, size, t, dark, hueDeg, o) => {
       const z = lerp(na[2], nb[2], u);
       const l = Math.max(1e-6, Math.sqrt(x * x + y * y + z * z));
       const [px, py, zr] = pt(x / l, y / l, z / l);
-      const depth = (zr + 1) / 2;
       dots.push({
         x: px,
         y: py,
