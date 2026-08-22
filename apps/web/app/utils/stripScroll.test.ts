@@ -6,12 +6,18 @@ import {
   LADDER_PX,
   MIN_ANIMATED_PX,
   PEEK_PX,
+  PREVIEW_PAIR_FIT,
+  PREVIEW_RUNGS,
   VISIBILITY_EPS,
   columnLeftFor,
+  columnLeftsFor,
   columnsInView,
   maxScrollFor,
+  maxScrollForWidths,
   padEndFor,
   planeWidthFor,
+  planeWidthForWidths,
+  previewColumnWidths,
   resolveScrollTarget,
   resolveSnapTarget,
   type CenterMode,
@@ -284,4 +290,138 @@ describe("a move too small to animate", () => {
     expect(target).not.toBeNull();
     expect(Math.abs(target!)).toBeLessThan(MIN_ANIMATED_PX + PEEK_PX);
   });
+});
+
+describe("the preview's mixed-width plane", () => {
+  // The settings page models five columns at five different rungs, sized so the
+  // opening pair sits in the window — otherwise When needed and Always collapse
+  // into the same picture on a laptop. These tests hold that plane to the same
+  // standard as the uniform one: correct seams, agreement with the uniform
+  // arithmetic where they should agree, a focus walk that still settles, and the
+  // disagreement the page is there to show.
+  const WALK = [1, 2, 3, 4, 3, 2, 1, 0];
+  /** Widened so `toContain` accepts any number — the rung tuple's literal union
+   *  would otherwise demand the argument be one of its own members. */
+  const RUNGS: readonly number[] = LADDER_PX;
+
+  /** One focus step, exactly the way the page runs it: the rule's answer, dropped
+   *  when it declines (out of range) or when the glide isn't worth firing. */
+  function apply(mode: CenterMode, viewport: number, index: number, at: number): number {
+    const widths = previewColumnWidths(viewport);
+    const lefts = columnLeftsFor(widths);
+    const target = resolveScrollTarget({
+      mode,
+      left: lefts[index]!,
+      width: widths[index]!,
+      viewport,
+      scrollLeft: at,
+      maxScroll: maxScrollForWidths(mode, widths, viewport),
+    });
+    if (target === null) return at;
+    if (Math.abs(Math.round(target - at)) < MIN_ANIMATED_PX) return at;
+    return target;
+  }
+
+  function lapSig(mode: CenterMode, viewport: number): string {
+    let at = 0;
+    const lap: string[] = [];
+    for (const index of WALK) {
+      const next = apply(mode, viewport, index, at);
+      lap.push(next === at ? "held" : String(Math.round(next - at)));
+      at = next;
+    }
+    return lap.join("|");
+  }
+
+  test("the widths are distinct rungs off the ladder", () => {
+    for (const w of PREVIEW_RUNGS) expect(RUNGS).toContain(w);
+    expect(new Set(PREVIEW_RUNGS).size).toBeGreaterThan(1);
+  });
+
+  test("mixed and uniform arithmetic agree where they describe the same plane", () => {
+    const uniform = [COL, COL, COL];
+    expect(planeWidthForWidths(uniform)).toBe(planeWidthFor(3, COL));
+    expect(columnLeftsFor(uniform)).toEqual([
+      columnLeftFor(0, COL),
+      columnLeftFor(1, COL),
+      columnLeftFor(2, COL),
+    ]);
+    for (const mode of MODES) {
+      expect(maxScrollForWidths(mode, uniform, 2560)).toBe(
+        maxScrollFor(mode, 3, COL, 2560),
+      );
+    }
+  });
+
+  test("a mixed plane still carries one more seam than columns", () => {
+    const W = previewColumnWidths(1440);
+    const LEFTS = columnLeftsFor(W);
+    expect(planeWidthForWidths(W)).toBe(W.reduce((sum, w) => sum + w, 0) + (W.length + 1) * JOINT_PX);
+    const last = W.length - 1;
+    expect(planeWidthForWidths(W) - (LEFTS[last]! + W[last]!)).toBe(JOINT_PX);
+  });
+
+  test("the opening pair sits in the window; the third peeks", () => {
+    expect(PREVIEW_PAIR_FIT).toBeLessThan(1);
+    for (const vp of [1280, 1440, 1512, 1680, 1920, 2560]) {
+      const W = previewColumnWidths(vp);
+      const L = columnLeftsFor(W);
+      expect(L[1]! + W[1]!).toBeLessThanOrEqual(vp);
+      expect(L[2]! + W[2]!).toBeGreaterThan(vp);
+    }
+  });
+
+  test("When needed and Always disagree on a laptop-sized window", () => {
+    // The previous 1:1 rungs collapsed these two from 1280px through 1792px —
+    // exactly the windows the page is most often opened on.
+    for (const vp of [1280, 1440, 1512, 1680, 1792, 1920, 2560]) {
+      expect(lapSig("on-overflow", vp)).not.toEqual(lapSig("always", vp));
+      expect(lapSig("never", vp)).not.toEqual(lapSig("always", vp));
+      expect(lapSig("never", vp)).not.toEqual(lapSig("on-overflow", vp));
+    }
+  });
+
+  test("at rest, Always recentres column 2 while When needed holds", () => {
+    const vp = 1440;
+    const W = previewColumnWidths(vp);
+    const L = columnLeftsFor(W);
+    const args = {
+      left: L[1]!,
+      width: W[1]!,
+      viewport: vp,
+      scrollLeft: 0,
+    };
+    expect(
+      resolveScrollTarget({ ...args, mode: "on-overflow", maxScroll: maxScrollForWidths("on-overflow", W, vp) }),
+    ).toBeNull();
+    expect(
+      resolveScrollTarget({ ...args, mode: "never", maxScroll: maxScrollForWidths("never", W, vp) }),
+    ).toBeNull();
+    expect(
+      resolveScrollTarget({ ...args, mode: "always", maxScroll: maxScrollForWidths("always", W, vp) }),
+    ).not.toBeNull();
+  });
+
+  // What the page needs is not literally "ends where it started" but "no drift":
+  // with mixed widths the path-dependent modes can find a window where the inbound
+  // leg holds where the outbound leg moved, so a lap may end a few pixels off its
+  // start. Drift would be that offset compounding lap over lap; what must hold is
+  // that the laps *settle* — after at most one transient lap, every further lap is
+  // identical. Pinned per viewport: a future tweak to `previewColumnWidths`
+  // that introduces genuine wander fails here instead of shipping a preview whose
+  // fifth lap differs from its fourth.
+  for (let vp = 320; vp <= 3440; vp += 40) {
+    test(`every mode's laps settle at ${vp}px`, () => {
+      for (const mode of MODES) {
+        const at = (lap: number) => {
+          let x = apply(mode, vp, 0, 0); // the page seeds on column 0
+          for (let l = 0; l < lap; l += 1) for (const index of WALK) x = apply(mode, vp, index, x);
+          return x;
+        };
+        expect(at(3)).toBe(at(4));
+      }
+      expect(lapSig("on-overflow", vp)).not.toEqual(lapSig("always", vp));
+      expect(lapSig("never", vp)).not.toEqual(lapSig("on-overflow", vp));
+    });
+  }
 });

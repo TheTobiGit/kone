@@ -167,27 +167,90 @@ export function resolveSnapTarget({
 // next to the constants they're built from so that a change to the plane's
 // structure (another seam, a pad, a gap) is one edit, not two files to remember.
 
-/** A column's left edge in a modelled plane: the leading seam, then a seam-and-column
- *  pitch for each column before it. Assumes the multi-column layout, where the start
- *  pad is zero — the solo case centres its one column with a start pad instead, and
- *  never scrolls at all. */
+/** Every column's left edge in a modelled plane of mixed widths: the leading seam,
+ *  then each column's own width plus a seam. The general form of `columnLeftFor`,
+ *  which is this with every width equal — kept as separate functions rather than a
+ *  union parameter so each call site reads as what it means. */
+export function columnLeftsFor(widths: readonly number[]): number[] {
+  const lefts: number[] = [];
+  let at = JOINT_PX;
+  for (const width of widths) {
+    lefts.push(at);
+    at += width + JOINT_PX;
+  }
+  return lefts;
+}
+
+/** The plane's own width for mixed widths: N columns and their N+1 seams. */
+export function planeWidthForWidths(widths: readonly number[]): number {
+  let total = JOINT_PX;
+  for (const width of widths) total += width + JOINT_PX;
+  return total;
+}
+
+/** `scrollWidth - clientWidth` for a modelled plane of mixed widths. */
+export function maxScrollForWidths(
+  mode: CenterMode,
+  widths: readonly number[],
+  viewport: number,
+): number {
+  return Math.max(0, planeWidthForWidths(widths) + padEndFor(mode, viewport) - viewport);
+}
+
+/** A column's left edge in a modelled plane of equal columns: the leading seam, then
+ *  a seam-and-column pitch for each column before it. Assumes the multi-column
+ *  layout, where the start pad is zero — the solo case centres its one column with a
+ *  start pad instead, and never scrolls at all. */
 export function columnLeftFor(index: number, columnWidth: number): number {
   return JOINT_PX + index * (columnWidth + JOINT_PX);
 }
 
-/** The plane's own width: N columns, N trailing seams, and the leading seam. */
+/** The plane's own width: N equal columns, N trailing seams, and the leading seam. */
 export function planeWidthFor(count: number, columnWidth: number): number {
-  return JOINT_PX + count * (columnWidth + JOINT_PX);
+  return planeWidthForWidths(Array.from({ length: count }, () => columnWidth));
 }
 
-/** `scrollWidth - clientWidth` for a modelled plane. */
+/** `scrollWidth - clientWidth` for a modelled plane of equal columns. Delegates to
+ *  the mixed-width form so the two can't disagree about what a plane weighs. */
 export function maxScrollFor(
   mode: CenterMode,
   count: number,
   columnWidth: number,
   viewport: number,
 ): number {
-  return Math.max(0, planeWidthFor(count, columnWidth) + padEndFor(mode, viewport) - viewport);
+  return maxScrollForWidths(mode, Array.from({ length: count }, () => columnWidth), viewport);
+}
+
+/** The rungs the settings preview assigns to its five columns, in walk order.
+ *  Ratios match the board's ladder; magnitudes come from `previewColumnWidths`. */
+export const PREVIEW_RUNGS: readonly number[] = [
+  LADDER_PX[0],
+  LADDER_PX[1],
+  LADDER_PX[2],
+  LADDER_PX[3],
+  LADDER_PX[0],
+] as const;
+
+/** Fraction of the viewport the preview's opening pair occupies at rest.
+ *  Under 1 so rounding can't push column 1 out of view; high enough that a
+ *  third column still peeks — if the pair sat much smaller, `never` and
+ *  `on-overflow` would both hold for most of the walk and the page would only
+ *  be demonstrating `always`. */
+export const PREVIEW_PAIR_FIT = 0.94;
+
+/** Column widths for the settings preview at a given viewport.
+ *
+ *  The board's rungs start at 840px. Two of those don't fit a laptop window,
+ *  so a 1:1 model leaves `on-overflow` with nothing to hold for and the two
+ *  centring modes become the same picture — which is the distinction the page
+ *  exists to teach. These keep the ladder's proportions but size the opening
+ *  pair (columns 0 and 1) to `PREVIEW_PAIR_FIT` of the window, so at rest
+ *  When needed holds and Always still recentres. */
+export function previewColumnWidths(viewport: number): number[] {
+  const vp = Math.max(320, viewport);
+  const pair = PREVIEW_RUNGS[0]! + PREVIEW_RUNGS[1]!;
+  const scale = (vp * PREVIEW_PAIR_FIT - 2 * JOINT_PX) / pair;
+  return PREVIEW_RUNGS.map((w) => Math.max(1, Math.round(w * scale)));
 }
 
 /** How many whole columns are visible at once — the number that decides whether
