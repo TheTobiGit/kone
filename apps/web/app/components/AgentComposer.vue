@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onMounted, onUnmounted, ref, render, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { onClickOutside, onKeyStroke, useEventListener } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -16,19 +16,14 @@ import {
 import SphereFace from "~/components/SphereFace.vue";
 import AgentBotBead from "~/components/AgentBotBead.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
-import MentionChip from "~/components/MentionChip.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
-import type { AttachmentKind, GitProjectFile, InteractionMode } from "~/types/desktop";
-import { useProjectFiles } from "~/composables/useProjectFiles";
+import type { AttachmentKind, InteractionMode } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
+import { useComposerAttachments } from "~/composables/useComposerAttachments";
+import { useComposerDraft } from "~/composables/useComposerDraft";
+import { useComposerMentions } from "~/composables/useComposerMentions";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
-import {
-  detectFileMentionTrigger,
-  formatFileMention,
-  splitComposerMentionSegments,
-  type FileMentionTrigger,
-} from "~/utils/composerMentions";
 import {
   effortForTier,
   familyForId,
@@ -349,445 +344,77 @@ const field = ref<HTMLElement | null>(null);
 const surface = ref<HTMLElement | null>(null);
 const dock = ref<HTMLElement | null>(null);
 
-// ── draft persistence ────────────────────────────────────────────────────────
-// The draft (text + @mention chips) is component state, so a project switch or
-// a renderer reload used to wipe it. It's saved debounced to localStorage under
-// the composer's identity — the project root it's bound to — and restored on
-// mount. Attachments are File objects and can't survive a reload; only the
-// text rides along. Cleared on send, so a consumed draft never resurrects.
-const DRAFT_KEY = computed(() => `kone:draft:${props.projectPath}`);
-let draftSaveTimer: number | null = null;
-function scheduleDraftSave(): void {
-  if (draftSaveTimer) clearTimeout(draftSaveTimer);
-  draftSaveTimer = window.setTimeout(persistDraft, 350);
-}
-function persistDraft(): void {
-  draftSaveTimer = null;
-  try {
-    const draft = text.value.trim();
-    if (draft) window.localStorage.setItem(DRAFT_KEY.value, draft);
-    else window.localStorage.removeItem(DRAFT_KEY.value);
-  } catch {
-    // Storage unavailable (private mode / quota) — a lost draft is not an
-    // error worth surfacing; the in-memory draft still works this session.
-  }
-}
-function restoreDraft(): void {
-  try {
-    const saved = window.localStorage.getItem(DRAFT_KEY.value);
-    if (saved) setEditorFromText(saved);
-  } catch {
-    // Same: storage unavailable → start clean.
-  }
-}
+// ── composer modules (mentions, attachments, draft) ──────────────────────────
+const {
+  draftKey: DRAFT_KEY,
+  scheduleDraftSave,
+  persistDraft,
+  restoreDraft,
+  clearDraft,
+} = useComposerDraft({
+  getProjectPath: () => props.projectPath,
+  getText: () => text.value,
+  setEditorFromText: (val) => setEditorFromText(val),
+});
 
-// ── project file mentions ────────────────────────────────────────────────────
-// @ opens a small project-scoped picker over the field. The field itself is a
-// contenteditable surface: prose lives in plain text nodes, and a chosen file
-// becomes an atomic <MentionChip> span (a type logo + the bare filename) that
-// the browser deletes as one unit. On every edit we serialize the DOM back into
-// `text` — chips write out as their full @path — so what the provider receives
-// is unchanged even though the field shows only names.
-const mentionTrigger = ref<FileMentionTrigger | null>(null);
-const mentionActiveIndex = ref(0);
-// The live DOM position of the active trigger (which text node, and the char
-// range of the "@query" inside it) so a pick can splice a chip in exactly there.
-type DomTrigger = { node: Text; start: number; end: number };
-let domTrigger: DomTrigger | null = null;
-const mentionQuery = computed(() => mentionTrigger.value?.query ?? "");
-const mentionOpen = computed(() => open.value && mentionTrigger.value !== null && !props.busy);
-const projectFiles = useProjectFiles(
-  () => props.projectPath,
-  () => mentionQuery.value,
-);
-const mentionFiles = computed(() => projectFiles.entries.value);
-const mentionPending = computed(() => projectFiles.pending.value);
-const mentionError = computed(() => projectFiles.error.value);
+const {
+  mentionTrigger,
+  mentionActiveIndex,
+  mentionQuery,
+  mentionOpen,
+  projectFiles,
+  mentionFiles,
+  mentionPending,
+  mentionError,
+  makeChipEl,
+  disposeChips,
+  serializeNode,
+  serializeEditor,
+  onEditorChanged,
+  refreshTrigger,
+  selectMention,
+  onFieldInput,
+  onFieldClick,
+  onFieldKeyup,
+  onFieldKeydown,
+  setEditorFromText,
+  clearEditor,
+  focusEditorEnd,
+  insertTextAtCaret,
+} = useComposerMentions({
+  field,
+  text,
+  projectPath: () => props.projectPath,
+  isOpen: () => open.value,
+  isBusy: () => props.busy,
+  onSync: sync,
+  onSubmitOrQueue: () => submitOrQueue(),
+});
 
-// Placeholder shows only when the field is truly empty (no prose, no chips).
 const isEmpty = computed(() => text.value.trim().length === 0);
 
-// Mint a chip element by mounting a live MentionChip into a detached host and
-// handing back its root node. It's mounted live (not cloned) because the file
-// icon (@iconify/vue) fills its SVG in a tick after mount — a synchronous clone
-// would freeze an empty placeholder. Each chip's host is tracked so its Vue
-// scope can be torn down when the field is cleared or the composer unmounts.
-const chipHosts = new Set<HTMLElement>();
-function makeChipEl(path: string): HTMLElement {
-  const host = document.createElement("div");
-  render(h(MentionChip, { path }), host);
-  const chip = host.firstElementChild as HTMLElement | null;
-  if (!chip) {
-    render(null, host);
-    const span = document.createElement("span");
-    span.textContent = path;
-    span.setAttribute("contenteditable", "false");
-    span.dataset.mentionPath = path;
-    return span;
-  }
-  chip.setAttribute("contenteditable", "false");
-  chip.dataset.mentionPath = path;
-  chipHosts.add(host);
-  return chip;
-}
-// Unmount every live chip's Vue scope (the DOM nodes are already gone once the
-// field is wiped). Called on clear/send and unmount so nothing lingers.
-function disposeChips(): void {
-  for (const host of chipHosts) render(null, host);
-  chipHosts.clear();
-}
+const {
+  attachments,
+  notice,
+  fileInput,
+  dragging,
+  hasAttachments,
+  flash,
+  addFiles,
+  openFilePicker,
+  onFilePicked,
+  removeAttachment,
+  clearAttachments,
+  onDragEnter,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+} = useComposerAttachments({
+  isOpen: () => open.value,
+  wake,
+  syncSoon,
+});
 
-// Walk the field's DOM into the serialized draft: text nodes verbatim, chips as
-// their full @path token, and line breaks (a native <br> / block split from
-// Shift+Enter) as "\n".
-function serializeNode(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
-  if (node.nodeType !== Node.ELEMENT_NODE) return "";
-  const el = node as HTMLElement;
-  if (el.dataset.mentionPath !== undefined) return formatFileMention(el.dataset.mentionPath);
-  if (el.tagName === "BR") return "\n";
-  let inner = "";
-  for (const child of Array.from(el.childNodes)) inner += serializeNode(child);
-  return /^(DIV|P)$/.test(el.tagName) ? `\n${inner}` : inner;
-}
-function serializeEditor(): string {
-  const el = field.value;
-  if (!el) return "";
-  let out = "";
-  for (const child of Array.from(el.childNodes)) out += serializeNode(child);
-  // A lone bogus <br> the browser keeps in an "empty" field serializes to "\n";
-  // treat a value that is only whitespace as empty so the placeholder returns.
-  return out.replace(/^\n/, "");
-}
-
-// Read `text` back off the DOM after any edit, refresh the mention trigger from
-// the live caret, and re-measure the surface.
-function onEditorChanged(): void {
-  text.value = serializeEditor();
-  refreshTrigger();
-  void nextTick(sync);
-}
-
-// Find an active @token at the collapsed caret, scoped to the caret's own text
-// node. Reuses the shared detector so the "@ only after whitespace" rule holds.
-function readDomTrigger(): { trigger: FileMentionTrigger; dom: DomTrigger } | null {
-  const root = field.value;
-  const sel = typeof window !== "undefined" ? window.getSelection() : null;
-  if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-  const range = sel.getRangeAt(0);
-  const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return null;
-  const textNode = node as Text;
-  const trigger = detectFileMentionTrigger(textNode.data, range.startOffset);
-  if (!trigger) return null;
-  return { trigger, dom: { node: textNode, start: trigger.rangeStart, end: range.startOffset } };
-}
-
-function refreshTrigger(): void {
-  const found = readDomTrigger();
-  domTrigger = found?.dom ?? null;
-  mentionTrigger.value = found?.trigger ?? null;
-}
-
-function placeCaret(node: Node, offset: number): void {
-  const sel = window.getSelection();
-  if (!sel) return;
-  const range = document.createRange();
-  range.setStart(node, offset);
-  range.collapse(true);
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
-
-function selectMention(file: GitProjectFile): void {
-  const trig = domTrigger;
-  const root = field.value;
-  if (!trig || !root) return;
-
-  // Split the trigger's text node into [before][query][after], drop the query
-  // text, and drop a chip where it was. A trailing space keeps the next word off
-  // the chip — reusing one already sitting after the caret so we never double it.
-  const after = trig.node.splitText(trig.end);
-  trig.node.splitText(trig.start);
-  const parent = trig.node.parentNode;
-  const queryNode = trig.node.nextSibling;
-  if (!parent || !queryNode) return;
-  parent.removeChild(queryNode);
-
-  const chip = makeChipEl(file.path);
-  parent.insertBefore(chip, after);
-
-  let caretNode: Node;
-  let caretOffset: number;
-  if (after.nodeType === Node.TEXT_NODE && (after as Text).data.startsWith(" ")) {
-    caretNode = after;
-    caretOffset = 1;
-  } else {
-    const space = document.createTextNode(" ");
-    parent.insertBefore(space, after);
-    caretNode = space;
-    caretOffset = 1;
-  }
-
-  root.focus();
-  placeCaret(caretNode, caretOffset);
-  mentionActiveIndex.value = 0;
-  onEditorChanged();
-}
-
-function onFieldInput(): void {
-  onEditorChanged();
-}
-function onFieldClick(): void {
-  refreshTrigger();
-}
-function onFieldKeyup(): void {
-  refreshTrigger();
-}
-
-function onFieldKeydown(e: KeyboardEvent): void {
-  if (mentionOpen.value) {
-    const count = projectFiles.entries.value.length;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      if (count) mentionActiveIndex.value = (mentionActiveIndex.value + 1) % count;
-      return;
-    }
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      if (count) mentionActiveIndex.value = (mentionActiveIndex.value - 1 + count) % count;
-      return;
-    }
-    if (e.key === "Enter" || e.key === "Tab") {
-      const file = projectFiles.entries.value[mentionActiveIndex.value];
-      if (file) {
-        e.preventDefault();
-        selectMention(file);
-        return;
-      }
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      mentionTrigger.value = null;
-      domTrigger = null;
-      return;
-    }
-  }
-  // Plain Enter sends. Shift+Enter falls through to the browser's native
-  // line-break (it manages the caret correctly), which serializes back as "\n".
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    submitOrQueue();
-  }
-}
-
-// Rebuild the field's DOM from a serialized draft, parsing completed @paths back
-// into chips. Used to restore a draft and to clear on send.
-function setEditorFromText(value: string): void {
-  const el = field.value;
-  if (!el) return;
-  el.replaceChildren();
-  disposeChips();
-  for (const segment of splitComposerMentionSegments(value)) {
-    if (segment.type === "mention") el.appendChild(makeChipEl(segment.path));
-    else if (segment.text) el.appendChild(document.createTextNode(segment.text));
-  }
-  text.value = serializeEditor();
-}
-
-function clearEditor(): void {
-  field.value?.replaceChildren();
-  disposeChips();
-  text.value = "";
-  mentionTrigger.value = null;
-  domTrigger = null;
-}
-
-function focusEditorEnd(): void {
-  const el = field.value;
-  if (!el) return;
-  el.focus();
-  const sel = window.getSelection();
-  if (!sel) return;
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  range.collapse(false);
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
-
-// Insert plain text at the caret (used by paste + type-anywhere-to-focus),
-// falling back to the field's end when there's no live selection inside it.
-function insertTextAtCaret(value: string): void {
-  const el = field.value;
-  if (!el) return;
-  const sel = window.getSelection();
-  let range: Range;
-  if (sel && sel.rangeCount && el.contains(sel.anchorNode)) {
-    range = sel.getRangeAt(0);
-    range.deleteContents();
-  } else {
-    range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(false);
-  }
-  const node = document.createTextNode(value);
-  range.insertNode(node);
-  range.setStartAfter(node);
-  range.collapse(true);
-  sel?.removeAllRanges();
-  sel?.addRange(range);
-}
-
-// The surface is sized imperatively so it can animate (CSS can't transition to
-// `auto`). Open, it is ONE shape — a card of fixed width (CSS owns it) whose
-// height follows the text. The orb expands straight into that card, so waking
-// is a single move (width + corners + height together) instead of a pill that
-// then has to widen per keystroke. Only the height is measured here.
-const REST = 55;
-const surfaceH = ref(REST);
-// True only during the wake expand, so the corner-lead stagger applies then but
-// not on every keystroke width change.
-const opening = ref(false);
-// A big/structural size change (paste, drop, wrap toggle, pill↔card) springs;
-// the small per-keystroke nudges of ordinary typing stay snappy so the field
-// tracks the cursor instead of wobbling behind it.
-const springy = ref(false);
-// Size changes below this (px) read as incremental typing → snappy, not spring.
-const SPRING_MIN = 64;
-let lastCard = false;
-
-// ── attachments ────────────────────────────────────────────────────────────
-// The composer holds the picked File objects locally (with an object-URL
-// preview for images) and emits them on send; the parent uploads them to disk
-// so they're scoped to the final thread. Limits mirror the main-process store
-// (see MAX_ATTACHMENTS_PER_TURN / *_BYTES in the agent contract) so an oversize
-// or over-count pick is caught here before it ever reaches an IPC round-trip.
-const MAX_ATTACHMENTS = 8;
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
-
-type PendingAttachment = {
-  id: number;
-  file: File;
-  name: string;
-  kind: AttachmentKind;
-  sizeBytes: number;
-  /** A short uppercase badge for non-image files, e.g. "PDF", "MD". */
-  ext: string;
-  /** An object URL for image previews; revoked on remove / unmount. */
-  previewUrl?: string;
-};
-let attachSeq = 0;
-const attachments = ref<PendingAttachment[]>([]);
-// A brief, self-clearing note when a pick is rejected (too big / too many).
-const notice = ref("");
-let noticeTimer: number | undefined;
-function flash(msg: string) {
-  notice.value = msg;
-  window.clearTimeout(noticeTimer);
-  noticeTimer = window.setTimeout(() => (notice.value = ""), 3200);
-}
-
-const fileInput = ref<HTMLInputElement | null>(null);
-const dragging = ref(false);
-let dragDepth = 0;
-
-function extFor(file: File): string {
-  const dot = file.name.lastIndexOf(".");
-  const raw = dot > 0 ? file.name.slice(dot + 1) : "";
-  return (raw || "FILE").slice(0, 4).toUpperCase();
-}
-
-// Take a FileList (picker, drop, or paste) into pending attachments, enforcing
-// the count + per-kind size caps. Rejected files are skipped with a note.
-function addFiles(list: FileList | File[] | null | undefined) {
-  if (!list) return;
-  const incoming = Array.from(list);
-  if (incoming.length === 0) return;
-  let added = 0;
-  for (const file of incoming) {
-    if (attachments.value.length >= MAX_ATTACHMENTS) {
-      flash(`Up to ${MAX_ATTACHMENTS} attachments per message.`);
-      break;
-    }
-    const kind: AttachmentKind = file.type.startsWith("image/") ? "image" : "file";
-    const cap = kind === "image" ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
-    if (file.size > cap) {
-      flash(`"${file.name}" is too large (max ${Math.round(cap / (1024 * 1024))} MB).`);
-      continue;
-    }
-    attachments.value.push({
-      id: ++attachSeq,
-      file,
-      name: file.name,
-      kind,
-      sizeBytes: file.size,
-      ext: extFor(file),
-      previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined,
-    });
-    added++;
-  }
-  if (added > 0) {
-    cue("toggle");
-    if (!open.value) void wake();
-    syncSoon();
-  }
-}
-
-function openFilePicker() {
-  fileInput.value?.click();
-}
-function onFilePicked(e: Event) {
-  const input = e.target as HTMLInputElement;
-  addFiles(input.files);
-  // Clear so re-picking the same file fires `change` again.
-  input.value = "";
-}
-
-function removeAttachment(id: number) {
-  const at = attachments.value.find((a) => a.id === id);
-  if (at?.previewUrl) URL.revokeObjectURL(at.previewUrl);
-  attachments.value = attachments.value.filter((a) => a.id !== id);
-  cue("toggle");
-  syncSoon();
-}
-function clearAttachments() {
-  for (const at of attachments.value) {
-    if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
-  }
-  attachments.value = [];
-}
-
-// ── drag & drop (over the whole dock) ────────────────────────────────────────
-function hasFiles(e: DragEvent): boolean {
-  return Array.from(e.dataTransfer?.types ?? []).includes("Files");
-}
-function onDragEnter(e: DragEvent) {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  dragDepth++;
-  dragging.value = true;
-}
-function onDragOver(e: DragEvent) {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-}
-function onDragLeave() {
-  dragDepth = Math.max(0, dragDepth - 1);
-  if (dragDepth === 0) dragging.value = false;
-}
-function onDrop(e: DragEvent) {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  dragDepth = 0;
-  dragging.value = false;
-  addFiles(e.dataTransfer?.files);
-}
-
-// Paste — grab any files off the clipboard (a screenshot, a copied file) and
-// keep the plain-text paste working when there aren't any.
 function onPaste(e: ClipboardEvent) {
   const files = e.clipboardData?.files;
   if (files && files.length > 0) {
@@ -795,8 +422,6 @@ function onPaste(e: ClipboardEvent) {
     addFiles(files);
     return;
   }
-  // Force a plain-text paste — the field is contenteditable, so the default
-  // would drop styled markup into it. Insert the text ourselves, then re-read.
   const plain = e.clipboardData?.getData("text/plain");
   if (plain) {
     e.preventDefault();
@@ -805,10 +430,15 @@ function onPaste(e: ClipboardEvent) {
   }
 }
 
-const hasAttachments = computed(() => attachments.value.length > 0);
+const REST = 55;
+const surfaceH = ref(REST);
+const opening = ref(false);
+const springy = ref(false);
+const SPRING_MIN = 64;
+let lastCard = false;
+
 const hasText = computed(() => text.value.trim().length > 0);
 const armed = computed(() => hasText.value || hasAttachments.value);
-// Chips only ride the card when something is actually attached.
 const card = computed(() => hasAttachments.value);
 
 // Read the surface's natural height at its current (settled) width.
@@ -977,15 +607,9 @@ onMounted(() => {
   sync();
 });
 onUnmounted(() => {
-  window.clearTimeout(noticeTimer);
-  if (draftSaveTimer) {
-    window.clearTimeout(draftSaveTimer);
-    persistDraft();
-  }
+  persistDraft();
   disposeChips();
-  for (const at of attachments.value) {
-    if (at.previewUrl) URL.revokeObjectURL(at.previewUrl);
-  }
+  clearAttachments();
 });
 watch(text, scheduleDraftSave);
 watch(

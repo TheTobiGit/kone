@@ -5,14 +5,11 @@ import {
   query,
   type AccountInfo,
   type CanUseTool,
-  type EffortLevel,
   type HookInput,
   type HookJSONOutput,
   type ModelInfo,
   type Options as ClaudeQueryOptions,
-  type PermissionMode,
   type PermissionResult,
-  type Query,
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -30,30 +27,23 @@ import { probe } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
-  ApprovalRequest,
-  ApprovalRequestKind,
   BaseEvent,
   EmitEvent,
   InteractionMode,
   ModelDescriptor,
-  PlanTask,
   ProviderAdapter,
   ProviderRefs,
   ProviderStatus,
   RuntimeEvent,
   RuntimeItem,
-  RuntimeItemKind,
   RuntimeItemStatus,
   Session,
   SendTurnInput,
   SessionStartInput,
-  SubagentRunSnapshot,
   SubagentStatus,
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
-  UserInputQuestion,
-  UserInputQuestionOption,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 import {
@@ -63,13 +53,12 @@ import {
   isClaudeSubagentTool,
   CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND,
 } from "../claudeSubagents.js";
-import type { ClaudeTrackedTask } from "../claudeTaskTracker.js";
 import {
   applyClaudeTaskToolResult,
   isClaudeTaskTool,
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
-import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
+import { formatPlanTasks } from "../planTasks.js";
 import { isResumeRefusalError } from "./errors.js";
 import {
   buildClaudeAttachmentContent,
@@ -127,529 +116,45 @@ import {
 // models are natively 1M (not the legacy `context-1m` beta, which was Sonnet
 // 4/4.5-only), so the real per-thread choice is the *auto-compact window* — the
 // token budget Claude Code compacts the transcript at. kone offers 200k (a safer
-// default) vs the full 1M on every non-Haiku model, carried per-turn as
 // `contextWindow` and applied live via applyFlagSettings({ autoCompactWindow })
 // — no session restart.
 
-const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
+import {
+  CURATED_CLAUDE_MODELS,
+  DEFAULT_CLAUDE_CONTEXT_WINDOW,
+  FAST_SERVICE_TIER,
+  INTERRUPT_TIMEOUT_MS,
+  STOP_TASK_TIMEOUT_MS,
+  contextWindowTokens,
+  mapClaudeModels,
+  mergeClaudeModels,
+  newScope,
+  normalizeEffort,
+  recognizedSubagentToolUseId,
+  scopeItemId,
+  toPermissionMode,
+  type ClaudeItemBuffer,
+  type ClaudeScope,
+  type ClaudeSession,
+  type ClaudeSubagentRun,
+} from "./claudeAdapterTypes.js";
 
-// Bounds for stop-path provider calls: a wedged CLI must never hang Stop. The
-// SDK's stopTask/interrupt promises have no timeout of their own, so a hung
-// fix-thread-kill-handling bounds the same calls).
-const STOP_TASK_TIMEOUT_MS = 3_000;
-const INTERRUPT_TIMEOUT_MS = 5_000;
-
-// The one speed tier Claude exposes, surfaced as a plain on/off toggle (the
-// composer renders any family whose descriptor carries a `fast` serviceTier).
-// Only models that report `supportsFastMode` advertise it.
-const FAST_SERVICE_TIER = { id: "fast", label: "Fast" };
-
-// The context-window choice kone offers on 1M-capable Claude models. This is the
-// *auto-compact window* — the token budget Claude Code compacts the transcript
-// at — NOT the raw model capacity, and NOT the legacy `context-1m-2025-08-07`
-// beta (that flag was Sonnet-4/4.5-only; every current Claude model is natively
-// 1M). Default to a safer 200k budget and let a thread opt into the full 1M.
-// `tokens` is the value handed to the SDK's `autoCompactWindow` Setting (see
-// sendTurn). Single-window models (Haiku, 200k) get no `contextWindows` and so
-// no picker.
-const CLAUDE_CONTEXT_WINDOWS = [
-  { id: "200k", label: "200K", tokens: 200_000, isDefault: true as const },
-  { id: "1m", label: "1M", tokens: 1_000_000 },
-];
-
-/** Token budget for a chosen context-window id, or undefined for an unknown id
- *  (which the caller treats as "leave the window at its current setting"). */
-function contextWindowTokens(id: string | undefined): number | undefined {
-  return CLAUDE_CONTEXT_WINDOWS.find((w) => w.id === id)?.tokens;
-}
-
-/** Claude's default auto-compact budget is the safer 200k window. The live
- * setting is only populated when a turn explicitly changes it. */
-const DEFAULT_CLAUDE_CONTEXT_WINDOW = contextWindowTokens("200k");
-
-/** Which context-window options a Claude model exposes. Current Claude models
- *  are natively 1M except the Haiku line (200k), so every non-Haiku Claude model
- *  gets the 200k/1M auto-compact choice; a single-window model gets none. The
- *  SDK's live ModelInfo carries no context-window field, so — like a static
- *  capability table — this is derived from the id. */
-function contextWindowsForModel(id: string): typeof CLAUDE_CONTEXT_WINDOWS | undefined {
-  return /haiku/i.test(id) ? undefined : CLAUDE_CONTEXT_WINDOWS;
-}
-
-// The effort ladders the current Claude line exposes (API-effort levels only —
-// ultrathink/ultracode are separate prompt/provider modes kone doesn't surface).
-// `full` = the Claude 5 xhigh/max ladder; `extended` = the pre-xhigh generation
-// (4.6); `basic` = Opus 4.5's short ladder. Haiku carries no effort axis at all.
-const CLAUDE_FULL_EFFORTS: string[] = ["low", "medium", "high", "xhigh", "max"];
-const CLAUDE_EXTENDED_EFFORTS: string[] = ["low", "medium", "high", "max"];
-const CLAUDE_BASIC_EFFORTS: string[] = ["low", "medium", "high"];
-
-// kone's curated Claude catalog — the hand-maintained ground truth. This is the
-// *base* of the picker: listModels() merges whatever the live SDK reports on
-// top of it (see mergeClaudeModels), so older versions the SDK no longer
-// advertises still appear, and a brand-new release the SDK knows about surfaces
-// even before it's baked here. Each entry carries verified per-model
-// capabilities:
-//   • fast mode — only the Opus fast-mode lane (5 / 4.8 / 4.7 / 4.6) advertises
-//     the `fast` tier; Fable, Sonnet and Haiku don't.
-//   • context window — the 200k/1M auto-compact switch is present on every
-//     natively-1M model; Opus 4.5 and Haiku 4.5 are 200k-only, so they get no
-//     `contextWindows` and therefore no switch.
-//   • reasoning effort — each model's real ladder, defaulting to `high`.
-const CURATED_CLAUDE_MODELS: ModelDescriptor[] = [
-  { id: "claude-fable-5", label: "Claude Fable 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-opus-4-7", label: "Claude Opus 4.7", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6", reasoningEfforts: CLAUDE_EXTENDED_EFFORTS, defaultReasoningEffort: "high", serviceTiers: [FAST_SERVICE_TIER], contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-opus-4-5", label: "Claude Opus 4.5", reasoningEfforts: CLAUDE_BASIC_EFFORTS, defaultReasoningEffort: "high" },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5", reasoningEfforts: CLAUDE_FULL_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", reasoningEfforts: CLAUDE_EXTENDED_EFFORTS, defaultReasoningEffort: "high", contextWindows: CLAUDE_CONTEXT_WINDOWS },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
-];
-
-type ClaudeItemBuffer = {
-  itemId: string;
-  kind: RuntimeItemKind;
-  name?: string;
-  text: string;
-  detail: string;
-  tasks?: PlanTask[];
-  /** Raw streamed tool input JSON — kept for TaskCreate/TaskUpdate handling. */
-  toolInputRaw?: string;
-  /** Set for tool_use blocks — the raw tool name, used to shape the summary and
-   *  to know the block is still executing after its input finishes streaming. */
-  toolName?: string;
-  /** Set for tool_use blocks — the provider's tool-use id. Doubles as a
-   *  subagent run's identity when the tool is a Task/Agent spawn. */
-  toolUseId?: string;
-};
-
-/** One projection scope. The main conversation has exactly one; every live
- *  subagent run gets its own, so a child's blocks and tool items can never
- *  collide with the parent's (both stream block index 0 for their first block). */
-type ClaudeScope = {
-  /** Undefined for the main conversation; the run's Task tool-use id otherwise
-   *  — stamped on every item event this scope emits. */
-  subagentToolUseId?: string;
-  /** Bumped on each message_start so item ids stay unique across a turn. */
-  msgOrdinal: number;
-  /** The current message's live content blocks, keyed by block index. Cleared
-   *  on each message_start. Holds text/thinking/tool-input while they stream. */
-  blocks: Map<number, ClaudeItemBuffer>;
-  /** Tool items keyed by tool_use_id, so a tool_result arriving in a later
-   *  `user` message can find and complete the right item after the block map
-   *  has already rolled over. */
-  toolItems: Map<string, ClaudeItemBuffer>;
-  /** True once a `stream_event` landed here. Subagent conversations are
-   *  normally forwarded as *complete* messages (no partials), which is why this
-   *  adapter projects assistant messages for them at all — if a future CLI does
-   *  stream a child, the complete-message projection stands down rather than
-   *  emitting every item twice. */
-  sawStreamEvent: boolean;
-};
-
-/** One live Task/Agent tool spawn: the snapshot kone reports and the scope its
- *  forwarded traffic is projected through. */
-type ClaudeSubagentRun = {
-  snapshot: SubagentRunSnapshot;
-  scope: ClaudeScope;
-  /** True once `subagent.started` has been emitted for this run. */
-  announced: boolean;
-};
-
-type ClaudeSession = {
-  threadId: string;
-  cwd: string;
-  model?: string;
-  effort?: EffortLevel;
-  mode: InteractionMode;
-  query: Query;
-  prompt: MessageQueue;
-  abort: AbortController;
-  /** Claude-native session id (from system/init) — for display/resume. */
-  sessionId?: string;
-  /** The resume id this process actually adopted, when one was honored. */
-  resumedFrom?: string;
-  /** The uuid of the most recent main-conversation assistant message — the
-   *  resume anchor the SDK's `resumeSessionAt` option wants (see
-   *  startFreshSession). The SDK can't reliably resume a conversation whose
-   *  tail is a user message, so this anchors the resume at the last assistant
-   *  message instead. Carried on every event envelope via refs so the store
-   *  persists it live. */
-  lastAssistantUuid?: string;
-  activeTurnId?: string;
-  /** The main conversation's projection scope. */
-  main: ClaudeScope;
-  /** Live subagent runs, keyed by the spawning Task tool-use id — the id every
-   *  forwarded child message carries as `parent_tool_use_id`. */
-  subagentRuns: Map<string, ClaudeSubagentRun>;
-  /** Final status per run that already settled. Kept so (a) a settled run's
-   *  in-flight tail is dropped rather than resurrecting it, and (b) the parent's
-   *  Task tool_result — which comes back as an *error* for a stopped run — is
-   *  reported with the truth. */
-  settledSubagents: Map<string, SubagentStatus>;
-  /** Mid-task messages queued per run, drained by the PreToolUse hook on the
-   *  child's next tool call (the only SDK channel that reaches a live child). */
-  pendingSubagentSteers: Map<string, string[]>;
-  /** Stop requests that arrived before `task_started` mapped a run's tool-use
-   *  id to an SDK task id; fired the moment that mapping lands. */
-  pendingSubagentStops: Set<string>;
-  consumer: Promise<void>;
-  /** True once we're tearing this session down on purpose (stopSession) — the
-   *  consumer's finally then skips the "unexpected exit" event. */
-  disposed: boolean;
-  /** True between interruptTurn() and the result that lands from it, so the
-   *  result is reported as `interrupted` rather than `failed`. */
-  interrupting: boolean;
-  /** Whether Claude's low-latency "fast mode" Setting is currently on for this
-   *  session. Toggled live in sendTurn via applyFlagSettings when a turn's
-   *  requested `fast` service tier differs from this. */
-  fastMode: boolean;
-  /** The auto-compact window (in tokens) currently applied to this session, or
-   *  undefined while it's still at the CLI's default. Toggled live in sendTurn
-   *  via applyFlagSettings when a turn's requested context window differs — the
-   *  Claude analogue of a per-thread context-window size, no restart needed. */
-  autoCompactWindow?: number;
-  /** Claude Code TaskCreate/TaskUpdate checklist for the active turn. */
-  trackedTasks: Map<string, ClaudeTrackedTask>;
-  /** Whether a synthesized `${turnId}:plan` item has been started this turn. */
-  taskPlanStarted: boolean;
-  /** In-flight AskUserQuestion round-trips, keyed by our requestId. Each holds
-   *  the resolver the parked `canUseTool` promise is awaiting — settled by
-   *  respondToUserInput (the user answered) or drained on interrupt/stop. */
-  pendingUserInputs: Map<string, PendingUserInput>;
-  /** In-flight tool approvals, keyed by our requestId. Each holds the ask we
-   *  surfaced and the resolver the parked `canUseTool` promise is awaiting —
-   *  settled by respondToRequest (the user decided) or drained on teardown. */
-  pendingApprovals: Map<string, PendingApproval>;
-  /** True once the user picked "allow always" for this live session: later
-   *  canUseTool prompts auto-allow without asking again. Deliberately NOT
-   *  persisted across sessions — it is a live-session-only decision (the
-   *  approvalsAlwaysAllowedForSession). */
-  approvalsAlwaysAllowed: boolean;
-};
-
-/** A parked AskUserQuestion: the questions we emitted and the resolver that
- *  unblocks canUseTool once the renderer answers (or we drain on teardown). */
-type PendingUserInput = {
-  questions: UserInputQuestion[];
-  resolve: (answers: UserInputAnswers) => void;
-};
-
-/** A parked tool approval: the ask we surfaced and the resolver that unblocks
- *  canUseTool once the renderer decides (or we drain on teardown). */
-type PendingApproval = {
-  approval: ApprovalRequest;
-  resolve: (decision: ApprovalDecision) => void;
-};
-
-function newScope(subagentToolUseId?: string): ClaudeScope {
-  const scope: ClaudeScope = {
-    msgOrdinal: 0,
-    blocks: new Map(),
-    toolItems: new Map(),
-    sawStreamEvent: false,
-  };
-  if (subagentToolUseId) scope.subagentToolUseId = subagentToolUseId;
-  return scope;
-}
-
-/** Item ids are scoped so a subagent's block 0 can't collide with the parent's:
- *  the main conversation keeps the historical `${turnId}:${msg}:${index}` shape,
- *  a run prefixes its Task tool-use id. */
-function scopeItemId(session: ClaudeSession, scope: ClaudeScope, index: number): string {
-  const prefix = scope.subagentToolUseId
-    ? `${session.activeTurnId}:sub:${scope.subagentToolUseId}`
-    : `${session.activeTurnId}`;
-  return `${prefix}:${scope.msgOrdinal}:${index}`;
-}
-
-/** The subagent run a forwarded message belongs to, or undefined for the main
- *  conversation. Claude sets `parent_tool_use_id` on async Bash progress too, so
- *  only ids already recognized as a Task/Agent spawn are treated as a run —
- *  otherwise a backgrounded Bash command would grow a phantom subagent. */
-function recognizedSubagentToolUseId(
-  session: ClaudeSession,
-  message: SDKMessage,
-): string | undefined {
-  const parent = readString(message, "parent_tool_use_id");
-  if (!parent) return undefined;
-  if (session.subagentRuns.has(parent) || session.settledSubagents.has(parent)) return parent;
-  return undefined;
-}
-
-// ── small JSON helpers (defensive, like CodexAdapter) ────────────────────────
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
-}
-
-function readString(value: unknown, ...path: string[]): string | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "string" ? cursor : undefined;
-}
-
-function readNumber(value: unknown, ...path: string[]): number | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "number" ? cursor : undefined;
-}
-
-/** Normalize the SDK's `AskUserQuestion` tool input into kone's neutral
- *  UserInputQuestion[]. Claude's shape is `{ questions: [{ question, header,
- *  multiSelect?, options: [{ label, description? }] }] }`; options may also
-  *  arrive as bare strings. The id is set to the question TEXT because the SDK
-  *  keys answers by text when mapping the tool result. */
-/** Normalize a Claude tool call into the neutral ask the renderer shows. The
- *  subject is the tool's own headline input (the command, the file path); the
- *  kind follows the tool family so the prompt can read "run this command" /
- *  "read this file" / "edit this file". */
-function claudeApprovalRequest(
-  toolName: string,
-  input: Parameters<CanUseTool>[1],
-): ApprovalRequest {
-  const record = asRecord(input);
-  const subject =
-    readString(record, "command")?.trim() ??
-    readString(record, "file_path")?.trim() ??
-    readString(record, "path")?.trim() ??
-    readString(record, "glob")?.trim();
-  const kind: ApprovalRequestKind =
-    /^(bash|shell|terminal)$/i.test(toolName)
-      ? "command"
-      : /^(read|glob|grep|ls)$/i.test(toolName)
-        ? "file-read"
-        : /^(write|edit|multi_edit|notebook_edit)$/i.test(toolName)
-          ? "file-change"
-          : "tool";
-  const request: ApprovalRequest = {
-    kind,
-    title: subject ?? toolName,
-  };
-  if (subject) request.detail = toolName;
-  return request;
-}
-
-function parseAskUserQuestions(input: unknown): UserInputQuestion[] {
-  const rawQuestions = asRecord(input)?.questions;
-  if (!Array.isArray(rawQuestions)) return [];
-
-  const out: UserInputQuestion[] = [];
-  for (const raw of rawQuestions) {
-    const record = asRecord(raw);
-    const question = readString(record, "question")?.trim();
-    if (!question) continue;
-    const header = readString(record, "header")?.trim() || "Question";
-
-    const options: UserInputQuestionOption[] = [];
-    const rawOptions = Array.isArray(record?.options) ? record!.options : [];
-    for (const rawOption of rawOptions) {
-      if (typeof rawOption === "string") {
-        const label = rawOption.trim();
-        if (label) options.push({ label });
-        continue;
-      }
-      const optionRecord = asRecord(rawOption);
-      const label = readString(optionRecord, "label")?.trim();
-      if (!label) continue;
-      const description = readString(optionRecord, "description")?.trim();
-      options.push(description ? { label, description } : { label });
-    }
-
-    out.push({
-      id: question,
-      header,
-      question,
-      options,
-      multiSelect: record?.multiSelect === true,
-    });
-  }
-  return out;
-}
-
-function normalizeEffort(value: string | undefined): EffortLevel | undefined {
-  return value && EFFORT_LEVELS.has(value as EffortLevel) ? (value as EffortLevel) : undefined;
-}
-
-/** kone's InteractionMode → the SDK's spawn-time permission mode. `ask` maps to
- *  `default` (canUseTool is consulted for every tool the SDK doesn't already
- *  auto-approve — kone parks those as real approval gates, see askToolApproval,
- *  it does not auto-allow); `accept-edits` to `acceptEdits`; `full-access` to
- *  `bypassPermissions`. */
-function toPermissionMode(mode: InteractionMode): PermissionMode {
-  switch (mode) {
-    case "ask":
-      return "default";
-    case "full-access":
-      return "bypassPermissions";
-    case "accept-edits":
-    default:
-      return "acceptEdits";
-  }
-}
-
-/** A short inline summary for a tool call, dug out of its (parsed) input — the
- *  command run, the file touched, the query searched — mirroring Codex's
- *  itemDetail(). Everything else becomes the expandable body. */
-function summarizeToolInput(toolName: string | undefined, rawInput: string): Pick<ClaudeItemBuffer, "text" | "detail"> {
-  let parsed: Record<string, unknown> | undefined;
-  try {
-    parsed = asRecord(JSON.parse(rawInput));
-  } catch {
-    parsed = undefined;
-  }
-  if (!parsed) return { text: "", detail: rawInput.trim() };
-
-  const target = [
-    parsed.command,
-    parsed.file_path,
-    parsed.path,
-    parsed.pattern,
-    parsed.query,
-    parsed.url,
-    parsed.description,
-    parsed.prompt,
-  ].find((v) => typeof v === "string" && v.trim().length > 0) as string | undefined;
-
-  const detail = JSON.stringify(parsed, null, 2);
-  return { text: target?.trim() ?? toolName ?? "", detail };
-}
-
-// The empty placeholder a streaming tool_use carries before its input_json_delta
-// chunks arrive — an empty object (or empty string). Seeding a buffer with it
-// then appending deltas would produce unparseable JSON, so we skip it.
-function isEmptyToolInput(input: unknown): boolean {
-  if (typeof input === "string") return input.trim().length === 0;
-  if (typeof input === "object" && input !== null && !Array.isArray(input)) {
-    return Object.keys(input).length === 0;
-  }
-  return false;
-}
-
-// Claude's file-mutating tools — the ones whose `tool_use_result` carries a
-// structured diff we can surface. Kept lowercase for name-agnostic matching.
-const FILE_EDIT_TOOLS = new Set(["edit", "write", "multiedit", "notebookedit"]);
-
-function isClaudeFileEditTool(toolName: string | undefined): boolean {
-  return !!toolName && FILE_EDIT_TOOLS.has(toolName.trim().toLowerCase());
-}
-
-/** Rebuild a unified-diff body from a file tool's structured `tool_use_result`.
- *  Edit/Write/MultiEdit return a `structuredPatch` (hunks of `+`/`-`/context
- *  lines); joining every hunk's lines gives the thread — and the Changes dock's
- *  +/− counts — a real diff, matching what CodexAdapter already emits as `diff`.
- *  Returns undefined when there's no patch (falls back to the result text). */
-function fileEditDiffBody(structuredResult: unknown): string | undefined {
-  const record = asRecord(structuredResult);
-  if (!record) return undefined;
-
-  const patch = record.structuredPatch;
-  if (Array.isArray(patch) && patch.length > 0) {
-    const lines: string[] = [];
-    for (const hunk of patch) {
-      const hunkLines = asRecord(hunk)?.lines;
-      if (!Array.isArray(hunkLines)) continue;
-      for (const line of hunkLines) if (typeof line === "string") lines.push(line);
-    }
-    if (lines.length > 0) return lines.join("\n");
-  }
-
-  // A brand-new file write has no prior version to diff against, so there's no
-  // patch — treat the whole written content as additions so the dock shows +N.
-  if (record.originalFile == null && typeof record.content === "string" && record.content.length > 0) {
-    return record.content
-      .replace(/\n$/, "")
-      .split("\n")
-      .map((line) => `+${line}`)
-      .join("\n");
-  }
-  return undefined;
-}
-
-/** Apply a TodoWrite snapshot to a plan_text buffer when JSON parsing succeeds. */
-function applyPlanSnapshot(buffer: ClaudeItemBuffer, rawJson: string): boolean {
-  const snapshot = parseTodoWriteInput(rawJson);
-  if (!snapshot) return false;
-  buffer.tasks = reconcilePlanTasks(buffer.tasks ?? [], snapshot);
-  buffer.text = formatPlanTasks(buffer.tasks);
-  return true;
-}
-
-/** Pull display text out of a tool_result's `content` (string, or an array of
- *  content blocks). */
-function extractToolResultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => readString(block, "text") ?? "")
-      .filter((v) => v.length > 0)
-      .join("\n");
-  }
-  return "";
-}
-
-// ── prompt queue ──────────────────────────────────────────────────────────────
-// The SDK's `prompt` is an async iterable it pulls from; we feed it one
-// SDKUserMessage per turn. A pull that outruns the pushes parks until the next
-// prompt (or close) arrives.
-
-class MessageQueue {
-  private readonly items: SDKUserMessage[] = [];
-  private readonly waiters: ((result: IteratorResult<SDKUserMessage>) => void)[] = [];
-  private closed = false;
-
-  push(message: SDKUserMessage): void {
-    if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter) waiter({ value: message, done: false });
-    else this.items.push(message);
-  }
-
-  close(): void {
-    this.closed = true;
-    // Unconsumed prompts (queued steers) are dropped on shutdown: after
-    // close() nothing may ever be delivered again, not even items that were
-    // pushed but never pulled — a stop discards pending input.
-    this.items.length = 0;
-    let waiter: ((result: IteratorResult<SDKUserMessage>) => void) | undefined;
-    while ((waiter = this.waiters.shift())) waiter({ value: undefined as never, done: true });
-  }
-
-  iterable(): AsyncIterable<SDKUserMessage> {
-    const self = this;
-    return {
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<SDKUserMessage>> {
-            if (self.items.length > 0) return Promise.resolve({ value: self.items.shift()!, done: false });
-            if (self.closed) return Promise.resolve({ value: undefined as never, done: true });
-            return new Promise((resolve) => self.waiters.push(resolve));
-          },
-        };
-      },
-    };
-  }
-}
-
-/** A prompt iterable that yields nothing and only completes when `signal`
- *  aborts — used for the throwaway discovery/model-list probe, which needs the
- *  session to initialize but must never run a turn. */
-function idlePrompt(signal: AbortSignal): AsyncIterable<SDKUserMessage> {
-  return {
-    [Symbol.asyncIterator]() {
-      return {
-        next(): Promise<IteratorResult<SDKUserMessage>> {
-          return new Promise((resolve) => {
-            if (signal.aborted) return resolve({ value: undefined as never, done: true });
-            signal.addEventListener("abort", () => resolve({ value: undefined as never, done: true }), { once: true });
-          });
-        },
-      };
-    },
-  };
-}
+import {
+  MessageQueue,
+  applyPlanSnapshot,
+  asRecord,
+  claudeApprovalRequest,
+  extractToolResultText,
+  fileEditDiffBody,
+  idlePrompt,
+  isClaudeFileEditTool,
+  isEmptyToolInput,
+  isInterruptedResult,
+  parseAskUserQuestions,
+  readNumber,
+  readString,
+  summarizeToolInput,
+} from "./claudeAdapterHelpers.js";
 
 export class ClaudeAdapter implements ProviderAdapter {
   readonly provider = "claudeAgent" as const;
@@ -2275,63 +1780,4 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (!session) throw new Error(`No Claude session for thread ${threadId}`);
     return session;
   }
-}
-
-/** A Claude turn `result` is an interruption (not a hard failure) when the CLI
- *  reports an abort. */
-function isInterruptedResult(
-  message: Extract<SDKMessage, { type: "result" }>,
-  errors: string[],
-): boolean {
-  if (message.subtype === "error_during_execution" && message.is_error === false) return true;
-  const haystack = errors.join(" ").toLowerCase();
-  return ["interrupt", "aborted", "request was aborted"].some((needle) => haystack.includes(needle));
-}
-
-/** Map the SDK's live ModelInfo list to kone's ModelDescriptor, preferring the
- *  canonical `claude-*` id, deduping alias rows, and carrying each model's real
- *  effort ladder. Skips the `default` alias so the model it resolves to keeps
- *  its own name (e.g. "Sonnet") rather than the generic "Default (recommended)". */
-function mapClaudeModels(models: ModelInfo[]): ModelDescriptor[] {
-  const seen = new Set<string>();
-  const out: ModelDescriptor[] = [];
-  for (const model of models) {
-    if (model.value === "default") continue;
-    const id = model.resolvedModel ?? model.value;
-    if (!id || !id.startsWith("claude") || seen.has(id)) continue;
-    seen.add(id);
-    const efforts = model.supportsEffort && model.supportedEffortLevels?.length ? [...model.supportedEffortLevels] : undefined;
-    const descriptor: ModelDescriptor = {
-      id,
-      label: model.displayName || id,
-    };
-    if (efforts) descriptor.reasoningEfforts = efforts;
-    // The SDK's model list is authoritative for fast-mode support — surface it
-    // as the generic `fast` service tier the composer's toggle keys off.
-    if (model.supportsFastMode) descriptor.serviceTiers = [FAST_SERVICE_TIER];
-    // ModelInfo carries no context-window field, so the 200k/1m auto-compact
-    // choice is derived from the id (every current non-Haiku Claude is 1M).
-    const contextWindows = contextWindowsForModel(id);
-    if (contextWindows) descriptor.contextWindows = contextWindows;
-    out.push(descriptor);
-  }
-  return out;
-}
-
-/** Merge kone's curated Claude catalog with whatever the live SDK reports.
- *  Static table + dynamic discovery: the curated list is authoritative for
- *  capability *shape* — the fast-mode lane
- *  and, crucially, the 200k-only vs 200k/1M auto-compact switch, which the SDK's
- *  ModelInfo simply can't express — so a model the curated list already knows
- *  keeps its verified toggles rather than the id-derived guesses mapClaudeModels
- *  would make. The SDK only contributes genuinely *new* ids (a release we haven't
- *  baked yet), surfaced at the top so the latest model is reachable immediately.
- *  Curated entries always show, so older versions the SDK dropped don't vanish. */
-function mergeClaudeModels(
-  curated: ModelDescriptor[],
-  discovered: ModelDescriptor[],
-): ModelDescriptor[] {
-  const curatedIds = new Set(curated.map((m) => m.id));
-  const fresh = discovered.filter((m) => !curatedIds.has(m.id));
-  return [...fresh, ...curated];
 }

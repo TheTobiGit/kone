@@ -48,6 +48,8 @@ import { SESSION_BRAND } from "~/types/session";
 import ContextWindowMeter from "~/components/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/ThreadInfoPanel.vue";
 import type { ThreadSession } from "~/composables/useAgent";
+import { useStripOverview } from "~/composables/useStripOverview";
+import { useStripPresets } from "~/composables/useStripPresets";
 import type { GitRemote } from "~/types/desktop";
 
 const props = defineProps<{
@@ -132,36 +134,6 @@ const rail = ref<HTMLElement | null>(null);
 const railWidth = ref(0);
 const reducedMotion = usePreferredReducedMotion();
 
-// ── column widths ─────────────────────────────────────────────────────────────
-// Fixed pixel rungs — unlike niri (output size is the monitor), our strip lives
-// in a resizable app window, so the ladder itself does not drift every time you
-// drag the window edge. Each rung is an absolute width that holds until you step
-// it; the viewport cap only kicks in when the window is narrower than the preset.
-// The rungs themselves live in `~/utils/stripScroll` because the settings preview
-// has to model a column at the default width to predict where the strip will land.
-const LAST_STEPPED = LADDER_PX.length - 2;
-const DEFAULT_PRESET = 0; // 840px — default and narrowest rung
-
-interface Preset {
-  id: string;
-  label: string;
-  px: number;
-  width: string;
-}
-const PRESETS: Preset[] = LADDER_PX.map((px) => ({
-  id: `w${px}`,
-  label: String(px),
-  px,
-  // A percentage flex-basis is cyclic here: the plane is content-sized, so an
-  // empty column can make `100%` resolve to its own small intrinsic width. The
-  // viewport is definite and still gives us the intended narrow-window cap.
-  width: `min(${px}px, 100vw)`,
-}));
-
-const widthAnim = ref<Record<string, boolean>>({});
-const WIDTH_ANIM_MS = 520;
-const animTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
 function reducedMotionOn(): boolean {
   return reducedMotion.value === "reduce";
 }
@@ -169,328 +141,53 @@ function scrollBehavior(): ScrollBehavior {
   return reducedMotionOn() ? "auto" : "smooth";
 }
 
-/** Is a pane a side chat? Side chats are locked to the narrowest width rung —
- *  no expanding, no zen — and cannot fork further side chats. */
-function isSideChatPane(id: string): boolean {
-  const c = props.panes.find((p) => p.id === id);
-  return c?.kind === "thread" && !!c.session?.isSideChat.value;
-}
-
-/** The width preset a column shows — read from the pane entry, the board's
- *  single source of truth. Emits back on change so restore/move can't drift.
- *  A side chat is pinned to the narrowest rung whatever the stored width says. */
-function presetIndexFor(key: string): number {
-  if (isSideChatPane(key)) return 0;
-  const fromEntry = props.panes.find((c) => c.id === key)?.entry.width;
-  return typeof fromEntry === "number" ? clampPreset(fromEntry) : DEFAULT_PRESET;
-}
-function clampPreset(index: number): number {
-  return Math.min(PRESETS.length - 1, Math.max(0, index));
-}
-// ── zen (niri's maximize-column) ──────────────────────────────────────────────
-// Zen is per column, not per strip. Maximizing a thread says something about that
-// thread — that you want to read it — and says nothing about the terminal beside
-// it. So the flag lives with the column and simply travels out of view with it:
-// focus away and the strip goes back to the ladder widths, focus back and the
-// column is still maximized. Keyed by pane id, pruned when panes go, and never
-// persisted: a restored board that opens maximized hides the rest of the desktop
-// with no explanation of why.
-const zenIds = ref<Set<PaneId>>(new Set());
-
-function zenPreset(): Preset {
-  // Measured pixels, never `100%`. The column is `flex: 0 0 var(--col-w)` inside the
-  // plane, and the plane is a content-sized flex row in a scroll container — so a
-  // percentage basis resolves against the *plane* (the sum of the columns), not the
-  // viewport. That's why zen came out at whatever fraction the other columns happened
-  // to add up to: roomy with one 840px column in a 1040px window, absurdly narrow when
-  // the percentage went cyclic and fell back to content width. railWidth is the rail's
-  // clientWidth (the pads are custom properties on the plane, not real padding), so
-  // this is exactly the visible width, and it re-derives on resize because railWidth
-  // is a ref the resize observer writes.
-  const px = railWidth.value || LADDER_PX[0];
-  return { id: "zen", label: "max", px, width: `${px}px` };
-}
-/** Is `id` maximized *and* the focused column? Only the focused column may render
- *  full-width — an off-focus maximized column stays at its ladder rung so two
- *  maximized columns never fight for the viewport and break strip geometry. */
-function isZen(id: string): boolean {
-  return zenIds.value.has(id) && id === props.focusedId;
-}
-
-function presetFor(key: string): Preset {
-  if (isZen(key)) return zenPreset();
-  return PRESETS[presetIndexFor(key)] ?? PRESETS[DEFAULT_PRESET]!;
-}
-/** Flag `key` for the flex-basis glide and clear the flag once the transition
- *  window has passed, cancelling any in-flight timer for that column first so a
- *  rapid re-trigger doesn't strip the class mid-animation. Both the width ladder
- *  and zen borrow the same `is-width-anim` transition, so the timer bookkeeping
- *  lives here once rather than being copy-pasted into each caller. Callers gate the
- *  call on reduced motion — this helper always animates. */
-function flagWidthAnim(key: string): void {
-  widthAnim.value = { ...widthAnim.value, [key]: true };
-  const prev = animTimers.get(key);
-  if (prev) clearTimeout(prev);
-  animTimers.set(
-    key,
-    setTimeout(() => {
-      const { [key]: _, ...rest } = widthAnim.value;
-      widthAnim.value = rest;
-      animTimers.delete(key);
-    }, WIDTH_ANIM_MS),
-  );
-}
-function setPreset(key: string, index: number): void {
-  // Side chats are fixed at the narrowest rung — the width ladder never
-  // touches them (no expanding).
-  if (isSideChatPane(key)) return;
-  const next = clampPreset(index);
-  if (next === presetIndexFor(key)) return;
-  // Mirror the choice onto the pane entry so it persists across restart.
-  emit("width", key, next);
-  if (reducedMotionOn()) return;
-  flagWidthAnim(key);
-}
-
-function cycleWidth(key: string): void {
-  cue("press");
-  const next =
-    presetIndexFor(key) >= LAST_STEPPED
-      ? 0
-      : presetIndexFor(key) + 1 === LAST_STEPPED
-        ? PRESETS.length - 1
-        : presetIndexFor(key) + 1;
-  setPreset(key, next);
-  void nextTick(() => scrollToColumn(key));
-}
-function growWidth(key: string): void {
-  cue("press");
-  setPreset(key, presetIndexFor(key) + 1);
-  void nextTick(() => scrollToColumn(key));
-}
-function shrinkWidth(key: string): void {
-  cue("press");
-  setPreset(key, presetIndexFor(key) - 1);
-  void nextTick(() => scrollToColumn(key));
-}
-
-function toggleZen(): void {
-  // Side chats never maximize — they are narrow by design.
-  if (!props.focusedId || props.panes.length === 0 || isSideChatPane(props.focusedId)) return;
-  cue("toggle");
-  const id = props.focusedId;
-  const next = new Set(zenIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  zenIds.value = next;
-  if (!reducedMotionOn()) flagWidthAnim(id);
-  void nextTick(() => props.focusedId && scrollToColumn(props.focusedId));
-}
-
-// ── overview (niri's Exposé) ───────────────────────────────────────────────────
-// Zoom the whole plane out to a bird's-eye where every column is a card you can
-// click into. The one hard constraint is that `transform` doesn't shrink a scroll
-// container's `scrollWidth` — scale the flex row on its own and the rail still
-// thinks the content is full-size, leaving a huge dead scroll region. So the rail
-// wraps a two-element pair: `.rail__scaler` is the *layout box* (its width is the
-// scaled content size, which is what the rail scrolls against) and `.rail__plane`
-// is the real, unscaled flex row that we shrink into it with `transform: scale(k)`.
-// Scaling the live DOM keeps every pane's identity — no portalled copy to remount a
-// streaming thread or re-measure a terminal — and costs one GPU-composited property.
-const overview = ref(false);
-const plane = ref<HTMLElement | null>(null);
-const naturalWidth = ref(0); // plane scrollWidth at k = 1, sampled on entry (with gaps)
-
-// Fit the whole plane if we can, but never zoom out so far the columns turn into
-// unreadable slivers — and never zoom *in*. With a couple of columns the plane
-// pulls back gently; with a dozen it hits the floor and scrolls horizontally.
-const OVERVIEW_MIN_K = 0.34;
-const OVERVIEW_MAX_K = 0.78;
-// Symmetric breathing room, applied as in-plane pads (see railPads) so it scales with
-// the plane and — because k fits the plane to the *full* rail width — leaves equal
-// gutters on both sides. Reserving the margin outside the plane instead (subtracting
-// it from railWidth in the fit) would strand it all on the right, since the plane is
-// left-anchored at scrollLeft 0.
-const OVERVIEW_GUTTER = 56;
-const OVERVIEW_ANIM_MS = 420; // the zoom transition; also the will-change lifetime
-const OVERVIEW_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
-// The cards ride a little above the rail's centre line so the captions below them read
-// as belonging to the map rather than floating in the bottom margin. It's a *screen*
-// offset applied ahead of the scale in the transform list, so it never scales with k and
-// — crucially — costs no layout: the old version bought this air with `padding-block` on
-// the plane, which shortened every column and reflowed every pane inside it mid-zoom.
-const OVERVIEW_LIFT_PX = 14;
-
-const k = computed(() => {
-  if (!overview.value || !naturalWidth.value || !railWidth.value) return 1;
-  const fit = railWidth.value / naturalWidth.value;
-  return Math.max(OVERVIEW_MIN_K, Math.min(OVERVIEW_MAX_K, fit));
+const {
+  PRESETS,
+  DEFAULT_PRESET,
+  widthAnim,
+  zenIds,
+  isSideChatPane,
+  presetIndexFor,
+  clampPreset,
+  zenPreset,
+  isZen,
+  presetFor,
+  flagWidthAnim,
+  setPreset,
+  cycleWidth,
+  growWidth,
+  shrinkWidth,
+  toggleZen,
+} = useStripPresets({
+  panes: () => props.panes,
+  focusedId: () => props.focusedId,
+  railWidth,
+  reducedMotionOn,
+  onWidthEmit: (id, index) => emit("width", id, index),
+  onScrollToColumn: (id) => scrollToColumn(id),
 });
 
-/** How far right the scaled plane must slide to sit centred in the rail. Only ever
- *  non-zero when the plane *fits* — with k clamped at OVERVIEW_MAX_K (two or three
- *  columns on a wide display, the most likely first sight of the feature) the scaled
- *  footprint comes out narrower than the rail, and a left-anchored plane would dump all
- *  the slack down the right-hand side and read as broken.
- *
- *  This used to be `margin-inline: auto` on the scaler, which centred it in *layout* —
- *  and therefore instantly, on the first frame of the zoom, while the plane was still
- *  full size and gliding. That step (≈190px for two columns) was the single biggest
- *  lurch in the entry animation. Carrying the offset in the transform instead means it
- *  interpolates with the scale, as one motion.
- *
- *  Safe for the scroll maths — which map `offsetLeft × k` against a left-anchored plane
- *  — *specifically because* it's zero whenever the plane overflows: when it doesn't,
- *  scrollWidth equals clientWidth, so `max` is 0 and every clamp() in scrollTargetFor /
- *  snapTargetFor / nearestKey already resolves to 0. No scroll, no offset in play. */
-const centerShift = computed(() => {
-  if (!overview.value || !naturalWidth.value || !railWidth.value) return 0;
-  return Math.max(0, (railWidth.value - naturalWidth.value * k.value) / 2);
+const {
+  overview,
+  plane,
+  naturalWidth,
+  k,
+  centerShift,
+  planeTransform,
+  scalerStyle,
+  planeStyle,
+  isZooming,
+  zoomBusy,
+  markZooming,
+  markZoomBusy,
+  animateZoom,
+  flipFrom,
+  remeasurePlane,
+} = useStripOverview({
+  rail,
+  railWidth,
+  reducedMotionOn,
 });
-
-/** The plane's resting transform in the current mode — the *target* of every zoom.
- *  Ordered so the translations happen in the rail's own pixel space (a translate ahead
- *  of a scale isn't scaled by it) and only the scale is about the origin. */
-function planeTransform(scale: number, shiftX: number): string {
-  if (scale === 1 && shiftX === 0) return "none";
-  return `translateX(${shiftX}px) translateY(${-OVERVIEW_LIFT_PX}px) scale(${scale})`;
-}
-
-// The scaler carries the *scaled* footprint so `scrollWidth` shrinks with k; the
-// plane keeps its true width and is scaled into that smaller box from its left edge.
-// Both fall back to the plain flex layout — `max-content` on the scaler reproduces
-// exactly what the rail sized before this wrapper existed — not only when overview is
-// off, but also during the one frame between flipping overview on and sampling
-// naturalWidth. That matters: pinning the plane to `width: 0px` while naturalWidth is
-// still 0 would collapse every column's `min(px, 100vw)` preset to 0 and the measure
-// would come out tiny. So only constrain the width once we actually have naturalWidth
-// — until then `max-content` sizes the scaler exactly as the resting layout does.
-const scalerStyle = computed(() =>
-  overview.value && naturalWidth.value
-    ? { width: `${naturalWidth.value * k.value}px`, height: "100%" }
-    : { width: "max-content", height: "100%" },
-);
-const planeStyle = computed(() =>
-  overview.value && naturalWidth.value
-    ? {
-        width: `${naturalWidth.value}px`,
-        transform: planeTransform(k.value, centerShift.value),
-        // x-origin MUST stay 0 — the scroll maths map offsetLeft × k against a
-        // left-anchored plane. The y-origin is free, and centring vertically balances
-        // the cards in the viewport instead of stranding them against the top edge.
-        transformOrigin: "0 50%",
-        // Publish the inverse scale *once*, here on the plane, so every descendant
-        // inherits it. The principle overview lives by: content scales, chrome doesn't.
-        // The plane's `scale(k)` shrinks the live pane content (which is the point), but
-        // it would equally shrink the card framing — ring, radius, shadows, hover lift,
-        // caption gap — so at high column counts the whole visual language collapses and
-        // it reads as a zoomed-out screenshot, not a designed map. Chrome expressed as
-        // `calc(<px> * var(--inv-k))` counter-scales back to constant screen size at any k.
-        "--inv-k": 1 / k.value,
-      }
-    : {},
-);
-
-/** Re-read the plane's true unscaled width while overview is *already* on. Needed
- *  because `naturalWidth` is only sampled on entry, and both a pane arriving (⌘N and
- *  friends still fire from here) and a window resize (a column's `min(px, 100vw)` rung
- *  collapses to the rail width on a narrow window) change the plane underneath us. Left
- *  stale, the scaler stays sized for the old plane: the new card falls outside the
- *  scroll extent and can't be reached, and `k` no longer fits what's actually there.
- *
- *  The measure has to defeat the pinned `width: naturalWidth` — with the box pinned,
- *  `scrollWidth` can grow past it but can never shrink below it. Swapping in
- *  `max-content` and restoring it without yielding forces one synchronous reflow the
- *  browser can't paint between, so there's no full-size frame flash. */
-async function remeasurePlane(): Promise<void> {
-  const p = plane.value;
-  const r = rail.value;
-  if (!overview.value || !p || !r) return;
-  const pinned = p.style.width;
-  p.style.width = "max-content";
-  const measured = p.scrollWidth;
-  p.style.width = pinned;
-  if (!measured || Math.abs(measured - naturalWidth.value) <= 1) return;
-  // A new plane width re-fits k, which moves every card. Ride the same FLIP the entry
-  // animation uses rather than letting the new scale land in one frame — a card arriving
-  // shouldn't make the whole map flinch.
-  const fromTransform = planeTransform(k.value, centerShift.value);
-  const fromScroll = r.scrollLeft;
-  naturalWidth.value = measured;
-  await nextTick();
-  animateZoom(flipFrom(fromTransform, fromScroll, r.scrollLeft));
-}
-
-// `will-change: transform` promotes the plane — and thus every column, terminals
-// included — to its own compositor layer, which is real memory to hold for a whole
-// session. So flag it only for the length of the zoom transition, cleared on a
-// timer. It also suppresses pointer events on the plane for that window: as the plane
-// scales, cards sweep under a stationary cursor and each one that passes fires its
-// hover lift, so the flight used to be speckled with cards twitching up and down.
-// Reduced motion never animates, so it never sets this.
-const isZooming = ref(false);
-let zoomTimer: ReturnType<typeof setTimeout> | null = null;
-function markZooming(): void {
-  if (reducedMotionOn()) return;
-  isZooming.value = true;
-  if (zoomTimer) clearTimeout(zoomTimer);
-  zoomTimer = setTimeout(() => {
-    isZooming.value = false;
-    zoomTimer = null;
-  }, OVERVIEW_ANIM_MS);
-}
-
-// A zoom owns the plane until it lands. Pinch in particular arrives as a burst of wheel
-// events and would happily fire a second toggle mid-flight, which reads as the board
-// convulsing; a keyboard mash does the same. Both no-op instead until the plane settles.
-const zoomBusy = ref(false);
-let busyTimer: ReturnType<typeof setTimeout> | null = null;
-function markZoomBusy(): void {
-  zoomBusy.value = true;
-  if (busyTimer) clearTimeout(busyTimer);
-  // Under reduced motion the change is instant, so the lockout is only long enough to
-  // absorb the rest of the pinch gesture that asked for it — not a 420ms dead zone.
-  busyTimer = setTimeout(
-    () => {
-      zoomBusy.value = false;
-      busyTimer = null;
-    },
-    reducedMotionOn() ? 120 : OVERVIEW_ANIM_MS,
-  );
-}
-
-/** Animate the plane from an explicitly-computed *previous* visual state to whatever its
- *  resting transform now is. This is a FLIP, and it's the whole reason the zoom is smooth.
- *
- *  The naive version — let CSS transition `transform`, and separately assign the remapped
- *  `scrollLeft` — cannot work, because scroll offset isn't animatable: the scroll jumps to
- *  its new value on frame 0 while the scale is still gliding, so the plane lurches sideways
- *  by scrollLeft × (1 − k) and then eases. The layout changes that come with the mode
- *  (gaps opening, gutters, the scaler's footprint) compound it.
- *
- *  So we do it the other way round: put the new state *fully* in place first — mode class,
- *  scaler width, final scroll offset — then hand the difference to one composited transform
- *  animation. `from` is computed by the caller as "the transform that, given the new scroll
- *  offset, renders the old view", which makes frame 0 pixel-identical to where we started.
- *  Layout-driven parts of the change (the 28px struts, the gutter pads) can't ride a
- *  transform, so they carry their own CSS transitions on the same duration and curve. */
-let zoomAnim: Animation | null = null;
-function animateZoom(from: string): void {
-  const p = plane.value;
-  if (!p || reducedMotionOn()) return;
-  markZooming();
-  // Cancel only *our* previous zoom, by handle — not `p.getAnimations()`, which would
-  // also take out the CSS transitions on `gap` and `--inv-k` running on this same
-  // element and snap the struts and the card chrome to their final size.
-  zoomAnim?.cancel();
-  // `fill: "none"` (the default) is deliberate: the resting transform is already the
-  // final value in `planeStyle`, so when the animation drops off there's nothing to
-  // snap back to.
-  zoomAnim = p.animate(
-    { transform: [from, planeTransform(k.value, centerShift.value)] },
-    { duration: OVERVIEW_ANIM_MS, easing: OVERVIEW_EASE },
-  );
-}
 
 const isSolo = computed(() => props.panes.length === 1);
 
@@ -694,20 +391,6 @@ async function exitOverview(): Promise<void> {
   animateZoom(flipFrom(fromTransform, fromScroll, r.scrollLeft));
 }
 
-/** The transform that renders the pre-change view now that the scroll offset has moved.
- *  Screen x of a point is `base − scrollLeft + translateX + scale × planeX`, so holding
- *  it fixed across a scroll change of (after − before) means shifting the old translate
- *  by exactly that difference and keeping the old scale. */
-function flipFrom(previous: string, beforeScroll: number, afterScroll: number): string {
-  const shift = afterScroll - beforeScroll;
-  if (previous === "none") return `translateX(${shift}px) scale(1)`;
-  // `previous` is always our own output, so parsing it back is safe and beats threading
-  // the two numbers through every call site.
-  const scale = Number(previous.match(/scale\(([-\d.]+)\)/)?.[1] ?? 1);
-  const tx = Number(previous.match(/translateX\(([-\d.]+)px\)/)?.[1] ?? 0);
-  return `translateX(${tx + shift}px) translateY(${-OVERVIEW_LIFT_PX}px) scale(${scale})`;
-}
-
 function toggleOverview(): void {
   // Overview of a single column is theatre — the guard is why the shortcut and the
   // pinch both no-op on a one-pane board.
@@ -748,10 +431,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(resizeRaf);
   if (resizeEndTimer) clearTimeout(resizeEndTimer);
   if (settleTimer) clearTimeout(settleTimer);
-  if (zoomTimer) clearTimeout(zoomTimer);
-  if (busyTimer) clearTimeout(busyTimer);
   if (pinchQuiet) clearTimeout(pinchQuiet);
-  for (const t of animTimers.values()) clearTimeout(t);
 });
 
 // Trackpad pinch toggles overview. On macOS a pinch arrives as a wheel event with
