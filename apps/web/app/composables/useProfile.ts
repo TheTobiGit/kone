@@ -53,6 +53,19 @@ export function useProfile() {
 
   const initial = computed(() => name.value.charAt(0).toUpperCase() || "");
 
+  const avatarStyle = computed(() =>
+    image.value
+      ? {
+          backgroundImage: `url(${image.value})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+        }
+      : {
+          backgroundColor: color.value || "var(--ink)",
+          color: color.value ? "#fff" : "var(--ground)",
+        },
+  );
+
   return {
     // effective (read for display)
     name,
@@ -60,6 +73,7 @@ export function useProfile() {
     initial,
     color,
     image,
+    avatarStyle,
     // raw overrides (bind in the edit UI)
     nameOverride,
     handleOverride,
