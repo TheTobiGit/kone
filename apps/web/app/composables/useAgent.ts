@@ -108,6 +108,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const timelineBlocks = computed<ThreadBlock[]>(() =>
     isSideChat.value
       ? blocks.value.filter(
+          // SAFETY: only fork imports carry a `source` tag; others read as undefined.
           (b) => (b as ThreadBlock & { source?: string }).source !== "fork-import",
         )
       : blocks.value,
@@ -603,6 +604,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // the known tier set — a tier added by a newer catalog must not wedge the
     // composer on an unrecognised rung.
     if (stored.selection?.effort && stored.selection.effort in EFFORT_META) {
+      // SAFETY: the membership test above guards the cast.
       reasoning.value = stored.selection.effort as ReasoningTier;
     }
     if (stored.selection?.serviceTier !== undefined) serviceTier.value = stored.selection.serviceTier;
@@ -668,6 +670,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  a missing bridge method, a rejected query, or a thread id that moved on
    *  while the query was in flight all leave the chips as they are. */
   function seedQueuedTurns(api: NonNullable<ReturnType<typeof bridge>>): void {
+    // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
     const query = (api as KoneAgentApi & QueueBridge).queuedTurns;
     if (!query) return;
     const id = threadId.value;
@@ -729,6 +732,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       }
       const known = new Set(blocks.value.map((b) => b.id));
       const older = markHistorical(
+        // SAFETY: page blocks deserialize to ThreadBlocks; markHistorical re-checks shape.
         (page.blocks as ThreadBlock[]).filter((b) => !known.has(b.id)),
       );
       if (older.length > 0) blocks.value = [...older, ...blocks.value];
@@ -762,11 +766,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       let resolvedBlocks: ThreadBlock[] | null = null;
       let nextCursor: string | null = null;
       if (page && page.blocks.length > 0) {
+        // SAFETY: page.blocks deserializes to ThreadBlocks by IPC contract.
         resolvedBlocks = page.blocks as ThreadBlock[];
         nextCursor = page.nextCursor;
       } else {
         const full = await api.history.thread(meta.threadId).catch(() => null);
-        if (full && full.blocks.length > 0) resolvedBlocks = full.blocks as ThreadBlock[];
+        if (full && full.blocks.length > 0) {
+          // SAFETY: thread history blocks deserialize to ThreadBlocks by IPC contract.
+          resolvedBlocks = full.blocks as ThreadBlock[];
+        }
       }
       if (resolvedBlocks && resolvedBlocks.length > 0) {
         threadId.value = meta.threadId;
@@ -974,6 +982,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // flat. Normalize both to the same meta + blocks pair here.
     const meta: StoredThreadMeta = page ? page.meta : stored!;
     const sourceBlocks: StoredBlock[] = page ? page.blocks : stored!.blocks;
+    // SAFETY: both sources deserialize to ThreadBlocks by IPC contract.
     blocks.value = markHistorical(sourceBlocks as ThreadBlock[]);
     olderCursor.value = page ? page.nextCursor : null;
     title.value = meta.title?.trim() || "";
@@ -1098,6 +1107,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       const wasDeferred = deferred.value;
       await ensureStarted();
       if (wasDeferred && !session.value) return;
+      // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
       const steer = (api as KoneAgentApi & QueueBridge).steerTurn;
       if (!steer) {
         // Older bridge without the steer channel — fall back to a plain send
@@ -1142,6 +1152,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  backend emits turn.queued-cancelled; the chip clears on that event. */
   async function cancelQueuedTurn(queueId: string): Promise<void> {
     const api = bridge();
+    // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
     const cancel = (api as KoneAgentApi & QueueBridge | undefined)?.cancelQueuedTurn;
     if (!cancel) return;
     try {
@@ -1179,13 +1190,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // Browser dev: mark the running mock turn as stopped, then halt its timers.
       const tid = getMockTurnId();
       stopMock();
-      if (tid)
+      if (tid) {
+        // SAFETY: the literal below spells out the whole aborted-event payload.
         reduce({
           ...base("turn.aborted"),
           type: "turn.aborted",
           turnId: tid,
           reason: "interrupted",
         } as RuntimeEvent);
+      }
       sessionState.value = "ready";
       return;
     }
@@ -1691,6 +1704,7 @@ export function useAgent(options: UseAgentOptions) {
   // fresh boot thread on top of them (the board reconciles those straight onto
   // the strip). Focus comes back to wherever the user left it.
   const firstMount = sessions.value.length === 0;
+  // SAFETY: when firstMount is false, sessions.value has at least one entry.
   const first = firstMount
     ? spawn({ rehydrate: options.rehydrate })
     : (sessions.value[0] as ThreadSession);

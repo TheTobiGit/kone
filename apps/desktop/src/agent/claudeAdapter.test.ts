@@ -26,6 +26,13 @@ setUserDataDir(testUserDataDir);
 
 import type { RuntimeEvent } from "./types.js";
 
+/** The events of exactly one type.
+ *  SAFETY: the predicate compares e.type to the requested literal, so each
+ *  element really is that union member. */
+function ofType<T extends RuntimeEvent["type"]>(events: RuntimeEvent[], type: T) {
+  return events.filter((e): e is Extract<RuntimeEvent, { type: T }> => e.type === type);
+}
+
 /** Controllable SDK message feed: the stubbed query yields exactly what the
  *  test pushes, when it pushes it. */
 class MessageFeed {
@@ -78,6 +85,7 @@ const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null
 
 const stubQuery = mock((input: unknown) => {
   state.promptIterable =
+    // SAFETY: the SDK query input carries the prompt iterable under `prompt`.
     (input as { prompt?: AsyncIterable<Record<string, unknown>> }).prompt ?? null;
   return {
     initializationResult: async () => state.initializationResult?.() ?? {},
@@ -149,6 +157,8 @@ describe("Claude result handler", () => {
 
     const warnCalls: unknown[][] = [];
     const originalWarn = console.warn;
+    // SAFETY: the replacement keeps console.warn's call signature; only the
+    // arguments are recorded.
     console.warn = ((...args: unknown[]) => {
       warnCalls.push(args);
     }) as typeof console.warn;
@@ -168,11 +178,12 @@ describe("Claude result handler", () => {
     // Usage is still folded in...
     const usage = events.filter((e) => e.type === "thread.token-usage.updated");
     expect(usage).toHaveLength(1);
-    expect((usage[0] as Extract<RuntimeEvent, { type: "thread.token-usage.updated" }>).usage.total).toBe(15);
+    expect(ofType(usage, "thread.token-usage.updated")[0].usage.total).toBe(15);
     // ...but no untargeted lifecycle event for a turn that never ran.
     expect(events.filter((e) => e.type === "turn.completed")).toHaveLength(0);
     expect(events.filter((e) => e.type === "turn.aborted")).toHaveLength(0);
     expect(warnCalls.length).toBe(1);
+    // SAFETY: the adapter warns with (message, payload) and this payload's fields are probed below.
     const payload = warnCalls[0][1] as { status?: string; numTurns?: number; hasUsage?: boolean };
     expect(payload.status).toBe("success");
     expect(payload.numTurns).toBe(0);
@@ -213,10 +224,10 @@ describe("Claude stop paths", () => {
     // loses the race.
     const done = events.filter((e) => e.type === "subagent.completed");
     expect(done).toHaveLength(1);
-    expect((done[0] as Extract<RuntimeEvent, { type: "subagent.completed" }>).subagent.status).toBe(
+    expect(ofType(done, "subagent.completed")[0].subagent.status).toBe(
       "stopped",
     );
-    expect((done[0] as Extract<RuntimeEvent, { type: "subagent.completed" }>).turnId).toBe(turnId);
+    expect(ofType(done, "subagent.completed")[0].turnId).toBe(turnId);
 
     const aborted = events.filter(
       (e) => e.type === "turn.aborted" && e.turnId === turnId && e.reason === "interrupted",
@@ -243,7 +254,7 @@ describe("Claude stop paths", () => {
     expect(aborted).toHaveLength(1);
     const done = events.filter((e) => e.type === "subagent.completed");
     expect(done).toHaveLength(1);
-    expect((done[0] as Extract<RuntimeEvent, { type: "subagent.completed" }>).subagent.status).toBe(
+    expect(ofType(done, "subagent.completed")[0].subagent.status).toBe(
       "stopped",
     );
     state.feed!.end();
@@ -259,7 +270,7 @@ describe("Claude stop paths", () => {
     expect(state.stopTask).toHaveBeenCalledWith("task-1");
     const done = events.filter((e) => e.type === "subagent.completed");
     expect(done).toHaveLength(1);
-    expect((done[0] as Extract<RuntimeEvent, { type: "subagent.completed" }>).subagent.status).toBe(
+    expect(ofType(done, "subagent.completed")[0].subagent.status).toBe(
       "stopped",
     );
   });
@@ -286,7 +297,7 @@ describe("Claude stop paths", () => {
     expect(state.interrupt).toHaveBeenCalled();
     const done = events.filter((e) => e.type === "subagent.completed");
     expect(done).toHaveLength(1);
-    expect((done[0] as Extract<RuntimeEvent, { type: "subagent.completed" }>).subagent.status).toBe(
+    expect(ofType(done, "subagent.completed")[0].subagent.status).toBe(
       "stopped",
     );
   });
@@ -323,14 +334,15 @@ describe("Claude steerTurn", () => {
     // The message was offered into the prompt queue...
     const { value, done } = await iterator.next();
     expect(done).toBe(false);
+    // SAFETY: the queued steer round-trips through the adapter as a user message with text blocks.
     const content = (value as { message: { content: Array<{ text: string }> } }).message.content;
     expect(content[0]?.text).toBe("keep going");
 
     // ...and announced as a steer into the live turn.
     const steered = events.filter((e) => e.type === "turn.steered");
     expect(steered).toHaveLength(1);
-    expect((steered[0] as Extract<RuntimeEvent, { type: "turn.steered" }>).turnId).toBe(turnId);
-    expect((steered[0] as Extract<RuntimeEvent, { type: "turn.steered" }>).message).toBe(
+    expect(ofType(steered, "turn.steered")[0].turnId).toBe(turnId);
+    expect(ofType(steered, "turn.steered")[0].message).toBe(
       "keep going",
     );
   });
@@ -347,7 +359,7 @@ describe("Claude steerTurn", () => {
 
     const started = events.filter((e) => e.type === "turn.started");
     expect(started).toHaveLength(1);
-    expect((started[0] as Extract<RuntimeEvent, { type: "turn.started" }>).turnId).toBe(
+    expect(ofType(started, "turn.started")[0].turnId).toBe(
       result.turnId,
     );
     expect(events.filter((e) => e.type === "turn.steered")).toHaveLength(0);

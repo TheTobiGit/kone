@@ -185,7 +185,10 @@ export class AgentService {
       adapter.setConfig?.(settings[provider] ?? {});
     }
     for (const [provider, models] of Object.entries(readProviderCache().models)) {
-      if (models?.length) this.catalogs.set(provider as ProviderKind, models);
+      if (models?.length) {
+        // SAFETY: the provider cache is keyed by ProviderKind at write time.
+        this.catalogs.set(provider as ProviderKind, models);
+      }
     }
   }
 
@@ -212,18 +215,21 @@ export class AgentService {
    *  a busy send goes straight to the adapter again, and promotion/cancel
    *  paths no-op — instead of crashing the main process mid-tree. */
   private get queueStore(): QueuedTurnStore | null {
-    const store = this.options.store ?? (getConversationStore() as unknown);
-    if (store && typeof (store as QueuedTurnStore).enqueueQueuedTurn === "function") {
-      return store as QueuedTurnStore;
+    const store: unknown = this.options.store ?? getConversationStore();
+    // SAFETY: the enqueueQueuedTurn probe below confirms this really is the
+    // store's landed queue slice before it is ever handed out.
+    const candidate = store as QueuedTurnStore | null;
+    if (!candidate || typeof candidate.enqueueQueuedTurn !== "function") {
+      if (!this.queueUnavailableWarned) {
+        this.queueUnavailableWarned = true;
+        console.warn(
+          "[agent] durable turn queue unavailable (store slice not landed) — " +
+            "busy sends fall back to direct dispatch",
+        );
+      }
+      return null;
     }
-    if (!this.queueUnavailableWarned) {
-      this.queueUnavailableWarned = true;
-      console.warn(
-        "[agent] durable turn queue unavailable (store slice not landed) — " +
-          "busy sends fall back to direct dispatch",
-      );
-    }
-    return null;
+    return candidate;
   }
 
   /** The conversation store's policy surface, or null when the store slice
@@ -231,15 +237,18 @@ export class AgentService {
    *  means the enforcer can't resolve an agent, so it allows everything — a
    *  missing store never turns into a blanket denial. */
   private get policyStore(): PolicyStore | null {
-    const store = this.options.store ?? (getConversationStore() as unknown);
+    const store: unknown = this.options.store ?? getConversationStore();
+    if (!store) return null;
+    // SAFETY: the method probes below confirm this really is the store's
+    // landed policy slice before it is ever handed out.
+    const candidate = store as PolicyStore;
     if (
-      store &&
-      typeof (store as PolicyStore).getThreadAgent === "function" &&
-      typeof (store as PolicyStore).getAgent === "function"
+      typeof candidate.getThreadAgent !== "function" ||
+      typeof candidate.getAgent !== "function"
     ) {
-      return store as PolicyStore;
+      return null;
     }
-    return null;
+    return candidate;
   }
 
   /** The prohibitions in force on a thread: the policies of the agent it answers
@@ -1103,8 +1112,13 @@ export class AgentService {
     let attachments: ChatAttachment[] | undefined;
     if (row.attachmentsJson) {
       try {
+        // SAFETY: the column text came from this app's own attachment serializer.
         const parsed = JSON.parse(row.attachmentsJson) as unknown;
-        if (Array.isArray(parsed)) attachments = parsed as ChatAttachment[];
+        if (Array.isArray(parsed)) {
+          // SAFETY: serialized by the attachment writer; a deviant row drops
+          // the chips rather than being trusted.
+          attachments = parsed as ChatAttachment[];
+        }
       } catch {
         // Corrupt attachments JSON — send the prompt without attachments
         // rather than dropping the whole queued turn.

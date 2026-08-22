@@ -144,6 +144,7 @@ type PendingApproval = {
 // ── small JSON helpers ───────────────────────────────────────────────────────
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the object check on the line above is the gate; readers probe fields.
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
@@ -438,7 +439,7 @@ function itemDetailBody(item: Record<string, unknown> | undefined): string | und
   const stderr = typeof item.stderr === "string" ? item.stderr : undefined;
   if (stdout || stderr) return [stdout, stderr].filter((v): v is string => Boolean(v)).join("\n");
 
-  const output = [item.output, nestedResult?.output].find((v) => typeof v === "string") as string | undefined;
+  const output = stringIn([item.output, nestedResult?.output]);
   if (output && output.trim().length > 0) return output;
 
   const fileList = Array.isArray(item.files) ? item.files : Array.isArray(item.paths) ? item.paths : undefined;
@@ -450,28 +451,37 @@ function itemDetailBody(item: Record<string, unknown> | undefined): string | und
   return undefined;
 }
 
+/** The first string among the values. */
+function stringIn(values: unknown[]): string | undefined {
+  return values.find((v): v is string => typeof v === "string");
+}
+
+/** The array under `key` when it is one.
+ *  SAFETY: Array.isArray is checked before the cast, so only arrays pass. */
+function asArray(value: unknown): unknown[] {
+  // SAFETY: Array.isArray is checked before the cast, so only arrays pass.
+  return Array.isArray(value) ? (value as unknown[]) : [];
+}
+
 function parseModelListResponse(response: Record<string, unknown> | undefined): ModelDescriptor[] {
   const list =
-    (Array.isArray(response?.items) && (response.items as unknown[])) ||
-    (Array.isArray(response?.data) && (response.data as unknown[])) ||
-    (Array.isArray(response?.models) && (response.models as unknown[])) ||
-    [];
+    asArray(response?.items) || asArray(response?.data) || asArray(response?.models) || [];
   const seen = new Set<string>();
   const models: ModelDescriptor[] = [];
   for (const entry of list) {
     const record = asRecord(entry);
     if (!record) continue;
-    const id = [record.id, record.slug, record.model].find((v) => typeof v === "string") as string | undefined;
+    const id = stringIn([record.id, record.slug, record.model]);
     if (!id || seen.has(id)) continue;
     seen.add(id);
     // Real `model/list` responses carry the human name as `displayName` (e.g.
     // "GPT-5.6-Terra" for id `gpt-5.6-terra`) — `label` was a guess at a field
     // name that doesn't actually appear in the response.
-    const label = [record.displayName, record.label].find((v) => typeof v === "string") as string | undefined;
+    const label = stringIn([record.displayName, record.label]);
     // Real efforts vary per model (e.g. gpt-5.6-terra: low/medium/high/xhigh/max/ultra) —
     // read them straight off the response rather than assuming a fixed ladder.
     const effortEntries = Array.isArray(record.supportedReasoningEfforts)
-      ? (record.supportedReasoningEfforts as unknown[])
+      ? asArray(record.supportedReasoningEfforts)
       : [];
     const reasoningEfforts = effortEntries
       .map((entry) => asRecord(entry)?.reasoningEffort)
@@ -481,7 +491,7 @@ function parseModelListResponse(response: Record<string, unknown> | undefined): 
     // Real `serviceTiers` entries carry {id, name, description}; the older
     // `additionalSpeedTiers` a bare id list (deprecated, "fast" in practice).
     // Either way we normalize to the same {id, label, description} shape.
-    const serviceTierEntries = Array.isArray(record.serviceTiers) ? (record.serviceTiers as unknown[]) : [];
+    const serviceTierEntries = asArray(record.serviceTiers);
     const serviceTiers = serviceTierEntries
       .map((entry) => {
         const r = asRecord(entry);
@@ -495,7 +505,7 @@ function parseModelListResponse(response: Record<string, unknown> | undefined): 
       })
       .filter((v): v is { id: string; label: string; description?: string } => v !== undefined);
     if (!serviceTiers.length && Array.isArray(record.additionalSpeedTiers)) {
-      for (const tierId of record.additionalSpeedTiers as unknown[]) {
+      for (const tierId of asArray(record.additionalSpeedTiers)) {
         if (typeof tierId === "string") serviceTiers.push({ id: tierId, label: tierId === "fast" ? "Fast" : tierId });
       }
     }

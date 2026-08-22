@@ -23,6 +23,16 @@ let sessionRpc: FakeJsonRpcClient | null = null;
 
 type RecordLike = Record<string, unknown>;
 
+/** SAFETY: a no-op emitter — these tests never listen to what the adapter emits. */
+const noopEmit = (() => {}) as EmitEvent;
+
+/** The text blocks of an outgoing session/prompt. */
+function promptParts(params: unknown): { type: string; text: string }[] {
+  // SAFETY: the fake client records exactly what the adapter sent; its prompt
+  // is always this list of text blocks.
+  return (params as RecordLike).prompt as { type: string; text: string }[];
+}
+
 function sessionResponse(): RecordLike {
   return {
     sessionId: "ses-1",
@@ -44,9 +54,10 @@ class FakeJsonRpcClient {
   }
   async call<T = unknown>(method: string, params?: unknown): Promise<T> {
     this.calls.push({ method, params });
+    let response: unknown;
     switch (method) {
       case "initialize":
-        return {
+        response = {
           agentCapabilities: {
             mcpCapabilities: { http: httpCapable },
             // droid advertises `loadSession`; resume support rides
@@ -55,18 +66,26 @@ class FakeJsonRpcClient {
             loadSession: true,
           },
           authMethods: [{ id: "factory-api-key" }, { id: "device-pairing" }],
-        } as T;
+        };
+        break;
       case "authenticate":
-        return {} as T;
+        response = {};
+        break;
       case "session/new":
       case "session/load":
       case "session/resume":
-        return sessionResponse() as T;
+        response = sessionResponse();
+        break;
       case "session/prompt":
-        return { stopReason: "end_turn" } as T;
+        response = { stopReason: "end_turn" };
+        break;
       default:
-        return {} as T;
+        response = {};
+        break;
     }
+    // SAFETY: each arm above builds exactly the payload this adapter's protocol
+    // answers `method` with; T is that shape at every call site.
+    return response as T;
   }
   notify(): void {}
   onNotification(): () => void {
@@ -105,7 +124,7 @@ const CONNECTION = { url: "http://127.0.0.1:41231/mcp", bearerToken: "kone_gw_to
 
 function start(overrides: Partial<SessionStartInput>) {
   sessionRpc = null;
-  const adapter = new DroidAdapter((() => {}) as EmitEvent);
+  const adapter = new DroidAdapter(noopEmit);
   return adapter.startSession({
     threadId: "thread-1",
     provider: "droid",
@@ -178,7 +197,7 @@ describe("Droid gateway injection", () => {
 
   test("first turn carries the kone host-context block, later turns do not", async () => {
     httpCapable = false;
-    const adapter = new DroidAdapter((() => {}) as EmitEvent);
+    const adapter = new DroidAdapter(noopEmit);
     sessionRpc = null;
     await adapter.startSession({
       threadId: "thread-2",
@@ -189,20 +208,20 @@ describe("Droid gateway injection", () => {
 
     await adapter.sendTurn({ threadId: "thread-2", input: "hello world" });
     const first = sessionRpc!.calls.find((c) => c.method === "session/prompt");
-    const firstText = (first?.params as RecordLike).prompt as { type: string; text: string }[];
+    const firstText = promptParts(first?.params);
     expect(firstText[0].text).toContain(KONE_HOST_CONTEXT_MARKER);
     expect(firstText[0].text).toContain("kone_scratchpad_write");
     expect(firstText[0].text).toContain("hello world");
 
     await adapter.sendTurn({ threadId: "thread-2", input: "again" });
     const prompts = sessionRpc!.calls.filter((c) => c.method === "session/prompt");
-    const secondText = (prompts[1].params as RecordLike).prompt as { type: string; text: string }[];
+    const secondText = promptParts(prompts[1].params);
     expect(secondText[0].text).toBe("again");
   });
 
   test("no gateway connection: no host-context block even on the first turn", async () => {
     httpCapable = true;
-    const adapter = new DroidAdapter((() => {}) as EmitEvent);
+    const adapter = new DroidAdapter(noopEmit);
     sessionRpc = null;
     await adapter.startSession({
       threadId: "thread-3",
@@ -212,7 +231,7 @@ describe("Droid gateway injection", () => {
 
     await adapter.sendTurn({ threadId: "thread-3", input: "plain" });
     const first = sessionRpc!.calls.find((c) => c.method === "session/prompt");
-    const firstText = (first?.params as RecordLike).prompt as { type: string; text: string }[];
+    const firstText = promptParts(first?.params);
     expect(firstText[0].text).toBe("plain");
   });
 });
@@ -223,13 +242,13 @@ describe("Droid agent identity", () => {
   /** The text of the nth session/prompt this adapter sent, in order. */
   function promptText(index: number): string {
     const prompts = sessionRpc!.calls.filter((c) => c.method === "session/prompt");
-    const parts = (prompts[index].params as RecordLike).prompt as { type: string; text: string }[];
+    const parts = promptParts(prompts[index].params);
     return parts[0].text;
   }
 
   test("a thread handed to an agent says who it is on the first turn, and once", async () => {
     httpCapable = true;
-    const adapter = new DroidAdapter((() => {}) as EmitEvent);
+    const adapter = new DroidAdapter(noopEmit);
     sessionRpc = null;
     await adapter.startSession({
       threadId: "thread-4",
@@ -252,7 +271,7 @@ describe("Droid agent identity", () => {
 
   test("a guest thread's turns are the plain prompt, exactly as before agents existed", async () => {
     httpCapable = true;
-    const adapter = new DroidAdapter((() => {}) as EmitEvent);
+    const adapter = new DroidAdapter(noopEmit);
     sessionRpc = null;
     await adapter.startSession({
       threadId: "thread-5",
@@ -267,7 +286,7 @@ describe("Droid agent identity", () => {
 
   test("an agent keeps its name with no gateway to talk to", async () => {
     httpCapable = true;
-    const adapter = new DroidAdapter((() => {}) as EmitEvent);
+    const adapter = new DroidAdapter(noopEmit);
     sessionRpc = null;
     await adapter.startSession({
       threadId: "thread-6",

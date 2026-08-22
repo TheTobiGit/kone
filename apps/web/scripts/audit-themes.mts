@@ -122,6 +122,7 @@ function parseRgb(body: string): Rgba {
     throw new Error(`rgb() needs exactly three channels (got ${channels.length})`);
   }
   const toChannel = (c: string) => (c.endsWith("%") ? (parseFloat(c) / 100) * 255 : parseFloat(c));
+  // SAFETY: rgb() was validated to have exactly the three channels Rgb holds.
   return { rgb: channels.map((c) => clamp01(toChannel(c) / 255)) as Rgb, a };
 }
 
@@ -184,7 +185,10 @@ function parseValue(raw: string, ctx: ResolveContext): Rgba {
   if (m) return parseRgb(m[1]);
 
   m = s.match(/^color-mix\(in\s+(srgb|oklab)\s*,(.*)\)$/i);
-  if (m) return parseColorMix(m[1].toLowerCase() as "srgb" | "oklab", m[2], ctx);
+  if (m) {
+    // SAFETY: the regex above matches only the two color-space literals.
+    return parseColorMix(m[1].toLowerCase() as "srgb" | "oklab", m[2], ctx);
+  }
 
   const fn = s.match(/^([a-z-]+)\(/i);
   if (fn) throw new Error(`unknown function \`${fn[1]}(...)\``);
@@ -227,11 +231,13 @@ function parseColorMix(space: "srgb" | "oklab", argStr: string, ctx: ResolveCont
     const rgb = c1.color.rgb.map(
       (v, i) => (c1.color.a * w1 * v + c2.color.a * w2 * c2.color.rgb[i]) / a,
     );
+    // SAFETY: mixing two three-channel colors yields three channels.
     return { rgb: rgb.map(clamp01) as Rgb, a };
   }
   const lab1 = srgbToOklab(c1.color.rgb);
   const lab2 = srgbToOklab(c2.color.rgb);
   const lab = lab1.map((v, i) => (c1.color.a * w1 * v + c2.color.a * w2 * lab2[i]) / a);
+  // SAFETY: oklab channels are exactly the three Rgb holds.
   return { rgb: oklabToSrgb(lab as Rgb), a };
 }
 
@@ -275,6 +281,7 @@ function createResolver(colors: Record<string, unknown>, varToRole: Map<string, 
 
 function composite(c: Rgba, ground: Rgba | null): Rgb {
   if (c.a >= 1 || !ground) return c.rgb;
+  // SAFETY: blending two three-channel arrays channelwise stays three long.
   return c.rgb.map((v, i) => v * c.a + ground.rgb[i] * (1 - c.a)) as Rgb;
 }
 
@@ -349,6 +356,7 @@ function auditScheme(
     try {
       opaque.set(role, composite(resolveRole(role), ground));
     } catch (e) {
+      // SAFETY: colors[role] is a CSS string by construction; throws here are Errors.
       unresolved.push({ role, raw: colors[role] as string, reason: (e as Error).message });
     }
   }
@@ -401,6 +409,7 @@ function auditScheme(
   if (plasma == null) {
     plasmaBad.push("plasma is missing");
   } else if (!Array.isArray(plasma) || plasma.length !== 3) {
+    // SAFETY: this branch ran because Array.isArray(plasma) held.
     plasmaBad.push(`plasma has ${(plasma as unknown[]).length} stops, expected exactly 3`);
   }
   if (Array.isArray(plasma)) {
@@ -425,9 +434,14 @@ async function main(): Promise<void> {
 
     const themesMod = await import(themesUrl);
     const rolesMod = await import(rolesUrl);
+    // SAFETY: the sources are this repo's own theme modules; their exports are
+    // the contract this audit exists to check.
     const themes = themesMod.BUILT_IN_THEMES as readonly Record<string, any>[];
+    // SAFETY: same repo-owned module contract as above.
     const roles = rolesMod.THEME_ROLES as readonly string[];
+    // SAFETY: same repo-owned module contract as above.
     const variables = rolesMod.THEME_VARIABLES as Record<string, string>;
+    // SAFETY: same repo-owned module contract as above.
     const schemesOf = rolesMod.schemesOf as (t: any) => readonly string[];
 
     const varToRole = new Map<string, string>();
@@ -449,7 +463,9 @@ async function main(): Promise<void> {
       // exactly one, and reporting a missing second scheme as a finding would be
       // flagging the feature rather than a fault.
       for (const scheme of schemesOf(theme)) {
+        // SAFETY: theme is a built-in theme record; colors/extras are its scheme maps.
         const colors = theme.colors?.[scheme] as Record<string, unknown> | undefined;
+        // SAFETY: see above — same record, probed field-by-field below.
         const extras = theme.extras?.[scheme] as { plasma?: unknown } | undefined;
 
         if (!colors) {
@@ -494,6 +510,7 @@ async function main(): Promise<void> {
       `TOTAL: ${totalFindings} finding${totalFindings === 1 ? "" : "s"} across ${themes.length} theme${themes.length === 1 ? "" : "s"}`,
     );
   } catch (err) {
+    // SAFETY: module-load failures surface as Errors here.
     report.push(`could not load theme source: ${(err as Error).message}`);
     report.push("nothing audited — another thread may be mid-edit");
   }

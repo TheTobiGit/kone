@@ -30,6 +30,20 @@ import type {
   ThreadLineage,
 } from "./types.js";
 
+/** The caught rejection as a plain Error.
+ *  SAFETY: every caller runs expect(error).toBeInstanceOf(Error)
+ *  immediately before reading name/message off it. */
+function errorOf(e: unknown): Error {
+  return e as Error;
+}
+
+/** The caught rejection as its domain error.
+ *  SAFETY: every caller runs expect(error).toBeInstanceOf(SpawnError)
+ *  immediately before reading fields off it. */
+function spawnErrorOf(e: unknown): SpawnError {
+  return e as SpawnError;
+}
+
 // The spawn engine against in-memory fakes: no sqlite, no electron, no real
 // adapters. The store fake mirrors the real ConversationStore's spawn surface
 // (including reserveGatewayOp's replay/conflict semantics), the dispatcher
@@ -158,7 +172,10 @@ class FakeStore implements SpawnEngineStore {
     resultJson: string;
   }): void {
     const prior = this.ops.get(`${input.threadId}/${input.turnId}/${input.requestId}`);
-    if (prior) prior.result = JSON.parse(input.resultJson) as SpawnThreadResult;
+    if (prior) {
+      // SAFETY: the engine only ever stores JSON.stringify of a SpawnThreadResult here.
+      prior.result = JSON.parse(input.resultJson) as SpawnThreadResult;
+    }
   }
 
   markGatewayOpDispatched(input: {
@@ -436,6 +453,7 @@ describe("spawn engine", () => {
       provider: "opencode",
       source: "kone.store",
     });
+    // SAFETY: ofType collected only thread.spawned events; [0] is this spawn's announce.
     const projection = (spawned[0] as Extract<RuntimeEvent, { type: "thread.spawned" }>).spawned;
     expect(projection.threadId).toBe(result.threadId);
     expect(projection.parentThreadId).toBe(CALLER.threadId);
@@ -540,7 +558,7 @@ describe("spawn engine", () => {
     const error = await engine.spawn(CALLER, { ...REQUEST, prompt: "Do something else" }).catch((e) => e);
 
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("idempotency_conflict");
+    expect(spawnErrorOf(error).code).toBe("idempotency_conflict");
   });
 
   test("a guard refusal surfaces as a SpawnError with the guard's own code", async () => {
@@ -552,8 +570,8 @@ describe("spawn engine", () => {
       .catch((e) => e);
 
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("invalid_input");
-    expect((error as SpawnError).message).toContain("prompt");
+    expect(spawnErrorOf(error).code).toBe("invalid_input");
+    expect(spawnErrorOf(error).message).toContain("prompt");
     // Refused before any child was written.
     expect(store.spawnedChildren(CALLER.threadId)).toHaveLength(0);
   });
@@ -566,10 +584,11 @@ describe("spawn engine", () => {
     const error = await engine.spawn(CALLER, REQUEST).catch((e) => e);
 
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("provider_unavailable");
+    expect(spawnErrorOf(error).code).toBe("provider_unavailable");
     // The thread row stays — a failed child is visible, not silently erased.
     expect(store.spawnedChildren(CALLER.threadId)).toHaveLength(1);
     const failed = bus.ofType("thread.spawn-updated").at(-1);
+    // SAFETY: ofType collected only thread.spawn-updated events.
     const projection = (failed as Extract<RuntimeEvent, { type: "thread.spawn-updated" }>).spawned;
     expect(projection.status).toBe("failed");
     expect(projection.terminal).toBe(true);
@@ -590,7 +609,7 @@ describe("spawn engine", () => {
     const error = await engine.spawn(CALLER, REQUEST).catch((e) => e);
 
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("provider_unavailable");
+    expect(spawnErrorOf(error).code).toBe("provider_unavailable");
     // The row stays — a failed child is visible, not silently erased.
     const children = store.spawnedChildren(CALLER.threadId);
     expect(children).toHaveLength(1);
@@ -598,6 +617,7 @@ describe("spawn engine", () => {
     // The child projects failed + terminal, and the settled turn's own error
     // rides up as the detail rather than being shadowed by a synthetic turn.
     const updates = bus.ofType("thread.spawn-updated");
+    // SAFETY: updates holds only thread.spawn-updated events.
     const last = updates.at(-1) as Extract<RuntimeEvent, { type: "thread.spawn-updated" }>;
     expect(last.spawned.status).toBe("failed");
     expect(last.spawned.terminal).toBe(true);
@@ -614,11 +634,12 @@ describe("spawn engine", () => {
     const error = await engine.spawn(CALLER, REQUEST).catch((e) => e);
 
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("provider_unavailable");
+    expect(spawnErrorOf(error).code).toBe("provider_unavailable");
     const children = store.spawnedChildren(CALLER.threadId);
     expect(children).toHaveLength(1);
     const childId = children[0]!.threadId;
     const updates = bus.ofType("thread.spawn-updated");
+    // SAFETY: updates holds only thread.spawn-updated events.
     const last = updates.at(-1) as Extract<RuntimeEvent, { type: "thread.spawn-updated" }>;
     expect(last.spawned.status).toBe("failed");
     expect(last.spawned.terminal).toBe(true);
@@ -642,8 +663,8 @@ describe("spawn engine", () => {
       .spawn(CALLER, { ...REQUEST, requestId: "req-13" })
       .catch((e) => e);
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("capability_denied");
-    expect((error as SpawnError).message).toContain(
+    expect(spawnErrorOf(error).code).toBe("capability_denied");
+    expect(spawnErrorOf(error).message).toContain(
       `${MAX_LIVE_CHILDREN_PER_PARENT} children running`,
     );
     expect(store.spawnedChildren(CALLER.threadId)).toHaveLength(MAX_LIVE_CHILDREN_PER_PARENT);
@@ -735,8 +756,8 @@ describe("spawn engine", () => {
       .waitFor({ threadIds: ["foreign-1"], timeoutMs: 10, scopeThreadId: CALLER.threadId })
       .catch((e) => e);
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("not_found");
-    expect((error as SpawnError).message).toContain("foreign-1");
+    expect(spawnErrorOf(error).code).toBe("not_found");
+    expect(spawnErrorOf(error).message).toContain("foreign-1");
   });
 
   test("isInSubtree walks parent pointers — a mid-tree parent sees its own child", () => {
@@ -876,7 +897,7 @@ describe("spawn engine", () => {
       })
       .catch((e) => e);
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("invalid_input");
+    expect(spawnErrorOf(error).code).toBe("invalid_input");
   });
 
   test("waitFor honours the requested order", async () => {
@@ -944,8 +965,8 @@ describe("spawn engine", () => {
     const started = Date.now();
     const error = await waiting.catch((e) => e);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).name).toBe("AbortError");
-    expect((error as Error).message).toBe("The wait was cancelled.");
+    expect(errorOf(error).name).toBe("AbortError");
+    expect(errorOf(error).message).toBe("The wait was cancelled.");
     // Rejected on entry, well before the 20ms timeout could have fired.
     expect(Date.now() - started).toBeLessThan(20);
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -969,7 +990,7 @@ describe("spawn engine", () => {
     controller.abort();
     const error = await waiting.catch((e) => e);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).name).toBe("AbortError");
+    expect(errorOf(error).name).toBe("AbortError");
 
     // The aborted waiter was removed from the list, not left to collide with
     // a later wait on the same child: the fresh wait times out on its own
@@ -1090,7 +1111,7 @@ describe("spawn engine", () => {
       .catch((e) => e);
 
     expect(error).toBeInstanceOf(SpawnError);
-    expect((error as SpawnError).code).toBe("permission_denied");
+    expect(spawnErrorOf(error).code).toBe("permission_denied");
     // Refused before any child was written.
     expect(store.spawnedChildren(CALLER.threadId)).toHaveLength(0);
   });

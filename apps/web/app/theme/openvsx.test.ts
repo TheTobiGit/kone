@@ -94,6 +94,7 @@ type Route =
 function installFetch(routes: (url: string, init?: RequestInit) => Route | null): void {
   // A mock request handler can't satisfy `fetch`'s full overload set; this
   // stands one in for the duration of a test.
+  // SAFETY: the stand-in implements exactly the fetch surface these routes hit.
   // eslint-disable-next-line anti-slop/no-chained-type-assertions
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const route = routes(String(input), init);
@@ -110,6 +111,7 @@ function installFetch(routes: (url: string, init?: RequestInit) => Route | null)
     }
     if (route.kind === "json") return new Response(JSON.stringify(route.body), { status: 200 });
     if (route.kind === "text") return new Response(route.text, { status: 200 });
+    // SAFETY: a Uint8Array is a valid BodyInit.
     return new Response(Uint8Array.from(route.bytes) as BodyInit, { status: 200 });
   }) as unknown as typeof fetch;
 }
@@ -117,6 +119,7 @@ function installFetch(routes: (url: string, init?: RequestInit) => Route | null)
 afterEach(() => {
   // fetch is reassigned per test; restoring to a no-op is enough because every
   // test installs its own router.
+  // SAFETY: a no-op fetch is enough between tests; each test installs its own.
   // eslint-disable-next-line anti-slop/no-chained-type-assertions
   globalThis.fetch = (() => Promise.resolve(new Response("unrouted", { status: 500 }))) as unknown as typeof fetch;
 });
@@ -124,6 +127,7 @@ afterEach(() => {
 describe("Open VSX theme import", () => {
   /** The standard happy-path router: manifest, checksum, and package. */
   function installPackageFetch(pkg: { bytes: Uint8Array; sha256: string }, manifest: unknown = MANIFEST) {
+    // SAFETY: the stand-in implements exactly the fetch surface this test hits.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -131,6 +135,7 @@ describe("Open VSX theme import", () => {
       if (url === `${ASSET_ROOT}/demo.theme-1.0.0.sha256`) return new Response(`${pkg.sha256}\n`, { status: 200 });
       if (url === `${ASSET_ROOT}/demo.theme-1.0.0.vsix`) {
         if (init?.method === "HEAD") return new Response(null, { status: 200 });
+        // SAFETY: a Uint8Array is a valid BodyInit.
         return new Response(Uint8Array.from(pkg.bytes) as BodyInit, { status: 200 });
       }
       return new Response("not found", { status: 404 });
@@ -188,6 +193,7 @@ describe("Open VSX theme import", () => {
     const pkg = await happyPackage();
     installPackageFetch(pkg);
     const original = globalThis.fetch;
+    // SAFETY: wraps the standard router, serving only a wrong checksum.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === `${ASSET_ROOT}/demo.theme-1.0.0.sha256`) {
