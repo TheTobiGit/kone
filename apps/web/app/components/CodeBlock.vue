@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
-import type { CodeLine } from "~/composables/useHighlighter";
+import { highlightThrottleMs, type CodeLine } from "~/composables/useHighlighter";
+import { createStreamGate } from "~/composables/useStreamGate";
 
 // A fenced code block inside an agent reply — syntax-highlighted with the same
 // Shiki engine (and VSCode themes) the file viewer uses, so code in the chat
@@ -20,11 +21,14 @@ const { scheme } = useTheme();
 
 const lines = shallowRef<CodeLine[] | null>(null);
 const lang = ref<string>("");
+let seq = 0;
 
 // Highlight on mount and re-tint when the colour scheme flips. A token guards
-// against an out-of-order async resolve painting stale colours.
-let seq = 0;
-let rafId: number | null = null;
+// against an out-of-order async resolve painting stale colours. While the block
+// is still streaming, re-tints are gated: short code updates fast, huge code
+// less often (see highlightThrottleMs); settled blocks re-run immediately since
+// a lone request always lands outside the previous window.
+const gate = createStreamGate(() => highlightThrottleMs(props.code.length));
 
 async function doHighlight(): Promise<void> {
   const mine = ++seq;
@@ -38,23 +42,19 @@ watch(
   [() => props.code, scheme],
   () => {
     if (!lines.value || !import.meta.client) {
+      gate.cancel();
       void doHighlight();
       return;
     }
-    if (rafId !== null) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(() => {
-      rafId = null;
-      void doHighlight();
-    });
+    gate.request(() => void doHighlight());
   },
   { immediate: true },
 );
 
 onBeforeUnmount(() => {
-  if (rafId !== null && import.meta.client) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
+  // Kill any scheduled pass; bumping seq also strands one already in flight.
+  gate.cancel();
+  seq++;
 });
 
 // The plain-text rows we fall back to before highlighting lands (or when the
