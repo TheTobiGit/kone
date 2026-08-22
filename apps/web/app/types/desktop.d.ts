@@ -2302,7 +2302,7 @@ export type AgentAvatarRef = {
  *  (mirrors the desktop `AgentBotRef`). Ids and nothing derived: the geometry
  *  behind them is the renderer's, so a stored bot never freezes a copy of it. */
 export type AgentBotRef = {
-  shape: string;
+  form: string;
   color: string;
   expression: string;
 };

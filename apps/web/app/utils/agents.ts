@@ -259,7 +259,7 @@ export const KONE: AgentPreset = {
   // The house bot wears the accent's own hue, and the accent is the only colour
   // it may claim — every bot made later reads as a colleague beside it. A sphere
   // because that is the shape kone already is.
-  bot: { shape: "circle", color: "orange", expression: "attentive" },
+  bot: { form: "circle", color: "orange", expression: "attentive" },
 };
 
 const PRESETS: readonly AgentPreset[] = [KONE];

@@ -41,7 +41,7 @@
 import { EXPRESSIONS, type BotExpression } from './expressions'
 import { eyePoses } from './face'
 import { radiusAtAngle, toPoints, type Point } from './shape'
-import { SHAPES } from './skins'
+import { FORMS } from './skins'
 import { STATES, type Pose, type StateDef, type StateId } from './states'
 
 /** Rayon de reference du solveur. Le decalage rendu est en unites de ce rayon. */
@@ -413,7 +413,7 @@ const clef = (state: StateId, expr: string | null) => `${state}|${expr ?? ''}`
  */
 function batir(): Map<number[], Map<string, { x: number; y: number }>> {
   return new Map(
-  SHAPES.map((forme) => {
+  FORMS.map((forme) => {
     const par = new Map<string, { x: number; y: number }>()
     for (const def of STATES) {
       if (!def.baseBody) continue

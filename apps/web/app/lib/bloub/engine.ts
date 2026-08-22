@@ -140,9 +140,9 @@ export class BotEngine {
   private tPrev = 0
   private blinkAt = -10
   private pts: Point[] = []
-  private shape: number[] | null = null
-  private shapePrev: number[] | null = null
-  private shapeAt = -10
+  private form: number[] | null = null
+  private formPrev: number[] | null = null
+  private formAt = -10
   private expr: BotExpression | null = null
   private exprPrev: BotExpression | null = null
   private exprAt = -10
@@ -153,10 +153,10 @@ export class BotEngine {
   private lookMorph = 0.24
 
   /** duree du morph quand on change la forme du corps */
-  static readonly SHAPE_MORPH = 0.45
+  static readonly FORM_MORPH = 0.45
 
   /**
-   * Duree de rattrapage du regard vers la cible. Plus court que `SHAPE_MORPH` :
+   * Duree de rattrapage du regard vers la cible. Plus court que `FORM_MORPH` :
    * un regard qui suit doit paraitre attentif, pas visqueux. Comme la cible est
    * reposee a chaque mouvement de souris, c'est cette duree qui donne au suivi
    * son inertie — le regard n'atteint jamais tout a fait un curseur qui bouge.
@@ -166,12 +166,12 @@ export class BotEngine {
   constructor(
     scale = 100,
     initial: StateId = 'idle',
-    shape: number[] | null = null,
+    form: number[] | null = null,
     expression: BotExpression | null = null
   ) {
     this.scale = scale
     this.cur = initial
-    this.shape = shape
+    this.form = form
     this.expr = expression
   }
 
@@ -191,7 +191,7 @@ export class BotEngine {
     const to = this.expr
     const from = this.exprPrev
     if (!to || !from) return to
-    const k = (now - this.exprAt) / BotEngine.SHAPE_MORPH
+    const k = (now - this.exprAt) / BotEngine.FORM_MORPH
     if (k >= 1) return to
     return blendExpression(from, to, easings.easeOutQuint(clamp(k)))
   }
@@ -204,25 +204,25 @@ export class BotEngine {
    * Le changement se fait en morph, pas d'un coup : comme toutes les formes sont
    * echantillonnees aux memes angles, il suffit d'interpoler les rayons.
    */
-  setShape(radii: number[] | null, now = 0) {
-    if (radii === this.shape) return
-    this.shapePrev = this.shape
-    this.shape = radii
-    this.shapeAt = now
+  setForm(radii: number[] | null, now = 0) {
+    if (radii === this.form) return
+    this.formPrev = this.form
+    this.form = radii
+    this.formAt = now
   }
 
   /**
    * Forme effective a l'instant `now`, morph en cours compris.
    *
-   * Ne remet PAS `shapePrev` a null en fin de morph : `sample` doit rester une
+   * Ne remet PAS `formPrev` a null en fin de morph : `sample` doit rester une
    * fonction pure du temps, donc relire une date passee doit redonner l'image
    * intermediaire. On garde juste une reference de plus.
    */
-  private shapeAtTime(now: number): number[] | null {
-    const to = this.shape
-    const from = this.shapePrev
+  private formAtTime(now: number): number[] | null {
+    const to = this.form
+    const from = this.formPrev
     if (!to || !from) return to
-    const k = (now - this.shapeAt) / BotEngine.SHAPE_MORPH
+    const k = (now - this.formAt) / BotEngine.FORM_MORPH
     if (k >= 1) return to
     const t = easings.easeOutQuint(clamp(k))
     // alloue seulement pendant le morph ; hors morph on rend le tableau tel quel
@@ -233,11 +233,11 @@ export class BotEngine {
    * Nouvelle cible de regard, `null` pour revenir a celui de l'etat.
    *
    * Elle repart de la valeur COURANTE, et non de la cible precedente comme
-   * `setShape` : cette methode est appelee a chaque mouvement de pointeur, et
+   * `setForm` : cette methode est appelee a chaque mouvement de pointeur, et
    * repartir de l'ancienne cible ferait reculer le regard d'un cran avant
    * chaque rattrapage — le suivi tremblerait au lieu de glisser.
    *
-   * Meme contrat que `setShape` par ailleurs : l'etat externe entre par un
+   * Meme contrat que `setForm` par ailleurs : l'etat externe entre par un
    * setter horodate, jamais par une variable lue pendant `sample`, sinon le
    * moteur cesse d'etre une fonction pure du temps.
    */
@@ -269,13 +269,13 @@ export class BotEngine {
   private posed(
     def: StateDef,
     t: number,
-    shape: number[] | null,
+    form: number[] | null,
     expr: BotExpression | null
   ): Pose {
     let pose = def.pose(t)
-    if (def.baseBody && shape) {
+    if (def.baseBody && form) {
       // on garde la pose (rotation, decalage, squash) et on n'echange que le profil
-      pose = { ...pose, sil: { ...pose.sil, radii: shape } }
+      pose = { ...pose, sil: { ...pose.sil, radii: form } }
     }
     if (def.baseFace && expr) {
       pose = { ...pose, gaze: expr.gaze, split: expr.split, eyes: expr.eyes }
@@ -291,8 +291,8 @@ export class BotEngine {
    * sur l'axe de la forme, avec exactement la courbe et la duree du morph de silhouette
    * — c'est la meme cause, donc ce doit etre le meme mouvement.
    *
-   * On interroge la table sur les BORNES du morph (`shapePrev` et `shape`) et non sur le
-   * profil que rend `shapeAtTime` : celui-la est un tableau neuf alloue a chaque image,
+   * On interroge la table sur les BORNES du morph (`formPrev` et `form`) et non sur le
+   * profil que rend `formAtTime` : celui-la est un tableau neuf alloue a chaque image,
    * donc sans identite, et il n'existe dans aucune table.
    */
   private decalageAtTime(now: number, state: StateId): { x: number; y: number } {
@@ -319,17 +319,17 @@ export class BotEngine {
     const parForme = (radii: number[] | null) =>
       surAxe(
         this.exprAt,
-        BotEngine.SHAPE_MORPH,
+        BotEngine.FORM_MORPH,
         decalageDesYeux(radii, state, this.exprPrev?.id ?? null),
         decalageDesYeux(radii, state, this.expr?.id ?? null)
       )
 
     // puis axe de la forme
     return surAxe(
-      this.shapeAt,
-      BotEngine.SHAPE_MORPH,
-      parForme(this.shapePrev),
-      parForme(this.shape)
+      this.formAt,
+      BotEngine.FORM_MORPH,
+      parForme(this.formPrev),
+      parForme(this.form)
     )
   }
 
@@ -364,13 +364,13 @@ export class BotEngine {
    */
   private origine(
     now: number,
-    shape: number[] | null,
+    form: number[] | null,
     expr: BotExpression | null
   ): Pose | null {
     if (this.departFige) return this.departFige
     if (!this.prev) return null
     const prevDef = STATE_BY_ID.get(this.prev)!
-    return this.posed(prevDef, Math.max(0, now - this.tPrev), shape, expr)
+    return this.posed(prevDef, Math.max(0, now - this.tPrev), form, expr)
   }
 
   /**
@@ -380,12 +380,12 @@ export class BotEngine {
    */
   private poseComposee(now: number): Pose {
     const def = STATE_BY_ID.get(this.cur)!
-    const shape = this.shapeAtTime(now)
+    const form = this.formAtTime(now)
     const expr = this.exprAtTime(now)
-    const pose = this.posed(def, Math.max(0, now - this.tCur), shape, expr)
+    const pose = this.posed(def, Math.max(0, now - this.tCur), form, expr)
     const since = now - this.tCur
     if (since >= def.morph) return pose
-    const origine = this.origine(now, shape, expr)
+    const origine = this.origine(now, form, expr)
     if (!origine) return pose
     return blendPose(origine, pose, easings.easeOutQuint(clamp(since / def.morph)))
   }
@@ -424,9 +424,9 @@ export class BotEngine {
   sample(now: number): BotFrame {
     const R = this.scale
     const def = STATE_BY_ID.get(this.cur)!
-    const shape = this.shapeAtTime(now)
+    const form = this.formAtTime(now)
     const expr = this.exprAtTime(now)
-    let pose = this.posed(def, Math.max(0, now - this.tCur), shape, expr)
+    let pose = this.posed(def, Math.max(0, now - this.tCur), form, expr)
     let decalage = this.decalageAtTime(now, this.cur)
 
     // --- transition -------------------------------------------------------
@@ -435,7 +435,7 @@ export class BotEngine {
     // l'ignorer une fois le fondu passe, et l'oublier rendrait le moteur non
     // rejouable — relire une date d'avant la fin du fondu ne le retrouverait
     // plus. C'est l'optimisation qui parait innocente et qui casse tout.
-    const origine = since < def.morph ? this.origine(now, shape, expr) : null
+    const origine = since < def.morph ? this.origine(now, form, expr) : null
     if (origine) {
       // Ease-out exponentiel : c'est la courbe mesuree sur la video. Le corps
       // n'a pas d'overshoot (seuls la pastille et l'ouverture des yeux en ont).

@@ -30,7 +30,7 @@ import {
 
 // ── shapes ──────────────────────────────────────────────────────────────────
 
-export type BotShapeId =
+export type BotFormId =
   | "circle"
   | "pebble"
   | "squircle"
@@ -40,8 +40,8 @@ export type BotShapeId =
   | "cloud"
   | "droplet";
 
-export interface BotShape {
-  id: BotShapeId;
+export interface BotForm {
+  id: BotFormId;
   /** What a picker calls it. */
   label: string;
   /** `r(theta)` at `PROFILE_SAMPLES` angles, in units of the body's unit radius. */
@@ -77,7 +77,7 @@ const droplet = normalizeProfile(
 /** Lying down: the hull of two discs side by side. */
 const capsule = profileFromPolygon(hullOfCircles(-0.42, 0, 0.62, 0.42, 0, 0.62), 0, 0);
 
-export const BOT_SHAPES: readonly BotShape[] = [
+export const BOT_FORMS: readonly BotForm[] = [
   { id: "circle", label: "Circle", radii: new Array(PROFILE_SAMPLES).fill(1) },
   { id: "pebble", label: "Pebble", radii: pebble },
   // Normalised to 1.15 rather than ~1.02: a superellipse's longest radius is its
@@ -93,7 +93,7 @@ export const BOT_SHAPES: readonly BotShape[] = [
   { id: "droplet", label: "Droplet", radii: droplet },
 ];
 
-export const DEFAULT_BOT_SHAPE: BotShapeId = "circle";
+export const DEFAULT_BOT_FORM: BotFormId = "circle";
 
 /**
  * The largest radius any shape here reaches.
@@ -102,8 +102,8 @@ export const DEFAULT_BOT_SHAPE: BotShapeId = "circle";
  * from the catalogue rather than written down, so adding a wider shape can't
  * quietly start clipping the ones already drawn.
  */
-export const SHAPE_HEADROOM = BOT_SHAPES.reduce(
-  (peak, shape) => Math.max(peak, ...shape.radii),
+export const FORM_HEADROOM = BOT_FORMS.reduce(
+  (peak, form) => Math.max(peak, ...form.radii),
   1,
 );
 
@@ -362,12 +362,12 @@ export const DEFAULT_BOT_EXPRESSION: BotExpressionId = "neutral";
 // rather than a fact. Every one of these falls back to the default, so a bot
 // stored by a build that offered a shape this one dropped still draws.
 
-const SHAPE_BY_ID = new Map<string, BotShape>(BOT_SHAPES.map((s) => [s.id, s]));
+const FORM_BY_ID = new Map<string, BotForm>(BOT_FORMS.map((s) => [s.id, s]));
 const COLOR_BY_ID = new Map<string, BotColor>(BOT_COLORS.map((c) => [c.id, c]));
 const EXPRESSION_BY_ID = new Map<string, BotExpression>(BOT_EXPRESSIONS.map((e) => [e.id, e]));
 
-export function botShape(id: string | null | undefined): BotShape {
-  return SHAPE_BY_ID.get(id ?? "") ?? SHAPE_BY_ID.get(DEFAULT_BOT_SHAPE)!;
+export function botForm(id: string | null | undefined): BotForm {
+  return FORM_BY_ID.get(id ?? "") ?? FORM_BY_ID.get(DEFAULT_BOT_FORM)!;
 }
 
 export function botColor(id: string | null | undefined): BotColor {

@@ -516,7 +516,7 @@ describe("an agent's policies", () => {
 
 describe("how an agent looks", () => {
   const PICTURE = { source: "generated", src: "data:image/jpeg;base64,AAAA" };
-  const BOT = { shape: "pebble", color: "teal", expression: "curious" };
+  const BOT = { form: "pebble", color: "teal", expression: "curious" };
 
   test("an avatar and a bot are stored as answers; null hands each field back", () => {
     const store = seeded();
@@ -547,7 +547,7 @@ describe("how an agent looks", () => {
   // handed back untouched — answering an unknown one with a default is the
   // renderer's job, and is what lets a bot outlive the build that made it.
   test("an unrecognised shape, colour or expression is kept, not corrected", () => {
-    const odd = { shape: "trefoil", color: "chartreuse", expression: "smug" };
+    const odd = { form: "trefoil", color: "chartreuse", expression: "smug" };
     expect(seeded().createAgent({ name: "Ada", bot: odd })!.bot).toEqual(odd);
   });
 
@@ -557,7 +557,7 @@ describe("how an agent looks", () => {
     const store = seeded();
     store.updateAgent("kone", {
       avatar: { source: "generated", src: "  " },
-      bot: { shape: "pebble", color: "", expression: "curious" },
+      bot: { form: "pebble", color: "", expression: "curious" },
     });
     expect(store.getAgent("kone")!.avatar).toBeNull();
     expect(store.getAgent("kone")!.bot).toBeNull();
@@ -569,7 +569,7 @@ describe("how an agent looks", () => {
     const copy = store.duplicateAgent({
       agentId: "kone",
       newAgentId: "copy-1",
-      inherited: { name: "kone", avatar: PICTURE, bot: { shape: "circle", color: "ink", expression: "neutral" } },
+      inherited: { name: "kone", avatar: PICTURE, bot: { form: "circle", color: "ink", expression: "neutral" } },
     })!;
     // The row's own bot wins; the avatar it has none of comes from the preset.
     expect(copy.bot).toEqual(BOT);
@@ -584,6 +584,17 @@ describe("how an agent looks", () => {
     const reopened = new ConversationStoreCtor();
     expect(reopened.getAgent("kone")!.avatar).toEqual(PICTURE);
     expect(reopened.getAgent("kone")!.bot).toEqual(BOT);
+  });
+
+  // Bots saved before the form rename key their column JSON `shape`; the
+  // normalizer maps it so an old row keeps its bot.
+  test("a bot stored under the legacy `shape` key still reads back", async () => {
+    const { parseAgentBot } = await import("./rosterRecord.js");
+    expect(parseAgentBot('{"shape":"pebble","color":"teal","expression":"curious"}')).toEqual({
+      form: "pebble",
+      color: "teal",
+      expression: "curious",
+    });
   });
 
   // A generated face is carried by value, so the ceiling here is orders of

@@ -19,14 +19,14 @@
 import {
   botColor,
   botExpression,
-  botShape,
+  botForm,
   DEFAULT_BOT_COLOR,
   DEFAULT_BOT_EXPRESSION,
-  DEFAULT_BOT_SHAPE,
-  SHAPE_HEADROOM,
+  DEFAULT_BOT_FORM,
+  FORM_HEADROOM,
   type BotColorId,
   type BotExpressionId,
-  type BotShapeId,
+  type BotFormId,
 } from "./catalog";
 import {
   capsulePath,
@@ -39,14 +39,14 @@ import {
   toPoints,
 } from "./geometry";
 
-export type { BotColor, BotColorId, BotExpression, BotExpressionId, BotShape, BotShapeId } from "./catalog";
+export type { BotColor, BotColorId, BotExpression, BotExpressionId, BotForm, BotFormId } from "./catalog";
 export {
   BOT_COLORS,
   BOT_EXPRESSIONS,
-  BOT_SHAPES,
+  BOT_FORMS,
   DEFAULT_BOT_COLOR,
   DEFAULT_BOT_EXPRESSION,
-  DEFAULT_BOT_SHAPE,
+  DEFAULT_BOT_FORM,
 } from "./catalog";
 
 /**
@@ -55,26 +55,35 @@ export {
  * a stored bot must not freeze a copy of it.
  */
 export interface AgentBot {
-  shape: BotShapeId;
+  form: BotFormId;
   color: BotColorId;
   expression: BotExpressionId;
 }
 
 /** The bot an agent gets when somebody opens the picker and changes nothing. */
 export const DEFAULT_BOT: AgentBot = {
-  shape: DEFAULT_BOT_SHAPE,
+  form: DEFAULT_BOT_FORM,
   color: DEFAULT_BOT_COLOR,
   expression: DEFAULT_BOT_EXPRESSION,
 };
 
 /** A bot read back out of the store, with anything unrecognised answered by the
  *  default. Returns null for nothing at all, which is an agent with no bot —
- *  a different thing from an agent with the default one. */
+ *  a different thing from an agent with the default one. Accepts the stored
+ *  key `shape` as well as `form`, so a bot saved before the rename still reads. */
 export function readBot(value: unknown): AgentBot | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as Partial<Record<keyof AgentBot, unknown>>;
+  const raw = value as Partial<Record<keyof AgentBot | "shape", unknown>>;
+  // A present-but-blank `form` falls back to the legacy key rather than
+  // reading as unknown and taking the default.
+  const form =
+    typeof raw.form === "string" && raw.form.trim()
+      ? raw.form
+      : typeof raw["shape"] === "string" && raw["shape"].trim()
+        ? raw["shape"]
+        : null;
   return {
-    shape: botShape(typeof raw.shape === "string" ? raw.shape : null).id,
+    form: botForm(form).id,
     color: botColor(typeof raw.color === "string" ? raw.color : null).id,
     expression: botExpression(typeof raw.expression === "string" ? raw.expression : null).id,
   };
@@ -130,7 +139,7 @@ const cache = new Map<string, string>();
 /** Body outlines, kept apart from the marks that wear them: a bot that is
  *  looking around redraws its eyes many times a second and its body never
  *  changes, and the outline is the expensive half. */
-const bodies = new Map<BotShapeId, string>();
+const bodies = new Map<BotFormId, string>();
 
 /**
  * Where a bot is looking, over and above the expression it is wearing.
@@ -155,11 +164,11 @@ export interface BotAim {
  * keeping every one of them would be a cache that only grows.
  */
 export function botMark(bot: AgentBot, aim?: BotAim): string {
-  const key = `${bot.shape}|${bot.color}|${bot.expression}`;
+  const key = `${bot.form}|${bot.color}|${bot.expression}`;
   const hit = aim ? undefined : cache.get(key);
   if (hit) return hit;
 
-  const shape = botShape(bot.shape);
+  const form = botForm(bot.form);
   const color = botColor(bot.color);
   const resting = botExpression(bot.expression);
   const expression = aim
@@ -177,11 +186,11 @@ export function botMark(bot: AgentBot, aim?: BotAim): string {
   // Every shape is scaled by the widest one in the catalogue, so the tile fits
   // all of them and their relative weights survive — a triangle stays visibly
   // smaller than the circle it is measured against, which is how it was drawn.
-  const R = ((TILE / 2) * FILL) / SHAPE_HEADROOM;
-  let bodyPath = bodies.get(shape.id);
+  const R = ((TILE / 2) * FILL) / FORM_HEADROOM;
+  let bodyPath = bodies.get(form.id);
   if (bodyPath === undefined) {
-    bodyPath = closedPath(toPoints(shape.radii, R));
-    bodies.set(shape.id, bodyPath);
+    bodyPath = closedPath(toPoints(form.radii, R));
+    bodies.set(form.id, bodyPath);
   }
 
   // The eyes live on a sphere of unit radius. Once the body is not a circle they
@@ -193,7 +202,7 @@ export function botMark(bot: AgentBot, aim?: BotAim): string {
       // Past the limb of the sphere this eye has turned away from us entirely.
       if (pose.depth <= 0.02) return "";
       const cfg = expression.eyes[i]!;
-      const fit = radiusAtAngle(shape.radii, Math.atan2(pose.y, pose.x));
+      const fit = radiusAtAngle(form.radii, Math.atan2(pose.y, pose.x));
 
       // The capsule's own tilt composes with the tangent frame, which is what
       // lets the two eyes lean opposite ways.
@@ -232,5 +241,5 @@ export function botMark(bot: AgentBot, aim?: BotAim): string {
 
 /** What a bot is called in one line — for a closed row's summary. */
 export function botSummary(bot: AgentBot): string {
-  return `${botColor(bot.color).label} ${botShape(bot.shape).label.toLowerCase()} · ${botExpression(bot.expression).label.toLowerCase()}`;
+  return `${botColor(bot.color).label} ${botForm(bot.form).label.toLowerCase()} · ${botExpression(bot.expression).label.toLowerCase()}`;
 }

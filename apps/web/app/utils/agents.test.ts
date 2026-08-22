@@ -557,7 +557,7 @@ describe("an agent's policies", () => {
 
 describe("how an agent looks", () => {
   const PICTURE = { source: "generated", src: "data:image/jpeg;base64,AAAA" } as const;
-  const BOT = { shape: "pebble", color: "teal", expression: "curious" } as const;
+  const BOT = { form: "pebble", color: "teal", expression: "curious" } as const;
 
   test("kone ships with a picture of itself and a bot", () => {
     const kone = agentById(KONE.id)!;
@@ -595,9 +595,9 @@ describe("how an agent looks", () => {
     const made = await createAgent({
       name: "Ada",
       // Deliberately not real ids — this is a bot from another build.
-      bot: { shape: "trefoil", color: "chartreuse", expression: "smug" } as never,
+      bot: { form: "trefoil", color: "chartreuse", expression: "smug" } as never,
     });
-    expect(made?.bot).toEqual({ shape: "circle", color: "ink", expression: "neutral" });
+    expect(made?.bot).toEqual({ form: "circle", color: "ink", expression: "neutral" });
   });
 
   // Where a picture came from is carried as it was stored, so reopening the
@@ -778,7 +778,7 @@ describe("what crosses the bridge", () => {
     const draft = ref({
       name: "Ada",
       avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" },
-      bot: { shape: "droplet", color: "ink", expression: "curious" },
+      bot: { form: "droplet", color: "ink", expression: "curious" },
       // Nested and reactive, which is why an unwrapped top level is not enough.
       policies: { deniedCommands: ["rm -rf"], deniedPaths: [] },
       model: null,
@@ -788,7 +788,7 @@ describe("what crosses the bridge", () => {
     expect(payload).toEqual({
       name: "Ada",
       avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" },
-      bot: { shape: "droplet", color: "ink", expression: "curious" },
+      bot: { form: "droplet", color: "ink", expression: "curious" },
       policies: { deniedCommands: ["rm -rf"], deniedPaths: [] },
       model: null,
     });
