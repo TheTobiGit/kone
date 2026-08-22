@@ -6,14 +6,14 @@ import { useSound } from "~/composables/useSound";
 import {
   BOT_COLORS,
   BOT_EXPRESSIONS,
-  BOT_SHAPES,
+  BOT_FORMS,
   botGround,
   botMark,
   DEFAULT_BOT,
   type AgentBot,
   type BotColorId,
   type BotExpressionId,
-  type BotShapeId,
+  type BotFormId,
 } from "~/utils/bot";
 
 // The bot an agent drives: a body shape, a colour, a resting expression. Its own
@@ -53,15 +53,15 @@ function clear() {
 function pick(over: Partial<AgentBot>) {
   const base = props.bot;
   const next = { ...(base ?? DEFAULT_BOT), ...over };
-  if (base && base.shape === next.shape && base.color === next.color && base.expression === next.expression) {
+  if (base && base.form === next.form && base.color === next.color && base.expression === next.expression) {
     return;
   }
   cue(base ? "toggle" : "expand");
   emit("update:bot", next);
 }
 
-function setShape(shape: BotShapeId) {
-  pick({ shape });
+function setForm(form: BotFormId) {
+  pick({ form });
 }
 function setColor(color: BotColorId) {
   pick({ color });
@@ -104,20 +104,20 @@ function swatch(over: Partial<AgentBot>): string {
       <span class="bot__axislabel">Shape</span>
       <div class="bot__swatches">
         <button
-          v-for="shape in BOT_SHAPES"
-          :key="shape.id"
+          v-for="form in BOT_FORMS"
+          :key="form.id"
           type="button"
           class="bot__swatch"
-          :class="{ 'is-on': bot?.shape === shape.id }"
-          :aria-pressed="bot?.shape === shape.id"
-          :aria-label="shape.label"
-          :title="shape.label"
-          @click="setShape(shape.id)"
+          :class="{ 'is-on': bot?.form === form.id }"
+          :aria-pressed="bot?.form === form.id"
+          :aria-label="form.label"
+          :title="form.label"
+          @click="setForm(form.id)"
         >
           <span
             class="bot__mark"
             :style="{ background: ground }"
-            v-html="swatch({ shape: shape.id })"
+            v-html="swatch({ form: form.id })"
           />
         </button>
       </div>

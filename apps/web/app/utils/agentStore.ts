@@ -490,11 +490,11 @@ function clampAvatar(value: AgentAvatarRef | null | undefined): AgentAvatarRef |
  *  answer with a default, not this layer's to drop. */
 function clampBot(value: AgentBotRef | null | undefined): AgentBotRef | null {
   if (value === null || value === undefined) return null;
-  const shape = value.shape?.trim();
+  const form = value.form?.trim();
   const color = value.color?.trim();
   const expression = value.expression?.trim();
-  if (!shape || !color || !expression) return null;
-  return { shape, color, expression };
+  if (!form || !color || !expression) return null;
+  return { form, color, expression };
 }
 
 function nextSortOrder(): number {

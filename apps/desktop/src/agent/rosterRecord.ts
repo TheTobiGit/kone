@@ -48,11 +48,11 @@ export type AgentAvatarRef = {
   src: string;
 };
 
-/** The bot an agent drives (v27): a body shape, a colour, and an expression,
- *  each named by id. Only ids, never geometry — what a shape looks like is this
+/** The bot an agent drives (v27): a body form, a colour, and an expression,
+ *  each named by id. Only ids, never geometry — what a form looks like is this
  *  build's to supply, and a stored bot must not freeze a copy of it. */
 export type AgentBotRef = {
-  shape: string;
+  form: string;
   color: string;
   expression: string;
 };
@@ -416,17 +416,22 @@ export function parseAgentAvatar(raw: string | null): AgentAvatarRef | null {
 /** Normalize a bot. Every field is a plain id the renderer's catalogue
  *  resolves, so an id this build has never heard of is stored and handed back
  *  unchanged — the catalogue answers an unknown one with its default, which is
- *  what lets a bot survive a build that drops the shape it was made with. A bot
- *  missing any of the three is not one and reads as null. */
+ *  what lets a bot survive a build that drops the form it was made with. A bot
+ *  missing any of the three is not one and reads as null.
+ *
+ *  The stored column still keys the first field `shape` — bots saved before the
+ *  form rename keep reading — while new rows write `form`. */
 export function normalizeBot(value: unknown): AgentBotRef | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "object") return null;
   const obj = value as Record<string, unknown>;
-  const shape = boundRefField(obj.shape);
+  // A present-but-blank `form` falls back to the legacy key rather than
+  // voiding the bot; boundRefField answers null for blank input.
+  const form = boundRefField(obj.form) ?? boundRefField(obj["shape"]);
   const color = boundRefField(obj.color);
   const expression = boundRefField(obj.expression);
-  if (!shape || !color || !expression) return null;
-  return { shape, color, expression };
+  if (!form || !color || !expression) return null;
+  return { form, color, expression };
 }
 
 /** Serialize a bot to the JSON its column holds. Null and undefined both store
