@@ -19,6 +19,8 @@
  */
 import { useStorage } from "@vueuse/core";
 import type {
+  AgentAvatarRef,
+  AgentBotRef,
   AgentCreateInput,
   AgentDuplicateInput,
   AgentModelRef,
@@ -112,12 +114,47 @@ const NAME_MAX = 64;
 const ROLE_MAX = 120;
 const PROSE_MAX = 4000;
 const PAINT_MAX = 64;
+/**
+ * How long an avatar's `src` may get, mirroring the store's own ceiling.
+ *
+ * Far larger than anything else here because a generated face is carried by
+ * value — the source hands back a different one per request, so a stored URL
+ * would repaint a new face every time. Worth knowing in the dev fallback in
+ * particular: rows there live in browser storage, which is a few megabytes
+ * total, so a handful of avatars is fine and a full-size original is not.
+ */
+const AVATAR_MAX = 512 * 1024;
 /** How long a capability list may get in the dev fallback, mirroring the
  *  store's own ceiling. */
 const LIST_MAX = 128;
 
 function bridge() {
   return import.meta.client ? window.koneDesktop?.roster : undefined;
+}
+
+/**
+ * The same payload with nothing reactive left in it.
+ *
+ * Everything crossing the bridge is structured-cloned, and that serializer
+ * refuses a Proxy outright — so a value read out of a `ref` holding an object
+ * fails to send at all, with nothing but "an object could not be cloned" to say
+ * why. Which is every picture, bot, model and policy list a pane collects, since
+ * a pane holds its draft in refs.
+ *
+ * Done here, at the one place these leave the renderer, rather than at each
+ * pane: a field that forgets is a write that fails in the app and nowhere else,
+ * and the next field added would have to remember all over again. A round trip
+ * through JSON rather than `toRaw`, because the nesting is arbitrary — an
+ * unwrapped top level with a reactive array inside it is the same failure.
+ * Everything here is stored as JSON at the far end, so nothing survives the trip
+ * that wouldn't have survived the column.
+ *
+ * Exported for its test rather than for callers: the bridge itself is out of
+ * reach from a test, so the guarantee this makes is worth pinning down on its
+ * own.
+ */
+export function sendable<T>(payload: T): T {
+  return JSON.parse(JSON.stringify(payload)) as T;
 }
 
 /** In flight while the first hydrate is still running. Writes wait on it, so an
@@ -215,7 +252,7 @@ export async function insertAgentRow(input: AgentCreateInput): Promise<AgentReco
   await hydrating;
   const api = bridge();
   if (!api) return insertLocalRow(input);
-  const row = await api.create(input);
+  const row = await api.create(sendable(input));
   if (row) applyRow(row);
   return row;
 }
@@ -243,7 +280,7 @@ export async function patchAgentRow(
   const optimistic = patchLocalRow(agentId, patch);
   const api = bridge();
   if (!api) return optimistic;
-  const row = await api.update({ agentId, patch });
+  const row = await api.update(sendable({ agentId, patch }));
   if (row) applyRow(row);
   // Refused — the row is gone, or the edit left an agent with no name at all.
   // Nothing local is trustworthy after that, so go back to what the store has.
@@ -270,7 +307,7 @@ export async function forkAgentRow(input: AgentDuplicateInput): Promise<AgentRec
   await hydrating;
   const api = bridge();
   if (!api) return forkLocalRow(input);
-  const row = await api.duplicate(input);
+  const row = await api.duplicate(sendable(input));
   // A fork renumbers the rows below it, so the local copy is stale in more
   // places than the new row — read the order back rather than guessing it.
   if (row) await reload();
@@ -437,6 +474,29 @@ function clampPolicies(value: AgentPolicies | null | undefined): AgentPolicies |
   };
 }
 
+/** An avatar delta: null and undefined both mean "inherit", and one with
+ *  nothing to draw is no avatar at all rather than a picture that paints blank.
+ *  `src` is bounded but never inspected — an asset path and a data URL are the
+ *  same thing to a row. */
+function clampAvatar(value: AgentAvatarRef | null | undefined): AgentAvatarRef | null {
+  if (value === null || value === undefined) return null;
+  const src = value.src?.trim().slice(0, AVATAR_MAX);
+  if (!src) return null;
+  return { source: value.source, src };
+}
+
+/** A bot delta: null and undefined both mean "inherit", and the three ids are
+ *  kept as given — an id this build doesn't know is the catalogue's problem to
+ *  answer with a default, not this layer's to drop. */
+function clampBot(value: AgentBotRef | null | undefined): AgentBotRef | null {
+  if (value === null || value === undefined) return null;
+  const shape = value.shape?.trim();
+  const color = value.color?.trim();
+  const expression = value.expression?.trim();
+  if (!shape || !color || !expression) return null;
+  return { shape, color, expression };
+}
+
 function nextSortOrder(): number {
   return agentRows.value.reduce((max, row) => Math.max(max, row.sortOrder + 1), 0);
 }
@@ -471,6 +531,8 @@ function ensureLocalRow(presetId: string): AgentRecord {
     skills: null,
     model: null,
     policies: null,
+    avatar: null,
+    bot: null,
     sortOrder: nextSortOrder(),
     createdAt: now,
     updatedAt: now,
@@ -495,6 +557,8 @@ function insertLocalRow(input: AgentCreateInput): AgentRecord | null {
     skills: clampList(input.skills),
     model: clampModel(input.model),
     policies: clampPolicies(input.policies),
+    avatar: clampAvatar(input.avatar),
+    bot: clampBot(input.bot),
     sortOrder: nextSortOrder(),
     createdAt: now,
     updatedAt: now,
@@ -516,6 +580,8 @@ function patchLocalRow(agentId: string, patch: AgentPatch): AgentRecord | null {
   if (patch.skills !== undefined) next.skills = clampList(patch.skills);
   if (patch.model !== undefined) next.model = clampModel(patch.model);
   if (patch.policies !== undefined) next.policies = clampPolicies(patch.policies);
+  if (patch.avatar !== undefined) next.avatar = clampAvatar(patch.avatar);
+  if (patch.bot !== undefined) next.bot = clampBot(patch.bot);
   // The store's CHECK, mirrored: an agent with nothing to inherit from has to
   // keep a name, so a clear that would leave it nameless is refused outright.
   if (next.presetId === null && !next.name) return null;
@@ -548,6 +614,8 @@ function forkLocalRow(input: AgentDuplicateInput): AgentRecord | null {
     skills: clampList(source.skills ?? inherited.skills),
     model: clampModel(source.model ?? inherited.model),
     policies: clampPolicies(source.policies ?? inherited.policies),
+    avatar: clampAvatar(source.avatar ?? inherited.avatar),
+    bot: clampBot(source.bot ?? inherited.bot),
     sortOrder: source.sortOrder + 1,
     createdAt: now,
     updatedAt: now,

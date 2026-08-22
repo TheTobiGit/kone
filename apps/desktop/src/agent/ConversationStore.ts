@@ -39,7 +39,7 @@ import { getUserDataDir } from "./userDataDir.js";
 // so a storage hiccup can never crash the agent or drop a turn. Plain-TS and
 // framework-free to match AgentService / the git + fs modules — no Effect, no DI.
 
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 27;
 
 /** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
  *  partially-applied migration — a crash between statements — re-runs
@@ -921,8 +921,35 @@ function migrate(db: DatabaseSync, dbFile: string): void {
     version = commitStep(db, 26);
   }
 
+  if (version < 27) {
+    // v27 — how an agent looks: a picture of them, and the bot they drive.
+    //
+    // Two marks rather than one because they answer different questions. An
+    // avatar says who is speaking and belongs beside a name in a transcript; a
+    // bot is a creature the agent drives and belongs where the agent is doing
+    // something rather than saying it. An agent can have either, both, or
+    // neither — with neither, the drawn face it has always had still stands.
+    //
+    // Both are JSON objects in TEXT, and both overlay like the prose beside
+    // them: NULL means "inherit whatever the shipped preset says". The store
+    // holds neither shape's meaning. An avatar's `src` is a string it never
+    // reads — a shipped asset path today, a data URL for a generated face — and
+    // a bot is three ids the renderer's own catalogue resolves, so a bot stored
+    // by a build offering a shape this one dropped still draws something.
+    //
+    // The avatar gets a far larger ceiling than any other field on the row
+    // (`AGENT_AVATAR_MAX`) precisely because a generated face is carried by
+    // value. It has to be: the source hands back a different face on every
+    // request, so storing the URL would give the agent a new face on every
+    // paint. A downscaled JPEG data URL is a few tens of kilobytes.
+    beginStep(db);
+    addColumn(db, "agents", "avatar", "TEXT");
+    addColumn(db, "agents", "bot", "TEXT");
+    version = commitStep(db, 27);
+  }
+
   // Future migrations append here:
-  // `if (version < 27) { beginStep(db); …; version = commitStep(db, 27); }`
+  // `if (version < 28) { beginStep(db); …; version = commitStep(db, 28); }`
 
   // Every rung stamps itself, so the ladder ending anywhere but the current
   // version means a rung is missing for it — a bumped SCHEMA_VERSION that
@@ -3770,8 +3797,8 @@ export class ConversationStore {
         `INSERT INTO agents
            (agent_id, preset_id, name, role, instructions,
             face_body, face_ink, skills, providers, models, policies,
-            sort_order, created_at, updated_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            avatar, bot, sort_order, created_at, updated_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         agentId,
         name,
@@ -3785,6 +3812,8 @@ export class ConversationStore {
         null,
         serializeModelRef(input.model),
         serializeAgentPolicies(input.policies),
+        serializeAgentAvatar(input.avatar),
+        serializeAgentBot(input.bot),
         this.nextAgentSortOrder(db),
         now,
         now,
@@ -3828,6 +3857,12 @@ export class ConversationStore {
     }
     if (patch.policies !== undefined) {
       edits.push(["policies", serializeAgentPolicies(patch.policies)]);
+    }
+    if (patch.avatar !== undefined) {
+      edits.push(["avatar", serializeAgentAvatar(patch.avatar)]);
+    }
+    if (patch.bot !== undefined) {
+      edits.push(["bot", serializeAgentBot(patch.bot)]);
     }
     if (edits.length === 0) return this.getAgent(agentId);
     try {
@@ -3917,8 +3952,8 @@ export class ConversationStore {
           `INSERT INTO agents
              (agent_id, preset_id, name, role, instructions,
               face_body, face_ink, skills, providers, models, policies,
-              sort_order, created_at, updated_at)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              avatar, bot, sort_order, created_at, updated_at)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           agentId,
           name,
@@ -3931,6 +3966,8 @@ export class ConversationStore {
           null,
           serializeModelRef(source.model ?? inherited.model),
           serializeAgentPolicies(source.policies ?? inherited.policies),
+          serializeAgentAvatar(source.avatar ?? inherited.avatar),
+          serializeAgentBot(source.bot ?? inherited.bot),
           source.sortOrder + 1,
           now,
           now,
@@ -4393,6 +4430,24 @@ export type AgentPolicies = {
   deniedPaths: string[];
 };
 
+/** A picture of an agent (v27). `source` records where it came from, so a later
+ *  editor can tell a generated face from an uploaded one without inspecting the
+ *  bytes; `src` is whatever draws it — a path to a shipped asset, or a data URL
+ *  carrying a generated one by value. Opaque to the store either way. */
+export type AgentAvatarRef = {
+  source: string;
+  src: string;
+};
+
+/** The bot an agent drives (v27): a body shape, a colour, and an expression,
+ *  each named by id. Only ids, never geometry — what a shape looks like is this
+ *  build's to supply, and a stored bot must not freeze a copy of it. */
+export type AgentBotRef = {
+  shape: string;
+  color: string;
+  expression: string;
+};
+
 export type AgentRecord = {
   agentId: string;
   /** The shipped preset this row overlays, or null for a user-made agent. */
@@ -4415,6 +4470,10 @@ export type AgentRecord = {
   /** The agent's permanent restrictions (v25), or null to inherit the preset's.
    *  A resolved object forbids exactly what its lists name and nothing else. */
   policies: AgentPolicies | null;
+  /** How the agent looks (v27), each an overlay: null inherits the preset's. An
+   *  agent with neither is drawn by the face they have always had. */
+  avatar: AgentAvatarRef | null;
+  bot: AgentBotRef | null;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -4435,6 +4494,8 @@ export type AgentCreateInput = {
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
   policies?: AgentPolicies | null;
+  avatar?: AgentAvatarRef | null;
+  bot?: AgentBotRef | null;
 };
 
 /** An edit. A key left out is left alone; an explicit null clears the field —
@@ -4448,6 +4509,8 @@ export type AgentPatch = {
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
   policies?: AgentPolicies | null;
+  avatar?: AgentAvatarRef | null;
+  bot?: AgentBotRef | null;
 };
 
 /** A fork of an existing agent. `inherited` carries the shipped preset's values
@@ -4468,6 +4531,8 @@ export type AgentDuplicateInput = {
     skills?: AgentSkillRef[] | null;
     model?: AgentModelRef | null;
     policies?: AgentPolicies | null;
+    avatar?: AgentAvatarRef | null;
+    bot?: AgentBotRef | null;
   };
 };
 
@@ -4534,11 +4599,21 @@ const AGENT_ROLE_MAX = 120;
 const AGENT_PROSE_MAX = 4000;
 /** Room for a colour or a theme variable reference. */
 const AGENT_PAINT_MAX = 64;
+/**
+ * Room for an avatar, which is far more than anything else on the row needs.
+ *
+ * A generated face has to be carried by value: the source hands back a
+ * different one on every request, so a stored URL would give the agent a new
+ * face on every paint. A 256px JPEG data URL runs to a few tens of kilobytes,
+ * and this leaves room for a larger one without letting a full-size original
+ * through — the editor downscales, and this is the floor under it.
+ */
+const AGENT_AVATAR_MAX = 512 * 1024;
 
 const AGENT_COLUMNS =
   "agent_id, preset_id, name, role, instructions, " +
   "face_body, face_ink, skills, providers, models, policies, " +
-  "sort_order, created_at, updated_at, deleted_at";
+  "avatar, bot, sort_order, created_at, updated_at, deleted_at";
 
 /** How long a stored capability list may get, and how long each string inside
  *  one may be. A ceiling, not a rule: like `clampAgentField`, this is the floor
@@ -4695,6 +4770,74 @@ function parseAgentPolicies(raw: string | null): AgentPolicies | null {
   }
 }
 
+/** Normalize an avatar. Both fields are required and neither may be empty — an
+ *  avatar with nothing to draw is not one, and reads as null ("inherit") rather
+ *  than as a picture that paints a blank. `src` is bounded but never inspected:
+ *  the store has no opinion on whether it is an asset path or a data URL. */
+function normalizeAvatar(value: unknown): AgentAvatarRef | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  const source = boundRefField(obj.source);
+  const src = typeof obj.src === "string" ? obj.src.trim().slice(0, AGENT_AVATAR_MAX) : null;
+  if (!source || !src) return null;
+  return { source, src };
+}
+
+/** Serialize an avatar to the JSON its column holds. Null and undefined both
+ *  store as null ("inherit"); one that can't be made valid stores as null too,
+ *  rather than malformed. */
+function serializeAgentAvatar(value: AgentAvatarRef | null | undefined): string | null {
+  const normalized = normalizeAvatar(value);
+  return normalized === null ? null : JSON.stringify(normalized);
+}
+
+/** Read the avatar column back into its ref, or null when the column is null
+ *  ("inherit"). Unparseable JSON reads as null, the way a malformed capability
+ *  list does — no picture, and the drawn face stands in. */
+function parseAgentAvatar(raw: string | null): AgentAvatarRef | null {
+  if (raw === null) return null;
+  try {
+    return normalizeAvatar(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** Normalize a bot. Every field is a plain id the renderer's catalogue
+ *  resolves, so an id this build has never heard of is stored and handed back
+ *  unchanged — the catalogue answers an unknown one with its default, which is
+ *  what lets a bot survive a build that drops the shape it was made with. A bot
+ *  missing any of the three is not one and reads as null. */
+function normalizeBot(value: unknown): AgentBotRef | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  const shape = boundRefField(obj.shape);
+  const color = boundRefField(obj.color);
+  const expression = boundRefField(obj.expression);
+  if (!shape || !color || !expression) return null;
+  return { shape, color, expression };
+}
+
+/** Serialize a bot to the JSON its column holds. Null and undefined both store
+ *  as null, which on an overlay row is "inherit" and on a user-made agent is an
+ *  agent with no bot — a different thing from one wearing the default bot. */
+function serializeAgentBot(value: AgentBotRef | null | undefined): string | null {
+  const normalized = normalizeBot(value);
+  return normalized === null ? null : JSON.stringify(normalized);
+}
+
+/** Read the bot column back into its ref, or null when the column is null. */
+function parseAgentBot(raw: string | null): AgentBotRef | null {
+  if (raw === null) return null;
+  try {
+    return normalizeBot(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
 type AgentRow = {
   agent_id: string;
   preset_id: string | null;
@@ -4707,6 +4850,8 @@ type AgentRow = {
   providers: string | null;
   models: string | null;
   policies: string | null;
+  avatar: string | null;
+  bot: string | null;
   sort_order: number;
   created_at: number;
   updated_at: number;
@@ -4725,6 +4870,8 @@ function rowToAgent(row: AgentRow): AgentRecord {
     skills: parseAgentList(row.skills, normalizeSkillRef),
     model: parseModelRef(row.models),
     policies: parseAgentPolicies(row.policies),
+    avatar: parseAgentAvatar(row.avatar),
+    bot: parseAgentBot(row.bot),
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, FolderBlockIcon, PlusSignIcon, TerminalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { useSound } from "~/composables/useSound";
 import type { AgentPolicies } from "~/utils/agents";
@@ -81,6 +81,9 @@ function removePath(entry: string) {
       </div>
 
       <form class="pol__add" @submit.prevent="addCommand">
+        <span class="pol__glyph" aria-hidden="true">
+          <HugeiconsIcon :icon="TerminalIcon" :size="14" :stroke-width="1.7" />
+        </span>
         <input
           v-model="commandDraft"
           class="pol__input"
@@ -113,6 +116,9 @@ function removePath(entry: string) {
       </div>
 
       <form class="pol__add" @submit.prevent="addPath">
+        <span class="pol__glyph" aria-hidden="true">
+          <HugeiconsIcon :icon="FolderBlockIcon" :size="14" :stroke-width="1.7" />
+        </span>
         <input
           v-model="pathDraft"
           class="pol__input"
@@ -212,23 +218,34 @@ function removePath(entry: string) {
   gap: 6px;
   margin-top: 2px;
 }
+/* The leading glyph marks the bare input as a field, and firms on focus the
+   way the modal's identity fields do. */
+.pol__glyph {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+  opacity: 0.7;
+  transition: opacity 0.18s ease, color 0.18s ease;
+}
+.pol__add:focus-within .pol__glyph {
+  color: var(--ink-soft);
+  opacity: 1;
+}
 .pol__input {
   flex: 1;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   font-size: 12.5px;
   color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  padding: 7px 12px;
-  border: 0;
-  border-radius: 9px;
   outline: none;
-  transition: box-shadow 0.16s ease;
 }
 .pol__input::placeholder {
   color: var(--faint);
 }
-.pol__input:focus {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+.pol__input::selection {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 .pol__addbtn {
   display: inline-flex;

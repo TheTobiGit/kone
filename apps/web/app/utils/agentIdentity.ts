@@ -26,6 +26,11 @@ export interface AgentIdentity {
   name: string;
   /** Inline SVG markup, ready to mount. */
   svg: string;
+  /** A picture of the agent, when it has one — drawn in place of the SVG, which
+   *  stays filled in as the fallback for anything that can't show an image. A
+   *  guest never has one: a guest's whole point is that nothing about it is
+   *  stored, and a picture is the one part of an identity that has to be. */
+  avatar?: string;
 }
 
 /**
@@ -118,7 +123,11 @@ export function agentIdentity(seed: string | null | undefined): AgentIdentity {
   // Deliberately not memoised: an agent can be renamed, and the new name has to
   // reach every speaker line already on screen.
   const agent = agentForThread(seed);
-  if (agent) return { seed: seed ?? "", name: agent.name, svg: agent.svg };
+  if (agent) {
+    const identity: AgentIdentity = { seed: seed ?? "", name: agent.name, svg: agent.svg };
+    if (agent.avatar) identity.avatar = agent.avatar.src;
+    return identity;
+  }
 
   if (!seed) return ANONYMOUS;
   const hit = cache.get(seed);

@@ -14,6 +14,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import SphereFace from "~/components/SphereFace.vue";
+import AgentBotBead from "~/components/AgentBotBead.vue";
 import ProjectFileMentionMenu from "~/components/ProjectFileMentionMenu.vue";
 import MentionChip from "~/components/MentionChip.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
@@ -21,7 +22,7 @@ import type { AttachmentKind, GitProjectFile, InteractionMode } from "~/types/de
 import { useProjectFiles } from "~/composables/useProjectFiles";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import { agentIdentity } from "~/utils/agentIdentity";
-import { GUEST_LABEL, type Agent } from "~/utils/agents";
+import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
 import {
   detectFileMentionTrigger,
   formatFileMention,
@@ -174,6 +175,23 @@ const settledIdentity = computed(() => {
   // name, so keep offering the picker rather than labelling the slot with a
   // placeholder.
   return identity.svg ? identity : null;
+});
+
+/**
+ * The bot resting on the composer, or null for the rolled face.
+ *
+ * Whose bot it is follows the same line the tray's own slot does: on a settled
+ * thread it is the agent the thread was handed to, and on a blank one it is
+ * whoever is about to take the turn — so the bead shows the change the moment the
+ * pick is made, and then stops moving for the life of the thread.
+ *
+ * A named agent with no bot falls back to the rolled face rather than to the
+ * default bot. Having no bot is a real answer in the picker, and inventing one
+ * here would put a creature on the composer that its maker never chose.
+ */
+const beadBot = computed(() => {
+  const owner = canSwitchAgent.value ? currentAgent.value : agentForThread(props.threadId);
+  return owner?.bot ?? null;
 });
 
 const agentMenu = ref(false);
@@ -1069,9 +1087,15 @@ defineExpose({ wake, setDraft });
       <!-- Resting bead: a face that looks up at you and follows the pointer in.
            It keeps its own size and place through the wake — the card simply
            grows out of it and closes over it, and it's still sitting there
-           underneath when the card folds back down. -->
+           underneath when the card folds back down.
+
+           An agent with a bot rests under its bot instead, in the same footprint
+           and with the same behaviour: this is the composer, which is where an
+           agent is working rather than speaking, so the mark here is the creature
+           it works through. A guest has none, so a guest keeps the rolled face. -->
       <div class="orbfx" aria-hidden="true">
-        <SphereFace :size="REST" :covered="open" />
+        <AgentBotBead v-if="beadBot" :bot="beadBot" :size="REST" :covered="open" />
+        <SphereFace v-else :size="REST" :covered="open" />
       </div>
 
       <!-- White panel: the sleeping face and the field share it, cross-fading. -->

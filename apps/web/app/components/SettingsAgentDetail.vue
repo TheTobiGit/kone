@@ -2,11 +2,15 @@
 import { computed, ref, watch } from "vue";
 import { Copy01Icon, Delete02Icon, UserGroupIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
+import AgentAvatarEditor from "~/components/AgentAvatarEditor.vue";
+import AgentBotEditor from "~/components/AgentBotEditor.vue";
 import AgentCapabilitiesEditor from "~/components/AgentCapabilitiesEditor.vue";
 import AgentPoliciesEditor from "~/components/AgentPoliciesEditor.vue";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
 import { useSound } from "~/composables/useSound";
+import type { AgentAvatar } from "~/utils/agents";
+import type { AgentBot } from "~/utils/bot";
 import type { AgentModelRef } from "~/types/desktop";
 
 // One agent, opened out of the roster: the face big, the name and role up top,
@@ -22,7 +26,7 @@ const emit = defineEmits<{
 const { agentById, duplicateAgent, deleteAgent, updateAgent } = useAgentRoster();
 const { cue } = useSound();
 const agent = computed(() => agentById(props.agentId));
-const isCustom = computed(() => agent.value?.id !== "kone" && agent.value?.id !== "gideon");
+const isCustom = computed(() => agent.value?.id !== "kone");
 const isDeleting = ref(false);
 
 // An id that resolves to nobody has no frame to fill — step back to the list
@@ -77,6 +81,18 @@ function setDeniedPaths(next: string[]) {
       policies: { deniedCommands: agent.value.policies.deniedCommands, deniedPaths: next },
     });
   }
+}
+
+// The picture and the bot persist on the change too, each from its own section.
+// Clearing one clears the overlay, so on
+// a user-made agent the picture or bot is gone, and on a built-in the agent goes
+// back to looking the way the build ships it — which is what "remove" can mean
+// there, since the shipped look isn't a row anybody can delete.
+function setAvatar(next: AgentAvatar | null) {
+  if (agent.value) void updateAgent(agent.value.id, { avatar: next });
+}
+function setBot(next: AgentBot | null) {
+  if (agent.value) void updateAgent(agent.value.id, { bot: next });
 }
 
 interface Directive {
@@ -146,7 +162,14 @@ const bare = computed(() => instructions.value.length === 0);
 
     <article class="det">
       <header class="det__head">
-        <span class="det__face" v-html="agent.svg" />
+        <img
+          v-if="agent.avatar"
+          class="det__face det__face--photo"
+          :src="agent.avatar.src"
+          alt=""
+          draggable="false"
+        />
+        <span v-else class="det__face" v-html="agent.svg" />
         <span class="det__id">
           <h2 class="det__name">{{ agent.name }}</h2>
           <p class="det__role">{{ agent.role }}</p>
@@ -165,6 +188,19 @@ const bare = computed(() => instructions.value.length === 0);
       <p v-if="bare" class="det__bare">
         Just a name and a face for now — no instructions to carry into a thread.
       </p>
+
+      <section class="det__sec" aria-label="Picture">
+        <!-- The one line each of these is for rides on its eyebrow rather than
+             sitting above the controls, so the section opens onto the thing it
+             is for. -->
+        <p class="det__eyebrow">Picture <span class="det__what">the face it answers with</span></p>
+        <AgentAvatarEditor :avatar="agent.avatar" @update:avatar="setAvatar" />
+      </section>
+
+      <section class="det__sec" aria-label="Bot">
+        <p class="det__eyebrow">Bot <span class="det__what">the creature it works through</span></p>
+        <AgentBotEditor :bot="agent.bot" @update:bot="setBot" />
+      </section>
 
       <section class="det__sec" aria-label="Capabilities">
         <p class="det__eyebrow">Capabilities</p>
@@ -187,7 +223,7 @@ const bare = computed(() => instructions.value.length === 0);
 
     <template #foot>
       What a model is told: the name, and the instructions when the agent has them.
-      The role and the face stay here in the drawer.
+      The role, the face, the picture and the bot stay here in the drawer.
     </template>
   </SettingsPageShell>
 </template>
@@ -248,6 +284,12 @@ const bare = computed(() => instructions.value.length === 0);
   border-radius: 50%;
   filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.14));
 }
+/* Cropped rather than fitted: a face letterboxed into a circle reads as a
+   picture of a picture. */
+.det__face--photo {
+  object-fit: cover;
+  user-select: none;
+}
 .det__face :deep(svg) {
   display: block;
   width: 100%;
@@ -287,6 +329,15 @@ const bare = computed(() => instructions.value.length === 0);
   line-height: 1;
   text-transform: uppercase;
   color: var(--muted);
+}
+/* Sentence case and unspaced beside the eyebrow's caps, so the two read as a
+   label and an aside rather than one long heading. */
+.det__what {
+  margin-left: 8px;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.75;
 }
 .det__prose {
   display: flex;

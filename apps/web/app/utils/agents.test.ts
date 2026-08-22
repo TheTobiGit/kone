@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { ref } from "vue";
 
 import {
   addAgentToProject,
@@ -10,7 +11,6 @@ import {
   createAgent,
   deleteAgent,
   duplicateAgent,
-  GIDEON,
   hydrateRoster,
   isOnProjectTeam,
   KONE,
@@ -28,6 +28,7 @@ import {
   GUEST_BINDING,
   projectTeams,
   selectedAgentId,
+  sendable,
   threadBindings,
 } from "./agentStore";
 
@@ -59,10 +60,9 @@ beforeEach(() => {
 });
 
 describe("the roster", () => {
-  test("ships with kone at the head and gideon beside it", () => {
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, GIDEON.id]);
+  test("ships with kone and nobody else", () => {
+    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id]);
     expect(agentById(KONE.id)?.name).toBe(KONE.name);
-    expect(agentById(GIDEON.id)?.name).toBe(GIDEON.name);
   });
 
   test("nobody is picked for you — a fresh app sends work to a guest", () => {
@@ -80,15 +80,16 @@ describe("the roster", () => {
   test("hydrating gives every built-in a row and changes nothing on screen", async () => {
     const before = agentRoster();
     await hydrateRoster();
-    expect(agentRows.value.map((row) => row.agentId)).toEqual([KONE.id, GIDEON.id]);
+    expect(agentRows.value.map((row) => row.agentId)).toEqual([KONE.id]);
     expect(agentRoster()).toEqual(before);
   });
 
-  // The failure this guards: rows-only resolution would make the first agent
-  // anybody edits the only agent in the app.
-  test("editing one built-in doesn't hide the others", async () => {
-    await renameAgent(KONE.id, "Maya");
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, GIDEON.id]);
+  // The failure this guards: rows-only resolution would show only the agents
+  // that happen to have rows, so making one agent would hide every built-in
+  // nobody has touched yet.
+  test("a made agent doesn't hide a built-in with no row of its own", async () => {
+    const made = await createAgent({ name: "Ada" });
+    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, made!.id]);
   });
 
   // A row is a delta, not a copy: only the field that was edited is the row's,
@@ -333,7 +334,7 @@ describe("an agent you made yourself", () => {
     expect(made?.name).toBe("Ada");
     expect(made?.role).toBe("Reviewer");
     expect(made?.instructions).toBe("Exacting.");
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, GIDEON.id, made!.id]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, made!.id]);
   });
 
   test("a name is the one thing it can't do without", async () => {
@@ -352,15 +353,15 @@ describe("an agent you made yourself", () => {
 describe("an agent who leaves the roster", () => {
   test("is gone from everywhere you could pick them", async () => {
     await hydrateRoster();
-    expect(await deleteAgent(GIDEON.id)).toBe(true);
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id]);
-    expect(agentById(GIDEON.id)).toBeUndefined();
+    expect(await deleteAgent(KONE.id)).toBe(true);
+    expect(agentRoster()).toEqual([]);
+    expect(agentById(KONE.id)).toBeUndefined();
 
-    selectAgent(GIDEON.id);
+    selectAgent(KONE.id);
     expect(selectedAgent()).toBeUndefined();
     // And a thread starting now can't be settled on them either.
     const id = threadId();
-    settleThreadAgent(id, GIDEON.id);
+    settleThreadAgent(id, KONE.id);
     expect(agentForThread(id)).toBeUndefined();
   });
 
@@ -369,16 +370,16 @@ describe("an agent who leaves the roster", () => {
   test("still names the threads they worked", async () => {
     await hydrateRoster();
     const id = threadId();
-    settleThreadAgent(id, GIDEON.id);
-    await deleteAgent(GIDEON.id);
-    expect(agentForThread(id)?.name).toBe(GIDEON.name);
-    expect(agentPersonaForThread(id)?.name).toBe(GIDEON.name);
+    settleThreadAgent(id, KONE.id);
+    await deleteAgent(KONE.id);
+    expect(agentForThread(id)?.name).toBe(KONE.name);
+    expect(agentPersonaForThread(id)?.name).toBe(KONE.name);
   });
 
   test("the selection doesn't point at them afterwards", async () => {
     await hydrateRoster();
-    selectAgent(GIDEON.id);
-    await deleteAgent(GIDEON.id);
+    selectAgent(KONE.id);
+    await deleteAgent(KONE.id);
     expect(selectedAgent()).toBeUndefined();
     // Cleared where it is kept, not merely unresolvable on the way out.
     expect(selectedAgentId.value).toBeNull();
@@ -386,23 +387,23 @@ describe("an agent who leaves the roster", () => {
 
   test("a built-in stays dismissed rather than coming back on hydrate", async () => {
     await hydrateRoster();
-    await deleteAgent(GIDEON.id);
+    await deleteAgent(KONE.id);
     await hydrateRoster();
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id]);
+    expect(agentRoster()).toEqual([]);
   });
 
   test("leaving twice, or leaving when you were never here, is a no", async () => {
     await hydrateRoster();
-    expect(await deleteAgent(GIDEON.id)).toBe(true);
-    expect(await deleteAgent(GIDEON.id)).toBe(false);
+    expect(await deleteAgent(KONE.id)).toBe(true);
+    expect(await deleteAgent(KONE.id)).toBe(false);
     expect(await deleteAgent("nobody")).toBe(false);
   });
 
   test("a departed agent cannot be edited back into the roster", async () => {
     await hydrateRoster();
-    await deleteAgent(GIDEON.id);
-    expect(await renameAgent(GIDEON.id, "Maya")).toBeUndefined();
-    expect(agentById(GIDEON.id)).toBeUndefined();
+    await deleteAgent(KONE.id);
+    expect(await renameAgent(KONE.id, "Maya")).toBeUndefined();
+    expect(agentById(KONE.id)).toBeUndefined();
   });
 });
 
@@ -414,7 +415,7 @@ describe("forking an agent", () => {
     // A fork keeps no inheritance, so the preset's words are copied onto it.
     expect(copy?.instructions).toBe(KONE.instructions);
     expect(copy?.role).toBe(KONE.role);
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, copy!.id, GIDEON.id]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, copy!.id]);
   });
 
   test("an edit to the original doesn't reach the copy", async () => {
@@ -426,16 +427,16 @@ describe("forking an agent", () => {
 
   test("with no name given, the copy carries the original's", async () => {
     await hydrateRoster();
-    const copy = await duplicateAgent(GIDEON.id);
-    expect(copy?.name).toBe(GIDEON.name);
-    expect(copy?.id).not.toBe(GIDEON.id);
+    const copy = await duplicateAgent(KONE.id);
+    expect(copy?.name).toBe(KONE.name);
+    expect(copy?.id).not.toBe(KONE.id);
   });
 
   test("there is nothing to fork in somebody who isn't here", async () => {
     await hydrateRoster();
     expect(await duplicateAgent("nobody")).toBeUndefined();
-    await deleteAgent(GIDEON.id);
-    expect(await duplicateAgent(GIDEON.id)).toBeUndefined();
+    await deleteAgent(KONE.id);
+    expect(await duplicateAgent(KONE.id)).toBeUndefined();
   });
 });
 
@@ -490,8 +491,8 @@ describe("an agent's capabilities", () => {
   // the row rather than left to resolve against a preset it no longer overlays.
   test("a fork carries the capabilities the source reads as", async () => {
     await hydrateRoster();
-    await updateAgent(GIDEON.id, { model: { provider: "codex", model: "gpt-5" } });
-    const copy = await duplicateAgent(GIDEON.id, "Gideon copy");
+    await updateAgent(KONE.id, { model: { provider: "codex", model: "gpt-5" } });
+    const copy = await duplicateAgent(KONE.id, "kone copy");
     expect(copy?.capabilities.model).toEqual({ provider: "codex", model: "gpt-5" });
   });
 });
@@ -536,10 +537,10 @@ describe("an agent's policies", () => {
 
   test("a fork carries the policies the source reads as", async () => {
     await hydrateRoster();
-    await updateAgent(GIDEON.id, {
+    await updateAgent(KONE.id, {
       policies: { deniedCommands: ["git push"], deniedPaths: ["secrets"] },
     });
-    const copy = await duplicateAgent(GIDEON.id, "Gideon copy");
+    const copy = await duplicateAgent(KONE.id, "kone copy");
     expect(copy?.policies.deniedCommands).toEqual(["git push"]);
     expect(copy?.policies.deniedPaths).toEqual(["secrets"]);
   });
@@ -551,6 +552,90 @@ describe("an agent's policies", () => {
     });
     expect(made?.policies.deniedCommands).toEqual(["rm -rf"]);
     expect(made?.policies.deniedPaths).toEqual([]);
+  });
+});
+
+describe("how an agent looks", () => {
+  const PICTURE = { source: "generated", src: "data:image/jpeg;base64,AAAA" } as const;
+  const BOT = { shape: "pebble", color: "teal", expression: "curious" } as const;
+
+  test("kone ships with a picture of itself and a bot", () => {
+    const kone = agentById(KONE.id)!;
+    expect(kone.avatar).toEqual(KONE.avatar!);
+    expect(kone.bot).toEqual(KONE.bot!);
+  });
+
+  // Neither field falls back to a default: an agent with no picture is
+  // identified by its drawn face, and one with no bot has none.
+  test("a new agent has neither unless it was given one", async () => {
+    const made = await createAgent({ name: "Ada" });
+    expect(made?.avatar).toBeNull();
+    expect(made?.bot).toBeNull();
+  });
+
+  test("a new agent keeps the appearance it was made with", async () => {
+    const made = await createAgent({ name: "Ada", avatar: PICTURE, bot: BOT });
+    expect(made?.avatar).toEqual(PICTURE);
+    expect(made?.bot).toEqual(BOT);
+  });
+
+  test("an edit sets it, and null hands the field back to the preset", async () => {
+    await updateAgent(KONE.id, { avatar: PICTURE, bot: BOT });
+    expect(agentById(KONE.id)?.avatar).toEqual(PICTURE);
+    expect(agentById(KONE.id)?.bot).toEqual(BOT);
+
+    await updateAgent(KONE.id, { avatar: null, bot: null });
+    expect(agentById(KONE.id)?.avatar).toEqual(KONE.avatar!);
+    expect(agentById(KONE.id)?.bot).toEqual(KONE.bot!);
+  });
+
+  // A bot stored by a build that offered a shape this one dropped still draws:
+  // the catalogue answers an id it doesn't know with its default.
+  test("a bot naming something this build no longer ships still resolves", async () => {
+    const made = await createAgent({
+      name: "Ada",
+      // Deliberately not real ids — this is a bot from another build.
+      bot: { shape: "trefoil", color: "chartreuse", expression: "smug" } as never,
+    });
+    expect(made?.bot).toEqual({ shape: "circle", color: "ink", expression: "neutral" });
+  });
+
+  // Where a picture came from is carried as it was stored, so reopening the
+  // picker lands the maker on the source they used. All four are equally real
+  // rows; nothing downstream reads the source to draw one.
+  test("every source a picture can come from round-trips", async () => {
+    for (const source of ["generated", "upload", "dicebear", "shipped"] as const) {
+      const made = await createAgent({
+        name: `Ada ${source}`,
+        avatar: { source, src: "data:image/jpeg;base64,AAAA" },
+      });
+      expect(made?.avatar?.source).toBe(source);
+    }
+  });
+
+  // A row written by a build that named a source this one dropped still draws:
+  // the picture is the bytes, and the source is only a hint for the picker.
+  test("a picture naming an unknown source reads as generated", async () => {
+    const made = await createAgent({
+      name: "Ada",
+      avatar: { source: "daguerreotype", src: "data:image/jpeg;base64,AAAA" } as never,
+    });
+    expect(made?.avatar).toEqual({ source: "generated", src: "data:image/jpeg;base64,AAAA" });
+  });
+
+  // An empty picture is no picture, not a picture that paints nothing.
+  test("a picture with no bytes is dropped", async () => {
+    const made = await createAgent({ name: "Ada", avatar: { source: "upload", src: "  " } });
+    expect(made?.avatar).toBeNull();
+  });
+
+  test("a fork carries the appearance the source reads as", async () => {
+    await hydrateRoster();
+    await updateAgent(KONE.id, { bot: BOT });
+    const copy = await duplicateAgent(KONE.id, "kone copy");
+    // The row's own bot, and the preset's picture the row never overrode.
+    expect(copy?.bot).toEqual(BOT);
+    expect(copy?.avatar).toEqual(KONE.avatar!);
   });
 });
 
@@ -572,6 +657,8 @@ describe("the store's answer arriving", () => {
       skills: null,
       model: null,
       policies: null,
+      avatar: null,
+      bot: null,
       sortOrder: 0,
       createdAt: now,
       updatedAt: now,
@@ -633,9 +720,10 @@ describe("project teams", () => {
   });
 
   test("an agent added is on the team, and members hold their add order", async () => {
-    expect(await addAgentToProject(PROJECT, GIDEON.id)).toBe(true);
+    const made = await createAgent({ name: "Ada" });
+    expect(await addAgentToProject(PROJECT, made!.id)).toBe(true);
     await addAgentToProject(PROJECT, KONE.id);
-    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([GIDEON.id, KONE.id]);
+    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([made!.id, KONE.id]);
     expect(isOnProjectTeam(PROJECT, KONE.id)).toBe(true);
   });
 
@@ -647,11 +735,12 @@ describe("project teams", () => {
 
   test("membership is per project — an agent can be on many, off others", async () => {
     const other = "/tmp/other";
+    const made = await createAgent({ name: "Ada" });
     await addAgentToProject(PROJECT, KONE.id);
-    await addAgentToProject(PROJECT, GIDEON.id);
+    await addAgentToProject(PROJECT, made!.id);
     await addAgentToProject(other, KONE.id);
     await removeAgentFromProject(PROJECT, KONE.id);
-    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([GIDEON.id]);
+    expect(projectTeam(PROJECT).map((agent) => agent.id)).toEqual([made!.id]);
     expect(isOnProjectTeam(other, KONE.id)).toBe(true);
   });
 
@@ -672,5 +761,36 @@ describe("project teams", () => {
   test("a nonexistent agent can't be staffed onto a team", async () => {
     expect(await addAgentToProject(PROJECT, "ghost")).toBe(false);
     expect(projectTeam(PROJECT)).toEqual([]);
+  });
+});
+
+// What a pane collects lives in refs, and a ref holding an object hands out a
+// reactive proxy — which the bridge's serializer refuses outright, with nothing
+// but "an object could not be cloned" to show for a create. So every payload
+// leaving the renderer goes through this first.
+describe("what crosses the bridge", () => {
+  test("a reactive draft is refused by the serializer as it stands", () => {
+    const draft = ref({ avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" } });
+    expect(() => structuredClone(draft.value)).toThrow();
+  });
+
+  test("and goes through unchanged once it has been made sendable", () => {
+    const draft = ref({
+      name: "Ada",
+      avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" },
+      bot: { shape: "droplet", color: "ink", expression: "curious" },
+      // Nested and reactive, which is why an unwrapped top level is not enough.
+      policies: { deniedCommands: ["rm -rf"], deniedPaths: [] },
+      model: null,
+    });
+    const payload = sendable(draft.value);
+    expect(() => structuredClone(payload)).not.toThrow();
+    expect(payload).toEqual({
+      name: "Ada",
+      avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" },
+      bot: { shape: "droplet", color: "ink", expression: "curious" },
+      policies: { deniedCommands: ["rm -rf"], deniedPaths: [] },
+      model: null,
+    });
   });
 });

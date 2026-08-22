@@ -85,6 +85,7 @@ import type {
   PresetDeleteInput,
   PresetUpdateInput,
 } from "./presets/index.js";
+import type { AvatarFetchInput, AvatarFetchResult } from "./avatars/index.js";
 import type { DirListing } from "./fs.js";
 import type { ThemeMode } from "./system.js";
 import type {
@@ -559,6 +560,10 @@ const api = {
       ipcRenderer.invoke("presets:update", input),
     delete: (input: PresetDeleteInput): Promise<boolean> =>
       ipcRenderer.invoke("presets:delete", input),
+  },
+  avatars: {
+    fetch: (input: AvatarFetchInput): Promise<AvatarFetchResult> =>
+      ipcRenderer.invoke("avatars:fetch", input),
   },
 };
 
