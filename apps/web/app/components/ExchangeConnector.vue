@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
-// An organic spline branch connecting the bottom-left of the user request
-// bubble down into the agent avatar (x=13px) at the start of the response.
+// A thin elbow line connecting the user request to the agent's response:
+// it leaves the bubble's left edge at its vertical midpoint, runs horizontally
+// over to the avatar column, then drops straight down to stop just above the
+// speaker row, with a soft bend where the two legs meet.
+const STANDOFF = 8;
+const CORNER_RADIUS = 12;
+
 const props = defineProps<{
   running?: boolean;
 }>();
 
 const svgEl = ref<SVGSVGElement | null>(null);
 const d = ref("");
-const nodeX = ref(0);
-const nodeY = ref(0);
 const visible = ref(false);
 
 let ro: ResizeObserver | null = null;
@@ -38,25 +41,19 @@ function measure(): void {
 
   if (exRect.width === 0 || exRect.height === 0) return;
 
-  // Start at the bottom-left of the user request bubble (offset slightly inside the radius)
-  const x1 = Math.round(bRect.left - exRect.left + 14);
-  const y1 = Math.round(bRect.bottom - exRect.top);
+  // Leave the bubble's left edge at its vertical midpoint
+  const x1 = Math.round(bRect.left - exRect.left);
+  const y1 = Math.round(bRect.top - exRect.top + bRect.height / 2);
 
-  // End at the top center of the agent face avatar (x=13px within speaker)
+  // The drop column sits over the avatar centre (26px face, so x=13 within speaker)
   const x2 = Math.round(sRect.left - exRect.left + 13);
-  const y2 = Math.round(sRect.top - exRect.top);
+  // Stop short of the speaker row rather than touching it
+  const y2 = Math.round(sRect.top - exRect.top - STANDOFF);
 
-  if (y2 > y1) {
-    const dy = y2 - y1;
-    // Cubic spline: leaves bubble downward, sweeps left, and lands vertically into avatar
-    const cp1x = x1;
-    const cp1y = y1 + Math.max(10, Math.min(dy * 0.55, 36));
-    const cp2x = x2;
-    const cp2y = y2 - Math.max(10, Math.min(dy * 0.55, 36));
-
-    d.value = `M ${x1} ${y1} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${x2} ${y2}`;
-    nodeX.value = x1;
-    nodeY.value = y1;
+  if (y2 > y1 && x2 < x1 - 2) {
+    // Ease the corner with a quadratic bend, sized to whatever both legs can spare
+    const r = Math.min(CORNER_RADIUS, (x1 - x2) / 2, y2 - y1);
+    d.value = `M ${x1} ${y1} L ${x2 + r} ${y1} Q ${x2} ${y1}, ${x2} ${y1 + r} L ${x2} ${y2}`;
     visible.value = true;
   } else {
     visible.value = false;
@@ -103,7 +100,6 @@ onBeforeUnmount(() => {
     aria-hidden="true"
   >
     <path v-if="visible && d" :d="d" class="connector-path" />
-    <circle v-if="visible && d" :cx="nodeX" :cy="nodeY" r="2.5" class="connector-node" />
   </svg>
 </template>
 
@@ -123,27 +119,18 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 .connector-path {
-  stroke: var(--rail, color-mix(in srgb, var(--ink) 12%, transparent));
-  stroke-width: 1.5px;
-  stroke-linecap: round;
+  stroke: var(--rail, color-mix(in srgb, var(--ink) 9%, transparent));
+  stroke-width: 1px;
   fill: none;
-  transition: stroke 0.2s ease, stroke-width 0.2s ease;
+  /* A whisper of shadow under the hairline so it reads as sitting on the
+     surface rather than painted onto it — depth without weight. */
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.35));
+  transition: stroke 0.2s ease;
 }
 .exchange-connector.is-running .connector-path {
-  stroke: color-mix(in oklab, var(--accent) 45%, var(--rail, color-mix(in srgb, var(--ink) 12%, transparent)));
-  stroke-width: 1.75px;
+  stroke: color-mix(in oklab, var(--accent) 45%, var(--rail, color-mix(in srgb, var(--ink) 9%, transparent)));
 }
 :global(.exchange:hover) .connector-path {
   stroke: color-mix(in srgb, var(--ink) 25%, transparent);
-}
-.connector-node {
-  fill: color-mix(in srgb, var(--ink) 28%, transparent);
-  transition: fill 0.2s ease;
-}
-.exchange-connector.is-running .connector-node {
-  fill: color-mix(in oklab, var(--accent) 75%, var(--ink));
-}
-:global(.exchange:hover) .connector-node {
-  fill: var(--ink-soft);
 }
 </style>
