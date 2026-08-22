@@ -54,7 +54,7 @@ export interface SpawnEngineStore {
   /** Bind a delegated child to the agent it runs as, before its first turn
    *  dispatches. The return value is ignored — the engine only needs the write
    *  to land so the approval seam resolves the agent's policies. */
-  bindThreadAgent(threadId: string, agentId: string): unknown;
+  bindThreadAgent(threadId: string, agentId: string): void;
   spawnedChildren(parentThreadId: string): StoredThreadMeta[];
   spawnDepth(threadId: string): number;
   liveSpawnedThreadIds(): string[];

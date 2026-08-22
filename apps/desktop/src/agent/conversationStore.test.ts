@@ -44,6 +44,7 @@ function rawDb(): Database {
 }
 
 function columnNames(db: Database, table: string): string[] {
+  // SAFETY: PRAGMA table_info answers one row per column, each carrying its name.
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
     (r) => r.name,
   );
@@ -236,6 +237,7 @@ describe("v18 migration", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
 
@@ -243,6 +245,7 @@ describe("v18 migration", () => {
     for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
       expect(threads).toContain(col);
     }
+    // SAFETY: sqlite_master rows carry the object's name in `name`.
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
     }>).map((r) => r.name);
@@ -278,6 +281,7 @@ describe("v18 migration", () => {
     // Idempotency authority: the OLDEST row keeps the key, the newer one loses it.
     expect(store.threadIdForRequestId("req-dup")).toBe("old-1");
     const raw = rawDb();
+    // SAFETY: The SELECT names exactly these two columns.
     const rows = raw
       .prepare(`SELECT thread_id, request_id FROM threads ORDER BY created_at`)
       .all() as Array<{ thread_id: string; request_id: string | null }>;
@@ -309,6 +313,7 @@ describe("v18 migration", () => {
 
   function tableNames(db: Database): string[] {
     return (
+      // SAFETY: sqlite_master rows carry the object's name in `name`.
       db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
         name: string;
       }>
@@ -331,6 +336,7 @@ describe("v18 migration", () => {
     const raw = rawDb();
     // 18 and 19 each committed with their own stamp, so the file records the
     // ladder standing at 19 — not rewound to the 17 it started from.
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(19);
     expect(columnNames(raw, "threads")).toContain("is_pinned");
@@ -362,6 +368,7 @@ describe("v18 migration", () => {
     store.ensureThread({ threadId: "t-2", projectPath: "/p", provider: "opencode" });
 
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
     expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
@@ -424,6 +431,7 @@ describe("v18 migration", () => {
     expect(store.listThreads("/p")).toEqual([]);
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(99);
     raw.close();
@@ -462,6 +470,7 @@ describe("v18 migration", () => {
   /** A ConversationStore's private open-retry bookkeeping — the unusable flag
    *  and retry cooldown — reached for white-box assertions. */
   type StoreInternals = { unusable: boolean; retryOpenAfter: number };
+  // SAFETY: white-box seam — s really is the store instance; only private flags are read.
   const storeInternals = (s: InstanceType<typeof ConversationStoreCtor>): StoreInternals =>
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     s as unknown as StoreInternals;
@@ -634,6 +643,7 @@ describe("delete/archive subtree cascade with busy guard", () => {
     });
     store.applyEvent(tokenUsage("child-1", 25, { input: 10, output: 5, total: 15 }));
     const raw = rawDb();
+    // SAFETY: the write above landed one row; only turn_id is read off it.
     const usage = raw
       .prepare(`SELECT * FROM turn_usage WHERE thread_id = 'child-1'`)
       .get() as { turn_id: string } | undefined;
@@ -643,6 +653,7 @@ describe("delete/archive subtree cascade with busy guard", () => {
     expect(store.deleteThread("parent-1")).toEqual({ ok: true });
     const after = rawDb();
     for (const table of ["threads", "blocks", "items", "subagents", "gateway_ops", "turn_usage", "attachments"]) {
+      // SAFETY: COUNT(*) always comes back under the alias n.
       const n = (
         after
           .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE thread_id IN ('parent-1', 'child-1')`)
@@ -715,6 +726,7 @@ describe("delete/archive subtree cascade with busy guard", () => {
     store.applyEvent(turnCompleted("child-1", "turn-1", 20));
     expect(store.setArchived("parent-1", true)).toEqual({ ok: true });
     const raw = rawDb();
+    // SAFETY: the SELECT projects exactly the archived column.
     const archived = (id: string) =>
       (raw.prepare(`SELECT archived FROM threads WHERE thread_id = ?`).get(id) as {
         archived: number | null;
@@ -774,6 +786,7 @@ describe("live capture contracts", () => {
     );
     expect(store.threadMeta("t-1")?.tokens).toBe(200); // Claude accumulates per-turn spend.
     const raw = rawDb();
+    // SAFETY: the event written above lands exactly these columns.
     const usage = raw
       .prepare(`SELECT * FROM turn_usage WHERE thread_id = 't-1' AND turn_id = 'turn-1'`)
       .get() as { input_tokens: number; output_tokens: number; total_tokens: number; at: number };
@@ -787,6 +800,7 @@ describe("live capture contracts", () => {
   test("an explicit compactsAutomatically: false survives the store round-trip", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    // SAFETY: the literal carries every field read back; only compactsAutomatically matters.
     store.applyEvent({
       type: "thread.token-usage.updated",
       threadId: "t-1",
@@ -805,6 +819,7 @@ describe("live capture contracts", () => {
   test("an explicit compactsAutomatically: true survives the store round-trip", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    // SAFETY: the literal carries every field read back; only compactsAutomatically matters.
     store.applyEvent({
       type: "thread.token-usage.updated",
       threadId: "t-1",
@@ -822,6 +837,7 @@ describe("v19 keyset index migration", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
     const idx = raw
@@ -842,6 +858,7 @@ describe("v19 keyset index migration", () => {
     const store = new ConversationStoreCtor();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
     const idx = raw
@@ -1005,6 +1022,7 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
     };
     const projectedEvent = projectRuntimeEventForIpc(event);
     expect(projectedEvent).not.toBe(event);
+    // SAFETY: the projected event wraps the same item shape this test built.
     expect((projectedEvent as { item: typeof item }).item.detail!.length).toBeLessThan(
       TOOL_DETAIL_WIRE_CAP + 200,
     );
@@ -1029,9 +1047,11 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
       item: { itemId: "i-1", kind: "tool_call", status: "completed", text: "run", detail: long },
     });
     const stored = store.loadThread("t-1")!;
+    // SAFETY: block 0 of this fixture is the tool_call group holding i-1.
     const storedItem = (stored.blocks[0] as { items: Array<{ detail?: string }> }).items[0]!;
     expect(storedItem.detail).toBe(long);
     const projected = projectStoredThreadForIpc(stored);
+    // SAFETY: projection preserves the block/item order of the stored thread.
     const projectedItem = (projected.blocks[0] as { items: Array<{ detail?: string }> }).items[0]!;
     expect(projectedItem.detail!.length).toBeLessThan(10_000);
     expect(projectedItem.detail!.endsWith("local history)")).toBe(true);
@@ -1099,6 +1119,7 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
       item: { itemId: "i-1", kind: "tool_call", status: "completed", text: "run", detail: "final" },
     });
     const raw = rawDb();
+    // SAFETY: the SELECT targets the single row written above; status/detail are its columns.
     const rows = raw
       .prepare(`SELECT * FROM items WHERE thread_id = 't-1' AND turn_id = 'turn-1' AND item_id = 'i-1'`)
       .all() as Array<{ status: string; detail: string }>;
@@ -1116,8 +1137,10 @@ describe("v20 queued turns migration", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
+    // SAFETY: sqlite_master rows carry the object's name in `name`.
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
     }>).map((r) => r.name);
@@ -1150,12 +1173,14 @@ describe("v20 queued turns migration", () => {
     const store = new ConversationStoreCtor();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
     // A re-open (a second process) runs the ladder again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    // SAFETY: Same PRAGMA row shape as every read above.
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version2.user_version).toBe(27);
     raw.close();
@@ -1204,6 +1229,7 @@ describe("durable turn queue", () => {
     // A different prompt still enqueues.
     expect(enq(store, "q-2", "t-1", "ub-2", "second", 3)).toBe(true);
     const raw = rawDb();
+    // SAFETY: the SELECT names exactly queue_id and input.
     const rows = raw
       .prepare(`SELECT queue_id, input FROM queued_turns WHERE thread_id = 't-1' ORDER BY created_at`)
       .all() as Array<{ queue_id: string; input: string }>;
@@ -1297,6 +1323,7 @@ describe("durable turn queue", () => {
     // Promoting a row nobody claimed fails loudly too.
     expect(store.markQueuedTurnPromoted("q-2")).toBe(false);
     const raw = rawDb();
+    // SAFETY: the SELECT projects exactly state and promoted_at.
     const row = raw
       .prepare(`SELECT state, promoted_at FROM queued_turns WHERE queue_id = 'q-1'`)
       .get() as { state: string; promoted_at: number | null };
@@ -1328,6 +1355,7 @@ describe("durable turn queue", () => {
     expect(store.releaseQueuedTurn("q-1")).toBe(false);
     expect(store.listQueuedTurns("t-1")).toEqual([]);
     const raw = rawDb();
+    // SAFETY: the SELECT projects exactly the state column.
     const states = raw
       .prepare(`SELECT state FROM queued_turns WHERE thread_id = 't-1' ORDER BY queue_id`)
       .all() as Array<{ state: string }>;
@@ -1347,6 +1375,7 @@ describe("durable turn queue", () => {
     store.markQueuedTurnPromoted("q-2");
     expect(store.cancelQueuedTurn("q-2")).toBe(false);
     const raw = rawDb();
+    // SAFETY: the SELECT projects exactly the state column.
     const states = raw
       .prepare(`SELECT state FROM queued_turns ORDER BY queue_id`)
       .all() as Array<{ state: string }>;
@@ -1388,6 +1417,7 @@ describe("durable turn queue", () => {
     enq(store, "q-3", "other-1", "ub-3", "three", 3);
     expect(store.deleteThread("parent-1")).toEqual({ ok: true });
     const raw = rawDb();
+    // SAFETY: the SELECT projects exactly the queue_id column.
     const rows = raw
       .prepare(`SELECT queue_id FROM queued_turns ORDER BY queue_id`)
       .all() as Array<{ queue_id: string }>;

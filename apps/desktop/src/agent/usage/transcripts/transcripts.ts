@@ -30,6 +30,14 @@ const EMPTY_TOTALS: UsageTokenTotals = {
   reasoningTokens: 0,
 };
 
+
+/** The value as a JSON record when it is a non-null object.
+ *  SAFETY: the typeof/null gate runs inside, so only objects are cast. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  // SAFETY: the gate on this line rejects null and non-objects before the cast.
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
 function int(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
 }
@@ -90,18 +98,15 @@ export function parseClaudeLine(line: string): UsageRecord | null {
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null) return null;
-
-  const record = parsed as Record<string, unknown>;
+  const record = asRecord(parsed);
+  if (!record) return null;
   if (record["type"] !== "assistant") return null;
 
-  const message = record["message"];
-  if (typeof message !== "object" || message === null) return null;
-  const messageRecord = message as Record<string, unknown>;
+  const messageRecord = asRecord(record["message"]);
+  if (!messageRecord) return null;
 
-  const usage = messageRecord["usage"];
-  if (typeof usage !== "object" || usage === null) return null;
-  const usageRecord = usage as Record<string, unknown>;
+  const usageRecord = asRecord(messageRecord["usage"]);
+  if (!usageRecord) return null;
 
   const timestampMs = parseTimestampMs(record["timestamp"]);
   if (timestampMs === null) return null;
@@ -178,13 +183,8 @@ const FORK_COPY_MAX_GAP_MS = 1000;
 /** Whether a `session_meta` payload marks the rollout as a fork or subagent. */
 function isForkedSessionMeta(payload: Record<string, unknown>): boolean {
   if (typeof payload["forked_from_id"] === "string") return true;
-  const source = payload["source"];
-  if (typeof source !== "object" || source === null) return false;
-  const subagent = (source as Record<string, unknown>)["subagent"];
-  if (typeof subagent !== "object" || subagent === null) return false;
-  const spawn = (subagent as Record<string, unknown>)["thread_spawn"];
-  if (typeof spawn !== "object" || spawn === null) return false;
-  return typeof (spawn as Record<string, unknown>)["parent_thread_id"] === "string";
+  const spawn = asRecord(asRecord(asRecord(payload["source"])?.["subagent"])?.["thread_spawn"]);
+  return typeof spawn?.["parent_thread_id"] === "string";
 }
 
 /**
@@ -204,10 +204,10 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
   }
   if (typeof parsed !== "object" || parsed === null) return null;
 
-  const record = parsed as Record<string, unknown>;
-  const payload = record["payload"];
-  if (typeof payload !== "object" || payload === null) return null;
-  const payloadRecord = payload as Record<string, unknown>;
+  const record = asRecord(parsed);
+  if (!record) return null;
+  const payloadRecord = asRecord(record["payload"]);
+  if (!payloadRecord) return null;
   const payloadType = payloadRecord["type"];
 
   if (record["type"] === "session_meta") {
@@ -233,11 +233,8 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
 
   if (payloadType !== "token_count") return null;
 
-  const info = payloadRecord["info"];
-  if (typeof info !== "object" || info === null) return null;
-  const last = (info as Record<string, unknown>)["last_token_usage"];
-  if (typeof last !== "object" || last === null) return null;
-  const lastRecord = last as Record<string, unknown>;
+  const lastRecord = asRecord(asRecord(payloadRecord["info"])?.["last_token_usage"]);
+  if (!lastRecord) return null;
 
   // Only an event that is otherwise eligible may consume the duplicate
   // signature. A token_count arriving before its turn_context (no model yet)

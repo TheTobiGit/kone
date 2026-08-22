@@ -138,7 +138,10 @@ export function rowToAttachment(row: AttachmentRow): StoredAttachment {
 export function parseAttachments(json: string | null): ChatAttachment[] | undefined {
   if (!json) return undefined;
   try {
+    // SAFETY: the column text came from this app's own serializer.
     const parsed = JSON.parse(json) as unknown;
+    // SAFETY: attachments were written by serializeAttachments; a deviant old
+    // row degrades to chips-less rendering rather than being trusted blindly.
     return Array.isArray(parsed) ? (parsed as ChatAttachment[]) : undefined;
   } catch {
     return undefined;
@@ -305,6 +308,7 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
   const meta: StoredThreadMeta = {
     threadId: row.thread_id,
     projectPath: row.project_path,
+    // SAFETY: the provider column is only ever written from ProviderKind values.
     provider: row.provider as ProviderKind,
     model: row.model ?? undefined,
     conversationId: row.conversation_id ?? undefined,
@@ -337,7 +341,10 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
 export function parseJsonObject<T>(json: string | null): T | undefined {
   if (!json) return undefined;
   try {
+    // SAFETY: the column text came from this app's own serializer.
     const parsed = JSON.parse(json) as unknown;
+    // SAFETY: callers name the T this column was serialized as; the object
+    // check here is the gate, field-level trust lives at the read sites.
     return parsed && typeof parsed === "object" ? (parsed as T) : undefined;
   } catch {
     return undefined;
@@ -348,12 +355,18 @@ export function rowToItem(row: ItemRow): RuntimeItem {
   let tasks: RuntimeItem["tasks"];
   if (row.tasks_json) {
     try {
+      // SAFETY: the column text came from this app's own item writer.
       const parsed = JSON.parse(row.tasks_json) as unknown;
-      if (Array.isArray(parsed)) tasks = parsed as RuntimeItem["tasks"];
+      if (Array.isArray(parsed)) {
+        // SAFETY: tasks_json was serialized from RuntimeItem["tasks"]; anything
+        // else reads as no task list.
+        tasks = parsed as RuntimeItem["tasks"];
+      }
     } catch {
       tasks = undefined;
     }
   }
+  // SAFETY: kind/status columns are written only from the matching unions.
   const item: RuntimeItem = {
     itemId: row.item_id,
     kind: row.kind as RuntimeItem["kind"],
@@ -377,6 +390,7 @@ export function rowToSubagent(row: SubagentRow): SubagentRun {
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     background: row.background === null ? undefined : row.background === 1,
+    // SAFETY: the status column is written only from SubagentRun["status"].
     status: row.status as SubagentRun["status"],
     summary: row.summary ?? undefined,
     lastToolName: row.last_tool_name ?? undefined,
@@ -448,6 +462,7 @@ export function assembleBlocks(
       role: "assistant",
       turnId: b.turn_id ?? b.block_id,
       items: itemsByTurn.get(b.turn_id ?? "") ?? [],
+      // SAFETY: state column is written only from StoredAssistantState.
       state: (b.state as StoredAssistantState | null) ?? "completed",
       error: b.error ?? undefined,
       at: b.at,
@@ -513,6 +528,7 @@ export function decodeThreadPageCursor(encoded: string): ThreadPageCursor | null
     return null;
   }
   if (parsed === null || typeof parsed !== "object") return null;
+  // SAFETY: the object check passed; every field is verified below before use.
   const record = parsed as Record<string, unknown>;
   if (typeof record.t !== "string" || record.t.length === 0) return null;
   if (typeof record.a !== "number" || !Number.isFinite(record.a)) return null;

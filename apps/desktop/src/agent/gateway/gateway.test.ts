@@ -50,7 +50,17 @@ function makeGateway(store: ConversationStoreType) {
       };
     },
   });
-  return { gateway, events, turn: (event: RuntimeEvent) => turnListener?.(event) };
+  // SAFETY: these tests hand over complete event literals; the listener
+  // consumes exactly the RuntimeEvent they spell out.
+  const turn = <T>(event: T) => turnListener?.(event as RuntimeEvent);
+  return { gateway, events, turn };
+}
+
+/** The JSON-RPC envelope's `result` member — the only part these tests read. */
+function rpcResult(res: { json: unknown }): any {
+  // SAFETY: every MCP reply below is a JSON-RPC response whose payload sits
+  // under `result`; each expect pins the exact field it asserts on.
+  return (res.json as { result?: unknown }).result;
 }
 
 async function mcpPost(url: string, token: string, body: unknown) {
@@ -62,7 +72,8 @@ async function mcpPost(url: string, token: string, body: unknown) {
     },
     body: JSON.stringify(body),
   });
-  const json = (await res.json()) as Record<string, unknown> | Record<string, unknown>[];
+  // SAFETY: the endpoint answers JSON-RPC — one object (or array) parsed from the body.
+  const json = (await res.json()) as Record<string, unknown> | Record<string, unknown>[] | undefined;
   return { status: res.status, json };
 }
 
@@ -203,7 +214,7 @@ describe("gateway integration (real store + HTTP)", () => {
 
     // No live turn yet → write denied, read still works (not_found).
     let res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-    const names = (res.json as any).result.tools.map((t: any) => t.name);
+    const names = rpcResult(res).tools.map((t: any) => t.name);
     expect(names).toEqual([
       "kone_scratchpad_read",
       "kone_scratchpad_write",
@@ -216,24 +227,25 @@ describe("gateway integration (real store + HTTP)", () => {
     ]);
 
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
-    expect((res.json as any).result.isError).toBe(true);
-    expect((res.json as any).result.structuredContent.error.code).toBe("not_found");
+    expect(rpcResult(res).isError).toBe(true);
+    expect(rpcResult(res).structuredContent.error.code).toBe("not_found");
 
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "turnless write" } } });
-    expect((res.json as any).result.structuredContent.error.code).toBe("capability_denied");
+    expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
 
     // Turn starts → write binds authority.
-    turn({ type: "turn.started", threadId: "thread-1", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" } as RuntimeEvent);
+    turn({ type: "turn.started", threadId: "thread-1", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" });
 
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one" } } });
-    expect((res.json as any).result.isError).toBeUndefined();
-    expect((res.json as any).result.structuredContent).toMatchObject({
+    expect(rpcResult(res).isError).toBeUndefined();
+    expect(rpcResult(res).structuredContent).toMatchObject({
       revision: 1,
       writer: { model: "sonnet", provider: "claudeAgent" },
     });
 
     // The event reached the broadcast path with full payload.
     expect(events).toHaveLength(1);
+    // SAFETY: the single broadcast above is the scratchpad write's own event.
     const event = events[0] as RuntimeEvent & { type: "scratchpad.updated" };
     expect(event).toMatchObject({
       type: "scratchpad.updated",
@@ -246,12 +258,12 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(store.getScratchpad(event.scratchpadId)!.body).toBe("agent note one");
 
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note two", append: true } } });
-    expect((res.json as any).result.structuredContent).toMatchObject({ revision: 2 });
-    expect((res.json as any).result.structuredContent.pad.body).toBe("agent note one\n\nagent note two");
+    expect(rpcResult(res).structuredContent).toMatchObject({ revision: 2 });
+    expect(rpcResult(res).structuredContent.pad.body).toBe("agent note one\n\nagent note two");
 
     // Stale expectedRevision → revision_conflict with current revision.
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "stale", expectedRevision: 1 } } });
-    expect((res.json as any).result.structuredContent.error).toMatchObject({
+    expect(rpcResult(res).structuredContent.error).toMatchObject({
       code: "revision_conflict",
       details: { currentRevision: 2 },
     });
@@ -259,19 +271,19 @@ describe("gateway integration (real store + HTTP)", () => {
     // Idempotency: first op-1 write saves (revision 3); the identical retry
     // replays the stored post-write result instead of re-applying.
     const first = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one", clientRequestId: "op-1" } } });
-    expect((first.json as any).result.structuredContent).toMatchObject({ revision: 3 });
+    expect(rpcResult(first).structuredContent).toMatchObject({ revision: 3 });
     const replay = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "agent note one", clientRequestId: "op-1" } } });
-    expect((replay.json as any).result.content[0].text).toContain("Replayed");
-    expect((replay.json as any).result.structuredContent).toEqual((first.json as any).result.structuredContent);
+    expect(rpcResult(replay).content[0].text).toContain("Replayed");
+    expect(rpcResult(replay).structuredContent).toEqual(rpcResult(first).structuredContent);
 
     // Turn completes → write authority retired; writes denied again, reads fine.
-    turn({ type: "turn.completed", threadId: "thread-1", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1" } as RuntimeEvent);
+    turn({ type: "turn.completed", threadId: "thread-1", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1" });
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "after turn" } } });
-    expect((res.json as any).result.structuredContent.error.code).toBe("capability_denied");
+    expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
     // The op-1 write was a full replacement — the pad holds its content.
-    expect((res.json as any).result.structuredContent.pad.body).toBe("agent note one");
-    expect((res.json as any).result.structuredContent.pad.revision).toBe(3);
+    expect(rpcResult(res).structuredContent.pad.body).toBe("agent note one");
+    expect(rpcResult(res).structuredContent.pad.revision).toBe(3);
 
     // stopSession revokes the token outright.
     gateway.revokeThread("thread-1");
@@ -295,15 +307,15 @@ describe("gateway integration (real store + HTTP)", () => {
     });
 
     // A running turn binds write authority.
-    turn({ type: "turn.started", threadId: "thread-abort", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" } as RuntimeEvent);
+    turn({ type: "turn.started", threadId: "thread-abort", provider: "claudeAgent", at: 1, source: "claude.sdk.message", turnId: "turn-1" });
     let res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "in turn" } } });
-    expect((res.json as any).result.structuredContent).toMatchObject({ revision: 1 });
+    expect(rpcResult(res).structuredContent).toMatchObject({ revision: 1 });
 
     // The abort terminal event retires the exact turn, so the next write is
     // refused — the same branch that sweeps the turn's in-flight work.
-    turn({ type: "turn.aborted", threadId: "thread-abort", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1", reason: "interrupted" } as RuntimeEvent);
+    turn({ type: "turn.aborted", threadId: "thread-abort", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1", reason: "interrupted" });
     res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "after abort" } } });
-    expect((res.json as any).result.structuredContent.error.code).toBe("capability_denied");
+    expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
 
     await gateway.shutdown();
   });

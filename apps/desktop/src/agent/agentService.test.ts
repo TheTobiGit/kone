@@ -242,11 +242,13 @@ beforeAll(async () => {
     // only backs latestUserBlockId's user-block walk, so it is not a full
     // StoredThread) — cast at the boundary, the same contract the module mock
     // used to stand in for.
+    // SAFETY: fakeStore implements the queued-turn slice this service reads.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     store: fakeStore as unknown as QueuedTurnStore,
     // The fakes are constructed inside the service with its real emit closure,
     // exactly like the real adapters — FakeAdapter.emits records them so the
     // tests below can drive the merged event stream.
+    // SAFETY: five fake adapters are the whole provider roster here.
     adapters: (emit) =>
       // eslint-disable-next-line anti-slop/no-chained-type-assertions
       [
@@ -335,6 +337,7 @@ describe("AgentService wedge watchdog", () => {
     // the session and announce it as an error.
     await new Promise((r) => setTimeout(r, 150));
     expect(FakeAdapter.stopped).toContain(thread);
+    // SAFETY: the predicate matches only session.state.changed events.
     const reset = received.find(
       (e) => e.threadId === thread && e.type === "session.state.changed" && e.state === "error",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "session.state.changed" }> | undefined;
@@ -437,6 +440,7 @@ describe("AgentService idle session reaper", () => {
     // Inactivity > idleThresholdMs (50ms) with sweep at 40ms — reaper must stop the session.
     await new Promise((r) => setTimeout(r, 150));
     expect(FakeAdapter.stopped).toContain(thread);
+    // SAFETY: the predicate matches only session.state.changed events.
     const stoppedEvent = received.find(
       (e) => e.threadId === thread && e.type === "session.state.changed" && e.state === "stopped",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "session.state.changed" }> | undefined;
@@ -572,6 +576,7 @@ describe("AgentService durable turn queue + steering", () => {
     // eventual turn.promoted by it.
     expect(result.turnId).toBe(row.queueId);
 
+    // SAFETY: the predicate matches only turn.queued events.
     const queued = received.find(
       (e) => e.threadId === thread && e.type === "turn.queued",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
@@ -612,6 +617,7 @@ describe("AgentService durable turn queue + steering", () => {
     });
     // markQueuedTurnPromoted removed the row — the claim settled.
     expect(fakeStore.rows).toHaveLength(0);
+    // SAFETY: the predicate matches only turn.queued events.
     const promoted = received.find(
       (e) => e.threadId === thread && e.type === "turn.promoted",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.promoted" }> | undefined;
@@ -701,6 +707,7 @@ describe("AgentService durable turn queue + steering", () => {
     const row = fakeStore.rows[0];
     expect(row).toMatchObject({ dispatchMode: "steer", input: "change direction", state: "queued" });
     expect(result.turnId).toBe(row.queueId);
+    // SAFETY: the predicate matches only turn.queued events.
     const queued = received.find(
       (e) => e.threadId === thread && e.type === "turn.queued",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
@@ -736,9 +743,11 @@ describe("AgentService policy enforcement", () => {
     policed = new AgentServiceCtor({
       // Answers the policy slice only; the queue slice is absent, so busy sends
       // would degrade — irrelevant here, no turn is ever queued.
+      // SAFETY: policyStore implements the policy slice under test.
       // eslint-disable-next-line anti-slop/no-chained-type-assertions
       store: policyStore as unknown as QueuedTurnStore,
       adapters: (e) =>
+        // SAFETY: one fake adapter is the whole provider list here.
         // eslint-disable-next-line anti-slop/no-chained-type-assertions
         [new FakeAdapter(e, "codex")] as unknown as ProviderAdapter[],
     });
@@ -769,6 +778,7 @@ describe("AgentService policy enforcement", () => {
       type: "approval.requested" as const,
       requestId,
       turnId: "turn-x",
+      // SAFETY: kind is the literal "command" in this test's parameterization.
       approval: { kind: kind as "command", title },
     });
 
