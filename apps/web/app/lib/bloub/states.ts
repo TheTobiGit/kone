@@ -580,7 +580,7 @@ export const STATE_BY_ID = new Map(STATES.map((s) => [s.id, s]))
  * montrent les vignettes et la planche. Rendu deterministe, donc comparable
  * d'une execution a l'autre. Le type force a couvrir tout nouvel etat.
  */
-export const POSES: Record<StateId, number> = {
+export const POSES = {
   idle: 1,
   thinking: 1.1,
   wink: 0.8,
@@ -596,7 +596,7 @@ export const POSES: Record<StateId, number> = {
   swirl: 0.5,
   burst: 0.45,
   comet: 1.15
-}
+} satisfies Record<StateId, number>
 
 export const SEQUENCE: StateId[] = [
   'idle',

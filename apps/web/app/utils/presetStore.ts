@@ -41,7 +41,6 @@ export const presetRows = useStorage<SubagentPresetRecord[]>(
  *  paste out of a row; the store clamps again on the way in. */
 const NAME_MAX = 64;
 const PROSE_MAX = 4000;
-const LIST_MAX = 128;
 
 function bridge() {
   return import.meta.client ? window.koneDesktop?.presets : undefined;

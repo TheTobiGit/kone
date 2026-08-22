@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { STDIO_PROXY_PATH } from "./injection.js";
 

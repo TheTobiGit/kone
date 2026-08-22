@@ -1,4 +1,3 @@
-import type { StoredThreadMeta } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import { useSessionList } from "~/composables/useSessionList";
 

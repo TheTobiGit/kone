@@ -1,7 +1,6 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from "vue";
 import type {
   ApprovalDecision,
-  ApprovalRequest,
   ChatAttachment,
   ForkContext,
   InteractionMode,
@@ -9,7 +8,6 @@ import type {
   ProviderKind,
   RuntimeEvent,
   RuntimeItem,
-  RuntimeItemKind,
   RuntimeSessionState,
   SendTurnInput,
   Session,
@@ -22,30 +20,20 @@ import type {
   SubagentRun,
   SubagentRunSnapshot,
   TokenUsage,
-  TurnStartResult,
   UserInputAnswers,
-  UserInputQuestion,
 } from "~/types/desktop";
 import { agentPersonaForThread, carryThreadAgent } from "~/utils/agents";
 import { peelIpcError } from "~/utils/ipcError";
-import { EFFORT_META, type EffortTier } from "~/utils/modelCatalog";
-import {
-  activePlanTask,
-  formatPlanTasks,
-  type ActivePlanTask,
-  type PlanTask,
-} from "~/utils/planTasks";
+import { EFFORT_META } from "~/utils/modelCatalog";
+import { activePlanTask } from "~/utils/planTasks";
 
 import {
-  type Historical,
   type UserBlock,
   type AssistantBlock,
   type ThreadBlock,
   type PendingUserInput,
   type PendingApproval,
-  type ThreadAttentionKind,
   type ThreadAttention,
-  type QueuedTurnRow,
   type QueuedTurnEntry,
   type QueueBridge,
   type ReasoningTier,
@@ -55,20 +43,14 @@ import {
 } from "./useAgentTypes";
 
 import {
-  PREFETCH_TTL_MS,
-  PREFETCH_MAX,
-  prefetched,
-  prefetchThread,
   takePrefetched,
   markHistorical,
   uid,
   fileToBase64,
   latestAssistant,
-  childApprovalsInbox,
   setChildApproval,
   clearChildApproval,
   clearChildApprovalFor,
-  decideChildApproval,
   originSubagentOfApproval,
   titleFromPrompt,
 } from "./useAgentPrefetch";

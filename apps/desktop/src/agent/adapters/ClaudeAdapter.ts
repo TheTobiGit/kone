@@ -556,7 +556,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   /** Reject every parked approval — on interrupt/stop so no canUseTool promise
    *  leaks and the renderer's pending prompt clears. */
   private drainApprovals(session: ClaudeSession): void {
-    for (const [requestId] of [...session.pendingApprovals]) {
+    for (const [requestId] of session.pendingApprovals) {
       this.resolveApproval(session, requestId, "reject-once");
     }
   }
@@ -618,7 +618,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   /** Resolve every parked question empty — on interrupt/stop so no canUseTool
    *  promise leaks and the renderer's pending prompt clears. */
   private drainUserInputs(session: ClaudeSession): void {
-    for (const [requestId] of [...session.pendingUserInputs]) {
+    for (const [requestId] of session.pendingUserInputs) {
       this.resolveUserInput(session, requestId, {});
     }
   }
@@ -759,7 +759,9 @@ export class ClaudeAdapter implements ProviderAdapter {
     // task best-effort, bounded per task so one wedged child can't block the
     // interrupt itself; an acknowledged stop is settled synthetically so no
     // run renders as forever-running if the notification loses the race.
-    for (const run of [...session.subagentRuns.values()]) {
+    // Snapshot, not live iteration: each task's stop races a bounded timeout,
+    // and run records can still arrive from the stream mid-await.
+    for (const run of Array.from(session.subagentRuns.values())) {
       const taskId = run.snapshot.taskId;
       if (!taskId) continue;
       const acknowledged = await Promise.race([
@@ -1572,7 +1574,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   /** Settle every still-live run — the parent turn ended (or the session is
    *  going away), so nothing should be left rendering as forever-running. */
   private settleLiveSubagents(session: ClaudeSession, status: SubagentStatus): void {
-    for (const run of [...session.subagentRuns.values()]) {
+    for (const run of session.subagentRuns.values()) {
       this.settleSubagent(session, run, status);
     }
   }

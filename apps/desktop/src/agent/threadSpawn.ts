@@ -1051,7 +1051,9 @@ class SpawnEngineImpl implements SpawnEngine {
   }
 
   private checkWaiters(): void {
-    for (const waiter of [...this.waiters]) this.checkWaiter(waiter);
+    // Snapshot: checkWaiter can splice entries out of this.waiters, and live
+    // array iteration would skip the element shifting into the removed slot.
+    for (const waiter of Array.from(this.waiters)) this.checkWaiter(waiter);
   }
 
   private finishWaiter(waiter: Waiter, timedOut: boolean): void {

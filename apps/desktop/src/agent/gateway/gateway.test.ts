@@ -19,17 +19,14 @@ mock.module("../sqlite.js", () => ({
 
 import type { RuntimeEvent } from "../types.js";
 
-let testUserDataDir = "";
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
 function useUserDataDir(dir: string): string {
-  testUserDataDir = dir;
   setUserDataDir(dir);
   return dir;
 }
 useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-gateway-test-")));
 
 type ConversationStoreType = import("../ConversationStore.js").ConversationStore;
-type GatewayHandleType = import("./index.js").GatewayHandle;
 let ConversationStoreCtor: typeof import("../ConversationStore.js").ConversationStore;
 let createGateway: typeof import("./index.js").createGateway;
 

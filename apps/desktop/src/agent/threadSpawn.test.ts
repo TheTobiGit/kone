@@ -89,7 +89,7 @@ class FakeStore implements SpawnEngineStore {
   /** threadId → the agent it was bound to at spawn (delegation). */
   readonly bound = new Map<string, string>();
 
-  bindThreadAgent(threadId: string, agentId: string): unknown {
+  bindThreadAgent(threadId: string, agentId: string) {
     this.bound.set(threadId, agentId);
     return { threadId, agentId };
   }

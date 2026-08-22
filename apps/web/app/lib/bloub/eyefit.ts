@@ -239,7 +239,7 @@ const DICHOTOMIE = 8
  * reapparaitre 34 debordements. Ici le resultat ne depend pas d'une convergence : chaque
  * direction est resolue exactement, au pas de dichotomie pres.
  */
-function resous(epreuves: Epreuve[]): { x: number; y: number } {
+function resous(epreuves: Epreuve[]): Point {
   if (!epreuves.length) return { x: 0, y: 0 }
 
   /** La marge la plus serree sur toutes les epreuves, pour une translation donnee. */

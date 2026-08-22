@@ -35,7 +35,6 @@ import type {
   AgentPatch,
   AgentRecord,
   AgentSkillRef,
-  ProviderKind,
 } from "~/types/desktop";
 import {
   addTeamMember,

@@ -83,7 +83,7 @@ export function resetCloneForTests(): void {
  *  cannot outlive the process just because the user's GitHub clone held the
  *  cancel slot. */
 export function cancelAllClones(): void {
-  for (const abort of [...liveSessions]) abort();
+  for (const abort of liveSessions) abort();
 }
 
 /** Alias of cancelAllClones — kept so existing imports keep compiling. IPC

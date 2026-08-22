@@ -2,8 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { GatewayCredentials } from "./credentials.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
-import { createRegistry, gatewayToolErrorResult } from "./registry.js";
-import { GatewayToolError } from "./schemas.js";
+import { createRegistry } from "./registry.js";
 import {
   extractBearerToken,
   makeMcpTransport,

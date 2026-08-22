@@ -13,7 +13,7 @@ export type ActivePlanState = {
   streaming: boolean;
 };
 
-const MD_LINE = /^-\s+\[( |x|X|\/|\-)\]\s+(.+)$/;
+const MD_LINE = /^-\s+\[( |x|X|\/|-)\]\s+(.+)$/;
 const UNICODE_LINE = /^([○→✓])\s+(.+)$/;
 
 function mintPlanTaskId(): string {

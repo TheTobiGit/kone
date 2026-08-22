@@ -20,10 +20,6 @@ function baseInput(overrides: Partial<SkillSignalsInput> = {}): SkillSignalsInpu
   };
 }
 
-function signalIds(input: SkillSignalsInput): string[] {
-  return deriveSignals(input).security.map((signal) => signal.id);
-}
-
 describe("cost facts", () => {
   test("reports description and listing lengths within the caps", () => {
     const result = deriveSignals(baseInput());

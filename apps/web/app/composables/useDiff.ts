@@ -22,12 +22,14 @@ export type DiffRow =
   /** A quiet break between non-adjacent hunks (skipped lines). */
   | { kind: "gap" };
 
-type HL = (code: string, path: string, dark: boolean) => Promise<CodeLine[] | null>;
-
 // Plain single-token fallback when highlighting is unavailable (unknown grammar,
 // oversize, SSR) — one uncoloured token per line.
 function plainLines(text: string): CodeLine[] {
-  return text.split("\n").map((l) => [{ content: l, color: undefined } as CodeLine[number]]);
+  return text.split("\n").map((l) => {
+    // SAFETY: one whole-line token with an unset colour satisfies CodeLine's
+    // per-line shape; plainLines runs only where highlighting produced nothing.
+    return [{ content: l, color: undefined } as CodeLine[number]];
+  });
 }
 
 // Split a tokenised line into chunks, breaking tokens where the emphasis mask
@@ -76,7 +78,12 @@ function wordMasks(oldStr: string, newStr: string): WordMasks {
     const n = part.value.length;
     if (part.added) for (let k = 0; k < n; k++) add.push(true);
     else if (part.removed) for (let k = 0; k < n; k++) del.push(true);
-    else for (let k = 0; k < n; k++) (del.push(false), add.push(false));
+    else {
+      for (let k = 0; k < n; k++) {
+        del.push(false);
+        add.push(false);
+      }
+    }
   }
   return { del, add };
 }

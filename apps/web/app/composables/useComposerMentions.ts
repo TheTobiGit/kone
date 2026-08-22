@@ -4,7 +4,6 @@ import {
   nextTick,
   ref,
   render,
-  type ComputedRef,
   type Ref,
 } from "vue";
 import MentionChip from "~/components/MentionChip.vue";

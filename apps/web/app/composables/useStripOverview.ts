@@ -3,7 +3,6 @@ import {
   nextTick,
   onBeforeUnmount,
   ref,
-  type ComputedRef,
   type Ref,
 } from "vue";
 
