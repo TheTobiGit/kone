@@ -10,10 +10,11 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import ProviderLogo from "~/components/ProviderLogo.vue";
-import { describeModelId, EFFORT_META, type EffortTier } from "~/utils/modelCatalog";
+import { describeModelId, EFFORT_META, type BrandKey, type EffortTier } from "~/utils/modelCatalog";
+import { PROVIDER_LABEL } from "~/utils/usageProviders";
 import { brainStack } from "~/utils/subagentRuns";
 import type { ThreadSession } from "~/composables/useAgent";
-import type { GitRemote } from "~/types/desktop";
+import type { GitRemote, ProviderKind } from "~/types/desktop";
 
 // The thread-info drop-down — the natural read-out of a conversation's name.
 // Clicking the column title opens this beneath it: the thread's own name leads,
@@ -131,6 +132,23 @@ function commitEdit(): void {
   if (!next || next === s.title.value) return;
   emit("rename", next);
 }
+const PROVIDER_BRAND = {
+  codex: "codex",
+  claudeAgent: "claude",
+  opencode: "opencode",
+  cursor: "cursor",
+  droid: "droid",
+  antigravity: "antigravity",
+} satisfies Record<ProviderKind, BrandKey>;
+
+const providerKind = computed(() => s.provider?.value);
+const providerBrand = computed<BrandKey>(() =>
+  providerKind.value ? PROVIDER_BRAND[providerKind.value] : "generic",
+);
+const providerLabel = computed(() =>
+  providerKind.value ? PROVIDER_LABEL[providerKind.value] ?? providerKind.value : "",
+);
+
 const brand = computed(() => describeModelId(s.model.value).brand);
 const modelName = computed(() => describeModelId(s.model.value).name);
 
@@ -294,6 +312,13 @@ onBeforeUnmount(() => {
                   Edit
                 </button>
               </template>
+            </dd>
+          </div>
+          <div v-if="providerLabel" class="tip__row">
+            <dt>Provider</dt>
+            <dd class="tip__provider" :title="providerLabel">
+              <ProviderLogo v-if="providerBrand !== 'generic'" :brand="providerBrand" :size="14" />
+              <span>{{ providerLabel }}</span>
             </dd>
           </div>
           <div class="tip__row">
@@ -544,15 +569,18 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tip__provider,
 .tip__model {
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
+.tip__provider :deep(.plogo),
 .tip__model :deep(.plogo) {
   flex: none;
   opacity: 0.9;
 }
+.tip__provider span,
 .tip__model span {
   min-width: 0;
   overflow: hidden;
