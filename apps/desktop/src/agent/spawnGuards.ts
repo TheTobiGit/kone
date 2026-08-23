@@ -287,9 +287,8 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
   }
 
   // 8. Mode — result mode = requested ?? parent, and an EXPLICIT escalation is
-  //    runtimeModeEscalatesPrivilege: "created threads cannot use
-  //    higher-privileged ..."). Privilege only ever increases across a spawn,
-  //    and a silently downgraded child plans against a mode it doesn't have.
+  //    a refusal. Privilege NEVER increases across a spawn, and a silently
+  //    downgraded child plans against a mode it doesn't have.
   //    Unset inherits the parent's rung silently; a downgrade or equal request
   //    is kept as-is (going down is exactly what was asked for).
   const requestedMode = input.requestedMode;

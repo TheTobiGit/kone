@@ -7,8 +7,6 @@
 // thread-spawning tools — agents read/edit the project scratchpad the web
 // board renders, and open, follow and read kone threads. Future tools (side
 // chats, theme, panes) are pure registry entries on the same server.
-//
-// httpRoute.ts / AgentGatewayCredentials.ts), reimplemented in plain TS.
 
 import type { ConversationStore } from "../ConversationStore.js";
 import type { EmitEvent, ProviderKind, RuntimeEvent } from "../types.js";
