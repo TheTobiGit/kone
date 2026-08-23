@@ -1,8 +1,8 @@
 // Minimal MCP (Model Context Protocol) JSON-RPC handling for the kone gateway.
 //
 // Implements the stateless subset of the MCP streamable-HTTP transport the
-// gateway needs — `initialize`, `ping`, `tools/list`, `tools/call`, plus
-// mechanics verbatim (protocol.ts + mcpTransport.ts), in plain TypeScript.
+// gateway needs — `initialize`, `ping`, `tools/list`, `tools/call`, plus the
+// batching and cancellation mechanics around them.
 // Every POST gets a single application/json response (the spec allows servers
 // to answer with JSON instead of an SSE stream), so no session or stream state
 // is kept server-side. GET/DELETE are explicit non-endpoints (405) at the HTTP

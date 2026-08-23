@@ -190,6 +190,44 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(store.getScratchpad("p")!.body).toBe("b2\n\nmore");
   });
 
+  test("a request carrying an Origin is refused before the token is even read", async () => {
+    const store = freshStore();
+    const { gateway } = makeGateway(store);
+    await gateway.ready;
+    const conn = gateway.connectionForThread("thread-origin", "claudeAgent", "sonnet");
+    store.ensureThread({
+      threadId: "thread-origin",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+
+    // A page that guessed the dynamic port, holding a VALID token: the loopback
+    // server is reachable from any browser tab, so Origin — which only a
+    // browser sends — is refused outright rather than served.
+    const rebound = await fetch(conn.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${conn.bearerToken}`,
+        origin: "http://evil.example",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(rebound.status).toBe(403);
+
+    // The same call from a real client (no Origin) still works.
+    const ok = await mcpPost(conn.url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {},
+    });
+    expect(ok.status).toBe(200);
+
+    await gateway.shutdown();
+  });
+
   test("full round-trip: auth → tools/list → write → read → append → replay", async () => {
     const store = freshStore();
     const { gateway, events, turn } = makeGateway(store);

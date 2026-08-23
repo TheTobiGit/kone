@@ -35,6 +35,24 @@ function sendJson(res: ServerResponse, status: number, body: GatewayRecord | Gat
   res.end(payload);
 }
 
+/** Reject a browser-originated request outright. The gateway's real boundary
+ *  is the per-session bearer token, but a loopback HTTP server is reachable
+ *  from any page the user has open, and a page that guesses the dynamic port
+ *  should not even get to attempt a call. The only legitimate clients are
+ *  provider CLIs and the stdio proxy — none of which send `Origin` — so any
+ *  `Origin` at all is a browser, and browsers have no business here. */
+function forbiddenOrigin(origin: string, res: ServerResponse): void {
+  console.warn(`[gateway] refusing cross-origin request from ${origin}`);
+  sendJson(res, 403, {
+    jsonrpc: "2.0",
+    id: null,
+    error: {
+      code: JSON_RPC_INVALID_REQUEST,
+      message: "forbidden_origin: The kone gateway does not serve browser origins.",
+    },
+  });
+}
+
 function unauthorized(res: ServerResponse): void {
   sendJson(res, 401, {
     jsonrpc: "2.0",
@@ -83,6 +101,16 @@ async function handleRequest(
 ): Promise<void> {
   try {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    // Before anything else, including the token check: a request carrying an
+    // Origin came from a web page, and no legitimate client of this server is
+    // one. Refusing here is the DNS-rebinding guard local MCP servers owe —
+    // without it a page only has to find the port to start probing.
+    const origin = req.headers.origin;
+    if (origin) {
+      forbiddenOrigin(origin, res);
+      return;
+    }
 
     if (url.pathname === AGENT_GATEWAY_BOOTSTRAP_PATH) {
       // proxy spawned by a provider whose plugin config must be secret-free on
