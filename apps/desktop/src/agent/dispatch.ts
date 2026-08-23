@@ -57,6 +57,14 @@ export interface ThreadDispatcher {
     input: SendTurnInput,
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult>;
+  /** A mid-turn nudge into the RUNNING turn. Journals the user's message and
+   *  names a first-turn thread exactly like sendThreadTurn — a steer is the
+   *  user speaking, so it belongs in the transcript — then hands it to the
+   *  service's steer channel instead of its send channel. */
+  steerThreadTurn(
+    input: SendTurnInput,
+    options?: StartThreadTurnOptions,
+  ): Promise<TurnStartResult>;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -156,6 +164,29 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     input: SendTurnInput,
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
+    return this.dispatchTurn(input, "send", options);
+  }
+
+  steerThreadTurn(
+    input: SendTurnInput,
+    options?: StartThreadTurnOptions,
+  ): Promise<TurnStartResult> {
+    return this.dispatchTurn(input, "steer", options);
+  }
+
+  /** The shared body of sendThreadTurn and steerThreadTurn. A steer is the same
+   *  dispatch with a different destination: the user typed a message, so it is
+   *  journaled and can name a thread exactly like a send, and only the service
+   *  call at the end differs. Routing steers around this — straight to
+   *  AgentService — left them out of the transcript entirely, and left the
+   *  durable queue deriving every steer row's userBlockId from the PREVIOUS
+   *  send's block, so a second steer collided with the first on the
+   *  (thread_id, user_block_id) index and was dropped as a replay. */
+  private dispatchTurn(
+    input: SendTurnInput,
+    destination: "send" | "steer",
+    options?: StartThreadTurnOptions,
+  ): Promise<TurnStartResult> {
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
     const preamble = this.replayPreamble(input.threadId);
     // Persist the user prompt (with any attachment metadata) before dispatching,
@@ -183,9 +214,10 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     }
     // Only the dispatched prompt carries the replay — the block journaled above
     // keeps the user's own words, so the transcript never shows the machinery.
-    return this.service.sendTurn(
-      preamble ? { ...input, input: `${preamble}\n\n${input.input}` } : input,
-    );
+    const dispatched = preamble ? { ...input, input: `${preamble}\n\n${input.input}` } : input;
+    return destination === "steer"
+      ? this.service.steerTurn(dispatched)
+      : this.service.sendTurn(dispatched);
   }
 
   onTurnCompleted(threadId: string): void {

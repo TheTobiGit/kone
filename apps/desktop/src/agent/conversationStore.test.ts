@@ -1240,6 +1240,55 @@ describe("durable turn queue", () => {
     raw.close();
   });
 
+  test("rows enqueued in the same millisecond claim in arrival order", () => {
+    const store = freshStore();
+    // created_at is a millisecond clock, so a burst ties on it. The tiebreak
+    // must be arrival (rowid), not the random queue_id it used to be.
+    enq(store, "q-zzz", "t-1", "ub-1", "first", 7);
+    enq(store, "q-aaa", "t-1", "ub-2", "second", 7);
+    enq(store, "q-mmm", "t-1", "ub-3", "third", 7);
+    expect(store.listQueuedTurns("t-1").map((r) => r.input)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    expect(store.claimNextQueuedTurn("t-1")?.input).toBe("first");
+    expect(store.claimNextQueuedTurn("t-1")?.input).toBe("second");
+  });
+
+  test("steers enqueued in the same millisecond claim newest-first", () => {
+    const store = freshStore();
+    enq(store, "q-s1", "t-1", "ub-1", "steer old", 7, { dispatchMode: "steer" });
+    enq(store, "q-s2", "t-1", "ub-2", "steer new", 7, { dispatchMode: "steer" });
+    expect(store.claimNextQueuedTurn("t-1")?.input).toBe("steer new");
+  });
+
+  test("cancelQueuedTurn refuses a row a drain has already claimed", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "already running", 1);
+    // The drain claimed it and is awaiting adapter.sendTurn — the turn is on
+    // its way to the provider.
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-1");
+
+    // The user hits ✕ on the chip. Reporting success here would emit
+    // turn.queued-cancelled(reason "user") for a turn that runs anyway.
+    expect(store.cancelQueuedTurn("q-1")).toBe(false);
+
+    // The row is still the drain's to settle.
+    expect(store.markQueuedTurnPromoted("q-1")).toBe(true);
+  });
+
+  test("the stop path still cancels a claimed row", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "doomed", 1);
+    store.claimNextQueuedTurn("t-1");
+    // Unlike the per-item cancel, a stop tears the session down regardless —
+    // and flipping 'promoting' is what stops the drain's error path from
+    // releasing the row back to 'queued'.
+    expect(store.cancelQueuedTurnsForThread("t-1")).toEqual(["q-1"]);
+    expect(store.releaseQueuedTurn("q-1")).toBe(false);
+  });
+
   test("a settled row does not block re-enqueue of the same user block", () => {
     const store = freshStore();
     enq(store, "q-1", "t-1", "ub-1", "first", 1);

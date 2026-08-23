@@ -312,7 +312,7 @@ export function registerAgentIpc(): void {
     svc.cancelQueuedTurn(threadId, queueId),
   );
   ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) =>
-    svc.steerTurn(input),
+    dispatcher.steerThreadTurn(input),
   );
   // Read a parent thread's spawned children, projected fresh from the store.
   // The spawn events aren't journaled (derived state), so a reloaded renderer
