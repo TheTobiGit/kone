@@ -78,7 +78,7 @@ const droplet = normalizeProfile(
 const capsule = profileFromPolygon(hullOfCircles(-0.42, 0, 0.62, 0.42, 0, 0.62), 0, 0);
 
 export const BOT_FORMS: readonly BotForm[] = [
-  { id: "circle", label: "Circle", radii: new Array(PROFILE_SAMPLES).fill(1) },
+  { id: "circle", label: "Circle", radii: Array.from({ length: PROFILE_SAMPLES }, () => 1) },
   { id: "pebble", label: "Pebble", radii: pebble },
   // Normalised to 1.15 rather than ~1.02: a superellipse's longest radius is its
   // diagonal, so peaking it at the circle's radius leaves a shape that reads

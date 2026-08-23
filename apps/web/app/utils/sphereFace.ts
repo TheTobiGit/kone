@@ -13,7 +13,7 @@
  * rather than as two ovals on a circle.
  */
 
-const TAU = Math.PI * 2;
+import { liveliness, PITCH_MAX, PITCH_REST, YAW_MAX } from "./idleLife";
 
 const clamp = (v: number, lo = 0, hi = 1) => (v < lo ? lo : v > hi ? hi : v);
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -29,73 +29,6 @@ const EYE_H = 0.412;
 
 /** Head orientation at rest: turned up and to its right, tipped slightly. */
 const REST_GAZE = { yaw: 28.49, pitch: 28.62, roll: -13 };
-
-/**
- * Where the head goes when it is following the pointer.
- *
- * These are ABSOLUTE angles that replace the resting pose as the blend rises,
- * not offsets added on top of it — otherwise the resting yaw of +28deg would
- * ride along and the face would never actually look at anything. Wide enough to
- * read as attention rather than drift, narrow enough that neither eye crosses
- * the limb of the sphere and pops out of frame.
- */
-const YAW_MAX = 16;
-const PITCH_MAX = 13;
-/** Held a little above the equator with the pointer centred: attentive, not vacant. */
-const PITCH_REST = 10;
-
-/** Periodic 1D noise: loops seamlessly over `period`. */
-function loopNoise(t: number, period: number, seed = 0): number {
-  const p = (t / period) * TAU;
-  return (
-    0.55 * Math.sin(p + seed) +
-    0.3 * Math.sin(2 * p + seed * 1.7 + 1.1) +
-    0.15 * Math.sin(3 * p + seed * 2.3 + 2.4)
-  );
-}
-
-/** Deterministic PRNG (mulberry32): same sequence every read. */
-function createRng(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Pre-drawn blink calendar, so blinking stays stateless and reproducible. */
-const BLINKS: number[] = (() => {
-  const rng = createRng(0x5eed);
-  const out: number[] = [];
-  let t = 1.4;
-  while (t < 900) {
-    out.push(t);
-    // 1.9 to 4.6s apart, with the occasional double blink
-    t += 1.9 + rng() * 2.7;
-    if (rng() < 0.18) {
-      out.push(t);
-      t += 0.24;
-    }
-  }
-  return out;
-})();
-
-const BLINK_DUR = 0.18;
-
-function blinkLid(t: number): number {
-  for (let i = 0; i < BLINKS.length; i++) {
-    const start = BLINKS[i]!;
-    if (t < start) break;
-    const k = (t - start) / BLINK_DUR;
-    if (k >= 0 && k <= 1) {
-      // snaps shut, opens back a touch slower
-      return k < 0.45 ? 1 - k / 0.45 : (k - 0.45) / 0.55;
-    }
-  }
-  return 1;
-}
 
 /**
  * The blink is a VERTICAL squash in screen space around the eye's centre — the
@@ -228,40 +161,29 @@ export interface FaceOptions {
 export function sampleFace(t: number, opt: FaceOptions): FaceFrame {
   const { size, aim } = opt;
   const R = size / 2;
-
-  // Idle life. The body is all but still — a stable centre and a constant width
-  // — so the liveliness lives in the gaze and the blinks, and the body gets only
-  // enough to keep the image from looking frozen.
-  const dYaw = loopNoise(t, 11.3, 0.4) * 5.5 + loopNoise(t, 3.7, 2.1) * 1.6;
-  const dPitch = loopNoise(t, 9.1, 1.3) * 4.2 + loopNoise(t, 4.3, 0.7) * 1.3;
-  const dRoll = loopNoise(t, 13.7, 3.2) * 2.2;
-  const driftX = loopNoise(t, 7.9, 1.9) * 0.006;
-  const driftY = loopNoise(t, 5.3, 0.3) * 0.007;
-  // Only the height breathes; the width holds.
-  const breath = 1 + Math.sin((t / 3.4) * TAU) * 0.005;
-  const lid = blinkLid(t);
+  const life = liveliness(t);
 
   const mix = aim ? clamp(aim.mix) : 0;
   const gaze: HeadGaze = {
     // The aim REPLACES the resting direction as the blend rises; the drift is
     // added after the blend so a following head still keeps its life.
-    yaw: lerp(REST_GAZE.yaw, aim ? aim.nx * YAW_MAX : 0, mix) + dYaw,
+    yaw: lerp(REST_GAZE.yaw, aim ? aim.nx * YAW_MAX : 0, mix) + life.dYaw,
     // pitch is positive upward while screen y runs down
-    pitch: lerp(REST_GAZE.pitch, aim ? PITCH_REST - aim.ny * PITCH_MAX : 0, mix) + dPitch,
+    pitch: lerp(REST_GAZE.pitch, aim ? PITCH_REST - aim.ny * PITCH_MAX : 0, mix) + life.dPitch,
     // Roll follows nothing: the -13deg lean is the face's signature, and rolling
     // it with the pointer throws that away.
-    roll: REST_GAZE.roll + dRoll,
+    roll: REST_GAZE.roll + life.dRoll,
   };
 
-  const cx = R + driftX * R;
-  const cy = R + driftY * R;
+  const cx = R + life.driftX * R;
+  const cy = R + life.driftY * R;
 
   const eyes: RenderedEye[] = [];
   const eyePath = capsulePath(EYE_W * R, EYE_H * R);
   for (const e of eyePoses(gaze, R)) {
     // Past the limb of the sphere the eye has turned away from us entirely.
     if (e.depth <= 0.02) continue;
-    const k = blinkScale(lid);
+    const k = blinkScale(life.lid);
     eyes.push({
       d: eyePath,
       matrix:
@@ -272,5 +194,5 @@ export function sampleFace(t: number, opt: FaceOptions): FaceFrame {
     });
   }
 
-  return { bodyPath: bodyEllipse(cx, cy, R, R * breath), eyes };
+  return { bodyPath: bodyEllipse(cx, cy, R, R * life.breath), eyes };
 }

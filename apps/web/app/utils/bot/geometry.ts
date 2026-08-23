@@ -94,7 +94,7 @@ export function closedPath(pts: Point[], tension = 1 / 6): string {
  * rounded polygon. Run once when the catalogue is built, never per render.
  */
 export function profileFromPolygon(poly: Point[], cx: number, cy: number): number[] {
-  const radii = new Array<number>(PROFILE_SAMPLES).fill(0);
+  const radii = Array.from({ length: PROFILE_SAMPLES }, () => 0);
   const n = poly.length;
   for (let k = 0; k < PROFILE_SAMPLES; k++) {
     const dx = COS[k] ?? 0;
@@ -184,7 +184,7 @@ export function superellipseProfile(n: number, sx = 1, sy = 1): number[] {
 export function unionOfCirclesProfile(
   circles: Array<{ x: number; y: number; r: number }>,
 ): number[] {
-  const out = new Array<number>(PROFILE_SAMPLES).fill(0);
+  const out = Array.from({ length: PROFILE_SAMPLES }, () => 0);
   for (let i = 0; i < PROFILE_SAMPLES; i++) {
     const dx = COS[i] ?? 0;
     const dy = SIN[i] ?? 0;

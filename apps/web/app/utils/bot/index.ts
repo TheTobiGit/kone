@@ -6,8 +6,9 @@
  * belongs in a transcript beside a name. A bot is a creature the agent drives,
  * and it belongs where the agent is *doing* something rather than saying it,
  * which is the composer. So a bot is built to move (see `./geometry` on why
- * every shape is a radial profile) even though nothing animates it yet, and an
- * avatar never will.
+ * every shape is a radial profile), and the composer bead is what actually
+ * does: the same idle life as a guest's face, wearing the expression the
+ * maker picked. An avatar never will.
  *
  * The eyes are painted onto the body, not punched out of it with a mask. A mask
  * needs an id, one mark is mounted many times across a pane, and every mount
@@ -33,11 +34,14 @@ import {
   clamp,
   closedPath,
   eyePoses,
+  lerp,
   lidScale,
   r2,
   radiusAtAngle,
   toPoints,
+  type HeadGaze,
 } from "./geometry";
+import { liveliness, PITCH_MAX, PITCH_REST, YAW_MAX } from "../idleLife";
 
 export type { BotColor, BotColorId, BotExpression, BotExpressionId, BotForm, BotFormId } from "./catalog";
 export {
@@ -141,6 +145,15 @@ const cache = new Map<string, string>();
  *  changes, and the outline is the expensive half. */
 const bodies = new Map<BotFormId, string>();
 
+function bodyOf(formId: BotFormId, radii: number[], R: number): string {
+  let path = bodies.get(formId);
+  if (path === undefined) {
+    path = closedPath(toPoints(radii, R));
+    bodies.set(formId, path);
+  }
+  return path;
+}
+
 /**
  * Where a bot is looking, over and above the expression it is wearing.
  *
@@ -187,11 +200,7 @@ export function botMark(bot: AgentBot, aim?: BotAim): string {
   // all of them and their relative weights survive — a triangle stays visibly
   // smaller than the circle it is measured against, which is how it was drawn.
   const R = ((TILE / 2) * FILL) / FORM_HEADROOM;
-  let bodyPath = bodies.get(form.id);
-  if (bodyPath === undefined) {
-    bodyPath = closedPath(toPoints(form.radii, R));
-    bodies.set(form.id, bodyPath);
-  }
+  const bodyPath = bodyOf(form.id, form.radii, R);
 
   // The eyes live on a sphere of unit radius. Once the body is not a circle they
   // have to come back to the outline's real radius in their own direction, or a
@@ -237,6 +246,95 @@ export function botMark(bot: AgentBot, aim?: BotAim): string {
 
   if (!aim) cache.set(key, svg);
   return svg;
+}
+
+/**
+ * Pointer command for a live bot, in the same shape the guest face takes: a
+ * direction on the unit box and how far the pointer owns it. The sampler
+ * replaces the expression's gaze with this as `mix` rises, so a bot that rests
+ * looking up and to the right actually looks at you rather than past you. What
+ * the expression keeps is the shape of the eyes.
+ */
+export interface BotLook {
+  nx: number;
+  ny: number;
+  mix: number;
+}
+
+export interface BotEyeDraw {
+  d: string;
+  matrix: string;
+  alpha: number;
+}
+
+export interface BotFrame {
+  bodyPath: string;
+  fill: string;
+  ink: string;
+  driftX: number;
+  driftY: number;
+  breath: number;
+  eyes: BotEyeDraw[];
+}
+
+/**
+ * One frame of a live bot at time `t`, in seconds.
+ *
+ * Same idle life as the guest face — wander, blink, a breath — wearing the
+ * expression the maker picked. The look, if any, replaces where the head
+ * points; the wander is added after, so a following bot still keeps its life.
+ */
+export function sampleBot(t: number, bot: AgentBot, look?: BotLook): BotFrame {
+  const form = botForm(bot.form);
+  const color = botColor(bot.color);
+  const expression = botExpression(bot.expression);
+  const life = liveliness(t);
+  const mix = look ? clamp(look.mix) : 0;
+  const rest = expression.gaze;
+  const gaze: HeadGaze = {
+    yaw: lerp(rest.yaw, look ? look.nx * YAW_MAX : rest.yaw, mix) + life.dYaw,
+    pitch: lerp(rest.pitch, look ? PITCH_REST - look.ny * PITCH_MAX : rest.pitch, mix) + life.dPitch,
+    roll: rest.roll + life.dRoll,
+  };
+
+  const R = ((TILE / 2) * FILL) / FORM_HEADROOM;
+  const driftX = life.driftX * R;
+  const driftY = life.driftY * R;
+  const ink = inkFor(color.hex);
+  const poses = eyePoses(gaze, R, expression.split);
+  const eyes: BotEyeDraw[] = [];
+  for (let i = 0; i < poses.length; i++) {
+    const pose = poses[i]!;
+    if (pose.depth <= 0.02) continue;
+    const cfg = expression.eyes[i]!;
+    const fit = radiusAtAngle(form.radii, Math.atan2(pose.y, pose.x));
+    const phi = (cfg.tilt * Math.PI) / 180;
+    const cp = Math.cos(phi);
+    const sp = Math.sin(phi);
+    const ax = pose.a * cp + pose.c * sp;
+    const ay = pose.b * cp + pose.d * sp;
+    const cx = -pose.a * sp + pose.c * cp;
+    const cy = -pose.b * sp + pose.d * cp;
+    // Blink composes with the expression's own lid: a sleepy eye still shuts.
+    const k = lidScale(cfg.open * life.lid);
+    eyes.push({
+      d: capsulePath(cfg.w * R, cfg.h * R),
+      matrix:
+        `matrix(${r2(ax)},${r2(ay * k)},${r2(cx)},${r2(cy * k)},` +
+        `${r2(pose.x * fit + driftX)},${r2(pose.y * fit + driftY)})`,
+      alpha: r2(clamp(pose.depth / 0.12)),
+    });
+  }
+
+  return {
+    bodyPath: bodyOf(form.id, form.radii, R),
+    fill: color.hex,
+    ink,
+    driftX: r2(driftX),
+    driftY: r2(driftY),
+    breath: life.breath,
+    eyes,
+  };
 }
 
 /** What a bot is called in one line — for a closed row's summary. */
