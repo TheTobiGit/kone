@@ -10,8 +10,8 @@ import type { AgentPolicies } from "~/utils/agents";
 // what it may never do. Both lists are freeform — a command line to block, a
 // path to keep out of — so unlike the capability editor there is no inventory
 // to pick from, just entries the user types and removes. An empty list forbids
-// nothing. Both Create and the roster detail mount this, so the add/remove
-// logic lives in one place.
+// nothing. The agent modal mounts this, so the add/remove logic lives in one
+// place.
 
 const props = defineProps<{
   deniedCommands: string[];

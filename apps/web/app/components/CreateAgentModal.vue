@@ -19,6 +19,7 @@ import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSound } from "~/composables/useSound";
 import {
   addAgentToProject,
+  removeAgentFromProject,
   type Agent,
   type AgentAvatar,
   type AgentAvatarSource,
@@ -26,12 +27,13 @@ import {
 import { botSummary, type AgentBot } from "~/utils/bot";
 import type { AgentModelRef } from "~/types/desktop";
 
-// Making an agent, in the shared modal shell — scrim, elastic card, scooped
-// header/footer bands. Concerns stacked as collapsible rows: who the agent is
-// (name and role), how it looks, how it works, what it may reach for, what it
-// may never do. Only a name is required, so the rest are rows a maker may open
-// or leave alone rather than gates they must walk through — and a closed row
-// still says what it holds, so the whole draft is legible from the outside.
+// Making or editing an agent, in the shared modal shell — scrim, elastic card,
+// scooped header/footer bands. Concerns stacked as collapsible rows: who the
+// agent is (name and role), how it looks, how it works, what it may reach for,
+// what it may never do. Only a name is required, so the rest are rows a maker
+// may open or leave alone rather than gates they must walk through — and a
+// closed row still says what it holds, so the whole draft is legible from the
+// outside.
 //
 // One row is open at a time: these panes are tall (a textarea, three editors)
 // and several of them unfurled at once would outgrow the drawer and hide the
@@ -43,13 +45,25 @@ import type { AgentModelRef } from "~/types/desktop";
 // who is speaking, a bot is the creature the agent works through, and one pane
 // holding both meant scrolling past thirty-six swatches to reach a face. Both
 // stay optional: an agent given neither is drawn by the face it has always had.
+//
+// The same card edits an existing agent. Create greets on identity because a
+// draft has nothing else to show; edit greets with every row closed so the
+// summaries carry what is already true, and a row is opened only to change it.
+// The roster detail page is read-only — this is the one place the fields move.
+
+const props = defineProps<{
+  /** The agent being rewritten. Absent, the card is making a new one. */
+  agent?: Agent;
+}>();
 
 const emit = defineEmits<{
   close: [];
   created: [agent: Agent];
+  saved: [agent: Agent];
 }>();
 
-const { createAgent } = useAgentRoster();
+const { createAgent, updateAgent, agentTeamPaths } = useAgentRoster();
+const isEditing = computed(() => Boolean(props.agent));
 const { recents } = useRecentProjects();
 const { cue } = useSound();
 
@@ -103,8 +117,10 @@ const PICTURE_LABELS = {
 } satisfies Record<AgentAvatarSource, string>;
 
 // The open row, or none — every row closed is a legitimate resting state, and
-// the summaries carry the draft on their own.
-const open = ref<Section | null>("identity");
+// the summaries carry the draft on their own. Create opens on identity so a
+// name is the first thing asked; edit starts closed so the existing answers
+// are what greet you.
+const open = ref<Section | null>(props.agent ? null : "identity");
 
 function toggle(id: Section) {
   const opening = open.value !== id;
@@ -153,7 +169,21 @@ function toggleTeam(path: string) {
   cue(joining ? "select" : "collapse");
 }
 
-const canCreate = computed(() => name.value.trim().length > 0 && !isSubmitting.value);
+const canSubmit = computed(() => name.value.trim().length > 0 && !isSubmitting.value);
+
+function seedFrom(agent: Agent) {
+  name.value = agent.name;
+  role.value = agent.role;
+  instructions.value = agent.instructions ?? "";
+  avatar.value = agent.avatar;
+  bot.value = agent.bot;
+  model.value = agent.capabilities.model;
+  deniedCommands.value = [...agent.policies.deniedCommands];
+  deniedPaths.value = [...agent.policies.deniedPaths];
+  teamPaths.value = new Set(agentTeamPaths(agent.id));
+}
+
+if (props.agent) seedFrom(props.agent);
 
 /** Move focus to the entry field of the open row, where it marks one. Found by
  *  query rather than by template ref: the rows are a `v-for`, which collects
@@ -255,6 +285,60 @@ async function handleCreate() {
   }
 }
 
+async function handleSave() {
+  const current = props.agent;
+  const trimmed = name.value.trim();
+  if (!current || !trimmed || isSubmitting.value) return;
+
+  isSubmitting.value = true;
+  errorMsg.value = null;
+  try {
+    const saved = await updateAgent(current.id, {
+      name: trimmed,
+      role: role.value.trim() || null,
+      instructions: instructions.value.trim() || null,
+      avatar: avatar.value,
+      bot: bot.value,
+      model: model.value,
+      policies: {
+        deniedCommands: deniedCommands.value,
+        deniedPaths: deniedPaths.value,
+      },
+    });
+    if (!saved) {
+      errorMsg.value = "Could not save the agent — check the fields and try again.";
+      cue("error");
+      isSubmitting.value = false;
+      return;
+    }
+    // Membership is its own write per project. Only the projects this machine
+    // already has a team for are in the picker, so the diff is taken against
+    // those — an unloaded project is left alone rather than treated as a leave.
+    const known = new Set(teamOptions.value.map((opt) => opt.path));
+    const before = new Set(agentTeamPaths(current.id).filter((path) => known.has(path)));
+    const after = teamPaths.value;
+    await Promise.all([
+      ...[...after]
+        .filter((path) => !before.has(path))
+        .map((path) => addAgentToProject(path, current.id)),
+      ...[...before]
+        .filter((path) => !after.has(path))
+        .map((path) => removeAgentFromProject(path, current.id)),
+    ]);
+    cue("success");
+    fadeOut(() => emit("saved", saved));
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : "Save failed.";
+    cue("error");
+    isSubmitting.value = false;
+  }
+}
+
+function submit() {
+  if (isEditing.value) void handleSave();
+  else void handleCreate();
+}
+
 // ── keyboard ────────────────────────────────────────────────────────────────
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -263,9 +347,9 @@ function onKeydown(e: KeyboardEvent) {
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    if (canCreate.value) {
+    if (canSubmit.value) {
       e.preventDefault();
-      void handleCreate();
+      submit();
     }
     return;
   }
@@ -275,9 +359,9 @@ function onKeydown(e: KeyboardEvent) {
     // creating the agent behind the maker's back.
     if (document.activeElement instanceof HTMLTextAreaElement) return;
     if (document.activeElement instanceof HTMLButtonElement) return;
-    if (!canCreate.value) return;
+    if (!canSubmit.value) return;
     e.preventDefault();
-    void handleCreate();
+    submit();
     return;
   }
   if (e.key === "Tab") {
@@ -409,12 +493,12 @@ onBeforeUnmount(() => {
       :transition="cardSpring"
       role="dialog"
       aria-modal="true"
-      aria-label="Create an agent"
+      :aria-label="isEditing ? 'Edit agent' : 'Create an agent'"
     >
       <div ref="contentEl" class="flex shrink-0 flex-col">
         <!-- Header band: what this card makes, and cancel. -->
         <div class="ca-band ca-header">
-          <span class="ca-eyebrow">New agent</span>
+          <span class="ca-eyebrow">{{ isEditing ? "Edit agent" : "New agent" }}</span>
           <button type="button" class="ca-close" aria-label="Close" title="Close (Esc)" @click="close">
             <HugeiconsIcon :icon="Cancel01Icon" :size="14" :stroke-width="2" />
           </button>
@@ -566,10 +650,18 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="ca-action ca-forward text-ink"
-            :disabled="!canCreate"
-            @click="handleCreate"
+            :disabled="!canSubmit"
+            @click="submit"
           >
-            {{ isSubmitting ? "Creating…" : "Create agent" }}
+            {{
+              isSubmitting
+                ? isEditing
+                  ? "Saving…"
+                  : "Creating…"
+                : isEditing
+                  ? "Save changes"
+                  : "Create agent"
+            }}
             <span class="ca-forward-arrow" aria-hidden="true">→</span>
           </button>
         </div>

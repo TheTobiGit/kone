@@ -1,42 +1,38 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   AiChipIcon,
   BotIcon,
   Copy01Icon,
   Delete02Icon,
+  FolderBlockIcon,
   IdIcon,
-  ImageAdd01Icon,
   NoteIcon,
-  PaintBoardIcon,
-  Shield01Icon,
+  PencilEdit02Icon,
   SparklesIcon,
+  TerminalIcon,
   UserGroupIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import AgentAvatarEditor from "~/components/AgentAvatarEditor.vue";
-import AgentBotEditor from "~/components/AgentBotEditor.vue";
-import AgentCapabilitiesEditor from "~/components/AgentCapabilitiesEditor.vue";
-import AgentPoliciesEditor from "~/components/AgentPoliciesEditor.vue";
+import CreateAgentModal from "~/components/CreateAgentModal.vue";
 import ProviderLogo from "~/components/ProviderLogo.vue";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
 import { useRecentProjects } from "~/composables/useRecentProjects";
+import { useSettingsSurface } from "~/composables/useSettingsSurface";
 import { useSound } from "~/composables/useSound";
-import { botGround, botMark, botSummary, type AgentBot } from "~/utils/bot";
+import { botGround, botMark, botSummary } from "~/utils/bot";
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
 import type { BrandKey } from "~/utils/modelCatalog";
-import type { AgentAvatar } from "~/utils/agents";
-import type { AgentModelRef, ProviderKind } from "~/types/desktop";
+import type { ProviderKind } from "~/types/desktop";
 
 // One agent, opened out of the roster.
 //
-// The page reads top to bottom as: who this is, what is true about it, what it
-// was told, and only then the controls for changing any of that. The editors
-// used to sit open all at once — four grids of faces, shapes, colours and
-// models stacked down a single column — which made every visit start with a
-// scroll past machinery nobody had asked for. They share one tabbed panel now,
-// so the page opens on the agent rather than on its settings.
+// The page is a reading of the agent, not a place to rewrite it. Who this is
+// sits in the head; what is true about it and what it was told sit as two tabs
+// below. Appearance, model and restrictions used to be editors in this same
+// strip — they belonged in the modal, which is the one surface that already
+// knows how to change every field. The tabs that remain only tell.
 
 const props = defineProps<{ open: boolean; agentId: string }>();
 const emit = defineEmits<{
@@ -44,13 +40,24 @@ const emit = defineEmits<{
   switched: [agentId: string];
 }>();
 
-const { agentById, duplicateAgent, deleteAgent, updateAgent, teams, loadProjectTeam } =
-  useAgentRoster();
+const { agentById, duplicateAgent, deleteAgent, teams, loadProjectTeam } = useAgentRoster();
 const { recents } = useRecentProjects();
+const { compact } = useSettingsSurface();
 const { cue } = useSound();
 const agent = computed(() => agentById(props.agentId));
 const isCustom = computed(() => agent.value?.id !== "kone");
 const isDeleting = ref(false);
+const isEditing = ref(false);
+
+// This page is a reading of one agent, so the drawer sits at the compact
+// measure rather than the board-width the roster (and every other page) uses.
+// Cleared on the way out so the next pane doesn't inherit the tighter cap.
+onMounted(() => {
+  compact.value = true;
+});
+onBeforeUnmount(() => {
+  compact.value = false;
+});
 
 // An id that resolves to nobody has no frame to fill — step back to the list
 // rather than render an empty page (a stale id, or an agent removed later on).
@@ -92,42 +99,9 @@ async function handleDelete() {
   }
 }
 
-// Capability edits persist as they happen — the editor hands back the whole
-// model each time, so there is nothing to save separately. On a built-in this
-// writes an overlay over the shipped preset; on a user-made agent it is the
-// agent's own row.
-function setModel(next: AgentModelRef | null) {
-  if (agent.value) void updateAgent(agent.value.id, { model: next });
-}
-
-// Policies persist the same way — the editor hands back a whole list per change.
-// Each setter carries the other list unchanged so the stored object always has
-// both, mirroring the resolved shape the agent already reads.
-function setDeniedCommands(next: string[]) {
-  if (agent.value) {
-    void updateAgent(agent.value.id, {
-      policies: { deniedCommands: next, deniedPaths: agent.value.policies.deniedPaths },
-    });
-  }
-}
-function setDeniedPaths(next: string[]) {
-  if (agent.value) {
-    void updateAgent(agent.value.id, {
-      policies: { deniedCommands: agent.value.policies.deniedCommands, deniedPaths: next },
-    });
-  }
-}
-
-// The picture and the bot persist on the change too, each from its own section.
-// Clearing one clears the overlay, so on
-// a user-made agent the picture or bot is gone, and on a built-in the agent goes
-// back to looking the way the build ships it — which is what "remove" can mean
-// there, since the shipped look isn't a row anybody can delete.
-function setAvatar(next: AgentAvatar | null) {
-  if (agent.value) void updateAgent(agent.value.id, { avatar: next });
-}
-function setBot(next: AgentBot | null) {
-  if (agent.value) void updateAgent(agent.value.id, { bot: next });
+function openEdit() {
+  isEditing.value = true;
+  cue("open");
 }
 
 interface Directive {
@@ -156,7 +130,6 @@ function toDirectives(text: string | undefined): Directive[] {
 }
 
 const instructions = computed(() => toDirectives(agent.value?.instructions));
-const bare = computed(() => instructions.value.length === 0);
 
 // ── what the details table reads back ──────────────────────────────────────
 // Each of these is one row's value, resolved once here so the template stays a
@@ -192,29 +165,19 @@ const teamNames = computed<string[]>(() => {
     })
     .sort((a, b) => a.localeCompare(b));
 });
-const pictureLabel = computed(() => {
-  const avatar = agent.value?.avatar;
-  if (!avatar) return "Drawn face";
-  if (avatar.source === "upload") return "Uploaded";
-  if (avatar.source === "dicebear") return "Drawn";
-  if (avatar.source === "shipped") return "Shipped";
-  return "Generated";
-});
+const deniedCommands = computed(() => agent.value?.policies.deniedCommands ?? []);
+const deniedPaths = computed(() => agent.value?.policies.deniedPaths ?? []);
 // ── the tabs ──────────────────────────────────────────────────────────────
 // Everything below the head is one tabbed panel: what is true about the agent,
-// what it was told, and the three editors. They are alternatives — you come to
-// the page for one of them — and stacking all five down a column is the wall
-// the page had before.
-type TabKey = "details" | "instructions" | "appearance" | "model" | "policies";
+// and what it was told. They are alternatives — you come to the page for one
+// of them — and stacking both down a column is the wall the page had before.
+type TabKey = "details" | "instructions";
 const tab = ref<TabKey>("details");
 const tabStrip = ref<HTMLElement>();
 
 const TABS = [
   { key: "details", label: "Details", icon: IdIcon },
   { key: "instructions", label: "Instructions", icon: NoteIcon },
-  { key: "appearance", label: "Appearance", icon: PaintBoardIcon },
-  { key: "model", label: "Model", icon: AiChipIcon },
-  { key: "policies", label: "Restrictions", icon: Shield01Icon },
 ] as const satisfies readonly { key: TabKey; label: string; icon: unknown }[];
 
 function selectTab(key: TabKey) {
@@ -236,12 +199,6 @@ async function stepTab(delta: number) {
   tabStrip.value?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
 }
 
-/** The head's own way in: it names a tab rather than a place further down, so
- *  all it has to do is turn the strip to it. */
-function openAppearance() {
-  selectTab("appearance");
-}
-
 // Switching agents puts the page back to its resting shape, so a tab left open
 // on one doesn't greet you inside the next.
 watch(
@@ -249,11 +206,19 @@ watch(
   () => {
     tab.value = "details";
     isDeleting.value = false;
+    isEditing.value = false;
   },
 );
 </script>
 
 <template>
+  <CreateAgentModal
+    v-if="isEditing && agent"
+    :agent="agent"
+    @close="isEditing = false"
+    @saved="isEditing = false"
+  />
+
   <SettingsPageShell
     v-if="agent"
     :open="open"
@@ -264,6 +229,17 @@ watch(
   >
     <template #actions>
       <div class="det__actions">
+        <button
+          type="button"
+          class="det__action-btn"
+          title="Edit this agent"
+          :tabindex="open ? 0 : -1"
+          @click="openEdit"
+        >
+          <HugeiconsIcon :icon="PencilEdit02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          <span>Edit</span>
+        </button>
+
         <button
           type="button"
           class="det__action-btn"
@@ -320,21 +296,10 @@ watch(
           </span>
           <p class="det__role">{{ agent.role || "Agent" }}</p>
         </span>
-
-        <button
-          type="button"
-          class="det__hero-btn"
-          :tabindex="open ? 0 : -1"
-          @click="openAppearance"
-        >
-          <HugeiconsIcon :icon="PaintBoardIcon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-          <span>Change appearance</span>
-        </button>
       </header>
 
-      <!-- One strip over one panel, starting where the page's first section
-           used to: what is true about the agent, what it was told, and the
-           three editors, each a tab rather than another thing to scroll past. -->
+      <!-- One strip over one panel: what is true about the agent, and what it
+           was told. Editing lives in the modal, not in another tab. -->
       <div
         ref="tabStrip"
         class="det__tabs"
@@ -367,8 +332,9 @@ watch(
 
       <div class="det__panel" role="tabpanel" :aria-label="TABS.find((t) => t.key === tab)?.label">
         <!-- Everything true about the agent, on one table: what it runs on, what
-             it is equipped with, where it works, and what it is called by the
-             store. Reading it should not mean opening an editor. -->
+             it is equipped with, where it works, what it may never do, and what
+             it is called by the store. Reading it should not mean opening an
+             editor. -->
         <dl v-if="tab === 'details'" class="det__table">
           <div class="det__row">
             <dt class="det__key">
@@ -436,10 +402,9 @@ watch(
                 v-if="agent.bot"
                 class="det__botchip"
                 :style="{ background: botGround(agent.bot) }"
-                aria-hidden="true"
+                :aria-label="botSummary(agent.bot)"
                 v-html="botMark(agent.bot)"
               />
-              <span v-if="agent.bot">{{ botSummary(agent.bot) }}</span>
               <span v-else class="det__none">None</span>
             </dd>
           </div>
@@ -447,14 +412,41 @@ watch(
           <div class="det__row">
             <dt class="det__key">
               <HugeiconsIcon
-                :icon="ImageAdd01Icon"
+                :icon="TerminalIcon"
                 :size="14"
                 :stroke-width="1.6"
                 aria-hidden="true"
               />
-              <span>Picture</span>
+              <span>Denied commands</span>
             </dt>
-            <dd class="det__val">{{ pictureLabel }}</dd>
+            <dd class="det__val det__val--wrap">
+              <template v-if="deniedCommands.length">
+                <span v-for="entry in deniedCommands" :key="entry" class="det__tag det__tag--code">{{
+                  entry
+                }}</span>
+              </template>
+              <span v-else class="det__none">None</span>
+            </dd>
+          </div>
+
+          <div class="det__row">
+            <dt class="det__key">
+              <HugeiconsIcon
+                :icon="FolderBlockIcon"
+                :size="14"
+                :stroke-width="1.6"
+                aria-hidden="true"
+              />
+              <span>Denied paths</span>
+            </dt>
+            <dd class="det__val det__val--wrap">
+              <template v-if="deniedPaths.length">
+                <span v-for="entry in deniedPaths" :key="entry" class="det__tag det__tag--code">{{
+                  entry
+                }}</span>
+              </template>
+              <span v-else class="det__none">None</span>
+            </dd>
           </div>
 
           <div class="det__row">
@@ -466,7 +458,7 @@ watch(
           </div>
         </dl>
 
-        <template v-else-if="tab === 'instructions'">
+        <template v-else>
           <div v-if="instructions.length" class="det__prose">
             <p v-for="(d, i) in instructions" :key="i" class="det__para">
               <span v-if="d.lead" class="det__lead">{{ d.lead }}</span>{{ d.body }}
@@ -476,29 +468,6 @@ watch(
             Just a name and a face for now — no instructions to carry into a thread.
           </p>
         </template>
-
-        <template v-else-if="tab === 'appearance'">
-          <p class="det__sub">Picture <span class="det__what">the face it answers with</span></p>
-          <AgentAvatarEditor :avatar="agent.avatar" @update:avatar="setAvatar" />
-          <p class="det__sub det__sub--spaced">
-            Bot <span class="det__what">the creature it works through</span>
-          </p>
-          <AgentBotEditor :bot="agent.bot" @update:bot="setBot" />
-        </template>
-
-        <AgentCapabilitiesEditor
-          v-else-if="tab === 'model'"
-          :model="agent.capabilities.model"
-          @update:model="setModel"
-        />
-
-        <AgentPoliciesEditor
-          v-else
-          :denied-commands="agent.policies.deniedCommands"
-          :denied-paths="agent.policies.deniedPaths"
-          @update:denied-commands="setDeniedCommands"
-          @update:denied-paths="setDeniedPaths"
-        />
       </div>
     </article>
 
@@ -515,7 +484,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 30px;
-  max-width: 48rem;
+  max-width: 36rem;
   padding-bottom: 3rem;
   /* The tab strip drops its summaries against the page's own width, not the
      window's — the drawer widens and narrows under it. */
@@ -622,7 +591,6 @@ watch(
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  margin-right: auto;
 }
 .det__nameline {
   display: flex;
@@ -661,43 +629,6 @@ watch(
   text-wrap: pretty;
 }
 
-.det__hero-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex: none;
-  align-self: center;
-  height: 30px;
-  padding-inline: 12px;
-  border-radius: 999px;
-  background-color: color-mix(in srgb, var(--ink) 4.5%, transparent);
-  font-size: 11.5px;
-  color: var(--ink-soft);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background-color 160ms ease,
-    color 160ms ease;
-}
-.det__hero-btn:hover {
-  background-color: color-mix(in srgb, var(--ink) 8%, transparent);
-  color: var(--ink);
-}
-.det__hero-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-
-/* Sentence case and unspaced beside the label's caps, so the two read as a
-   label and an aside rather than one long heading. */
-.det__what {
-  margin-left: 8px;
-  font-size: 11px;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--muted);
-}
-
 /* ── details table ────────────────────────────────────────────────────────── */
 /* Hairlines between rows, nothing around the block: the table is a rhythm, not
    a container. */
@@ -708,9 +639,9 @@ watch(
 }
 .det__row {
   display: grid;
-  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+  grid-template-columns: 10.5rem minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   padding-block: 11px;
 }
 .det__row + .det__row {
@@ -761,6 +692,10 @@ watch(
   font-size: 11.5px;
   line-height: 1.35;
   color: var(--ink-soft);
+}
+.det__tag--code {
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 .det__botchip {
   display: block;
@@ -876,17 +811,6 @@ watch(
    narrow drawer and lets the names scroll rather than wrapping to two lines. */
 .det__panel {
   padding-top: 4px;
-}
-.det__sub {
-  margin: 0 0 10px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.det__sub--spaced {
-  margin-top: 26px;
 }
 
 @media (prefers-reduced-motion: reduce) {
