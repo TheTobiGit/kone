@@ -1157,9 +1157,10 @@ export class ConversationStore {
    *  the candidate subquery and the state flip share the statement's write
    *  lock, so two racing drains serialize and the loser sees no 'queued'
    *  candidate). Steer rows jump the line, most recent steer first, then plain
-   *  FIFO by created_at
-   *  `CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END, steer seq DESC,
-   *  seq ASC`, with queue_id as the final deterministic tiebreak. Returns the
+   *  FIFO by created_at, with the table's insertion order (rowid) as the final
+   *  tiebreak. rowid rather than queue_id: created_at is a millisecond clock,
+   *  so two rows enqueued in the same tick tie on it, and breaking that tie by
+   *  a random UUID ordered them arbitrarily instead of by arrival. Returns the
    *  row now in 'promoting' (attempt_count already bumped), or null when the
    *  thread has nothing active to claim. */
   claimNextQueuedTurn(threadId: string): QueuedTurnRow | null {
@@ -1181,8 +1182,9 @@ export class ConversationStore {
                ORDER BY
                  CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
                  CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
+                 CASE WHEN dispatch_mode = 'steer' THEN rowid END DESC,
                  created_at ASC,
-                 queue_id ASC
+                 rowid ASC
                LIMIT 1
             )
            RETURNING *`,
@@ -1240,9 +1242,16 @@ export class ConversationStore {
     }
   }
 
-  /** Cancel ONE queued turn (the UI's per-item cancel). Only active rows can
-   *  flip — a promoted turn already started, so claiming it was cancelled
-   *  would be a lie. Returns whether a row flipped. */
+  /** Cancel ONE queued turn (the UI's per-item cancel). Only a row still
+   *  WAITING can flip: 'promoting' means a drain has already claimed it and
+   *  handed it to the adapter, so flipping it would report a cancellation for
+   *  a turn that is running — the chip would vanish, turn.queued-cancelled
+   *  would go out with reason "user", and the agent would answer the message
+   *  anyway. Losing the race is the honest answer (false); the row promotes
+   *  and the chip is replaced by the running turn. The stop/delete path keeps
+   *  cancelling 'promoting' rows on purpose — see cancelQueuedTurnsForThread,
+   *  where the session is being torn down regardless. Returns whether a row
+   *  flipped. */
   cancelQueuedTurn(queueId: string): boolean {
     const db = this.handle();
     if (!db) return false;
@@ -1250,7 +1259,7 @@ export class ConversationStore {
       const result = db
         .prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE queue_id = ? AND state IN ('queued', 'promoting')`,
+            WHERE queue_id = ? AND state = 'queued'`,
         )
         .run(Date.now(), queueId);
       return Number(result.changes) > 0;
@@ -1301,8 +1310,9 @@ export class ConversationStore {
             ORDER BY
               CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
               CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
+              CASE WHEN dispatch_mode = 'steer' THEN rowid END DESC,
               created_at ASC,
-              queue_id ASC`,
+              rowid ASC`,
         )
         .all(threadId) as QueuedTurnDbRow[];
       return rows.map(rowToQueuedTurn);

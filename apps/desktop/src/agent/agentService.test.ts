@@ -112,10 +112,16 @@ class FakeAdapter {
 /** In-memory stand-in for the store's queue slice (ConversationStore, landing
  *  in parallel). Mirrors the store contract: steer-first claiming, FIFO
  *  fallback, state transitions, and the (thread_id, user_block_id) dedupe.
- *  loadThread emulates the transcript read the service uses to derive a row's
- *  userBlockId: seeded blocks, plus a synthetic block appended per accepted
- *  enqueue (the real dispatch.recordUserBlock journals a fresh block per
- *  send, so consecutive sends derive distinct ids). */
+ *  loadThread backs the transcript read the service uses to derive a row's
+ *  userBlockId.
+ *
+ *  Journaling is NOT a side effect of enqueueing here, because it isn't one in
+ *  production either: `dispatch.recordUserBlock` writes the block, and only
+ *  the dispatcher calls it. An earlier version of this fake appended a
+ *  synthetic block per accepted enqueue "because the real send path journals
+ *  one" — which quietly guaranteed every row a distinct userBlockId and hid a
+ *  real bug on the path that does NOT journal. Tests that stand in for the
+ *  dispatcher call `journalUserBlock` themselves. */
 /** The block shape the queue path reads back; `id` is what a row's userBlockId
  *  is derived from. */
 type FakeUserBlock = { id: string; role: "user"; text: string; at: number };
@@ -137,6 +143,20 @@ class FakeQueueStore {
     );
   }
 
+  /** Journal a user block the way dispatch.sendThreadTurn does, before its
+   *  send reaches the service. Tests that drive `service.sendTurn` directly
+   *  call this to stand in for the dispatcher. */
+  journalUserBlock(threadId: string, text: string): string {
+    let blocks = this.blocksByThread.get(threadId);
+    if (!blocks) {
+      blocks = [];
+      this.blocksByThread.set(threadId, blocks);
+    }
+    const id = `journaled-${++this.journaled}`;
+    blocks.push({ id, role: "user", text, at: Date.now() });
+    return id;
+  }
+
   reset(): void {
     this.rows.length = 0;
     this.blocksByThread.clear();
@@ -154,10 +174,6 @@ class FakeQueueStore {
       return false;
     }
     this.rows.push({ ...row });
-    const blocks = this.blocksByThread.get(row.threadId);
-    if (blocks) {
-      blocks.push({ id: `journaled-${++this.journaled}`, role: "user", text: row.input, at: row.createdAt });
-    }
     return true;
   }
 
@@ -646,7 +662,12 @@ describe("AgentService durable turn queue + steering", () => {
     const thread = "t-q-cancel-user";
     fakeStore.seedUserBlocks(thread, ["b1"]);
     await startBusyThread(thread, "live-1");
+    // Each send journals its own user block first, exactly as the dispatcher
+    // does — that is what gives the two rows distinct userBlockIds instead of
+    // colliding on the (thread_id, user_block_id) index.
+    fakeStore.journalUserBlock(thread, "doomed");
     await service.sendTurn({ threadId: thread, input: "doomed" });
+    fakeStore.journalUserBlock(thread, "kept");
     await service.sendTurn({ threadId: thread, input: "kept" });
     expect(fakeStore.rows).toHaveLength(2);
     const doomed = fakeStore.rows[0];

@@ -137,6 +137,12 @@ export class AgentService {
   private readonly lastActivity = new Map<string, number>();
   /** Turns currently live per thread (turnId) — the wedge watchdog's scope. */
   private readonly activeTurns = new Map<string, string>();
+  /** Threads whose sendTurn is in flight at an adapter but whose turn.started
+   *  hasn't landed yet. `activeTurns` alone can't close that window — adapters
+   *  emit turn.started from INSIDE sendTurn, after their own awaits — so
+   *  without this a burst of sends walks straight past the busy-intercept and
+   *  starts concurrent turns on one session. See `isBusy`. */
+  private readonly dispatchingTurns = new Set<string>();
   /** itemIds currently in-progress per thread (item.started without a matching
    *  item.completed yet) — the wedge sweep's "is this thread legitimately busy"
    *  signal. */
@@ -577,10 +583,45 @@ export class AgentService {
     // rather than racing the live turn (sending straight to the adapter would
     // start a second concurrent turn on the same session). `steer` requests
     // that reach sendTurn go through the same queue — steers claim first.
-    if (this.activeTurns.has(input.threadId)) {
+    //
+    // `dispatchingTurns` is the second half of "busy": `activeTurns` is fed by
+    // the turn.started EVENT, which adapters emit partway through their own
+    // sendTurn (ClaudeAdapter awaits the attachment read and the live-settings
+    // apply first). Two sends landing in the same tick therefore both saw an
+    // empty activeTurns and both reached the adapter — the second overwriting
+    // the session's activeTurnId and resetting its scopes. The marker is set
+    // before the first await below, so the second call's synchronous prologue
+    // sees it and queues instead.
+    if (this.isBusy(input.threadId)) {
       return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
     }
-    return this.adapterForThread(input.threadId).sendTurn(routed);
+    return this.dispatchToAdapter(input.threadId, routed);
+  }
+
+  /** Is this thread already running (or about to run) a turn? True while a
+   *  turn.started has landed without its settlement, AND across the window
+   *  where a sendTurn has been handed to an adapter but the adapter hasn't
+   *  announced the turn yet. */
+  private isBusy(threadId: string): boolean {
+    return this.activeTurns.has(threadId) || this.dispatchingTurns.has(threadId);
+  }
+
+  /** Hand one turn to the thread's adapter, holding the in-flight marker for
+   *  the duration so a concurrent send queues behind it instead of starting a
+   *  second turn on the same session. The marker is released on settle: by
+   *  then the adapter has emitted turn.started, so `activeTurns` carries the
+   *  busy signal on. */
+  private async dispatchToAdapter(
+    threadId: string,
+    input: SendTurnInput,
+  ): Promise<TurnStartResult> {
+    const adapter = this.adapterForThread(threadId);
+    this.dispatchingTurns.add(threadId);
+    try {
+      return await adapter.sendTurn(input);
+    } finally {
+      this.dispatchingTurns.delete(threadId);
+    }
   }
 
   async interruptTurn(threadId: string): Promise<void> {
@@ -715,6 +756,7 @@ export class AgentService {
   private forgetThreadState(threadId: string): void {
     this.parkedByThread.delete(threadId);
     this.activeTurns.delete(threadId);
+    this.dispatchingTurns.delete(threadId);
     this.openItems.delete(threadId);
     this.lastActivity.delete(threadId);
   }
@@ -793,8 +835,9 @@ export class AgentService {
     const now = Date.now();
     const thresholdMs = this.options.idleThresholdMs ?? IDLE_THRESHOLD_MS;
     for (const threadId of this.routing.keys()) {
-      // Never reap while a turn is in flight.
-      if (this.activeTurns.has(threadId)) continue;
+      // Never reap while a turn is in flight (announced or still being handed
+      // to the adapter).
+      if (this.isBusy(threadId)) continue;
       // Never reap while waiting on user approval or question answer.
       if (this.parkedByThread.get(threadId)?.size) continue;
       // Never reap if queued follow-ups are waiting to run or being promoted.
@@ -870,16 +913,21 @@ export class AgentService {
    *  has one (turn.steered on delivery), else fall back to the durable queue
    *  with dispatchMode "steer" — steer rows claim first, so the nudge lands
    *  as the next turn the moment the current one settles. Without a live turn
-   *  there is nothing to steer — a steer is just a send. */
+   *  there is nothing to steer — a steer is just a send.
+   *
+   *  A turn that has been handed to an adapter but hasn't announced itself yet
+   *  (see `isBusy`) has no turn id to steer INTO, so it takes the queue's steer
+   *  lane rather than the live channel — the nudge still claims ahead of every
+   *  plain follow-up. */
   async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const threadId = input.threadId;
-    if (this.activeTurns.has(threadId)) {
+    const liveTurnId = this.activeTurns.get(threadId);
+    if (liveTurnId) {
       const adapter = this.adapterForThread(threadId);
       if (adapter.steerTurn) {
-        const liveTurnId = this.activeTurns.get(threadId);
         const result = await adapter.steerTurn(input);
         const provider = this.routing.get(threadId);
-        if (liveTurnId && provider) {
+        if (provider) {
           this.dispatch({
             type: "turn.steered",
             threadId,
@@ -892,6 +940,8 @@ export class AgentService {
         }
         return result;
       }
+    }
+    if (this.isBusy(threadId)) {
       const provider = this.routing.get(threadId);
       if (provider) return this.enqueueTurn(input, "steer", provider);
     }
@@ -1060,11 +1110,12 @@ export class AgentService {
   private async drainQueuedTurns(threadId: string, store: QueuedTurnStore): Promise<void> {
     const provider = this.routing.get(threadId);
     try {
-      if (this.activeTurns.has(threadId)) return;
+      if (this.isBusy(threadId)) return;
       const row = await store.claimNextQueuedTurn(threadId);
       if (!row) return;
       try {
-        const result = await this.adapterForThread(threadId).sendTurn(
+        const result = await this.dispatchToAdapter(
+          threadId,
           this.turnInputFromQueuedRow(row),
         );
         const claimed = await store.markQueuedTurnPromoted(row.queueId);
@@ -1201,6 +1252,8 @@ export class AgentService {
     this.routing.clear();
     this.parkedByThread.clear();
     this.activeTurns.clear();
+    this.dispatchingTurns.clear();
+    this.openItems.clear();
     // Queued ROWS are deliberately NOT cleared on quit — durability is the
     // point of the queue; the next startSession drains them. Only the
     // in-memory mirrors reset.
