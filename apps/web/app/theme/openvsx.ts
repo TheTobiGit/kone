@@ -16,8 +16,10 @@ import JSZip from "jszip";
 import { parse, type ParseError } from "jsonc-parser";
 import {
   buildImportedThemes,
+  isRecord,
   isVsCodeThemeFile,
   parseVsCodeThemeEntry,
+  type ThemeJsonObject,
   type VsCodeImportEntry,
 } from "./import-vscode";
 import type { ThemeDefinition, ThemeScheme } from "./roles";
@@ -125,10 +127,6 @@ export type OpenVsxThemeSearchOptions = {
   size?: number;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** 6-byte hash — enough to tell theme ids apart, short enough to read. */
 async function shortHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(new TextEncoder().encode(value)));
@@ -170,12 +168,12 @@ function publicSourceUrl(value: unknown): string | null {
 
 type ThemeContribution = { label?: unknown; uiTheme?: unknown; path?: unknown };
 
-function themeContributions(manifest: Record<string, unknown>): ThemeContribution[] {
+function themeContributions(manifest: ThemeJsonObject): ThemeContribution[] {
   const contributes = isRecord(manifest.contributes) ? manifest.contributes : null;
   return Array.isArray(contributes?.themes) ? contributes.themes.filter(isRecord) : [];
 }
 
-function manifestLicenseMatches(manifest: Record<string, unknown>, license: string): boolean {
+function manifestLicenseMatches(manifest: ThemeJsonObject, license: string): boolean {
   return (
     typeof manifest.license === "string" &&
     manifest.license.trim().toLowerCase() === license.toLowerCase()
@@ -363,15 +361,22 @@ export function popularThemes(): Promise<OpenVsxThemeExtension[]> {
   return popularCache;
 }
 
-function parseJsoncObject(source: string, description: string): Record<string, unknown> {
+function parseJsoncObject(source: string, description: string): ThemeJsonObject {
   const errors: ParseError[] = [];
   const value: unknown = parse(source, errors, { allowTrailingComma: true });
   if (errors.length > 0 || !isRecord(value)) throw new Error(`${description} is not valid JSON.`);
   return value;
 }
 
+/** A theme file stripped to what kone reads: its workbench colours and,
+ *  optionally, the file it extends. */
+type SanitizedThemeFile = {
+  colors: Record<string, string>;
+  include?: string;
+};
+
 /** Strip a theme file to the keys kone will actually read. */
-function sanitizeThemeObject(value: Record<string, unknown>): Record<string, unknown> {
+function sanitizeThemeObject(value: ThemeJsonObject): SanitizedThemeFile {
   const colors: Record<string, string> = {};
   if (isRecord(value.colors)) {
     for (const [key, color] of Object.entries(value.colors)) {
@@ -590,11 +595,11 @@ async function readZipText(
 async function loadThemeObject(
   zip: JSZip,
   path: string,
-  cache: Map<string, Record<string, unknown>>,
+  cache: Map<string, SanitizedThemeFile>,
   budget: { files: number },
   ancestors: ReadonlySet<string> = new Set(),
   signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
+): Promise<SanitizedThemeFile> {
   signal?.throwIfAborted();
   if (ancestors.size >= MAX_INCLUDE_DEPTH) throw new Error("Theme includes are nested too deeply.");
   if (ancestors.has(path)) throw new Error("Theme includes contain a cycle.");
@@ -608,7 +613,7 @@ async function loadThemeObject(
   const value = sanitizeThemeObject(
     parseJsoncObject(await readZipText(zip, path, path, signal), path),
   );
-  if (typeof value.include !== "string") {
+  if (value.include === undefined) {
     cache.set(path, value);
     return value;
   }
@@ -617,12 +622,10 @@ async function loadThemeObject(
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(path);
   const base = await loadThemeObject(zip, includePath, cache, budget, nextAncestors, signal);
-  const baseColors = isRecord(base.colors) ? base.colors : {};
-  const valueColors = isRecord(value.colors) ? value.colors : {};
-  const resolved = {
+  const resolved: SanitizedThemeFile = {
     ...base,
     ...value,
-    colors: { ...baseColors, ...valueColors },
+    colors: { ...base.colors, ...value.colors },
   };
   cache.set(path, resolved);
   return resolved;
@@ -767,7 +770,7 @@ export async function importOpenVsxThemeExtension(
   }
 
   const entries: VsCodeImportEntry[] = [];
-  const themeCache = new Map<string, Record<string, unknown>>();
+  const themeCache = new Map<string, SanitizedThemeFile>();
   const themeBudget = { files: 0 };
   for (const contribution of contributions) {
     signal?.throwIfAborted();

@@ -1,3 +1,4 @@
+import type { JsonObject } from "../jsonValue.js";
 import type {
   ChatAttachment,
   ProviderKind,
@@ -528,8 +529,9 @@ export function decodeThreadPageCursor(encoded: string): ThreadPageCursor | null
     return null;
   }
   if (parsed === null || typeof parsed !== "object") return null;
-  // SAFETY: the object check passed; every field is verified below before use.
-  const record = parsed as Record<string, unknown>;
+  // SAFETY: the object check passed and the value came out of JSON.parse, so
+  // it satisfies JsonObject; each field is verified below before use.
+  const record = parsed as JsonObject;
   if (typeof record.t !== "string" || record.t.length === 0) return null;
   if (typeof record.a !== "number" || !Number.isFinite(record.a)) return null;
   if (typeof record.i !== "string" || record.i.length === 0) return null;

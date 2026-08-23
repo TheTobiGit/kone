@@ -141,6 +141,7 @@ import {
 } from "./claudeAdapterTypes.js";
 
 import {
+  type ClaudeJsonObject,
   MessageQueue,
   applyPlanSnapshot,
   asRecord,
@@ -609,8 +610,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (!answered) {
       return { behavior: "deny", message: "The user dismissed the question without answering." };
     }
-    // SAFETY: tool input is an opaque record; spreading it back keeps every original key.
-    return { behavior: "allow", updatedInput: { ...(input as Record<string, unknown>), answers } };
+    // The SDK's tool input is a record; spreading it back keeps every original key.
+    return { behavior: "allow", updatedInput: { ...input, answers } };
   }
 
   /** Settle one parked AskUserQuestion (idempotent — a no-op once drained). */
@@ -1254,7 +1255,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   private applyTaskToolResult(
     session: ClaudeSession,
     buffer: ClaudeItemBuffer,
-    resultBlock: Record<string, unknown>,
+    resultBlock: ClaudeJsonObject,
     structuredResult: unknown,
     isError: boolean,
   ): boolean {
@@ -1276,13 +1277,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     return false;
   }
 
-  private parseToolInputRaw(raw: string): Record<string, unknown> {
+  private parseToolInputRaw(raw: string): ClaudeJsonObject {
     if (!raw.trim()) return {};
     try {
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed === "object" && parsed !== null) {
         // SAFETY: the typeof-object/null checks above are the narrowing itself.
-        return parsed as Record<string, unknown>;
+        return parsed as ClaudeJsonObject;
       }
     } catch {
       /* malformed */
@@ -1291,8 +1292,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
-    // SAFETY: probing the optional `usage` field on the SDK message shape.
-    const usage = asRecord((message as Record<string, unknown>).usage);
+    const usage = message.usage;
     if (usage) {
       // The Anthropic usage object splits prompt tokens across three fields:
       // `input_tokens` is ONLY the fresh, uncached bytes; the bulk of an
@@ -1362,9 +1362,16 @@ export class ClaudeAdapter implements ProviderAdapter {
       // turnId, so no consumer could attribute it — and it would flip the
       // still folded in above; the lifecycle event is dropped. Tripwire so the
       // upstream trigger stays measurable in the field.
-      const orphanDetail: Record<string, unknown> = {
+      // What the untargeted result carried, for the tripwire log line below.
+      type OrphanTurnDetail = {
+        status: typeof message.subtype;
+        numTurns: typeof message.num_turns;
+        hasUsage: boolean;
+        errors?: string[];
+      };
+      const orphanDetail: OrphanTurnDetail = {
         status: message.subtype,
-        numTurns: readNumber(message, "num_turns"),
+        numTurns: message.num_turns,
         hasUsage: usage !== undefined,
       };
       if ("errors" in message && Array.isArray(message.errors) && message.errors.length > 0) {
@@ -1501,16 +1508,16 @@ export class ClaudeAdapter implements ProviderAdapter {
       return;
     }
 
-    if (subtype === "task_updated") {
-      // SAFETY: probing the optional `patch` field on the SDK message shape.
-      const patch = asRecord((message as Record<string, unknown>).patch);
-      const backgrounded = patch?.is_backgrounded;
-      if (typeof backgrounded === "boolean") run.snapshot.background = backgrounded;
-      const description = readString(patch, "description");
+    if (message.type === "system" && message.subtype === "task_updated") {
+      // The SDK's wire-safe TaskState subset that changed; merge it into the snapshot.
+      const patch = message.patch;
+      const backgrounded = patch.is_backgrounded;
+      if (backgrounded !== undefined) run.snapshot.background = backgrounded;
+      const description = patch.description;
       if (description) run.snapshot.description = description;
-      const error = readString(patch, "error");
+      const error = patch.error;
       if (error) run.snapshot.summary = error;
-      switch (readString(patch, "status")) {
+      switch (patch.status) {
         case "completed":
           this.settleSubagent(session, run, "completed");
           return;
@@ -1622,10 +1629,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     hookInput: HookInput,
   ): Promise<HookJSONOutput> {
     if (session.mode !== "full-access") return {};
-    const toolName = readString(hookInput, "tool_name") ?? "unknown";
-    // SAFETY: a hook payload is a JSON object by the SDK's own contract; the
-    // read is widened only to reach `tool_input`, which asRecord then probes.
-    const rawInput = asRecord((hookInput as Record<string, unknown>).tool_input);
+    // This hook only ever registers for PreToolUse, but the SDK types the
+    // callback with the whole HookInput union — narrow on its discriminant.
+    if (hookInput.hook_event_name !== "PreToolUse") return {};
+    const toolName = hookInput.tool_name;
+    const rawInput = asRecord(hookInput.tool_input);
     const summary = summarizeToolInput(toolName, JSON.stringify(rawInput ?? {})).text || toolName;
     console.warn(`[kone] full-access ${session.threadId}: ${toolName} ${summary}`);
     return {};

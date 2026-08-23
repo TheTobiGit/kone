@@ -26,7 +26,22 @@ type VsCodeRgba = VsCodeRgb & { a: number };
 
 const rgbHex = (c: VsCodeRgb): string => toHex([c.r / 255, c.g / 255, c.b / 255] as const);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/** Anything theme JSON text can decode to; the record guard narrows further. */
+export type ThemeJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ThemeJsonObject
+  | ThemeJsonValue[];
+
+/** A parsed theme/manifest object still mid-validation: every field is a JSON
+ *  value until a guard proves otherwise. */
+export interface ThemeJsonObject {
+  [key: string]: ThemeJsonValue;
+}
+
+export function isRecord(value: unknown): value is ThemeJsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -184,7 +199,7 @@ const ANSI_SLOTS = [
 
 /** Judge label candidates by their humanized form: a displayName of "---"
  *  humanizes to nothing and must fall through to the name. */
-function resolveThemeLabel(value: Record<string, unknown>): string {
+function resolveThemeLabel(value: ThemeJsonObject): string {
   for (const candidate of [value.displayName, value.name]) {
     if (typeof candidate !== "string") continue;
     const humanized = humanizeThemeName(candidate);
@@ -194,7 +209,7 @@ function resolveThemeLabel(value: Record<string, unknown>): string {
 }
 
 /** How light or dark a theme is, when the file doesn't say. */
-function resolveAppearance(value: Record<string, unknown>, canvasHex: string): ThemeScheme {
+function resolveAppearance(value: ThemeJsonObject, canvasHex: string): ThemeScheme {
   const type = typeof value.type === "string" ? value.type.toLowerCase() : null;
   if (type === "light" || type === "hc-light") return "light";
   if (type === "dark" || type === "hc-black") return "dark";
@@ -208,7 +223,7 @@ function resolveAppearance(value: Record<string, unknown>, canvasHex: string): T
  */
 export function parseVsCodeThemeEntry(value: unknown, sourceStem: string): VsCodeImportEntry {
   if (!isRecord(value)) throw new Error("Theme files must contain a JSON object.");
-  const colors = isRecord(value.colors) ? value.colors : {};
+  const colors: ThemeJsonObject = isRecord(value.colors) ? value.colors : {};
 
   /** First key that carries a usable colour, in priority order. */
   const pick = (...keys: ReadonlyArray<string>): VsCodeRgba | null => {

@@ -63,6 +63,15 @@ function rpcResult(res: { json: unknown }): any {
   return (res.json as { result?: unknown }).result;
 }
 
+/** One JSON-RPC 2.0 response envelope as the gateway answers — `result` on a
+ *  success, `error` on a protocol failure; tests read `result` via rpcResult. */
+type RpcEnvelope = {
+  jsonrpc?: "2.0";
+  id?: number | string | null;
+  result?: unknown;
+  error?: unknown;
+};
+
 async function mcpPost(url: string, token: string, body: unknown) {
   const res = await fetch(url, {
     method: "POST",
@@ -72,8 +81,9 @@ async function mcpPost(url: string, token: string, body: unknown) {
     },
     body: JSON.stringify(body),
   });
-  // SAFETY: the endpoint answers JSON-RPC — one object (or array) parsed from the body.
-  const json = (await res.json()) as Record<string, unknown> | Record<string, unknown>[] | undefined;
+  // SAFETY: the endpoint answers JSON-RPC — one envelope (or a batch array)
+  // parsed from the body.
+  const json = (await res.json()) as RpcEnvelope | RpcEnvelope[] | undefined;
   return { status: res.status, json };
 }
 

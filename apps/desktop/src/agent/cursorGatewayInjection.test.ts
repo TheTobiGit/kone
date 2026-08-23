@@ -22,7 +22,11 @@ let httpCapable = false;
  *  model-catalog probe uses homedir() instead, so it can't be mistaken for it). */
 let sessionRpc: FakeJsonRpcClient | null = null;
 
-type RecordLike = Record<string, unknown>;
+/** A JSON object this test builds as a stand-in ACP payload — every field is
+ *  test-owned data the assertions pin exactly, never parsed generically. */
+type RecordLike = {
+  [key: string]: string | number | boolean | null | RecordLike | RecordLike[];
+};
 
 /** SAFETY: a no-op emitter — these tests never listen to what the adapter emits. */
 const noopEmit = (() => {}) as EmitEvent;

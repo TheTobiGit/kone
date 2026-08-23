@@ -220,21 +220,23 @@ type CursorConfigOption = {
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+/** Any JSON value as it arrives off the ACP wire. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+
+/** A JSON object: every property is another JSON value. */
+export type JsonObject = { [key: string]: JsonValue };
+
+function asRecord(value: unknown): JsonObject | undefined {
+  // SAFETY: every value here came out of JSON.parse of a protocol frame, so a
+  // non-null object is exactly a JsonObject; the typeof/null checks are the
+  // narrowing itself.
+  return typeof value === "object" && value !== null ? (value as JsonObject) : undefined;
 }
 
 function readString(value: unknown, ...path: string[]): string | undefined {
   let cursor: unknown = value;
   for (const key of path) cursor = asRecord(cursor)?.[key];
   return typeof cursor === "string" ? cursor : undefined;
-}
-
-function readNumber(value: unknown, ...path: string[]): number | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "number" ? cursor : undefined;
 }
 
 function asArray(value: unknown): unknown[] {
@@ -319,6 +321,25 @@ export type CursorSessionSeed = {
   modeIds: string[];
   configOptions: CursorConfigOption[];
   defaultModel?: string;
+};
+
+/** Result of `cursor/list_available_models`: one row per model, verbatim wire
+ *  data until toModelDescriptor projects it onto kone's axes. */
+type AcpModelsResult = { models?: JsonValue[] };
+
+/** The initialize result. kone consumes only
+ *  `agentCapabilities.mcpCapabilities.http`, and it reads that through
+ *  acpAgentSupportsHttp's own probing, so the envelope stays a JSON object. */
+type AcpInitializeResult = JsonObject;
+
+/** Shared shape of `session/new` / `session/load` results (protocol fact 2):
+ *  the session id, the starting mode list, and the starting config matrix.
+ *  Fields are optional because each was observed absent on at least one live
+ *  response; consumers degrade per field. */
+type AcpSessionResult = {
+  sessionId?: string;
+  modes?: { availableModes?: JsonValue[]; currentModeId?: string };
+  configOptions?: JsonValue[];
 };
 
 /** Read the starting mode list and config matrix off a session/new or
@@ -559,9 +580,28 @@ const TOOL_KIND_NAMES: Record<string, string> = {
   other: "tool",
 };
 
+/** Body of an ACP `tool_call` / `tool_call_update` update, minus the
+ *  `sessionUpdate` discriminator. `rawInput`/`rawOutput` stay raw JSON — tool
+ *  arguments are whatever the agent sent — and are probed at the edge rather
+ *  than trusted. */
+export type AcpToolCallUpdate = {
+  toolCallId?: string;
+  kind?: string;
+  title?: string;
+  status?: string;
+  rawInput?: JsonObject;
+  rawOutput?: JsonObject;
+  content?: JsonValue[];
+  locations?: JsonValue[];
+};
+
+/** The `entries` bag of an ACP `plan` update, verbatim from the wire — the
+ *  plan schema is undocumented, so entries are probed field by field. */
+export type AcpPlanUpdate = { entries?: JsonValue[] };
+
 /** A short, human inline target for a tool row: the command, path, or query —
  *  never the tool's own name, which travels separately as `name`. */
-export function toolCallTarget(update: Record<string, unknown>): string {
+export function toolCallTarget(update: AcpToolCallUpdate): string {
   const rawInput = asRecord(update.rawInput);
   const command = readString(rawInput, "command");
   if (command) return command;
@@ -576,12 +616,12 @@ export function toolCallTarget(update: Record<string, unknown>): string {
   const firstPath = locations.length > 0 ? readString(locations[0], "path") : undefined;
   if (firstPath) return locations.length > 1 ? `${firstPath} +${locations.length - 1} more` : firstPath;
 
-  return readString(update, "title") ?? "";
+  return update.title ?? "";
 }
 
 /** The expandable body of a tool row. ACP puts results in `rawOutput` and/or a
  *  `content` array of text/diff/resource blocks. */
-export function toolCallDetail(update: Record<string, unknown>): string {
+export function toolCallDetail(update: AcpToolCallUpdate): string {
   const parts: string[] = [];
   for (const block of asArray(update.content)) {
     const text = readString(block, "content", "text") ?? readString(block, "text");
@@ -604,7 +644,7 @@ export function toolCallStatus(raw: string | undefined): RuntimeItemStatus {
 
 /** ACP plan entries are `{ content, status }` with `in_progress` spelled with
  *  an underscore; kone's PlanTaskStatus uses a hyphen. */
-export function parseAcpPlan(update: Record<string, unknown>): Omit<PlanTask, "id">[] | undefined {
+export function parseAcpPlan(update: AcpPlanUpdate): Omit<PlanTask, "id">[] | undefined {
   const entries = asArray(update.entries);
   if (entries.length === 0) return undefined;
   const out: Omit<PlanTask, "id">[] = [];
@@ -618,6 +658,93 @@ export function parseAcpPlan(update: Record<string, unknown>): Omit<PlanTask, "i
   }
   return out.length > 0 ? out : undefined;
 }
+
+// ── session/update dispatch ─────────────────────────────────────────────────
+// ACP streams session progress as `session/update` notifications whose body is
+// discriminated by `sessionUpdate`. The variants below are the kinds captured
+// live on 2026.07.23; anything else is dropped at the gate in
+// wireNotifications — exactly what this switch's old default branch did.
+
+type AcpTextChunkUpdate = {
+  sessionUpdate: "agent_message_chunk" | "agent_thought_chunk";
+  content?: { type?: string; text?: string };
+};
+
+type AcpToolCallNotification = { sessionUpdate: "tool_call" | "tool_call_update" } & AcpToolCallUpdate;
+
+type AcpPlanNotification = { sessionUpdate: "plan" } & AcpPlanUpdate;
+
+type AcpUsageNotification = { sessionUpdate: "usage_update"; used?: number; size?: number };
+
+type AcpSessionInfoNotification = { sessionUpdate: "session_info_update"; title?: string };
+
+type AcpConfigOptionsNotification = {
+  sessionUpdate: "config_option_update";
+  configOptions?: JsonValue[];
+};
+
+/** Kinds kone recognizes but does not act on yet — `user_message_chunk` (the
+ *  renderer owns the user's own message) plus session-state updates. */
+type AcpIgnoredUpdate = {
+  sessionUpdate: "user_message_chunk" | "current_mode_update" | "available_commands_update";
+};
+
+type AcpSessionUpdate =
+  | AcpTextChunkUpdate
+  | AcpToolCallNotification
+  | AcpPlanNotification
+  | AcpUsageNotification
+  | AcpSessionInfoNotification
+  | AcpConfigOptionsNotification
+  | AcpIgnoredUpdate;
+
+const SESSION_UPDATE_KINDS: ReadonlySet<string> = new Set([
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+  "plan",
+  "usage_update",
+  "session_info_update",
+  "config_option_update",
+  "user_message_chunk",
+  "current_mode_update",
+  "available_commands_update",
+]);
+
+/** Gate for an incoming `session/update` body. Recognizing the discriminator
+ *  is the whole validation: every field across every variant is optional, so
+ *  any object carrying a known kind satisfies its variant. */
+function isAcpSessionUpdate(value: JsonObject): value is AcpSessionUpdate {
+  return typeof value.sessionUpdate === "string" && SESSION_UPDATE_KINDS.has(value.sessionUpdate);
+}
+
+/** Token counts as Cursor spells them over ACP: camelCase today, with the
+ *  snake_case spellings of the one-shot `--print` stream kept alongside in
+ *  case a provider routed through ACP uses those. */
+type AcpUsageCounts = {
+  inputTokens?: number;
+  input_tokens?: number;
+  outputTokens?: number;
+  output_tokens?: number;
+  totalTokens?: number;
+  total_tokens?: number;
+  cacheReadTokens?: number;
+  cache_read_tokens?: number;
+  cacheWriteTokens?: number;
+  cache_write_tokens?: number;
+  reasoningTokens?: number;
+  reasoning_tokens?: number;
+};
+
+/** Result of `session/prompt`: bare `stopReason` today (protocol fact 6), with
+ *  speculative usage bags — top-level and `_meta`-wrapped — kept defensively
+ *  for a build that starts carrying them. */
+type AcpPromptResult = {
+  stopReason?: string;
+  usage?: AcpUsageCounts;
+  _meta?: { usage?: AcpUsageCounts };
+};
 
 export class CursorAdapter implements ProviderAdapter {
   readonly provider = "cursor" as const;
@@ -720,12 +847,8 @@ export class CursorAdapter implements ProviderAdapter {
     try {
       await rpc.call("initialize", CURSOR_INITIALIZE_PARAMS, INITIALIZE_TIMEOUT_MS);
       await this.authenticate(rpc);
-      const response = await rpc.call<Record<string, unknown>>(
-        "cursor/list_available_models",
-        {},
-        CONFIG_TIMEOUT_MS,
-      );
-      const models = asArray(asRecord(response)?.models)
+      const response = await rpc.call<AcpModelsResult>("cursor/list_available_models", {}, CONFIG_TIMEOUT_MS);
+      const models = asArray(response.models)
         .map((raw) => toModelDescriptor(raw))
         .filter((model): model is ModelDescriptor => model !== undefined);
       for (const model of models) {
@@ -796,7 +919,7 @@ export class CursorAdapter implements ProviderAdapter {
     });
 
     try {
-      const initializeResult = await rpc.call<Record<string, unknown>>(
+      const initializeResult = await rpc.call<AcpInitializeResult>(
         "initialize",
         CURSOR_INITIALIZE_PARAMS,
         INITIALIZE_TIMEOUT_MS,
@@ -820,10 +943,10 @@ export class CursorAdapter implements ProviderAdapter {
       // only door (protocol fact 5). A refused load means the session is gone
       // from Cursor's store — start fresh rather than failing the thread open,
       // matching how CodexAdapter degrades a stale `thread/resume`.
-      let response: Record<string, unknown> | undefined;
+      let response: AcpSessionResult | undefined;
       if (input.resume) {
         try {
-          response = await rpc.call<Record<string, unknown>>(
+          response = await rpc.call<AcpSessionResult>(
             "session/load",
             { sessionId: input.resume, cwd: input.cwd, mcpServers },
             SESSION_SETUP_TIMEOUT_MS,
@@ -840,12 +963,12 @@ export class CursorAdapter implements ProviderAdapter {
         }
       }
       if (!response) {
-        response = await rpc.call<Record<string, unknown>>(
+        response = await rpc.call<AcpSessionResult>(
           "session/new",
           { cwd: input.cwd, mcpServers },
           SESSION_SETUP_TIMEOUT_MS,
         );
-        const sessionId = readString(response, "sessionId");
+        const sessionId = response.sessionId;
         if (!sessionId) throw new Error("session/new response did not include a session id.");
         session.conversationId = sessionId;
       }
@@ -942,7 +1065,7 @@ export class CursorAdapter implements ProviderAdapter {
     // `session/prompt` only settles when the whole turn is done, so it is
     // deliberately not awaited here — sendTurn is request/ack.
     void session.rpc
-      .call<Record<string, unknown>>(
+      .call<AcpPromptResult>(
         "session/prompt",
         { sessionId: session.conversationId, prompt },
         PROMPT_TIMEOUT_MS,
@@ -1079,12 +1202,12 @@ export class CursorAdapter implements ProviderAdapter {
     const configId = findOption(session.configOptions, ids)?.id ?? ids[0];
     if (!configId) return;
     try {
-      const response = await session.rpc.call<Record<string, unknown>>(
+      const response = await session.rpc.call<AcpSessionResult>(
         "session/set_config_option",
         { sessionId: session.conversationId, configId, value },
         CONFIG_TIMEOUT_MS,
       );
-      const refreshed = parseConfigOptions(asRecord(response)?.configOptions);
+      const refreshed = parseConfigOptions(response.configOptions);
       if (refreshed.length > 0) session.configOptions = refreshed;
     } catch (error) {
       this.warn(session, `Cursor rejected ${configId}="${value}"`, error);
@@ -1098,7 +1221,9 @@ export class CursorAdapter implements ProviderAdapter {
 
     rpc.onNotification("session/update", (params) => {
       const update = asRecord(asRecord(params)?.update);
-      if (!update) return;
+      // Unrecognized kinds — including anything Cursor adds later — drop here,
+      // exactly where the dispatch's old default branch ignored them.
+      if (!update || !isAcpSessionUpdate(update)) return;
       this.handleSessionUpdate(session, update);
     });
 
@@ -1187,13 +1312,13 @@ export class CursorAdapter implements ProviderAdapter {
     }
   }
 
-  private handleSessionUpdate(session: CursorSession, update: Record<string, unknown>): void {
-    switch (readString(update, "sessionUpdate")) {
+  private handleSessionUpdate(session: CursorSession, update: AcpSessionUpdate): void {
+    switch (update.sessionUpdate) {
       case "agent_message_chunk":
-        this.appendText(session, "assistant_text", readString(update, "content", "text"));
+        this.appendText(session, "assistant_text", update.content?.text);
         return;
       case "agent_thought_chunk":
-        this.appendText(session, "reasoning_text", readString(update, "content", "text"));
+        this.appendText(session, "reasoning_text", update.content?.text);
         return;
       case "tool_call":
       case "tool_call_update":
@@ -1208,22 +1333,17 @@ export class CursorAdapter implements ProviderAdapter {
       case "session_info_update": {
         // Cursor names the conversation itself once it has read the first
         // prompt — a better title than anything kone could infer, and free.
-        const title = readString(update, "title")?.trim();
+        const title = update.title?.trim();
         if (title) this.emit({ ...this.base(session), type: "thread.title.updated", title });
         return;
       }
-      case "current_mode_update":
-      case "available_commands_update":
-        // Session state kone doesn't surface yet.
-        return;
       case "config_option_update": {
         const refreshed = parseConfigOptions(update.configOptions);
         if (refreshed.length > 0) session.configOptions = refreshed;
         return;
       }
       default:
-        // `user_message_chunk` and anything Cursor adds later — the renderer
-        // already owns the user's own message.
+        // user_message_chunk / current_mode_update / available_commands_update.
         return;
     }
   }
@@ -1259,8 +1379,8 @@ export class CursorAdapter implements ProviderAdapter {
     if (buffer) this.emitItem(session, "item.completed", buffer, "completed");
   }
 
-  private handleToolCall(session: CursorSession, update: Record<string, unknown>): void {
-    const toolCallId = readString(update, "toolCallId");
+  private handleToolCall(session: CursorSession, update: AcpToolCallUpdate): void {
+    const toolCallId = update.toolCallId;
     if (!toolCallId || !session.activeTurnId) return;
 
     // A tool call interrupts whatever text was streaming — close it so the two
@@ -1275,21 +1395,20 @@ export class CursorAdapter implements ProviderAdapter {
       session.items.set(itemId, buffer);
     }
 
-    const kind = readString(update, "kind");
-    if (kind) buffer.name = TOOL_KIND_NAMES[kind] ?? "tool";
+    if (update.kind) buffer.name = TOOL_KIND_NAMES[update.kind] ?? "tool";
     if (!buffer.name) buffer.name = "tool";
     const target = toolCallTarget(update);
     if (target) buffer.text = target;
     const detail = toolCallDetail(update);
     if (detail) buffer.detail = detail;
 
-    const status = toolCallStatus(readString(update, "status"));
+    const status = toolCallStatus(update.status);
     if (isNew) this.emitItem(session, "item.started", buffer, status);
     else if (status === "in-progress") this.emitItem(session, "item.updated", buffer, status);
     else this.emitItem(session, "item.completed", buffer, status);
   }
 
-  private handlePlan(session: CursorSession, update: Record<string, unknown>): void {
+  private handlePlan(session: CursorSession, update: AcpPlanNotification): void {
     if (!session.activeTurnId) return;
     const snapshot = parseAcpPlan(update);
     if (!snapshot) return;
@@ -1391,9 +1510,8 @@ export class CursorAdapter implements ProviderAdapter {
    *  is defensive ground truth, kept for the day a Cursor build starts emitting
    *  it. On this build
    *  emitUsageFallback is what actually fires at turn end. */
-  private handleUsage(session: CursorSession, update: Record<string, unknown>): void {
-    const used = readNumber(update, "used");
-    const size = readNumber(update, "size");
+  private handleUsage(session: CursorSession, update: AcpUsageNotification): void {
+    const { used, size } = update;
     if (used === undefined && size === undefined) return;
     session.usageReported = true;
     // The ACP `usage_update` shape is only ever `used`/`size` — no
@@ -1429,27 +1547,26 @@ export class CursorAdapter implements ProviderAdapter {
     session.activeTurnId = undefined;
   }
 
-  private completeTurn(session: CursorSession, turnId: string, response: Record<string, unknown>): void {
+  private completeTurn(session: CursorSession, turnId: string, response: AcpPromptResult): void {
     // The result only speaks for the turn it was requested under — a settled
     // turn means a newer prompt already superseded this one, and its usage
     // must not clobber the newer turn's meter.
     if (session.activeTurnId !== turnId) return;
-    const stopReason = readString(response, "stopReason");
+    const stopReason = response.stopReason;
     // ACP doesn't define usage on the prompt result, but a future Cursor build
     // (or a provider routed through it) may carry a usage bag here or in the
-    // through when present; otherwise the turn-end disk fallback below is the
-    // honest source.
-    const meta = asRecord(response._meta);
-    const resultUsage = asRecord(response.usage) ?? asRecord(meta?.usage);
+    // `_meta` envelope; take it when present, otherwise the turn-end disk
+    // fallback below is the honest source.
+    const resultUsage = response.usage ?? response._meta?.usage;
     if (resultUsage) {
-      const input = readNumber(resultUsage, "inputTokens") ?? readNumber(resultUsage, "input_tokens");
-      const output = readNumber(resultUsage, "outputTokens") ?? readNumber(resultUsage, "output_tokens");
-      const cacheRead = readNumber(resultUsage, "cacheReadTokens") ?? readNumber(resultUsage, "cache_read_tokens");
-      const cacheWrite = readNumber(resultUsage, "cacheWriteTokens") ?? readNumber(resultUsage, "cache_write_tokens");
-      const reasoning = readNumber(resultUsage, "reasoningTokens") ?? readNumber(resultUsage, "reasoning_tokens");
+      const input = resultUsage.inputTokens ?? resultUsage.input_tokens;
+      const output = resultUsage.outputTokens ?? resultUsage.output_tokens;
+      const cacheRead = resultUsage.cacheReadTokens ?? resultUsage.cache_read_tokens;
+      const cacheWrite = resultUsage.cacheWriteTokens ?? resultUsage.cache_write_tokens;
+      const reasoning = resultUsage.reasoningTokens ?? resultUsage.reasoning_tokens;
       const total =
-        readNumber(resultUsage, "totalTokens") ??
-        readNumber(resultUsage, "total_tokens") ??
+        resultUsage.totalTokens ??
+        resultUsage.total_tokens ??
         (input !== undefined && output !== undefined
           ? input + output + (cacheRead ?? 0) + (cacheWrite ?? 0)
           : undefined);

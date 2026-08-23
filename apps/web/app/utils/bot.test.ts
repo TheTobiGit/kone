@@ -10,6 +10,7 @@ import {
   readBot,
   sampleBot,
   type AgentBot,
+  type StoredBot,
 } from "./bot";
 import { liveliness } from "./idleLife";
 
@@ -87,8 +88,7 @@ describe("reading one back", () => {
   // Bots saved before the form rename key their first field `shape`; reading
   // one maps it instead of answering with the default.
   test("a bot stored under the legacy `shape` key still reads back", () => {
-    const legacy: Record<string, unknown> = { color: "teal", expression: "curious" };
-    legacy["shape"] = "pebble";
+    const legacy: StoredBot = { color: "teal", expression: "curious", "shape": "pebble" };
     expect(readBot(legacy)).toEqual({
       form: "pebble",
       color: "teal",

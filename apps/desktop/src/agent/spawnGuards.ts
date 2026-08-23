@@ -79,6 +79,15 @@ export type SpawnGuardInput = {
   catalog?: ModelDescriptor[] | undefined;
 };
 
+/** Detail payloads a refusal may carry — kone-owned data (never wire-parsed)
+ *  that the gateway tool layer forwards into the result's structuredContent
+ *  verbatim. Which payload rides which code is decided at each refusal site. */
+export type SpawnRefusalDetails =
+  | { error: string }
+  | { availableModels: string[] }
+  | { requestedMode: InteractionMode; parentMode: InteractionMode }
+  | { provider: ProviderKind; mode: InteractionMode; parentMode: InteractionMode };
+
 /** Admission verdict. `ok: true` means the child may spawn — `model`, `effort`
  *  and `mode` are what kone will actually run with, and `adjustments` lists
  *  every target the caller asked for that got changed. `ok: false` is a
@@ -93,7 +102,7 @@ export type SpawnGuardResult =
       mode: InteractionMode;
       adjustments: SpawnAdjustment[];
     }
-  | { ok: false; code: SpawnRefusalCode; message: string; details?: Record<string, unknown> };
+  | { ok: false; code: SpawnRefusalCode; message: string; details?: SpawnRefusalDetails };
 
 // ── refusal messages ─────────────────────────────────────────────────────────
 // Every refusal message is read by a model deciding what to do next, so each is

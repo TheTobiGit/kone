@@ -75,12 +75,21 @@ export const DEFAULT_BOT: AgentBot = {
  *  default. Returns null for nothing at all, which is an agent with no bot —
  *  a different thing from an agent with the default one. Accepts the stored
  *  key `shape` as well as `form`, so a bot saved before the rename still reads. */
+/** A bot as persisted on an agent record: the three ids, plus the pre-rename
+ *  `shape` key, each unvalidated until read. */
+export interface StoredBot {
+  form?: unknown;
+  color?: unknown;
+  expression?: unknown;
+  "shape"?: unknown;
+}
+
 export function readBot(value: unknown): AgentBot | null {
   if (!value || typeof value !== "object") return null;
   // SAFETY: the object check above is all this cast claims; every field read
   // off `raw` is re-validated (typeof / trim / membership) before use, so a
   // row of any other shape still degrades to the default.
-  const raw = value as Partial<Record<keyof AgentBot | "shape", unknown>>;
+  const raw = value as StoredBot;
   // A present-but-blank `form` falls back to the legacy key rather than
   // reading as unknown and taking the default.
   const form =

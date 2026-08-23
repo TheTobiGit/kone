@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import JSZip from "jszip";
+import type { ThemeJsonObject } from "./import-vscode";
 import {
   importOpenVsxThemeExtension,
   popularThemes,
@@ -62,7 +63,9 @@ const MANIFEST = {
   },
 };
 
-async function buildVsix(files: Record<string, unknown>): Promise<{ bytes: Uint8Array; sha256: string }> {
+/** One file in a built VSIX: its archive path and its contents — raw text, or
+ *  a JSON payload `buildVsix` serializes. */
+async function buildVsix(files: Record<string, string | ThemeJsonObject>): Promise<{ bytes: Uint8Array; sha256: string }> {
   const zip = new JSZip();
   for (const [path, content] of Object.entries(files)) {
     zip.file(path, typeof content === "string" ? content : JSON.stringify(content));

@@ -207,6 +207,27 @@ type AntigravitySession = {
   exited?: Promise<void>;
 };
 
+/** One decoded line from the capture-hook stream (`<event>\t<json>`), written
+ *  by the generated capture script this adapter installs. Every field is
+ *  optional: older CLIs omit fields, and each reader validates before use. */
+type AntigravityHookPayload = {
+  /** Conversation (thread or subagent run) the hook fired in. */
+  conversationId?: string;
+  /** Transcript file the CLI is appending to — re-pointed on resume. */
+  transcriptPath?: string;
+  /** Zero-based step index that binds a `pre-tool` to its `post-tool`. */
+  stepIdx?: number;
+  /** The tool invocation a `pre-tool` hook announces. */
+  toolCall?: { name?: string };
+  /** Whether the tool failed, carried by `post-tool` hooks. */
+  failed?: boolean;
+  /** The tool's error text, carried by `post-tool` hooks. */
+  error?: string;
+  /** `false` only when the agent still has background work at `stop` — an
+   *  older CLI that omits it is taken at its word: done is done. */
+  fullyIdle?: boolean;
+};
+
 // ── small helpers ────────────────────────────────────────────────────────────
 
 function trim(value: string | null | undefined): string | undefined {
@@ -218,7 +239,7 @@ function resumeConversationId(value: unknown): string | undefined {
   if (typeof value === "string") return trim(value);
   if (!value || typeof value !== "object") return undefined;
   // SAFETY: the typeof-object/null checks above are the narrowing itself.
-  const record = value as Record<string, unknown>;
+  const record = value as AntigravityJsonRecord;
   for (const key of ["conversationId", "providerThreadId", "id"]) {
     if (typeof record[key] === "string" && record[key].trim()) return record[key].trim();
   }
@@ -455,11 +476,25 @@ process.stdin.on("end", () => {
 `;
 }
 
-/** The plugin's hooks.json — every generated hook is a command hook. */
+/** One generated capture hook: a command line the plugin spawns per event. */
+type KoneHook = { type: "command"; command: string };
+
+/** The plugin's hooks.json — every generated hook is a command hook, grouped
+ *  by the agy lifecycle event that spawns it. */
+type KoneHookConfig = {
+  "kone-capture": {
+    PreToolUse: { matcher: string; hooks: KoneHook[] }[];
+    PostToolUse: { matcher: string; hooks: KoneHook[] }[];
+    PreInvocation: KoneHook[];
+    PostInvocation: KoneHook[];
+    Stop: KoneHook[];
+  };
+};
+
 export function buildKoneHookConfig(
   command: (event: string) => string,
-): Record<string, unknown> {
-  const hook = (event: string) => ({ type: "command", command: command(event) });
+): KoneHookConfig {
+  const hook = (event: string): KoneHook => ({ type: "command", command: command(event) });
   return {
     "kone-capture": {
       PreToolUse: [{ matcher: "*", hooks: [hook("pre-tool")] }],
@@ -1448,10 +1483,10 @@ export class AntigravityAdapter implements ProviderAdapter {
       const tab = line.indexOf("\t");
       if (tab < 0) continue;
       const eventName = line.slice(0, tab);
-      let payload: Record<string, unknown>;
+      let payload: AntigravityHookPayload;
       try {
         // SAFETY: JSON.parse yields unknown; the field probes below validate before use.
-        payload = JSON.parse(line.slice(tab + 1)) as Record<string, unknown>;
+        payload = JSON.parse(line.slice(tab + 1)) as AntigravityHookPayload;
       } catch {
         continue;
       }
@@ -1486,12 +1521,7 @@ export class AntigravityAdapter implements ProviderAdapter {
           ? payload.stepIdx
           : undefined;
       if (eventName === "pre-tool" && stepIndex !== undefined && session.activeTurnId) {
-        // SAFETY: the typeof-object check in this ternary is the narrowing itself.
-        const toolCall =
-          payload.toolCall && typeof payload.toolCall === "object"
-            ? (payload.toolCall as Record<string, unknown>)
-            : undefined;
-        const name = typeof toolCall?.name === "string" ? trim(toolCall.name) : undefined;
+        const name = typeof payload.toolCall?.name === "string" ? trim(payload.toolCall.name) : undefined;
         if (name) {
           const owner = run ?? session;
           const scope = run ? `sub-${run.snapshot.toolUseId}-tool` : "tool";

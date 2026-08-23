@@ -33,6 +33,7 @@ import {
   selectOpenCodeTurnId,
   translateOpenCodeEvent,
 } from "./adapters/OpenCodeAdapter.js";
+import type { RecordLike } from "./adapters/OpenCodeAdapter.js";
 import type { RuntimeEvent } from "./types.js";
 
 function ofType<T extends RuntimeEvent["type"]>(events: RuntimeEvent[], type: T) {
@@ -88,9 +89,9 @@ describe("OpenCode pure translation helpers", () => {
     expect(isOpenCodeNotFound({ response: { status: 404 } })).toBe(true);
     expect(isOpenCodeNotFound({ status: 500, body: { name: "NotFoundError" } })).toBe(false);
     expect(isOpenCodeNotFound(new Error("not found"))).toBe(false);
-    const cycle: Record<string, unknown> = {}; cycle.cause = cycle;
+    const cycle: RecordLike = {}; cycle.cause = cycle;
     expect(isOpenCodeNotFound(cycle)).toBe(false);
-    let deep: Record<string, unknown> = {};
+    let deep: RecordLike = {};
     for (let i = 0; i < 100; i += 1) deep = { cause: deep };
     expect(isOpenCodeNotFound(deep)).toBe(false);
   });
@@ -409,7 +410,7 @@ describe("OpenCode tool status ladder", () => {
   const THREAD = "ladder-thread";
   const originalFetch = globalThis.fetch;
   let adapterModule: OpenCodeAdapterModule;
-  let pushEvent: ((part: Record<string, unknown>) => void) | null = null;
+  let pushEvent: ((part: RecordLike) => void) | null = null;
   let closeStream: (() => void) | null = null;
 
   beforeAll(async () => {

@@ -41,10 +41,20 @@ function readImported(): ThemeDefinition[] {
 /** The minimum a stored definition needs to be trusted; anything else is a
  *  damaged write (or a file from an older kone) and is dropped rather than
  *  painted. */
+/** The fields `isStoredTheme` inspects on an untrusted stored definition —
+ *  each present only in a well-formed write, and validated before use. */
+interface StoredThemeFields {
+  id?: unknown;
+  label?: unknown;
+  kind?: unknown;
+  appearance?: unknown;
+  colors?: unknown;
+}
+
 function isStoredTheme(value: unknown): value is ThemeDefinition {
   if (typeof value !== "object" || value === null) return false;
-  // SAFETY: the typeof-object + null checks on this line are the narrowing itself.
-  const t = value as Record<string, unknown>;
+  // SAFETY: the typeof-object + null checks above are the narrowing itself.
+  const t = value as StoredThemeFields;
   return (
     typeof t.id === "string" &&
     typeof t.label === "string" &&

@@ -13,8 +13,7 @@ import type {
   GatewayToolContext,
   GatewayToolResult,
   ToolEntry,
-} from "./schemas.js";
-import { GatewayToolError } from "./schemas.js";
+} from "./schemas.js";import { GatewayToolError } from "./schemas.js";
 
 export type { GatewayToolContext, GatewayToolResult, ToolEntry } from "./schemas.js";
 
@@ -42,8 +41,9 @@ export function gatewayToolErrorResult(error: GatewayToolError): GatewayToolResu
 }
 
 export interface GatewayRegistry {
-  /** The tool definitions tools/list advertises (denied tools omitted). */
-  listTools(): ReadonlyArray<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+  /** The tool definitions tools/list advertises (denied tools omitted). Each
+   *  inputSchema is the tool's hand-written JSON Schema object. */
+  listTools(): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
   /** Dispatch one tools/call through the full dispatch order. Never throws. */
   call(ctx: GatewayToolContext, name: string, args: unknown): Promise<GatewayToolResult>;
 }
