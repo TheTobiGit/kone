@@ -965,6 +965,10 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
     // preset says", which the renderer resolves. An object with empty lists is a
     // real answer that forbids nothing, the way an empty provider list restricts
     // nothing — and a fork copies the whole object by value like the prose.
+    //
+    // The policy feature has since been shelved: no code reads or writes this
+    // column (it is absent from AGENT_COLUMNS), but it stays on every table so
+    // old rows keep their data untouched.
     beginStep(db);
     addColumn(db, "agents", "policies", "TEXT");
     version = commitStep(db, 25);

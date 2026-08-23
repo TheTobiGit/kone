@@ -13,7 +13,6 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import AgentAvatarEditor from "~/components/AgentAvatarEditor.vue";
 import AgentBotEditor from "~/components/AgentBotEditor.vue";
 import AgentCapabilitiesEditor from "~/components/AgentCapabilitiesEditor.vue";
-import AgentPoliciesEditor from "~/components/AgentPoliciesEditor.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSound } from "~/composables/useSound";
@@ -29,11 +28,10 @@ import type { AgentModelRef } from "~/types/desktop";
 
 // Making or editing an agent, in the shared modal shell — scrim, elastic card,
 // scooped header/footer bands. Concerns stacked as collapsible rows: who the
-// agent is (name and role), how it looks, how it works, what it may reach for,
-// what it may never do. Only a name is required, so the rest are rows a maker
-// may open or leave alone rather than gates they must walk through — and a
-// closed row still says what it holds, so the whole draft is legible from the
-// outside.
+// agent is (name and role), how it looks, how it works, and what it may reach
+// for. Only a name is required, so the rest are rows a maker may open or leave
+// alone rather than gates they must walk through — and a closed row still says
+// what it holds, so the whole draft is legible from the outside.
 //
 // One row is open at a time: these panes are tall (a textarea, three editors)
 // and several of them unfurled at once would outgrow the drawer and hide the
@@ -74,7 +72,6 @@ type Section =
   | "bot"
   | "instructions"
   | "capabilities"
-  | "policies"
   | "teams";
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "identity", label: "Identity" },
@@ -82,7 +79,6 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "bot", label: "Bot" },
   { id: "instructions", label: "Instructions" },
   { id: "capabilities", label: "Model" },
-  { id: "policies", label: "Policies" },
   { id: "teams", label: "Teams" },
 ];
 
@@ -101,7 +97,6 @@ const HINTS = {
   bot: "The creature it works through.",
   instructions: "Habits it carries into every thread.",
   capabilities: "The model it thinks with.",
-  policies: "What it may never run or reach.",
   teams: "The projects it joins.",
 } satisfies Record<Section, string>;
 
@@ -142,8 +137,6 @@ const instructions = ref("");
 const avatar = ref<AgentAvatar | null>(null);
 const bot = ref<AgentBot | null>(null);
 const model = ref<AgentModelRef | null>(null);
-const deniedCommands = ref<string[]>([]);
-const deniedPaths = ref<string[]>([]);
 // The project teams this agent should join once made — a set of project paths,
 // picked from the projects this machine knows. None is a working answer: a
 // project's team is set by hand, so joining nothing on day one is ordinary.
@@ -178,8 +171,6 @@ function seedFrom(agent: Agent) {
   avatar.value = agent.avatar;
   bot.value = agent.bot;
   model.value = agent.capabilities.model;
-  deniedCommands.value = [...agent.policies.deniedCommands];
-  deniedPaths.value = [...agent.policies.deniedPaths];
   teamPaths.value = new Set(agentTeamPaths(agent.id));
 }
 
@@ -201,7 +192,6 @@ const summaries = computed<Record<Section, string>>(() => {
   const named = name.value.trim();
   const stated = role.value.trim();
   const words = instructions.value.trim().split(/\s+/).filter(Boolean).length;
-  const denials = deniedCommands.value.length + deniedPaths.value.length;
   const joined = teamPaths.value.size;
   return {
     identity: named ? (stated ? `${named} · ${stated}` : named) : "Not named yet",
@@ -209,7 +199,6 @@ const summaries = computed<Record<Section, string>>(() => {
     bot: bot.value ? botSummary(bot.value) : "None",
     instructions: words ? `${words} ${words === 1 ? "word" : "words"}` : "None",
     capabilities: model.value?.label ?? model.value?.model ?? "Any model",
-    policies: denials ? `${denials} ${denials === 1 ? "rule" : "rules"}` : "Unrestricted",
     teams: joined ? `${joined} ${joined === 1 ? "team" : "teams"}` : "None",
   };
 });
@@ -256,12 +245,6 @@ async function handleCreate() {
       // Only send a model the maker actually pinned — an untouched picker is
       // "no preference", which the draft says by leaving the field off.
       model: model.value ?? undefined,
-      // A prohibition is only sent when the maker set one — an untouched pair of
-      // lists is "forbids nothing", which the draft says by leaving it off.
-      policies:
-        deniedCommands.value.length || deniedPaths.value.length
-          ? { deniedCommands: deniedCommands.value, deniedPaths: deniedPaths.value }
-          : undefined,
     });
     if (!created) {
       errorMsg.value = "Could not create the agent — check the fields and try again.";
@@ -300,10 +283,6 @@ async function handleSave() {
       avatar: avatar.value,
       bot: bot.value,
       model: model.value,
-      policies: {
-        deniedCommands: deniedCommands.value,
-        deniedPaths: deniedPaths.value,
-      },
     });
     if (!saved) {
       errorMsg.value = "Could not save the agent — check the fields and try again.";
@@ -592,14 +571,6 @@ onBeforeUnmount(() => {
                 <!-- Model -->
                 <div v-else-if="s.id === 'capabilities'" class="ca-pane">
                   <AgentCapabilitiesEditor v-model:model="model" />
-                </div>
-
-                <!-- Policies -->
-                <div v-else-if="s.id === 'policies'" class="ca-pane">
-                  <AgentPoliciesEditor
-                    v-model:denied-commands="deniedCommands"
-                    v-model:denied-paths="deniedPaths"
-                  />
                 </div>
 
                 <!-- Teams: which projects this agent joins the team of, if any.

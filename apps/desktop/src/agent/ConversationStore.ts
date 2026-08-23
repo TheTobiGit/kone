@@ -41,7 +41,6 @@ import {
   serializeAgentAvatar,
   serializeAgentBot,
   serializeAgentList,
-  serializeAgentPolicies,
   serializeModelRef,
   type AgentCreateInput,
   type AgentDuplicateInput,
@@ -2797,9 +2796,9 @@ export class ConversationStore {
       db.prepare(
         `INSERT INTO agents
            (agent_id, preset_id, name, role, instructions,
-            face_body, face_ink, skills, providers, models, policies,
+            face_body, face_ink, skills, providers, models,
             avatar, bot, sort_order, created_at, updated_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         agentId,
         name,
@@ -2812,7 +2811,6 @@ export class ConversationStore {
         // provider comes from the model ref — so it is always written null.
         null,
         serializeModelRef(input.model),
-        serializeAgentPolicies(input.policies),
         serializeAgentAvatar(input.avatar),
         serializeAgentBot(input.bot),
         this.nextAgentSortOrder(db),
@@ -2855,9 +2853,6 @@ export class ConversationStore {
     }
     if (patch.model !== undefined) {
       edits.push(["models", serializeModelRef(patch.model)]);
-    }
-    if (patch.policies !== undefined) {
-      edits.push(["policies", serializeAgentPolicies(patch.policies)]);
     }
     if (patch.avatar !== undefined) {
       edits.push(["avatar", serializeAgentAvatar(patch.avatar)]);
@@ -2952,9 +2947,9 @@ export class ConversationStore {
         db.prepare(
           `INSERT INTO agents
              (agent_id, preset_id, name, role, instructions,
-              face_body, face_ink, skills, providers, models, policies,
+              face_body, face_ink, skills, providers, models,
               avatar, bot, sort_order, created_at, updated_at)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           agentId,
           name,
@@ -2966,7 +2961,6 @@ export class ConversationStore {
           // Dormant since the collapse to one model — always null.
           null,
           serializeModelRef(source.model ?? inherited.model),
-          serializeAgentPolicies(source.policies ?? inherited.policies),
           serializeAgentAvatar(source.avatar ?? inherited.avatar),
           serializeAgentBot(source.bot ?? inherited.bot),
           source.sortOrder + 1,

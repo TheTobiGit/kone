@@ -5,12 +5,10 @@ import {
   BotIcon,
   Copy01Icon,
   Delete02Icon,
-  FolderBlockIcon,
   IdIcon,
   NoteIcon,
   PencilEdit02Icon,
   SparklesIcon,
-  TerminalIcon,
   UserGroupIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -165,8 +163,6 @@ const teamNames = computed<string[]>(() => {
     })
     .sort((a, b) => a.localeCompare(b));
 });
-const deniedCommands = computed(() => agent.value?.policies.deniedCommands ?? []);
-const deniedPaths = computed(() => agent.value?.policies.deniedPaths ?? []);
 // ── the tabs ──────────────────────────────────────────────────────────────
 // Everything below the head is one tabbed panel: what is true about the agent,
 // and what it was told. They are alternatives — you come to the page for one
@@ -405,46 +401,6 @@ watch(
                 :aria-label="botSummary(agent.bot)"
                 v-html="botMark(agent.bot)"
               />
-              <span v-else class="det__none">None</span>
-            </dd>
-          </div>
-
-          <div class="det__row">
-            <dt class="det__key">
-              <HugeiconsIcon
-                :icon="TerminalIcon"
-                :size="14"
-                :stroke-width="1.6"
-                aria-hidden="true"
-              />
-              <span>Denied commands</span>
-            </dt>
-            <dd class="det__val det__val--wrap">
-              <template v-if="deniedCommands.length">
-                <span v-for="entry in deniedCommands" :key="entry" class="det__tag det__tag--code">{{
-                  entry
-                }}</span>
-              </template>
-              <span v-else class="det__none">None</span>
-            </dd>
-          </div>
-
-          <div class="det__row">
-            <dt class="det__key">
-              <HugeiconsIcon
-                :icon="FolderBlockIcon"
-                :size="14"
-                :stroke-width="1.6"
-                aria-hidden="true"
-              />
-              <span>Denied paths</span>
-            </dt>
-            <dd class="det__val det__val--wrap">
-              <template v-if="deniedPaths.length">
-                <span v-for="entry in deniedPaths" :key="entry" class="det__tag det__tag--code">{{
-                  entry
-                }}</span>
-              </template>
               <span v-else class="det__none">None</span>
             </dd>
           </div>

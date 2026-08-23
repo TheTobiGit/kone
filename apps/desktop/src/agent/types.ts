@@ -595,8 +595,8 @@ export type QueuedTurnStore = {
 /** How an app-owned thread relates to another thread. `"subagent"` =
  *  agent-initiated work unit spawned as an anonymous worker; `"delegation"` =
  *  agent-initiated work handed to a persistent project-team agent, bound to it
- *  so the child runs as that agent (its identity, policies and model
- *  preference); `"side_chat"` = user-initiated fork. Both agent-initiated kinds
+ *  so the child runs as that agent (its identity and model preference);
+ *  `"side_chat"` = user-initiated fork. Both agent-initiated kinds
  *  are spawned children — the discriminator only records whether the work went
  *  to a named agent (delegation) or a throwaway worker (subagent). */
 export type RelationshipToParent = "subagent" | "delegation" | "side_chat";

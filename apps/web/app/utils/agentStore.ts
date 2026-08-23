@@ -25,7 +25,6 @@ import type {
   AgentDuplicateInput,
   AgentModelRef,
   AgentPatch,
-  AgentPolicies,
   AgentRecord,
   RosterSnapshot,
   ThreadAgentBinding,
@@ -453,27 +452,6 @@ function clampModel(value: AgentModelRef | null | undefined): AgentModelRef | nu
   return value ?? null;
 }
 
-/** A denied-string list: trimmed, empties dropped, length-bounded — the dev
- *  fallback's echo of the store's `cleanStringList`. */
-function clampStrings(value: readonly string[] | null | undefined): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .slice(0, LIST_MAX)
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter(Boolean);
-}
-
-/** A policies delta: null and undefined both mean "inherit", while an object —
- *  even one with empty lists — is a real answer the dev fallback keeps by
- *  value, each list cleaned and bounded. */
-function clampPolicies(value: AgentPolicies | null | undefined): AgentPolicies | null {
-  if (value === null || value === undefined) return null;
-  return {
-    deniedCommands: clampStrings(value.deniedCommands),
-    deniedPaths: clampStrings(value.deniedPaths),
-  };
-}
-
 /** An avatar delta: null and undefined both mean "inherit", and one with
  *  nothing to draw is no avatar at all rather than a picture that paints blank.
  *  `src` is bounded but never inspected — an asset path and a data URL are the
@@ -530,7 +508,6 @@ function ensureLocalRow(presetId: string): AgentRecord {
     faceInk: null,
     skills: null,
     model: null,
-    policies: null,
     avatar: null,
     bot: null,
     sortOrder: nextSortOrder(),
@@ -556,7 +533,6 @@ function insertLocalRow(input: AgentCreateInput): AgentRecord | null {
     faceInk: clamp(input.faceInk, PAINT_MAX),
     skills: clampList(input.skills),
     model: clampModel(input.model),
-    policies: clampPolicies(input.policies),
     avatar: clampAvatar(input.avatar),
     bot: clampBot(input.bot),
     sortOrder: nextSortOrder(),
@@ -579,7 +555,6 @@ function patchLocalRow(agentId: string, patch: AgentPatch): AgentRecord | null {
   if (patch.faceInk !== undefined) next.faceInk = clamp(patch.faceInk, PAINT_MAX);
   if (patch.skills !== undefined) next.skills = clampList(patch.skills);
   if (patch.model !== undefined) next.model = clampModel(patch.model);
-  if (patch.policies !== undefined) next.policies = clampPolicies(patch.policies);
   if (patch.avatar !== undefined) next.avatar = clampAvatar(patch.avatar);
   if (patch.bot !== undefined) next.bot = clampBot(patch.bot);
   // The store's CHECK, mirrored: an agent with nothing to inherit from has to
@@ -613,7 +588,6 @@ function forkLocalRow(input: AgentDuplicateInput): AgentRecord | null {
     faceInk: clamp(source.faceInk ?? inherited.faceInk, PAINT_MAX),
     skills: clampList(source.skills ?? inherited.skills),
     model: clampModel(source.model ?? inherited.model),
-    policies: clampPolicies(source.policies ?? inherited.policies),
     avatar: clampAvatar(source.avatar ?? inherited.avatar),
     bot: clampBot(source.bot ?? inherited.bot),
     sortOrder: source.sortOrder + 1,

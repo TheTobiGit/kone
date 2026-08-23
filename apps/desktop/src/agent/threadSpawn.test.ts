@@ -490,8 +490,8 @@ describe("spawn engine", () => {
     // went to a named agent rather than an anonymous worker.
     expect(store.lineages.get(result.threadId)?.relationshipToParent).toBe("delegation");
 
-    // The child is bound to its agent BEFORE the first turn — so the approval
-    // seam resolves that agent's policies from the first action.
+    // The child is bound to its agent BEFORE the first turn — so every event
+    // the thread emits names who ran it from the first action.
     expect(store.bound.get(result.threadId)).toBe("agent-backend");
 
     // And it runs AS that agent: the persona rode to the session.

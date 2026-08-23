@@ -16,7 +16,7 @@ import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
 // §3.4's preset sub-agents surface: the reusable definitions an agent cuts a
 // spawn from. A list of presets, each opening into a light editor — name, the
 // standing instructions the child wakes up to, and the one model it runs on. No
-// face, no role, no policies: a preset is lighter than an agent on purpose, just
+// face, no role: a preset is lighter than an agent on purpose, just
 // enough to name a repeatable job and say how it should run.
 
 const props = defineProps<{ open: boolean }>();

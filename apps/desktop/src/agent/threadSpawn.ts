@@ -53,7 +53,7 @@ export interface SpawnEngineStore {
   threadLineage(threadId: string): ThreadLineage | null;
   /** Bind a delegated child to the agent it runs as, before its first turn
    *  dispatches. The return value is ignored — the engine only needs the write
-   *  to land so the approval seam resolves the agent's policies. */
+   *  to land so the thread's transcript names who answered. */
   bindThreadAgent(threadId: string, agentId: string): void;
   spawnedChildren(parentThreadId: string): StoredThreadMeta[];
   spawnDepth(threadId: string): number;
@@ -138,8 +138,8 @@ export type SpawnRequest = {
   /** When this spawn is a delegation to a persistent project-team agent: the
    *  agent to bind the child to, so it runs AS that agent. The engine stamps
    *  the child's lineage `"delegation"` (not `"subagent"`), binds the thread to
-   *  this agent before dispatch (so its policies apply at the approval seam),
-   *  and delivers `persona` to the session (so its instructions reach the
+   *  this agent before dispatch (so the transcript carries its identity), and
+   *  delivers `persona` to the session (so its instructions reach the
    *  model). Absent for an anonymous sub-agent spawn. */
   delegateToAgentId?: string;
   /** The delegated agent's identity — its name and standing instructions — set
@@ -483,9 +483,9 @@ class SpawnEngineImpl implements SpawnEngine {
     }
 
     // Bind the child to the agent it was delegated to BEFORE its first turn
-    // dispatches, so the approval seam resolves that agent's policies from the
-    // very first action. The persona (below) carries its instructions into the
-    // session; the binding is what makes its standing prohibitions bite.
+    // dispatches, so every event the thread emits names the agent it ran as
+    // from the very first action. The persona (below) carries its instructions
+    // into the session; the binding is what makes the transcript read as theirs.
     if (request.delegateToAgentId) {
       this.store.bindThreadAgent(threadId, request.delegateToAgentId);
     }

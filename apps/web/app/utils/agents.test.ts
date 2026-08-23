@@ -529,64 +529,6 @@ describe("an agent's capabilities", () => {
   });
 });
 
-describe("an agent's policies", () => {
-  // Resolved policies are always concrete lists: the presets ship none, so an
-  // unedited built-in resolves to empty lists — it forbids nothing.
-  test("an unedited built-in resolves to empty lists, not gaps", () => {
-    const kone = agentById(KONE.id)!;
-    expect(kone.policies.deniedCommands).toEqual([]);
-    expect(kone.policies.deniedPaths).toEqual([]);
-  });
-
-  test("a new agent keeps the policies it was made with", async () => {
-    const made = await createAgent({
-      name: "Ada",
-      policies: { deniedCommands: ["rm -rf"], deniedPaths: [".env"] },
-    });
-    expect(made?.policies.deniedCommands).toEqual(["rm -rf"]);
-    expect(made?.policies.deniedPaths).toEqual([".env"]);
-  });
-
-  test("a new agent silent about its policies forbids nothing", async () => {
-    const made = await createAgent({ name: "Ada" });
-    expect(made?.policies.deniedCommands).toEqual([]);
-    expect(made?.policies.deniedPaths).toEqual([]);
-  });
-
-  // An empty-lists object is a stored answer; null hands the field back to the
-  // preset. Both resolve to `[]` on a built-in that ships no policies, so only
-  // the row shows the difference.
-  test("an empty-lists object is a stored answer; null hands the field back", async () => {
-    await updateAgent(KONE.id, { policies: { deniedCommands: ["rm"], deniedPaths: [] } });
-    expect(rowFor(KONE.id).policies).toEqual({ deniedCommands: ["rm"], deniedPaths: [] });
-
-    await updateAgent(KONE.id, { policies: { deniedCommands: [], deniedPaths: [] } });
-    expect(rowFor(KONE.id).policies).toEqual({ deniedCommands: [], deniedPaths: [] });
-
-    await updateAgent(KONE.id, { policies: null });
-    expect(rowFor(KONE.id).policies).toBeNull();
-  });
-
-  test("a fork carries the policies the source reads as", async () => {
-    await hydrateRoster();
-    await updateAgent(KONE.id, {
-      policies: { deniedCommands: ["git push"], deniedPaths: ["secrets"] },
-    });
-    const copy = await duplicateAgent(KONE.id, "kone copy");
-    expect(copy?.policies.deniedCommands).toEqual(["git push"]);
-    expect(copy?.policies.deniedPaths).toEqual(["secrets"]);
-  });
-
-  test("a blank policy entry is dropped", async () => {
-    const made = await createAgent({
-      name: "Ada",
-      policies: { deniedCommands: ["", "rm -rf"], deniedPaths: ["   "] },
-    });
-    expect(made?.policies.deniedCommands).toEqual(["rm -rf"]);
-    expect(made?.policies.deniedPaths).toEqual([]);
-  });
-});
-
 describe("how an agent looks", () => {
   const PICTURE = { source: "generated", src: "data:image/jpeg;base64,AAAA" } as const;
   const BOT = { form: "pebble", color: "teal", expression: "curious" } as const;
@@ -688,7 +630,6 @@ describe("the store's answer arriving", () => {
       faceInk: null,
       skills: null,
       model: null,
-      policies: null,
       avatar: null,
       bot: null,
       sortOrder: 0,
@@ -812,7 +753,6 @@ describe("what crosses the bridge", () => {
       avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" },
       bot: { form: "droplet", color: "ink", expression: "curious" },
       // Nested and reactive, which is why an unwrapped top level is not enough.
-      policies: { deniedCommands: ["rm -rf"], deniedPaths: [] },
       model: null,
     });
     const payload = sendable(draft.value);
@@ -821,7 +761,6 @@ describe("what crosses the bridge", () => {
       name: "Ada",
       avatar: { source: "generated", src: "data:image/jpeg;base64,AAAA" },
       bot: { form: "droplet", color: "ink", expression: "curious" },
-      policies: { deniedCommands: ["rm -rf"], deniedPaths: [] },
       model: null,
     });
   });

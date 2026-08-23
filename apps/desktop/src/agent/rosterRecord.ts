@@ -27,18 +27,6 @@ export type AgentModelRef = {
   label?: string;
 };
 
-/** An agent's permanent restrictions (v25). Where capabilities say what an
- *  agent has available, policies say what it may never do, whatever the
- *  thread's interaction mode would otherwise allow. Empty lists forbid nothing.
- *  The matching that turns a stored string into a block lives with whatever
- *  enforces it, not here — this is only the written-down set of restrictions. */
-export type AgentPolicies = {
-  /** Command lines the agent may never run. */
-  deniedCommands: string[];
-  /** File paths the agent may never read or write. */
-  deniedPaths: string[];
-};
-
 /** A picture of an agent (v27). `source` records where it came from, so a later
  *  editor can tell a generated face from an uploaded one without inspecting the
  *  bytes; `src` is whatever draws it — a path to a shipped asset, or a data URL
@@ -76,9 +64,6 @@ export type AgentRecord = {
    *  always has). */
   skills: AgentSkillRef[] | null;
   model: AgentModelRef | null;
-  /** The agent's permanent restrictions (v25), or null to inherit the preset's.
-   *  A resolved object forbids exactly what its lists name and nothing else. */
-  policies: AgentPolicies | null;
   /** How the agent looks (v27), each an overlay: null inherits the preset's. An
    *  agent with neither is drawn by the face they have always had. */
   avatar: AgentAvatarRef | null;
@@ -102,7 +87,6 @@ export type AgentCreateInput = {
   faceInk?: string | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
-  policies?: AgentPolicies | null;
   avatar?: AgentAvatarRef | null;
   bot?: AgentBotRef | null;
 };
@@ -117,7 +101,6 @@ export type AgentPatch = {
   faceInk?: string | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
-  policies?: AgentPolicies | null;
   avatar?: AgentAvatarRef | null;
   bot?: AgentBotRef | null;
 };
@@ -139,7 +122,6 @@ export type AgentDuplicateInput = {
     faceInk?: string | null;
     skills?: AgentSkillRef[] | null;
     model?: AgentModelRef | null;
-    policies?: AgentPolicies | null;
     avatar?: AgentAvatarRef | null;
     bot?: AgentBotRef | null;
   };
@@ -221,7 +203,7 @@ export const AGENT_AVATAR_MAX = 512 * 1024;
 
 export const AGENT_COLUMNS =
   "agent_id, preset_id, name, role, instructions, " +
-  "face_body, face_ink, skills, providers, models, policies, " +
+  "face_body, face_ink, skills, providers, models, " +
   "avatar, bot, sort_order, created_at, updated_at, deleted_at";
 
 /** How long a stored capability list may get, and how long each string inside
@@ -381,52 +363,6 @@ export function parseAgentList<T>(raw: string | null, normalize: (entry: ColumnV
   }
 }
 
-/** Clean one list of strings inside a policy: drop anything that isn't a
- *  string, trim and bound each, drop the ones that empty out, and cap the
- *  count — the same floor `serializeAgentList` puts under a capability list. */
-export function cleanStringList(value: ColumnValue | undefined): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  for (const entry of value.slice(0, AGENT_LIST_MAX)) {
-    const bounded = boundRefField(entry);
-    if (bounded) out.push(bounded);
-  }
-  return out;
-}
-
-/** Normalize a policies object. Null and undefined both mean "inherit" and
- *  come back as null; anything that isn't an object is not a policy set and
- *  reads the same way. A real object always resolves to both lists, each
- *  cleaned — a missing or malformed list is an empty one, never a throw. */
-export function normalizePolicies(value: ColumnValue | undefined): AgentPolicies | null {
-  if (!isColumnRecord(value)) return null;
-  return {
-    deniedCommands: cleanStringList(value.deniedCommands),
-    deniedPaths: cleanStringList(value.deniedPaths),
-  };
-}
-
-/** Serialize the policies object to the JSON its column holds. Null and
- *  undefined store as null ("inherit"); a real object stores as cleaned JSON. */
-export function serializeAgentPolicies(value: AgentPolicies | null | undefined): string | null {
-  const normalized = normalizePolicies(value);
-  return normalized === null ? null : JSON.stringify(normalized);
-}
-
-/** Read the policies column back into its object, or null when the column is
- *  null ("inherit"). Unparseable or non-object JSON reads as null — a malformed
- *  policy is no policy, exactly as a malformed capability list is. */
-export function parseAgentPolicies(raw: string | null): AgentPolicies | null {
-  if (raw === null) return null;
-  try {
-    // SAFETY: the column hands back arbitrary JSON; normalizePolicies rebuilds
-    // both lists from validated fields.
-    return normalizePolicies(JSON.parse(raw) as ColumnValue);
-  } catch {
-    return null;
-  }
-}
-
 /** Normalize an avatar. Both fields are required and neither may be empty — an
  *  avatar with nothing to draw is not one, and reads as null ("inherit") rather
  *  than as a picture that paints a blank. `src` is bounded but never inspected:
@@ -512,7 +448,6 @@ export type AgentRow = {
   skills: string | null;
   providers: string | null;
   models: string | null;
-  policies: string | null;
   avatar: string | null;
   bot: string | null;
   sort_order: number;
@@ -532,7 +467,6 @@ export function rowToAgent(row: AgentRow): AgentRecord {
     faceInk: row.face_ink,
     skills: parseAgentList(row.skills, normalizeSkillRef),
     model: parseModelRef(row.models),
-    policies: parseAgentPolicies(row.policies),
     avatar: parseAgentAvatar(row.avatar),
     bot: parseAgentBot(row.bot),
     sortOrder: row.sort_order,
