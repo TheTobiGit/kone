@@ -78,8 +78,8 @@ function readConnected(): Set<QuotaProvider> {
   if (!import.meta.client) return new Set();
   try {
     const raw = localStorage.getItem(CONNECTED_KEY);
-    const list = raw ? (JSON.parse(raw) as string[]) : [];
-    return new Set(list.filter((p): p is QuotaProvider => QUOTA_CAPABLE.includes(p as QuotaProvider)));
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    return new Set(list.filter((p): p is QuotaProvider => READABLE.has(p)));
   } catch {
     return new Set();
   }

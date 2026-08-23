@@ -255,6 +255,7 @@ function koneMcpServerName(threadId: string): string {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 

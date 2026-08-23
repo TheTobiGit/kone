@@ -20,6 +20,7 @@ export function applyThemeColors(
   root.classList.add("theme-swapping");
   void root.offsetHeight;
 
+  // SAFETY: Object.keys lists THEME_VARIABLES' own roles, so every key names one of them.
   for (const role of Object.keys(THEME_VARIABLES) as (keyof typeof THEME_VARIABLES)[]) {
     root.style.setProperty(THEME_VARIABLES[role], colors[role]);
   }

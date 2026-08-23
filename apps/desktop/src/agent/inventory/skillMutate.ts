@@ -67,7 +67,7 @@ const FRONTMATTER_KEY_PATTERN = /^[A-Za-z0-9_-]+$/;
  *  The name must be lowercase letters, numbers, and hyphens (the folder name
  *  is the command name, and scanners key on it case-sensitively). */
 export function validateSkillName(name: string): string | null {
-  if (typeof name !== "string" || !NAME_PATTERN.test(name)) {
+  if (!NAME_PATTERN.test(name)) {
     return "The name must be lowercase letters, numbers, and hyphens, like review-code.";
   }
   if (name.length > NAME_MAX_CHARS) {
@@ -271,7 +271,7 @@ async function prepareRoot(root: string): Promise<{ ok: true; real: string } | {
   try {
     await mkdir(root, { recursive: true });
   } catch (error) {
-    return { ok: false, error: `${(error as Error).message}.` };
+    return { ok: false, error: `${error instanceof Error ? error.message : String(error)}.` };
   }
   try {
     return { ok: true, real: await realpath(root) };
@@ -340,7 +340,7 @@ export async function scaffoldSkill(root: string, name: string, description: str
   try {
     await mkdir(dir);
   } catch (error) {
-    return { ok: false, action: "scaffold", path: dir, detail: `Could not scaffold: ${(error as Error).message}.` };
+    return { ok: false, action: "scaffold", path: dir, detail: `Could not scaffold: ${error instanceof Error ? error.message : String(error)}.` };
   }
 
   const skillMdPath = path.join(dir, "SKILL.md");
@@ -348,7 +348,7 @@ export async function scaffoldSkill(root: string, name: string, description: str
     await writeFile(skillMdPath, `---\nname: ${name}\ndescription: ${description.trim()}\n---\n`, "utf8");
   } catch (error) {
     await removeCreated(dir);
-    return { ok: false, action: "scaffold", path: skillMdPath, detail: `Could not scaffold: ${(error as Error).message}.` };
+    return { ok: false, action: "scaffold", path: skillMdPath, detail: `Could not scaffold: ${error instanceof Error ? error.message : String(error)}.` };
   }
 
   // Containment: the created folder must resolve back inside the root — a
@@ -471,7 +471,7 @@ export async function editSkillFrontmatter(skillMdPath: string, edits: Frontmatt
   try {
     await writeFile(skillMdPath, applied.text, "utf8");
   } catch (error) {
-    return { ok: false, action: "editFrontmatter", path: skillMdPath, detail: `Could not edit: ${(error as Error).message}.` };
+    return { ok: false, action: "editFrontmatter", path: skillMdPath, detail: `Could not edit: ${error instanceof Error ? error.message : String(error)}.` };
   }
 
   const keys = edits.map((edit) => edit.key);
@@ -519,14 +519,14 @@ export async function deleteSkillToTrash(skillDir: string, trashDir?: string): P
   try {
     target = await trashTarget(trashDir ?? defaultTrashRoot(), path.basename(resolved));
   } catch (error) {
-    return { ok: false, action: "delete", path: skillDir, detail: `Could not delete: ${(error as Error).message}.` };
+    return { ok: false, action: "delete", path: skillDir, detail: `Could not delete: ${error instanceof Error ? error.message : String(error)}.` };
   }
   try {
     await rename(resolved, target);
   } catch (error) {
     // A rename fails across filesystems (EXDEV); never fall back to
     // copy-then-unlink — if the trash cannot take the folder, nothing goes.
-    return { ok: false, action: "delete", path: skillDir, detail: `Could not delete: ${(error as Error).message}.` };
+    return { ok: false, action: "delete", path: skillDir, detail: `Could not delete: ${error instanceof Error ? error.message : String(error)}.` };
   }
 
   return { ok: true, action: "delete", path: skillDir, detail: `Moved the skill folder to ${target}.` };
@@ -538,7 +538,7 @@ export async function deleteSkillToTrash(skillDir: string, trashDir?: string): P
  *  and scp-style URLs, plus local repository folders — and rejects anything
  *  else (a marketplace name, a zip URL, a shell-ish string). */
 function validateInstallSource(url: string): string | null {
-  if (typeof url !== "string" || url.length === 0) {
+  if (url.length === 0) {
     return "the source is empty.";
   }
   if (/\s/.test(url)) {
@@ -612,7 +612,7 @@ export async function installSkillFromGit(
     const result = await clone(url, cloneTarget, () => {});
     cloned = result.root;
   } catch (error) {
-    return { ok: false, action: "install", path: cloneTarget, detail: `Could not install: ${(error as Error).message}.` };
+    return { ok: false, action: "install", path: cloneTarget, detail: `Could not install: ${error instanceof Error ? error.message : String(error)}.` };
   }
 
   if (await exists(path.join(cloned, ".claude-plugin"))) {
@@ -677,7 +677,7 @@ export async function installSkillFromGit(
       await rename(cloned, renamedTarget);
     } catch (error) {
       await discardClone(cloned, options?.trashDir);
-      return { ok: false, action: "install", path: cloned, detail: `Could not install: ${(error as Error).message}.` };
+      return { ok: false, action: "install", path: cloned, detail: `Could not install: ${error instanceof Error ? error.message : String(error)}.` };
     }
     finalDir = renamedTarget;
   } else {
@@ -701,7 +701,7 @@ export async function installSkillFromGit(
     // Without the manifest there is no honest update or uninstall later, so
     // the install is rolled back rather than left half-claimed.
     await discardClone(finalDir, options?.trashDir);
-    return { ok: false, action: "install", path: finalDir, detail: `Could not install: the source manifest could not be written (${(error as Error).message}).` };
+    return { ok: false, action: "install", path: finalDir, detail: `Could not install: the source manifest could not be written (${error instanceof Error ? error.message : String(error)}).` };
   }
 
   const renamed = name !== cloneName ? ` (renamed to ${name} to match its frontmatter name)` : "";

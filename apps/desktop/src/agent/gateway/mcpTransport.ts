@@ -35,16 +35,55 @@ const MCP_MAX_BATCH_MESSAGES = 50;
 
 export type JsonRpcId = string | number | null;
 
+/** One decoded JSON document. The HTTP layer parses bytes once at its
+ *  boundary; everything downstream branches on these domain values, so no
+ *  step has to interrogate a representation. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type JsonObject = { [key: string]: JsonValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isJsonNumber(value: JsonValue | undefined): value is number {
+  return Number.isFinite(value);
+}
+
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  value — booleans by identity, numbers by finiteness, composites by their
+ *  constructors. */
+function jsonText(value: JsonValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isJsonNumber(value)) return null;
+  return value;
+}
+
+/** A JSON scalar fit for a JSON-RPC id or cancellation key: text or number. */
+function jsonScalar(value: JsonValue | undefined): string | number | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object) return null;
+  return value;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value instanceof Object && !Array.isArray(value);
+}
+
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
   id: JsonRpcId;
   method: string;
-  params: Record<string, unknown>;
+  params: JsonObject;
 }
 
 export interface JsonRpcNotification {
   method: string;
-  params: Record<string, unknown>;
+  params: JsonObject;
 }
 
 export type ParsedMcpMessage =
@@ -68,47 +107,39 @@ export function jsonRpcError(
 /** Classify one raw JSON-RPC message. Responses and notifications require no
  *  reply body; invalid entries produce an error response bound to whatever id
  *  could be recovered. */
-export function parseMcpMessage(raw: unknown): ParsedMcpMessage {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+export function parseMcpMessage(raw: JsonValue): ParsedMcpMessage {
+  if (!isJsonObject(raw)) {
     return { kind: "invalid", id: null };
   }
-  const record = raw as Record<string, unknown>;
-  const rawId = record.id;
-  const id: JsonRpcId =
-    typeof rawId === "string" || typeof rawId === "number" || rawId === null ? rawId : null;
-  if (record.jsonrpc !== "2.0") return { kind: "invalid", id };
-  if (typeof record.method !== "string" || record.method.length === 0) {
+  const rawId = raw.id;
+  const id = jsonScalar(rawId);
+  if (raw.jsonrpc !== "2.0") return { kind: "invalid", id };
+  const method = jsonText(raw.method);
+  if (method === null || method.length === 0) {
     // No method: either a client→server response (has result/error) or garbage.
-    if ("result" in record || "error" in record) return { kind: "response" };
+    if ("result" in raw || "error" in raw) return { kind: "response" };
     return { kind: "invalid", id };
   }
-  if (
-    rawId !== undefined &&
-    rawId !== null &&
-    typeof rawId !== "string" &&
-    typeof rawId !== "number"
-  ) {
+  if (rawId != null && jsonScalar(rawId) === null) {
     return { kind: "invalid", id: null };
   }
-  const params =
-    typeof record.params === "object" && record.params !== null && !Array.isArray(record.params)
-      ? (record.params as Record<string, unknown>)
-      : {};
+  const params = isJsonObject(raw.params) ? raw.params : {};
   if (rawId === undefined) {
-    return { kind: "notification", notification: { method: record.method, params } };
+    return { kind: "notification", notification: { method, params } };
   }
-  return { kind: "request", request: { jsonrpc: "2.0", id, method: record.method, params } };
+  return { kind: "request", request: { jsonrpc: "2.0", id, method, params } };
 }
 
-export function negotiateMcpProtocolVersion(requested: unknown): string {
-  if (typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.has(requested)) {
-    return requested;
+export function negotiateMcpProtocolVersion(requested: JsonValue | undefined): string {
+  const requestedVersion = jsonText(requested);
+  if (requestedVersion !== null && MCP_SUPPORTED_PROTOCOL_VERSIONS.has(requestedVersion)) {
+    return requestedVersion;
   }
   return MCP_DEFAULT_PROTOCOL_VERSION;
 }
 
 export function buildMcpInitializeResult(input: {
-  requestedProtocolVersion: unknown;
+  requestedProtocolVersion: JsonValue | undefined;
   serverVersion: string;
   instructions: string;
 }): Record<string, unknown> {
@@ -157,7 +188,7 @@ export interface McpTransport {
   /** Handle one POSTed JSON-RPC message or batch. Never throws. */
   handlePost(input: {
     authorizationHeader: string | undefined;
-    body: unknown;
+    body: JsonValue;
   }): Promise<GatewayMcpResponse>;
 }
 
@@ -190,8 +221,8 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       case "tools/list":
         return jsonRpcResult(request.id, { tools: input.registry.listTools() });
       case "tools/call": {
-        const name = request.params.name;
-        if (typeof name !== "string") {
+        const name = jsonText(request.params.name);
+        if (name === null) {
           return jsonRpcError(request.id, JSON_RPC_INVALID_PARAMS, "Missing tool name.");
         }
         const toolCtx = {
@@ -247,13 +278,12 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       // sticks, so a request racing a turn boundary can never inherit the
       // next turn's authority.
       const live = input.turnState.get(threadId);
-      const bound =
-        live && live.running
-          ? input.credentials.bindWriteAuthority(token, live.turnId)
-          : false;
-      const turnId = bound ? (live as { turnId: string }).turnId : null;
+      let turnId: string | null = null;
+      if (live?.running && input.credentials.bindWriteAuthority(token, live.turnId)) {
+        turnId = live.turnId;
+      }
 
-      const rawMessages = Array.isArray(body) ? body : [body];
+      const rawMessages: readonly JsonValue[] = Array.isArray(body) ? body : [body];
       if (rawMessages.length === 0) {
         return { status: 400, body: jsonRpcError(null, JSON_RPC_INVALID_REQUEST, "Empty JSON-RPC batch.") };
       }
@@ -277,8 +307,8 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
           message.kind === "notification" &&
           message.notification.method === "notifications/cancelled"
         ) {
-          const id = message.notification.params.requestId;
-          if (typeof id === "string" || typeof id === "number") cancelledIds.add(id);
+          const requestId = jsonScalar(message.notification.params.requestId);
+          if (requestId !== null) cancelledIds.add(requestId);
         }
       }
 
@@ -324,15 +354,11 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
             break;
           }
           case "notification": {
-            if (
-              message.notification.method === "notifications/cancelled" &&
-              (typeof message.notification.params.requestId === "string" ||
-                typeof message.notification.params.requestId === "number")
-            ) {
-              inFlight.cancel({
-                sessionKey: threadId,
-                requestId: message.notification.params.requestId,
-              });
+            if (message.notification.method === "notifications/cancelled") {
+              const requestId = jsonScalar(message.notification.params.requestId);
+              if (requestId !== null) {
+                inFlight.cancel({ sessionKey: threadId, requestId });
+              }
             }
             responses.push(null);
             break;

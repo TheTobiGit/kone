@@ -48,8 +48,11 @@ export function lastStderrLine(stderr: string, fallback: string): string {
 /** Whether a rejected child_process run died from its own timeout (killed by
  *  the `timeout` option) rather than a real exit. */
 export function isExecTimeout(err: unknown): boolean {
-  const e = err as { killed?: boolean; code?: number | string } | null | undefined;
-  return e?.killed === true || e?.code === "ETIMEDOUT";
+  if (!(err instanceof Object)) return false;
+  return (
+    ("killed" in err && err.killed === true) ||
+    ("code" in err && err.code === "ETIMEDOUT")
+  );
 }
 
 export async function git(
@@ -73,13 +76,21 @@ export async function git(
     if (isExecTimeout(error)) {
       throw new GitError("The git command timed out.", null, "", "TIMEOUT");
     }
-    const err = error as NodeJS.ErrnoException & {
-      stderr?: string;
-      stdout?: string;
-      code?: number | string;
-    };
-    const code = typeof err.code === "number" ? err.code : null;
-    throw new GitError(err.stderr?.trim() || err.message, code, err.stdout ?? "");
+    const stderr =
+      error instanceof Error && "stderr" in error
+        ? String(error.stderr ?? "")
+        : "";
+    const stdout =
+      error instanceof Error && "stdout" in error
+        ? String(error.stdout ?? "")
+        : "";
+    const message =
+      stderr.trim() ||
+      (error instanceof Error ? error.message : "git command failed");
+    const rawCode =
+      error instanceof Error && "code" in error ? error.code : undefined;
+    const code = typeof rawCode === "number" ? rawCode : null;
+    throw new GitError(message, code, stdout);
   }
 }
 

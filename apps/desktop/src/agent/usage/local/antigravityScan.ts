@@ -132,6 +132,7 @@ function firstProtoField(fields: readonly ProtoField[], fieldNumber: number): Pr
 function protoFieldText(field: ProtoField | undefined): string | undefined {
   if (!field?.bytes || field.bytes.length === 0) return undefined;
   const text = new TextDecoder("utf-8", { fatal: false }).decode(field.bytes);
+  // eslint-disable-next-line no-control-regex
   if (!text || /[\u0000-\u0008\u000E-\u001F\u007F\uFFFD]/.test(text)) return undefined;
   return text;
 }
@@ -230,7 +231,7 @@ export function canonicalAntigravityModelId(
   }
   // Antigravity's model map sometimes hasn't caught up with a new model and
   // carries a placeholder id — never leak it as a model name.
-  return /^MODEL_PLACEHOLDER_/.test(rawModel) ? "unknown" : rawModel;
+  return rawModel.startsWith("MODEL_PLACEHOLDER_") ? "unknown" : rawModel;
 }
 
 const isResponseId = (value: string): boolean => /^[^\s]+$/.test(value);

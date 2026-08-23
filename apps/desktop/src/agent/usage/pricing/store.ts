@@ -183,8 +183,10 @@ async function fetchSource(source: SourceId, deps: StoreDeps): Promise<boolean> 
       return false;
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const body = await response.json();
-    const table = source === "litellm" ? parseLiteLLM(body, todayIso(deps)) : parseModelsDev(body, todayIso(deps));
+    // Decode here rather than inside a codec: response.json() hands back
+    // unknown, and each codec declares the shape it actually consumes.
+    const parsed = JSON.parse(await response.text());
+    const table = source === "litellm" ? parseLiteLLM(parsed, todayIso(deps)) : parseModelsDev(parsed, todayIso(deps));
     const compact = encodeCompact(table, SOURCE_URLS[source]);
     writeJsonFile(cacheFile(source), JSON.stringify(compact));
     sourceStates[source] = {

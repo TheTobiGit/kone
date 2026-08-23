@@ -203,13 +203,12 @@ describe("getInitialWindowState restore", () => {
         return win;
       },
     };
-    manageWindowState(win as never, { persistEnabled: restored.persistEnabled });
+    manageWindowState(win, { persistEnabled: restored.persistEnabled });
     for (const fn of listeners.get("close") ?? []) fn();
 
-    const onDisk = JSON.parse(readFileSync(STATE_FILE, "utf8")) as {
-      x?: number;
-      y?: number;
-    };
+    const onDisk: { x?: number; y?: number } = JSON.parse(
+      readFileSync(STATE_FILE, "utf8"),
+    );
     expect(onDisk.x).toBe(4000);
     expect(onDisk.y).toBe(80);
   });
@@ -377,16 +376,15 @@ describe("manageWindowState", () => {
       height: restored.height,
     };
     const { win, listeners } = fakeWindow(() => bounds);
-    manageWindowState(win as never, { persistEnabled: restored.persistEnabled });
+    manageWindowState(win, { persistEnabled: restored.persistEnabled });
 
     bounds = { x: 200, y: 150, width: restored.width, height: restored.height };
     for (const fn of listeners.get("move") ?? []) fn();
     for (const fn of listeners.get("close") ?? []) fn();
 
-    const onDisk = JSON.parse(readFileSync(STATE_FILE, "utf8")) as {
-      x?: number;
-      y?: number;
-    };
+    const onDisk: { x?: number; y?: number } = JSON.parse(
+      readFileSync(STATE_FILE, "utf8"),
+    );
     expect(onDisk.x).toBe(200);
     expect(onDisk.y).toBe(150);
   });
@@ -394,7 +392,7 @@ describe("manageWindowState", () => {
   test("registers a maximize listener", () => {
     const { win, listeners } = fakeWindow(() => ({ x: 0, y: 0, width: 1280, height: 840 }));
 
-    manageWindowState(win as never, { persistEnabled: true });
+    manageWindowState(win, { persistEnabled: true });
 
     expect(listeners.has("maximize")).toBe(true);
   });

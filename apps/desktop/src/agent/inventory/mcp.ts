@@ -16,24 +16,42 @@ import type { InventoryError, McpServerEntry, McpTransport } from "./types.js";
 
 const MAX_FILE_BYTES = 256 * 1024;
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+// One decoded value from a parsed MCP config document; every helper below
+// branches on these domain values instead of interrogating representations.
+type McpConfigValue = string | number | boolean | null | McpConfigValue[] | { [key: string]: McpConfigValue };
+
+type McpConfigRecord = { [key: string]: McpConfigValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isConfigNumber(value: McpConfigValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function isEnoent(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT");
+/** Text is the one config variant left after every other variant is excluded
+ *  by value — booleans by identity, numbers by finiteness, composites by
+ *  their constructors. */
+function configText(value: McpConfigValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isConfigNumber(value)) return null;
+  return value;
+}
+
+function isConfigRecord(value: McpConfigValue | undefined): value is McpConfigRecord {
+  return value instanceof Object && !Array.isArray(value);
 }
 
 // ── JSON reading ─────────────────────────────────────────────────────────────
 
-type JsonReadResult = { kind: "ok"; data: unknown } | { kind: "missing" } | { kind: "error"; message: string };
+type JsonReadResult = { kind: "ok"; data: McpConfigValue } | { kind: "missing" } | { kind: "error"; message: string };
 
 async function readOptionalJsonFile(filePath: string): Promise<JsonReadResult> {
   let info;
   try {
     info = await stat(filePath);
   } catch (error) {
-    return isEnoent(error) ? { kind: "missing" } : { kind: "error", message: errorMessage(error) };
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return { kind: "missing" };
+    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
   }
   if (!info.isFile()) return { kind: "missing" };
   if (info.size > MAX_FILE_BYTES) {
@@ -43,82 +61,80 @@ async function readOptionalJsonFile(filePath: string): Promise<JsonReadResult> {
     const raw = await readFile(filePath, "utf8");
     return { kind: "ok", data: JSON.parse(raw) };
   } catch (error) {
-    return { kind: "error", message: errorMessage(error) };
+    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
   }
 }
 
-function recordAt(data: unknown, key: string): Record<string, unknown> {
-  if (!data || typeof data !== "object") return {};
-  const value = (data as Record<string, unknown>)[key];
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
+function recordAt(data: McpConfigValue | undefined, key: string): McpConfigRecord {
+  const value = isConfigRecord(data) ? data[key] : undefined;
+  return isConfigRecord(value) ? value : {};
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+function stringArray(value: McpConfigValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => configText(item) !== null) : [];
 }
 
 // ── Shape normalization ──────────────────────────────────────────────────────
 // Every config source names its transport/command/env fields slightly
 // differently; these fold them all onto McpServerEntry's shape.
 
-function normalizeTransport(raw: Record<string, unknown>): McpTransport {
-  const type = typeof raw.type === "string" ? raw.type.toLowerCase() : undefined;
+function normalizeTransport(raw: McpConfigRecord): McpTransport {
+  const type = configText(raw.type)?.toLowerCase();
   if (type === "stdio" || type === "local") return "stdio";
   if (type === "http" || type === "streamable-http" || type === "remote") return "http";
   if (type === "sse" || type === "se") return "sse";
   if (type === "ws" || type === "websocket") return "ws";
   // No explicit tag: shape-discriminated per the ACP schema (research doc
   // §2) — a `command` means stdio, a `url` means http.
-  if (typeof raw.command !== "undefined") return "stdio";
-  if (typeof raw.url === "string") return "http";
+  if (raw.command !== undefined) return "stdio";
+  if (configText(raw.url) !== null) return "http";
   return "unknown";
 }
 
 // opencode's `command` is an argv array (`["bun", "x", "pkg"]`); every other
 // source splits `command` (a string) + `args` (an array). Handle both.
-function normalizeCommand(command: unknown, extraArgs: string[]): Pick<McpServerEntry, "command" | "args"> {
+function normalizeCommand(command: McpConfigValue | undefined, extraArgs: string[]): Pick<McpServerEntry, "command" | "args"> {
   if (Array.isArray(command)) {
-    const parts = command.filter((item): item is string => typeof item === "string");
+    const parts = command.filter((item): item is string => configText(item) !== null);
     const [first, ...rest] = parts;
     return { command: first ?? null, args: [...rest, ...extraArgs] };
   }
-  if (typeof command === "string" && command.trim()) {
-    return { command, args: extraArgs };
+  const text = configText(command);
+  if (text?.trim()) {
+    return { command: text, args: extraArgs };
   }
   return { command: null, args: extraArgs };
 }
 
 // Key NAMES only — never the values, which may hold API keys/tokens.
-function envKeyNames(env: unknown): string[] {
-  if (!env || typeof env !== "object" || Array.isArray(env)) return [];
-  return Object.keys(env as Record<string, unknown>);
+function envKeyNames(env: McpConfigValue | undefined): string[] {
+  return isConfigRecord(env) ? Object.keys(env) : [];
 }
 
-function genericEnabledFlag(raw: unknown): boolean | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as Record<string, unknown>;
-  if (typeof record.enabled === "boolean") return record.enabled;
-  if (typeof record.disabled === "boolean") return !record.disabled;
+function genericEnabledFlag(raw: McpConfigValue | undefined): boolean | null {
+  const record = isConfigRecord(raw) ? raw : null;
+  if (!record) return null;
+  if (record.enabled === true || record.enabled === false) return record.enabled;
+  if (record.disabled === true || record.disabled === false) return !record.disabled;
   return null;
 }
 
 function buildEntry(input: {
   name: string;
-  raw: unknown;
+  raw: McpConfigValue | undefined;
   sourcePath: string;
   sourceLabel: string;
   scope: "user" | "project";
   enabled: boolean | null;
 }): McpServerEntry {
-  const record = input.raw && typeof input.raw === "object" ? (input.raw as Record<string, unknown>) : {};
+  const record = isConfigRecord(input.raw) ? input.raw : {};
   const { command, args } = normalizeCommand(record.command, stringArray(record.args));
   return {
     name: input.name,
     transport: normalizeTransport(record),
     command,
     args,
-    url: typeof record.url === "string" ? record.url : null,
+    url: configText(record.url),
     envKeys: envKeyNames(record.env ?? record.environment),
     sourcePath: input.sourcePath,
     sourceLabel: input.sourceLabel,
@@ -189,10 +205,10 @@ async function scanClaudeDotJson(
   if (projectPath) {
     const projects = recordAt(result.data, "projects");
     const projectEntry = projects[path.resolve(projectPath)] ?? projects[projectPath] ?? null;
-    if (projectEntry && typeof projectEntry === "object") {
-      const record = projectEntry as Record<string, unknown>;
-      approval = { enabled: stringArray(record.enabledMcpjsonServers), disabled: stringArray(record.disabledMcpjsonServers) };
-      const projectServers = recordAt(record, "mcpServers");
+    const projectRecord = isConfigRecord(projectEntry) ? projectEntry : null;
+    if (projectRecord) {
+      approval = { enabled: stringArray(projectRecord.enabledMcpjsonServers), disabled: stringArray(projectRecord.disabledMcpjsonServers) };
+      const projectServers = recordAt(projectRecord, "mcpServers");
       for (const [name, raw] of Object.entries(projectServers)) {
         const enabled = approval.disabled.includes(name) ? false : approval.enabled.includes(name) ? true : genericEnabledFlag(raw);
         entries.push(

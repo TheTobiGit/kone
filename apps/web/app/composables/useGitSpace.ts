@@ -149,7 +149,7 @@ export function useGitSpace(
   function load(): Promise<void> {
     return once("load", async () => {
       const [remoteList, repoState, ghStatus] = await Promise.all([
-        bridge.remotes(dir()).catch(() => [] as GitRemote[]),
+        bridge.remotes(dir()).catch(() => []),
         bridge.repoState(dir()).catch(() => null),
         gh.value ? Promise.resolve(gh.value) : bridge.github.status().catch(() => null),
       ]);
@@ -164,7 +164,7 @@ export function useGitSpace(
     if (!reset && commitsDone.value) return Promise.resolve();
     return once(reset ? "commits:reset" : "commits", async () => {
       const skip = reset ? 0 : commits.value.length;
-      const page = await bridge.log(dir(), PAGE, skip).catch(() => [] as GitCommit[]);
+      const page = await bridge.log(dir(), PAGE, skip).catch(() => []);
       commits.value = reset ? page : [...commits.value, ...page];
       commitsDone.value = page.length < PAGE;
     });
@@ -172,13 +172,13 @@ export function useGitSpace(
 
   function loadBranches(): Promise<void> {
     return once("branches", async () => {
-      branches.value = await bridge.branches(dir()).catch(() => [] as GitBranch[]);
+      branches.value = await bridge.branches(dir()).catch(() => []);
     });
   }
 
   function loadStashes(): Promise<void> {
     return once("stashes", async () => {
-      stashes.value = await bridge.stashes(dir()).catch(() => [] as GitStashEntry[]);
+      stashes.value = await bridge.stashes(dir()).catch(() => []);
     });
   }
 
@@ -193,7 +193,7 @@ export function useGitSpace(
       }
       prs.value = await bridge.github
         .prs(dir(), { state: prState.value })
-        .catch(() => [] as GitHubPullRequest[]);
+        .catch(() => []);
     });
   }
 

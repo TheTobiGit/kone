@@ -9,6 +9,7 @@ export const SCHEMA_VERSION = 27;
  *  idempotently instead of failing on a duplicate column. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
   try {
+    // SAFETY: the row shape is fixed by the SQL's single selected column.
     const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     return rows.some((r) => r.name === column);
   } catch {
@@ -157,6 +158,7 @@ export function assistantBlockId(threadId: string, turnId: string): string {
  *  per-thread so one bad row can't abort the whole upgrade. */
 export function backfillOrphanedTurns(db: DatabaseSync): void {
   // Threads with at least one item-turn that has no assistant block to render it.
+  // SAFETY: the row shape is fixed by the SQL's single selected column.
   const affected = db
     .prepare(
       `SELECT DISTINCT i.thread_id AS thread_id
@@ -172,12 +174,14 @@ export function backfillOrphanedTurns(db: DatabaseSync): void {
   for (const { thread_id: threadId } of affected) {
     try {
       // User prompts and any surviving assistant blocks, each in arrival order.
+      // SAFETY: the row shape is fixed by the SQL's selected columns.
       const users = db
         .prepare(
           `SELECT block_id, text, at FROM blocks
             WHERE thread_id = ? AND role = 'user' ORDER BY seq`,
         )
         .all(threadId) as Array<{ block_id: string; text: string | null; at: number }>;
+      // SAFETY: the row shape is fixed by the SQL's selected columns.
       const survivingRows = db
         .prepare(
           `SELECT block_id, turn_id, state, error, at, ended_at FROM blocks
@@ -191,10 +195,14 @@ export function backfillOrphanedTurns(db: DatabaseSync): void {
         at: number;
         ended_at: number | null;
       }>;
-      const surviving = new Map(survivingRows.filter((r) => r.turn_id).map((r) => [r.turn_id as string, r]));
+      const surviving = new Map<string, (typeof survivingRows)[number]>();
+      for (const r of survivingRows) {
+        if (r.turn_id) surviving.set(r.turn_id, r);
+      }
 
       // Turns in the order their items first arrived — provider-agnostic (works
       // whether the turn id is "turn_1" or a Codex uuid).
+      // SAFETY: the row shape is fixed by the SQL's selected columns.
       const turns = db
         .prepare(
           `SELECT turn_id, MIN(seq) AS ms FROM items
@@ -257,6 +265,7 @@ export function backfillOrphanedTurns(db: DatabaseSync): void {
  *  out of here with its transaction still open; handle() rolls it back on the
  *  way out, leaving the database on the last rung that fully landed. */
 export function migrate(db: DatabaseSync, dbFile: string): void {
+  // SAFETY: the row shape is fixed by the SQL's single selected column.
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   let version = row?.user_version ?? 0;
 
@@ -563,6 +572,7 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
     // side chats (from the pre-v14 lax round) keep the app-level join rule and
     // log instead of failing the migration.
     beginStep(db);
+    // SAFETY: the row shape is fixed by the SQL's single selected column.
     const dupes = db
       .prepare(
         `SELECT COUNT(*) AS n FROM (

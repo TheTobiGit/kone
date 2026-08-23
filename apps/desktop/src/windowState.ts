@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { writeFileAtomicSync } from "./atomicWrite.js";
 
-import { app, type BrowserWindow, type Rectangle, screen } from "electron";
+import { app, type Rectangle, screen } from "electron";
 
 // Persists the main window's size / position between launches so the app
 // reopens the way the user left it. State lives in a small JSON file under the
@@ -65,6 +65,8 @@ export function parsePersistedWindowState(value: unknown): {
 } | null {
   if (typeof value !== "object" || value === null) return null;
 
+  // SAFETY: the guard proved value is a non-null object, so indexing it as a
+  // string-keyed record is sound; every field is still re-validated below.
   const record = value as Record<string, unknown>;
 
   if (
@@ -230,8 +232,18 @@ export function getInitialWindowState(): WindowState {
  * overwrite them with the restored fallback bounds — only the first user
  * change flips tracking on and starts writing the new placement.
  */
+
+/** The window surface this module actually touches; a real BrowserWindow
+ *  satisfies it, and so does a test double. */
+type ManagedWindow = {
+  isDestroyed(): boolean;
+  isMaximized(): boolean;
+  getNormalBounds(): Rectangle;
+  on(event: string, listener: () => void): void;
+};
+
 export function manageWindowState(
-  win: BrowserWindow,
+  win: ManagedWindow,
   options?: { persistEnabled?: boolean },
 ): void {
   let persistAllowed = options?.persistEnabled ?? true;

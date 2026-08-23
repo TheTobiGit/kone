@@ -255,6 +255,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       const env = await buildClaudeEnv();
       const executable = resolveClaudeExecutable();
+      // SAFETY: buildClaudeEnv returns the process-env shape the SDK widens to a string record.
       const probeOptions: ClaudeQueryOptions = {
         cwd: homedir(),
         env: env as Record<string, string | undefined>,
@@ -328,6 +329,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const prompt = new MessageQueue();
 
     const permissionMode = toPermissionMode(mode);
+    // SAFETY: buildClaudeEnv returns the process-env shape the SDK widens to a string record.
     const options: ClaudeQueryOptions = {
       cwd: input.cwd,
       additionalDirectories: [input.cwd],
@@ -604,6 +606,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (!answered) {
       return { behavior: "deny", message: "The user dismissed the question without answering." };
     }
+    // SAFETY: tool input is an opaque record; spreading it back keeps every original key.
     return { behavior: "allow", updatedInput: { ...(input as Record<string, unknown>), answers } };
   }
 
@@ -1193,6 +1196,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     scope: ClaudeScope,
     message: Extract<SDKMessage, { type: "user" }>,
   ): void {
+    // SAFETY: probing the optional `tool_use_result` field on the SDK message shape.
     const structuredResult = (message as { tool_use_result?: unknown }).tool_use_result;
     const content = asRecord(message.message)?.content;
     const blocks = Array.isArray(content) ? content : [];
@@ -1272,8 +1276,11 @@ export class ClaudeAdapter implements ProviderAdapter {
   private parseToolInputRaw(raw: string): Record<string, unknown> {
     if (!raw.trim()) return {};
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (typeof parsed === "object" && parsed !== null) return parsed as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null) {
+        // SAFETY: the typeof-object/null checks above are the narrowing itself.
+        return parsed as Record<string, unknown>;
+      }
     } catch {
       /* malformed */
     }
@@ -1281,6 +1288,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleResult(session: ClaudeSession, message: Extract<SDKMessage, { type: "result" }>): void {
+    // SAFETY: probing the optional `usage` field on the SDK message shape.
     const usage = asRecord((message as Record<string, unknown>).usage);
     if (usage) {
       // The Anthropic usage object splits prompt tokens across three fields:
@@ -1491,6 +1499,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     if (subtype === "task_updated") {
+      // SAFETY: probing the optional `patch` field on the SDK message shape.
       const patch = asRecord((message as Record<string, unknown>).patch);
       const backgrounded = patch?.is_backgrounded;
       if (typeof backgrounded === "boolean") run.snapshot.background = backgrounded;

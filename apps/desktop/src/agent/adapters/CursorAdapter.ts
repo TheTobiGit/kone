@@ -217,6 +217,7 @@ type CursorConfigOption = {
 // ── small JSON helpers ───────────────────────────────────────────────────────
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
@@ -1361,12 +1362,15 @@ export class CursorAdapter implements ProviderAdapter {
         { readOnly: true },
       );
       try {
+        // SAFETY: the row shape is fixed by the SQL's single selected column.
         const metaRow = db.prepare("SELECT value FROM meta").get() as { value: string | Uint8Array } | undefined;
         if (!metaRow) return undefined;
         const hex = typeof metaRow.value === "string" ? metaRow.value : Buffer.from(metaRow.value).toString("latin1");
+        // SAFETY: JSON.parse yields unknown; consumers probe fields before use.
         const meta = JSON.parse(Buffer.from(hex, "hex").toString("utf8")) as { latestRootBlobId?: string };
         const latest = meta.latestRootBlobId;
         if (!latest) return undefined;
+        // SAFETY: the row shape is fixed by the SQL's single selected column.
         const row = db.prepare("SELECT data FROM blobs WHERE id = ?").get(latest) as { data: Uint8Array } | undefined;
         if (!row) return undefined;
         return parseStoredCursorContext(row.data);

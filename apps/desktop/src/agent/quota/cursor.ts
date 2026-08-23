@@ -42,6 +42,57 @@ const REFRESH_TOKEN_KEY = "cursorAuth/refreshToken";
 const KEYCHAIN_ACCESS_SERVICE = "cursor-access-token";
 const KEYCHAIN_REFRESH_SERVICE = "cursor-refresh-token";
 
+// Cursor's payload mixes encodings inside one response — the same slot can
+// carry a number, a numeric string, an explicit null, or be absent — so
+// spend-control scalars decode through num() rather than trusting shapes.
+type UsageScalar = number | string | null | undefined;
+
+type TokenRefreshResponse = {
+  access_token?: string;
+};
+
+/** The only claims ever read off a Cursor JWT; both are scalars or absent
+ *  (`sub` may legally be numeric). */
+type CursorJwtClaims = {
+  exp?: number;
+  sub?: string | number;
+};
+
+type PlanInfoResponse = { planInfo?: { planName?: string } | null };
+
+type CreditGrantsResponse = {
+  hasCreditGrants?: boolean;
+  totalCents?: UsageScalar;
+  usedCents?: UsageScalar;
+};
+
+type PlanUsagePayload = {
+  limit?: UsageScalar;
+  totalSpend?: UsageScalar;
+  remaining?: UsageScalar;
+  totalPercentUsed?: UsageScalar;
+  autoPercentUsed?: UsageScalar;
+  apiPercentUsed?: UsageScalar;
+};
+
+type SpendLimitUsagePayload = {
+  limitType?: string;
+  pooledLimit?: UsageScalar;
+  individualLimit?: UsageScalar;
+  individualRemaining?: UsageScalar;
+  pooledRemaining?: UsageScalar;
+  individualUsed?: UsageScalar;
+  pooledUsed?: UsageScalar;
+  totalSpend?: UsageScalar;
+};
+
+export type CursorUsagePayload = {
+  enabled?: boolean;
+  billingCycleEnd?: UsageScalar;
+  planUsage?: PlanUsagePayload | null;
+  spendLimitUsage?: SpendLimitUsagePayload | null;
+};
+
 /** Cursor's app keeps its own session in a local sqlite key/value store, not
  *  a flat JSON credential file — so `readSecureFile` (built for a small,
  *  single-blob file with strict permission bits) doesn't fit here. This is
@@ -73,10 +124,20 @@ async function readTokenFromStateDb(dbPath: string, key: string): Promise<string
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
+      // SAFETY: node:sqlite's get returns unknown row shapes; only the value
+      // column is read and its type is probed below.
       const row = db.prepare("SELECT value FROM ItemTable WHERE key = ?").get(key) as { value: unknown } | undefined;
       if (!row) return null;
       const raw = row.value;
-      const text = typeof raw === "string" ? raw : raw instanceof Uint8Array ? Buffer.from(raw).toString("utf8") : null;
+      // TEXT decodes through String()'s own pass-through, BLOB through utf8;
+      // a numeric or absent value is nothing Cursor could have written, so it
+      // reads as "no token".
+      const text =
+        raw == null || Number.isFinite(raw)
+          ? null
+          : raw instanceof Uint8Array
+            ? Buffer.from(raw).toString("utf8")
+            : String(raw);
       const trimmed = text?.trim();
       return trimmed ? trimmed : null;
     } finally {
@@ -152,13 +213,16 @@ export async function detectCursorCredential(): Promise<boolean> {
   }
 }
 
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
+/** Decodes a Cursor JWT down to the two claims kone reads. A payload that
+ *  parses to anything but an object degrades to "no claims": callers only
+ *  ever touch optional fields off the result. */
+function decodeJwtPayload(token: string): CursorJwtClaims | null {
   const segment = token.split(".")[1];
   if (!segment) return null;
   try {
     const json = Buffer.from(segment.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const parsed: unknown = JSON.parse(json);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    const claims: CursorJwtClaims = JSON.parse(json);
+    return claims;
   } catch {
     return null;
   }
@@ -169,7 +233,9 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
  *  it" rather than "never expires". */
 function tokenExpiryMs(token: string): number | null {
   const exp = decodeJwtPayload(token)?.exp;
-  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;
+  // Number.isFinite rejects every non-number (NaN, Infinity, garbage)
+  // without coercing, so a malformed exp claim reads as "unknown expiry".
+  return exp !== undefined && Number.isFinite(exp) ? exp * 1000 : null;
 }
 
 // Deliberately never written back to the sqlite store or Keychain: this
@@ -187,8 +253,8 @@ async function refreshAccessToken(refreshToken: string, deps: CursorDeps, signal
       body: JSON.stringify({ grant_type: "refresh_token", client_id: CLIENT_ID, refresh_token: refreshToken }),
     });
     if (!response.ok) return null;
-    const body = (await response.json()) as Record<string, unknown>;
-    return typeof body.access_token === "string" && body.access_token.length > 0 ? body.access_token : null;
+    const body: TokenRefreshResponse = JSON.parse(await response.text());
+    return body.access_token ? body.access_token : null;
   } catch {
     return null;
   }
@@ -210,9 +276,11 @@ async function connectPost(url: string, accessToken: string, deps: CursorDeps, s
 
 // `Number('')` is 0, not NaN — a blank string must be rejected explicitly or
 // an absent field decodes as a confident zero rather than "unknown".
-function num(value: unknown): number | null {
-  if (typeof value === "string" && !value.trim()) return null;
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+function num(value: UsageScalar): number | null {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -231,10 +299,9 @@ async function fetchPlanName(accessToken: string, deps: CursorDeps, signal?: Abo
   try {
     const response = await connectPost(PLAN_URL, accessToken, deps, signal);
     if (!response.ok) return null;
-    const body = (await response.json()) as Record<string, unknown>;
-    const planInfo = body.planInfo && typeof body.planInfo === "object" ? (body.planInfo as Record<string, unknown>) : null;
-    const name = typeof planInfo?.planName === "string" ? planInfo.planName.trim() : "";
-    return name.length > 0 ? name : null;
+    const body: PlanInfoResponse = JSON.parse(await response.text());
+    const name = body.planInfo?.planName?.trim();
+    return name ? name : null;
   } catch {
     // Plan name is cosmetic (the "Max 20x"-style badge next to the provider
     // name) — never worth failing the whole report over.
@@ -248,7 +315,7 @@ async function fetchCreditGrants(accessToken: string, deps: CursorDeps, signal?:
   try {
     const response = await connectPost(CREDITS_URL, accessToken, deps, signal);
     if (!response.ok) return null;
-    const body = (await response.json()) as Record<string, unknown>;
+    const body: CreditGrantsResponse = JSON.parse(await response.text());
     if (body.hasCreditGrants !== true) return null;
     const totalCents = num(body.totalCents);
     const usedCents = num(body.usedCents);
@@ -267,19 +334,21 @@ async function fetchCreditGrants(accessToken: string, deps: CursorDeps, signal?:
  *  of the network. Field names below (`planUsage.totalPercentUsed`,
  *  `spendLimitUsage.individualLimit`, …) are ported straight from
  */
-export function decodeCursorUsage(body: unknown, planName: string | null, credits: CreditGrants | null): QuotaProviderReport {
-  const data = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+export function decodeCursorUsage(
+  body: CursorUsagePayload,
+  planName: string | null,
+  credits: CreditGrants | null,
+): QuotaProviderReport {
   // `enabled` is only "usage tracking is off for this account" when
   // `CursorPlanUsageFacts.isEnabled`.
-  const enabled = data.enabled !== false;
-  const planUsage = data.planUsage && typeof data.planUsage === "object" ? (data.planUsage as Record<string, unknown>) : null;
-  const spendLimitUsage =
-    data.spendLimitUsage && typeof data.spendLimitUsage === "object" ? (data.spendLimitUsage as Record<string, unknown>) : null;
+  const enabled = body.enabled !== false;
+  const planUsage = body.planUsage ?? null;
+  const spendLimitUsage = body.spendLimitUsage ?? null;
 
   // by 1000 only because Swift's `Date` wants seconds) — `new Date(ms)` is
   // the direct read. Past 8.64e15 ms `toISOString()` throws, so that's
   // guarded the same way the Codex module guards its own epoch fields.
-  const cycleEnd = num(data.billingCycleEnd);
+  const cycleEnd = num(body.billingCycleEnd);
   const resetsAt = cycleEnd !== null && cycleEnd > 0 && cycleEnd <= 8.64e15 ? new Date(cycleEnd).toISOString() : null;
 
   const windows: QuotaWindow[] = [];
@@ -293,7 +362,7 @@ export function decodeCursorUsage(body: unknown, planName: string | null, credit
     // demanding a specific field be present.
     const usedCents = spentCents ?? (limitCents !== null && remainingCents !== null ? limitCents - remainingCents : null);
     const reportedPercent = num(planUsage.totalPercentUsed);
-    const spendLimitType = typeof spendLimitUsage?.limitType === "string" ? spendLimitUsage.limitType.toLowerCase() : null;
+    const spendLimitType = spendLimitUsage?.limitType?.toLowerCase() ?? null;
     const pooledLimit = num(spendLimitUsage?.pooledLimit) ?? 0;
     const isTeamAccount = planName?.trim().toLowerCase() === "team" || spendLimitType === "team" || pooledLimit > 0;
 
@@ -458,8 +527,10 @@ export type CursorQuotaResult = { report: QuotaProviderReport; retryAfterSeconds
 /** JWT `sub` from Cursor's saved access token — used to build the
  *  `WorkosCursorSessionToken` cookie for cursor.com REST/CSV endpoints. */
 function tokenSubject(accessToken: string): string | null {
-  const sub = decodeJwtPayload(accessToken)?.sub;
-  return typeof sub === "string" && sub.trim().length > 0 ? sub.trim() : null;
+  const subject = decodeJwtPayload(accessToken)?.sub;
+  if (subject === undefined) return null;
+  const text = String(subject).trim();
+  return text.length > 0 ? text : null;
 }
 
 /** `userId%3A%3A<token>` cookie value for cursor.com dashboard REST/CSV. */
@@ -566,7 +637,7 @@ export async function fetchCursorQuota(
       };
     }
 
-    const usageBody: unknown = await usageResponse.json();
+    const usageText = await usageResponse.text();
     // Plan name and credit-grant balance are optional enrichments — a
     // rejected or errored fetch for either degrades to null rather than
     // `fetchOptionalJSONObject` boundary.
@@ -574,7 +645,7 @@ export async function fetchCursorQuota(
       fetchPlanName(accessToken, deps, options.signal),
       fetchCreditGrants(accessToken, deps, options.signal),
     ]);
-    return { report: decodeCursorUsage(usageBody, planName, credits) };
+    return { report: decodeCursorUsage(JSON.parse(usageText), planName, credits) };
   } catch (error) {
     // Deliberately sanitized before the only diagnostic sink — no token ever
     // reaches a log line or a returned report.

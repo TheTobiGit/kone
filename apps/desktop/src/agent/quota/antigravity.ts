@@ -387,16 +387,48 @@ async function callLs(
 
 // ── decoding ─────────────────────────────────────────────────────────────────
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+/** One decoded language-server document. The RPC layer parses bytes once at
+ *  its boundary; everything downstream branches on these domain values, so no
+ *  step has to interrogate a representation. */
+type AntigravityApiValue =
+  | string
+  | number
+  | boolean
+  | null
+  | AntigravityApiValue[]
+  | { [key: string]: AntigravityApiValue };
+
+type AntigravityApiRecord = { [key: string]: AntigravityApiValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isApiNumber(value: AntigravityApiValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function asArray(value: unknown): unknown[] {
+function isApiRecord(value: AntigravityApiValue | undefined): value is AntigravityApiRecord {
+  return value instanceof Object && !Array.isArray(value);
+}
+
+function apiRecord(value: AntigravityApiValue | undefined): AntigravityApiRecord | undefined {
+  return isApiRecord(value) ? value : undefined;
+}
+
+function apiArray(value: AntigravityApiValue | undefined): AntigravityApiValue[] {
   return Array.isArray(value) ? value : [];
 }
 
-function readNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  identity — booleans by value, numbers by finiteness, composites by their
+ *  constructors. */
+function apiText(value: AntigravityApiValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isApiNumber(value)) return null;
+  return value;
+}
+
+function readNumber(value: AntigravityApiValue | undefined): number | null {
+  return isApiNumber(value) ? value : null;
 }
 
 function windowState(frac: number, resetsAt: string | null): QuotaWindowState {
@@ -427,26 +459,24 @@ export function formatAntigravityPlan(raw: string | null | undefined): string | 
  *  load-bearing: groups existed but none carried a usable, known bucket — a
  *  *parsed* summary, authoritative, and never to be replaced by the legacy
  *  chain's fabricated "fully used" numbers. */
-export function parseAntigravityQuotaSummary(body: unknown): QuotaWindow[] | null {
-  const envelope = asRecord(body);
-  const groups = envelope ? (asArray(envelope.groups).length > 0 ? asArray(envelope.groups) : asArray(asRecord(envelope.response)?.groups)) : [];
+export function parseAntigravityQuotaSummary(body: AntigravityApiValue | undefined): QuotaWindow[] | null {
+  const envelope = apiRecord(body);
+  const rawGroups = envelope ? envelope.groups : undefined;
+  const groups = apiArray(rawGroups).length > 0 ? apiArray(rawGroups) : apiArray(apiRecord(envelope?.response)?.groups);
   if (groups.length === 0) return null;
 
   const pooled = new Map<string, { consumed: number; resetsAt: string | null }>();
   for (const group of groups) {
-    for (const bucket of asArray(asRecord(group)?.buckets)) {
-      const record = asRecord(bucket);
+    for (const bucket of apiArray(apiRecord(group)?.buckets)) {
+      const record = apiRecord(bucket);
       if (!record) continue;
-      const bucketId = typeof record.bucketId === "string" ? record.bucketId : undefined;
+      const bucketId = apiText(record.bucketId);
       if (!bucketId || !SUMMARY_BUCKETS.some((spec) => spec.bucketId === bucketId)) continue;
       if (pooled.has(bucketId)) continue; // duplicate id — first one wins
       const remaining = readNumber(record.remainingFraction);
       if (remaining === null) continue;
       const clamped = Math.max(0, Math.min(1, remaining));
-      const resetsAt =
-        typeof record.resetTime === "string" && !Number.isNaN(Date.parse(record.resetTime))
-          ? new Date(record.resetTime).toISOString()
-          : null;
+      const resetsAt = isoResetTime(record.resetTime);
       pooled.set(bucketId, { consumed: 1 - clamped, resetsAt });
     }
   }
@@ -468,18 +498,20 @@ export function parseAntigravityQuotaSummary(body: unknown): QuotaWindow[] | nul
   return windows;
 }
 
+/** A timestamp the server may send in any textual form, kept only when it
+ *  parses; normalized to ISO so downstream comparisons see one shape. */
+function isoResetTime(value: AntigravityApiValue | undefined): string | null {
+  const text = apiText(value);
+  return text !== null && !Number.isNaN(Date.parse(text)) ? new Date(text).toISOString() : null;
+}
+
 /** `GetUserStatus` → the plan label (prefers Google's own `userTier`). */
-export function parseAntigravityUserStatus(body: unknown): string | null {
-  const envelope = asRecord(body);
-  const userStatus = asRecord(envelope?.userStatus);
-  const tier = asRecord(userStatus?.userTier);
-  const planInfo = asRecord(asRecord(userStatus?.planStatus)?.planInfo);
-  const plan =
-    typeof tier?.name === "string"
-      ? tier.name
-      : typeof planInfo?.planName === "string"
-        ? (planInfo.planName as string)
-        : null;
+export function parseAntigravityUserStatus(body: AntigravityApiValue | undefined): string | null {
+  const envelope = apiRecord(body);
+  const userStatus = apiRecord(envelope?.userStatus);
+  const tier = apiRecord(userStatus?.userTier);
+  const planInfo = apiRecord(apiRecord(userStatus?.planStatus)?.planInfo);
+  const plan = apiText(tier?.name) ?? apiText(planInfo?.planName);
   return formatAntigravityPlan(plan);
 }
 
@@ -520,18 +552,17 @@ export function antigravityPoolLabel(normalizedLabel: string): "Session" | "Clau
   return normalizedLabel.toLowerCase().includes("gemini") ? "Session" : "Claude";
 }
 
-function readLegacyConfig(value: unknown): LegacyModelConfig | null {
-  const record = asRecord(value);
+function readLegacyConfig(value: AntigravityApiValue | undefined): LegacyModelConfig | null {
+  const record = apiRecord(value);
   if (!record) return null;
-  const label = typeof record.label === "string" ? record.label.trim() : "";
+  const labelText = apiText(record.label);
+  const label = labelText !== null ? labelText.trim() : "";
   if (!label) return null;
-  const modelOrAlias = asRecord(record.modelOrAlias);
-  const modelID = typeof modelOrAlias?.model === "string" ? modelOrAlias.model : undefined;
-  const quotaInfo = asRecord(record.quotaInfo);
+  const modelOrAlias = apiRecord(record.modelOrAlias);
+  const modelID = apiText(modelOrAlias?.model) ?? undefined;
+  const quotaInfo = apiRecord(record.quotaInfo);
   const remaining = readNumber(quotaInfo?.remainingFraction);
-  const resetTime = typeof quotaInfo?.resetTime === "string" && !Number.isNaN(Date.parse(quotaInfo.resetTime))
-    ? new Date(quotaInfo.resetTime).toISOString()
-    : null;
+  const resetTime = isoResetTime(quotaInfo?.resetTime);
   return {
     label,
     modelID,
@@ -542,10 +573,10 @@ function readLegacyConfig(value: unknown): LegacyModelConfig | null {
 
 /** `GetUserStatus` → the per-model configs (`cascadeModelConfigData`), nil
  *  when absent. Exported for tests. */
-export function parseAntigravityUserStatusConfigs(body: unknown): LegacyModelConfig[] | null {
-  const envelope = asRecord(body);
-  const cascade = asRecord(asRecord(envelope?.userStatus)?.cascadeModelConfigData);
-  const configs = asArray(cascade?.clientModelConfigs);
+export function parseAntigravityUserStatusConfigs(body: AntigravityApiValue | undefined): LegacyModelConfig[] | null {
+  const envelope = apiRecord(body);
+  const cascade = apiRecord(apiRecord(envelope?.userStatus)?.cascadeModelConfigData);
+  const configs = apiArray(cascade?.clientModelConfigs);
   if (configs.length === 0) return null;
   const parsed = configs.map(readLegacyConfig).filter((config): config is LegacyModelConfig => config !== null);
   return parsed.length > 0 ? parsed : null;
@@ -553,9 +584,9 @@ export function parseAntigravityUserStatusConfigs(body: unknown): LegacyModelCon
 
 /** `GetCommandModelConfigs` → the per-model configs (`clientModelConfigs`),
  *  nil when absent. Exported for tests. */
-export function parseAntigravityCommandModelConfigs(body: unknown): LegacyModelConfig[] | null {
-  const envelope = asRecord(body);
-  const configs = asArray(envelope?.clientModelConfigs);
+export function parseAntigravityCommandModelConfigs(body: AntigravityApiValue | undefined): LegacyModelConfig[] | null {
+  const envelope = apiRecord(body);
+  const configs = apiArray(envelope?.clientModelConfigs);
   if (configs.length === 0) return null;
   const parsed = configs.map(readLegacyConfig).filter((config): config is LegacyModelConfig => config !== null);
   return parsed.length > 0 ? parsed : null;
@@ -645,7 +676,9 @@ export async function fetchAntigravityQuota(options: {
     if (summary.status >= 200 && summary.status < 300) {
       let windows: QuotaWindow[] | null = null;
       try {
-        windows = parseAntigravityQuotaSummary(JSON.parse(summary.body) as unknown);
+        // SAFETY: the RPC layer hands back arbitrary JSON; every field is
+        // revalidated through the decoders above before use.
+        windows = parseAntigravityQuotaSummary(JSON.parse(summary.body) as AntigravityApiValue);
       } catch {
         windows = null;
       }
@@ -710,7 +743,9 @@ async function fetchPlanLabel(
   const status = await callLs(server, "GetUserStatus", signal);
   if (status === null || status.status !== 200) return null;
   try {
-    return parseAntigravityUserStatus(JSON.parse(status.body) as unknown);
+    // SAFETY: the RPC layer hands back arbitrary JSON; every field is
+    // revalidated through the decoders above before use.
+    return parseAntigravityUserStatus(JSON.parse(status.body) as AntigravityApiValue);
   } catch {
     return null;
   }
@@ -725,11 +760,13 @@ async function fetchLegacyWindows(
 ): Promise<{ windows: QuotaWindow[]; planLabel: string | null } | null> {
   const status = await callLs(server, "GetUserStatus", signal);
   if (status !== null && status.status === 200) {
-    let body: unknown;
+    let body: AntigravityApiValue | null = null;
     let planLabel: string | null = null;
     let configs: LegacyModelConfig[] | null = null;
     try {
-      body = JSON.parse(status.body) as unknown;
+      // SAFETY: the RPC layer hands back arbitrary JSON; every field is
+      // revalidated through the decoders above before use.
+      body = JSON.parse(status.body) as AntigravityApiValue;
       planLabel = parseAntigravityUserStatus(body);
       configs = parseAntigravityUserStatusConfigs(body);
     } catch {
@@ -744,7 +781,9 @@ async function fetchLegacyWindows(
   const commandConfigs = await callLs(server, "GetCommandModelConfigs", signal);
   if (commandConfigs === null || commandConfigs.status !== 200) return null;
   try {
-    const configs = parseAntigravityCommandModelConfigs(JSON.parse(commandConfigs.body) as unknown);
+    // SAFETY: the RPC layer hands back arbitrary JSON; every field is
+    // revalidated through the decoders above before use.
+    const configs = parseAntigravityCommandModelConfigs(JSON.parse(commandConfigs.body) as AntigravityApiValue);
     if (!configs) return null;
     const windows = buildAntigravityLegacyWindows(configs);
     return windows.length > 0 ? { windows, planLabel: null } : null;

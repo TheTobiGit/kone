@@ -56,21 +56,23 @@ export function formatPlanTasks(tasks: readonly PlanTask[]): string {
  *  mid-stream — returns undefined on parse failure. */
 export function parseTodoWriteInput(rawJson: string): Omit<PlanTask, "id">[] | undefined {
   try {
-    const parsed = JSON.parse(rawJson) as unknown;
+    const parsed: unknown = JSON.parse(rawJson);
     if (typeof parsed !== "object" || parsed === null) return undefined;
-    const todos = (parsed as { todos?: unknown }).todos;
+    if (!("todos" in parsed)) return undefined;
+    const todos: unknown = parsed.todos;
     if (!Array.isArray(todos)) return undefined;
     const out: Omit<PlanTask, "id">[] = [];
     for (const entry of todos) {
       if (typeof entry !== "object" || entry === null) continue;
-      const record = entry as Record<string, unknown>;
-      const content = typeof record.content === "string" ? record.content.trim() : "";
+      const contentRaw = "content" in entry ? entry.content : undefined;
+      const content = typeof contentRaw === "string" ? contentRaw.trim() : "";
       if (!content) continue;
+      const activeFormRaw = "activeForm" in entry ? entry.activeForm : undefined;
       const activeForm =
-        typeof record.activeForm === "string" && record.activeForm.trim()
-          ? record.activeForm.trim()
+        typeof activeFormRaw === "string" && activeFormRaw.trim()
+          ? activeFormRaw.trim()
           : undefined;
-      const statusRaw = record.status;
+      const statusRaw = "status" in entry ? entry.status : undefined;
       const status: PlanTaskStatus =
         statusRaw === "completed"
           ? "completed"
@@ -90,15 +92,16 @@ export function parseTodoWriteInput(rawJson: string): Omit<PlanTask, "id">[] | u
 /** Map a Codex `turn/plan/updated` payload to a task snapshot. */
 export function parseCodexPlanSnapshot(payload: unknown): Omit<PlanTask, "id">[] | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
-  const plan = (payload as { plan?: unknown }).plan;
+  if (!("plan" in payload)) return undefined;
+  const plan: unknown = payload.plan;
   if (!Array.isArray(plan)) return undefined;
   const out: Omit<PlanTask, "id">[] = [];
   for (const entry of plan) {
     if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    const content = typeof record.step === "string" ? record.step.trim() : "";
+    const stepRaw = "step" in entry ? entry.step : undefined;
+    const content = typeof stepRaw === "string" ? stepRaw.trim() : "";
     if (!content) continue;
-    const statusRaw = record.status;
+    const statusRaw = "status" in entry ? entry.status : undefined;
     const status: PlanTaskStatus =
       statusRaw === "completed"
         ? "completed"

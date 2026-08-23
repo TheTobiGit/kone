@@ -98,18 +98,24 @@ async function createRemote(
       { cwd, env: { ...process.env }, timeout: 60_000, windowsHide: true },
     );
   } catch (error) {
-    const err = error as NodeJS.ErrnoException & { stderr?: string };
-    if (err.code === "ENOENT") {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
       throw new GitError(
         "GitHub CLI (gh) not found — install it to create a remote repo",
         null,
       );
     }
-    const message = lastStderrLine(
-      err.stderr ?? "",
-      err.message || "Couldn’t create the GitHub repository",
-    );
-    throw new GitError(message, null);
+    const stderr =
+      error instanceof Error && "stderr" in error
+        ? String(error.stderr ?? "")
+        : "";
+    const fallback =
+      (error instanceof Error && error.message) ||
+      "Couldn’t create the GitHub repository";
+    throw new GitError(lastStderrLine(stderr, fallback), null);
   }
 }
 
@@ -134,7 +140,8 @@ export async function createProject(
   try {
     await mkdir(target, { recursive: true });
   } catch (error) {
-    throw new GitError((error as Error).message, null);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new GitError(message, null);
   }
 
   // A setup command runs first, on the still-empty folder — scaffolders expect

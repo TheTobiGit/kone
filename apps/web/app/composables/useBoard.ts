@@ -237,6 +237,8 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
         }
         session = null;
       }
+      // SAFETY: sessionMatchesKind above pins session's variant to entry.kind,
+      // so the literal matches its Pane union arm.
       return { id: entry.id, kind: entry.kind, entry, session } as Pane;
     });
   });
@@ -746,9 +748,14 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
           kind: "thread",
           // Attached → the live emptiness check (blank slates persist as null so
           // they don't resurrect); dormant → fall back to the stored anchor id.
-          threadId: p.session
-            ? persistableThreadId(p.session)
-            : (p.entry.anchor as { threadId: string | null }).threadId ?? null,
+          // A stored anchor whose kind disagrees with the pane reads as blank —
+          // the same null a missing field would produce below.
+          threadId:
+            p.session
+              ? persistableThreadId(p.session)
+              : p.entry.anchor.kind === "thread"
+                ? p.entry.anchor.threadId
+                : null,
         };
       case "terminal":
         // A terminal anchor is a slot marker only — the live terminalId lets a
@@ -761,7 +768,9 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       case "scratchpad":
         return {
           kind: "scratchpad",
-          scratchpadId: p.session?.scratchpadId ?? (p.entry.anchor as { scratchpadId: string | null }).scratchpadId ?? null,
+          scratchpadId:
+            p.session?.scratchpadId ??
+            (p.entry.anchor.kind === "scratchpad" ? p.entry.anchor.scratchpadId : null),
         };
     }
   }
@@ -814,9 +823,9 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     const kept: PaneEntry[] = [];
     for (const raw of layout.panes) {
       if (!raw || typeof raw !== "object") continue;
-      const kind = (raw as PaneEntry).kind;
+      const kind = raw.kind;
       if (kind !== "thread" && kind !== "terminal" && kind !== "scratchpad") continue;
-      const anchor = (raw as PaneEntry).anchor;
+      const anchor = raw.anchor;
       if (!anchor || anchor.kind !== kind) continue;
       // A blank thread slot (no remembered id) is preserved at most once — it
       // restores as an empty column with a composer, not a phantom conversation.
@@ -853,10 +862,10 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
         if (seenSingleton.has(kind)) continue;
         seenSingleton.add(kind);
       }
-      const rawId = (raw as PaneEntry).id;
+      const rawId = raw.id;
       const id = typeof rawId === "string" && rawId && !seenIds.has(rawId) ? rawId : mintPaneId();
       seenIds.add(id);
-      const width = typeof (raw as PaneEntry).width === "number" ? (raw as PaneEntry).width : 0;
+      const width = typeof raw.width === "number" ? raw.width : 0;
       kept.push({ id, kind, anchor, width });
       if (kept.length >= MAX_RESTORED_PANES) break;
     }
@@ -881,7 +890,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       entries.value = sanitized;
       sessionKeyById.value = {};
       focusedId.value = sanitized.some((e) => e.id === layout.focusedId)
-        ? (layout.focusedId as PaneId)
+        ? layout.focusedId
         : sanitized[0]?.id ?? null;
 
       // Attach eagerly only what's cheap or needed to land on content:

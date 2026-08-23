@@ -39,6 +39,12 @@ export type SkillFinding = {
   message: string;
 };
 
+// The parsed-YAML value domain every frontmatter field arrives as: scalars,
+// sequences, and mappings of the same. Field rules probe against this rather
+// than re-narrowing representations.
+type YamlValue = string | number | boolean | null | YamlValue[] | { [key: string]: YamlValue };
+type YamlRecord = { [key: string]: YamlValue };
+
 export type LintInput = {
   /** The skill name as the caller knows it — the frontmatter name, or the
    *  folder name when the frontmatter omits one (what the inventory scan
@@ -47,7 +53,7 @@ export type LintInput = {
   /** Basename of the skill's folder. */
   directoryName: string;
   /** The caller's parsed frontmatter mapping. */
-  frontmatter: Record<string, unknown>;
+  frontmatter: YamlRecord;
   /** Raw SKILL.md text, frontmatter included, untrimmed. */
   body: string;
   /** Top-level files in the skill folder, SKILL.md included when present. */
@@ -126,7 +132,7 @@ const OVERLAP_PHRASES = [
 ];
 
 const NEGATIVE_PATTERN = /\b(do not|don't|not for|unless|only when|not)\b/i;
-const XML_TAG_PATTERN = /<\/?[a-zA-Z\/][^>]*>/;
+const XML_TAG_PATTERN = /<\/?[a-zA-Z/][^>]*>/;
 const FIRST_PERSON_PATTERN =
   /(\bI\s+(can|will|am|do|have|would|should|need)\b|\bMy\b|\byou\s+(can|will|should|must|need)\b)/i;
 
@@ -166,8 +172,8 @@ const FRONTMATTER_BLOCK = /^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/;
 class YamlSyntaxError extends Error {}
 
 type YamlContainer =
-  | { kind: "map"; entries: Map<string, unknown> }
-  | { kind: "seq"; items: unknown[] };
+  | { kind: "map"; entries: YamlRecord }
+  | { kind: "seq"; items: YamlValue[] };
 
 const BLOCK_SCALAR_HEADER = /^[>|](?:[0-9])?(?:[+-])?$/;
 
@@ -272,8 +278,7 @@ function typePlainScalar(text: string): string | number | boolean | null {
 // need to see whether a flow value is a map, a list, or a scalar.
 // A flow value is a scalar, a list, or a map, decided only at runtime; the shape
 // rules that consume it narrow it. This parser layer names no domain type.
-// eslint-disable-next-line anti-slop/no-unknown-returns
-function parseFlow(text: string): unknown {
+function parseFlow(text: string): YamlValue {
   let i = 0;
 
   const skipWs = (): void => {
@@ -322,8 +327,7 @@ function parseFlow(text: string): unknown {
     while (i < text.length && !",]}{".includes(text[i]!) && !/\s/.test(text[i]!)) i++;
     return text.slice(start, i);
   };
-  // eslint-disable-next-line anti-slop/no-unknown-returns
-  const parseValue = (): unknown => {
+  const parseValue = (): YamlValue => {
     skipWs();
     if (i >= text.length) throw new YamlSyntaxError("unexpected end of flow collection");
     const c = text[i]!;
@@ -332,15 +336,14 @@ function parseFlow(text: string): unknown {
     if (c === '"' || c === "'") return readQuoted();
     return typePlainScalar(readBare());
   };
-  // eslint-disable-next-line anti-slop/no-unknown-returns
-  const parseMap = (): unknown => {
+  const parseMap = (): YamlValue => {
     i++;
-    const map = new Map<string, unknown>();
+    const map: YamlRecord = {};
     for (;;) {
       skipWs();
       if (text[i] === "}") {
         i++;
-        return Object.fromEntries(map);
+        return map;
       }
       let key: string;
       if (text[i] === '"' || text[i] === "'") key = readQuoted();
@@ -352,7 +355,7 @@ function parseFlow(text: string): unknown {
       skipWs();
       if (text[i] !== ":") throw new YamlSyntaxError("expected `:` in flow mapping");
       i++;
-      map.set(key, parseValue());
+      map[key] = parseValue();
       skipWs();
       if (text[i] === ",") {
         i++;
@@ -360,14 +363,14 @@ function parseFlow(text: string): unknown {
       }
       if (text[i] === "}") {
         i++;
-        return Object.fromEntries(map);
+        return map;
       }
       throw new YamlSyntaxError("expected `,` or `}` in flow mapping");
     }
   };
-  const parseSeq = (): unknown[] => {
+  const parseSeq = (): YamlValue[] => {
     i++;
-    const items: unknown[] = [];
+    const items: YamlValue[] = [];
     for (;;) {
       skipWs();
       if (text[i] === "]") {
@@ -394,8 +397,7 @@ function parseFlow(text: string): unknown {
   return result;
 }
 
-// eslint-disable-next-line anti-slop/no-unknown-returns
-function parseInlineValue(text: string): unknown {
+function parseInlineValue(text: string): YamlValue {
   if (text === "") return null;
   if (text.startsWith('"')) return parseDoubleQuoted(text);
   if (text.startsWith("'")) return parseSingleQuoted(text);
@@ -506,17 +508,17 @@ function readBlockScalar(
 
 function attachValue(parent: YamlContainer, key: string, value: YamlContainer | null): void {
   if (parent.kind !== "map") throw new YamlSyntaxError("pending key under a sequence item");
-  parent.entries.set(key, value === null ? null : value.kind === "map" ? value.entries : value.items);
+  parent.entries[key] = value === null ? null : value.kind === "map" ? value.entries : value.items;
 }
 
-type ParsedFrontmatter = { mapping: Record<string, unknown>; blockScalarKeys: string[] };
+type ParsedFrontmatter = { mapping: YamlRecord; blockScalarKeys: string[] };
 
 // Parses the frontmatter text between the `---` delimiters. Indentation-aware
 // enough for nested `metadata:` maps and one level of block sequences; a
 // top-level sequence is rejected because the frontmatter must be a mapping.
 function parseFrontmatterYaml(text: string): ParsedFrontmatter {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const root: YamlContainer = { kind: "map", entries: new Map() };
+  const root: YamlContainer = { kind: "map", entries: {} };
   const stack: { indent: number; node: YamlContainer }[] = [{ indent: -1, node: root }];
   let pending: { parent: YamlContainer; key: string; indent: number } | null = null;
   const blockScalarKeys: string[] = [];
@@ -573,18 +575,18 @@ function parseFrontmatterYaml(text: string): ParsedFrontmatter {
       }
       const kv = splitKeyValue(itemNoComment, true);
       if (kv) {
-        const mapItem: YamlContainer = { kind: "map", entries: new Map() };
+        const mapItem: YamlContainer = { kind: "map", entries: {} };
         top.node.items.push(mapItem.entries);
         const rest = stripInlineComment(kv.rest).trim();
         if (BLOCK_SCALAR_HEADER.test(rest)) {
           const block = readBlockScalar(lines, i + 1, indent, rest);
-          mapItem.entries.set(kv.key, block.value);
+          mapItem.entries[kv.key] = block.value;
           blockScalarKeys.push(kv.key);
           i = block.next - 1;
         } else if (rest === "") {
           pending = { parent: mapItem, key: kv.key, indent };
         } else {
-          mapItem.entries.set(kv.key, parseInlineValue(rest));
+          mapItem.entries[kv.key] = parseInlineValue(rest);
         }
         stack.push({ indent, node: mapItem });
         continue;
@@ -597,7 +599,7 @@ function parseFrontmatterYaml(text: string): ParsedFrontmatter {
     // is deeper, or as null when a sibling key arrives first.
     if (pending) {
       if (indent > pending.indent) {
-        const map: YamlContainer = { kind: "map", entries: new Map() };
+        const map: YamlContainer = { kind: "map", entries: {} };
         attachValue(pending.parent, pending.key, map);
         stack.push({ indent: pending.indent, node: map });
         pending = null;
@@ -615,31 +617,47 @@ function parseFrontmatterYaml(text: string): ParsedFrontmatter {
     const rest = stripInlineComment(kv.rest).trim();
     if (BLOCK_SCALAR_HEADER.test(rest)) {
       const block = readBlockScalar(lines, i + 1, indent, rest);
-      top.node.entries.set(kv.key, block.value);
+      top.node.entries[kv.key] = block.value;
       blockScalarKeys.push(kv.key);
       i = block.next - 1;
     } else if (rest === "") {
       pending = { parent: top.node, key: kv.key, indent };
     } else {
-      top.node.entries.set(kv.key, parseInlineValue(rest));
+      top.node.entries[kv.key] = parseInlineValue(rest);
     }
   }
 
   if (pending) attachValue(pending.parent, pending.key, null);
-  return { mapping: toPlainValue(Object.fromEntries(root.entries)) as Record<string, unknown>, blockScalarKeys };
+  return { mapping: root.entries, blockScalarKeys };
 }
 
-// Containers are built as Maps and arrays; the lint consumes plain records,
-// so nested maps are converted depth-first before the parse result escapes.
-// eslint-disable-next-line anti-slop/no-unknown-returns
-function toPlainValue(value: unknown): unknown {
-  if (value instanceof Map) {
-    const out: Record<string, unknown> = {};
-    for (const [key, child] of value) out[key] = toPlainValue(child);
-    return out;
-  }
-  if (Array.isArray(value)) return value.map(toPlainValue);
-  return value;
+// ── parsed-value probes ──────────────────────────────────────────────────────
+// Field rules branch on what the parser produced. Strings carry text, records
+// are mappings, and every other shape is a scalar the rules only need to name.
+// A parsed value is text exactly when it survives every other shape's reject:
+// booleans by identity, collections by their prototype, numbers by finiteness
+// (which never coerces).
+
+function isYamlText(value: YamlValue | undefined): value is string {
+  if (value === undefined || value === null || value === true || value === false) return false;
+  if (value instanceof Object) return false;
+  return !Number.isFinite(value);
+}
+
+function isYamlRecord(value: YamlValue | undefined): value is YamlRecord {
+  return value !== undefined && value instanceof Object && !Array.isArray(value);
+}
+
+function yamlText(value: YamlValue | undefined): string | null {
+  return isYamlText(value) ? value : null;
+}
+
+function yamlTypeName(value: YamlValue): string {
+  if (value === null) return "null";
+  if (value === true || value === false) return "boolean";
+  if (isYamlText(value)) return "string";
+  if (value instanceof Object) return "object";
+  return "number";
 }
 
 // ── body helpers ─────────────────────────────────────────────────────────────
@@ -692,7 +710,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
   const body = input.body.replace(/\r\n/g, "\n");
 
   const blockMatch = FRONTMATTER_BLOCK.exec(body);
-  let mine: { mapping: Record<string, unknown>; blockScalarKeys: string[] } | null = null;
+  let mine: ParsedFrontmatter | null = null;
   let mineFailed = false;
   let markdownBody = body;
   if (blockMatch) {
@@ -705,7 +723,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
   }
   const callerFmPresent = Object.keys(input.frontmatter).length > 0;
 
-  let fm: Record<string, unknown>;
+  let fm: YamlRecord;
   if (mine) {
     fm = mine.mapping;
   } else if (mineFailed && callerFmPresent) {
@@ -739,7 +757,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
     });
   }
 
-  const fmName = typeof fm.name === "string" ? fm.name.trim() : "";
+  const fmName = (yamlText(fm.name) ?? "").trim();
   const effectiveName = fmName !== "" ? fmName : input.name.trim();
   if (fmName === "") {
     findings.push({
@@ -749,9 +767,9 @@ export function lintSkill(input: LintInput): SkillFinding[] {
     });
   }
 
-  const fmDesc = typeof fm.description === "string" ? fm.description : null;
-  if (fm.description !== undefined && typeof fm.description !== "string") {
-    const typeName = fm.description === null ? "null" : typeof fm.description;
+  const fmDesc = yamlText(fm.description);
+  if (fm.description !== undefined && fmDesc === null) {
+    const typeName = yamlTypeName(fm.description);
     findings.push({
       id: "sk-desc-not-string",
       severity: "error",
@@ -835,7 +853,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
       });
     }
 
-    const whenToUse = typeof fm.when_to_use === "string" ? fm.when_to_use : "";
+    const whenToUse = yamlText(fm.when_to_use) ?? "";
     if (descLen + whenToUse.length > LISTING_CAP) {
       findings.push({
         id: "sk-desc-listing-cap",
@@ -899,8 +917,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
   if (
     mine &&
     mine.blockScalarKeys.includes("description") &&
-    typeof mine.mapping.description === "string" &&
-    mine.mapping.description.includes("\n\n")
+    (yamlText(mine.mapping.description)?.includes("\n\n") ?? false)
   ) {
     findings.push({
       id: "sk-desc-blank-lines",
@@ -1023,9 +1040,10 @@ export function lintSkill(input: LintInput): SkillFinding[] {
   }
 
   // ── 6.6 tools, compatibility, metadata ──────────────────────────────────
-  const allowedTools = fm["allowed-tools"];
-  if (allowedTools !== undefined) {
-    if (typeof allowedTools !== "string" || allowedTools.trim() === "") {
+  const allowedToolsRaw = fm["allowed-tools"];
+  const allowedTools = yamlText(allowedToolsRaw);
+  if (allowedToolsRaw !== undefined) {
+    if (allowedTools === null || allowedTools.trim() === "") {
       findings.push({
         id: "sk-tools-bad-format",
         severity: "warning",
@@ -1065,7 +1083,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
       }
     }
   }
-  const hasAllowedTools = typeof allowedTools === "string" && allowedTools.trim() !== "";
+  const hasAllowedTools = allowedTools !== null && allowedTools.trim() !== "";
   if (!hasAllowedTools && SHELL_MARKER_PATTERN.test(strippedBody)) {
     findings.push({
       id: "sk-tools-no-tools-when-shelling",
@@ -1074,19 +1092,19 @@ export function lintSkill(input: LintInput): SkillFinding[] {
     });
   }
 
-  if (typeof fm.compatibility === "string" && fm.compatibility.length > MAX_COMPATIBILITY_LENGTH) {
+  const compatibility = yamlText(fm.compatibility);
+  if (compatibility !== null && compatibility.length > MAX_COMPATIBILITY_LENGTH) {
     findings.push({
       id: "sk-compat-too-long",
       severity: "warning",
-      message: `\`compatibility\` is \`${fm.compatibility.length}\` chars — the spec caps it at 500.`,
+      message: `\`compatibility\` is \`${compatibility.length}\` chars — the spec caps it at 500.`,
     });
   }
 
   const metadata = fm.metadata;
   if (metadata !== undefined) {
-    const isMap = typeof metadata === "object" && metadata !== null && !Array.isArray(metadata);
-    const allStringValues =
-      isMap && Object.values(metadata as Record<string, unknown>).every((value) => typeof value === "string");
+    const isMap = isYamlRecord(metadata);
+    const allStringValues = isMap && Object.values(metadata).every((value) => yamlText(value) !== null);
     if (!isMap || !allStringValues) {
       findings.push({
         id: "sk-metadata-shape",
@@ -1095,7 +1113,7 @@ export function lintSkill(input: LintInput): SkillFinding[] {
       });
     }
     if (isMap) {
-      const shadowed = Object.keys(metadata as Record<string, unknown>)
+      const shadowed = Object.keys(metadata)
         .filter((key) => SPEC_FIELDS.has(key))
         .sort();
       for (const key of shadowed) {

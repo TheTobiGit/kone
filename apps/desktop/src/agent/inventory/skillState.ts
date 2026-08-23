@@ -133,10 +133,36 @@ function stripJsoncComments(contents: string): string {
   return out;
 }
 
-// Parses arbitrary JSONC into whatever it held; the caller narrows it to the
-// shape it expects. There is no domain type to name at the parse itself.
-// eslint-disable-next-line anti-slop/no-unknown-returns
-function parseJsonc(contents: string): unknown | null {
+// One decoded value from a parsed JSONC settings document (Claude's settings
+// files, opencode.json); neither shape is a published contract here, so every
+// helper below branches on these domain values instead of interrogating
+// representations.
+type SettingsValue = string | number | boolean | null | SettingsValue[] | { [key: string]: SettingsValue };
+
+type SettingsRecord = { [key: string]: SettingsValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isSettingsNumber(value: SettingsValue | undefined): value is number {
+  return Number.isFinite(value);
+}
+
+/** Text is the one settings variant left after every other variant is excluded
+ *  by value — booleans by identity, numbers by finiteness, composites by
+ *  their constructors. */
+function settingsText(value: SettingsValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isSettingsNumber(value)) return null;
+  return value;
+}
+
+function isSettingsRecord(value: SettingsValue | undefined): value is SettingsRecord {
+  return value instanceof Object && !Array.isArray(value);
+}
+
+// Parses arbitrary JSONC into whatever it held; every caller branches on the
+// SettingsValue variants rather than interrogating representations.
+function parseJsonc(contents: string): SettingsValue | null {
   try {
     return JSON.parse(stripJsoncComments(contents).replace(/,(\s*[}\]])/g, "$1"));
   } catch {
@@ -197,6 +223,8 @@ function scanJsonObject(contents: string, openIndex: number): ScannedObject | nu
             try {
               let valueStart = k + 1;
               while (valueStart < contents.length && /\s/.test(contents[valueStart]!)) valueStart += 1;
+              // SAFETY: JSON.parse yields unknown; the token only got here
+              // after the quote-scanning above accepted it as a string.
               pending = { key: JSON.parse(raw) as string, keyStart: tokenStart, valueStart, valueEnd: -1 };
             } catch {
               // not a valid string token — ignore this opening quote
@@ -305,13 +333,14 @@ function insertTopLevelKey(
  *  that honor it), as a name → raw-value map. Non-string values are dropped;
  *  a missing key is the same as no overrides. */
 export function readClaudeOverrides(contents: string): Record<string, string> {
-  const parsed = parseJsonc(contents);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const raw = (parsed as Record<string, unknown>).skillOverrides;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const root = parseJsonc(contents);
+  if (!isSettingsRecord(root)) return {};
+  const raw = root.skillOverrides;
+  if (!isSettingsRecord(raw)) return {};
   const overrides: Record<string, string> = {};
-  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof value === "string") overrides[name] = value;
+  for (const [name, value] of Object.entries(raw)) {
+    const text = settingsText(value);
+    if (text !== null) overrides[name] = text;
   }
   return overrides;
 }
@@ -523,16 +552,18 @@ export function applyCodexSkillConfig(contents: string, skillMdPath: string, ena
  *  The shorthand `"permission": { "skill": "deny" }` reads as the wildcard
  *  pattern `*`. */
 export function readOpenCodePermission(contents: string): Record<string, string> {
-  const parsed = parseJsonc(contents);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const permission = (parsed as Record<string, unknown>).permission;
-  if (!permission || typeof permission !== "object" || Array.isArray(permission)) return {};
-  const skill = (permission as Record<string, unknown>).skill;
-  if (typeof skill === "string") return { "*": skill };
-  if (!skill || typeof skill !== "object" || Array.isArray(skill)) return {};
+  const root = parseJsonc(contents);
+  if (!isSettingsRecord(root)) return {};
+  const permission = root.permission;
+  if (!isSettingsRecord(permission)) return {};
+  const skill = permission.skill;
+  const shorthand = settingsText(skill);
+  if (shorthand !== null) return { "*": shorthand };
+  if (!isSettingsRecord(skill)) return {};
   const patterns: Record<string, string> = {};
-  for (const [pattern, action] of Object.entries(skill as Record<string, unknown>)) {
-    if (typeof action === "string") patterns[pattern] = action;
+  for (const [pattern, action] of Object.entries(skill)) {
+    const actionText = settingsText(action);
+    if (actionText !== null) patterns[pattern] = actionText;
   }
   return patterns;
 }
@@ -643,6 +674,8 @@ export function applyOpenCodePermission(contents: string, skillName: string, act
     if (action === "remove") return contents;
     let old: string;
     try {
+      // SAFETY: JSON.parse yields unknown; the startsWith('"') guard above
+      // means the token is a JSON string, and it is re-serialized immediately.
       old = JSON.parse(skillValue) as string;
     } catch {
       return contents;

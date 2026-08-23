@@ -35,6 +35,14 @@ const OPENCODE_TITLE_MODEL = "opencode-go/deepseek-v4-flash";
 const CURSOR_TITLE_MODEL = "composer-2.5-fast";
 const TITLE_GENERATION_TIMEOUT_MS = 45_000;
 
+/** Shape each CLI's JSON output may take; every field optional because the
+ *  decode is best-effort and callers probe before reading. */
+interface TitleCliOutput {
+  title?: unknown;
+  structured_output?: unknown;
+  part?: { type?: unknown; text?: unknown };
+}
+
 const TITLE_SCHEMA = {
   type: "object",
   properties: { title: { type: "string" } },
@@ -119,7 +127,9 @@ function extractTitle(raw: string): string | null {
   const text = raw.trim();
   if (!text) return null;
   try {
-    const parsed = JSON.parse(text) as { title?: unknown; structured_output?: unknown; part?: { type?: unknown; text?: unknown } };
+    // SAFETY: each CLI's JSON envelope differs; all fields are optional and
+    // every read below re-checks its value before use.
+    const parsed = JSON.parse(text) as Partial<TitleCliOutput>;
     if (parsed.part?.type === "text" && typeof parsed.part.text === "string") {
       return extractTitle(parsed.part.text);
     }
@@ -127,8 +137,13 @@ function extractTitle(raw: string): string | null {
     // `{ structured_output: … }`.
     const payload =
       parsed.structured_output !== undefined ? parsed.structured_output : parsed;
-    if (payload && typeof payload === "object" && typeof (payload as { title?: unknown }).title === "string") {
-      return (payload as { title: string }).title;
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "title" in payload &&
+      typeof payload.title === "string"
+    ) {
+      return payload.title;
     }
     if (typeof parsed.title === "string") return parsed.title;
   } catch {

@@ -9,7 +9,7 @@ import { classifyGhError } from "./ghError.js";
 // clicks); stand in for it before the module loads.
 mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 
-// eslint-disable-next-line anti-slop/no-chained-type-assertions
+// SAFETY: the dynamically imported module is exactly ./github's own exports.
 const { me } = (await import("./github.js")) as typeof import("./github.js");
 
 describe("classifyGhError", () => {

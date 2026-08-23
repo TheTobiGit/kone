@@ -50,6 +50,8 @@ function decodeKeychainValue(raw: string): string {
 // (interaction not allowed, user canceled/denied, or a timeout kill while the
 // dialog waited) means the item is there but access wasn't granted.
 function classifyKeychainError(error: unknown): "notFound" | "accessDenied" {
+  // SAFETY: only optional fields are probed off the caught error; anything
+  // shapeless simply fails every match and lands on accessDenied below.
   const err = error as { code?: number | string; stderr?: string; message?: string };
   const code = typeof err.code === "number" ? err.code : undefined;
   const text = `${err.stderr ?? ""} ${err.message ?? ""}`.toLowerCase();
@@ -135,6 +137,8 @@ export async function readSecureFile(filePath: string, maxBytes = 64 * 1024): Pr
   try {
     before = await lstat(filePath);
   } catch (error) {
+    // SAFETY: lstat rejections are ErrnoException; the code string is all we
+    // compare against and any other shape rethrows below.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }

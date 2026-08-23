@@ -48,11 +48,13 @@ async function collectJsonFiles(root: string): Promise<string[]> {
 
 function timeCreatedLooksLikeMillis(db: DatabaseSync): boolean {
   try {
+    // SAFETY: the SELECT yields a single aggregate row whose one column is the
+    // max; node:sqlite types it unknown, and it is undefined on an empty table.
     const row = db
       .prepare("SELECT max(time_created) FROM (SELECT time_created FROM message LIMIT 8)")
       .get() as { "max(time_created)"?: number } | undefined;
     const max = row?.["max(time_created)"];
-    return typeof max === "number" && max >= MIN_MILLIS_SCALE;
+    return max !== undefined && Number.isFinite(max) && max >= MIN_MILLIS_SCALE;
   } catch {
     return false;
   }
@@ -71,12 +73,18 @@ function readMessagesFromDatabase(
       ? "SELECT id, session_id, data FROM message WHERE id IN (SELECT id FROM message WHERE time_created >= ? AND time_created < ?)"
       : "SELECT id, session_id, data FROM message";
     const stmt = db.prepare(sql);
-    const rows = useTimeFilter
-      ? (stmt.all(sinceMs, untilMs) as Array<{ id: string; session_id: string; data: string }>)
-      : (stmt.all() as Array<{ id: string; session_id: string; data: string }>);
+    // SAFETY: the SELECT names exactly id, session_id and data, so every row
+    // carries those three columns; node:sqlite types each row unknown.
+    const rows = (useTimeFilter ? stmt.all(sinceMs, untilMs) : stmt.all()) as Array<{
+      id: string;
+      session_id: string;
+      data: string;
+    }>;
 
     for (const row of rows) {
-      const data = typeof row.data === "string" ? row.data : String(row.data ?? "");
+      // String() passes a real string through untouched, so this matches the
+      // old branch split while also flattening any stray BLOB or null cell.
+      const data = String(row.data ?? "");
       if (!data.includes('"tokens"')) continue;
       if (useTimeFilter) {
         const ts = extractMessageTimestampMs(data);

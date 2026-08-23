@@ -19,10 +19,74 @@ const TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const EIGHT_DAYS = 8 * 24 * 60 * 60_000;
 
-type AuthDoc = Record<string, any> & {
+type CodexTokens = {
+  access_token?: string;
+  refresh_token?: string;
+  id_token?: string;
+  account_id?: string;
+};
+
+type AuthDoc = {
   auth_mode?: string;
-  tokens?: { access_token?: string; refresh_token?: string; id_token?: string; account_id?: string; [key: string]: unknown };
+  tokens?: CodexTokens | null;
   last_refresh?: string;
+};
+
+// chatgpt.com's payload mixes encodings inside one response — the same slot
+// can carry a number, a numeric string, an explicit null, or be absent — so
+// spend-control scalars decode through num(), and the percent/window fields
+// through fraction()'s own finite gate, rather than trusting shapes alone.
+type UsageScalar = number | string | null | undefined;
+
+type RateLimitWindowRow = {
+  used_percent?: number;
+  limit_window_seconds?: number;
+  reset_at?: number;
+};
+
+type RateLimitGroup = {
+  primary_window?: RateLimitWindowRow | null;
+  secondary_window?: RateLimitWindowRow | null;
+  individual_limit?: SpendControlRow | null;
+  individualLimit?: SpendControlRow | null;
+};
+
+type AdditionalRateLimit = {
+  limit_name?: string;
+  rate_limit?: RateLimitGroup | null;
+};
+
+type SpendControlRow = {
+  limit?: UsageScalar;
+  remaining_percent?: UsageScalar;
+  remainingPercent?: UsageScalar;
+  used?: UsageScalar;
+  used_percent?: UsageScalar;
+  usedPercent?: UsageScalar;
+  reset_at?: UsageScalar;
+  resets_at?: UsageScalar;
+  resetsAt?: UsageScalar;
+};
+
+type SpendControl = {
+  reached?: boolean;
+  individual_limit?: SpendControlRow | null;
+  individualLimit?: SpendControlRow | null;
+};
+
+type UsagePayload = {
+  plan_type?: string;
+  rate_limit?: RateLimitGroup | null;
+  additional_rate_limits?: AdditionalRateLimit[] | null;
+  spend_control?: SpendControl | null;
+  individual_limit?: SpendControlRow | null;
+  individualLimit?: SpendControlRow | null;
+};
+
+type TokenResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  id_token?: string;
 };
 
 export type CodexDeps = {
@@ -56,7 +120,11 @@ type CodexSource = {
 
 async function readAuth(deps: CodexDeps, filePath: string = deps.authPath): Promise<AuthDoc | null> {
   const raw = await deps.readFile(filePath, 64 * 1024);
-  return raw ? (JSON.parse(raw) as AuthDoc) : null;
+  if (!raw) return null;
+  // Malformed JSON throws into the caller's catch — a corrupt auth file must
+  // read as "no credential", never take down the poll.
+  const doc: AuthDoc = JSON.parse(raw);
+  return doc;
 }
 
 async function discoverSource(deps: CodexDeps): Promise<CodexSource | null> {
@@ -73,14 +141,14 @@ async function discoverSource(deps: CodexDeps): Promise<CodexSource | null> {
   return null;
 }
 
-function labelForSeconds(value: unknown): string {
-  const seconds = typeof value === "number" ? Math.max(0, Math.trunc(value)) : 0;
-  if (seconds < 3600) return "Hourly";
-  if (seconds < 7200) return "Hour";
-  if (seconds >= 18_000 && seconds < 19_000) return "5-hour";
-  if (seconds >= 86_400 && seconds < 87_000) return "Daily";
-  if (seconds >= 604_800 && seconds < 605_000) return "Weekly";
-  const hours = Math.floor(seconds / 3600);
+function labelForSeconds(seconds: number | null | undefined): string {
+  const total = seconds != null && Number.isFinite(seconds) ? Math.max(0, Math.trunc(seconds)) : 0;
+  if (total < 3600) return "Hourly";
+  if (total < 7200) return "Hour";
+  if (total >= 18_000 && total < 19_000) return "5-hour";
+  if (total >= 86_400 && total < 87_000) return "Daily";
+  if (total >= 604_800 && total < 605_000) return "Weekly";
+  const hours = Math.floor(total / 3600);
   return hours < 24 ? `${hours}-hour` : `${Math.floor(hours / 24)}-day`;
 }
 
@@ -91,15 +159,16 @@ function windowState(frac: number, resetsAt: string | null): QuotaWindowState {
   return frac === 0 && resetsAt === null ? "notStarted" : "active";
 }
 
-function windowOf(id: string, value: unknown, override?: string): QuotaWindow | null {
-  if (!value || typeof value !== "object") return null;
-  const row = value as Record<string, unknown>;
-  const frac = fraction(row.used_percent);
+function windowOf(id: string, value: RateLimitWindowRow | null | undefined, override?: string): QuotaWindow | null {
+  if (!value) return null;
+  const frac = fraction(value.used_percent);
   if (frac === null) return null;
-  const reset = typeof row.reset_at === "number" && Number.isFinite(row.reset_at) ? new Date(row.reset_at * 1000).toISOString() : null;
+  // Number.isFinite rejects every non-number without coercing, so string or
+  // null garbage degrades to "no reset time" exactly like a missing field.
+  const reset = value.reset_at != null && Number.isFinite(value.reset_at) ? new Date(value.reset_at * 1000).toISOString() : null;
   return {
     id,
-    label: override ?? labelForSeconds(row.limit_window_seconds),
+    label: override ?? labelForSeconds(value.limit_window_seconds),
     used: percentValue(frac),
     limit: null,
     percent: frac,
@@ -122,9 +191,11 @@ function slug(value: string): string {
 // chatgpt.com mixes encodings inside one payload. `Number('')` is 0, not NaN,
 // so a blank string must be rejected explicitly or an absent `used` decodes
 // as a confident zero.
-function num(value: unknown): number | null {
-  if (typeof value === "string" && !value.trim()) return null;
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+function num(value: UsageScalar): number | null {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -137,9 +208,9 @@ function normalizePlanType(value: string): string {
     .replace(/[_-]cbp[_-]/g, "_");
 }
 
-function planLabel(value: unknown): string | null {
-  if (typeof value !== "string" || !value.trim()) return null;
-  const raw = value.trim();
+function planLabel(planType: string | null | undefined): string | null {
+  if (!planType?.trim()) return null;
+  const raw = planType.trim();
   const lower = normalizePlanType(raw.toLowerCase());
   const known: Record<string, string> = {
     guest: "Guest",
@@ -165,10 +236,10 @@ function planLabel(value: unknown): string | null {
 // The admin-set monthly allowance, the only limit a credit-metered workspace
 // has. `spend_control` is the live position, the others forward-compat. `any`
 // because this walks six optional-chained hops, all validated by `num()`.
-function spendControlWindow(data: Record<string, any>): QuotaWindow | null {
+function spendControlWindow(data: UsagePayload): QuotaWindow | null {
   // `find`/`num` per alias, not `??`: a non-null garbage value would stop `??`
-  // and mask a valid alias further down. Object-shaped garbage still wins the
-  // position — commit to the first candidate that decodes.
+  // and mask a valid alias further down. The first candidate present wins the
+  // position — commit to it even if its own fields fail to decode.
   const row = [
     data.spend_control?.individual_limit,
     data.spend_control?.individualLimit,
@@ -176,7 +247,7 @@ function spendControlWindow(data: Record<string, any>): QuotaWindow | null {
     data.individualLimit,
     data.rate_limit?.individual_limit,
     data.rate_limit?.individualLimit,
-  ].find((candidate) => candidate && typeof candidate === "object");
+  ].find((candidate) => candidate != null);
   if (!row) return null;
   const limit = num(row.limit);
   if (limit === null || limit <= 0) return null;
@@ -211,11 +282,10 @@ function spendControlWindow(data: Record<string, any>): QuotaWindow | null {
   };
 }
 
-/** Decodes the wham/usage payload into a report. Exported for tests — the
- *  window/spend-control shape is worth locking down independent of the
- *  network. */
-export function decodeCodexUsage(body: unknown): QuotaProviderReport {
-  const data = body && typeof body === "object" ? (body as Record<string, any>) : {};
+/** Decodes the wham/usage payload into a report. The payload type carries
+ *  optional fields everywhere, so absent or null forward-compat slots decode
+ *  as missing rather than crashing the poll. */
+function decodeCodexUsage(data: UsagePayload): QuotaProviderReport {
   const primaryRaw = windowOf("primary", data.rate_limit?.primary_window);
   const secondaryRaw = windowOf("secondary", data.rate_limit?.secondary_window);
   const primary = primaryRaw ?? secondaryRaw;
@@ -223,15 +293,13 @@ export function decodeCodexUsage(body: unknown): QuotaProviderReport {
   if (primaryRaw) windows.push(primaryRaw);
   if (secondaryRaw && secondaryRaw !== primary) windows.push(secondaryRaw);
   else if (!primaryRaw && secondaryRaw) windows.push(secondaryRaw);
-  if (Array.isArray(data.additional_rate_limits)) {
-    for (const additional of data.additional_rate_limits) {
-      if (!additional || typeof additional !== "object" || typeof additional.limit_name !== "string") continue;
-      for (const key of ["primary_window", "secondary_window"] as const) {
-        const raw = additional.rate_limit?.[key];
-        const base = windowOf(`${slug(additional.limit_name)}_${key}`, raw);
-        if (base && base.percent !== null && base.percent > 0) {
-          windows.push({ ...base, label: `${additional.limit_name} · ${base.label}` });
-        }
+  for (const additional of data.additional_rate_limits ?? []) {
+    if (!additional?.limit_name) continue;
+    for (const key of ["primary_window", "secondary_window"] as const) {
+      const raw = additional.rate_limit?.[key];
+      const base = windowOf(`${slug(additional.limit_name)}_${key}`, raw);
+      if (base && base.percent !== null && base.percent > 0) {
+        windows.push({ ...base, label: `${additional.limit_name} · ${base.label}` });
       }
     }
   }
@@ -260,13 +328,13 @@ async function refresh(auth: AuthDoc, deps: CodexDeps, signal?: AbortSignal): Pr
     body: JSON.stringify({ client_id: CLIENT_ID, grant_type: "refresh_token", refresh_token: refreshToken, scope: "openid profile email" }),
   });
   if (!response.ok) return null;
-  const next = (await response.json()) as Record<string, unknown>;
-  if (typeof next.access_token !== "string" || !next.access_token) return null;
+  const next: TokenResponse = JSON.parse(await response.text());
+  if (!next.access_token) return null;
   const latest = await readAuth(deps);
   if (!latest || latest.auth_mode !== "chatgpt") return null;
   latest.tokens = { ...latest.tokens, access_token: next.access_token };
-  if (typeof next.refresh_token === "string") latest.tokens.refresh_token = next.refresh_token;
-  if (typeof next.id_token === "string") latest.tokens.id_token = next.id_token;
+  if (next.refresh_token) latest.tokens.refresh_token = next.refresh_token;
+  if (next.id_token) latest.tokens.id_token = next.id_token;
   latest.last_refresh = new Date(deps.now()).toISOString();
   // The only place this module ever writes a token to disk — and only back to
   // the source (the Codex CLI's own auth.json) whose rotation kone owns.
@@ -300,7 +368,7 @@ export async function fetchCodexQuota(options: Partial<CodexDeps> & { signal?: A
 
     // Proactive staleness refresh only for the source whose rotation we own.
     if (source.writable) {
-      const refreshedAt = typeof auth.last_refresh === "string" ? Date.parse(auth.last_refresh) : NaN;
+      const refreshedAt = auth.last_refresh ? Date.parse(auth.last_refresh) : NaN;
       if (!Number.isFinite(refreshedAt) || deps.now() - refreshedAt > EIGHT_DAYS) {
         const next = await refresh(auth, deps, options.signal);
         if (next) auth = next;
@@ -342,7 +410,7 @@ export async function fetchCodexQuota(options: Partial<CodexDeps> & { signal?: A
         ),
       };
     }
-    return { report: decodeCodexUsage(await response.json()) };
+    return { report: decodeCodexUsage(JSON.parse(await response.text())) };
   } catch (error) {
     console.warn(`Codex quota unavailable: ${sanitizeError(error)}`);
     return { report: emptyReport("codex", "transientFailure", "Could not reach Codex's usage endpoint.") };

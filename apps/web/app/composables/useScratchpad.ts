@@ -2,6 +2,7 @@ import { onBeforeUnmount, ref, shallowRef, watch, type Ref } from "vue";
 import { useDebounceFn, useEventListener } from "@vueuse/core";
 import type { ScratchpadRecord, ScratchpadWriter } from "~/types/desktop";
 import { normalizeTaskLists } from "~/utils/padMarkdown";
+import { isHighlightId, isTextColorId } from "~/utils/padColors";
 
 export type Snippet = {
   /** Markdown — what the thread's capture bubble hands over. */
@@ -60,10 +61,13 @@ function readMarker(projectPath: string): PadMarker {
   try {
     const raw = localStorage.getItem(markerKey(projectPath));
     if (!raw) return { ...DEFAULT_MARKER };
-    const parsed = JSON.parse(raw) as Partial<PadMarker>;
+    const parsed: Partial<PadMarker> = JSON.parse(raw);
     return {
-      highlight: parsed.highlight ?? DEFAULT_MARKER.highlight,
-      text: parsed.text ?? DEFAULT_MARKER.text,
+      highlight:
+        parsed.highlight && isHighlightId(parsed.highlight)
+          ? parsed.highlight
+          : DEFAULT_MARKER.highlight,
+      text: parsed.text && isTextColorId(parsed.text) ? parsed.text : DEFAULT_MARKER.text,
     };
   } catch {
     return { ...DEFAULT_MARKER };
@@ -84,8 +88,8 @@ function readLocal(projectPath: string): ScratchpadRecord[] {
   try {
     const raw = localStorage.getItem(storageKey(projectPath));
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as ScratchpadRecord[]) : [];
+    const records: ScratchpadRecord[] = JSON.parse(raw);
+    return Array.isArray(records) ? records : [];
   } catch {
     return [];
   }

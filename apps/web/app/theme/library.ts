@@ -43,6 +43,7 @@ function readImported(): ThemeDefinition[] {
  *  painted. */
 function isStoredTheme(value: unknown): value is ThemeDefinition {
   if (typeof value !== "object" || value === null) return false;
+  // SAFETY: the typeof-object + null checks on this line are the narrowing itself.
   const t = value as Record<string, unknown>;
   return (
     typeof t.id === "string" &&

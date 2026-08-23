@@ -48,27 +48,28 @@ function longContextTier(cost: CostBlock & { tiers?: TierBlock[] }, baseInput: n
 export function parseModelsDev(raw: unknown, retrievedAt?: string): PricingTable {
   if (!raw || typeof raw !== "object") throw new Error("models.dev feed is not a JSON object");
   const entries: Record<string, ModelRates> = {};
-  const providerNames = Object.keys(raw as Record<string, unknown>).sort();
-  for (const providerName of providerNames) {
-    const provider = (raw as Record<string, unknown>)[providerName];
+  // Name-sorted entries keep the documented "first provider in sorted order
+  // wins" rule deterministic.
+  const providerBlocks = Object.entries(raw).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [, provider] of providerBlocks) {
     if (!provider || typeof provider !== "object") continue;
-    const models = (provider as Record<string, unknown>).models;
+    const models = provider.models;
     if (!models || typeof models !== "object") continue;
-    for (const [modelId, value] of Object.entries(models as Record<string, unknown>)) {
+    for (const [modelId, value] of Object.entries(models)) {
       if (entries[modelId]) continue; // first provider in sorted order wins
       if (!value || typeof value !== "object") continue;
-      const cost = (value as Record<string, unknown>).cost;
-      if (!isCostBlock(cost)) continue;
-      const { input, output } = cost;
+      const costRaw = "cost" in value ? value.cost : undefined;
+      if (!isCostBlock(costRaw)) continue;
+      const { input, output } = costRaw;
       if (typeof input !== "number" || typeof output !== "number") continue;
       entries[modelId] = {
         inputPerMillion: input,
         outputPerMillion: output,
-        cacheWritePerMillion: cost.cache_write ?? input,
-        cacheReadPerMillion: cost.cache_read ?? input * 0.1,
-        cacheReadIsExplicit: cost.cache_read !== undefined,
+        cacheWritePerMillion: costRaw.cache_write ?? input,
+        cacheReadPerMillion: costRaw.cache_read ?? input * 0.1,
+        cacheReadIsExplicit: costRaw.cache_read !== undefined,
         fastMultiplier: 1,
-        longContext: longContextTier(cost, input),
+        longContext: longContextTier(costRaw, input),
       };
     }
   }

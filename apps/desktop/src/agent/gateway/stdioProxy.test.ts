@@ -11,22 +11,24 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { STDIO_PROXY_PATH } from "./injection.js";
 
+type MockRequestParams = { protocolVersion?: number; requestId?: number };
+type MockRequest = { jsonrpc: string; id?: unknown; method: string; params?: MockRequestParams };
+
 let gateway: Server;
 let baseUrl = "";
-let requests: { jsonrpc: string; id?: unknown; method: string; params?: unknown }[] = [];
+let requests: MockRequest[] = [];
 let auths: string[] = [];
 let slowAborted = false;
 
-function jsonResult(res: ServerResponse, msg: { id?: unknown; method: string; params?: unknown }): void {
+function jsonResult(res: ServerResponse, msg: MockRequest): void {
   if (msg.method === "initialize") {
-    const params = (msg.params ?? {}) as { protocolVersion?: number };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(
       JSON.stringify({
         jsonrpc: "2.0",
         id: msg.id ?? null,
         result: {
-          protocolVersion: params.protocolVersion ?? 1,
+          protocolVersion: msg.params?.protocolVersion ?? 1,
           capabilities: { tools: {} },
           serverInfo: { name: "mock-gateway", version: "0.0.1" },
         },
@@ -43,9 +45,9 @@ beforeAll(async () => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
-      let msg: { jsonrpc: string; id?: unknown; method: string; params?: unknown };
+      let msg: MockRequest;
       try {
-        msg = JSON.parse(body) as typeof msg;
+        msg = JSON.parse(body);
       } catch {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "bad" } }));
@@ -80,7 +82,7 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => {
     gateway.listen(0, "127.0.0.1", () => {
       const address = gateway.address();
-      baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/mcp`;
+      baseUrl = `http://127.0.0.1:${address && "port" in address ? address.port : 0}/mcp`;
       resolve();
     });
   });
@@ -110,7 +112,7 @@ function nextLine(run: ProxyRun, timeoutMs = 2_000): Promise<string | null> {
   });
 }
 
-function send(run: ProxyRun, message: unknown): void {
+function send(run: ProxyRun, message: MockRequest | MockRequest[]): void {
   run.child.stdin!.write(`${JSON.stringify(message)}\n`);
 }
 
@@ -163,7 +165,7 @@ describe("stdio proxy", () => {
         { jsonrpc: "2.0", id: 11, method: "tools/list" },
       ]);
       const line = await nextLine(run);
-      const parsed = JSON.parse(line!) as { id: number }[];
+      const parsed = JSON.parse(line!);
       expect(Array.isArray(parsed)).toBe(true);
       expect(parsed.map((r) => r.id)).toEqual([10, 11]);
       expect(requests).toHaveLength(2);

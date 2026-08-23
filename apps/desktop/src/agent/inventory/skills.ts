@@ -29,10 +29,6 @@ const MAX_PROJECT_ANCESTORS = 25;
 // unbounded — eight is more than any real skill has ever had.
 const MAX_SHADOWED_COPIES = 8;
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 type SkillOrigin = "claude" | "codex" | "opencode" | "cursor" | "factory" | "agents";
 
 type SkillRoot = {
@@ -225,7 +221,10 @@ async function scanRoots(roots: readonly SkillRoot[], errors: InventoryError[]):
         const entries = await Promise.all(skillPaths.map((skillPath) => readSkillEntry(skillPath, root.origin, root.scope)));
         return entries.filter((entry): entry is SkillEntry => entry !== null);
       } catch (error) {
-        errors.push({ source: `skills:${root.origin}:${root.dir}`, message: errorMessage(error) });
+        errors.push({
+          source: `skills:${root.origin}:${root.dir}`,
+          message: error instanceof Error ? error.message : String(error),
+        });
         return [];
       }
     }),
@@ -240,27 +239,50 @@ async function scanRoots(roots: readonly SkillRoot[], errors: InventoryError[]):
 // object-map form) and realpath-checks every plugin path so a malformed or
 // hostile manifest entry can't walk the scan outside the plugins directory.
 
-type InstalledPlugin = { name?: string; installPath?: string };
+// One decoded value from a parsed plugin manifest (installed_plugins.json,
+// known_marketplaces.json, marketplace.json); none of those shapes is a
+// published contract, so every helper below branches on these domain values
+// instead of interrogating representations.
+type PluginManifestValue = string | number | boolean | null | PluginManifestValue[] | { [key: string]: PluginManifestValue };
 
-function readOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+type PluginManifestRecord = { [key: string]: PluginManifestValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isManifestNumber(value: PluginManifestValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function extractInstalledPlugins(manifest: unknown): InstalledPlugin[] {
+/** Text is the one manifest variant left after every other variant is excluded
+ *  by value — booleans by identity, numbers by finiteness, composites by
+ *  their constructors. */
+function manifestText(value: PluginManifestValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isManifestNumber(value)) return null;
+  return value;
+}
+
+function isManifestRecord(value: PluginManifestValue | undefined): value is PluginManifestRecord {
+  return value instanceof Object && !Array.isArray(value);
+}
+
+type InstalledPlugin = { name?: string; installPath?: string };
+
+function extractInstalledPlugins(manifest: PluginManifestValue | undefined): InstalledPlugin[] {
   if (Array.isArray(manifest)) {
     return manifest
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .filter((item): item is PluginManifestRecord => isManifestRecord(item))
       .map((item) => ({
-        name: readOptionalString(item.name),
-        installPath: readOptionalString(item.path) ?? readOptionalString(item.installPath),
+        name: manifestText(item.name) ?? undefined,
+        installPath: manifestText(item.path) ?? manifestText(item.installPath) ?? undefined,
       }));
   }
-  if (manifest && typeof manifest === "object") {
-    return Object.entries(manifest as Record<string, unknown>).map(([key, value]) => {
-      if (typeof value === "string") return { name: key, installPath: value };
-      if (value && typeof value === "object") {
-        const record = value as Record<string, unknown>;
-        return { name: key, installPath: readOptionalString(record.path) ?? readOptionalString(record.installPath) };
+  if (isManifestRecord(manifest)) {
+    return Object.entries(manifest).map(([key, value]) => {
+      const direct = manifestText(value);
+      if (direct !== null) return { name: key, installPath: direct };
+      if (isManifestRecord(value)) {
+        return { name: key, installPath: manifestText(value.path) ?? manifestText(value.installPath) ?? undefined };
       }
       return { name: key };
     });
@@ -285,7 +307,7 @@ async function readClaudePluginSkills(home: string): Promise<SkillEntry[]> {
   }
   if (!info.isFile() || info.size > MAX_FILE_BYTES) return [];
 
-  let manifest: unknown;
+  let manifest: PluginManifestValue | undefined;
   try {
     manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch {
@@ -329,21 +351,21 @@ async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
   }
   if (!info.isFile() || info.size > MAX_FILE_BYTES) return [];
 
-  let known: unknown;
+  let known: PluginManifestValue | undefined;
   try {
     known = JSON.parse(await readFile(marketplacesManifest, "utf8"));
   } catch {
     return [];
   }
-  if (!known || typeof known !== "object" || Array.isArray(known)) return [];
+  if (!isManifestRecord(known)) return [];
 
   const factoryRealRoot = await realpath(factoryDir).catch(() => factoryDir);
 
   const perMarketplace = await Promise.all(
-    Object.entries(known as Record<string, unknown>).map(async ([, reg]) => {
-      if (!reg || typeof reg !== "object" || Array.isArray(reg)) return [];
-      const installLocation = (reg as Record<string, unknown>).installLocation;
-      if (typeof installLocation !== "string" || !installLocation.trim()) return [];
+    Object.entries(known).map(async ([, reg]) => {
+      if (!isManifestRecord(reg)) return [];
+      const installLocation = manifestText(reg.installLocation)?.trim();
+      if (!installLocation) return [];
 
       const marketplaceDir = path.resolve(factoryDir, installLocation.trim());
       const marketplaceRealDir = await realpath(marketplaceDir).catch(() => null);
@@ -357,22 +379,21 @@ async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
         return [];
       }
 
-      let manifest: unknown;
+      let manifest: PluginManifestValue | undefined;
       try {
         manifest = JSON.parse(manifestRaw);
       } catch {
         return [];
       }
-      if (!manifest || typeof manifest !== "object" || !Array.isArray((manifest as Record<string, unknown>).plugins)) {
+      if (!isManifestRecord(manifest) || !Array.isArray(manifest.plugins)) {
         return [];
       }
 
-      const plugins = (manifest as Record<string, unknown>).plugins as Array<Record<string, unknown>>;
+      const plugins = manifest.plugins.filter((item): item is PluginManifestRecord => isManifestRecord(item));
       const perPlugin = await Promise.all(
         plugins.map(async (plugin) => {
-          if (!plugin || typeof plugin !== "object") return [];
-          const source = typeof plugin.source === "string" ? plugin.source.trim() : null;
-          const pluginName = typeof plugin.name === "string" ? plugin.name.trim() : null;
+          const source = manifestText(plugin.source)?.trim() ?? null;
+          const pluginName = manifestText(plugin.name)?.trim() ?? null;
           if (!source || !pluginName) return [];
 
           const pluginDir = path.resolve(marketplaceRealDir, source);
@@ -473,14 +494,20 @@ export async function discoverSkills(projectPath: string | null): Promise<{
   try {
     claudePluginSkills = await readClaudePluginSkills(home);
   } catch (error) {
-    errors.push({ source: "skills:claude-plugins", message: errorMessage(error) });
+    errors.push({
+      source: "skills:claude-plugins",
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 
   let factoryPluginSkills: SkillEntry[] = [];
   try {
     factoryPluginSkills = await readFactoryPluginSkills(home);
   } catch (error) {
-    errors.push({ source: "skills:factory-plugins", message: errorMessage(error) });
+    errors.push({
+      source: "skills:factory-plugins",
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const pluginSkills = [...claudePluginSkills, ...factoryPluginSkills];

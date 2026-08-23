@@ -156,7 +156,8 @@ describe("withRepoMutation", () => {
       throw new Error("expected the overflowing call to reject");
     } catch (error) {
       expect(error).toBeInstanceOf(GitError);
-      expect((error as GitError).message).toBe(
+      if (!(error instanceof GitError)) throw error;
+      expect(error.message).toBe(
         "Too many git operations are already queued for this repository.",
       );
     }

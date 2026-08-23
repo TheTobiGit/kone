@@ -211,7 +211,8 @@ export function clone(
       try {
         await mkdir(path.dirname(target), { recursive: true });
       } catch (error) {
-        finish(() => reject(new GitError((error as Error).message, null)));
+        const message = error instanceof Error ? error.message : String(error);
+        finish(() => reject(new GitError(message, null)));
         return;
       }
 
@@ -273,9 +274,10 @@ export function clone(
             try {
               await rename(staging, target);
             } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
               sweepAndReject(
                 new GitError(
-                  (error as Error).message || `A folder already exists at ${target}`,
+                  message || `A folder already exists at ${target}`,
                   null,
                 ),
               );

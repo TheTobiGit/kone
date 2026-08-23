@@ -249,6 +249,22 @@ export function boundRefField(value: unknown): string | null {
   return trimmed || null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function isProviderKind(value: string): value is ProviderKind {
+  return (
+    value === "codex" ||
+    value === "claudeAgent" ||
+    value === "opencode" ||
+    value === "cursor" ||
+    value === "droid" ||
+    value === "antigravity"
+  );
+}
+
 /** Serialize a capability list to the JSON a column holds. Null and undefined
  *  both store as null ("inherit"); an array — even an empty one — is a real
  *  answer and stores as JSON. Each entry is validated and bounded, and one that
@@ -268,20 +284,20 @@ export function serializeAgentList<T>(
 }
 
 export function normalizeSkillRef(entry: unknown): AgentSkillRef | null {
-  if (!entry || typeof entry !== "object") return null;
-  const ref = entry as Record<string, unknown>;
+  const ref = asRecord(entry);
+  if (!ref) return null;
   const path = boundRefField(ref.path);
   if (!path) return null;
   return { path, name: boundRefField(ref.name) ?? "", origin: boundRefField(ref.origin) ?? "" };
 }
 
 export function normalizeModelRef(entry: unknown): AgentModelRef | null {
-  if (!entry || typeof entry !== "object") return null;
-  const ref = entry as Record<string, unknown>;
+  const ref = asRecord(entry);
+  if (!ref) return null;
   const provider = boundRefField(ref.provider);
   const model = boundRefField(ref.model);
-  if (!provider || !model) return null;
-  const out: AgentModelRef = { provider: provider as ProviderKind, model };
+  if (!provider || !model || !isProviderKind(provider)) return null;
+  const out: AgentModelRef = { provider, model };
   const label = boundRefField(ref.label);
   if (label) out.label = label;
   return out;
@@ -351,9 +367,8 @@ export function cleanStringList(value: unknown): string[] {
  *  reads the same way. A real object always resolves to both lists, each
  *  cleaned — a missing or malformed list is an empty one, never a throw. */
 export function normalizePolicies(value: unknown): AgentPolicies | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "object") return null;
-  const obj = value as Record<string, unknown>;
+  const obj = asRecord(value);
+  if (!obj) return null;
   return {
     deniedCommands: cleanStringList(obj.deniedCommands),
     deniedPaths: cleanStringList(obj.deniedPaths),
@@ -384,9 +399,8 @@ export function parseAgentPolicies(raw: string | null): AgentPolicies | null {
  *  than as a picture that paints a blank. `src` is bounded but never inspected:
  *  the store has no opinion on whether it is an asset path or a data URL. */
 export function normalizeAvatar(value: unknown): AgentAvatarRef | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "object") return null;
-  const obj = value as Record<string, unknown>;
+  const obj = asRecord(value);
+  if (!obj) return null;
   const source = boundRefField(obj.source);
   const src = typeof obj.src === "string" ? obj.src.trim().slice(0, AGENT_AVATAR_MAX) : null;
   if (!source || !src) return null;
@@ -422,9 +436,8 @@ export function parseAgentAvatar(raw: string | null): AgentAvatarRef | null {
  *  The stored column still keys the first field `shape` — bots saved before the
  *  form rename keep reading — while new rows write `form`. */
 export function normalizeBot(value: unknown): AgentBotRef | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "object") return null;
-  const obj = value as Record<string, unknown>;
+  const obj = asRecord(value);
+  if (!obj) return null;
   // A present-but-blank `form` falls back to the legacy key rather than
   // voiding the bot; boundRefField answers null for blank input.
   const form = boundRefField(obj.form) ?? boundRefField(obj["shape"]);

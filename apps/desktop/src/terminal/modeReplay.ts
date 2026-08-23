@@ -48,6 +48,7 @@ type KittyKeyboardReplayState = {
   stack: number[];
 };
 
+// eslint-disable-next-line no-control-regex
 const KITTY_KEYBOARD_SEQUENCE_PATTERN = /(?:\u001b\[|\u009b)([<>=])([0-9;]*)u/g;
 
 /** First param of `CSI <cmd>params u` is the flag set; anything non-numeric or
