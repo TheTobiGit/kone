@@ -12,6 +12,13 @@ import {
   parseAntigravityVersion,
   resolveAntigravityBinary,
 } from "../antigravityHome.js";
+import {
+  parseCreatedSubagents,
+  parseInboundMessage,
+  parseInvokeSubagentSpecs,
+  type AntigravityJsonRecord,
+  type AntigravitySubagentSpec,
+} from "../antigravitySubagents.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { STDIO_PROXY_PATH } from "../gateway/injection.js";
 import { probe, killTree } from "../spawn.js";
@@ -31,6 +38,8 @@ import type {
   Session,
   SendTurnInput,
   SessionStartInput,
+  SubagentRunSnapshot,
+  SubagentStatus,
   TurnStartResult,
 } from "../types.js";
 
@@ -66,11 +75,27 @@ import type {
 //     session token — which never enters the CLI process env, so exec-tool
 //     descendants can't inherit it (see gateway/stdioProxy.mjs).
 //  5. Windows: the prompt rides `-p` as a command-line argument, so it is
+//  6. Native subagents (`invoke_subagent`) are separate conversations that
+//     outlive the tool call that made them, and every artifact names the
+//     conversation it belongs to: hook lines carry the child's id, the result
+//     step carries the child's transcript path, and the child's report arrives
+//     as a message to the parent signed with that same id. The Stop hook's
+//     `fullyIdle` says whether any of that is still running — false means the
+//     agent has finished speaking but its own background work has not, and
+//     print mode is right to keep waiting.
 
 const PROVIDER = "antigravity" as const;
 const DEFAULT_MODEL = "Gemini 3.5 Flash";
 const PRINT_TIMEOUT = "30m";
 const POLL_INTERVAL_MS = 75;
+/** How long a turn keeps waiting after the agent has stopped talking but left
+ *  background work running (a native subagent). Every hook line refreshes it,
+ *  so a working subagent holds the turn open for as long as it keeps acting;
+ *  the window only expires when nothing at all is happening. */
+const BACKGROUND_IDLE_GRACE_MS = 120_000;
+/** Cap on hook lines held back for a conversation kone has not met yet, so a
+ *  stream that never explains itself cannot grow without bound. */
+const DEFERRED_HOOK_LINE_LIMIT = 1_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const PLUGIN_INSTALL_TIMEOUT_MS = 30_000;
 const HELPER_OUTPUT_MAX_CHARS = 128 * 1024;
@@ -94,8 +119,7 @@ type TranscriptStep = {
   type?: string;
   status?: string;
   content?: string;
-  tool_calls?: ReadonlyArray<{ name?: string; args?: Record<string, unknown> }> | null;
-  [key: string]: unknown;
+  tool_calls?: ReadonlyArray<{ name?: string; args?: AntigravityJsonRecord }> | null;
 };
 
 /** A tool call the hooks reported started but not yet finished. */
@@ -103,6 +127,21 @@ type PendingTool = {
   stepIndex: number;
   itemId: string;
   name: string;
+};
+
+/** One native subagent run this turn started, from the `invoke_subagent` call
+ *  that briefed it to the report it sends back. Keyed by the child's own
+ *  conversation id, which is the id its hook lines and its `sender=` message
+ *  both carry — so it doubles as the run's `toolUseId`. */
+type AntigravitySubagentRun = {
+  snapshot: SubagentRunSnapshot;
+  /** The child's transcript, tailed exactly like the parent's. */
+  transcriptPath?: string;
+  processedTranscriptBytes: number;
+  processedSteps: Set<number>;
+  pendingTools: PendingTool[];
+  nextToolSequence: number;
+  settled: boolean;
 };
 
 type AntigravitySession = {
@@ -135,9 +174,30 @@ type AntigravitySession = {
   processedTranscriptPath?: string;
   processedSteps: Set<number>;
   pendingTools: PendingTool[];
+  /** Every tool item this turn opened, kept past its completion and keyed by
+   *  the step it reported — an `invoke_subagent` run has to hang off its
+   *  spawning item, and the result step that names the children arrives after
+   *  the item has already closed. */
+  toolItemsByStep: Map<number, { itemId: string; name: string }>;
   nextToolSequence: number;
+  /** Briefs from `invoke_subagent` calls whose result step has not named the
+   *  children yet. The result lists them in the order they were briefed, so
+   *  these queue in that same order. */
+  pendingSubagentSpecs: { spec: AntigravitySubagentSpec; parentItemId?: string }[];
+  /** Native subagent runs, keyed by the child's conversation id. */
+  subagentRuns: Map<string, AntigravitySubagentRun>;
+  /** Hook lines from a conversation that was unknown when they arrived. */
+  deferredHookLines: string[];
+  /** When the agent stopped talking with background work still running — the
+   *  start of the grace window, refreshed by any hook activity. Absent while
+   *  the agent is still working. */
+  backgroundIdleSince?: number;
   sawAssistant: boolean;
   interrupted: boolean;
+  /** The turn's Stop hook has fired with nothing left running, and the print
+   *  process was torn down rather than waited out. The non-zero exit that
+   *  follows is that teardown, not a failure. */
+  agentStopped: boolean;
   stopped: boolean;
   /** Guards against double turn settlement (process close + interrupt/stop). */
   turnTerminalEmitted: boolean;
@@ -168,6 +228,26 @@ function resumeConversationId(value: unknown): string | undefined {
 function shellQuote(value: string, platform: NodeJS.Platform = process.platform): string {
   if (platform === "win32") return `"${value.replaceAll('"', '\\"')}"`;
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** How a finished print process settles its turn.
+ *
+ *  A user interrupt wins outright. After that, `agentStopped` decides: the
+ *  Stop hook already said the agent was done with nothing left running, and
+ *  the adapter killed the process rather than wait for print mode to notice.
+ *  The CLI answers that kill by printing its wait timeout and exiting
+ *  non-zero, so neither the code nor the signal describes the turn — the turn
+ *  is complete. Only an exit with no Stop behind it is a failure. */
+export function antigravityTurnOutcome(input: {
+  interrupted: boolean;
+  agentStopped: boolean;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}): "completed" | "interrupted" | "failed" {
+  if (input.interrupted) return "interrupted";
+  if (input.agentStopped) return "completed";
+  if (input.signal !== null) return "interrupted";
+  return (input.code ?? 1) !== 0 ? "failed" : "completed";
 }
 
 /** Hook output when capture is inactive (the session is not kone-managed).
@@ -555,8 +635,10 @@ export class AntigravityAdapter implements ProviderAdapter {
     supportsToolEvents: true,
     supportsResume: true,
     supportsModelList: true,
-    // Print mode has no nested-agent surface kone can attribute.
-    supportsSubagents: false,
+    // Native subagents are separate conversations, but every artifact they
+    // produce is attributable: the capture hooks tag each line with the
+    // child's own conversation id, and the child writes its own transcript.
+    supportsSubagents: true,
   };
 
   private readonly emit: EmitEvent;
@@ -728,9 +810,14 @@ export class AntigravityAdapter implements ProviderAdapter {
       processedTranscriptBytes: 0,
       processedSteps: new Set(),
       pendingTools: [],
+      toolItemsByStep: new Map(),
       nextToolSequence: 0,
+      pendingSubagentSpecs: [],
+      subagentRuns: new Map(),
+      deferredHookLines: [],
       sawAssistant: false,
       interrupted: false,
+      agentStopped: false,
       stopped: false,
       turnTerminalEmitted: false,
     };
@@ -810,9 +897,15 @@ export class AntigravityAdapter implements ProviderAdapter {
     session.processedHookBytes = 0;
     session.processedSteps.clear();
     session.pendingTools = [];
+    session.toolItemsByStep.clear();
     session.nextToolSequence = 0;
+    session.pendingSubagentSpecs = [];
+    session.subagentRuns.clear();
+    session.deferredHookLines = [];
+    delete session.backgroundIdleSince;
     session.sawAssistant = false;
     session.interrupted = false;
+    session.agentStopped = false;
     session.turnTerminalEmitted = false;
     // A resumed conversation's transcript already holds prior turns — mark it
     // processed so only this turn's steps render (the resume-scope seam).
@@ -899,8 +992,13 @@ export class AntigravityAdapter implements ProviderAdapter {
           await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
           return;
         }
-        const interrupted = session.interrupted || signal !== null;
-        const failed = !interrupted && (code ?? 1) !== 0;
+        const outcome = antigravityTurnOutcome({
+          interrupted: session.interrupted,
+          agentStopped: session.agentStopped,
+          code,
+          signal,
+        });
+        const failed = outcome === "failed";
         if (failed && stderr.trim()) {
           this.emit({
             ...this.base(session),
@@ -911,7 +1009,7 @@ export class AntigravityAdapter implements ProviderAdapter {
           });
         }
         this.settleActiveTurn(session, {
-          state: interrupted ? "interrupted" : failed ? "failed" : "completed",
+          state: outcome,
           message: failed ? stderr.trim() || `Antigravity CLI exited with code ${code ?? 1}.` : undefined,
         });
         await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
@@ -998,6 +1096,9 @@ export class AntigravityAdapter implements ProviderAdapter {
   ): void {
     if (session.turnTerminalEmitted || session.activeTurnId === undefined) return;
     const turnId = session.activeTurnId;
+    // Before the turn loses its id: a run still open has to be closed out
+    // while there is still a turn to attach the event to.
+    this.settleLiveSubagentRuns(session);
     session.turnTerminalEmitted = true;
     delete session.activeProcess;
     delete session.activeTurnId;
@@ -1101,11 +1202,42 @@ export class AntigravityAdapter implements ProviderAdapter {
 
     if (step.type === "PLANNER_RESPONSE") {
       const calls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+      for (const call of calls) {
+        if (call?.name !== "invoke_subagent") continue;
+        for (const spec of parseInvokeSubagentSpecs(call.args)) {
+          session.pendingSubagentSpecs.push({ spec });
+        }
+      }
       if (calls.length > 0) {
         this.emitTranscriptItem(session, step, "reasoning_text");
       } else {
         this.emitTranscriptItem(session, step, "assistant_text");
       }
+      return;
+    }
+
+    if (step.type === "GENERIC") {
+      // The `invoke_subagent` result: the step that turns each queued brief
+      // into a real child with an id and a transcript of its own.
+      const handles = parseCreatedSubagents(step.content);
+      if (handles.length === 0) return;
+      const parentItemId = session.toolItemsByStep.get(stepIndex)?.itemId;
+      for (const handle of handles) {
+        const queued = session.pendingSubagentSpecs.shift();
+        this.startSubagentRun(session, handle, queued?.spec, parentItemId);
+      }
+      return;
+    }
+
+    if (step.type === "SYSTEM_MESSAGE") {
+      // A child reporting back. agy delivers it to the parent as a system
+      // message whose sender is the child's conversation id; anything else
+      // (agy's own notices, background shell tasks) names no run here.
+      const message = parseInboundMessage(step.content);
+      const run = message ? session.subagentRuns.get(message.sender) : undefined;
+      if (!message || !run) return;
+      run.snapshot.summary = message.content;
+      this.settleSubagentRun(session, run, "completed");
     }
   }
 
@@ -1124,9 +1256,160 @@ export class AntigravityAdapter implements ProviderAdapter {
     if (kind === "assistant_text") session.sawAssistant = true;
   }
 
+  // ── native subagents ──────────────────────────────────────────────────────
+
+  /** Begin tracking a child agy created, and announce it. The child's
+   *  conversation id is the run's id: it is what the child's hook lines carry,
+   *  what its report-back message is signed with, and what its transcript
+   *  directory is named. */
+  private startSubagentRun(
+    session: AntigravitySession,
+    handle: { conversationId: string; transcriptPath?: string },
+    spec: AntigravitySubagentSpec | undefined,
+    parentItemId: string | undefined,
+  ): void {
+    if (!session.activeTurnId || session.subagentRuns.has(handle.conversationId)) return;
+    const snapshot: SubagentRunSnapshot = {
+      toolUseId: handle.conversationId,
+      status: "running",
+      startedAt: Date.now(),
+      // The tool returns as soon as the children exist — every native
+      // subagent runs in the background and reports back by message.
+      background: true,
+    };
+    if (parentItemId) snapshot.parentItemId = parentItemId;
+    if (spec?.typeName) snapshot.agentType = spec.typeName;
+    if (spec?.role) snapshot.description = spec.role;
+    if (spec?.prompt) snapshot.prompt = spec.prompt;
+    if (spec?.model) snapshot.model = spec.model;
+    const run: AntigravitySubagentRun = {
+      snapshot,
+      transcriptPath:
+        handle.transcriptPath ??
+        antigravityTranscriptPath(handle.conversationId, session.homeDir),
+      processedTranscriptBytes: 0,
+      processedSteps: new Set(),
+      pendingTools: [],
+      nextToolSequence: 0,
+      settled: false,
+    };
+    session.subagentRuns.set(handle.conversationId, run);
+    this.emitSubagent(session, run, "subagent.started");
+  }
+
+  private emitSubagent(
+    session: AntigravitySession,
+    run: AntigravitySubagentRun,
+    type: "subagent.started" | "subagent.updated" | "subagent.completed",
+  ): void {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    this.emit({ ...this.base(session), type, turnId, subagent: { ...run.snapshot } });
+  }
+
+  private settleSubagentRun(
+    session: AntigravitySession,
+    run: AntigravitySubagentRun,
+    status: SubagentStatus,
+  ): void {
+    if (run.settled) {
+      // A late report still belongs to the run — the child messages the parent
+      // before it goes idle, but the two can arrive the other way round.
+      this.emitSubagent(session, run, "subagent.completed");
+      return;
+    }
+    run.settled = true;
+    run.snapshot.status = status;
+    run.snapshot.endedAt = Date.now();
+    for (const pending of run.pendingTools) {
+      this.emitToolItem(session, pending.itemId, pending.name, "failed", run);
+    }
+    run.pendingTools = [];
+    this.emitSubagent(session, run, "subagent.completed");
+  }
+
+  /** Close out every run still open when the turn ends. The print process is
+   *  gone by then, so a child that never reported back is stopped, not failed
+   *  — it was doing its job right up to the moment the turn stopped watching. */
+  private settleLiveSubagentRuns(session: AntigravitySession): void {
+    for (const run of session.subagentRuns.values()) {
+      if (!run.settled) this.settleSubagentRun(session, run, "stopped");
+    }
+  }
+
+  /** Tail each child's transcript for its own reasoning and replies, exactly
+   *  as the parent's is tailed. */
+  private async readSubagentTranscripts(session: AntigravitySession): Promise<void> {
+    const turnId = session.activeTurnId;
+    if (!turnId) return;
+    for (const run of session.subagentRuns.values()) {
+      if (!run.transcriptPath) continue;
+      let batch: Awaited<ReturnType<typeof readCompleteAntigravityLines>>;
+      try {
+        batch = await readCompleteAntigravityLines(run.transcriptPath, run.processedTranscriptBytes);
+      } catch {
+        continue;
+      }
+      run.processedTranscriptBytes = batch.nextOffset;
+      for (const line of batch.lines) {
+        let step: TranscriptStep;
+        try {
+          // SAFETY: JSON.parse yields unknown; consumers probe fields before use.
+          step = JSON.parse(line) as TranscriptStep;
+        } catch {
+          continue;
+        }
+        const stepIndex = step.step_index;
+        if (typeof stepIndex !== "number" || run.processedSteps.has(stepIndex)) continue;
+        run.processedSteps.add(stepIndex);
+        if (step.type !== "PLANNER_RESPONSE") continue;
+        const content = trim(step.content);
+        if (!content) continue;
+        const calls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+        const kind: RuntimeItemKind = calls.length > 0 ? "reasoning_text" : "assistant_text";
+        const item: RuntimeItem = {
+          itemId: `antigravity-${turnId}-sub-${run.snapshot.toolUseId}-${stepIndex}-${kind}`,
+          kind,
+          status: "completed",
+          text: content,
+        };
+        this.emit({
+          ...this.base(session),
+          type: "item.started",
+          turnId,
+          item,
+          subagentToolUseId: run.snapshot.toolUseId,
+        });
+        this.emit({
+          ...this.base(session),
+          type: "item.completed",
+          turnId,
+          item,
+          subagentToolUseId: run.snapshot.toolUseId,
+        });
+      }
+    }
+  }
+
+  /** Tear the print process down so the close handler settles the turn. The
+   *  non-zero exit that follows is this kill, not a failure — see
+   *  antigravityTurnOutcome. */
+  private tearDownPrintProcess(session: AntigravitySession): void {
+    if (!session.activeProcess || session.turnTerminalEmitted) return;
+    const child = session.activeProcess;
+    session.agentStopped = true;
+    delete session.backgroundIdleSince;
+    void killTree(child.pid);
+  }
+
   /** Poll the hook event file: pre/post-tool lifecycle becomes tool items, the
-   *  conversation id + transcript path are learned here, and a stop hook tears
-   *  the lingering print process down. */
+   *  conversation id + transcript path are learned here, and a stop hook with
+   *  nothing left running tears the lingering print process down.
+   *
+   *  Every line names the conversation it came from, and a turn that spawns
+   *  native subagents interleaves theirs with the parent's — so identity is
+   *  read from the parent's lines only, and a child's are projected onto its
+   *  run instead. */
   private async pollHookFile(session: AntigravitySession): Promise<void> {
     if (session.stopped) return;
     if (!session.eventFile) return;
@@ -1137,7 +1420,31 @@ export class AntigravityAdapter implements ProviderAdapter {
       return;
     }
     session.processedHookBytes = batch.nextOffset;
-    for (const line of batch.lines) {
+    const deferred = this.consumeHookLines(session, [...session.deferredHookLines, ...batch.lines]);
+    session.deferredHookLines = [];
+    await this.readTranscript(session);
+    // Lines from a conversation that was unknown a moment ago: reading the
+    // transcript may have just introduced the child that wrote them.
+    session.deferredHookLines = this.consumeHookLines(session, deferred);
+    await this.readSubagentTranscripts(session);
+
+    // Nothing has happened since the agent stopped talking and left background
+    // work running. Waiting further only holds the turn open for a child that
+    // has gone quiet without reporting.
+    if (
+      session.backgroundIdleSince !== undefined &&
+      Date.now() - session.backgroundIdleSince > BACKGROUND_IDLE_GRACE_MS
+    ) {
+      this.tearDownPrintProcess(session);
+    }
+  }
+
+  /** Process hook lines, returning the ones whose conversation is not yet
+   *  known — a child's first lines can outrun the transcript step that
+   *  introduces it. */
+  private consumeHookLines(session: AntigravitySession, lines: string[]): string[] {
+    const deferred: string[] = [];
+    for (const line of lines) {
       const tab = line.indexOf("\t");
       if (tab < 0) continue;
       const eventName = line.slice(0, tab);
@@ -1150,13 +1457,27 @@ export class AntigravityAdapter implements ProviderAdapter {
       }
       const conversationId =
         typeof payload.conversationId === "string" ? payload.conversationId : undefined;
-      const transcriptPath =
-        typeof payload.transcriptPath === "string" ? payload.transcriptPath : undefined;
-      if (conversationId) session.conversationId = conversationId;
-      if (transcriptPath && transcriptPath !== session.transcriptPath) {
-        session.transcriptPath = transcriptPath;
-        session.processedTranscriptBytes = 0;
-        delete session.processedTranscriptPath;
+      // The parent always speaks first: its own hooks fire before it can have
+      // invoked anything, so the first id on the stream is this turn's.
+      if (conversationId && !session.conversationId) session.conversationId = conversationId;
+      const isParent = !conversationId || conversationId === session.conversationId;
+      const run = isParent ? undefined : session.subagentRuns.get(conversationId);
+      if (!isParent && !run) {
+        if (deferred.length < DEFERRED_HOOK_LINE_LIMIT) deferred.push(line);
+        continue;
+      }
+      // Any hook line is proof the turn is still doing something, so it
+      // restarts the wait on background work.
+      if (session.backgroundIdleSince !== undefined) session.backgroundIdleSince = Date.now();
+
+      if (isParent) {
+        const transcriptPath =
+          typeof payload.transcriptPath === "string" ? payload.transcriptPath : undefined;
+        if (transcriptPath && transcriptPath !== session.transcriptPath) {
+          session.transcriptPath = transcriptPath;
+          session.processedTranscriptBytes = 0;
+          delete session.processedTranscriptPath;
+        }
       }
       const stepIndex =
         typeof payload.stepIdx === "number" &&
@@ -1172,28 +1493,46 @@ export class AntigravityAdapter implements ProviderAdapter {
             : undefined;
         const name = typeof toolCall?.name === "string" ? trim(toolCall.name) : undefined;
         if (name) {
-          const itemId = `antigravity-${session.activeTurnId}-tool-${session.nextToolSequence++}`;
-          session.pendingTools.push({ stepIndex, itemId, name });
-          this.emitToolItem(session, itemId, name, "in-progress");
+          const owner = run ?? session;
+          const scope = run ? `sub-${run.snapshot.toolUseId}-tool` : "tool";
+          const itemId = `antigravity-${session.activeTurnId}-${scope}-${owner.nextToolSequence++}`;
+          owner.pendingTools.push({ stepIndex, itemId, name });
+          if (run) {
+            run.snapshot.lastToolName = name;
+            run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;
+            this.emitSubagent(session, run, "subagent.updated");
+          } else {
+            session.toolItemsByStep.set(stepIndex, { itemId, name });
+          }
+          this.emitToolItem(session, itemId, name, "in-progress", run);
         }
       } else if (eventName === "post-tool" && stepIndex !== undefined) {
-        const pendingIndex = session.pendingTools.findIndex((pending) => pending.stepIndex === stepIndex);
-        const pending = pendingIndex >= 0 ? session.pendingTools.splice(pendingIndex, 1)[0] : undefined;
+        const owner = run ?? session;
+        const pendingIndex = owner.pendingTools.findIndex((pending) => pending.stepIndex === stepIndex);
+        const pending = pendingIndex >= 0 ? owner.pendingTools.splice(pendingIndex, 1)[0] : undefined;
         if (pending) {
           const failed =
             payload.failed === true ||
             (typeof payload.error === "string" && payload.error.trim().length > 0);
-          this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed");
+          this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed", run);
+        }
+      } else if (eventName === "stop") {
+        // `fullyIdle` is the whole distinction: false means the agent has
+        // finished speaking but its own background work (a native subagent) is
+        // still going, and print mode is right to keep waiting. Killing there
+        // would cut off the very report the turn is waiting for. An older CLI
+        // that reports no such field is taken at its word: done is done.
+        const fullyIdle = payload.fullyIdle !== false;
+        if (run) {
+          if (fullyIdle) this.settleSubagentRun(session, run, "completed");
+        } else if (fullyIdle) {
+          this.tearDownPrintProcess(session);
+        } else {
+          session.backgroundIdleSince = Date.now();
         }
       }
-      // Agent finished: if the print process lingers, tear it down so the
-      // close handler can settle the turn.
-      if (eventName === "stop" && session.activeProcess && !session.turnTerminalEmitted) {
-        const child = session.activeProcess;
-        void killTree(child.pid);
-      }
     }
-    await this.readTranscript(session);
+    return deferred;
   }
 
   private emitToolItem(
@@ -1201,6 +1540,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     itemId: string,
     name: string,
     status: "in-progress" | "completed" | "failed",
+    run?: AntigravitySubagentRun,
   ): void {
     const turnId = session.activeTurnId;
     if (!turnId) return;
@@ -1212,7 +1552,14 @@ export class AntigravityAdapter implements ProviderAdapter {
       name: TOOL_ITEM_NAMES[name] ?? "tool",
     };
     const type = status === "in-progress" ? "item.started" : "item.completed";
-    this.emit({ ...this.base(session), type, turnId, item });
+    const event: Extract<RuntimeEvent, { type: "item.started" | "item.completed" }> = {
+      ...this.base(session),
+      type,
+      turnId,
+      item,
+    };
+    if (run) event.subagentToolUseId = run.snapshot.toolUseId;
+    this.emit(event);
   }
 
   // ── shared helpers ────────────────────────────────────────────────────────
