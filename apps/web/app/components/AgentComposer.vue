@@ -24,6 +24,7 @@ import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
+import { botMark } from "~/utils/bot";
 import {
   effortForTier,
   familyForId,
@@ -187,6 +188,18 @@ const settledIdentity = computed(() => {
 const beadBot = computed(() => {
   const owner = canSwitchAgent.value ? currentAgent.value : agentForThread(props.threadId);
   return owner?.bot ?? null;
+});
+
+/**
+ * The mark next to the name in the tray. The bot when the agent has one —
+ * this strip is the composer, so the creature it works through is the right
+ * mark, the same one resting on the bead. A marble face only when there is no
+ * bot to show: a named agent that never got one, or a guest rolled from the
+ * thread. Null is the guest picker, which keeps the dice.
+ */
+const trayMark = computed(() => {
+  if (beadBot.value) return botMark(beadBot.value);
+  return settledIdentity.value?.svg ?? currentAgent.value?.svg ?? null;
 });
 
 const agentMenu = ref(false);
@@ -972,9 +985,10 @@ defineExpose({ wake, setDraft });
            a choice you make on purpose, and it is the one you start with.
 
            On a thread that has already started this is just a label — one agent
-           per thread — and it names the face the thread is actually wearing, so
-           a thread nobody was picked for reads as the agent it was rolled, not
-           as a guest slot that is still open. -->
+           per thread — and it names who is actually on it, so a thread nobody
+           was picked for reads as the agent it was rolled, not as a guest slot
+           that is still open. The mark is the bot when there is one, matching
+           the bead this strip sits under. -->
       <span
         v-if="settledIdentity"
         class="tray__item"
@@ -983,7 +997,7 @@ defineExpose({ wake, setDraft });
         <!-- Decorative: the name is right beside it, and a rolled face carries the
              generator's own title and licence text inside the SVG, which is read
              out in full otherwise. -->
-        <span class="tray__face" aria-hidden="true" v-html="settledIdentity.svg" />
+        <span class="tray__face" aria-hidden="true" v-html="trayMark" />
         <span class="tray__label tray__label--strong">{{ settledIdentity.name }}</span>
       </span>
       <div v-else ref="agentPop" class="tray__who">
@@ -1023,7 +1037,11 @@ defineExpose({ wake, setDraft });
               :aria-checked="a.id === currentAgent?.id"
               @click.stop="pickAgent(a.id)"
             >
-              <span class="opt__face" aria-hidden="true" v-html="a.svg" />
+              <span
+                class="opt__face"
+                aria-hidden="true"
+                v-html="a.bot ? botMark(a.bot) : a.svg"
+              />
               <span class="opt__stack">
                 <span class="opt__label">{{ a.name }}</span>
                 <span class="opt__vendor">{{ a.role }}</span>
@@ -1053,7 +1071,7 @@ defineExpose({ wake, setDraft });
           "
           @click.stop="toggleAgentMenu"
         >
-          <span v-if="currentAgent" class="tray__face" aria-hidden="true" v-html="currentAgent.svg" />
+          <span v-if="trayMark" class="tray__face" aria-hidden="true" v-html="trayMark" />
           <HugeiconsIcon v-else :icon="DiceFaces05Icon" :size="13" :stroke-width="1.8" />
           <span class="tray__label tray__label--strong">
             {{ currentAgent?.name ?? GUEST_LABEL }}
@@ -1623,15 +1641,21 @@ html.dark .dock {
 }
 .tray__who > .tray__item { margin-top: 0; }
 /* Big enough to read as a face rather than a dot, and level with the glyphs
-   beside it: the marble has no stroke and no counters, so at their nominal size
-   it reads optically smaller than they do. */
+   beside it: a marble has no stroke and no counters, so at their nominal size
+   it reads optically smaller than they do. A bot fills the same tile; its
+   outline's smoothing is allowed to bulge a hair past the box. */
 .tray__face {
   display: block;
   flex: none;
   width: 14px;
   height: 14px;
 }
-.tray__face :deep(svg) { display: block; width: 100%; height: 100%; }
+.tray__face :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
 /* Lifted only while the roster is up — see `spilling`. */
 .tray.is-spilling { overflow: visible; }
 
@@ -1916,16 +1940,21 @@ html.dark .dock {
   border-radius: 8px;
   background: var(--hover);
 }
-/* An agent's face takes the slot a provider logomark would, at the same measure
-   but with no tile behind it — the marble is already a solid round shape, and
-   putting it on a tile would read as a logo in a box. */
+/* An agent's mark takes the slot a provider logomark would, at the same measure
+   but with no tile behind it — the marble (or the bot) is already a solid
+   shape, and putting it on a tile would read as a logo in a box. */
 .opt__face {
   display: block;
   flex-shrink: 0;
   width: 26px;
   height: 26px;
 }
-.opt__face :deep(svg) { display: block; width: 100%; height: 100%; }
+.opt__face :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
 .opt__stack { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
 .opt__label { flex: 1 1 auto; color: var(--ink); font-size: 13.5px; font-weight: 500; }
 .opt__stack .opt__label { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -8,8 +8,10 @@ import {
   botSummary,
   DEFAULT_BOT,
   readBot,
+  sampleBot,
   type AgentBot,
 } from "./bot";
+import { liveliness } from "./idleLife";
 
 describe("bot marks", () => {
   test("a mark carries no document references", () => {
@@ -99,5 +101,43 @@ describe("reading one back", () => {
     expect(line).toContain("Teal");
     expect(line).toContain("pebble");
     expect(line).toContain("curious");
+  });
+});
+
+describe("a live bot", () => {
+  test("the same clock always draws the same frame", () => {
+    const a = sampleBot(2.4, DEFAULT_BOT);
+    const b = sampleBot(2.4, DEFAULT_BOT);
+    expect(a).toEqual(b);
+    expect(liveliness(2.4)).toEqual(liveliness(2.4));
+  });
+
+  test("a later clock turns the head", () => {
+    const a = sampleBot(0.9, DEFAULT_BOT);
+    const b = sampleBot(3.1, DEFAULT_BOT);
+    expect(a.eyes[0]?.matrix).not.toBe(b.eyes[0]?.matrix);
+  });
+
+  test("a blink shuts the lids", () => {
+    // First blink in the calendar starts at 1.4s and lasts 0.18s; 45% of the
+    // way through it the eye is fully shut.
+    const open = liveliness(0.9).lid;
+    const shut = liveliness(1.4 + 0.45 * 0.18).lid;
+    expect(open).toBe(1);
+    expect(shut).toBeLessThan(1e-10);
+    const awake = sampleBot(0.9, DEFAULT_BOT);
+    const blinked = sampleBot(1.4 + 0.45 * 0.18, DEFAULT_BOT);
+    expect(blinked.eyes[0]?.matrix).not.toBe(awake.eyes[0]?.matrix);
+  });
+
+  test("a look replaces where the head points, not the eyes it is wearing", () => {
+    const rest = sampleBot(0.9, { ...DEFAULT_BOT, expression: "angry" });
+    const looking = sampleBot(0.9, { ...DEFAULT_BOT, expression: "angry" }, {
+      nx: 1,
+      ny: 0,
+      mix: 1,
+    });
+    expect(looking.eyes[0]?.d).toBe(rest.eyes[0]?.d);
+    expect(looking.eyes[0]?.matrix).not.toBe(rest.eyes[0]?.matrix);
   });
 });
