@@ -14,6 +14,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
+import type { ThemeDefinition, ThemeScheme } from "../app/theme/roles";
 
 // The app source imports its own modules with extensionless specifiers
 // (`./kone`, `./derive`). Node's type stripper resolves exactly what it is
@@ -36,8 +37,13 @@ if (typeof registerHooks === "function") {
 type Rgb = readonly [number, number, number];
 type Rgba = { rgb: Rgb; a: number };
 
+/** A role → colour table as a built-in theme ships it (ThemeColors): every
+ *  value is a CSS colour expression string, re-validated field-by-field below
+ *  because this audit exists to check that contract at runtime. */
+type RoleColorTable = Record<string, string>;
+
 type ResolveContext = {
-  colors: Record<string, unknown>;
+  colors: RoleColorTable;
   varToRole: Map<string, string>;
   resolveRole: (role: string) => Rgba;
   resolveVar: (name: string) => Rgba;
@@ -241,7 +247,7 @@ function parseColorMix(space: "srgb" | "oklab", argStr: string, ctx: ResolveCont
   return { rgb: oklabToSrgb(lab as Rgb), a };
 }
 
-function createResolver(colors: Record<string, unknown>, varToRole: Map<string, string>) {
+function createResolver(colors: RoleColorTable, varToRole: Map<string, string>) {
   const memo = new Map<string, Rgba>();
   const resolving = new Set<string>();
 
@@ -316,7 +322,7 @@ type SchemeAudit = {
   findings: Finding[];
 };
 
-const roleList = (roles: readonly string[], colors: Record<string, unknown>) => {
+const roleList = (roles: readonly string[], colors: RoleColorTable) => {
   const bad: string[] = [];
   for (const role of roles) {
     const v = colors[role];
@@ -328,7 +334,7 @@ const roleList = (roles: readonly string[], colors: Record<string, unknown>) => 
 
 function auditScheme(
   scheme: string,
-  colors: Record<string, unknown>,
+  colors: RoleColorTable,
   roles: readonly string[],
   varToRole: Map<string, string>,
   extras: { plasma?: unknown } | undefined,
@@ -436,13 +442,13 @@ async function main(): Promise<void> {
     const rolesMod = await import(rolesUrl);
     // SAFETY: the sources are this repo's own theme modules; their exports are
     // the contract this audit exists to check.
-    const themes = themesMod.BUILT_IN_THEMES as readonly Record<string, any>[];
+    const themes = themesMod.BUILT_IN_THEMES as readonly ThemeDefinition[];
     // SAFETY: same repo-owned module contract as above.
     const roles = rolesMod.THEME_ROLES as readonly string[];
     // SAFETY: same repo-owned module contract as above.
     const variables = rolesMod.THEME_VARIABLES as Record<string, string>;
     // SAFETY: same repo-owned module contract as above.
-    const schemesOf = rolesMod.schemesOf as (t: any) => readonly string[];
+    const schemesOf = rolesMod.schemesOf as (theme: ThemeDefinition) => readonly ThemeScheme[];
 
     const varToRole = new Map<string, string>();
     for (const [role, variable] of Object.entries(variables)) varToRole.set(variable, role);
@@ -463,10 +469,8 @@ async function main(): Promise<void> {
       // exactly one, and reporting a missing second scheme as a finding would be
       // flagging the feature rather than a fault.
       for (const scheme of schemesOf(theme)) {
-        // SAFETY: theme is a built-in theme record; colors/extras are its scheme maps.
-        const colors = theme.colors?.[scheme] as Record<string, unknown> | undefined;
-        // SAFETY: see above — same record, probed field-by-field below.
-        const extras = theme.extras?.[scheme] as { plasma?: unknown } | undefined;
+        const colors = theme.colors[scheme];
+        const extras = theme.extras[scheme];
 
         if (!colors) {
           themeFindings.push({ scheme, check: "completeness", message: `scheme \`${scheme}\` has no colours table` });

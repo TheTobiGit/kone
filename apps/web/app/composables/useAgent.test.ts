@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { useAgent, type UserBlock } from "./useAgent";
-import type { RuntimeEvent } from "~/types/desktop";
+import type { AgentBaseEvent, RuntimeEvent } from "~/types/desktop";
 
 // The durable turn-queue slice (AgentService): a send while a turn runs is
 // durably enqueued and announced on the runtime stream. These tests drive the
@@ -16,21 +16,23 @@ function harness() {
   return { agent, session };
 }
 
-function queuedEvent(
+type QueueEventType = "turn.queued" | "turn.queued-cancelled" | "turn.promoted" | "turn.steered";
+
+function queuedEvent<T extends QueueEventType>(
   threadId: string,
-  type: "turn.queued" | "turn.queued-cancelled" | "turn.promoted" | "turn.steered",
-  extra: Record<string, unknown> = {},
-): RuntimeEvent {
-  // SAFETY: test fixture — `extra` supplies the union member's own fields
-  // (queueId, userBlockId, …); this literal pins just the base envelope.
+  type: T,
+  extra: Omit<Extract<RuntimeEvent, { type: T }>, keyof AgentBaseEvent | "type">,
+): Extract<RuntimeEvent, { type: T }> {
+  // SAFETY: test fixture — `extra` supplies every non-envelope field of the
+  // one union member `T` names; the literals above pin the AgentBaseEvent half.
   return {
     threadId,
     provider: "codex",
     at: Date.now(),
     source: "kone.store",
-    type,
     ...extra,
-  } as RuntimeEvent;
+    type,
+  } as Extract<RuntimeEvent, { type: T }>;
 }
 
 function userBlock(id: string, text = "follow-up"): UserBlock {

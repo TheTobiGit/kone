@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ThreadDispatcher } from "./dispatch.js";
-import { checkSpawn } from "./spawnGuards.js";
+import { checkSpawn, type SpawnRefusalDetails } from "./spawnGuards.js";
 import {
   projectSpawnedThread,
   type SpawnGate,
@@ -157,10 +157,15 @@ export type SpawnErrorCode =
   | "idempotency_conflict"
   | "internal";
 
+/** Detail payloads a SpawnError carries: the admission guards' refusal details
+ *  plus the engine's own `{ threadId }` lookups — all kone-owned data the
+ *  gateway tool layer forwards into structuredContent verbatim. */
+export type SpawnErrorDetails = SpawnRefusalDetails | { threadId: string };
+
 export class SpawnError extends Error {
   readonly code: SpawnErrorCode;
-  readonly details?: Record<string, unknown>;
-  constructor(code: SpawnErrorCode, message: string, details?: Record<string, unknown>) {
+  readonly details?: SpawnErrorDetails;
+  constructor(code: SpawnErrorCode, message: string, details?: SpawnErrorDetails) {
     super(message);
     this.name = "SpawnError";
     this.code = code;

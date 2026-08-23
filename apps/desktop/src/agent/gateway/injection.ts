@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import type { GatewayConnection } from "../types.js";
+import type { JsonObject } from "../../jsonValue.js";
 
 /** The ACP MCP server name both entry shapes ship under. */
 export const KONE_MCP_SERVER_NAME = "kone";
@@ -88,10 +89,11 @@ export function acpMcpServers(
   ];
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  // SAFETY: the ternary excludes null and non-objects, and any such value
-  // satisfies Record<string, unknown> at runtime.
-  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+function record(value: unknown): JsonObject | undefined {
+  // SAFETY: the ternary excludes null and non-objects; every value probed here
+  // is an ACP initialize result (parsed wire JSON), so it satisfies JsonObject
+  // and each field reads back as JsonValue for the === probes above.
+  return value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
 }
 
 /** The Claude SDK's HTTP MCP server config, injected into

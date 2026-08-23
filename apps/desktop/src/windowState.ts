@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { writeFileAtomicSync } from "./atomicWrite.js";
+import type { JsonObject } from "./jsonValue.js";
 
 import { app, type Rectangle, screen } from "electron";
 
@@ -65,9 +66,10 @@ export function parsePersistedWindowState(value: unknown): {
 } | null {
   if (typeof value !== "object" || value === null) return null;
 
-  // SAFETY: the guard proved value is a non-null object, so indexing it as a
-  // string-keyed record is sound; every field is still re-validated below.
-  const record = value as Record<string, unknown>;
+  // SAFETY: the guard proved value is a non-null object, and it came straight
+  // out of JSON.parse, so it satisfies JsonObject; every field is still
+  // re-validated below before use.
+  const record = value as JsonObject;
 
   if (
     typeof record.width !== "number" ||

@@ -44,9 +44,12 @@ type CloneApi = {
 // SAFETY: the clone module is the real implementation under its frozen API.
 // eslint-disable-next-line anti-slop/no-chained-type-assertions
 const api = cloneModule as unknown as CloneApi;
-// SAFETY: same module, read loosely for the optional test-reset hook.
+// SAFETY: same module, read loosely for the optional test-reset hook; every
+// export requireExport probes is a callable or absent.
 // eslint-disable-next-line anti-slop/no-chained-type-assertions
-const raw = cloneModule as unknown as Record<string, unknown>;
+const raw = cloneModule as unknown as {
+  readonly [key: string]: ((...args: never[]) => void) | undefined;
+};
 
 function requireExport(name: string): void {
   if (typeof raw[name] !== "function") {

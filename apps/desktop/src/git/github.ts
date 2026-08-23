@@ -5,6 +5,7 @@ import path from "node:path";
 import { shell } from "electron";
 
 import { parseSafeExternalUrl } from "../safeExternalUrl.js";
+import type { JsonObject } from "../jsonValue.js";
 import { GitError, lastStderrLine, repoRoot, run } from "./core.js";
 import { parseFileDiff } from "./diff.js";
 import { classifyGhError } from "./ghError.js";
@@ -201,7 +202,7 @@ function relativeTime(iso: string): string {
 
 /** Map one gh PR JSON record onto the contract shape. Throws on a malformed
  *  entry so the list caller can skip it without losing the healthy ones. */
-function mapPullRequest(pr: Record<string, unknown>): GitHubPullRequest {
+function mapPullRequest(pr: JsonObject): GitHubPullRequest {
   const number = Number(pr.number);
   if (!Number.isInteger(number) || number <= 0) throw new Error("bad number");
   const stateRaw = typeof pr.state === "string" ? pr.state : "";
@@ -215,8 +216,7 @@ function mapPullRequest(pr: Record<string, unknown>): GitHubPullRequest {
         ? "closed"
         : "open";
   const createdAt = typeof pr.createdAt === "string" ? pr.createdAt : "";
-  // SAFETY: pr came from parsed gh JSON; only login is read off author.
-  const author = pr.author as { login?: unknown } | null;
+  const author = jsonRecord(pr.author);
   return {
     number,
     title: typeof pr.title === "string" ? pr.title : "",
@@ -271,9 +271,10 @@ export async function prs(
   // PRs in the same list.
   const result: GitHubPullRequest[] = [];
   for (const entry of raw) {
+    const rec = jsonRecord(entry);
+    if (!rec) continue;
     try {
-      // SAFETY: entry is one element of gh's parsed --json array.
-      result.push(mapPullRequest(entry as Record<string, unknown>));
+      result.push(mapPullRequest(rec));
     } catch {
       // skip the malformed entry
     }
@@ -297,9 +298,11 @@ function isRepoViewAbsence(error: unknown): boolean {
 /** A JSON object straight out of `gh --json` output, or null.
  *  Every caller feeds this only freshly parsed gh CLI records and probes each
  *  field with typeof/=== before trusting it. */
-function jsonRecord(raw: unknown): Record<string, unknown> | null {
-  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
-  return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : null;
+function jsonRecord(raw: unknown): JsonObject | null {
+  // SAFETY: the typeof-object/null checks on this line are the narrowing itself;
+  // gh output is wire JSON, so a non-null object satisfies JsonObject and every
+  // field reads back as JsonValue.
+  return typeof raw === "object" && raw !== null ? (raw as JsonObject) : null;
 }
 
 /** Map one `gh repo view --json` record onto the flat About shape, unwrapping
@@ -601,7 +604,7 @@ function mergeabilityOf(
 /** One check run or status context as a single verdict. Skipped and neutral
  *  runs are their own state rather than a pass: a repo that skips half its
  *  matrix shouldn't read as half-green. */
-function checkStateOf(rec: Record<string, unknown>): GitHubCheck["state"] {
+function checkStateOf(rec: JsonObject): GitHubCheck["state"] {
   const state = typeof rec.state === "string" ? rec.state : "";
   const status = typeof rec.status === "string" ? rec.status : "";
   const conclusion = typeof rec.conclusion === "string" ? rec.conclusion : "";

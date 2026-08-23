@@ -25,11 +25,14 @@ type FakeSpawnErrorCode =
   | "idempotency_conflict"
   | "internal";
 
+/** Detail payload the fake engine attaches, mirroring SpawnError.details. */
+type FakeSpawnErrorDetails = { limit: number };
+
 class FakeSpawnError extends Error {
   readonly code: FakeSpawnErrorCode;
-  readonly details?: Record<string, unknown>;
+  readonly details?: FakeSpawnErrorDetails;
 
-  constructor(code: FakeSpawnErrorCode, message: string, details?: Record<string, unknown>) {
+  constructor(code: FakeSpawnErrorCode, message: string, details?: FakeSpawnErrorDetails) {
     super(message);
     this.name = "SpawnError";
     this.code = code;

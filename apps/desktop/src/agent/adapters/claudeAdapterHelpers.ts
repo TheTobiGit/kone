@@ -8,9 +8,21 @@ import type {
 import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
 import type { ClaudeItemBuffer } from "./claudeAdapterTypes.js";
 
-export function asRecord(value: unknown): Record<string, unknown> | undefined {
+/** One level of a decoded Claude CLI JSON payload (tool inputs, tool_result
+ *  bodies, hook data): a string-keyed object whose values are plain JSON. */
+export interface ClaudeJsonObject {
+  [key: string]: ClaudeJsonValue;
+}
+
+/** A decoded JSON value from the Claude CLI's stream-json wire: scalars,
+ *  null, arrays, or nested objects of the same. */
+export type ClaudeJsonValue = string | number | boolean | null | ClaudeJsonObject | ClaudeJsonValue[];
+
+/** Narrow an opaque payload to the CLI's JSON object contract, or undefined
+ *  when it is not an object. */
+export function asRecord(value: unknown): ClaudeJsonObject | undefined {
   // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+  return typeof value === "object" && value !== null ? (value as ClaudeJsonObject) : undefined;
 }
 
 /** A terminal iterator result; the done slot must still carry the value type. */
@@ -100,7 +112,7 @@ export function summarizeToolInput(
   toolName: string | undefined,
   rawInput: string,
 ): Pick<ClaudeItemBuffer, "text" | "detail"> {
-  let parsed: Record<string, unknown> | undefined;
+  let parsed: ClaudeJsonObject | undefined;
   try {
     parsed = asRecord(JSON.parse(rawInput));
   } catch {

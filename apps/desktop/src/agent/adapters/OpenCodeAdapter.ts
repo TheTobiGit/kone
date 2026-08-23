@@ -11,7 +11,18 @@ import { buildOpenCodeMcpServer } from "../gateway/injection.js";
 import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
-type RecordLike = Record<string, any>;
+/** One decoded JSON value from opencode's HTTP/SSE surface — message infos,
+ *  parts, tool state blobs, event properties. Field-level probes (`stringField`,
+ *  `record`, `nonNegativeInteger`, …) narrow it at the read sites. */
+type OpenCodeJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | OpenCodeJsonValue[]
+  | { [key: string]: OpenCodeJsonValue };
+/** A string-keyed JSON object as opencode returns it, before fields are trusted. */
+export type RecordLike = { [key: string]: OpenCodeJsonValue };
 type OpenCodeEvent = { type: string; properties?: RecordLike };
 type OpenCodeClient = { request(method: string, route: string, body?: unknown, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
 /** One opencode `task` tool call, recognized from its tool part. opencode runs
@@ -37,9 +48,12 @@ type OpenCodeSession = {
   /** Set only when `SessionStartInput.resume` was actually adopted — see Session.resumedFrom. */
   resumedFrom?: string;
   eventsAbort: AbortController; messageRoleById: Map<string, string>; partById: Map<string, RecordLike>;
+  /** The raw permission ask parked under its request id — write-only bookkeeping,
+   *  deleted when opencode confirms the reply. */
+  pendingPermissions: Map<string, OpenCodeJsonValue>;
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
-  pendingPermissions: Map<string, string>; pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
+  pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
   /** In-flight permission approvals, keyed by the permission request's id. Each
    *  holds the ask we surfaced and the resolver that posts the reply — settled
    *  by respondToRequest (the user decided) or drained on interrupt/stop. */
@@ -164,6 +178,28 @@ function nonNegativeInteger(value: unknown): number | undefined {
 function stringField(value: unknown, key: string): string | undefined {
   const field = record(value)?.[key];
   return typeof field === "string" ? field : undefined;
+}
+
+/** A decoded JSON number — finiteness separates the number variant from every
+ *  other JSON variant without inspecting representations. */
+function jsonNumber(value: OpenCodeJsonValue | undefined): value is number {
+  return Number.isFinite(value);
+}
+
+/** The text under an opencode JSON field when it is one — the same variant
+ *  split antigravitySubagents uses: booleans by value, numbers by finiteness,
+ *  composites by their constructors. */
+function textField(value: OpenCodeJsonValue | undefined): string | undefined {
+  if (value === undefined || value === null || value === true || value === false) return undefined;
+  if (Array.isArray(value) || value instanceof Object || jsonNumber(value)) return undefined;
+  return value;
+}
+
+/** Per-question selections opencode echoes back on reply events — an array of
+ *  label arrays, tolerated as loosely as every other SSE field. */
+function answerRows(value: OpenCodeJsonValue | undefined): string[][] {
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => Array.isArray(row) ? row.flatMap((cell) => { const text = textField(cell); return text === undefined ? [] : [text]; }) : []);
 }
 
 function openCodeModelName(metadata: RecordLike | undefined): string | undefined {
@@ -391,15 +427,15 @@ function makeClient(baseUrl: string): OpenCodeClient {
 }
 
 export function translateOpenCodeEvent(sessionId: string, event: OpenCodeEvent): boolean {
-  const properties = event.properties;
-  return properties?.sessionID === sessionId
-    || properties?.info?.sessionID === sessionId
-    || properties?.part?.sessionID === sessionId
-    || properties?.tool?.sessionID === sessionId;
+  const p = event.properties ?? {};
+  return p.sessionID === sessionId
+    || stringField(p.info, "sessionID") === sessionId
+    || stringField(p.part, "sessionID") === sessionId
+    || stringField(p.tool, "sessionID") === sessionId;
 }
 
 export function isOpenCodeTurnEnd(event: OpenCodeEvent): boolean {
-  return event.type === "session.idle" || (event.type === "session.status" && event.properties?.status?.type === "idle");
+  return event.type === "session.idle" || (event.type === "session.status" && record(event.properties?.status)?.type === "idle");
 }
 
 export function selectOpenCodeTurnId(activeTurnId: string | undefined): string {
@@ -524,7 +560,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
             directory: input.cwd,
           }),
         );
-        const koneStatus = record(mcpResult)?.["kone"];
+        const koneStatus = record(record(mcpResult)?.kone);
         if (koneStatus?.status !== "connected") {
           console.error(
             `[opencode] kone MCP server did not connect: ${koneStatus?.error ?? "unknown status"}`,
@@ -691,50 +727,52 @@ export class OpenCodeAdapter implements ProviderAdapter {
     switch (event.type) {
       case "message.updated": {
         const info = record(p.info);
-        if (info?.id && info.role) {
-          session.messageRoleById.set(info.id, info.role);
-          if (info.role === "assistant" && info.tokens !== undefined) {
-            this.maybeEmitAssistantTokenUsage(session, info.id, info.tokens);
+        const messageId = textField(info?.id);
+        const role = textField(info?.role);
+        if (info && messageId && role) {
+          session.messageRoleById.set(messageId, role);
+          if (role === "assistant" && info.tokens !== undefined) {
+            this.maybeEmitAssistantTokenUsage(session, messageId, info.tokens);
           }
-          for (const part of session.partById.values()) if (part.messageID === info.id) this.handlePart(session, part);
+          for (const part of session.partById.values()) if (part.messageID === messageId) this.handlePart(session, part);
         }
         break;
       }
-      case "message.removed": session.messageRoleById.delete(p.messageID); break;
-      case "message.part.delta": { const part = session.partById.get(p.partID); const role = part?.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (!part || (role !== undefined && role !== "assistant") || !active || typeof p.delta !== "string") break; const prior = session.emittedTextByPartId.get(p.partID) ?? ""; const merged = appendOpenCodeTextDelta(prior, p.delta); session.emittedTextByPartId.set(p.partID, merged.text); this.emit({ ...base(session), type: "item.updated", turnId: active, item: { itemId: p.partID, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text } }); break; }
-      case "message.part.updated": this.handlePart(session, p.part); break;
+      case "message.removed": { const removedId = textField(p.messageID); if (removedId) session.messageRoleById.delete(removedId); break; }
+      case "message.part.delta": { const partId = textField(p.partID); const part = partId !== undefined ? session.partById.get(partId) : undefined; const role = part?.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined; if (!part || partId === undefined || (role !== undefined && role !== "assistant") || !active || typeof p.delta !== "string") break; const prior = session.emittedTextByPartId.get(partId) ?? ""; const merged = appendOpenCodeTextDelta(prior, p.delta); session.emittedTextByPartId.set(partId, merged.text); this.emit({ ...base(session), type: "item.updated", turnId: active, item: { itemId: partId, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text } }); break; }
+      case "message.part.updated": this.handlePart(session, record(p.part)); break;
       case "session.next.step.ended": {
         const usage = normalizeOpenCodeTokenUsage(p.tokens, session.contextWindow);
         if (usage) this.emitTokenUsage(session, usage);
         break;
       }
       case "session.idle": this.complete(session); break;
-      case "session.status": if (p.status?.type === "idle") this.complete(session); break;
+      case "session.status": if (record(p.status)?.type === "idle") this.complete(session); break;
        case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
        case "permission.asked":
        case "permission.v2.asked": void this.permissionAsked(session, p); break;
        case "permission.replied":
-       case "permission.v2.replied": session.pendingPermissions.delete(p.requestID); break;
+       case "permission.v2.replied": session.pendingPermissions.delete(String(p.requestID)); break;
        case "question.asked":
        case "question.v2.asked": this.questionAsked(session, p); break;
        case "question.replied":
-       case "question.v2.replied": this.questionResolved(session, p.requestID, p.answers ?? []); break;
+       case "question.v2.replied": this.questionResolved(session, String(p.requestID), answerRows(p.answers)); break;
        case "question.rejected":
-       case "question.v2.rejected": this.questionResolved(session, p.requestID, []); break;
+       case "question.v2.rejected": this.questionResolved(session, String(p.requestID), []); break;
       default: break;
     }
   }
 
   private handlePart(session: OpenCodeSession, part: RecordLike | undefined, subagentToolUseId?: string): void {
-     if (!part || !session.activeTurnId) return; session.partById.set(part.id, part); const turnId = session.activeTurnId;
+     if (!part || !session.activeTurnId) return; const partId = textField(part.id); if (!partId) return; session.partById.set(partId, part); const turnId = session.activeTurnId;
      // A settled run's tail is dropped before anything is emitted: re-projecting
      // it would orphan items under a tool-use id no run nests anymore (the same
      // rule as ClaudeAdapter's settledSubagents tail drop).
      if (subagentToolUseId && session.settledSubagentToolUseIds.has(subagentToolUseId)) return;
-     if (part.type === "text" || part.type === "reasoning") { const role = part.messageID ? session.messageRoleById.get(part.messageID) : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(part.id); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(part.id), String(part.text ?? "")); session.emittedTextByPartId.set(part.id, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) { const updated: Extract<RuntimeEvent, { type: "item.started" | "item.updated" }> = { ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: part.id, kind, status: "in-progress", text: merged.text } }; if (subagentToolUseId) updated.subagentToolUseId = subagentToolUseId; this.emit(updated); } if (part.time?.end && !session.completedTextPartIds.has(part.id)) { session.completedTextPartIds.add(part.id); const completed: Extract<RuntimeEvent, { type: "item.completed" }> = { ...base(session), type: "item.completed", turnId, item: { itemId: part.id, kind, status: "completed", text: merged.text } }; if (subagentToolUseId) completed.subagentToolUseId = subagentToolUseId; this.emit(completed); } return; }
-    if (part.type !== "tool") return; const state = record(part.state) ?? {}; const kind = toolKind(String(part.tool ?? "tool"));
-    if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(state.status), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; const planEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item }; if (subagentToolUseId) planEvent.subagentToolUseId = subagentToolUseId; this.emit(planEvent); return; }
-    const item: RuntimeItem = { itemId: String(part.callID ?? part.id), kind: "tool_call", status: toolStatus(String(state.status)), text: String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool") };
+     if (part.type === "text" || part.type === "reasoning") { const role = part.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined; if (role !== undefined && role !== "assistant") return; if (role === undefined) return; const hadPart = session.emittedTextByPartId.has(partId); const merged = reconcileOpenCodeText(session.emittedTextByPartId.get(partId), String(part.text ?? "")); session.emittedTextByPartId.set(partId, merged.text); const kind = part.type === "reasoning" ? "reasoning_text" : "assistant_text"; if (merged.delta || !hadPart) { const updated: Extract<RuntimeEvent, { type: "item.started" | "item.updated" }> = { ...base(session), type: hadPart ? "item.updated" : "item.started", turnId, item: { itemId: partId, kind, status: "in-progress", text: merged.text } }; if (subagentToolUseId) updated.subagentToolUseId = subagentToolUseId; this.emit(updated); } if (record(part.time)?.end && !session.completedTextPartIds.has(partId)) { session.completedTextPartIds.add(partId); const completed: Extract<RuntimeEvent, { type: "item.completed" }> = { ...base(session), type: "item.completed", turnId, item: { itemId: partId, kind, status: "completed", text: merged.text } }; if (subagentToolUseId) completed.subagentToolUseId = subagentToolUseId; this.emit(completed); } return; }
+     if (part.type !== "tool") return; const state = record(part.state) ?? {}; const kind = toolKind(String(part.tool ?? "tool"));
+    if (kind === "plan_text") { const parsed = parseTodoWriteInput(JSON.stringify(state.input ?? {})); if (parsed) session.planTasks = reconcilePlanTasks(session.planTasks, parsed); const item: RuntimeItem = { itemId: `${turnId}:plan`, kind, status: toolStatus(String(state.status)), text: formatPlanTasks(session.planTasks), tasks: session.planTasks }; const planEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item }; if (subagentToolUseId) planEvent.subagentToolUseId = subagentToolUseId; this.emit(planEvent); return; }
+    const item: RuntimeItem = { itemId: String(part.callID ?? partId), kind: "tool_call", status: toolStatus(String(state.status)), text: String(state.title ?? part.tool ?? ""), name: String(part.tool ?? "tool") };
     const detail = detailForTool(state);
     if (detail) item.detail = detail;
     const toolEvent: Extract<RuntimeEvent, { type: "item.started" | "item.updated" | "item.completed" }> = { ...base(session), type: state.status === "pending" ? "item.started" : state.status === "completed" || state.status === "error" ? "item.completed" : "item.updated", turnId, item };
@@ -746,8 +784,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
       const run = session.subagentRuns.get(subagentToolUseId);
       if (run) {
         run.snapshot.lastToolName = String(part.tool ?? "tool");
-        if (!run.childToolPartIds.has(String(part.id))) {
-          run.childToolPartIds.add(String(part.id));
+        if (!run.childToolPartIds.has(partId)) {
+          run.childToolPartIds.add(partId);
           run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;
         }
         this.emitSubagent(session, run, "subagent.updated");
@@ -812,27 +850,30 @@ export class OpenCodeAdapter implements ProviderAdapter {
     switch (event.type) {
       case "message.updated": {
         const info = record(p.info);
-        if (info?.id && info.role) {
-          session.messageRoleById.set(info.id, info.role);
-          if (info.role === "assistant" && info.tokens !== undefined && run) {
+        const messageId = textField(info?.id);
+        const role = textField(info?.role);
+        if (info && messageId && role) {
+          session.messageRoleById.set(messageId, role);
+          if (role === "assistant" && info.tokens !== undefined && run) {
             const usage = normalizeOpenCodeTokenUsage(info.tokens);
             if (usage?.total !== undefined) run.snapshot.tokens = usage.total;
           }
-          for (const part of session.partById.values()) if (part.messageID === info.id) this.handlePart(session, part, toolUseId);
+          for (const part of session.partById.values()) if (part.messageID === messageId) this.handlePart(session, part, toolUseId);
         }
         break;
       }
       case "message.part.delta": {
-        const part = session.partById.get(p.partID);
-        const role = part?.messageID ? session.messageRoleById.get(part.messageID) : undefined;
-        if (!part || (role !== undefined && role !== "assistant") || !session.activeTurnId || typeof p.delta !== "string") break;
-        const prior = session.emittedTextByPartId.get(p.partID) ?? "";
+        const partId = textField(p.partID);
+        const part = partId !== undefined ? session.partById.get(partId) : undefined;
+        const role = part?.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined;
+        if (!part || partId === undefined || (role !== undefined && role !== "assistant") || !session.activeTurnId || typeof p.delta !== "string") break;
+        const prior = session.emittedTextByPartId.get(partId) ?? "";
         const merged = appendOpenCodeTextDelta(prior, p.delta);
-        session.emittedTextByPartId.set(p.partID, merged.text);
-        this.emit({ ...base(session), type: "item.updated", turnId: session.activeTurnId, item: { itemId: p.partID, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text }, subagentToolUseId: toolUseId });
+        session.emittedTextByPartId.set(partId, merged.text);
+        this.emit({ ...base(session), type: "item.updated", turnId: session.activeTurnId, item: { itemId: partId, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text }, subagentToolUseId: toolUseId });
         break;
       }
-      case "message.part.updated": this.handlePart(session, p.part, toolUseId); break;
+      case "message.part.updated": this.handlePart(session, record(p.part), toolUseId); break;
       case "permission.asked":
       case "permission.v2.asked": void this.permissionAsked(session, p, toolUseId); break;
       case "session.next.step.ended": {
@@ -847,7 +888,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         this.settleSubagent(session, run, "failed", { error: errorMessage(p.error) });
         break;
       }
-      case "session.status": if (p.status?.type === "idle" && run) this.emitSubagent(session, run, "subagent.updated"); break;
+      case "session.status": if (record(p.status)?.type === "idle" && run) this.emitSubagent(session, run, "subagent.updated"); break;
       default: break;
     }
   }
@@ -902,9 +943,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }
-  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask that still fires (a tool outside the allow-all ruleset, e.g. an MCP tool the rules don't name) is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval }; if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId; this.emit(approvalRequested); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
+  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission ?? null); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask that still fires (a tool outside the allow-all ruleset, e.g. an MCP tool the rules don't name) is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission ?? null); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval }; if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId; this.emit(approvalRequested); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
   /** Settle one parked permission approval (idempotent — a no-op once drained). */
   private resolveApproval(session: OpenCodeSession, requestId: string, decision: ApprovalDecision): void { const pending = session.pendingApprovals.get(requestId); if (!pending) return; session.pendingApprovals.delete(requestId); pending.resolve(decision); }
-  private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((q: RecordLike, i: number) => ({ id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((o: RecordLike) => { const option: UserInputQuestionOption = { label: String(o.label ?? "") }; if (o.description) option.description = String(o.description); return option; }) : [], multiSelect: q.multiple === true })); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }
+  private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((entry, i) => { const q = record(entry) ?? {}; return { id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((optionEntry) => { const o = record(optionEntry) ?? {}; const option: UserInputQuestionOption = { label: String(o.label ?? "") }; if (o.description) option.description = String(o.description); return option; }) : [], multiSelect: q.multiple === true }; }); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }
   private questionResolved(session: OpenCodeSession, requestId: string, answers: string[][]): void { const pending = session.pendingUserInputs.get(requestId); if (!pending) return; const mapped: UserInputAnswers = {}; pending.questions.forEach((q, i) => { mapped[q.id] = answers[i]?.join(", ") ?? ""; }); session.pendingUserInputs.delete(requestId); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped }); }
 }

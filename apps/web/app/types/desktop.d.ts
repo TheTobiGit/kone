@@ -1081,7 +1081,7 @@ export type RuntimeEventSource =
   // never crosses the bridge, so nothing downstream can observe this source.
   | "kone.mock";
 
-type AgentBaseEvent = {
+export type AgentBaseEvent = {
   threadId: string;
   provider: ProviderKind;
   at: number;

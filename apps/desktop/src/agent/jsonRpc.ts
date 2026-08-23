@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { createInterface } from "node:readline";
 
+import type { JsonObject } from "../jsonValue.js";
 import { killTree } from "./spawn.js";
 
 // Generic bidirectional JSON-RPC 2.0 client over a persistent child process's
@@ -23,10 +24,11 @@ type JsonRpcOutbound =
   | { jsonrpc: "2.0"; id: JsonRpcId; result: unknown }
   | { jsonrpc: "2.0"; id: JsonRpcId; error: { code: number; message: string } };
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  // SAFETY: the guard proves value is a non-null object, so treating it as a
-  // string-keyed record is sound; every property still reads back as unknown.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+function asRecord(value: unknown): JsonObject | undefined {
+  // SAFETY: the guard proves value is a non-null object, and every frame here
+  // came out of JSON.parse, so it satisfies JsonObject; fields still read
+  // back as JsonValue and are verified before use.
+  return typeof value === "object" && value !== null ? (value as JsonObject) : undefined;
 }
 
 /** A usable inbound frame must be a JSON-RPC-shaped envelope: a request or
@@ -34,7 +36,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  *  `result`/`error`. Anything else is leaked subprocess/hook output that
  *  merely parses as JSON — the child's tool subprocesses share its stdout
  */
-function isJsonRpcEnvelope(value: Record<string, unknown>): boolean {
+function isJsonRpcEnvelope(value: JsonObject): boolean {
   if (typeof value.method === "string") return true;
   return (
     Object.prototype.hasOwnProperty.call(value, "id") &&

@@ -13,6 +13,8 @@ import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
 import { Database } from "bun:sqlite";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ClaudeJsonObject } from "./adapters/claudeAdapterHelpers.js";
 
 // The adapter transitively imports ConversationStore (via AttachmentStore),
 // which loads node:sqlite — an Electron-runtime builtin this bun can't load.
@@ -34,12 +36,14 @@ function ofType<T extends RuntimeEvent["type"]>(events: RuntimeEvent[], type: T)
 }
 
 /** Controllable SDK message feed: the stubbed query yields exactly what the
- *  test pushes, when it pushes it. */
+ *  test pushes, when it pushes it. The pushed items are decoded CLI wire
+ *  objects (the adapter probes them field-by-field), so they carry the
+ *  stream-json contract, not the SDK's parsed union. */
 class MessageFeed {
-  private readonly items: Array<Record<string, unknown>> = [];
-  private waiter: ((item: IteratorResult<Record<string, unknown>>) => void) | null = null;
+  private readonly items: ClaudeJsonObject[] = [];
+  private waiter: ((item: IteratorResult<ClaudeJsonObject>) => void) | null = null;
 
-  push(message: Record<string, unknown>): void {
+  push(message: ClaudeJsonObject): void {
     const waiter = this.waiter;
     if (waiter) {
       this.waiter = null;
@@ -55,9 +59,9 @@ class MessageFeed {
     waiter?.({ value: undefined, done: true });
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<Record<string, unknown>> {
+  async *[Symbol.asyncIterator](): AsyncGenerator<ClaudeJsonObject> {
     while (true) {
-      const item = await new Promise<IteratorResult<Record<string, unknown>>>((resolve) => {
+      const item = await new Promise<IteratorResult<ClaudeJsonObject>>((resolve) => {
         if (this.items.length > 0) resolve({ value: this.items.shift()!, done: false });
         else this.waiter = resolve;
       });
@@ -75,7 +79,7 @@ type AdapterHarnessState = {
    *  passed as `query({ prompt })`). Captured at query() time; tests pull
    *  from it to assert what was offered into the queue — and that close()
    *  drops what was never pulled. */
-  promptIterable: AsyncIterable<Record<string, unknown>> | null;
+  promptIterable: AsyncIterable<SDKUserMessage> | null;
   /** The stubbed SDK's initializationResult — the adapter's request/ack point.
    *  Tests drive resume failures here (transport vs. refusal). */
   initializationResult: ReturnType<typeof mock> | null;
@@ -86,7 +90,7 @@ const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null
 const stubQuery = mock((input: unknown) => {
   state.promptIterable =
     // SAFETY: the SDK query input carries the prompt iterable under `prompt`.
-    (input as { prompt?: AsyncIterable<Record<string, unknown>> }).prompt ?? null;
+    (input as { prompt?: AsyncIterable<SDKUserMessage> }).prompt ?? null;
   return {
     initializationResult: async () => state.initializationResult?.() ?? {},
     interrupt: () => state.interrupt?.(),
@@ -334,9 +338,10 @@ describe("Claude steerTurn", () => {
     // The message was offered into the prompt queue...
     const { value, done } = await iterator.next();
     expect(done).toBe(false);
-    // SAFETY: the queued steer round-trips through the adapter as a user message with text blocks.
-    const content = (value as { message: { content: Array<{ text: string }> } }).message.content;
-    expect(content[0]?.text).toBe("keep going");
+    if (!value || typeof value.message.content === "string") throw new Error("the queued steer never arrived as content blocks");
+    const first = value.message.content[0];
+    if (first?.type !== "text") throw new Error("the queued steer is not a text block");
+    expect(first.text).toBe("keep going");
 
     // ...and announced as a steer into the live turn.
     const steered = events.filter((e) => e.type === "turn.steered");

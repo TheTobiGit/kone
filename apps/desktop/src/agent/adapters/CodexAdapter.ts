@@ -147,9 +147,24 @@ type PendingApproval = {
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+/** One decoded JSON value from a codex app-server frame. Every RPC response,
+ *  notification params, and nested item payload lands here first; field-level
+ *  probes (`readString`, `numberOrUndefined`, …) narrow it at the read sites. */
+type CodexJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | CodexJsonValue[]
+  | { [key: string]: CodexJsonValue };
+
+/** A string-keyed JSON object as the app-server sends it — the decoded shape
+ *  of an RPC payload before individual fields are trusted. */
+type CodexJsonObject = { [key: string]: CodexJsonValue };
+
+function asRecord(value: unknown): CodexJsonObject | undefined {
   // SAFETY: the object check on the line above is the gate; readers probe fields.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+  return typeof value === "object" && value !== null ? (value as CodexJsonObject) : undefined;
 }
 
 function readString(value: unknown, ...path: string[]): string | undefined {
@@ -376,7 +391,7 @@ export function joinedText(value: unknown): string | undefined {
 
 /** Scavenges a human-readable blob out of an item's many possible shapes —
  *  Codex item payloads vary too much for a per-type field map. */
-export function itemDetail(item: Record<string, unknown> | undefined): string | undefined {
+export function itemDetail(item: CodexJsonObject | undefined): string | undefined {
   if (!item) return undefined;
   const nestedResult = asRecord(item.result);
   const candidates = [
@@ -424,7 +439,7 @@ export function formatCodexThreadResumeError(error: unknown, threadId: string): 
 /** The richer body for a tool call's expandable `detail` — a diff, a before/
  *  after text pair, stdout/stderr, or a changed-file list. Only consulted on
  *  completion, when a delta stream hasn't already accumulated one. */
-function itemDetailBody(item: Record<string, unknown> | undefined): string | undefined {
+function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
   if (!item) return undefined;
   const nestedResult = asRecord(item.result);
 
@@ -467,7 +482,7 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? (value as unknown[]) : [];
 }
 
-function parseModelListResponse(response: Record<string, unknown> | undefined): ModelDescriptor[] {
+function parseModelListResponse(response: CodexJsonObject | undefined): ModelDescriptor[] {
   const list =
     asArray(response?.items) || asArray(response?.data) || asArray(response?.models) || [];
   const seen = new Set<string>();
@@ -636,7 +651,7 @@ export class CodexAdapter implements ProviderAdapter {
     try {
       await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
       rpc.notify("initialized");
-      const response = await rpc.call<Record<string, unknown>>("model/list", {
+      const response = await rpc.call<CodexJsonObject>("model/list", {
         cursor: null,
         limit: 50,
         includeHidden: false,
@@ -710,12 +725,12 @@ export class CodexAdapter implements ProviderAdapter {
       // conversation continues with its full context. If resume is refused
       // (thread pruned/expired),
       // fall back to a fresh `thread/start` rather than failing the open.
-      let response: Record<string, unknown> | undefined;
+      let response: CodexJsonObject | undefined;
       let openMethod: "thread/start" | "thread/resume" = "thread/start";
       if (input.resume) {
         try {
           openMethod = "thread/resume";
-          response = await rpc.call<Record<string, unknown>>("thread/resume", {
+          response = await rpc.call<CodexJsonObject>("thread/resume", {
             ...overrides,
             threadId: input.resume,
           });
@@ -735,7 +750,7 @@ export class CodexAdapter implements ProviderAdapter {
         }
       }
       if (!response) {
-        response = await rpc.call<Record<string, unknown>>("thread/start", {
+        response = await rpc.call<CodexJsonObject>("thread/start", {
           ...overrides,
           experimentalRawEvents: false,
         });
@@ -809,7 +824,7 @@ export class CodexAdapter implements ProviderAdapter {
     // window is fixed by the catalog, so a per-turn value could only be a
     // stale selection.
     if (collaborationMode) turnStartInput.collaborationMode = collaborationMode;
-    const response = await session.rpc.call<Record<string, unknown>>("turn/start", turnStartInput);
+    const response = await session.rpc.call<CodexJsonObject>("turn/start", turnStartInput);
     const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
     if (!turnId) throw new Error("turn/start response did not include a turn id.");
     // Codex accepts queued follow-ups while the current turn is still

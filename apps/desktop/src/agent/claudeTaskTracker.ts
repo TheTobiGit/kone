@@ -3,6 +3,7 @@
 // (TodoWrite is the older/alternate path).
 
 import type { PlanTask, PlanTaskStatus } from "./types.js";
+import type { ClaudeJsonObject } from "./adapters/claudeAdapterHelpers.js";
 
 type ClaudeTrackedTaskStatus = "pending" | "in_progress" | "completed";
 
@@ -18,10 +19,10 @@ export type ClaudeTrackedTask = {
 
 type ClaudeTaskToolCall = {
   toolName: string;
-  input: Record<string, unknown>;
+  input: ClaudeJsonObject;
 };
 
-function readTaskString(input: Record<string, unknown>, ...keys: string[]): string | undefined {
+function readTaskString(input: ClaudeJsonObject, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const value = input[key];
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
@@ -29,7 +30,7 @@ function readTaskString(input: Record<string, unknown>, ...keys: string[]): stri
   return undefined;
 }
 
-function readTaskId(input: Record<string, unknown>): string | undefined {
+function readTaskId(input: ClaudeJsonObject): string | undefined {
   for (const key of ["taskId", "id", "task_id"]) {
     const value = input[key];
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
@@ -49,10 +50,10 @@ function readStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+function asRecord(value: unknown): ClaudeJsonObject | undefined {
   // SAFETY: the typeof-object/null/array checks on this line are the narrowing itself.
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+    ? (value as ClaudeJsonObject)
     : undefined;
 }
 
@@ -82,12 +83,12 @@ function parseToolResultValue(value: unknown): unknown {
   return record;
 }
 
-function parseToolResultRecord(block: Record<string, unknown>): Record<string, unknown> | undefined {
+function parseToolResultRecord(block: ClaudeJsonObject): ClaudeJsonObject | undefined {
   return asRecord(parseToolResultValue(block.content));
 }
 
 function trackedTaskFromRecord(
-  record: Record<string, unknown>,
+  record: ClaudeJsonObject,
   previous?: ClaudeTrackedTask,
 ): ClaudeTrackedTask | undefined {
   const id = readTaskId(record);
@@ -111,7 +112,7 @@ function trackedTaskFromRecord(
   };
 }
 
-function mergeTaskUpdate(existing: ClaudeTrackedTask, input: Record<string, unknown>): ClaudeTrackedTask {
+function mergeTaskUpdate(existing: ClaudeTrackedTask, input: ClaudeJsonObject): ClaudeTrackedTask {
   const status = readTrackedTaskStatus(input.status);
   const addedBlockedBy = readStringArray(input.addBlockedBy ?? input.add_blocked_by);
   return {
@@ -131,9 +132,9 @@ function mergeTaskUpdate(existing: ClaudeTrackedTask, input: Record<string, unkn
 /** TaskUpdate often omits `status` on the input — the new value is only on the
  *  structured tool_use_result's statusChange.to field. */
 function taskUpdateInput(
-  input: Record<string, unknown>,
-  result: Record<string, unknown> | undefined,
-): Record<string, unknown> {
+  input: ClaudeJsonObject,
+  result: ClaudeJsonObject | undefined,
+): ClaudeJsonObject {
   if (input.status !== undefined) return input;
   const change = asRecord(result?.statusChange);
   if (!change) return input;
@@ -171,7 +172,7 @@ export function isClaudeTaskTool(toolName: string | undefined): boolean {
 export function applyClaudeTaskToolResult(
   tasks: Map<string, ClaudeTrackedTask>,
   tool: ClaudeTaskToolCall,
-  resultBlock: Record<string, unknown>,
+  resultBlock: ClaudeJsonObject,
   structuredResult: unknown,
   isError: boolean,
 ): boolean {
