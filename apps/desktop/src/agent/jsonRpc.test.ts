@@ -66,6 +66,18 @@ async function loadRealJsonRpcModule(): Promise<JsonRpcModule> {
   JsonRpcErrorCtor = mod.JsonRpcError;
 }
 
+/** The message a call rejected with, or a marker when it resolved instead —
+ *  every rejection path in this transport constructs an Error, so the message
+ *  is always readable without asserting the value's type. */
+async function rejectionMessage(call: Promise<unknown>): Promise<string> {
+  try {
+    await call;
+    return "<resolved>";
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 function spawnFakeChild(script: string): InstanceType<typeof JsonRpcClientCtor> {
   return new JsonRpcClientCtor(process.execPath, ["-e", script], { env: {} });
 }
@@ -94,6 +106,30 @@ describe("JsonRpcClient stdout envelope validation", () => {
     } finally {
       rpc.kill();
     }
+  });
+
+  test("an exit rejects in-flight calls naming THIS child, not a hardcoded provider", async () => {
+    // Three adapters share this transport, so the exit error must name the
+    // child that actually died — a Cursor session reported as "codex
+    // app-server" is a lie the user (and classifyProviderError) reads.
+    const rpc = new JsonRpcClientCtor(process.execPath, ["-e", "process.exit(0)"], {
+      env: {},
+      label: "cursor-agent",
+    });
+    expect(await rejectionMessage(rpc.call("initialize", {}, 5_000))).toBe(
+      "cursor-agent process exited",
+    );
+    // And a call made after the exit says the same thing.
+    expect(await rejectionMessage(rpc.call("ping", {}, 5_000))).toBe(
+      "cursor-agent process has exited",
+    );
+  });
+
+  test("the transport labels itself from the binary when no label is given", async () => {
+    const rpc = new JsonRpcClientCtor(process.execPath, ["-e", "process.exit(0)"], { env: {} });
+    expect(await rejectionMessage(rpc.call("initialize", {}, 5_000))).toBe(
+      `${path.basename(process.execPath)} process exited`,
+    );
   });
 
   test("surfaces error responses as JsonRpcError", async () => {

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { basename } from "node:path";
 import { createInterface } from "node:readline";
 
 import { killTree } from "./spawn.js";
@@ -74,8 +75,18 @@ export class JsonRpcClient {
   private readonly exitHandlers = new Set<(code: number | null) => void>();
   private readonly stderrHandlers = new Set<(line: string) => void>();
   private exited = false;
+  /** What this child is called in the errors it raises. Three adapters share
+   *  this transport (Codex, Cursor, Droid), so a hardcoded name told the user
+   *  their Cursor session died as "codex app-server" — and classifiers read
+   *  these messages. Defaults to the binary's own name. */
+  private readonly label: string;
 
-  constructor(command: string, args: string[], opts: { cwd?: string; env: NodeJS.ProcessEnv }) {
+  constructor(
+    command: string,
+    args: string[],
+    opts: { cwd?: string; env: NodeJS.ProcessEnv; label?: string },
+  ) {
+    this.label = opts.label ?? basename(command);
     this.child = spawn(command, args, {
       cwd: opts.cwd,
       env: opts.env,
@@ -107,7 +118,7 @@ export class JsonRpcClient {
   private handleExit(code: number | null): void {
     if (this.exited) return;
     this.exited = true;
-    const error = new Error("codex app-server process exited");
+    const error = new Error(`${this.label} process exited`);
     for (const { reject } of this.pending.values()) reject(error);
     this.pending.clear();
     for (const handler of this.exitHandlers) handler(code);
@@ -212,7 +223,7 @@ export class JsonRpcClient {
   /** Send a request; resolves with its result. Rejects on an error response,
    *  process exit, or timeout. */
   call<T = unknown>(method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
-    if (this.exited) return Promise.reject(new Error("codex app-server process has exited"));
+    if (this.exited) return Promise.reject(new Error(`${this.label} process has exited`));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {

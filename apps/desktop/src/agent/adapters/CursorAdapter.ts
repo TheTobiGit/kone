@@ -110,6 +110,10 @@ import type { TokenUsageSplits } from "../usage/report.js";
 //     running context fill and window (parseStoredCursorContext). emitUsageFallback
 //     reads it at turn end, so the ring gets real numbers instead of a 0% guess.
 
+/** How this adapter's child is named in transport-level errors (JsonRpcClient
+ *  is shared with Codex and Droid, so each names its own). */
+const CURSOR_RPC_LABEL = "cursor-agent";
+
 const CURSOR_INITIALIZE_PARAMS = {
   protocolVersion: 1,
   clientInfo: { name: "kone", title: "kone", version: "0.1.0" },
@@ -712,7 +716,7 @@ export class CursorAdapter implements ProviderAdapter {
    *  window, so a picker built from it can't offer the axes as choices. */
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildCursorEnv();
-    const rpc = new JsonRpcClient(this.binary, ["acp"], { cwd: homedir(), env });
+    const rpc = new JsonRpcClient(this.binary, ["acp"], { cwd: homedir(), env, label: CURSOR_RPC_LABEL });
     try {
       await rpc.call("initialize", CURSOR_INITIALIZE_PARAMS, INITIALIZE_TIMEOUT_MS);
       await this.authenticate(rpc);
@@ -750,7 +754,7 @@ export class CursorAdapter implements ProviderAdapter {
     if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
 
     const env = await buildCursorEnv();
-    const rpc = new JsonRpcClient(this.binary, ["acp"], { cwd: input.cwd, env });
+    const rpc = new JsonRpcClient(this.binary, ["acp"], { cwd: input.cwd, env, label: CURSOR_RPC_LABEL });
     const mode: InteractionMode = input.mode ?? "accept-edits";
 
     const session: CursorSession = {
