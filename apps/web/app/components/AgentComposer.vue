@@ -494,7 +494,16 @@ function syncSoon() {
   window.setTimeout(sync, 380);
 }
 
+const closing = ref(false);
+const closingH = ref(REST);
+let closeTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function wake() {
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+  closing.value = false;
   if (open.value) return;
   open.value = true;
   opening.value = true;
@@ -507,12 +516,19 @@ async function wake() {
   window.setTimeout(() => (opening.value = false), 340);
 }
 
-// Collapse back to the resting orb. The draft (text + chips) stays in state, so
-// waking again restores exactly what was there.
+// Fade away back to the resting orb with no movement. The draft (text + chips)
+// stays in state, so waking again restores exactly what was there.
 function close() {
   if (!open.value) return;
+  if (closeTimer) clearTimeout(closeTimer);
+  closingH.value = surfaceH.value;
   open.value = false;
-  surfaceH.value = REST;
+  closing.value = true;
+  closeTimer = setTimeout(() => {
+    closing.value = false;
+    surfaceH.value = REST;
+    closeTimer = null;
+  }, 200);
 }
 onClickOutside(dock, () => {
   // The picker lives outside our dock, so its clicks read as "outside" — but it
@@ -620,6 +636,7 @@ onMounted(() => {
   sync();
 });
 onUnmounted(() => {
+  if (closeTimer) clearTimeout(closeTimer);
   persistDraft();
   disposeChips();
   clearAttachments();
@@ -715,8 +732,8 @@ defineExpose({ wake, setDraft });
     <div
       ref="surface"
       class="surface"
-      :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-springy': springy }"
-      :style="{ height: surfaceH + 'px' }"
+      :class="{ 'is-open': open, 'is-card': card, 'is-opening': opening, 'is-closing': closing, 'is-springy': springy }"
+      :style="{ height: (open ? surfaceH : (closing ? closingH : REST)) + 'px' }"
       role="button"
       :aria-label="open ? undefined : 'Wake the agent'"
       @click="onSurfaceClick"
@@ -821,7 +838,7 @@ defineExpose({ wake, setDraft });
              what the turn may DO (attach context, autonomy rung); right is what
              will do it (model, effort, tier, window) and the send seed. It rides
              in from below as the card opens, a beat after the field. -->
-        <div class="bar" :class="{ 'is-shown': open }" :inert="!open">
+        <div class="bar" :class="{ 'is-shown': open && !closing }" :inert="!open || closing">
           <div class="bar__group">
             <!-- Attach — opens the file picker. Drag-drop and paste feed the
                  same pending list. -->
@@ -975,7 +992,7 @@ defineExpose({ wake, setDraft });
          where, and the right names the conversation. -->
     <div
       class="tray"
-      :class="{ 'is-shown': open, 'is-spilling': spilling }"
+      :class="{ 'is-shown': open, 'is-closing': closing, 'is-spilling': spilling }"
       :inert="!open"
       aria-label="Turn context"
     >
@@ -1269,21 +1286,24 @@ html.dark .dock {
   border-radius: 50%;
   cursor: pointer;
   pointer-events: auto;
-  /* Collapse: it shrinks back to the orb first, then the corners round off into
-     a circle last — the mirror of the expand's anticipation. */
-  transition:
-    width 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-    padding 0.22s ease 0.16s,
-    border-radius 0.26s ease 0.18s,
-    border-color 0.22s ease;
 }
-/* At rest the surface carries no gradient — the face IS the mark, and it bleeds
-   past the box (no circular clip). The rim returns only as the pill edge once it
-   opens. */
-.surface:not(.is-open) {
+/* At rest and settled, the surface carries no gradient and unclips the resting bead. */
+.surface:not(.is-open):not(.is-closing) {
   overflow: visible;
   background-image: none;
+}
+.surface.is-closing {
+  width: 100%;
+  padding: 0;
+  border-radius: 26px;
+  border-color: var(--line);
+  background-image: none;
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: none;
+  transition: opacity 0.18s ease;
 }
 .surface.is-open {
   /* One open shape. It fills the dock's responsive track (full width up to the
@@ -1294,6 +1314,7 @@ html.dark .dock {
   border-radius: 26px;
   border-color: var(--line);
   background-image: none;
+  opacity: 1;
   /* Soft and low — just enough to lift the card off the page and read the tray
      as sitting under it. Never a heavy drop. */
   box-shadow:
@@ -1310,7 +1331,8 @@ html.dark .dock {
     padding 0.13s ease,
     width 0.12s cubic-bezier(0.4, 0, 0.2, 1),
     height 0.14s cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 0.2s ease;
+    border-color 0.2s ease,
+    opacity 0.15s ease;
 }
 /* Big/structural moves (paste, drop, first/last wrap, pill↔card) overshoot and
    settle back — a little spring so a large size change feels physical. */
@@ -1320,7 +1342,8 @@ html.dark .dock {
     padding 0.13s ease,
     width 0.34s cubic-bezier(0.34, 1.56, 0.64, 1),
     height 0.42s cubic-bezier(0.34, 1.56, 0.64, 1),
-    border-color 0.2s ease;
+    border-color 0.2s ease,
+    opacity 0.15s ease;
 }
 /* Only through the wake expand: corners square off to the input's radius first,
    then the body stretches out — so it never passes through an ellipse. Placed
@@ -1343,7 +1366,6 @@ html.dark .dock {
   height: 100%;
   border-radius: inherit;
   background: transparent;
-  transition: background-color 0.28s ease, border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .surface.is-open .panel {
   display: flex;
@@ -1353,6 +1375,15 @@ html.dark .dock {
      growing over the face rather than a haze the face shows through; the slower
      base curve then lets the face come back gently on the way in. */
   transition: background-color 0.06s ease, border-radius 0.13s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 26px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+.surface.is-closing .panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--field);
   border-radius: 26px;
   flex: 1 1 auto;
   min-height: 0;
@@ -1371,6 +1402,12 @@ html.dark .dock {
   z-index: 0;
   transform: translateX(-50%);
   pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+.surface.is-open .orbfx {
+  opacity: 0;
+  transition: opacity 0.06s ease;
 }
 
 /* ── Dormant face ─────────────────────────────────────────────────────────── */
@@ -1413,16 +1450,28 @@ html.dark .dock {
      floor, so the field never pads down into it. */
   padding: 16px 14px 4px;
   opacity: 0;
-  transition: opacity 0.18s ease;
+  pointer-events: none;
 }
 .surface.is-open .field {
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
   opacity: 1;
+  pointer-events: auto;
   transition: opacity 0.2s ease 0.08s;
 }
-.surface:not(.is-open) .field { flex: none; }
+.surface.is-closing .field {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  opacity: 1;
+  pointer-events: none;
+}
+.surface:not(.is-open):not(.is-closing) .field {
+  flex: none;
+  opacity: 0;
+  pointer-events: none;
+}
 /* Closed, the panel is an invisible sheet lying over the face — its editor would
    otherwise hand the bead a text cursor. Nothing in it is reachable until the
    card is open anyway, so it stops taking the pointer entirely. */
@@ -1499,7 +1548,6 @@ html.dark .dock {
   opacity: 0;
   transform: translateY(6px);
   pointer-events: none;
-  transition: opacity 0.18s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .bar.is-shown {
   opacity: 1;
@@ -1508,6 +1556,11 @@ html.dark .dock {
   transition:
     opacity 0.22s ease 0.12s,
     transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.12s;
+}
+.surface.is-closing .bar {
+  opacity: 1;
+  transform: none;
+  pointer-events: none;
 }
 .bar__group {
   display: flex;
@@ -1566,13 +1619,9 @@ html.dark .dock {
   border-radius: 0 0 18px 18px;
   background: var(--sunken);
   opacity: 0;
-  transform: translateY(-8px);
+  transform: none;
   pointer-events: none;
-  transition:
-    height 0.26s cubic-bezier(0.22, 1, 0.36, 1),
-    margin-top 0.26s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s ease,
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 0.16s ease;
 }
 .tray.is-shown {
   /* Taller than it shows: the card's rounded floor covers the top 14px, so the
@@ -1585,8 +1634,14 @@ html.dark .dock {
   transition:
     height 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
     margin-top 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.06s,
-    opacity 0.24s ease 0.14s,
-    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.1s;
+    opacity 0.24s ease 0.14s;
+}
+.tray.is-closing {
+  height: 40px;
+  margin-top: -14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
 }
 .tray__item {
   display: inline-flex;
