@@ -2,6 +2,7 @@ import type {
   EffortLevel,
   ModelInfo,
   PermissionMode,
+  PermissionUpdate,
   Query,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -152,8 +153,6 @@ export type ClaudeSession = {
   pendingUserInputs: Map<string, PendingUserInput>;
   /** In-flight tool approvals, keyed by our requestId. */
   pendingApprovals: Map<string, PendingApproval>;
-  /** True once the user picked "allow always" for this live session. */
-  approvalsAlwaysAllowed: boolean;
 };
 
 /** A parked AskUserQuestion. */
@@ -223,6 +222,33 @@ export function toPermissionMode(mode: InteractionMode): PermissionMode {
     default:
       return "acceptEdits";
   }
+}
+
+/**
+ * The permission updates an "Always allow" decision applies: the SDK's own
+ * suggestions when it offered any, rescoped to `destination: "session"` —
+ * echoing them verbatim would persist a session-only choice as a permanent
+ * rule (suggestions usually target `.claude/settings.local.json`). When no
+ * suggestion exists — typical for MCP and other non-built-in tools — fall
+ * back to a whole-tool allow rule for the session, so the decision still
+ * sticks instead of silently degrading into a one-shot accept.
+ */
+export function toSessionPermissionUpdates(
+  toolName: string,
+  suggestions: readonly PermissionUpdate[] | undefined,
+): PermissionUpdate[] {
+  const sessionScoped = (suggestions ?? []).map(
+    (suggestion): PermissionUpdate => ({ ...suggestion, destination: "session" }),
+  );
+  if (sessionScoped.length > 0) return sessionScoped;
+  return [
+    {
+      type: "addRules",
+      rules: [{ toolName }],
+      behavior: "allow",
+      destination: "session",
+    },
+  ];
 }
 
 /** Map the SDK's live ModelInfo list to kone's ModelDescriptor. */
