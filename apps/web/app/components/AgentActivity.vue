@@ -126,6 +126,7 @@ function settleStrip(el: HTMLElement): void {
 
 function onStripSettled(e: TransitionEvent): void {
   if (e.propertyName !== "width") return;
+  // SAFETY: transitionend fires on an Element; anything but stripEl.value is rejected right below.
   const el = e.target as HTMLElement | null;
   if (!el || el !== stripEl.value) return;
   el.removeEventListener("transitionend", onStripSettled);
@@ -281,6 +282,8 @@ function sync(): void {
   if (!win || !inner) return;
 
   const innerH = inner.offsetHeight;
+  // SAFETY: innerEl renders only the row wrapper elements from this template — no text nodes
+  // appear in .children.
   const rows = Array.from(inner.children) as HTMLElement[];
   // Driven by what the batch *wants*, not by what's mounted: rows outlive the
   // close so there's something to watch fold away.

@@ -449,9 +449,13 @@ async function fetchLatest(source: LatestSource): Promise<string | null> {
     const payload = await fetchJson(
       `https://registry.npmjs.org/${encodeURIComponent(source.name)}/latest`,
     );
+    // SAFETY: fetchJson resolves unknown-or-null; the only field read here goes
+    // through optional chaining and trimmed()'s string guard.
     return trimmed((payload as { version?: unknown } | null)?.version);
   }
   const kind = source.cask ? "cask" : "formula";
+  // SAFETY: fetchJson resolves unknown-or-null; both fields read off the payload
+  // go through optional chaining and trimmed()'s string guard.
   const payload = (await fetchJson(
     `https://formulae.brew.sh/api/${kind}/${encodeURIComponent(source.name)}.json`,
   )) as { version?: unknown; versions?: { stable?: unknown } } | null;

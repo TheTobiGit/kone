@@ -41,6 +41,8 @@ export const drawDelegate: ModeDraw = (ctx, size, t, dark, hueDeg, o) => {
     const y = ny + 0.14 * (vnoise(i * 0.53 + 27, t * 0.18) - 0.5) * 2;
     const z = nz + 0.14 * (vnoise(i * 0.77 + 55, t * 0.22) - 0.5) * 2;
     const l = Math.sqrt(x * x + y * y + z * z);
+    // SAFETY: three coordinates mapped from the NODES triple — always exactly
+    // three numbers.
     return [x / l, y / l, z / l] as [number, number, number];
   });
 

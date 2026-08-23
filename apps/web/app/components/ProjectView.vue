@@ -580,7 +580,11 @@ watch(
   (raw) => {
     const next: Partial<Record<ProviderKind, ModelOption[]>> = {};
     for (const [provider, list] of Object.entries(raw)) {
-      if (list?.length) next[provider as ProviderKind] = buildModelCatalog(list);
+      if (list?.length) {
+        // SAFETY: raw is Partial<Record<ProviderKind, ModelOption[]>>, so
+        // every key Object.entries yields is a ProviderKind.
+        next[provider as ProviderKind] = buildModelCatalog(list);
+      }
     }
     catalogs.value = { ...catalogs.value, ...next };
     // Reconcile the live pick. A refresh can drop the model the user is on (a
@@ -863,13 +867,19 @@ onMounted(async () => {
       const savedReasoning = localStorage.getItem(REASONING_KEY);
       if (savedReasoning && savedReasoning in EFFORT_META) {
         const fam = familyForId(modelOptions.value, model.value);
+        // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the
+        // `savedReasoning in EFFORT_META` guard above proves it is an EffortTier.
         const eff = effortForTier(fam, savedReasoning as EffortTier);
         if (eff) agent.setReasoning(eff.tier);
       }
     }
     if (import.meta.client) {
       const savedMode = localStorage.getItem(MODE_KEY);
+      // SAFETY: MODES is declared as InteractionMode[]; the includes() above
+      // passes only when savedMode equals one of those exact members.
       if (savedMode && (MODES as string[]).includes(savedMode)) {
+        // SAFETY: the includes() check in the condition above passed, and
+        // MODES is declared as InteractionMode[], so savedMode is one.
         agent.setMode(savedMode as InteractionMode);
       }
     }

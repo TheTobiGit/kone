@@ -166,6 +166,8 @@ describe("kindHint", () => {
   test("returns null for null, INTERNAL, and unknown kinds", () => {
     expect(kindHint(null)).toBeNull();
     expect(kindHint("INTERNAL")).toBeNull();
+    // SAFETY: deliberately invalid kind — the test asserts unknown kinds get
+    // no hint rather than throwing.
     expect(kindHint("BOGUS" as IpcErrorKind)).toBeNull();
   });
 

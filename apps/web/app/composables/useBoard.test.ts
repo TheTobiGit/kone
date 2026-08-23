@@ -716,6 +716,9 @@ describe("useBoard — attach never conjures a second column", () => {
     // Close the focused one: focus hands off to the neighbour, whose session is
     // already live, so nothing may spawn and the PTY that left must be torn down.
     const closing = board.panes.value.find((p) => p.id === "p2")!;
+    // SAFETY: every session kind the board attaches carries a stable string
+    // `key` (the entry↔session matching contract), and this harness's
+    // terminal sessions are no exception.
     const closingKey = closing.session ? (closing.session as { key: string }).key : "";
     await board.close("p2");
     await settle();

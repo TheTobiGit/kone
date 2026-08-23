@@ -46,6 +46,8 @@ function startCapture(action: ShortcutAction, e: MouseEvent) {
   capturingId.value = action.id;
   captureMsg.value = "";
   cue("press");
+  // SAFETY: currentTarget is the <button> this handler is bound to while
+  // dispatch runs; after nextTick it may already be nulled, hence | null.
   nextTick(() => (e.currentTarget as HTMLElement | null)?.focus());
 }
 

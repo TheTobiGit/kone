@@ -76,6 +76,7 @@ function applyMoves(
 function makeMoves(count: number): Move[] {
   const moves: Move[] = [];
   for (let i = 0; i < count; i++) {
+    // SAFETY: Math.min(2, …) clamps the hashed value into {0, 1, 2}.
     const axis = Math.min(2, Math.floor(hashD(i, 2.3) * 3)) as 0 | 1 | 2;
     const lo = -1.0 + 0.5 * Math.min(3, Math.floor(hashD(i, 5.9) * 4));
     const dir = hashD(i, 7.7) < 0.5 ? 1 : -1;

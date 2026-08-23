@@ -160,6 +160,7 @@ function addRatio(c: ChangeItem): number {
 // Clicking a row hands up the row's viewport rect as the detail's grow origin —
 // the same contract the change cards use.
 function onRowClick(item: ChangeItem, e: MouseEvent | KeyboardEvent) {
+  // SAFETY: currentTarget is the row element this click handler is bound to.
   const el = e.currentTarget as HTMLElement;
   emit("openFile", item, el.getBoundingClientRect());
 }

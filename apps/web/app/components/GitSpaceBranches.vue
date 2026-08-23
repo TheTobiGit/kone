@@ -25,6 +25,8 @@ const renameTo = ref("");
 // rename, so take the element by hand instead.
 const renameEl = ref<HTMLInputElement | null>(null);
 function setRenameEl(el: unknown) {
+  // SAFETY: Vue template ref — the element is the rename <input> this is bound
+  // to, or null on unmount; both map onto HTMLInputElement | null.
   renameEl.value = (el as HTMLInputElement | null) ?? null;
 }
 

@@ -269,6 +269,9 @@ function onKeydown(event: KeyboardEvent) {
   const first = els[0];
   const last = els[els.length - 1];
   if (!first || !last) return;
+  // SAFETY: activeElement is only compared against focusableEls(), which
+  // selects HTMLElements via querySelectorAll<HTMLElement>; anything else
+  // simply misses in the includes() check.
   const active = document.activeElement as HTMLElement | null;
   const inTrap = active != null && els.includes(active);
   const atEdge = event.shiftKey ? active === first : active === last;
@@ -282,6 +285,9 @@ function onKeydown(event: KeyboardEvent) {
 let opener: HTMLElement | null = null;
 
 onMounted(async () => {
+  // SAFETY: activeElement is null when nothing is focused; otherwise the
+  // focused element is a focusable HTML control, and only opener?.focus()
+  // ever reads it back — matching opener's declared type.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", onWindowResize);

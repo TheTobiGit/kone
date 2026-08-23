@@ -75,7 +75,11 @@ function decode(file: SupplementFile): Supplement {
 /** The bundled supplement, decoded once at module load. There's no disk
  *  cache or network fetch for this layer (see file header), so this is the
  *  only place it's ever produced. */
-export const supplement: Supplement = decode(supplementJson as SupplementFile);
+export const supplement: Supplement = decode(
+  // SAFETY: supplementJson is kone's own hand-maintained bundled file (see its
+  // $comment), kept in lockstep with the SupplementFile shape decode consumes.
+  supplementJson as SupplementFile,
+);
 
 /** The canonical pricing key `model` should resolve to per the supplement's
  *  alias rules, or undefined when no rule matches — the overwhelming

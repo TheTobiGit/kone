@@ -86,6 +86,8 @@ export function useComposerAttachments(deps: {
   }
 
   function onFilePicked(e: Event) {
+    // SAFETY: this is the @change handler of the hidden <input type="file">
+    // in AgentComposer, whose target is that input element itself.
     const input = e.target as HTMLInputElement;
     addFiles(input.files);
     input.value = "";

@@ -41,11 +41,17 @@ const rolesMod = await import(pathToFileURL(path.join(appDir, "roles.ts")).href)
 const themesMod = await import(pathToFileURL(path.join(appDir, "themes/index.ts")).href);
 
 const { THEME_VARIABLES, colorsFor, schemesOf, extrasFor } = rolesMod;
+// SAFETY: themes/index.ts exports BUILT_IN_THEMES as a readonly ThemeDefinition[]
+// array; the dynamic import erases it to any and this restores array-ness only.
 const themes = themesMod.BUILT_IN_THEMES as readonly any[];
 
 function vars(theme: any, scheme: string): string {
   const colors = colorsFor(theme, scheme);
-  return Object.entries(THEME_VARIABLES as Record<string, string>)
+  return Object.entries(
+    // SAFETY: roles.ts declares THEME_VARIABLES as a literal role → "--property"
+    // map; the dynamic import erases that to any, this restores the string values.
+    THEME_VARIABLES as Record<string, string>,
+  )
     .map(([role, name]) => `${name}:${colors[role]}`)
     .join(";");
 }

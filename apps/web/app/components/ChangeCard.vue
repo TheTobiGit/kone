@@ -27,6 +27,7 @@ const props = withDefaults(
 const emit = defineEmits<{ open: [rect: DOMRect] }>();
 
 function onOpen(e: Event) {
+  // SAFETY: currentTarget is the card element this click handler is bound to.
   const el = e.currentTarget as HTMLElement;
   emit("open", el.getBoundingClientRect());
 }

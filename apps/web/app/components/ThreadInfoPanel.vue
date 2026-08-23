@@ -155,6 +155,8 @@ const modelName = computed(() => describeModelId(s.model.value).name);
 // Reasoning wears the same brain-stack as the model picker: a tier's brain
 // count and hue read at a glance, its label spelling it out.
 const effort = computed(() => {
+  // SAFETY: EFFORT_META[tier] below falls back to ?? EFFORT_META.medium, so a
+  // string outside EffortTier can only miss the lookup, never misbehave.
   const tier = String(s.reasoning.value ?? "").toLowerCase() as EffortTier;
   return EFFORT_META[tier] ?? EFFORT_META.medium;
 });
@@ -216,7 +218,10 @@ const ctxWindow = computed(() => {
 });
 const tokenRows = computed(() => {
   const u = usage.value;
-  if (!u) return [] as { label: string; value: string }[];
+  if (!u)
+    // SAFETY: the array literal is empty, so its element type vacuously
+    // matches the token-row shape the non-empty branch below builds.
+    return [] as { label: string; value: string }[];
   const out: { label: string; value: string }[] = [];
   if (ctxUsed.value !== undefined && ctxWindow.value !== undefined) {
     const remaining = ctxWindow.value - ctxUsed.value;

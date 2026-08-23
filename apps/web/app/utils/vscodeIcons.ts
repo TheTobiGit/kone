@@ -13,6 +13,8 @@ export function ensureVscodeIcons(): Promise<void> {
   if (!registration) {
     registration = import("@iconify-json/vscode-icons/icons.json")
       .then(({ default: vscodeIcons }) => {
+        // SAFETY: icons.json's default is the IconifyJSON collection record
+        // addCollection takes; its declared type is just not that specific.
         addCollection(vscodeIcons as Parameters<typeof addCollection>[0]);
       })
       .catch((error) => {

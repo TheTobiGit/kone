@@ -94,6 +94,8 @@ export function encodeCompact(table: PricingTable, source?: string): CompactFile
  *  garbage so a corrupt cache file can never silently replace good data —
  *  callers are expected to catch and fall back. */
 export function parseCompactJson(raw: string): PricingTable {
+  // SAFETY: decodeCompact re-validates the parsed file; this cast only carries
+  // us to the models-presence check that throws first.
   const file = JSON.parse(raw) as CompactFile;
   if (!file || typeof file !== "object" || typeof file.models !== "object") {
     throw new Error("compact pricing file missing a models object");

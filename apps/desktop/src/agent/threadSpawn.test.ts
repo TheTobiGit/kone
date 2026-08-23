@@ -34,6 +34,8 @@ import type {
  *  SAFETY: every caller runs expect(error).toBeInstanceOf(Error)
  *  immediately before reading name/message off it. */
 function errorOf(e: unknown): Error {
+  // SAFETY: every caller runs expect(error).toBeInstanceOf(Error)
+  // immediately before reading name/message off it.
   return e as Error;
 }
 
@@ -41,6 +43,8 @@ function errorOf(e: unknown): Error {
  *  SAFETY: every caller runs expect(error).toBeInstanceOf(SpawnError)
  *  immediately before reading fields off it. */
 function spawnErrorOf(e: unknown): SpawnError {
+  // SAFETY: every caller runs expect(error).toBeInstanceOf(SpawnError)
+  // immediately before reading fields off it.
   return e as SpawnError;
 }
 

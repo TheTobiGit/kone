@@ -406,6 +406,9 @@ class SpawnEngineImpl implements SpawnEngine {
       throw new SpawnError("internal", "Idempotency reserve failed — the op table is unavailable.");
     }
     if (reserve.kind === "replay") {
+      // SAFETY: result_json was written by this engine's own completion path
+      // (setGatewayOpResult(JSON.stringify(result))) under an identical
+      // kind+fingerprint, so the parsed replay is a SpawnThreadResult.
       const stored = reserve.result as SpawnThreadResult;
       return { ...stored, status: "replayed" };
     }

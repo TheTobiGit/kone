@@ -148,6 +148,8 @@ const conversation = computed(() => {
       at: r.submittedAt,
       relative: r.relative,
       state: r.state,
+      // SAFETY: pure type widening — reviews have no url, and the literal null
+      // is widened to string|null so both entry kinds share one shape.
       url: null as string | null,
     })),
     ...p.comments.map((c) => ({
@@ -156,6 +158,8 @@ const conversation = computed(() => {
       body: c.body,
       at: c.createdAt,
       relative: c.relative,
+      // SAFETY: pure type widening — the literal null is widened to string|null
+      // so both entry kinds share one shape; no runtime value is involved.
       state: null as string | null,
       url: c.url,
     })),

@@ -214,6 +214,9 @@ function showNotice(kind: "ok" | "error", text: string) {
 }
 
 async function onFilesPicked(event: Event) {
+  // SAFETY: onFilesPicked is bound via @change to this pane's hidden
+  // <input type="file"> (ref="fileInput"), so during dispatch target is
+  // that HTMLInputElement; files ?? [] also tolerates a null.
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   input.value = "";

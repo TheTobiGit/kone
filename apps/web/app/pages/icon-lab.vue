@@ -4,6 +4,8 @@ import type { Component } from "vue";
 import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
 
 // Auto-collect every animated icon so the lab stays complete as the set grows.
+// SAFETY: a Vite glob over *.vue SFCs yields modules whose default export is
+// the component.
 const modules = import.meta.glob("~/components/icons/animated/*.vue", {
   eager: true,
 }) as Record<string, { default: Component }>;
@@ -22,6 +24,9 @@ const size = ref(28);
 // One handle per rendered icon, keyed by name, for replay + play-all.
 const handles = ref<Record<string, AnimatedIconHandle | null>>({});
 function setHandle(name: string, el: unknown) {
+  // SAFETY: every animated icon defineExpose()s { startAnimation,
+  // stopAnimation } (the useIconAnimation contract); el is that exposed
+  // instance, or null while unmounting.
   handles.value[name] = (el as AnimatedIconHandle) ?? null;
 }
 function replay(name: string) {

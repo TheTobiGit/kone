@@ -137,6 +137,9 @@ function onKeydown(e: KeyboardEvent) {
 let opener: HTMLElement | null = null;
 
 onMounted(async () => {
+  // SAFETY: activeElement is null when nothing is focused; otherwise the
+  // focused element is a focusable HTML control, and only opener?.focus()
+  // ever reads it back — matching opener's declared type.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", syncHeight);

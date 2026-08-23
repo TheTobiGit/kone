@@ -189,6 +189,8 @@ export function parseDroidSettingsFile(filePath: string, raw: string): UsageReco
     return null;
   }
   if (!value || typeof value !== "object") return null;
+  // SAFETY: value passed the object check above; settings.tokenUsage is
+  // undefined-checked before any field is read.
   const settings = value as DroidSettings;
   const usage = settings.tokenUsage;
   if (!usage) return null;

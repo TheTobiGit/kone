@@ -200,6 +200,9 @@ function probeInView(): boolean {
 function setSentinel(el: Element | null | any): void {
   observer?.disconnect();
   observer = null;
+  // SAFETY: this is a Vue template (function) ref — Vue passes the mounted
+  // element itself here, typed as Element; the `any` slot just absorbs the
+  // unmount call where Vue passes null.
   sentinelEl = (el as Element | null) ?? null;
   if (!el || typeof IntersectionObserver === "undefined") return;
   observer = new IntersectionObserver(
@@ -208,6 +211,8 @@ function setSentinel(el: Element | null | any): void {
     },
     { rootMargin: `0px 0px ${REVEAL_MARGIN}px 0px` },
   );
+  // SAFETY: the guard above returned unless el is truthy, and the observer
+  // only accepts real Element targets.
   observer.observe(el as Element);
 }
 watch(

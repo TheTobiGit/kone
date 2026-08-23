@@ -148,6 +148,7 @@ function buildView(block: AssistantBlock): BlockView {
   const last = all[all.length - 1];
   const replyIsTrailingText = last?.kind === "text";
   const foldedGroups = replyIsTrailingText ? all.slice(0, -1) : all;
+  // SAFETY: replyIsTrailingText means last.kind === "text", which is a TextGroup.
   const replyGroups = replyIsTrailingText ? [last as TextGroup] : [];
   const tail = all[all.length - 1];
   const tailIsSteps = tail?.kind === "steps";
@@ -469,6 +470,7 @@ function scroller(): HTMLElement | null {
     if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight) return el;
     el = el.parentElement;
   }
+  // SAFETY: scrollingElement is document.documentElement or document.body — both HTMLElements.
   return (document.scrollingElement as HTMLElement) ?? document.documentElement;
 }
 

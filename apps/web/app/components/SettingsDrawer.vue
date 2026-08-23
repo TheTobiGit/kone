@@ -97,7 +97,10 @@ function onSoundToggle() {
 // on demand. Manual trigger in both cases — the row/switch is the hover target.
 const navIconHandles = new Map<string, AnimatedIconHandle>();
 function setNavIcon(key: string, el: unknown): void {
-  if (el) navIconHandles.set(key, el as AnimatedIconHandle);
+  if (el)
+    // SAFETY: every :ref wired to setNavIcon sits on an animated icon component
+    // that defineExposes exactly startAnimation/stopAnimation — AnimatedIconHandle.
+    navIconHandles.set(key, el as AnimatedIconHandle);
   else navIconHandles.delete(key);
 }
 function playNavIcon(key: string): void {
@@ -105,6 +108,8 @@ function playNavIcon(key: string): void {
 }
 const volumeHandle = ref<AnimatedIconHandle | null>(null);
 function setVolumeIcon(el: unknown): void {
+  // SAFETY: the :ref is on the VolumeHigh/VolumeMute01 animated icon, whose
+  // defineExpose is exactly startAnimation/stopAnimation — AnimatedIconHandle.
   volumeHandle.value = el as AnimatedIconHandle | null;
 }
 

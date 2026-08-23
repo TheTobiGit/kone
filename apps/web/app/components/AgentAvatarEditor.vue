@@ -79,6 +79,7 @@ async function takeGenerated() {
 }
 
 async function onFile(event: Event) {
+  // SAFETY: bound via @change on the hidden file <input>, so target is that input.
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   // Cleared so choosing the same file twice still counts as a change.

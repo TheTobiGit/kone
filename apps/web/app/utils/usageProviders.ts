@@ -30,5 +30,8 @@ export const PROVIDER_COLOR = {
 } satisfies Record<ProviderKind, string>;
 
 export function isProviderKind(value: string): value is ProviderKind {
+  // SAFETY: widening to readonly string[] is only so includes() accepts an
+  // arbitrary string; a hit still means value is one of the ProviderKinds in
+  // PROVIDER_ORDER.
   return (PROVIDER_ORDER as readonly string[]).includes(value);
 }

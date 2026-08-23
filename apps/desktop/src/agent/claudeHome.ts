@@ -72,6 +72,8 @@ export function hasLocalOAuthLogin(env: NodeJS.ProcessEnv = process.env): boolea
   const credsPath = path.join(resolveClaudeConfigDir(env), ".credentials.json");
   if (!existsSync(credsPath)) return false;
   try {
+    // SAFETY: every field read off raw is optional and only feeds a boolean, so
+    // a deviant credentials file just reads as undefined ("no file login").
     const raw = JSON.parse(readFileSync(credsPath, "utf8")) as {
       claudeAiOauth?: { accessToken?: string; expiresAt?: number } | null;
     };

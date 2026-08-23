@@ -174,6 +174,8 @@ const rows = computed<Row[]>(() =>
   }),
 );
 
+// SAFETY: ORDER above is a fixed six-entry literal, so rows always has a
+// first element for the ?? fallback to land on.
 const current = computed<Row>(
   () => rows.value.find((r) => r.provider === selected.value) ?? (rows.value[0] as Row),
 );

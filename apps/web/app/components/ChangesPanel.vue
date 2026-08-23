@@ -93,6 +93,7 @@ function sampleDots(all: DotTone[], max: number): DotTone[] {
     else idle++;
   }
 
+  // SAFETY: the three literals filled in above are exactly DotTone's members.
   return [
     ...Array(add).fill("add"),
     ...Array(del).fill("del"),

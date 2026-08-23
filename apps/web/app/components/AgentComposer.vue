@@ -563,6 +563,8 @@ async function onGlobalKey(e: KeyboardEvent) {
   if (open.value || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
   // Single printable char only — "a", "1", "?" pass; "Enter"/"Tab"/arrows don't.
   if (e.key.length !== 1) return;
+  // SAFETY: a non-element target would fail the contentEditable and tag-name probes below,
+  // so the keystroke is ignored either way.
   const t = e.target as HTMLElement | null;
   if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
   // A file detail is open → the composer is inert; leave the keystroke alone.

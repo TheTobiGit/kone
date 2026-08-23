@@ -118,6 +118,8 @@ export class TranscriptAggregator {
       const [day = "", provider = "", model = ""] = key.split("\0");
       buckets.push({
         day,
+        // SAFETY: the bucket key embeds record.provider verbatim from add(),
+        // which is typed TranscriptProviderKind.
         provider: provider as TranscriptProviderKind,
         model,
         totals: bucket.totals,

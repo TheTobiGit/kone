@@ -165,6 +165,8 @@ describe("parseCodexLine", () => {
       });
     };
     const stamped = (timestamp: string, line: string) => {
+      // SAFETY: line is meta()'s own JSON.stringify output from this same test,
+      // which always carries a timestamp string.
       const parsed = JSON.parse(line) as { timestamp: string };
       parsed.timestamp = timestamp;
       return JSON.stringify(parsed);

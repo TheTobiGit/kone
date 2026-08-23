@@ -48,5 +48,6 @@ export function parseKind(
 ): ParsedIpcMessage {
   const match = KIND_MARKER.exec(message);
   if (!match) return { kind: null, message };
+  // SAFETY: the marker is only ever written by markKind(), whose argument is an IpcErrorKind.
   return { kind: match[1] as IpcErrorKind, message: message.slice(match[0].length) };
 }

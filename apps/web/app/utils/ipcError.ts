@@ -72,6 +72,9 @@ export function classifyIpcError(
 ): ClassifiedIpcError {
   const cleaned = peel(error);
   const match = KIND_MARKER.exec(cleaned);
+  // SAFETY: markers are written only by the desktop main process, from its
+  // copy of IPC_ERROR_KINDS (kept in lockstep per the type above); a stray
+  // token would still fall through kindHint's switch harmlessly.
   const kind = match ? (match[1] as IpcErrorKind) : null;
   const message = (match ? cleaned.slice(match[0].length) : cleaned).trim();
   return { kind, message: message || fallback };

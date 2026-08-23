@@ -89,6 +89,8 @@ const departingThrustVariants = {
     transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] },
   },
   animate: (i: unknown) => {
+    // SAFETY: the template binds :custom only to numeric literals 0–2, and
+    // ?? 1 covers any out-of-range index.
     const lag = [1, 0.78, 0.62][i as number] ?? 1;
 
     return {
@@ -116,6 +118,7 @@ const departingThrustVariants = {
       ],
       transition: {
         duration: 0.64,
+        // SAFETY: the departingThrust paths likewise bind :custom only to 0–2.
         delay: (i as number) * 0.018,
         ease: [0.77, 0, 0.175, 1],
         times: [0, 0.1, 0.22, 0.38, 0.55, 0.72, 0.88, 1],
@@ -133,6 +136,8 @@ const arrivingThrustVariants = {
     visibility: "hidden",
   },
   animate: (i: unknown) => {
+    // SAFETY: the template binds :custom only to numeric literals 0–2, and
+    // ?? 1 covers any out-of-range index.
     const lag = [1, 0.76, 0.6][i as number] ?? 1;
 
     return {
@@ -148,6 +153,7 @@ const arrivingThrustVariants = {
       visibility: ["hidden", "visible", "visible", "visible", "visible"],
       transition: {
         duration: 0.4,
+        // SAFETY: the arrivingThrust paths bind :custom only to the literals 0–2.
         delay: 0.5 + (i as number) * 0.022,
         ease: [0.23, 1, 0.32, 1],
         times: [0, 0.16, 0.46, 0.8, 1],

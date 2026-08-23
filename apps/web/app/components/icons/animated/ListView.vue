@@ -11,6 +11,7 @@ defineExpose({ startAnimation, stopAnimation });
 // Existing rows contract and settle in reading order, alternating their anchored edge.
 const rowVariants = {
   normal: { transform: "scaleX(1)" },
+  // SAFETY: this file's template binds :custom only to the literals 0, 1 and 2.
   animate: (custom: unknown) => ({
     transform: ["scaleX(1)", "scaleX(0.68)", "scaleX(1.04)", "scaleX(0.98)", "scaleX(1)"],
     transition: {
