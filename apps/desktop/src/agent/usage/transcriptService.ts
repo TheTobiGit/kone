@@ -110,6 +110,8 @@ async function ensureScanCacheLoaded(): Promise<void> {
   cacheLoaded = true;
   try {
     const raw = await fs.readFile(SCAN_CACHE_PATH(), "utf8");
+    // SAFETY: asserting unknown narrows JSON.parse's any, so every access must
+    // survive decodeScanCache below.
     const doc = JSON.parse(raw) as unknown;
     for (const [p, entry] of decodeScanCache(doc)) fileCache.set(p, entry);
   } catch {

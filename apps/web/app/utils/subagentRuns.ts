@@ -103,6 +103,9 @@ export function subagentModel(
 export function subagentEffort(
   run: Pick<SubagentRunSnapshot, "effort">,
 ): (typeof EFFORT_META)[EffortTier] | null {
+  // SAFETY: the snapshot carries effort as a raw string off the bridge; the
+  // checks below reject undefined and any tier EFFORT_META doesn't know, so an
+  // out-of-set value degrades to null rather than rendering wrong.
   const tier = run.effort as EffortTier | undefined;
   if (!tier) return null;
   const meta = EFFORT_META[tier];

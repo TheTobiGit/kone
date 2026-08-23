@@ -105,7 +105,9 @@ describe("reveal", () => {
   });
 
   test("rejects a non-string without calling the shell", async () => {
+    // SAFETY: deliberate wrong-type input; reveal() must validate and reject it.
     await expect(reveal(42 as never)).rejects.toThrow();
+    // SAFETY: deliberate wrong-type input; reveal() must validate and reject it.
     await expect(reveal(null as never)).rejects.toThrow();
 
     expect(openPathCalls).toEqual([]);

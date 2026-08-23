@@ -113,6 +113,7 @@ async function readDiff(path: string): Promise<void> {
 function openPeek(file: ChangedFile, e: MouseEvent | KeyboardEvent): void {
   if (!canPeek.value) return;
   cue("expand");
+  // SAFETY: currentTarget is the row element this click handler is bound to; el?. covers the rest.
   const el = e.currentTarget as HTMLElement | null;
   peekRect.value = el?.getBoundingClientRect() ?? null;
   peekPath.value = file.path;

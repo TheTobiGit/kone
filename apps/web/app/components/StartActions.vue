@@ -24,7 +24,10 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
 // its gesture (plus pops, folder opens, github nudges) when the action is hovered.
 const iconHandles = new Map<ActionKey, AnimatedIconHandle>();
 function setIcon(key: ActionKey, el: unknown): void {
-  if (el) iconHandles.set(key, el as AnimatedIconHandle);
+  if (el)
+    // SAFETY: the :ref sits on one of this app's animated icon components,
+    // which defineExpose exactly startAnimation/stopAnimation — AnimatedIconHandle.
+    iconHandles.set(key, el as AnimatedIconHandle);
   else iconHandles.delete(key);
 }
 function playIcon(key: ActionKey): void {

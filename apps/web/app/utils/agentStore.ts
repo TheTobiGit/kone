@@ -153,6 +153,9 @@ function bridge() {
  * own.
  */
 export function sendable<T>(payload: T): T {
+  // SAFETY: a JSON round-trip preserves plain data exactly — strings, numbers,
+  // arrays and records come back with the same shape T declares. Only things
+  // JSON can't carry (functions, reactivity) are dropped, which is the point.
   return JSON.parse(JSON.stringify(payload)) as T;
 }
 

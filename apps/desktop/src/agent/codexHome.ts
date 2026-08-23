@@ -21,6 +21,8 @@ export function readCodexAuth(env: NodeJS.ProcessEnv = process.env): CodexAuth {
   const authPath = path.join(resolveCodexHome(env), "auth.json");
   if (!existsSync(authPath)) return { authenticated: false };
   try {
+    // SAFETY: every field read off raw is optional, so a deviant auth.json just
+    // reads as undefined ("not authenticated"); malformed JSON throws into the catch.
     const raw = JSON.parse(readFileSync(authPath, "utf8")) as {
       OPENAI_API_KEY?: string | null;
       tokens?: { access_token?: string } | null;

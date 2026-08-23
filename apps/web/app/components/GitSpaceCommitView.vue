@@ -128,6 +128,8 @@ async function toggleFile(f: GitCommitFile) {
 // what the file became), but it's a jump to the present, so it's a separate,
 // quiet affordance rather than what clicking the row does.
 function openInFileDetail(e: Event, path: string) {
+  // SAFETY: the handler is bound on a DOM file row, so currentTarget is that
+  // HTMLElement at dispatch time.
   const el = (e.currentTarget as HTMLElement).closest(".cv__file");
   emit("openFile", path, el ? el.getBoundingClientRect() : null);
 }

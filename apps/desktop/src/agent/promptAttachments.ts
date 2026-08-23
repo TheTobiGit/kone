@@ -124,7 +124,8 @@ export async function buildClaudeAttachmentContent(
           type: "image",
           source: {
             type: "base64",
-            // Safe: this branch only runs for a mime in the native set above.
+            // SAFETY: att.mimeType.toLowerCase() was tested for membership in
+            // CLAUDE_NATIVE_IMAGE_MIME_TYPES directly above.
             media_type: att.mimeType.toLowerCase() as ClaudeImageMediaType,
             data: bytes.toString("base64"),
           },

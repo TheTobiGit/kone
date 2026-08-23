@@ -165,6 +165,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     // schema, the parent index exists, and the gateway_ops dispatched bit (the
     // spawn crash-recovery ledger) is in place.
     const raw = new Database(dbPath());
+    // SAFETY: PRAGMA user_version projects exactly one column, named user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(27);
     const idx = raw
@@ -301,6 +302,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     // The global key resolves to the side chat — not to the spawned thread.
     expect(store.threadIdForRequestId("spawn-req-1")).toBe("sidechat-1");
     const raw = new Database(dbPath());
+    // SAFETY: the projection names only request_id, matching the asserted row shape.
     const row = raw
       .prepare(`SELECT request_id FROM threads WHERE thread_id = 'child-1'`)
       .get() as { request_id: string | null };

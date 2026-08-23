@@ -75,6 +75,9 @@ function stateFile(): string | undefined {
 function readJsonFile<T>(path: string | undefined): T | undefined {
   if (path === undefined) return undefined;
   try {
+    // SAFETY: callers validate the parsed value — parseCompactJson throws on
+    // garbage, and sourceStates fields are individually defaulted on read — so a
+    // deviant cache/state file degrades instead of misleading.
     return JSON.parse(fs.readFileSync(path, "utf8")) as T;
   } catch {
     return undefined;
@@ -97,6 +100,8 @@ let sourceStates: Record<SourceId, SourceState> = { litellm: {}, modelsDev: {} }
 let refreshInFlight: Promise<void> | null = null;
 
 function loadTable(source: SourceId): PricingTable {
+  // SAFETY: both snapshot imports are encodeCompact output checked into the
+  // repo, so they match the CompactFile shape decodeCompact consumes.
   const bundled = decodeCompact((source === "litellm" ? litellmSnapshot : modelsDevSnapshot) as CompactFile);
   let table = bundled;
   const cached = readJsonFile<string>(cacheFile(source));

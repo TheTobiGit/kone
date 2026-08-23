@@ -89,6 +89,8 @@ function toggleNote() {
 const crumb = computed(() => {
   const parts = props.breadcrumb.split(" / ").filter(Boolean);
   if (parts.length <= 1) {
+    // SAFETY: the array literal is empty, so its element type vacuously
+    // matches the string[] the multi-segment branch below fills.
     return { group: "", pane: parts[0] ?? "", nested: [] as string[] };
   }
   return { group: parts[0]!, pane: parts[1]!, nested: parts.slice(2) };

@@ -81,6 +81,9 @@ export function buildClaudeSubagentDefinitions(): Record<string, AgentDefinition
 export function claudeSubagentEffort(agentType: string | undefined): string | undefined {
   if (!agentType) return undefined;
   const trimmed = agentType.trim();
+  // SAFETY: widening the tier literals to readonly string[] only loosens
+  // find()'s element type to match the string return; matching stays an exact
+  // worker-<tier> comparison.
   return (CLAUDE_WORKER_EFFORT_TIERS as readonly string[]).find(
     (tier) => trimmed === `worker-${tier}`,
   );

@@ -89,6 +89,9 @@ describe("EventSubscriptions", () => {
 
     expect(f.sent.length).toBe(1);
     expect(f.sent[0]!.threadId).toBe("t1");
+    // SAFETY: f.sent[0] exists (checked above) and is the exact event
+    // pendingAsk() constructed with requestId set; RuntimeEvent just doesn't
+    // surface that field in its type.
     expect((f.sent[0] as { requestId?: string }).requestId).toBe("r1");
     expect(f.sent[0]!.eventId).toBeDefined();
     expect(delayed.length).toBe(1);
@@ -186,6 +189,8 @@ describe("EventSubscriptions", () => {
     });
     const f = fakeSink();
     subs.subscribe(f.sink);
+    // SAFETY: the sink received exactly one replayed approval event — built by
+    // pendingAsk() and re-stamped by the resolver this test injects.
     expect((f.sent[0] as { parentTurnId?: string }).parentTurnId).toBe("parentTurn");
   });
 });

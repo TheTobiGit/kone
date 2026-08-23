@@ -179,6 +179,8 @@ function onKeydown(event: KeyboardEvent) {
     const first = els[0];
     const last = els[els.length - 1];
     if (!first || !last) return;
+    // SAFETY: els holds only focusable elements; includes() rejects anything else, so the
+    // worst case is a spurious refocus at the edge.
     const active = document.activeElement as HTMLElement | null;
     const inTrap = active != null && els.includes(active);
     const atEdge = event.shiftKey ? active === first : active === last;
@@ -193,6 +195,7 @@ function onKeydown(event: KeyboardEvent) {
 let opener: HTMLElement | null = null;
 
 onMounted(async () => {
+  // SAFETY: activeElement is the element focused just before open; null is allowed by the type.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", syncHeight);

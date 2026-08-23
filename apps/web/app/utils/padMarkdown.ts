@@ -242,7 +242,10 @@ export function cleanPadHtml(html: string): string {
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const perches: Text[] = [];
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if ((node.textContent ?? "").includes(ZWSP)) perches.push(node as Text);
+    if ((node.textContent ?? "").includes(ZWSP))
+      // SAFETY: the walker was created with NodeFilter.SHOW_TEXT, so it yields
+      // only Text nodes.
+      perches.push(node as Text);
   }
   for (const node of perches) {
     const text = (node.textContent ?? "").replaceAll(ZWSP, "");

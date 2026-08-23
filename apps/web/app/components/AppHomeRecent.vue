@@ -108,7 +108,9 @@ function isActive(path: string) {
 // element gaining focus); moving between the folder button and its side actions
 // keeps the group active.
 function onFolderFocusOut(e: FocusEvent) {
+  // SAFETY: currentTarget is the folder wrapper this focusout handler is bound to.
   const wrap = e.currentTarget as HTMLElement;
+  // SAFETY: relatedTarget is the element gaining focus — always a Node, and null already fits the type.
   if (!wrap.contains(e.relatedTarget as Node | null)) focusedPath.value = null;
 }
 

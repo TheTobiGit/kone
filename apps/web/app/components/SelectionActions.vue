@@ -31,6 +31,9 @@ function hide(): void {
 }
 
 function extractMarkdown(sel: Selection, body: HTMLElement): string {
+  // SAFETY: [data-markdown-source] is only ever set by this app on HTML
+  // elements (thread-column content blocks), never on SVG or other Element
+  // subclasses, so closest() yields an HTMLElement or null.
   const sourceEl = sel.anchorNode
     ? (sel.anchorNode instanceof Element
         ? sel.anchorNode
@@ -105,6 +108,8 @@ useEventListener(document, "mouseup", evaluate);
 
 useEventListener(document, "mousedown", (e) => {
   if (!visible.value) return;
+  // SAFETY: a mousedown's target is the deepest node under the pointer — an
+  // Element in practice — and only .closest() is read from it.
   const t = e.target as HTMLElement;
   if (t.closest(".selection-actions")) return;
   hide();

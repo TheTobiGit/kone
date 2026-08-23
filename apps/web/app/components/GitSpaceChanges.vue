@@ -51,6 +51,8 @@ function nameOf(path: string) {
 }
 
 function open(e: Event, path: string) {
+  // SAFETY: the handler is bound on a DOM row, so currentTarget is that
+  // HTMLElement at dispatch time.
   const el = (e.currentTarget as HTMLElement).closest(".gsc__row");
   emit("openFile", path, el ? el.getBoundingClientRect() : null);
 }

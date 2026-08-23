@@ -71,6 +71,7 @@ function onReady() {
 let opener: HTMLElement | null = null;
 
 onMounted(() => {
+  // SAFETY: activeElement is the element focused just before open; null is allowed by the type.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("resize", syncHeight);
 });

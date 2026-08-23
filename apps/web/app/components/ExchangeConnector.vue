@@ -27,7 +27,10 @@ function measure(): void {
   const exchange = svg.parentElement;
   if (!exchange) return;
 
+  // SAFETY: these class names belong to plain <div>s rendered by ConversationThread around
+  // this connector; querySelector returns null when they're absent, which is handled below.
   const bubble = exchange.querySelector(".body--you, .edit-box") as HTMLElement | null;
+  // SAFETY: .speaker is a plain <div> rendered by ConversationThread; a null result is handled below.
   const speaker = exchange.querySelector(".speaker") as HTMLElement | null;
 
   if (!bubble || !speaker) {

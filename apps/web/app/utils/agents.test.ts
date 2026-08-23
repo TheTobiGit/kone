@@ -566,6 +566,8 @@ describe("how an agent looks", () => {
   // A bot stored by a build that offered a shape this one dropped still draws:
   // the catalogue answers an id it doesn't know with its default.
   test("a bot naming something this build no longer ships still resolves", async () => {
+    // SAFETY: deliberately invalid — the test asserts readBot answers an
+    // unrecognised bot with the catalogue default.
     const made = await createAgent({
       name: "Ada",
       // Deliberately not real ids — this is a bot from another build.
@@ -590,6 +592,8 @@ describe("how an agent looks", () => {
   // A row written by a build that named a source this one dropped still draws:
   // the picture is the bytes, and the source is only a hint for the picker.
   test("a picture naming an unknown source reads as generated", async () => {
+    // SAFETY: deliberately invalid — the test asserts readAvatar answers a
+    // source this build doesn't ship with "generated".
     const made = await createAgent({
       name: "Ada",
       avatar: { source: "daguerreotype", src: "data:image/jpeg;base64,AAAA" } as never,

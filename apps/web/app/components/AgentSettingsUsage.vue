@@ -69,6 +69,7 @@ const orderedProviders = computed(() => {
   const mapped = list
     .filter((p) => isProviderKind(p.key))
     .map((p) => {
+      // SAFETY: the filter above kept only entries whose key passes isProviderKind.
       const provider = p.key as ProviderKind;
       const totalTokens = totals.value?.tokens ?? 1;
       const totalCost = totals.value?.costUsd ?? 1;
@@ -110,6 +111,8 @@ const uncachedInput = computed(() => {
 
 const modelRows = computed(() => {
   const totalCost = totals.value?.costUsd ?? 1;
+  // SAFETY: buildUsageReport fills slice.provider from TRANSCRIPT_PROVIDERS/cursor, always a ProviderKind;
+  // a stray value would only miss SESSION_BRAND and fall back to "generic".
   return (report.value?.models ?? []).map((model) => ({
     ...model,
     name: describeModelId(model.label).name || model.label,

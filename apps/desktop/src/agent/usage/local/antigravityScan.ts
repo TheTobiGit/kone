@@ -309,6 +309,8 @@ type GenMetadataRow = { idx: number; data: Uint8Array | string };
 function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): UsageRecord[] {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
+    // SAFETY: the projection names exactly idx and data, the two columns of
+    // GenMetadataRow.
     const rows = db.prepare("SELECT idx, data FROM gen_metadata ORDER BY idx").all() as GenMetadataRow[];
     const records: UsageRecord[] = [];
     const seenResponseIds = new Set<string>();

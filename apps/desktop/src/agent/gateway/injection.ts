@@ -89,6 +89,8 @@ export function acpMcpServers(
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the ternary excludes null and non-objects, and any such value
+  // satisfies Record<string, unknown> at runtime.
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 

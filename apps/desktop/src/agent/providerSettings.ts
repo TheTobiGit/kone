@@ -28,9 +28,13 @@ function sanitize(raw: unknown): ProviderSettingsMap {
   if (!raw || typeof raw !== "object") return {};
   const out: ProviderSettingsMap = {};
   for (const provider of KNOWN_PROVIDERS) {
+    // SAFETY: raw passed the object check at the top of sanitize(); indexing by
+    // a KNOWN_PROVIDERS name reads unknown, re-checked below.
     const entry = (raw as Record<string, unknown>)[provider];
     if (!entry || typeof entry !== "object") continue;
     const config: ProviderConfig = {};
+    // SAFETY: entry passed the object check above; reading binaryPath off it
+    // yields unknown either way, and its type is verified before use.
     const binaryPath = (entry as Record<string, unknown>).binaryPath;
     if (typeof binaryPath === "string" && binaryPath.trim()) {
       config.binaryPath = binaryPath.trim();

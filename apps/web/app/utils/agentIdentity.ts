@@ -85,6 +85,8 @@ const PAPER = "f6f5f3";
 const TILE_TINT = 0.7;
 
 function channels(hex: string): [number, number, number] {
+  // SAFETY: mapping over the three-element literal [0, 2, 4] always yields
+  // exactly three numbers, so the result is a tuple, not just an array.
   return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
 }
 

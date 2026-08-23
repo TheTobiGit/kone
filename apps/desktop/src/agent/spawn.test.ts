@@ -20,6 +20,8 @@ async function loadRealSpawnModule(): Promise<typeof import("./spawn.js")> {
   const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-real-"));
   const copy = path.join(dir, "spawn.ts");
   writeFileSync(copy, source);
+  // SAFETY: copy is a byte-identical copy of spawn.ts (read from disk this run),
+  // so the loaded module's exports equal typeof import("./spawn.js").
   return (await import(pathToFileURL(copy).href)) as typeof import("./spawn.js");
 }
 

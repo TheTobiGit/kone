@@ -65,6 +65,8 @@ const { ClaudeAdapter } = await import("./adapters/ClaudeAdapter.js");
 const CONNECTION = { url: "http://127.0.0.1:12345/mcp", bearerToken: "token-abc" };
 
 function start(overrides: Partial<SessionStartInput>): Promise<ReturnType<ClaudeAdapter["startSession"]>> {
+  // SAFETY: a zero-arg arrow accepts every EmitEvent call signature, and the
+  // stubbed query() below never emits session events anyway.
   const adapter = new ClaudeAdapter((() => {}) as EmitEvent);
   return adapter.startSession({
     threadId: "thread-1",

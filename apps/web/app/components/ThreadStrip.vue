@@ -743,6 +743,9 @@ function toggleInfo(c: Pane, ev: Event): void {
     closeInfo();
     return;
   }
+  // SAFETY: toggleInfo is bound to the pane title's <h2> element, so
+  // currentTarget is that HTMLElement during dispatch (nulled after — hence
+  // | null before the guard below).
   const el = ev.currentTarget as HTMLElement | null;
   if (!el || !c.session) return;
   infoAnchor.value = el.getBoundingClientRect();
@@ -797,6 +800,8 @@ function onInsertPick(kind: "thread" | "terminal" | "scratchpad"): void {
 const { matchesShortcut, bindingFor, displayTokens } = useShortcuts();
 
 function isTyping(): boolean {
+  // SAFETY: only tagName and isContentEditable are read; a non-HTMLElement
+  // focus target simply fails both checks and yields false.
   const el = document.activeElement as HTMLElement | null;
   if (!el) return false;
   const tag = el.tagName;

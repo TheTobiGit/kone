@@ -21,6 +21,8 @@ function queuedEvent(
   type: "turn.queued" | "turn.queued-cancelled" | "turn.promoted" | "turn.steered",
   extra: Record<string, unknown> = {},
 ): RuntimeEvent {
+  // SAFETY: test fixture — `extra` supplies the union member's own fields
+  // (queueId, userBlockId, …); this literal pins just the base envelope.
   return {
     threadId,
     provider: "codex",

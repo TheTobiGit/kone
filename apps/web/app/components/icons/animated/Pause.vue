@@ -18,6 +18,7 @@ const pauseBarVariants = {
     transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] },
   },
   animate: (custom: unknown) => {
+    // SAFETY: this file's template binds :custom only to the literals 0 and 1.
     const i = custom as number;
     const direction = i === 0 ? 1 : -1;
 

@@ -87,6 +87,7 @@ function onKeydown(e: KeyboardEvent) {
 let opener: HTMLElement | null = null;
 
 onMounted(async () => {
+  // SAFETY: activeElement is the element focused just before open; null is allowed by the type.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", syncHeight);

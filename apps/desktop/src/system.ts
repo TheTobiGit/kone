@@ -11,6 +11,7 @@ export type ThemeMode = "light" | "dark" | "system";
 const THEME_MODES = new Set<ThemeMode>(["light", "dark", "system"]);
 
 function isThemeMode(value: unknown): value is ThemeMode {
+  // SAFETY: value is a string here; THEME_MODES membership is itself the runtime check.
   return typeof value === "string" && THEME_MODES.has(value as ThemeMode);
 }
 

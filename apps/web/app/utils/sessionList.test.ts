@@ -88,7 +88,11 @@ describe("summarizeSession — flatten a stored thread into a list row", () => {
 
 describe("byRecency — newest first", () => {
   test("sorts a newer updatedAt before an older one", () => {
+    // SAFETY: the fixtures spell out every required SessionSummary field, and
+    // byRecency reads only updatedAt — the optional members are never touched.
     const newer = { threadId: "a", title: "A", provider: "codex", brand: "gpt", updatedAt: 3000 } as SessionSummary;
+    // SAFETY: the fixtures spell out every required SessionSummary field, and
+    // byRecency reads only updatedAt — the optional members are never touched.
     const older = { threadId: "b", title: "B", provider: "codex", brand: "gpt", updatedAt: 1000 } as SessionSummary;
     expect(byRecency(newer, older)).toBeLessThan(0);
     expect(byRecency(older, newer)).toBeGreaterThan(0);

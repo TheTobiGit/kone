@@ -113,6 +113,8 @@ export function parseOpenCodeMessageJson(
     return null;
   }
   if (!value || typeof value !== "object") return null;
+  // SAFETY: value passed the object check above; every field read off payload
+  // is individually guarded (totalsFromPayload returns null otherwise).
   const payload = value as OpenCodeMessagePayload;
   const totals = totalsFromPayload(payload.tokens);
   if (!totals) return null;

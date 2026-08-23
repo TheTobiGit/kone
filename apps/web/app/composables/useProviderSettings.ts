@@ -68,6 +68,8 @@ function readDevBinaryPaths(): Partial<Record<ProviderKind, string>> {
   if (!import.meta.client) return {};
   try {
     const raw = localStorage.getItem(DEV_BINARY_KEY);
+    // SAFETY: DEV_BINARY_KEY is written only by writeDevBinaryPaths() below,
+    // from exactly this shape; malformed JSON throws into the catch.
     return raw ? (JSON.parse(raw) as Partial<Record<ProviderKind, string>>) : {};
   } catch {
     return {};

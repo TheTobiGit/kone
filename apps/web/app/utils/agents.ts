@@ -335,6 +335,9 @@ export function agentFace(paint: FacePaint): string {
 function readAvatar(value: AgentAvatarRef | null): AgentAvatar | null {
   const src = value?.src?.trim();
   if (!src) return null;
+  // SAFETY: the row's source tag is whatever an older build stored; the
+  // membership test on the next line demotes anything not in AVATAR_SOURCES
+  // to "generated".
   const named = value?.source as AgentAvatarSource | undefined;
   const source = named && AVATAR_SOURCES.includes(named) ? named : "generated";
   return { source, src };

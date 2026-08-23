@@ -114,6 +114,8 @@ const bar = ref<HTMLElement | null>(null);
 /** `motion.div` is a component, so its template ref is an instance — the element
  *  is what we need to measure and to walk for keyboard focus. */
 function setBar(el: unknown): void {
+  // SAFETY: the `"$el" in el` test above narrows el to the motion.div component
+  // instance shape before we read its $el property.
   const node = el && typeof el === "object" && "$el" in el ? (el as { $el: unknown }).$el : el;
   bar.value = node instanceof HTMLElement ? node : null;
 }
@@ -229,6 +231,8 @@ function pickText(id: string): void {
 function onNav(e: KeyboardEvent): void {
   if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
   const items = Array.from(bar.value?.querySelectorAll<HTMLElement>("[data-nav]") ?? []);
+  // SAFETY: items was built by querying inside the bar, so any activeElement
+  // that indexOf matches must be one of those HTMLElements.
   const here = items.indexOf(document.activeElement as HTMLElement);
   if (here < 0) return;
   e.preventDefault();

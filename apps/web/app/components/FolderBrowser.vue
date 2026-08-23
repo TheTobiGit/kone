@@ -110,9 +110,11 @@ watch(current, (folder) => (pathDraft.value = collapse(folder?.path ?? "")), {
 // remainder, and select it — so continued typing overwrites it and Tab / → / /
 // accept it.
 async function onType(event: Event) {
+  // SAFETY: onType is bound via @input on the path <input>, so target is that input.
   const el = event.target as HTMLInputElement;
   const value = el.value;
   pathDraft.value = value;
+  // SAFETY: @input on a text field fires an InputEvent; the ?? "" only covers exotic targets.
   const inputType = (event as InputEvent).inputType ?? "";
   if (inputType.startsWith("delete")) return;
   if (el.selectionStart !== value.length) return;
@@ -303,6 +305,8 @@ function onKeydown(event: KeyboardEvent) {
       scrollEl.value?.querySelectorAll<HTMLButtonElement>(".picker-row") ?? [],
     );
     if (rowEls.length === 0) return;
+    // SAFETY: rowEls are the .picker-row buttons; indexOf returns -1 when focus sits
+    // elsewhere, which the branch below handles.
     const idx = rowEls.indexOf(document.activeElement as HTMLButtonElement);
     event.preventDefault();
     if (event.key === "ArrowDown") {
@@ -320,6 +324,8 @@ function onKeydown(event: KeyboardEvent) {
     const first = els[0];
     const last = els[els.length - 1];
     if (!first || !last) return;
+    // SAFETY: els holds only focusable elements; includes() rejects anything else, so the
+    // worst case is a spurious refocus at the edge.
     const active = document.activeElement as HTMLElement | null;
     const inTrap = active != null && els.includes(active);
     const atEdge = event.shiftKey ? active === first : active === last;

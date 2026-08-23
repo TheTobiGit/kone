@@ -73,6 +73,7 @@ export function runStreaming(
       child.on("error", (error) => {
         // Spawn failure (ENOENT etc.) — surface as a non-zero-ish result rather
         // than throwing, so adapters have one place to handle failure.
+        // SAFETY: node delivers an Error instance to the child "error" listener.
         stderr += `${(error as Error).message}\n`;
         resolve({ code: null, stdout, stderr });
       });

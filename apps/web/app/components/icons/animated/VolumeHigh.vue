@@ -40,6 +40,7 @@ const waveVariants = {
       ease: [0.23, 1, 0.32, 1],
       repeat: Infinity,
       repeatDelay: 0.08,
+      // SAFETY: this file's template binds :custom only to the literals 0 and 1.
       delay: (custom as number) * 0.14,
     },
   }),

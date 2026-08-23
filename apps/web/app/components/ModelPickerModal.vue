@@ -430,6 +430,8 @@ const favoritedKeys = useStorage<Set<string>>(
   undefined,
   {
     serializer: {
+      // SAFETY: write() serialises the Set via JSON.stringify above, so any
+      // stored raw string parses back to the string[] it was written from.
       read: (raw) => new Set<string>(raw ? (JSON.parse(raw) as string[]) : []),
       write: (set) => JSON.stringify([...set]),
     },
@@ -599,6 +601,8 @@ watch(
 
 let opener: HTMLElement | null = null;
 onMounted(() => {
+  // SAFETY: activeElement is null when nothing is focused, otherwise the
+  // focused HTMLElement — the exact union opener's type declares.
   opener = document.activeElement as HTMLElement | null;
   seedPending();
   // Which tab greets you on open. seedPending has already staged the active

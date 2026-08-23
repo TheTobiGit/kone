@@ -301,7 +301,10 @@ function splitEffort(id: string): EffortSplit {
   // Defensive: a non-string (or missing) id must never throw — it degrades to
   // its own core with no effort axis, and the caller can skip it if it wants.
   const m = String(id ?? "").match(/^(.*)-(none|minimal|low|medium|high|xhigh|max|ultra|thinking)$/i);
-  if (m) return { core: m[1]!, tier: m[2]!.toLowerCase() as EffortTier };
+  if (m)
+    // SAFETY: the regex above matched, so capture 2 is one of the alternation's
+    // literals — all members of EffortTier.
+    return { core: m[1]!, tier: m[2]!.toLowerCase() as EffortTier };
   return { core: String(id ?? ""), tier: "base" };
 }
 
@@ -416,7 +419,10 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
       // the real per-model efforts the provider reported — a flag-based
       // provider (Codex) sends the tier as a separate turn param, not folded
       // into the model id, and which rungs exist varies model to model.
-      for (const rung of m.reasoningEfforts) bucket.push(toEffort(`${m.id}::${rung}`, m.id, rung as EffortTier));
+      for (const rung of m.reasoningEfforts)
+        // SAFETY: a provider rung outside EffortTier (a newer provider adding
+        // one) is tolerated by design — effortMeta() falls back to medium's look.
+        bucket.push(toEffort(`${m.id}::${rung}`, m.id, rung as EffortTier));
     } else {
       // No reasoning-effort axis reported at all for this model.
       bucket.push(toEffort(m.id, m.id, "base"));

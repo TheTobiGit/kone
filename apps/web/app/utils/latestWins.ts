@@ -33,6 +33,8 @@ export function createLatestWinsRun<T>(fn: () => Promise<T>): LatestWinsRun<T> {
       // Reads already began — they may predate whatever triggered this call,
       // so queue one fresh run behind the current one. Further calls during
       // this window join that queued run (latest-wins coalescing).
+      // SAFETY: placeholder only — queued.promise is reassigned immediately
+      // below, synchronously, before any caller can await this entry.
       const queued: Entry = { started: false, promise: Promise.resolve() as Promise<T> };
       queued.promise = active.promise
         .catch(() => undefined)
@@ -46,6 +48,8 @@ export function createLatestWinsRun<T>(fn: () => Promise<T>): LatestWinsRun<T> {
       active = queued;
       return queued.promise;
     }
+    // SAFETY: placeholder only — entry.promise is reassigned on the next line,
+    // before run() returns, so no caller ever observes Promise.resolve().
     const entry: Entry = { started: true, promise: Promise.resolve() as Promise<T> };
     entry.promise = fn().finally(() => {
       if (active === entry) active = null;

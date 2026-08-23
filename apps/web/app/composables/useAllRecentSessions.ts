@@ -134,6 +134,8 @@ export function useAllRecentSessions() {
       // One local SQLite read per project; a failed project drops to an empty
       // list rather than sinking the whole aggregate.
       const lists = await Promise.all(
+        // SAFETY: api.list resolves StoredThreadMeta[]; the catch substitutes
+        // an empty list of that same element type.
         projects.map((p) => api.list(p.path).catch(() => [] as StoredThreadMeta[])),
       );
       return lists
