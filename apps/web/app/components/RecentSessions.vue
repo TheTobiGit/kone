@@ -17,6 +17,8 @@ import AgentFace from "~/components/AgentFace.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { Magnet } from "~/components/ui/magnet";
 import { sessionBrand } from "~/utils/modelCatalog";
+import { sessionCost } from "~/utils/sessionCost";
+import { formatUsd } from "~/utils/usageFormat";
 import { prefetchThread } from "~/composables/useAgent";
 import type { SessionSummary } from "~/types/session";
 
@@ -253,6 +255,31 @@ function timeAgo(ms: number): string {
 function hasDiff(s: SessionSummary): boolean {
   return typeof s.added === "number" || typeof s.removed === "number";
 }
+
+const METRIC_KEY = "kone:recent-sessions-metric";
+const metric = ref<"tokens" | "cost">("tokens");
+
+if (import.meta.client) {
+  const saved = localStorage.getItem(METRIC_KEY);
+  if (saved === "tokens" || saved === "cost") {
+    metric.value = saved;
+  }
+}
+
+watch(metric, (val) => {
+  if (import.meta.client) {
+    try {
+      localStorage.setItem(METRIC_KEY, val);
+    } catch {
+      /* localStorage best-effort */
+    }
+  }
+});
+
+function hasMetricValue(s: SessionSummary): boolean {
+  if (metric.value === "cost") return sessionCost(s) > 0;
+  return typeof s.tokens === "number" && s.tokens > 0;
+}
 </script>
 
 <template>
@@ -266,17 +293,38 @@ function hasDiff(s: SessionSummary): boolean {
       class="rs"
       :style="{ '--proj-enter-sessions': `${enterSessionsMs}ms` }"
     >
-        <div v-for="section in sections" :key="section.kind" class="rs__group">
+        <div v-for="(section, sIdx) in sections" :key="section.kind" class="rs__group">
       <div class="rs__head" :style="{ '--i': section.start }">
-        <HugeiconsIcon
-          class="rs__hicon"
-          :class="section.kind === 'pinned' ? 'rs__pin' : 'rs__clock'"
-          :icon="section.kind === 'pinned' ? PinIcon : Clock01Icon"
-          :size="11"
-          :stroke-width="1.8"
-          aria-hidden="true"
-        />
-        <span class="rs__label">{{ section.label }}</span>
+        <div class="rs__head-tag">
+          <HugeiconsIcon
+            class="rs__hicon"
+            :class="section.kind === 'pinned' ? 'rs__pin' : 'rs__clock'"
+            :icon="section.kind === 'pinned' ? PinIcon : Clock01Icon"
+            :size="11"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
+          <span class="rs__label">{{ section.label }}</span>
+        </div>
+
+        <div v-if="sIdx === 0" class="rs__switch" role="group" aria-label="Metric measure">
+          <button
+            type="button"
+            class="rs__switch-btn"
+            :class="{ 'rs__switch-btn--on': metric === 'tokens' }"
+            @click="metric = 'tokens'"
+          >
+            Tokens
+          </button>
+          <button
+            type="button"
+            class="rs__switch-btn"
+            :class="{ 'rs__switch-btn--on': metric === 'cost' }"
+            @click="metric = 'cost'"
+          >
+            Cost
+          </button>
+        </div>
       </div>
 
       <ul class="rs__list">
@@ -304,15 +352,18 @@ function hasDiff(s: SessionSummary): boolean {
                already in place rather than snapping a fresh row in. -->
           <Transition name="rs-mask">
             <div v-if="isLoading(section, ri)" class="rs__mask" aria-hidden="true">
+              <div class="rs__skel-lead">
+                <span class="rs__skel-avatar rs__shimmer" />
+              </div>
               <div class="rs__skel-main">
                 <div class="rs__skel-title">
-                  <span class="rs__skel-dot rs__shimmer" />
                   <span
                     class="rs__skel-name rs__shimmer"
                     :style="{ width: 42 + ((ri * 13) % 34) + '%' }"
                   />
                 </div>
                 <div class="rs__skel-meta">
+                  <span class="rs__skel-chip rs__shimmer" style="width: 48px" />
                   <span class="rs__skel-chip rs__shimmer" style="width: 68px" />
                   <span class="rs__skel-chip rs__shimmer" style="width: 40px" />
                   <span class="rs__skel-chip rs__shimmer" style="width: 52px" />
@@ -322,9 +373,20 @@ function hasDiff(s: SessionSummary): boolean {
             </div>
           </Transition>
 
+          <div class="rs__lead">
+            <div class="rs__avatar-wrap">
+              <AgentFace :seed="s.threadId" :size="36" class="rs__face" />
+              <span
+                class="rs__badge"
+                :title="sessionBrand(s.provider, s.brand, s.model)"
+              >
+                <ProviderLogo :brand="sessionBrand(s.provider, s.brand, s.model)" :size="20" />
+              </span>
+            </div>
+          </div>
+
           <div class="rs__main">
             <div class="rs__title">
-              <ProviderLogo :brand="sessionBrand(s.provider, s.brand, s.model)" :size="16" />
               <span v-if="s.sideChat" class="rs__sidechat" title="Side chat — forked from a conversation">
                 <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="12" :stroke-width="2" aria-hidden="true" />
               </span>
@@ -332,12 +394,7 @@ function hasDiff(s: SessionSummary): boolean {
             </div>
 
             <div class="rs__meta">
-              <!-- Whose thread this is. It rides in the meta line rather than
-                   the title, where the provider logo already sits: the row
-                   should say which agent owns the conversation without growing
-                   a second mark next to the first. -->
               <span class="rs__agent">
-                <AgentFace :seed="s.threadId" :size="14" />
                 {{ agentIdentity(s.threadId).name }}
               </span>
 
@@ -362,12 +419,18 @@ function hasDiff(s: SessionSummary): boolean {
           </div>
 
           <div class="rs__trail">
-            <!-- A token tally reads as "this thread cost X" — absent or zero it
+            <!-- A token / cost tally reads as "this thread cost X" — absent or zero it
                  would claim "cost nothing", which a Cursor thread (no usage
                  reported) must never imply. Only render a real, positive spend. -->
-            <div v-if="typeof s.tokens === 'number' && s.tokens > 0" class="rs__tokens">
-              <span class="rs__count">{{ formatTokens(s.tokens) }}</span>
-              <span class="rs__unit">TOKENS</span>
+            <div v-if="hasMetricValue(s)" class="rs__tokens">
+              <Transition name="rs-swap" mode="out-in">
+                <div :key="metric" class="rs__metric-val">
+                  <span class="rs__count">
+                    {{ metric === "cost" ? formatUsd(sessionCost(s)) : formatTokens(s.tokens ?? 0) }}
+                  </span>
+                  <span class="rs__unit">{{ metric === "cost" ? "USD" : "TOKENS" }}</span>
+                </div>
+              </Transition>
             </div>
 
             <!-- Overlay the token tally on hover / focus. Each magnet-pulls
@@ -488,6 +551,7 @@ function hasDiff(s: SessionSummary): boolean {
   z-index: 2;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 7px;
   padding-bottom: 14px;
   background: linear-gradient(
@@ -499,6 +563,41 @@ function hasDiff(s: SessionSummary): boolean {
   animation: rs-head-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   /* Lead the group's first row by the same 50ms the lane head leads its tiles. */
   animation-delay: calc(var(--proj-enter-sessions, 0ms) + min(var(--i, 0) * 30ms, 360ms));
+}
+.rs__head-tag {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.rs__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.rs__switch-btn {
+  padding: 2px 7px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.rs__switch-btn:hover {
+  color: var(--ink);
+}
+.rs__switch-btn--on {
+  background: var(--ground);
+  color: var(--ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 8%, transparent);
 }
 .rs__hicon {
   flex-shrink: 0;
@@ -563,9 +662,9 @@ function hasDiff(s: SessionSummary): boolean {
   inset: 0;
   z-index: 3;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 14px;
   background: var(--ground);
   pointer-events: auto;
 }
@@ -574,6 +673,17 @@ function hasDiff(s: SessionSummary): boolean {
 }
 .rs-mask-leave-to {
   opacity: 0;
+}
+.rs__skel-lead {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.rs__skel-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex: none;
 }
 .rs__skel-main {
   display: flex;
@@ -586,12 +696,6 @@ function hasDiff(s: SessionSummary): boolean {
   display: flex;
   align-items: center;
   gap: 9px;
-}
-.rs__skel-dot {
-  width: 16px;
-  height: 16px;
-  border-radius: 5px;
-  flex: none;
 }
 .rs__skel-name {
   height: 14px;
@@ -643,9 +747,9 @@ function hasDiff(s: SessionSummary): boolean {
 .rs__row {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 14px;
   cursor: pointer;
   border-radius: 10px;
   outline: none;
@@ -698,11 +802,79 @@ function hasDiff(s: SessionSummary): boolean {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 30%, transparent);
 }
+.rs__lead {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs__row:not(.rs__row--loading):hover .rs__lead,
+.rs__row:not(.rs__row--loading):focus-visible .rs__lead,
+.rs__row:not(.rs__row--loading):focus-within .rs__lead {
+  width: 78px;
+}
+.rs__avatar-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 36px;
+}
+.rs__face {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.rs__badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--ground);
+  box-shadow: 0 0 0 3px var(--ground);
+  color: var(--ink);
+  transform-origin: center center;
+  transform: translate(11px, 11px) scale(0.52);
+  will-change: transform;
+  transition:
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs__badge :deep(svg) {
+  transform-origin: center center;
+  transform: scale(1.22);
+  will-change: transform;
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs__row:not(.rs__row--loading):hover .rs__badge,
+.rs__row:not(.rs__row--loading):focus-visible .rs__badge,
+.rs__row:not(.rs__row--loading):focus-within .rs__badge {
+  transform: translate(42px, 0) scale(1);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  box-shadow: 0 0 0 0px transparent;
+}
+.rs__row:not(.rs__row--loading):hover .rs__badge :deep(svg),
+.rs__row:not(.rs__row--loading):focus-visible .rs__badge :deep(svg),
+.rs__row:not(.rs__row--loading):focus-within .rs__badge :deep(svg) {
+  transform: scale(1);
+}
 .rs__main {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 .rs__title {
   display: flex;
@@ -800,6 +972,25 @@ function hasDiff(s: SessionSummary): boolean {
   /* Matches the actions' reveal curve/duration so the token→actions crossfade
      reads as one exchange rather than two overlapping fades. */
   transition: opacity 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs__metric-val {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.rs-swap-enter-active,
+.rs-swap-leave-active {
+  transition:
+    opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rs-swap-enter-from {
+  opacity: 0;
+  transform: translateY(3px);
+}
+.rs-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-3px);
 }
 .rs__count {
   font-family: var(--font-mono);
@@ -919,6 +1110,16 @@ function hasDiff(s: SessionSummary): boolean {
   .rs__row:focus-within {
     transform: none;
     transition: none;
+  }
+  .rs__lead,
+  .rs__badge,
+  .rs__badge :deep(svg) {
+    transition: none;
+  }
+  .rs-swap-enter-active,
+  .rs-swap-leave-active {
+    transition: opacity 0.1s ease;
+    transform: none;
   }
   .rs__actions {
     transition: opacity 0.18s ease;
