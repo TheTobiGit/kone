@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { EmitEvent, RuntimeEvent } from "../../types.js";
 import type { ScratchpadRecord } from "../../ConversationStore.js";
 import type {
+  GatewayRecord,
   GatewayToolContext,
   GatewayToolResult,
   ScratchpadPayload,
@@ -122,7 +123,11 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
     ctx: GatewayToolContext,
     args: { title: string; body: string; append?: boolean; expectedRevision?: number; clientRequestId?: string },
   ): Promise<GatewayToolResult> => {
+    // The event carries the writer as-is, while the JSON payload omits model
+    // when unknown — undefined has no representation in decoded data.
     const writer = { model: ctx.model, provider: ctx.provider };
+    const resultWriter: GatewayRecord = { provider: ctx.provider };
+    if (ctx.model !== undefined) resultWriter.model = ctx.model;
 
     // 1. Idempotency reserve (docs/mcp-gateway-design.md §7). Keys come from
     //    the bound authority context — never agent-supplied fields.
@@ -152,9 +157,11 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
         );
       }
       if (reserve.kind === "replay") {
+        // SAFETY: the replayed payload is canonical JSON this store recorded
+        // from a prior GatewayToolResult, so every field is plain data.
         return {
           content: [{ type: "text", text: "Replayed prior scratchpad write." }],
-          structuredContent: reserve.result as Record<string, unknown>,
+          structuredContent: reserve.result as GatewayRecord,
         };
       }
       if (reserve.kind === "conflict") {
@@ -203,7 +210,7 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
       revision: saved.revision,
       savedAt: saved.savedAt,
     };
-    const result = { pad: payload, savedAt: saved.savedAt, revision: saved.revision, writer };
+    const result = { pad: payload, savedAt: saved.savedAt, revision: saved.revision, writer: resultWriter };
 
     // 4. Publish the write to the web board (live update, revision-aware).
     const event: RuntimeEvent = {

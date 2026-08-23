@@ -17,6 +17,7 @@ import type { GatewayCredentials } from "./credentials.js";
 import type { InFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import type { GatewayRegistry } from "./registry.js";
+import type { GatewayRecord, GatewayValue } from "./schemas.js";
 
 /** The store surface the transport needs — structural, so unit tests can
  *  substitute a stub; the real ConversationStore satisfies it. */
@@ -35,42 +36,29 @@ const MCP_MAX_BATCH_MESSAGES = 50;
 
 export type JsonRpcId = string | number | null;
 
-/** One decoded JSON document. The HTTP layer parses bytes once at its
- *  boundary; everything downstream branches on these domain values, so no
- *  step has to interrogate a representation. */
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-export type JsonObject = { [key: string]: JsonValue };
-
 /** Decoded JSON numbers are always finite, so finiteness separates the number
  *  variant from every other JSON variant without inspecting representations. */
-function isJsonNumber(value: JsonValue | undefined): value is number {
+function isJsonNumber(value: GatewayValue | undefined): value is number {
   return Number.isFinite(value);
 }
 
 /** Text is the one JSON variant left after every other variant is excluded by
  *  value — booleans by identity, numbers by finiteness, composites by their
  *  constructors. */
-function jsonText(value: JsonValue | undefined): string | null {
+function jsonText(value: GatewayValue | undefined): string | null {
   if (value === undefined || value === null || value === true || value === false) return null;
   if (Array.isArray(value) || value instanceof Object || isJsonNumber(value)) return null;
   return value;
 }
 
 /** A JSON scalar fit for a JSON-RPC id or cancellation key: text or number. */
-function jsonScalar(value: JsonValue | undefined): string | number | null {
+function jsonScalar(value: GatewayValue | undefined): string | number | null {
   if (value === undefined || value === null || value === true || value === false) return null;
   if (Array.isArray(value) || value instanceof Object) return null;
   return value;
 }
 
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+function isGatewayRecord(value: GatewayValue | undefined): value is GatewayRecord {
   return value instanceof Object && !Array.isArray(value);
 }
 
@@ -78,12 +66,12 @@ export interface JsonRpcRequest {
   jsonrpc: "2.0";
   id: JsonRpcId;
   method: string;
-  params: JsonObject;
+  params: GatewayRecord;
 }
 
 export interface JsonRpcNotification {
   method: string;
-  params: JsonObject;
+  params: GatewayRecord;
 }
 
 export type ParsedMcpMessage =
@@ -92,7 +80,7 @@ export type ParsedMcpMessage =
   | { kind: "response" }
   | { kind: "invalid"; id: JsonRpcId };
 
-export function jsonRpcResult(id: JsonRpcId, result: unknown): Record<string, unknown> {
+export function jsonRpcResult(id: JsonRpcId, result: GatewayRecord): GatewayRecord {
   return { jsonrpc: "2.0", id, result };
 }
 
@@ -100,15 +88,15 @@ export function jsonRpcError(
   id: JsonRpcId,
   code: number,
   message: string,
-): Record<string, unknown> {
+): GatewayRecord {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
 /** Classify one raw JSON-RPC message. Responses and notifications require no
  *  reply body; invalid entries produce an error response bound to whatever id
  *  could be recovered. */
-export function parseMcpMessage(raw: JsonValue): ParsedMcpMessage {
-  if (!isJsonObject(raw)) {
+export function parseMcpMessage(raw: GatewayValue): ParsedMcpMessage {
+  if (!isGatewayRecord(raw)) {
     return { kind: "invalid", id: null };
   }
   const rawId = raw.id;
@@ -123,14 +111,14 @@ export function parseMcpMessage(raw: JsonValue): ParsedMcpMessage {
   if (rawId != null && jsonScalar(rawId) === null) {
     return { kind: "invalid", id: null };
   }
-  const params = isJsonObject(raw.params) ? raw.params : {};
+  const params = isGatewayRecord(raw.params) ? raw.params : {};
   if (rawId === undefined) {
     return { kind: "notification", notification: { method, params } };
   }
   return { kind: "request", request: { jsonrpc: "2.0", id, method, params } };
 }
 
-export function negotiateMcpProtocolVersion(requested: JsonValue | undefined): string {
+export function negotiateMcpProtocolVersion(requested: GatewayValue | undefined): string {
   const requestedVersion = jsonText(requested);
   if (requestedVersion !== null && MCP_SUPPORTED_PROTOCOL_VERSIONS.has(requestedVersion)) {
     return requestedVersion;
@@ -139,10 +127,10 @@ export function negotiateMcpProtocolVersion(requested: JsonValue | undefined): s
 }
 
 export function buildMcpInitializeResult(input: {
-  requestedProtocolVersion: JsonValue | undefined;
+  requestedProtocolVersion: GatewayValue | undefined;
   serverVersion: string;
   instructions: string;
-}): Record<string, unknown> {
+}): GatewayRecord {
   return {
     protocolVersion: negotiateMcpProtocolVersion(input.requestedProtocolVersion),
     capabilities: {
@@ -168,7 +156,7 @@ export function extractBearerToken(
 
 export type GatewayMcpResponse = {
   status: number;
-  body?: Record<string, unknown> | Record<string, unknown>[];
+  body?: GatewayRecord | GatewayRecord[];
 };
 
 export interface McpTransportInput {
@@ -188,7 +176,7 @@ export interface McpTransport {
   /** Handle one POSTed JSON-RPC message or batch. Never throws. */
   handlePost(input: {
     authorizationHeader: string | undefined;
-    body: JsonValue;
+    body: GatewayValue;
   }): Promise<GatewayMcpResponse>;
 }
 
@@ -205,7 +193,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       turnId: string | null;
       signal?: AbortSignal;
     },
-  ): Promise<Record<string, unknown>> {
+  ): Promise<GatewayRecord> {
     switch (request.method) {
       case "initialize":
         return jsonRpcResult(
@@ -218,8 +206,19 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         );
       case "ping":
         return jsonRpcResult(request.id, {});
-      case "tools/list":
-        return jsonRpcResult(request.id, { tools: input.registry.listTools() });
+      case "tools/list": {
+        // SAFETY: a tool's input schema is plain JSON by construction — the
+        // registry types it as a record of unknown values only because tool
+        // declarations arrive from many modules; here it crosses into the
+        // JSON-RPC envelope that is serialized verbatim, where the concrete
+        // gateway value type applies.
+        const tools = input.registry.listTools() as ReadonlyArray<{
+          name: string;
+          description: string;
+          inputSchema: GatewayRecord;
+        }>;
+        return jsonRpcResult(request.id, { tools });
+      }
       case "tools/call": {
         const name = jsonText(request.params.name);
         if (name === null) {
@@ -283,7 +282,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         turnId = live.turnId;
       }
 
-      const rawMessages: readonly JsonValue[] = Array.isArray(body) ? body : [body];
+      const rawMessages: readonly GatewayValue[] = Array.isArray(body) ? body : [body];
       if (rawMessages.length === 0) {
         return { status: 400, body: jsonRpcError(null, JSON_RPC_INVALID_REQUEST, "Empty JSON-RPC batch.") };
       }
@@ -312,7 +311,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         }
       }
 
-      const responses: Array<Record<string, unknown> | null> = [];
+      const responses: Array<GatewayRecord | null> = [];
       for (const message of parsed) {
         switch (message.kind) {
           case "request": {
@@ -329,7 +328,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
                 controller.abort();
               },
             });
-            let response: Record<string, unknown> | null;
+            let response: GatewayRecord | null;
             try {
               const result = await handleRequest(
                 message.request,
@@ -375,7 +374,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       }
 
       const settled = responses.filter(
-        (response): response is Record<string, unknown> => response !== null,
+        (response): response is GatewayRecord => response !== null,
       );
       if (settled.length === 0) return { status: 202 };
       return { status: 200, body: Array.isArray(body) ? settled : settled[0] };

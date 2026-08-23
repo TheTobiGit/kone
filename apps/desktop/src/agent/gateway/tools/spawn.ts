@@ -32,7 +32,12 @@ import type { AgentRecord, SubagentPresetRecord } from "../../ConversationStore.
 import { planPresetSpawn } from "../../presetSpawn.js";
 import { resolveDelegation } from "../../delegate.js";
 import type { ProviderAvailability } from "../../agentModel.js";
-import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../schemas.js";
+import type {
+  GatewayToolContext,
+  GatewayToolResult,
+  GatewayValue,
+  ToolEntry,
+} from "../schemas.js";
 import {
   DelegateInputSchema,
   DELEGATE_JSON_SCHEMA,
@@ -98,7 +103,9 @@ function callerOf(ctx: GatewayToolContext): SpawnCaller {
  *  that is not a SpawnError is rethrown for the registry's internal handling. */
 function mapSpawnError(error: unknown): GatewayToolError {
   if (error instanceof SpawnError) {
-    return new GatewayToolError(error.code, error.message, error.details);
+    // SAFETY: engine refusals carry plain-JSON detail bags that are embedded
+    // verbatim into the tool result without further interpretation.
+    return new GatewayToolError(error.code, error.message, error.details as GatewayValue);
   }
   throw error;
 }

@@ -31,20 +31,51 @@ const EMPTY_TOTALS: UsageTokenTotals = {
 };
 
 
-/** The value as a JSON record when it is a non-null object.
- *  SAFETY: the typeof/null gate runs inside, so only objects are cast. */
-function asRecord(value: unknown): Record<string, unknown> | null {
-  // SAFETY: the gate on this line rejects null and non-objects before the cast.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+/** One decoded transcript-line value. Each parser line is parsed once at its
+ *  boundary; everything downstream branches on these domain values. */
+type TranscriptValue =
+  | string
+  | number
+  | boolean
+  | null
+  | TranscriptValue[]
+  | { [key: string]: TranscriptValue };
+
+type TranscriptRecord = { [key: string]: TranscriptValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isTranscriptNumber(value: TranscriptValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function int(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+function isTranscriptRecord(value: TranscriptValue | undefined): value is TranscriptRecord {
+  return value instanceof Object && !Array.isArray(value);
 }
 
-function parseTimestampMs(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const parsed = Date.parse(value);
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  value — booleans by identity, numbers by finiteness, composites by their
+ *  constructors. */
+function transcriptText(value: TranscriptValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isTranscriptNumber(value)) return null;
+  return value;
+}
+
+/** The named field as a record, or null when absent or not an object. */
+function recordAt(record: TranscriptRecord, key: string): TranscriptRecord | null {
+  const value: TranscriptValue | undefined = record[key];
+  return isTranscriptRecord(value) ? value : null;
+}
+
+function int(value: TranscriptValue | undefined): number {
+  return isTranscriptNumber(value) && value > 0 ? Math.trunc(value) : 0;
+}
+
+function parseTimestampMs(value: TranscriptValue | undefined): number | null {
+  const text = transcriptText(value);
+  if (text === null) return null;
+  const parsed = Date.parse(text);
   return Number.isNaN(parsed) ? null : parsed;
 }
 
@@ -92,30 +123,32 @@ export function mightCarryUsage(line: string, provider: TranscriptProviderKind):
  * caller must drop repeats by `dedupeKey` and keep the first.
  */
 export function parseClaudeLine(line: string): UsageRecord | null {
-  let parsed: unknown;
+  let parsed: TranscriptValue;
   try {
-    parsed = JSON.parse(line);
+    // SAFETY: the transcript line hands back arbitrary JSON; every field is
+    // revalidated through the decoders before use.
+    parsed = JSON.parse(line) as TranscriptValue;
   } catch {
     return null;
   }
-  const record = asRecord(parsed);
+  const record = isTranscriptRecord(parsed) ? parsed : null;
   if (!record) return null;
   if (record["type"] !== "assistant") return null;
 
-  const messageRecord = asRecord(record["message"]);
+  const messageRecord = recordAt(record, "message");
   if (!messageRecord) return null;
 
-  const usageRecord = asRecord(messageRecord["usage"]);
+  const usageRecord = recordAt(messageRecord, "usage");
   if (!usageRecord) return null;
 
   const timestampMs = parseTimestampMs(record["timestamp"]);
   if (timestampMs === null) return null;
 
-  const model = typeof messageRecord["model"] === "string" ? messageRecord["model"] : "";
+  const model = transcriptText(messageRecord["model"]) ?? "";
   if (model.length === 0) return null;
 
-  const messageId = typeof messageRecord["id"] === "string" ? messageRecord["id"] : null;
-  const requestId = typeof record["requestId"] === "string" ? record["requestId"] : null;
+  const messageId = transcriptText(messageRecord["id"]);
+  const requestId = transcriptText(record["requestId"]);
   // half exists. Records with neither cannot be de-duplicated.
   const dedupeKey =
     messageId === null && requestId === null ? null : `${messageId ?? ""}:${requestId ?? ""}`;
@@ -126,7 +159,7 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     provider: "claude",
     timestampMs,
     model,
-    sessionId: typeof record["sessionId"] === "string" ? record["sessionId"] : "",
+    sessionId: transcriptText(record["sessionId"]) ?? "",
     totals: {
       uncachedInputTokens: int(usageRecord["input_tokens"]),
       cachedInputTokens: int(usageRecord["cache_read_input_tokens"]),
@@ -135,7 +168,7 @@ export function parseClaudeLine(line: string): UsageRecord | null {
       // Anthropic folds thinking tokens into output and does not break them out.
       reasoningTokens: 0,
     },
-    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    reportedCostUsd: isTranscriptNumber(cost) ? cost : null,
     dedupeKey,
   };
 }
@@ -181,10 +214,14 @@ export function initialCodexScanState(): CodexScanState {
 const FORK_COPY_MAX_GAP_MS = 1000;
 
 /** Whether a `session_meta` payload marks the rollout as a fork or subagent. */
-function isForkedSessionMeta(payload: Record<string, unknown>): boolean {
-  if (typeof payload["forked_from_id"] === "string") return true;
-  const spawn = asRecord(asRecord(asRecord(payload["source"])?.["subagent"])?.["thread_spawn"]);
-  return typeof spawn?.["parent_thread_id"] === "string";
+function isForkedSessionMeta(payload: TranscriptRecord): boolean {
+  if (transcriptText(payload["forked_from_id"]) !== null) return true;
+  const source = recordAt(payload, "source");
+  if (!source) return false;
+  const subagent = recordAt(source, "subagent");
+  if (!subagent) return false;
+  const spawn = recordAt(subagent, "thread_spawn");
+  return spawn !== null && transcriptText(spawn["parent_thread_id"]) !== null;
 }
 
 /**
@@ -196,28 +233,28 @@ function isForkedSessionMeta(payload: Record<string, unknown>): boolean {
  * consecutive duplicate events are dropped, which this does.
  */
 export function parseCodexLine(line: string, state: CodexScanState): UsageRecord | null {
-  let parsed: unknown;
+  let parsed: TranscriptValue;
   try {
-    parsed = JSON.parse(line);
+    // SAFETY: the transcript line hands back arbitrary JSON; every field is
+    // revalidated through the decoders before use.
+    parsed = JSON.parse(line) as TranscriptValue;
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null) return null;
-
-  const record = asRecord(parsed);
+  const record = isTranscriptRecord(parsed) ? parsed : null;
   if (!record) return null;
-  const payloadRecord = asRecord(record["payload"]);
+  const payloadRecord = recordAt(record, "payload");
   if (!payloadRecord) return null;
-  const payloadType = payloadRecord["type"];
+  const payloadType = transcriptText(payloadRecord["type"]);
 
-  if (record["type"] === "session_meta") {
+  if (transcriptText(record["type"]) === "session_meta") {
     // Only the first meta describes this file's own session. A forked rollout
     // repeats the ancestors' metas right after it; letting those through would
     // reassign every subsequent record to an ancestor session.
     if (state.sawSessionMeta) return null;
     state.sawSessionMeta = true;
-    const id = payloadRecord["id"] ?? payloadRecord["session_id"];
-    if (typeof id === "string") state.sessionId = id;
+    const id = transcriptText(payloadRecord["id"]) ?? transcriptText(payloadRecord["session_id"]);
+    if (id !== null) state.sessionId = id;
     const metaTimestampMs = parseTimestampMs(record["timestamp"]);
     if (metaTimestampMs !== null && isForkedSessionMeta(payloadRecord)) {
       state.suppressingForkCopies = true;
@@ -226,14 +263,16 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     return null;
   }
 
-  if (record["type"] === "turn_context") {
-    if (typeof payloadRecord["model"] === "string") state.model = payloadRecord["model"];
+  if (transcriptText(record["type"]) === "turn_context") {
+    const model = transcriptText(payloadRecord["model"]);
+    if (model !== null) state.model = model;
     return null;
   }
 
   if (payloadType !== "token_count") return null;
 
-  const lastRecord = asRecord(asRecord(payloadRecord["info"])?.["last_token_usage"]);
+  const infoRecord = recordAt(payloadRecord, "info");
+  const lastRecord = infoRecord ? recordAt(infoRecord, "last_token_usage") : null;
   if (!lastRecord) return null;
 
   // Only an event that is otherwise eligible may consume the duplicate

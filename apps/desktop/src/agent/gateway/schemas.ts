@@ -8,6 +8,21 @@ import { z } from "zod";
 
 import type { ProviderKind } from "../types.js";
 
+/** One decoded gateway payload — validated tool arguments, structured tool
+ *  results, and error detail are all plain JSON data, so consumers branch on
+ *  these variants instead of interrogating a representation. Arrays are
+ *  readonly because decoded payloads are treated as immutable data; records
+ *  stay writable so handlers can assemble results field by field. */
+export type GatewayValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly GatewayValue[]
+  | { [key: string]: GatewayValue };
+
+export type GatewayRecord = { [key: string]: GatewayValue };
+
 // ── tool surface ─────────────────────────────────────────────────────────────
 
 export type GatewayPermission = "allow" | "ask" | "deny";
@@ -38,7 +53,7 @@ export type ScratchpadPayload = {
 export type GatewayToolResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
-  structuredContent?: Record<string, unknown>;
+  structuredContent?: GatewayRecord;
 };
 
 export interface GatewayToolContext {
@@ -65,18 +80,18 @@ export interface ToolEntry {
   name: string;
   description: string;
   inputSchema: z.ZodTypeAny;
-  jsonSchema: Record<string, unknown>;
+  jsonSchema: GatewayRecord;
   permission: GatewayPermission;
   /** Write tools are only callable while the caller's bound turn is live. */
   requiresActiveTurn: boolean;
-  handler(ctx: GatewayToolContext, input: unknown): Promise<GatewayToolResult>;
+  handler(ctx: GatewayToolContext, input: GatewayRecord): Promise<GatewayToolResult>;
 }
 
 export class GatewayToolError extends Error {
   readonly code: GatewayErrorCode;
-  readonly details?: unknown;
+  readonly details?: GatewayValue;
 
-  constructor(code: GatewayErrorCode, message: string, details?: unknown) {
+  constructor(code: GatewayErrorCode, message: string, details?: GatewayValue) {
     super(message);
     this.name = "GatewayToolError";
     this.code = code;
@@ -106,7 +121,7 @@ export const ScratchpadWriteInputSchema = z.object({
 export const SCRATCHPAD_READ_JSON_SCHEMA = {
   type: "object",
   properties: { scratchpadId: { type: "string" } },
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 export const SCRATCHPAD_WRITE_JSON_SCHEMA = {
   type: "object",
@@ -118,7 +133,7 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA = {
     clientRequestId: { type: "string" },
   },
   required: ["title", "body"],
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 // ── spawn tool inputs (docs/thread-spawning-design.md) ───────────────────────
 // Schemas for the four thread-spawning tools. The zod `inputSchema` validates
@@ -200,7 +215,7 @@ export const ReadThreadInputSchema = z.object({
 export const SPAWN_TARGETS_JSON_SCHEMA = {
   type: "object",
   properties: {},
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 export const SPAWN_THREAD_JSON_SCHEMA = {
   type: "object",
@@ -220,7 +235,7 @@ export const SPAWN_THREAD_JSON_SCHEMA = {
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
   required: ["prompt", "requestId", "target"],
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 export const SPAWN_FROM_PRESET_JSON_SCHEMA = {
   type: "object",
@@ -236,7 +251,7 @@ export const SPAWN_FROM_PRESET_JSON_SCHEMA = {
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
   required: ["preset", "task", "requestId"],
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 export const DELEGATE_JSON_SCHEMA = {
   type: "object",
@@ -252,7 +267,7 @@ export const DELEGATE_JSON_SCHEMA = {
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
   required: ["agent", "task", "requestId"],
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 export const WAIT_FOR_THREADS_JSON_SCHEMA = {
   type: "object",
@@ -262,7 +277,7 @@ export const WAIT_FOR_THREADS_JSON_SCHEMA = {
     timeoutMs: { type: "integer" },
   },
   required: ["threadIds"],
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;
 
 export const READ_THREAD_JSON_SCHEMA = {
   type: "object",
@@ -272,4 +287,4 @@ export const READ_THREAD_JSON_SCHEMA = {
     maxTextChars: { type: "integer" },
   },
   required: ["threadId"],
-} satisfies Record<string, unknown>;
+} satisfies GatewayRecord;

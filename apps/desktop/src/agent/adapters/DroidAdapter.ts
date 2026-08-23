@@ -254,25 +254,59 @@ function koneMcpServerName(threadId: string): string {
   return `kone-${threadId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 8)}`;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+/** One decoded ACP JSON document. The RPC layer parses bytes once at its
+ *  boundary; everything downstream branches on these domain values, so no
+ *  step has to interrogate a representation. */
+type DroidAcpValue =
+  | string
+  | number
+  | boolean
+  | null
+  | DroidAcpValue[]
+  | { [key: string]: DroidAcpValue };
+
+type DroidAcpRecord = { [key: string]: DroidAcpValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isDroidAcpNumber(value: DroidAcpValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function readString(value: unknown, ...path: string[]): string | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "string" ? cursor : undefined;
+function isDroidAcpRecord(value: DroidAcpValue | undefined): value is DroidAcpRecord {
+  return value instanceof Object && !Array.isArray(value);
 }
 
-function readNumber(value: unknown, ...path: string[]): number | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "number" ? cursor : undefined;
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  value — booleans by identity, numbers by finiteness, composites by their
+ *  constructors. */
+function droidText(value: DroidAcpValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isDroidAcpNumber(value)) return null;
+  return value;
 }
 
-function asArray(value: unknown): unknown[] {
+/** The entries of a decoded JSON array, or none — callers iterate without
+ *  branching on the container variant. */
+function droidArray(value: DroidAcpValue | undefined): DroidAcpValue[] {
   return Array.isArray(value) ? value : [];
+}
+
+/** Walk a path of record keys from a decoded document; undefined the moment a
+ *  step lands off-record. */
+function readValue(cursor: DroidAcpValue | undefined, ...path: string[]): DroidAcpValue | undefined {
+  for (const key of path) cursor = isDroidAcpRecord(cursor) ? cursor[key] : undefined;
+  return cursor;
+}
+
+function readString(cursor: DroidAcpValue | undefined, ...path: string[]): string | undefined {
+  const text = droidText(readValue(cursor, ...path));
+  return text ?? undefined;
+}
+
+function readNumber(cursor: DroidAcpValue | undefined, ...path: string[]): number | undefined {
+  const leaf = readValue(cursor, ...path);
+  return isDroidAcpNumber(leaf) ? leaf : undefined;
 }
 
 /** Resolve with the value, or `undefined` after `ms` — used to bound the
@@ -296,8 +330,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
 /** Normalize an ACP `session/request_permission` payload into the neutral ask
  *  the renderer shows. The request names the tool call it wants to allow, so
  *  the headline is the command/title and the kind follows the tool family. */
-function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
-  const toolCall = asRecord(asRecord(params)?.toolCall);
+function buildAcpApprovalRequest(params: DroidAcpValue | undefined): ApprovalRequest {
+  const toolCall = readValue(params, "toolCall");
   const toolKind = readString(toolCall, "kind") ?? "";
   const kind: ApprovalRequestKind = /^bash$/i.test(toolKind)
     ? "command"
@@ -325,7 +359,7 @@ function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
  *  option; `reject-and-stop` deliberately matches NOTHING — the provider gets a
  *  cancelled outcome and the adapter interrupts the turn (the ACP spell of
  *  undefined for "cancel"). No match returns undefined (a cancelled outcome). */
-function selectPermissionOption(options: unknown[], decision: ApprovalDecision): string | undefined {
+function selectPermissionOption(options: readonly DroidAcpValue[], decision: ApprovalDecision): string | undefined {
   if (decision === "reject-and-stop") return undefined;
   const wanted = decision === "allow-once" ? "allow_once" : decision === "allow-always" ? "allow_always" : "reject_once";
   const direct = options.find((option) => readString(option, "kind")?.startsWith(wanted));
@@ -344,13 +378,13 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 /** Parse a droid config option (`{ id, name, category, currentValue, options:
  *  [{ value, name }] }`), tolerating the fields it omits. Same ACP shape
  *  CursorAdapter parses. */
-export function parseDroidConfigOptions(value: unknown): DroidConfigOption[] {
+export function parseDroidConfigOptions(value: DroidAcpValue | undefined): DroidConfigOption[] {
   const out: DroidConfigOption[] = [];
-  for (const raw of asArray(value)) {
+  for (const raw of droidArray(value)) {
     const id = readString(raw, "id");
     if (!id) continue;
     const options: { value: string; name?: string }[] = [];
-    for (const rawOption of asArray(asRecord(raw)?.options)) {
+    for (const rawOption of droidArray(readValue(raw, "options"))) {
       const optionValue = readString(rawOption, "value");
       if (!optionValue) continue;
       options.push({ value: optionValue, name: readString(rawOption, "name") });
@@ -393,7 +427,7 @@ export function resolveDroidModeId(
  *  reasoning efforts come from the `reasoning_effort` config option as probed
  *  for that model; undefined when the probe failed or the model has no axis. */
 export function toDroidModelDescriptor(
-  raw: unknown,
+  raw: DroidAcpValue | undefined,
   efforts?: { values: readonly string[]; current?: string },
 ): ModelDescriptor | undefined {
   const modelId = readString(raw, "modelId");
@@ -429,8 +463,8 @@ const TOOL_KIND_NAMES: Record<string, string> = {
 /** A short, human inline target for a tool row: the command, path, or query —
  *  never the tool's own name, which travels separately as `name`. droid's
  *  Write tool puts the path in `rawInput.file_path` (live capture). */
-export function toolCallTarget(update: Record<string, unknown>): string {
-  const rawInput = asRecord(update.rawInput);
+export function toolCallTarget(update: DroidAcpRecord): string {
+  const rawInput = readValue(update, "rawInput");
   const command = readString(rawInput, "command");
   if (command) return command;
 
@@ -440,7 +474,7 @@ export function toolCallTarget(update: Record<string, unknown>): string {
   const query = readString(rawInput, "query") ?? readString(rawInput, "pattern") ?? readString(rawInput, "url");
   if (query) return query;
 
-  const locations = asArray(update.locations);
+  const locations = droidArray(readValue(update, "locations"));
   const firstPath = locations.length > 0 ? readString(locations[0], "path") : undefined;
   if (firstPath) return locations.length > 1 ? `${firstPath} +${locations.length - 1} more` : firstPath;
 
@@ -451,14 +485,14 @@ export function toolCallTarget(update: Record<string, unknown>): string {
  *  `{ type: "diff", path, oldText, newText }` and `{ type: "content",
  *  content: { type: "text", text } }` blocks (live capture); results may land
  *  in `rawOutput`. */
-export function toolCallDetail(update: Record<string, unknown>): string {
+export function toolCallDetail(update: DroidAcpRecord): string {
   const parts: string[] = [];
-  for (const block of asArray(update.content)) {
+  for (const block of droidArray(readValue(update, "content"))) {
     const text = readString(block, "content", "text") ?? readString(block, "text");
     if (text) parts.push(text);
   }
-  const rawOutput = asRecord(update.rawOutput);
-  if (rawOutput) {
+  const rawOutput = readValue(update, "rawOutput");
+  if (isDroidAcpRecord(rawOutput)) {
     const output = readString(rawOutput, "content") ?? readString(rawOutput, "output") ?? readString(rawOutput, "stdout");
     if (output) parts.push(output);
     else parts.push(JSON.stringify(rawOutput, null, 2));
@@ -476,8 +510,8 @@ export function toolCallStatus(raw: string | undefined): RuntimeItemStatus {
  *  an underscore; kone's PlanTaskStatus uses a hyphen. Defensive ground truth:
  *  droid 0.186.0 never emitted a `plan` update across 364 live notifications,
  *  but the shape is the ACP standard and it costs nothing to keep. */
-export function parseDroidPlan(update: Record<string, unknown>): Omit<PlanTask, "id">[] | undefined {
-  const entries = asArray(update.entries);
+export function parseDroidPlan(update: DroidAcpRecord): Omit<PlanTask, "id">[] | undefined {
+  const entries = droidArray(readValue(update, "entries"));
   if (entries.length === 0) return undefined;
   const out: Omit<PlanTask, "id">[] = [];
   for (const entry of entries) {
@@ -591,7 +625,7 @@ export class DroidAdapter implements ProviderAdapter {
         }
         return models;
       })
-      .catch((error: unknown) => {
+      .catch((error) => {
         this.modelsCache = seeded;
         this.modelsCacheIsSeed = seeded !== null;
         throw error;
@@ -615,28 +649,30 @@ export class DroidAdapter implements ProviderAdapter {
     });
     const state: Pick<DroidSession, "configOptions"> = { configOptions: [] };
     rpc.onNotification("session/update", (params) => {
-      const update = asRecord(asRecord(params)?.update);
+      // SAFETY: the notification hands back arbitrary ACP JSON; every field is
+      // revalidated through the decoders before use.
+      const update = readValue(params as DroidAcpValue, "update");
       if (readString(update, "sessionUpdate") !== "config_option_update") return;
-      const refreshed = parseDroidConfigOptions(asRecord(update)?.configOptions);
+      const refreshed = parseDroidConfigOptions(readValue(update, "configOptions"));
       if (refreshed.length > 0) state.configOptions = refreshed;
     });
     try {
-      const initializeResult = await rpc.call<Record<string, unknown>>(
+      const initializeResult = await rpc.call<DroidAcpRecord>(
         "initialize",
         DROID_INITIALIZE_PARAMS,
         INITIALIZE_TIMEOUT_MS,
       );
       await this.authenticateRpc(rpc, initializeResult);
-      const response = await rpc.call<Record<string, unknown>>(
+      const response = await rpc.call<DroidAcpRecord>(
         "session/new",
         { cwd: homedir(), mcpServers: [] },
         SESSION_SETUP_TIMEOUT_MS,
       );
       const sessionId = readString(response, "sessionId");
       if (!sessionId) return [];
-      state.configOptions = parseDroidConfigOptions(asRecord(response)?.configOptions);
+      state.configOptions = parseDroidConfigOptions(readValue(response, "configOptions"));
       const originalModel = findOption(state.configOptions, MODEL_CONFIG_IDS)?.currentValue;
-      const models = asArray(asRecord(asRecord(response)?.models)?.availableModels);
+      const models = droidArray(readValue(readValue(response, "models"), "availableModels"));
 
       const descriptors: ModelDescriptor[] = [];
       const probeDeadline = Date.now() + CATALOG_PROBE_BUDGET_MS;
@@ -757,7 +793,7 @@ export class DroidAdapter implements ProviderAdapter {
     });
 
     try {
-      const initializeResult = await rpc.call<Record<string, unknown>>(
+      const initializeResult = await rpc.call<DroidAcpRecord>(
         "initialize",
         DROID_INITIALIZE_PARAMS,
         INITIALIZE_TIMEOUT_MS,
@@ -810,15 +846,16 @@ export class DroidAdapter implements ProviderAdapter {
       // settles" flag was tried and removed: the replay it aimed at arrives
       // before the load response can set it, so the only thing it ever
       // suppressed was the first real turn.
-      const sessionCapabilities = asRecord(asRecord(initializeResult.agentCapabilities)?.sessionCapabilities);
-      const supportsResume = sessionCapabilities !== undefined && "resume" in sessionCapabilities;
-      const supportsLoad = asRecord(initializeResult.agentCapabilities)?.loadSession === true;
-      let response: Record<string, unknown> | undefined;
+      const agentCapabilities = readValue(initializeResult, "agentCapabilities");
+      const sessionCapabilities = readValue(agentCapabilities, "sessionCapabilities");
+      const supportsResume = isDroidAcpRecord(sessionCapabilities) && "resume" in sessionCapabilities;
+      const supportsLoad = readValue(agentCapabilities, "loadSession") === true;
+      let response: DroidAcpRecord | undefined;
       if (input.resume) {
         const method = supportsResume ? "session/resume" : supportsLoad ? "session/load" : undefined;
         if (method) {
           try {
-            response = await rpc.call<Record<string, unknown>>(
+            response = await rpc.call<DroidAcpRecord>(
               method,
               { sessionId: input.resume, cwd: input.cwd, mcpServers },
               SESSION_SETUP_TIMEOUT_MS,
@@ -836,7 +873,7 @@ export class DroidAdapter implements ProviderAdapter {
         }
       }
       if (!response) {
-        response = await rpc.call<Record<string, unknown>>(
+        response = await rpc.call<DroidAcpRecord>(
           "session/new",
           { cwd: input.cwd, mcpServers },
           SESSION_SETUP_TIMEOUT_MS,
@@ -847,13 +884,13 @@ export class DroidAdapter implements ProviderAdapter {
       }
 
       // `modes: { currentModeId, availableModes: [{ id, name }] }`.
-      session.modeIds = asArray(asRecord(asRecord(response)?.modes)?.availableModes)
+      session.modeIds = droidArray(readValue(readValue(response, "modes"), "availableModes"))
         .map((raw) => readString(raw, "id"))
         .filter((id): id is string => id !== undefined);
 
       // `configOptions` from the session response — the starting matrix before
       // any `config_option_update` notification arrives.
-      session.configOptions = parseDroidConfigOptions(asRecord(response)?.configOptions);
+      session.configOptions = parseDroidConfigOptions(readValue(response, "configOptions"));
 
       // The session response's model catalog is the org-gated truth (fact 1);
       // seed the picker cache with it so the catalog is never stale. The
@@ -863,7 +900,7 @@ export class DroidAdapter implements ProviderAdapter {
       // overwrites a catalog the probe already completed.
       const modelOption = findOption(session.configOptions, MODEL_CONFIG_IDS);
       const currentModelId = modelOption?.currentValue;
-      const models = asArray(asRecord(asRecord(response)?.models)?.availableModels);
+      const models = droidArray(readValue(readValue(response, "models"), "availableModels"));
       const descriptors = models
         .map((raw) => {
           const modelId = readString(raw, "modelId");
@@ -955,14 +992,14 @@ export class DroidAdapter implements ProviderAdapter {
     // `session/prompt` only settles when the whole turn is done, so it is
     // deliberately not awaited here — sendTurn is request/ack.
     void session.rpc
-      .call<Record<string, unknown>>(
+      .call<DroidAcpRecord>(
         "session/prompt",
         { sessionId: session.conversationId, prompt },
         PROMPT_TIMEOUT_MS,
       )
       .then(
         (response) => this.completeTurn(session, turnId, readString(response, "stopReason")),
-        (error: unknown) => this.failTurn(session, turnId, error),
+        (error) => this.failTurn(session, turnId, error instanceof Error ? error.message : String(error)),
       );
 
     return { threadId: input.threadId, turnId };
@@ -1075,7 +1112,7 @@ export class DroidAdapter implements ProviderAdapter {
    *  safe to run on every start. A hard failure here is the real "not logged
    *  in" signal and must surface. The method id comes from the live handshake:
    *  API key when FACTORY_API_KEY is set, else device pairing. */
-  private async authenticateRpc(rpc: JsonRpcClient, initializeResult: Record<string, unknown>): Promise<void> {
+  private async authenticateRpc(rpc: JsonRpcClient, initializeResult: DroidAcpRecord): Promise<void> {
     const methodId = resolveDroidAuthMethodId(initializeResult);
     if (!methodId) {
       throw new Error(
@@ -1138,7 +1175,7 @@ export class DroidAdapter implements ProviderAdapter {
       );
       await this.waitForConfigValue(session, configId, value);
     } catch (error) {
-      this.warn(session, `Droid rejected ${configId}="${value}"`, error);
+      this.warn(session, `Droid rejected ${configId}="${value}"`, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1168,8 +1205,10 @@ export class DroidAdapter implements ProviderAdapter {
     const { rpc } = session;
 
     rpc.onNotification("session/update", (params) => {
-      const update = asRecord(asRecord(params)?.update);
-      if (!update) return;
+      // SAFETY: the notification hands back arbitrary ACP JSON; every field is
+      // revalidated through the decoders before use.
+      const update = readValue(params as DroidAcpValue, "update");
+      if (!isDroidAcpRecord(update)) return;
       this.handleSessionUpdate(session, update);
     });
 
@@ -1191,8 +1230,10 @@ export class DroidAdapter implements ProviderAdapter {
     // `approval.requested`; the user's decision selects the reply option by its
     // `kind` because droid's optionIds are its own spellings (`proceed_once`,
     // `cancel`, …).
+    // SAFETY: the reverse request hands back arbitrary ACP JSON; the decoders
+    // below revalidate every field before use.
     session.rpc.onRequest("session/request_permission", (params) =>
-      this.requestPermission(session, params),
+      this.requestPermission(session, params as DroidAcpValue),
     );
   }
 
@@ -1203,9 +1244,9 @@ export class DroidAdapter implements ProviderAdapter {
    *  back to a cancelled outcome when none matches. */
   private async requestPermission(
     session: DroidSession,
-    params: unknown,
+    params: DroidAcpValue | undefined,
   ): Promise<{ outcome: { outcome: string; optionId?: string } }> {
-    const options = asArray(asRecord(params)?.options);
+    const options = droidArray(readValue(params, "options"));
     // Fail closed: a permission request with no active turn (a recovery or
     // replay callback after a crash/interrupt) has no trustworthy mode behind
     // it — cancel rather than park a gate nobody is watching.
@@ -1259,7 +1300,7 @@ export class DroidAdapter implements ProviderAdapter {
     }
   }
 
-  private handleSessionUpdate(session: DroidSession, update: Record<string, unknown>): void {
+  private handleSessionUpdate(session: DroidSession, update: DroidAcpRecord): void {
     const variant = readString(update, "sessionUpdate");
     switch (variant) {
       case "agent_message_chunk":
@@ -1288,7 +1329,7 @@ export class DroidAdapter implements ProviderAdapter {
         // Session state kone doesn't surface yet.
         return;
       case "config_option_update": {
-        const refreshed = parseDroidConfigOptions(asRecord(update)?.configOptions);
+        const refreshed = parseDroidConfigOptions(readValue(update, "configOptions"));
         if (refreshed.length > 0) session.configOptions = refreshed;
         return;
       }
@@ -1329,7 +1370,7 @@ export class DroidAdapter implements ProviderAdapter {
     if (buffer) this.emitItem(session, "item.completed", buffer, "completed");
   }
 
-  private handleToolCall(session: DroidSession, update: Record<string, unknown>): void {
+  private handleToolCall(session: DroidSession, update: DroidAcpRecord): void {
     const toolCallId = readString(update, "toolCallId");
     if (!toolCallId || !session.activeTurnId) return;
 
@@ -1359,7 +1400,7 @@ export class DroidAdapter implements ProviderAdapter {
     else this.emitItem(session, "item.completed", buffer, status);
   }
 
-  private handlePlan(session: DroidSession, update: Record<string, unknown>): void {
+  private handlePlan(session: DroidSession, update: DroidAcpRecord): void {
     if (!session.activeTurnId) return;
     const snapshot = parseDroidPlan(update);
     if (!snapshot) return;
@@ -1381,7 +1422,7 @@ export class DroidAdapter implements ProviderAdapter {
   /** ACP's `usage_update` carrying the session's running `used`/`size` totals.
    *  droid 0.186.0 has never been observed emitting it (fact 2), so this is
    *  defensive ground truth, kept for the day a build starts reporting it. */
-  private handleUsage(session: DroidSession, update: Record<string, unknown>): void {
+  private handleUsage(session: DroidSession, update: DroidAcpRecord): void {
     const used = readNumber(update, "used");
     const size = readNumber(update, "size");
     if (used === undefined && size === undefined) return;
@@ -1455,13 +1496,12 @@ export class DroidAdapter implements ProviderAdapter {
     });
   }
 
-  private failTurn(session: DroidSession, turnId: string, error: unknown): void {
+  private failTurn(session: DroidSession, turnId: string, message: string): void {
     if (session.activeTurnId !== turnId) return;
     this.endTurn(session, turnId, "failed");
     // A prompt rejected because the child died is already covered by the
     // `session.exited` event; report the turn as failed either way so the
     // renderer never keeps a turn spinning.
-    const message = error instanceof Error ? error.message : String(error);
     const reason = session.interrupting ? "interrupted" : "failed";
     session.interrupting = false;
     this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason, message });
@@ -1472,8 +1512,7 @@ export class DroidAdapter implements ProviderAdapter {
   /** A degraded-but-continuing condition (a rejected model, a mode droid
    *  doesn't have). Surfaced as session state, never thrown — none of these are
    *  worth losing a session over. */
-  private warn(session: DroidSession, summary: string, error: unknown): void {
-    const detail = error instanceof Error ? error.message : String(error);
+  private warn(session: DroidSession, summary: string, detail: string): void {
     this.emit({
       ...this.base(session),
       source: "droid.acp.lifecycle",
@@ -1551,9 +1590,9 @@ export class DroidAdapter implements ProviderAdapter {
  *  when FACTORY_API_KEY is set in the server env (it would be pointless to
  *  open a pairing flow kone can't complete), else device pairing. Undefined
  *  when neither is offered. */
-export function resolveDroidAuthMethodId(initializeResult: Record<string, unknown>): string | undefined {
+export function resolveDroidAuthMethodId(initializeResult: DroidAcpRecord): string | undefined {
   const methods = new Set(
-    asArray(asRecord(initializeResult)?.authMethods)
+    droidArray(readValue(initializeResult, "authMethods"))
       .map((method) => readString(method, "id"))
       .filter((id): id is string => id !== undefined),
   );

@@ -241,17 +241,47 @@ export function clampAgentField(
   return value.trim().slice(0, max);
 }
 
-/** Trim and bound one string inside a capability ref, dropping it to null when
- *  it is empty — a ref with no path, or a model with no id, is not a ref. */
-export function boundRefField(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim().slice(0, AGENT_REF_FIELD_MAX);
-  return trimmed || null;
+// ── column JSON ──────────────────────────────────────────────────────────────
+
+/** One decoded agent column. The store parses each JSON column once when the
+ *  row is read; everything downstream branches on these domain values, so no
+ *  step has to interrogate a representation. */
+type ColumnValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ColumnValue[]
+  | { [key: string]: ColumnValue };
+
+type ColumnRecord = { [key: string]: ColumnValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isColumnNumber(value: ColumnValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+function isColumnRecord(value: ColumnValue | undefined): value is ColumnRecord {
+  return value instanceof Object && !Array.isArray(value);
+}
+
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  identity — booleans by value, numbers by finiteness, composites by their
+ *  constructors. */
+function columnText(value: ColumnValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isColumnNumber(value)) return null;
+  return value;
+}
+
+/** Trim and bound one string inside a capability ref, dropping it to null when
+ *  it is empty — a ref with no path, or a model with no id, is not a ref. */
+export function boundRefField(value: ColumnValue | undefined): string | null {
+  const text = columnText(value);
+  if (text === null) return null;
+  const trimmed = text.trim().slice(0, AGENT_REF_FIELD_MAX);
+  return trimmed || null;
 }
 
 function isProviderKind(value: string): value is ProviderKind {
@@ -271,8 +301,8 @@ function isProviderKind(value: string): value is ProviderKind {
  *  can't be made valid is dropped rather than stored malformed, so a column
  *  never holds a ref the reader has to guess at. */
 export function serializeAgentList<T>(
-  value: readonly unknown[] | null | undefined,
-  normalize: (entry: unknown) => T | null,
+  value: readonly ColumnValue[] | null | undefined,
+  normalize: (entry: ColumnValue | undefined) => T | null,
 ): string | null {
   if (value === null || value === undefined) return null;
   const clean: T[] = [];
@@ -283,22 +313,20 @@ export function serializeAgentList<T>(
   return JSON.stringify(clean);
 }
 
-export function normalizeSkillRef(entry: unknown): AgentSkillRef | null {
-  const ref = asRecord(entry);
-  if (!ref) return null;
-  const path = boundRefField(ref.path);
+export function normalizeSkillRef(entry: ColumnValue | undefined): AgentSkillRef | null {
+  if (!isColumnRecord(entry)) return null;
+  const path = boundRefField(entry.path);
   if (!path) return null;
-  return { path, name: boundRefField(ref.name) ?? "", origin: boundRefField(ref.origin) ?? "" };
+  return { path, name: boundRefField(entry.name) ?? "", origin: boundRefField(entry.origin) ?? "" };
 }
 
-export function normalizeModelRef(entry: unknown): AgentModelRef | null {
-  const ref = asRecord(entry);
-  if (!ref) return null;
-  const provider = boundRefField(ref.provider);
-  const model = boundRefField(ref.model);
+export function normalizeModelRef(entry: ColumnValue | undefined): AgentModelRef | null {
+  if (!isColumnRecord(entry)) return null;
+  const provider = boundRefField(entry.provider);
+  const model = boundRefField(entry.model);
   if (!provider || !model || !isProviderKind(provider)) return null;
   const out: AgentModelRef = { provider, model };
-  const label = boundRefField(ref.label);
+  const label = boundRefField(entry.label);
   if (label) out.label = label;
   return out;
 }
@@ -321,7 +349,9 @@ export function serializeModelRef(value: AgentModelRef | null | undefined): stri
 export function parseModelRef(raw: string | null): AgentModelRef | null {
   if (raw === null) return null;
   try {
-    const parsed = JSON.parse(raw);
+    // SAFETY: the column hands back arbitrary JSON; every field is revalidated
+    // through normalizeModelRef before use.
+    const parsed = JSON.parse(raw) as ColumnValue;
     const entry = Array.isArray(parsed) ? parsed[0] : parsed;
     return normalizeModelRef(entry);
   } catch {
@@ -333,10 +363,12 @@ export function parseModelRef(raw: string | null): AgentModelRef | null {
  *  ("inherit"). A column that somehow holds unparseable or non-array JSON reads
  *  as null rather than throwing — a malformed capability is no capability, and
  *  the roster falls back to the preset exactly as it would for an absent one. */
-export function parseAgentList<T>(raw: string | null, normalize: (entry: unknown) => T | null): T[] | null {
+export function parseAgentList<T>(raw: string | null, normalize: (entry: ColumnValue | undefined) => T | null): T[] | null {
   if (raw === null) return null;
   try {
-    const parsed = JSON.parse(raw);
+    // SAFETY: the column hands back arbitrary JSON; every entry is revalidated
+    // through the caller's normalize before use.
+    const parsed = JSON.parse(raw) as ColumnValue;
     if (!Array.isArray(parsed)) return null;
     const out: T[] = [];
     for (const entry of parsed) {
@@ -352,7 +384,7 @@ export function parseAgentList<T>(raw: string | null, normalize: (entry: unknown
 /** Clean one list of strings inside a policy: drop anything that isn't a
  *  string, trim and bound each, drop the ones that empty out, and cap the
  *  count — the same floor `serializeAgentList` puts under a capability list. */
-export function cleanStringList(value: unknown): string[] {
+export function cleanStringList(value: ColumnValue | undefined): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
   for (const entry of value.slice(0, AGENT_LIST_MAX)) {
@@ -366,12 +398,11 @@ export function cleanStringList(value: unknown): string[] {
  *  come back as null; anything that isn't an object is not a policy set and
  *  reads the same way. A real object always resolves to both lists, each
  *  cleaned — a missing or malformed list is an empty one, never a throw. */
-export function normalizePolicies(value: unknown): AgentPolicies | null {
-  const obj = asRecord(value);
-  if (!obj) return null;
+export function normalizePolicies(value: ColumnValue | undefined): AgentPolicies | null {
+  if (!isColumnRecord(value)) return null;
   return {
-    deniedCommands: cleanStringList(obj.deniedCommands),
-    deniedPaths: cleanStringList(obj.deniedPaths),
+    deniedCommands: cleanStringList(value.deniedCommands),
+    deniedPaths: cleanStringList(value.deniedPaths),
   };
 }
 
@@ -388,7 +419,9 @@ export function serializeAgentPolicies(value: AgentPolicies | null | undefined):
 export function parseAgentPolicies(raw: string | null): AgentPolicies | null {
   if (raw === null) return null;
   try {
-    return normalizePolicies(JSON.parse(raw));
+    // SAFETY: the column hands back arbitrary JSON; normalizePolicies rebuilds
+    // both lists from validated fields.
+    return normalizePolicies(JSON.parse(raw) as ColumnValue);
   } catch {
     return null;
   }
@@ -398,11 +431,11 @@ export function parseAgentPolicies(raw: string | null): AgentPolicies | null {
  *  avatar with nothing to draw is not one, and reads as null ("inherit") rather
  *  than as a picture that paints a blank. `src` is bounded but never inspected:
  *  the store has no opinion on whether it is an asset path or a data URL. */
-export function normalizeAvatar(value: unknown): AgentAvatarRef | null {
-  const obj = asRecord(value);
-  if (!obj) return null;
-  const source = boundRefField(obj.source);
-  const src = typeof obj.src === "string" ? obj.src.trim().slice(0, AGENT_AVATAR_MAX) : null;
+export function normalizeAvatar(value: ColumnValue | undefined): AgentAvatarRef | null {
+  if (!isColumnRecord(value)) return null;
+  const source = boundRefField(value.source);
+  const rawSrc = columnText(value.src);
+  const src = rawSrc === null ? null : rawSrc.trim().slice(0, AGENT_AVATAR_MAX);
   if (!source || !src) return null;
   return { source, src };
 }
@@ -421,7 +454,9 @@ export function serializeAgentAvatar(value: AgentAvatarRef | null | undefined): 
 export function parseAgentAvatar(raw: string | null): AgentAvatarRef | null {
   if (raw === null) return null;
   try {
-    return normalizeAvatar(JSON.parse(raw));
+    // SAFETY: the column hands back arbitrary JSON; normalizeAvatar validates
+    // both fields before use.
+    return normalizeAvatar(JSON.parse(raw) as ColumnValue);
   } catch {
     return null;
   }
@@ -435,14 +470,13 @@ export function parseAgentAvatar(raw: string | null): AgentAvatarRef | null {
  *
  *  The stored column still keys the first field `shape` — bots saved before the
  *  form rename keep reading — while new rows write `form`. */
-export function normalizeBot(value: unknown): AgentBotRef | null {
-  const obj = asRecord(value);
-  if (!obj) return null;
+export function normalizeBot(value: ColumnValue | undefined): AgentBotRef | null {
+  if (!isColumnRecord(value)) return null;
   // A present-but-blank `form` falls back to the legacy key rather than
   // voiding the bot; boundRefField answers null for blank input.
-  const form = boundRefField(obj.form) ?? boundRefField(obj["shape"]);
-  const color = boundRefField(obj.color);
-  const expression = boundRefField(obj.expression);
+  const form = boundRefField(value.form) ?? boundRefField(value["shape"]);
+  const color = boundRefField(value.color);
+  const expression = boundRefField(value.expression);
   if (!form || !color || !expression) return null;
   return { form, color, expression };
 }
@@ -459,7 +493,9 @@ export function serializeAgentBot(value: AgentBotRef | null | undefined): string
 export function parseAgentBot(raw: string | null): AgentBotRef | null {
   if (raw === null) return null;
   try {
-    return normalizeBot(JSON.parse(raw));
+    // SAFETY: the column hands back arbitrary JSON; normalizeBot validates all
+    // three ids before use.
+    return normalizeBot(JSON.parse(raw) as ColumnValue);
   } catch {
     return null;
   }
