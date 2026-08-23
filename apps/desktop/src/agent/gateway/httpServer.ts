@@ -10,9 +10,10 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { JSON_RPC_INVALID_REQUEST, JSON_RPC_PARSE_ERROR, type JsonValue, type McpTransport } from "./mcpTransport.js";
+import { JSON_RPC_INVALID_REQUEST, JSON_RPC_PARSE_ERROR, type McpTransport } from "./mcpTransport.js";
 import { extractBearerToken } from "./mcpTransport.js";
 import type { GatewayCredentials } from "./credentials.js";
+import type { GatewayRecord, GatewayValue } from "./schemas.js";
 
 export const AGENT_GATEWAY_MCP_PATH = "/mcp";
 export const AGENT_GATEWAY_BOOTSTRAP_PATH = "/bootstrap";
@@ -25,7 +26,7 @@ export interface GatewayHttpServer {
   close(): Promise<void>;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: GatewayRecord | GatewayRecord[]): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
@@ -56,8 +57,10 @@ export function startGatewayHttpServer(input: {
 
   const ready = new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
+      // A TCP listener reports an AddressInfo; the string shape belongs to
+      // pipe listeners, which this server never uses.
       const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
+      const port = address instanceof Object ? address.port : 0;
       input.credentials.setListeningPort(port);
       resolve();
     });
@@ -168,7 +171,7 @@ async function handleRequest(
 
 async function readBody(
   req: IncomingMessage,
-): Promise<{ kind: "ok"; body: JsonValue } | { kind: "invalid" } | { kind: "too-large" }> {
+): Promise<{ kind: "ok"; body: GatewayValue } | { kind: "invalid" } | { kind: "too-large" }> {
   const declared = Number.parseInt(req.headers["content-length"] ?? "", 10);
   if (Number.isFinite(declared) && declared > MCP_MAX_BODY_BYTES) {
     return { kind: "too-large" };

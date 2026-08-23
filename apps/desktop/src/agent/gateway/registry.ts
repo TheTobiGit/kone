@@ -9,6 +9,7 @@
 
 import type {
   GatewayErrorCode,
+  GatewayRecord,
   GatewayToolContext,
   GatewayToolResult,
   ToolEntry,
@@ -24,10 +25,8 @@ export function mcpToolResultText(text: string): GatewayToolResult {
 /** A tool-level failure: successful JSON-RPC, isError: true, machine-readable
  *  code in structuredContent. */
 export function gatewayToolErrorResult(error: GatewayToolError): GatewayToolResult {
-  const errorContent =
-    error.details === undefined
-      ? { code: error.code, message: error.message }
-      : { code: error.code, message: error.message, details: error.details };
+  const errorContent: GatewayRecord = { code: error.code, message: error.message };
+  if (error.details !== undefined) errorContent.details = error.details;
   return {
     content: [
       {
@@ -95,7 +94,9 @@ export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry
       );
     }
     try {
-      return await tool.handler(ctx, parsed.data);
+      // SAFETY: every tool's inputSchema is a zod object schema, so validated
+      // args are a JSON object by construction before the handler sees them.
+      return await tool.handler(ctx, parsed.data as GatewayRecord);
     } catch (error) {
       if (error instanceof GatewayToolError) {
         return gatewayToolErrorResult(error);

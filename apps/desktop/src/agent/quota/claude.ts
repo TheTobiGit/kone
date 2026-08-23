@@ -14,6 +14,48 @@ import type { QuotaProviderReport, QuotaWindow, QuotaWindowState } from "./types
 const ENDPOINT = "https://api.anthropic.com/api/oauth/usage";
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
 
+type ClaudeApiValue = string | number | boolean | null | ClaudeApiValue[] | { [key: string]: ClaudeApiValue };
+
+type ClaudeApiRecord = { [key: string]: ClaudeApiValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isApiNumber(value: ClaudeApiValue | undefined): value is number {
+  return Number.isFinite(value);
+}
+
+function isApiRecord(value: ClaudeApiValue | undefined): value is ClaudeApiRecord {
+  return value instanceof Object && !Array.isArray(value);
+}
+
+function apiRecord(value: ClaudeApiValue | undefined): ClaudeApiRecord | undefined {
+  return isApiRecord(value) ? value : undefined;
+}
+
+function apiArray(value: ClaudeApiValue | undefined): ClaudeApiValue[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  identity — booleans by value, numbers by finiteness, composites by their
+ *  constructors. */
+function apiText(value: ClaudeApiValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isApiNumber(value)) return null;
+  return value;
+}
+
+function readNumber(value: ClaudeApiValue | undefined): number | null {
+  return isApiNumber(value) ? value : null;
+}
+
+/** A timestamp the server may send in any textual form, kept only when it
+ *  parses; normalized to ISO so downstream comparisons see one shape. */
+function isoResetTime(value: ClaudeApiValue | undefined): string | null {
+  const text = apiText(value);
+  return text !== null && !Number.isNaN(Date.parse(text)) ? new Date(text).toISOString() : null;
+}
+
 type ClaudeCredential = { accessToken: string; expiresAt?: number; rateLimitTier?: string };
 
 export type ClaudeDeps = {
@@ -36,14 +78,16 @@ function parseCredential(raw: string): ClaudeCredential | null {
   // JSON with stray indentation — strip that before parsing rather than
   // trusting it's always compact.
   const clean = raw.replace(/\r/g, "").replace(/\n[ \t]*/g, "");
-  // SAFETY: JSON.parse yields unknown; the accessToken guard below rejects a
-  // payload without Claude's oauth envelope.
-  const oauth = (JSON.parse(clean) as { claudeAiOauth?: Record<string, unknown> }).claudeAiOauth;
-  if (!oauth || typeof oauth.accessToken !== "string" || oauth.accessToken.length === 0) return null;
+  // SAFETY: the credential file's bytes are arbitrary JSON; every field below
+  // is revalidated through the decoders before use.
+  const root = apiRecord(apiRecord(JSON.parse(clean) as ClaudeApiValue)?.claudeAiOauth);
+  if (!root) return null;
+  const accessToken = apiText(root.accessToken);
+  if (accessToken === null || accessToken.length === 0) return null;
   return {
-    accessToken: oauth.accessToken,
-    expiresAt: typeof oauth.expiresAt === "number" ? oauth.expiresAt : undefined,
-    rateLimitTier: typeof oauth.rateLimitTier === "string" ? oauth.rateLimitTier : undefined,
+    accessToken,
+    expiresAt: isApiNumber(root.expiresAt) ? root.expiresAt : undefined,
+    rateLimitTier: apiText(root.rateLimitTier) ?? undefined,
   };
 }
 
@@ -104,14 +148,12 @@ function windowState(frac: number, resetsAt: string | null): QuotaWindowState {
   return frac === 0 && resetsAt === null ? "notStarted" : "active";
 }
 
-function windowOf(id: string, label: string, value: unknown): QuotaWindow | null {
-  if (!value || typeof value !== "object") return null;
-  // SAFETY: the object check above narrows value before field reads.
-  const row = value as Record<string, unknown>;
+function windowOf(id: string, label: string, value: ClaudeApiValue | undefined): QuotaWindow | null {
+  const row = apiRecord(value);
+  if (!row) return null;
   const frac = fraction(row.utilization);
   if (frac === null) return null;
-  const resetsAt =
-    typeof row.resets_at === "string" && !Number.isNaN(Date.parse(row.resets_at)) ? new Date(row.resets_at).toISOString() : null;
+  const resetsAt = isoResetTime(row.resets_at);
   return { id, label, used: percentValue(frac), limit: null, percent: frac, state: windowState(frac, resetsAt), resetsAt };
 }
 
@@ -137,35 +179,29 @@ function tierLabel(raw: string | undefined): string {
 
 /** Decodes the oauth/usage payload into a report. Exported for tests — the
  *  window/limits shape is worth locking down independent of the network. */
-export function decodeClaudeUsage(body: unknown, credential: ClaudeCredential): QuotaProviderReport {
-  // SAFETY: the ternary guard keeps only objects; a primitive body reads as
-  // an empty payload.
-  const data = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  const five = windowOf("five_hour", "5-hour", data.five_hour);
-  const weekly = windowOf("weekly", "Weekly", data.seven_day);
-  const opus = windowOf("weekly_opus", "Weekly · Opus", data.seven_day_opus);
-  const sonnet = windowOf("weekly_sonnet", "Weekly · Sonnet", data.seven_day_sonnet);
+export function decodeClaudeUsage(body: ClaudeApiValue | undefined, credential: ClaudeCredential): QuotaProviderReport {
+  const data = apiRecord(body);
+  const five = windowOf("five_hour", "5-hour", data?.five_hour);
+  const weekly = windowOf("weekly", "Weekly", data?.seven_day);
+  const opus = windowOf("weekly_opus", "Weekly · Opus", data?.seven_day_opus);
+  const sonnet = windowOf("weekly_sonnet", "Weekly · Sonnet", data?.seven_day_sonnet);
   const scoped: QuotaWindow[] = [];
-  if (Array.isArray(data.limits)) {
-    for (const item of data.limits) {
-      if (!item || typeof item !== "object") continue;
-      // SAFETY: the object check above narrows the array element before reads.
-      const row = item as Record<string, any>;
-      const display = row.scope?.model?.display_name;
-      const frac = fraction(row.percent);
-      if (row.kind !== "weekly_scoped" || typeof display !== "string" || frac === null) continue;
-      const resetsAt =
-        typeof row.resets_at === "string" && !Number.isNaN(Date.parse(row.resets_at)) ? new Date(row.resets_at).toISOString() : null;
-      scoped.push({
-        id: scopedWindowId(display),
-        label: `Weekly · ${display}`,
-        used: percentValue(frac),
-        limit: null,
-        percent: frac,
-        state: windowState(frac, resetsAt),
-        resetsAt,
-      });
-    }
+  for (const item of apiArray(data?.limits)) {
+    const row = apiRecord(item);
+    if (!row) continue;
+    const display = apiText(apiRecord(apiRecord(row.scope)?.model)?.display_name);
+    const frac = fraction(row.percent);
+    if (row.kind !== "weekly_scoped" || display === null || frac === null) continue;
+    const resetsAt = isoResetTime(row.resets_at);
+    scoped.push({
+      id: scopedWindowId(display),
+      label: `Weekly · ${display}`,
+      used: percentValue(frac),
+      limit: null,
+      percent: frac,
+      state: windowState(frac, resetsAt),
+      resetsAt,
+    });
   }
   return {
     provider: "claudeAgent",
@@ -232,15 +268,16 @@ export async function fetchClaudeQuota(
       response = await request(credential.accessToken, deps, options.signal);
     }
     if (response.status === 429) {
-      let hint: unknown;
+      let hint: ClaudeApiValue | undefined;
       try {
-        // SAFETY: only the retry_after field is read; a non-JSON body is
-        // caught and treated as no hint.
-        hint = (await (response.json() as Promise<Record<string, unknown>>)).retry_after;
+        // SAFETY: the error body is arbitrary JSON; retry_after is
+        // revalidated through the decoders below before use.
+        hint = apiRecord((await response.json()) as ClaudeApiValue)?.retry_after;
       } catch {
         hint = undefined;
       }
-      const parsed = typeof hint === "number" ? hint : typeof hint === "string" ? Number(hint) : NaN;
+      const text = apiText(hint);
+      const parsed = readNumber(hint) ?? (text !== null ? Number(text) : NaN);
       return {
         report: { ...emptyReport("claudeAgent", "transientFailure", "Claude's usage endpoint is rate-limiting us — backing off."), rateLimited: true },
         retryAfterSeconds: Math.max(Number.isFinite(parsed) ? parsed : 300, 60),
@@ -255,7 +292,9 @@ export async function fetchClaudeQuota(
         ),
       };
     }
-    return { report: decodeClaudeUsage(await response.json(), credential) };
+    // SAFETY: the endpoint hands back arbitrary JSON; every field is
+    // revalidated through the decoders inside decodeClaudeUsage.
+    return { report: decodeClaudeUsage((await response.json()) as ClaudeApiValue, credential) };
   } catch (error) {
     // Deliberately sanitized before the only diagnostic sink — no token ever
     // reaches a log line or a returned report.
