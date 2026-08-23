@@ -2276,16 +2276,6 @@ export type AgentModelRef = {
   label?: string;
 };
 
-/** What an agent is prohibited from doing, the opposite of a capability
- *  (mirrors the desktop `AgentPolicies`). Empty lists forbid nothing; the
- *  object grows new keys as new kinds of restriction are added. */
-export type AgentPolicies = {
-  /** Commands the agent may not run, matched case-insensitively. */
-  deniedCommands: string[];
-  /** Paths the agent may not read or change. */
-  deniedPaths: string[];
-};
-
 /**
  * An agent's picture — what says who is speaking (mirrors the desktop
  * `AgentAvatarRef`).
@@ -2346,9 +2336,6 @@ export type AgentRecord = {
   /** The one model the agent runs on; null inherits the preset's, a ref is the
    *  model it uses, and no model named means the thread picks per turn. */
   model: AgentModelRef | null;
-  /** What the agent is forbidden to do; null inherits, an object with empty
-   *  lists forbids nothing. */
-  policies: AgentPolicies | null;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -2368,7 +2355,6 @@ export type AgentCreateInput = {
   bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
-  policies?: AgentPolicies | null;
 };
 
 /** An edit. A key left out is left alone; an explicit null clears the field —
@@ -2383,7 +2369,6 @@ export type AgentPatch = {
   bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
-  policies?: AgentPolicies | null;
 };
 
 /** A fork of an existing agent. `inherited` carries the shipped preset's values
@@ -2403,7 +2388,6 @@ export type AgentDuplicateInput = {
     bot?: AgentBotRef | null;
     skills?: AgentSkillRef[] | null;
     model?: AgentModelRef | null;
-    policies?: AgentPolicies | null;
   };
 };
 

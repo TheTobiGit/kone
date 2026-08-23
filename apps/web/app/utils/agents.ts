@@ -88,19 +88,6 @@ export interface AgentCapabilities {
 }
 
 /**
- * An agent's policies: the standing prohibitions, the mirror image of a
- * capability. A capability says what the agent may reach for; a policy says
- * what it may never do, however it got there. Both lists are additive
- * restrictions — an empty list forbids nothing, and each new entry closes off
- * one more command or path. The object grows new keys as new kinds of
- * restriction arrive; it never turns into a column.
- */
-export interface AgentPolicies {
-  deniedCommands: string[];
-  deniedPaths: string[];
-}
-
-/**
  * A picture of an agent — who is speaking, for a transcript or a roster row.
  *
  * `source` says where the picture came from, so an editor can offer to replace a
@@ -147,9 +134,6 @@ export interface AgentPreset {
    *  an agent with no skills and no provider/model restriction, which is what
    *  the built-in does today. */
   capabilities?: Partial<AgentCapabilities>;
-  /** What the agent is forbidden to do. Optional: the built-in ships none, so
-   *  an unedited built-in prohibits nothing. */
-  policies?: Partial<AgentPolicies>;
   /** The picture of the agent, and the bot it drives. Both optional and
    *  independent: an agent with no avatar is identified by its drawn face, and an
    *  agent with no bot simply has none. */
@@ -190,11 +174,6 @@ export interface Agent {
    *  no preference; an empty `skills` means none assigned. Host-side only:
    *  capabilities never reach a provider session (see `agentPersonaForThread`). */
   capabilities: AgentCapabilities;
-  /** The agent's resolved policies, on the same terms as `capabilities`: the
-   *  null-is-inherit of a stored row is answered here against the preset, so a
-   *  reader gets concrete lists. Empty lists forbid nothing. Host-side only —
-   *  the enforcer reads these, a provider session never sees them. */
-  policies: AgentPolicies;
   /** The agent's picture, or null when it has none — at which point `svg` is how
    *  it is identified. Resolved on the same terms as everything else here: null
    *  on the row inherits the preset's. */
@@ -381,7 +360,6 @@ function implicitRow(presetId: string, index: number): AgentRecord {
     faceInk: null,
     skills: null,
     model: null,
-    policies: null,
     avatar: null,
     bot: null,
     sortOrder: index,
@@ -447,14 +425,6 @@ function resolveRow(row: AgentRecord): Agent | undefined {
     model: row.model ?? preset?.capabilities?.model ?? null,
   };
 
-  // Policies resolve the same way, but the whole object is the overlay unit:
-  // null on the row inherits the preset's prohibitions, an object is the row's
-  // own answer. A preset that names none lands on empty lists — forbids nothing.
-  const policies: AgentPolicies = {
-    deniedCommands: row.policies?.deniedCommands ?? preset?.policies?.deniedCommands ?? [],
-    deniedPaths: row.policies?.deniedPaths ?? preset?.policies?.deniedPaths ?? [],
-  };
-
   // Appearance resolves as one overlay each, like the prose: null on the row is
   // the preset's answer, and neither field lands on a default — an agent with no
   // avatar is identified by its drawn face, and an agent with no bot has none.
@@ -470,7 +440,6 @@ function resolveRow(row: AgentRecord): Agent | undefined {
     svg: agentFace(paint),
     hue: paint.body,
     capabilities,
-    policies,
     avatar,
     bot,
   };
@@ -694,7 +663,6 @@ export interface AgentDraft {
   face?: FacePaint;
   skills?: AgentSkillRef[];
   model?: AgentModelRef;
-  policies?: AgentPolicies;
   avatar?: AgentAvatar;
   bot?: AgentBot;
 }
@@ -711,7 +679,6 @@ export interface AgentEdit {
   face?: FacePaint | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
-  policies?: AgentPolicies | null;
   /** Appearance clears the same way: null re-inherits the preset's picture or
    *  bot, and on a user-made agent takes it away entirely. */
   avatar?: AgentAvatar | null;
@@ -731,12 +698,6 @@ function inheritedFrom(preset: AgentPreset | undefined) {
     faceInk: preset.face.ink,
     skills: preset.capabilities?.skills ?? null,
     model: preset.capabilities?.model ?? null,
-    policies: preset.policies
-      ? {
-          deniedCommands: preset.policies.deniedCommands ?? [],
-          deniedPaths: preset.policies.deniedPaths ?? [],
-        }
-      : null,
     avatar: preset.avatar ?? null,
     bot: preset.bot ?? null,
   };
@@ -765,7 +726,6 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
     faceInk: draft.face?.ink ?? null,
     skills: draft.skills ?? null,
     model: draft.model ?? null,
-    policies: draft.policies ?? null,
     avatar: draft.avatar ?? null,
     bot: draft.bot ?? null,
   });
@@ -789,7 +749,6 @@ export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | 
   }
   if (edit.skills !== undefined) patch.skills = edit.skills;
   if (edit.model !== undefined) patch.model = edit.model;
-  if (edit.policies !== undefined) patch.policies = edit.policies;
   if (edit.avatar !== undefined) patch.avatar = edit.avatar;
   if (edit.bot !== undefined) patch.bot = edit.bot;
   const row = await patchAgentRow(id, patch, preset ? { presetId: preset.id } : undefined);

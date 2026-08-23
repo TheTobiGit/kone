@@ -1,7 +1,7 @@
 // Delegation planning (docs/agent-system-v1.md §4). Delegation is one
 // persistent agent asking another persistent agent — a member of the same
 // project team — to do a piece of work. The child thread runs AS that agent:
-// its identity, its standing instructions, its policies, and its model
+// its identity, its standing instructions, and its model
 // preference. This module is the pure step that turns "delegate this task to
 // that agent" into the concrete spawn the engine can carry out — who the child
 // answers as, which model it runs on, and the brief it wakes up with.

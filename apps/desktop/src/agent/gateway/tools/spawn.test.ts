@@ -144,7 +144,6 @@ function makeAgent(overrides: Partial<AgentRecord> = {}): AgentRecord {
     faceInk: null,
     skills: null,
     model: null,
-    policies: null,
     sortOrder: 0,
     createdAt: 1,
     updatedAt: 1,
