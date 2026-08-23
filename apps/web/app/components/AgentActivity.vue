@@ -112,8 +112,63 @@ const active = computed(() => props.running && props.isTail === true);
 const { cue } = useSound();
 const expanded = ref(false);
 const canExpand = computed(() => !active.value && total.value > 0);
+
+// The chip strip folds and unfolds in lockstep with the window below — same
+// duration, same curve. Without this the strip only shrinks when AnimatePresence
+// finally unmounts the exiting chips, so the rows finish opening before the
+// chevron (which rides the strip's edge) jumps toward the orb.
+const STRIP_FOLD = "width 380ms cubic-bezier(0.22, 0.61, 0.36, 1)";
+
+function settleStrip(el: HTMLElement): void {
+  el.style.transition = "";
+  el.style.width = "";
+}
+
+function onStripSettled(e: TransitionEvent): void {
+  if (e.propertyName !== "width") return;
+  const el = e.target as HTMLElement | null;
+  if (!el || el !== stripEl.value) return;
+  el.removeEventListener("transitionend", onStripSettled);
+  settleStrip(el);
+}
+
+function foldStrip(): void {
+  const el = stripEl.value;
+  // Fold from what it occupies right now — a clamped long run must not widen
+  // first just because its content is longer than the row.
+  if (!el || el.clientWidth === 0) return;
+  el.style.transition = "none";
+  el.style.width = `${el.clientWidth}px`;
+  void el.offsetWidth; // resolve styles: this is the transition's start
+  if (reduced()) {
+    settleStrip(el);
+    return;
+  }
+  el.style.transition = STRIP_FOLD;
+  el.style.width = "0px";
+  el.addEventListener("transitionend", onStripSettled);
+}
+
+async function unfurlStrip(): Promise<void> {
+  await nextTick(); // chips are back in the DOM at their natural size
+  const el = stripEl.value;
+  if (!el) return;
+  el.style.transition = "none";
+  el.style.width = "";
+  void el.offsetWidth;
+  const target = el.clientWidth; // natural width, clamped by the head's max
+  if (target === 0 || reduced()) return;
+  el.style.width = "0px";
+  void el.offsetWidth;
+  el.style.transition = STRIP_FOLD;
+  el.style.width = `${target}px`;
+  el.addEventListener("transitionend", onStripSettled);
+}
+
 function toggleExpanded(): void {
   if (!canExpand.value) return;
+  if (expanded.value) void unfurlStrip();
+  else foldStrip();
   expanded.value = !expanded.value;
   cue("toggle");
 }
@@ -445,7 +500,7 @@ function stepProps(e: ActivityEntry) {
       :aria-expanded="canExpand ? (expanded ? 'true' : 'false') : undefined"
       @click="toggleExpanded"
     >
-      <span class="head__orb" :class="{ 'head__orb--capped': rowsAlive }">
+      <span class="head__orb">
         <TurnOrb
           state="working"
           :size="16"
@@ -527,8 +582,8 @@ function stepProps(e: ActivityEntry) {
    inline to its right as chips (the horizontal stack); when expanded there are no
    chips and the steps become the rows below (the vertical stack). Either way the
    orb is the first item and holds its place — it never moves as the two swap.
-   The orb shares the left column with every row's icon, so the first row's rail
-   runs straight up into it; its opaque ground caps that rail without crossing. */
+   The orb shares the left column with every row's icon, and the first row's rail
+   rises to meet it, stopping at the orb's lower edge. */
 /* Fixed height, in every state. The head is the one thing above the rows, so any
    size change here moves the entire batch and everything under it — and it would
    land at the worst possible moment, since the chips arrive exactly as the rows
@@ -548,8 +603,8 @@ function stepProps(e: ActivityEntry) {
   width: fit-content;
   max-width: 100%;
   min-height: 26px;
-  /* Pull the window up so the 22px rail reaches into the orb when rows follow.
-     No left bleed: the orb must sit at the content edge (x=0) to line up with the
+  /* Pull the window up so the 22px rail closes the distance to the orb when rows
+     follow. No left bleed: the orb must sit at the content edge (x=0) to line up with the
      rows' rail and the reply text, so the hover pill starts there too rather than
      6px further left where the thread's scroll area would clip its rounded corner.
      The orb's own transparent inset gives it breathing room without padding. */
@@ -579,13 +634,6 @@ function stepProps(e: ActivityEntry) {
   /* Keep the canvas orb out of any row-enter transforms below. */
   isolation: isolate;
   transform: translateZ(0);
-}
-/* Only when rows follow does the orb need an opaque ground to cap the first row's
-   rail; collapsed there's no rail, and a solid box would punch through the hover
-   pill. Round it so even over the pill it reads as the orb, not a tile. */
-.head__orb--capped {
-  background: var(--ground);
-  border-radius: 50%;
 }
 /* The clipped one-line track. It shrinks to its chips so the chevron trails
    immediately after the last one, and fades rather than cuts when a very long

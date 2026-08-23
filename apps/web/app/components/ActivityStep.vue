@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, inject, ref } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import type { Component } from "vue";
+import { useIntersectionObserver } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   ArrowRight01Icon,
@@ -48,9 +49,10 @@ import {
 } from "~/utils/toolPresentation";
 
 // The animated twin for each tool glyph, keyed by the very icon data toolMeta
-// hands back — so a settled tool row can replay its own gesture on hover (Search
-// dips into the lens, Delete lifts its lid, the terminal caret steps). Keys are
-// the stable module singletons from core-free-icons, matched by reference.
+// hands back — so a settled tool row can play its own gesture as it scrolls
+// into view (Search dips into the lens, Delete lifts its lid, the terminal
+// caret steps). Keys are the stable module singletons from core-free-icons,
+// matched by reference.
 const ANIMATED_TOOL_ICON = new Map<HugeIcon, Component>([
   [File01Icon, File01],
   [FileEditIcon, FileEdit],
@@ -107,14 +109,27 @@ const status = computed(() => (tool.value ? toolStatus(tool.value) : "done"));
 
 // The row's own icon, animated. One glyph shows at a time (thinking brain or the
 // tool's twin), so a single handle drives whichever is mounted; the row plays it
-// on hover. Manual trigger — the row is the hover target, not the tiny glyph.
+// when the row enters the viewport, so scrolling a transcript plays each gesture
+// as it arrives instead of waiting for a pointer to find it.
 const animatedTool = computed(() =>
   meta.value ? ANIMATED_TOOL_ICON.get(meta.value.icon) ?? null : null,
 );
+const rowEl = ref<HTMLElement | null>(null);
 const iconApi = ref<AnimatedIconHandle | null>(null);
 function playIcon(): void {
   iconApi.value?.startAnimation();
 }
+
+// Track visibility separately so an icon that mounts onto an already-visible
+// row (a running orb settling into its glyph) still gets its one play.
+const rowVisible = ref(false);
+useIntersectionObserver(rowEl, ([entry]) => {
+  rowVisible.value = entry?.isIntersecting ?? false;
+  if (rowVisible.value) playIcon();
+});
+watch(iconApi, () => {
+  if (rowVisible.value) playIcon();
+});
 
 // A thinking row discloses only when the model actually surfaced reasoning; a
 // tool row discloses only when it carries a result body. Otherwise inert.
@@ -139,10 +154,10 @@ function toggle(): void {
       :is="clickable ? 'button' : 'div'"
       :type="clickable ? 'button' : undefined"
       class="astep__row"
+      ref="rowEl"
       :class="{ 'astep__row--clickable': clickable }"
       :title="tool ? toolDetailFull(tool) || undefined : undefined"
       @click="toggle"
-      @mouseenter="playIcon"
     >
       <span class="astep__icon">
         <!-- Thinking -->
