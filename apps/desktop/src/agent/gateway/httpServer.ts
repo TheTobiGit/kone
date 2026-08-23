@@ -10,7 +10,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { JSON_RPC_INVALID_REQUEST, JSON_RPC_PARSE_ERROR, type McpTransport } from "./mcpTransport.js";
+import { JSON_RPC_INVALID_REQUEST, JSON_RPC_PARSE_ERROR, type JsonValue, type McpTransport } from "./mcpTransport.js";
 import { extractBearerToken } from "./mcpTransport.js";
 import type { GatewayCredentials } from "./credentials.js";
 
@@ -168,7 +168,7 @@ async function handleRequest(
 
 async function readBody(
   req: IncomingMessage,
-): Promise<{ kind: "ok"; body: unknown } | { kind: "invalid" } | { kind: "too-large" }> {
+): Promise<{ kind: "ok"; body: JsonValue } | { kind: "invalid" } | { kind: "too-large" }> {
   const declared = Number.parseInt(req.headers["content-length"] ?? "", 10);
   if (Number.isFinite(declared) && declared > MCP_MAX_BODY_BYTES) {
     return { kind: "too-large" };
@@ -189,7 +189,7 @@ async function readBody(
       try {
         resolve({
           kind: "ok",
-          body: JSON.parse(Buffer.concat(chunks, total).toString("utf8")) as unknown,
+          body: JSON.parse(Buffer.concat(chunks, total).toString("utf8")),
         });
       } catch {
         resolve({ kind: "invalid" });

@@ -16,13 +16,30 @@
 
 import type { ModelRates, PricingTable } from "./types.js";
 
-type RawEntry = Record<string, unknown>;
+/** The rate fields this codec reads off one feed entry. Entries come off the
+ *  wire unchecked, so each read is gated on a finite-number check before use
+ *  rather than being trusted because of this shape. */
+interface LiteLLMRates {
+  input_cost_per_token?: number;
+  output_cost_per_token?: number;
+  cache_creation_input_token_cost?: number;
+  cache_read_input_token_cost?: number;
+  input_cost_per_token_priority?: number;
+}
+
+interface LiteLLMEntry extends LiteLLMRates {
+  provider_specific_entry?: { fast?: number };
+}
+
+type LiteLLMFeed = Record<string, LiteLLMEntry | undefined>;
 
 const ABOVE_TIER_PATTERN = /_above_(\d+)k_tokens$/;
 
-function numberField(entry: RawEntry, key: string): number | undefined {
-  const value = entry[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+/** A finite number or nothing. Number.isFinite rejects every non-number the
+ *  wire could deliver (strings, booleans, NaN, Infinity), so this one check
+ *  covers both "field present" and "field actually a usable rate". */
+function finiteOrUndefined(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) ? value : undefined;
 }
 
 /** Finds the single long-context threshold this entry publishes (if any) by
@@ -31,14 +48,15 @@ function numberField(entry: RawEntry, key: string): number | undefined {
  *  pull of the feed while building this), so the first suffix found is used
  *  for every bucket. Every argument here is a raw per-token rate (not yet
  *  scaled to per-million) so the fallback math matches the base-rate path
- *  in `parseLiteLLM` exactly. There's no `baseInputPerToken` parameter here
- *  because the tier's own input/output fields are required (a suffix with
- *  either one missing isn't treated as a usable tier at all, see below) —
- *  only the cache buckets, which providers sometimes omit even at the
- *  higher tier, fall back to the base rate. */
-function longContextTier(entry: RawEntry, baseCacheWritePerToken: number, baseCacheReadPerToken: number) {
+ *  in `parseLiteLLM` exactly. There's no base input parameter here because
+ *  the tier's own input/output fields are required (a suffix with either one
+ *  missing isn't treated as a usable tier at all, see below) — only the
+ *  cache buckets, which providers sometimes omit even at the higher tier,
+ *  fall back to the base rate. */
+function longContextTier(rates: LiteLLMRates, baseCacheWritePerToken: number, baseCacheReadPerToken: number) {
+  const fields = new Map(Object.entries(rates));
   let suffix: string | undefined;
-  for (const field of Object.keys(entry)) {
+  for (const field of fields.keys()) {
     const match = ABOVE_TIER_PATTERN.exec(field);
     if (match) {
       suffix = match[0];
@@ -46,12 +64,14 @@ function longContextTier(entry: RawEntry, baseCacheWritePerToken: number, baseCa
     }
   }
   if (!suffix) return undefined;
-  const thresholdTokens = Number(suffix.match(/\d+/)![0]) * 1000;
-  const input = numberField(entry, `input_cost_per_token${suffix}`);
-  const output = numberField(entry, `output_cost_per_token${suffix}`);
+  const tierSuffix = suffix;
+  const bucket = (prefix: string) => finiteOrUndefined(fields.get(`${prefix}${tierSuffix}`));
+  const input = bucket("input_cost_per_token");
+  const output = bucket("output_cost_per_token");
   if (input === undefined || output === undefined) return undefined;
-  const cacheWrite = numberField(entry, `cache_creation_input_token_cost${suffix}`) ?? baseCacheWritePerToken;
-  const cacheRead = numberField(entry, `cache_read_input_token_cost${suffix}`) ?? baseCacheReadPerToken;
+  const thresholdTokens = Number(tierSuffix.match(/\d+/)![0]) * 1000;
+  const cacheWrite = bucket("cache_creation_input_token_cost") ?? baseCacheWritePerToken;
+  const cacheRead = bucket("cache_read_input_token_cost") ?? baseCacheReadPerToken;
   return {
     thresholdTokens,
     inputPerMillion: input * 1_000_000,
@@ -65,28 +85,24 @@ function longContextTier(entry: RawEntry, baseCacheWritePerToken: number, baseCa
  *  an input or output cost are skipped — those are non-chat modes
  *  (embeddings, moderation) and stub entries LiteLLM carries for its own
  *  routing logic, never something kone would bill tokens against. */
-export function parseLiteLLM(raw: unknown, retrievedAt?: string): PricingTable {
-  if (!raw || typeof raw !== "object") throw new Error("LiteLLM feed is not a JSON object");
+export function parseLiteLLM(raw: LiteLLMFeed, retrievedAt?: string): PricingTable {
+  if (raw === null || raw === undefined) throw new Error("LiteLLM feed is not a JSON object");
   const entries: Record<string, ModelRates> = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!value || typeof value !== "object") continue;
-    const entry = value as RawEntry;
-    const input = numberField(entry, "input_cost_per_token");
-    const output = numberField(entry, "output_cost_per_token");
+  for (const [key, entry] of Object.entries(raw)) {
+    if (!entry) continue;
+    const input = finiteOrUndefined(entry.input_cost_per_token);
+    const output = finiteOrUndefined(entry.output_cost_per_token);
     if (input === undefined || output === undefined) continue;
-    const cacheWrite = numberField(entry, "cache_creation_input_token_cost");
-    const cacheRead = numberField(entry, "cache_read_input_token_cost");
-    const inputPerMillion = input * 1_000_000;
-    const outputPerMillion = output * 1_000_000;
-    const cacheReadPerMillion = (cacheRead ?? input * 0.1) * 1_000_000;
+    const cacheWriteField = finiteOrUndefined(entry.cache_creation_input_token_cost);
+    const cacheReadField = finiteOrUndefined(entry.cache_read_input_token_cost);
     const rates: ModelRates = {
-      inputPerMillion,
-      outputPerMillion,
-      cacheWritePerMillion: (cacheWrite ?? input) * 1_000_000,
-      cacheReadPerMillion,
-      cacheReadIsExplicit: cacheRead !== undefined,
+      inputPerMillion: input * 1_000_000,
+      outputPerMillion: output * 1_000_000,
+      cacheWritePerMillion: (cacheWriteField ?? input) * 1_000_000,
+      cacheReadPerMillion: (cacheReadField ?? input * 0.1) * 1_000_000,
+      cacheReadIsExplicit: cacheReadField !== undefined,
       fastMultiplier: 1,
-      longContext: longContextTier(entry, cacheWrite ?? input, cacheRead ?? input * 0.1),
+      longContext: longContextTier(entry, cacheWriteField ?? input, cacheReadField ?? input * 0.1),
     };
     // Two independent ways LiteLLM records a fast/priority tier: Anthropic
     // models carry an explicit scalar in `provider_specific_entry.fast`;
@@ -97,13 +113,11 @@ export function parseLiteLLM(raw: unknown, retrievedAt?: string): PricingTable {
     // ratio) — a model whose priority/fast rate turned out inconsistent
     // would be a sign the source changed shape and deserves its own
     // supplement override rather than a guessed average.
-    const providerSpecific = entry.provider_specific_entry;
-    const explicitFast =
-      providerSpecific && typeof providerSpecific === "object" ? (providerSpecific as RawEntry).fast : undefined;
-    if (typeof explicitFast === "number" && Number.isFinite(explicitFast)) {
+    const explicitFast = finiteOrUndefined(entry.provider_specific_entry?.fast);
+    if (explicitFast !== undefined) {
       rates.fastMultiplier = explicitFast;
     } else {
-      const priorityInput = numberField(entry, "input_cost_per_token_priority");
+      const priorityInput = finiteOrUndefined(entry.input_cost_per_token_priority);
       if (priorityInput !== undefined && input > 0) rates.fastMultiplier = priorityInput / input;
     }
     entries[key] = rates;

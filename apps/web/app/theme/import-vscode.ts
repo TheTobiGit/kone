@@ -64,22 +64,29 @@ function parseColorFunction(value: string): VsCodeRgba | null {
         : Number.parseFloat(alphaRaw);
   if (!Number.isFinite(alpha)) return null;
 
+  // SAFETY: the length + Number.isFinite checks above pin channels to three numbers.
   const [red, green, blue] = channels as [number, number, number];
   if (space === "srgb") {
     return { r: red * 255, g: green * 255, b: blue * 255, a: Math.max(0, Math.min(1, alpha)) };
   }
-  const [linearRed, linearGreen, linearBlue] = [red, green, blue].map(decodeGamma) as [
-    number,
-    number,
-    number,
-  ];
+  const linearRed = decodeGamma(red);
+  const linearGreen = decodeGamma(green);
+  const linearBlue = decodeGamma(blue);
   // Display P3 linear -> sRGB linear.
-  const srgb = [
-    1.2249401762805 * linearRed - 0.2249401762805 * linearGreen,
-    -0.042056961239 * linearRed + 1.042056961239 * linearGreen,
-    -0.0196375547643 * linearRed - 0.0786360655012 * linearGreen + 1.0982736202656 * linearBlue,
-  ].map((channel) => encodeGamma(channel) * 255) as [number, number, number];
-  return { r: srgb[0], g: srgb[1], b: srgb[2], a: Math.max(0, Math.min(1, alpha)) };
+  const srgbRed =
+    encodeGamma(1.2249401762805 * linearRed - 0.2249401762805 * linearGreen) * 255;
+  const srgbGreen =
+    encodeGamma(-0.042056961239 * linearRed + 1.042056961239 * linearGreen) * 255;
+  const srgbBlue =
+    encodeGamma(
+      -0.0196375547643 * linearRed - 0.0786360655012 * linearGreen + 1.0982736202656 * linearBlue,
+    ) * 255;
+  return {
+    r: srgbRed,
+    g: srgbGreen,
+    b: srgbBlue,
+    a: Math.max(0, Math.min(1, alpha)),
+  };
 }
 
 /** VS Code accepts #RGB, #RGBA, #RRGGBB and #RRGGBBAA; some themes also use
@@ -388,7 +395,7 @@ function pairCandidates(
         palette: entry.palette,
         sourceStem: entry.sourceStem,
         sources: [entry.sourceStem],
-      } as ImportCandidate,
+      } satisfies ImportCandidate,
     })),
     ...out,
   ]

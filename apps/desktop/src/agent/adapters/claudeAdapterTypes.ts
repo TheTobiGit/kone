@@ -200,6 +200,7 @@ export function recognizedSubagentToolUseId(
 
 function readParentToolUseId(value: unknown): string | undefined {
   if (typeof value === "object" && value !== null && "parent_tool_use_id" in value) {
+    // SAFETY: the typeof-object + `"parent_tool_use_id" in value` checks on this line are the narrowing.
     const parent = (value as { parent_tool_use_id?: unknown }).parent_tool_use_id;
     return typeof parent === "string" ? parent : undefined;
   }
@@ -207,6 +208,7 @@ function readParentToolUseId(value: unknown): string | undefined {
 }
 
 export function normalizeEffort(value: string | undefined): EffortLevel | undefined {
+  // SAFETY: the EFFORT_LEVELS membership check on this line is the narrowing; both casts name its result.
   return value && EFFORT_LEVELS.has(value as EffortLevel) ? (value as EffortLevel) : undefined;
 }
 

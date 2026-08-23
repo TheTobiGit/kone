@@ -20,10 +20,6 @@ const MAX_ENTRIES_PER_DIR = 500;
 const SKIPPED_DIR_NAMES = new Set(["node_modules", ".git", "dist", "build", ".next", "target"]);
 const INSTRUCTION_FILE_NAMES = new Set(["CLAUDE.md", "AGENTS.md"]);
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function kindForFileName(name: string): InstructionFile["kind"] {
   if (name === "CLAUDE.md") return "CLAUDE.md";
   if (name === "AGENTS.md") return "AGENTS.md";
@@ -108,7 +104,10 @@ async function walkNestedInstructions(rootDir: string, results: InstructionFile[
   try {
     await visit(rootDir, 0);
   } catch (error) {
-    errors.push({ source: `instructions:nested:${rootDir}`, message: errorMessage(error) });
+    errors.push({
+      source: `instructions:nested:${rootDir}`,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -131,7 +130,10 @@ export async function discoverInstructions(projectPath: string | null): Promise<
       const found = await readInstructionFile(filePath, "user");
       if (found) results.push(found);
     } catch (error) {
-      errors.push({ source: `instructions:user:${filePath}`, message: errorMessage(error) });
+      errors.push({
+        source: `instructions:user:${filePath}`,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -142,7 +144,10 @@ export async function discoverInstructions(projectPath: string | null): Promise<
         const found = await readInstructionFile(filePath, "project");
         if (found) results.push(found);
       } catch (error) {
-        errors.push({ source: `instructions:project:${filePath}`, message: errorMessage(error) });
+        errors.push({
+          source: `instructions:project:${filePath}`,
+          message: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 

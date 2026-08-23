@@ -9,7 +9,14 @@ import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../pla
 import type { ClaudeItemBuffer } from "./claudeAdapterTypes.js";
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+/** A terminal iterator result; the done slot must still carry the value type. */
+function doneResult(): IteratorResult<SDKUserMessage> {
+  // SAFETY: `done: true` means no value is ever read from this result.
+  return { value: undefined as never, done: true };
 }
 
 export function readString(value: unknown, ...path: string[]): string | undefined {
@@ -101,6 +108,7 @@ export function summarizeToolInput(
   }
   if (!parsed) return { text: "", detail: rawInput.trim() };
 
+  // SAFETY: the find predicate keeps only non-empty strings, so the result is string or undefined.
   const target = [
     parsed.command,
     parsed.file_path,
@@ -195,22 +203,18 @@ export class MessageQueue {
     this.closed = true;
     this.items.length = 0;
     let waiter: ((result: IteratorResult<SDKUserMessage>) => void) | undefined;
-    while ((waiter = this.waiters.shift())) waiter({ value: undefined as never, done: true });
+    while ((waiter = this.waiters.shift())) waiter(doneResult());
   }
 
   iterable(): AsyncIterable<SDKUserMessage> {
-    const self = this;
-    return {
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<SDKUserMessage>> {
-            if (self.items.length > 0) return Promise.resolve({ value: self.items.shift()!, done: false });
-            if (self.closed) return Promise.resolve({ value: undefined as never, done: true });
-            return new Promise((resolve) => self.waiters.push(resolve));
-          },
-        };
+    const iterator: AsyncIterator<SDKUserMessage> = {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        if (this.items.length > 0) return Promise.resolve({ value: this.items.shift()!, done: false });
+        if (this.closed) return Promise.resolve(doneResult());
+        return new Promise((resolve) => this.waiters.push(resolve));
       },
     };
+    return { [Symbol.asyncIterator]: () => iterator };
   }
 }
 
@@ -221,8 +225,8 @@ export function idlePrompt(signal: AbortSignal): AsyncIterable<SDKUserMessage> {
       return {
         next(): Promise<IteratorResult<SDKUserMessage>> {
           return new Promise((resolve) => {
-            if (signal.aborted) return resolve({ value: undefined as never, done: true });
-            signal.addEventListener("abort", () => resolve({ value: undefined as never, done: true }), { once: true });
+            if (signal.aborted) return resolve(doneResult());
+            signal.addEventListener("abort", () => resolve(doneResult()), { once: true });
           });
         },
       };

@@ -112,6 +112,8 @@ export function listOpenCodeDatabasePaths(dataDir: string): string[] {
   try {
     names = readdirSync(dataDir);
   } catch (error) {
+    // SAFETY: readdir rejections are ErrnoException; the code string is all
+    // we compare against and any other shape rethrows below.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
@@ -151,6 +153,8 @@ type HostedUsageRead = {
 function readDatabase(dbPath: string, cutoffMs: number): HostedUsageRead {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
+    // SAFETY: the row shape is fixed by HOSTED_ROWS_SQL's selected columns;
+    // numeric coercion below tolerates sqlite's number|bigint|null cells.
     const rawRows = db.prepare(HOSTED_ROWS_SQL).all(cutoffMs) as Array<{
       timeCreated: number | bigint;
       cost: number | bigint | null;
@@ -161,6 +165,8 @@ function readDatabase(dbPath: string, cutoffMs: number): HostedUsageRead {
       cost: Number(row.cost ?? 0),
       tokens: Number(row.tokens ?? 0),
     }));
+    // SAFETY: the anchor column comes from EARLIEST_HOSTED_USAGE_SQL's single
+    // aggregate; null means "no rows", handled by the caller.
     const earliestRow = db.prepare(EARLIEST_HOSTED_USAGE_SQL).get() as { anchor: number | bigint | null } | undefined;
     const earliestMs = earliestRow?.anchor != null ? Number(earliestRow.anchor) : null;
     return { rows, earliestMs };

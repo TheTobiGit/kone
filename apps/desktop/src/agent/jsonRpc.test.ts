@@ -57,7 +57,7 @@ async function loadRealJsonRpcModule(): Promise<JsonRpcModule> {
   const dir = mkdtempSync(path.join(tmpdir(), "kone-jsonrpc-real-"));
   const copy = path.join(dir, "jsonRpc.ts");
   writeFileSync(copy, source);
-  return (await import(pathToFileURL(copy).href)) as JsonRpcModule;
+  return await import(pathToFileURL(copy).href);
 }
 
 {
@@ -101,11 +101,12 @@ describe("JsonRpcClient stdout envelope validation", () => {
     try {
       const failure: unknown = await rpc.call("fail", {}, 5_000).then(
         () => undefined,
-        (error: unknown) => error,
+        (error) => error,
       );
       expect(failure).toBeInstanceOf(JsonRpcErrorCtor);
-      expect((failure as InstanceType<typeof JsonRpcErrorCtor>).code).toBe(-32000);
-      expect((failure as InstanceType<typeof JsonRpcErrorCtor>).message).toBe("boom");
+      if (!(failure instanceof JsonRpcErrorCtor)) throw new Error("expected a JsonRpcError");
+      expect(failure.code).toBe(-32000);
+      expect(failure.message).toBe("boom");
     } finally {
       rpc.kill();
     }

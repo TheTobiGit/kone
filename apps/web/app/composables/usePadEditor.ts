@@ -83,8 +83,8 @@ export function usePadEditor(options: UsePadEditorOptions) {
   function currentBlock(): HTMLElement | null {
     const sel = selection();
     const el = elementOf(sel?.anchorNode ?? null);
-    const block = el?.closest(BLOCK_SELECTOR) as HTMLElement | null;
-    if (block && host.value?.contains(block)) return block;
+    const block = el?.closest(BLOCK_SELECTOR);
+    if (block instanceof HTMLElement && host.value?.contains(block)) return block;
     return host.value;
   }
 
@@ -124,8 +124,8 @@ export function usePadEditor(options: UsePadEditorOptions) {
   /** The nearest enclosing element matching `selector`, bounded by the host. */
   function ancestor(selector: string): HTMLElement | null {
     const el = elementOf(window.getSelection()?.anchorNode ?? null);
-    const found = el?.closest(selector) as HTMLElement | null;
-    return found && host.value?.contains(found) ? found : null;
+    const found = el?.closest(selector);
+    return found instanceof HTMLElement && host.value?.contains(found) ? found : null;
   }
 
   function codeAncestor(): HTMLElement | null {
@@ -394,7 +394,7 @@ export function usePadEditor(options: UsePadEditorOptions) {
 
   function listItem(): HTMLElement | null {
     const el = elementOf(window.getSelection()?.anchorNode ?? null);
-    const li = el?.closest("li") as HTMLElement | null;
+    const li = el?.closest("li");
     return li && host.value?.contains(li) ? li : null;
   }
 
@@ -523,9 +523,9 @@ export function usePadEditor(options: UsePadEditorOptions) {
   /** A click in a task item's box column ticks it — the box is CSS, not an input,
    *  so the caret never lands inside a widget. */
   function onClick(e: MouseEvent): void {
-    const target = e.target as HTMLElement | null;
-    const li = target?.closest("li[data-checked]") as HTMLElement | null;
-    if (!li || !host.value?.contains(li)) return;
+    const target = e.target instanceof HTMLElement ? e.target : null;
+    const li = target?.closest("li[data-checked]");
+    if (!(li instanceof HTMLElement) || !host.value?.contains(li)) return;
     if (target !== li) return;
     const box = li.getBoundingClientRect();
     if (e.clientX - box.left > 22) return;
@@ -777,9 +777,8 @@ export function usePadEditor(options: UsePadEditorOptions) {
     }
   }
 
-  function onInput(e: Event): void {
-    const inputType = (e as InputEvent).inputType;
-    if (inputType === "insertParagraph") settleAfterParagraph();
+  function onInput(e: InputEvent): void {
+    if (e.inputType === "insertParagraph") settleAfterParagraph();
     emit();
   }
 

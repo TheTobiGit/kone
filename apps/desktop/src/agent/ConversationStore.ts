@@ -276,6 +276,8 @@ export class ConversationStore {
   private sealUndispatchedSpawns(db: DatabaseSync): void {
     try {
       const now = Date.now();
+      // SAFETY: the projection names exactly these four gateway_ops columns,
+      // all written by reserveGatewayOp/setGatewayOpResult.
       const rows = db
         .prepare(
           `SELECT thread_id, turn_id, request_id, result_json FROM gateway_ops
@@ -303,6 +305,8 @@ export class ConversationStore {
       for (const row of rows) {
         let childId: string | undefined;
         try {
+          // SAFETY: result_json here is only ever written by setGatewayOpResult
+          // from the spawn engine's own `{ threadId }` payload.
           const parsed = JSON.parse(row.result_json) as { threadId?: string };
           if (typeof parsed.threadId === "string") childId = parsed.threadId;
         } catch {
@@ -312,9 +316,13 @@ export class ConversationStore {
         // The child row must still exist with spawned lineage (an anonymous
         // subagent or a delegation to a named agent) and no real turns yet —
         // never clobber a child that actually ran.
+        // SAFETY: childMeta selects only threads.lineage_json.
         const meta = childMeta.get(childId) as { lineage_json: string } | undefined;
         if (!meta) continue;
         try {
+          // SAFETY: lineage_json is serialized by writeForkThread /
+          // writeSpawnedThread from ThreadLineage; a foreign blob throws into
+          // the catch, which skips the row.
           const lineage = JSON.parse(meta.lineage_json) as {
             relationshipToParent?: RelationshipToParent | null;
           };
@@ -418,6 +426,7 @@ export class ConversationStore {
         );
       });
       this.touch(db, input.threadId, at);
+      // SAFETY: COUNT(*) always arrives under the alias asked for.
       const row = db
         .prepare(
           `SELECT COUNT(*) AS n FROM blocks WHERE thread_id = ? AND role = 'user'`,
@@ -469,6 +478,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: `SELECT *` of attachments is exactly AttachmentRow — the
+      // columns this schema creates.
       const rows = db
         .prepare(`SELECT * FROM attachments WHERE thread_id = ?`)
         .all(threadId) as AttachmentRow[];
@@ -489,6 +500,8 @@ export class ConversationStore {
     try {
       const ids = this.subtreeIds(db, threadId);
       const placeholders = ids.map(() => "?").join(",");
+      // SAFETY: `SELECT *` of attachments is exactly AttachmentRow — the
+      // columns this schema creates.
       const rows = db
         .prepare(`SELECT * FROM attachments WHERE thread_id IN (${placeholders})`)
         .all(...ids) as AttachmentRow[];
@@ -505,6 +518,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: `SELECT *` of attachments keyed on the primary key is at most
+      // one row of exactly AttachmentRow.
       const row = db
         .prepare(`SELECT * FROM attachments WHERE attachment_id = ?`)
         .get(id) as AttachmentRow | undefined;
@@ -520,6 +535,7 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only the nullable TEXT title column.
       const row = db
         .prepare(`SELECT title FROM threads WHERE thread_id = ?`)
         .get(threadId) as { title: string | null } | undefined;
@@ -552,6 +568,7 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return false;
     try {
+      // SAFETY: same single-column projection as getTitle.
       const current = db
         .prepare(`SELECT title FROM threads WHERE thread_id = ?`)
         .get(threadId) as { title: string | null } | undefined;
@@ -595,6 +612,8 @@ export class ConversationStore {
     try {
       // Merge over the stored knobs: a partial update (the picker commits one
       // axis at a time) must never wipe the knobs it didn't touch.
+      // SAFETY: the projection names only model_selection_json, the nullable
+      // TEXT knob blob this class writes via JSON.stringify.
       const row = db
         .prepare(`SELECT model_selection_json FROM threads WHERE thread_id = ?`)
         .get(threadId) as { model_selection_json: string | null } | undefined;
@@ -912,6 +931,8 @@ export class ConversationStore {
             // block, which is the turn these numbers belong to. Survives
             // restart even though the thread-level `tokens` scalar only keeps
             // the rollup.
+            // SAFETY: the projection names only the latest assistant block's
+            // nullable turn_id.
             const turnRow = db
               .prepare(
                 `SELECT turn_id FROM blocks
@@ -929,6 +950,8 @@ export class ConversationStore {
               // count, but this read defaults again so a payload from an
               // adapter this store doesn't recognise (or a test) still
               // records real zeros instead of throwing.
+              // SAFETY: the split counts ride beyond TokenUsage's declared
+              // fields; every read below defaults them.
               const splits = event.usage as TokenUsage & Partial<TokenUsageSplits>;
               this.recordTurnUsage(db, event.threadId, turnRow.turn_id, event.at, {
                 input,
@@ -1054,6 +1077,7 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only base_tree, nullable TEXT.
       const row = db
         .prepare(`SELECT base_tree FROM threads WHERE thread_id = ?`)
         .get(threadId) as { base_tree: string | null } | undefined;
@@ -1143,6 +1167,8 @@ export class ConversationStore {
     if (!db) return null;
     try {
       const now = Date.now();
+      // SAFETY: RETURNING * of queued_turns is exactly QueuedTurnDbRow — the
+      // columns this schema creates.
       const row = db
         .prepare(
           `UPDATE queued_turns
@@ -1243,6 +1269,7 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: RETURNING names only queue_id.
       const rows = db
         .prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
@@ -1265,6 +1292,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: `SELECT *` of queued_turns is exactly QueuedTurnDbRow — the
+      // columns this schema creates.
       const rows = db
         .prepare(
           `SELECT * FROM queued_turns
@@ -1293,6 +1322,7 @@ export class ConversationStore {
     while (frontier.length > 0) {
       const next: string[] = [];
       for (const id of frontier) {
+        // SAFETY: childOf selects only threads.thread_id.
         for (const r of childOf.all(id) as Array<{ thread_id: string }>) {
           // Cycle-guarded: a corrupted parent pointer must not loop forever.
           if (!out.includes(r.thread_id)) {
@@ -1448,6 +1478,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: `SELECT *` of attachments is exactly AttachmentRow — the
+      // columns this schema creates.
       const rows = db.prepare(`SELECT * FROM attachments`).all() as AttachmentRow[];
       return rows.map(rowToAttachment);
     } catch (err) {
@@ -1475,6 +1507,7 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only project_path, NOT NULL TEXT.
       const row = db
         .prepare(`SELECT project_path FROM threads WHERE thread_id = ?`)
         .get(threadId) as { project_path: string } | undefined;
@@ -1491,6 +1524,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
+      // schema creates.
       const row = db
         .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
         .get(threadId) as ThreadRow | undefined;
@@ -1509,6 +1544,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
+      // schema creates.
       const row = db
         .prepare(
           `SELECT * FROM threads WHERE project_path = ? AND archived IS NULL
@@ -1528,6 +1565,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only the newest user block's block_id
+      // (NOT NULL TEXT).
       const row = this.prepare(
         db,
         `SELECT block_id FROM blocks WHERE thread_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1`,
@@ -1544,11 +1583,14 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
+      // schema creates.
       const threadRow = db
         .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
         .get(threadId) as ThreadRow | undefined;
       if (!threadRow) return null;
 
+      // SAFETY: `SELECT *` of blocks in seq order is exactly BlockRow.
       const blockRows = db
         .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY seq`)
         .all(threadId) as BlockRow[];
@@ -1575,6 +1617,7 @@ export class ConversationStore {
     if (turnIds && turnIds.length === 0) {
       return { itemRows: [], subagentRows: [] };
     }
+    // SAFETY: both branches are `SELECT *` of items — exactly ItemRow.
     const itemRows = turnIds
       ? (db
           .prepare(
@@ -1585,6 +1628,7 @@ export class ConversationStore {
       : (db
           .prepare(`SELECT * FROM items WHERE thread_id = ? ORDER BY turn_id, seq`)
           .all(threadId) as ItemRow[]);
+    // SAFETY: both branches are `SELECT *` of subagents — exactly SubagentRow.
     const subagentRows = turnIds
       ? (db
           .prepare(
@@ -1619,6 +1663,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
+      // schema creates.
       const threadRow = db
         .prepare(`SELECT * FROM threads WHERE thread_id = ?`)
         .get(threadId) as ThreadRow | undefined;
@@ -1633,6 +1679,7 @@ export class ConversationStore {
       // it as a first-page request.
       const boundary = cursor && cursor.threadId === threadId ? cursor : null;
 
+      // SAFETY: both branches are `SELECT *` of blocks — exactly BlockRow.
       const candidates = (
         boundary
           ? db
@@ -1717,15 +1764,17 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: `t.*` of threads is exactly ThreadRow — the columns this
+      // schema creates.
       const rows = db
         .prepare(
           `SELECT t.* FROM threads t
-           WHERE t.project_path = ? AND t.archived IS NULL
-             AND EXISTS (
-               SELECT 1 FROM blocks b
-               WHERE b.thread_id = t.thread_id AND b.role = 'user'
-             )
-           ORDER BY COALESCE(t.last_activity_at, t.updated_at) DESC`,
+            WHERE t.project_path = ? AND t.archived IS NULL
+              AND EXISTS (
+                SELECT 1 FROM blocks b
+                WHERE b.thread_id = t.thread_id AND b.role = 'user'
+              )
+            ORDER BY COALESCE(t.last_activity_at, t.updated_at) DESC`,
         )
         .all(projectPath) as ThreadRow[];
       return rows.map(rowToMeta);
@@ -1764,68 +1813,78 @@ export class ConversationStore {
           SELECT 1 FROM blocks b WHERE b.thread_id = t.thread_id AND b.role = 'user'
         )`;
 
+      // SAFETY: two aliased COUNT aggregates, exactly the names below.
       const totalsRow = db
         .prepare(
           `SELECT COUNT(*) AS threads, COUNT(DISTINCT project_path) AS projects
-           FROM (${REAL})`,
+            FROM (${REAL})`,
         )
         .get() as { threads: number; projects: number };
 
+      // SAFETY: COUNT(*) aliased to n, as everywhere in this file.
       const prompts = (
         db.prepare(`SELECT COUNT(*) AS n FROM blocks WHERE role = 'user'`).get() as { n: number }
       ).n;
 
       // Tokens: prefer the per-turn audit trail; fall back to the threads'
       // cumulative scalar when no turn_usage rows exist yet (older stores).
+      // SAFETY: three COALESCE'd SUM aggregates under the aliases read below.
       const usage = db
         .prepare(
           `SELECT COALESCE(SUM(total_tokens), 0) AS total,
                   COALESCE(SUM(input_tokens), 0) AS input,
                   COALESCE(SUM(output_tokens), 0) AS output
-           FROM turn_usage`,
+            FROM turn_usage`,
         )
         .get() as { total: number; input: number; output: number };
       let totalTokens = usage.total;
       if (totalTokens === 0) {
         totalTokens = (
+          // SAFETY: a COALESCE'd SUM aggregate aliased to n.
           db.prepare(`SELECT COALESCE(SUM(tokens), 0) AS n FROM threads`).get() as { n: number }
         ).n;
       }
 
       // Activity + hours by local calendar (user blocks carry the timestamp).
+      // SAFETY: the GROUP BY returns exactly the aliased date/count pair.
       const activity = db
         .prepare(
           `SELECT strftime('%Y-%m-%d', at / 1000, 'unixepoch', 'localtime') AS date,
                   COUNT(*) AS count
-           FROM blocks WHERE role = 'user'
-           GROUP BY date ORDER BY date ASC`,
+            FROM blocks WHERE role = 'user'
+            GROUP BY date ORDER BY date ASC`,
         )
         .all() as Array<{ date: string; count: number }>;
 
+      // SAFETY: same shape — an aliased hour/count pair per bucket.
       const hours = db
         .prepare(
           `SELECT CAST(strftime('%H', at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
                   COUNT(*) AS count
-           FROM blocks WHERE role = 'user'
-           GROUP BY hour ORDER BY count DESC`,
+            FROM blocks WHERE role = 'user'
+            GROUP BY hour ORDER BY count DESC`,
         )
         .all() as Array<{ hour: number; count: number }>;
 
+      // SAFETY: GROUP BY returns exactly the aliased provider/count pair
+      // ProfileStats["providers"] is declared from.
       const providers = db
         .prepare(
           `SELECT provider, COUNT(*) AS count FROM (${REAL})
-           GROUP BY provider ORDER BY count DESC`,
+            GROUP BY provider ORDER BY count DESC`,
         )
         .all() as ProfileStats["providers"];
 
+      // SAFETY: same — model/provider/count is ProfileStats["models"]'s shape.
       const models = db
         .prepare(
           `SELECT model, provider, COUNT(*) AS count FROM (${REAL})
-           WHERE model IS NOT NULL AND model <> ''
-           GROUP BY model, provider ORDER BY count DESC`,
+            WHERE model IS NOT NULL AND model <> ''
+            GROUP BY model, provider ORDER BY count DESC`,
         )
         .all() as ProfileStats["models"];
 
+      // SAFETY: same — effort/count is ProfileStats["reasoning"]'s shape.
       const reasoning = db
         .prepare(
           `SELECT json_extract(model_selection_json, '$.effort') AS effort, COUNT(*) AS count
@@ -1835,12 +1894,13 @@ export class ConversationStore {
         )
         .all() as ProfileStats["reasoning"];
 
+      // SAFETY: an aliased path/prompts pair per project group.
       const projectRows = db
         .prepare(
           `SELECT t.project_path AS path, COUNT(*) AS prompts
-           FROM blocks b JOIN threads t ON t.thread_id = b.thread_id
-           WHERE b.role = 'user'
-           GROUP BY t.project_path ORDER BY prompts DESC LIMIT 8`,
+            FROM blocks b JOIN threads t ON t.thread_id = b.thread_id
+            WHERE b.role = 'user'
+            GROUP BY t.project_path ORDER BY prompts DESC LIMIT 8`,
         )
         .all() as Array<{ path: string; prompts: number }>;
       const projects = projectRows.map((r) => ({
@@ -1939,6 +1999,7 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only thread_id (TEXT primary key).
       const row = db
         .prepare(`SELECT thread_id FROM threads WHERE request_id = ? LIMIT 1`)
         .get(requestId) as { thread_id: string } | undefined;
@@ -1956,6 +2017,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names the two NOT NULL/declared columns read
+      // below; provider is written only from ProviderKind inputs.
       const row = db
         .prepare(
           `SELECT thread_id, provider FROM threads
@@ -1963,6 +2026,8 @@ export class ConversationStore {
             ORDER BY created_at ASC LIMIT 1`,
         )
         .get(sourceThreadId) as { thread_id: string; provider: string } | undefined;
+      // SAFETY: threads.provider only ever stores ProviderKind strings — every
+      // writer takes input.provider typed as ProviderKind.
       return row ? { threadId: row.thread_id, provider: row.provider as ProviderKind } : null;
     } catch (err) {
       console.error("[conversation-store] sidechatForSource failed:", err);
@@ -2000,6 +2065,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only fork_context_json, the nullable TEXT
+      // blob this class writes via JSON.stringify(ForkContext).
       const row = db
         .prepare(`SELECT fork_context_json FROM threads WHERE thread_id = ?`)
         .get(threadId) as { fork_context_json: string | null } | undefined;
@@ -2114,6 +2181,7 @@ export class ConversationStore {
    *  twice. No-op for non-forks and already-completed forks. */
   private completeSidechatBootstrap(db: DatabaseSync, threadId: string): void {
     try {
+      // SAFETY: same single-column projection as threadForkContext.
       const row = db
         .prepare(`SELECT fork_context_json FROM threads WHERE thread_id = ?`)
         .get(threadId) as { fork_context_json: string | null } | undefined;
@@ -2197,6 +2265,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only lineage_json, the nullable TEXT blob
+      // written via JSON.stringify(ThreadLineage).
       const row = db
         .prepare(`SELECT lineage_json FROM threads WHERE thread_id = ?`)
         .get(threadId) as { lineage_json: string | null } | undefined;
@@ -2213,6 +2283,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: `SELECT *` of threads is exactly ThreadRow — the columns this
+      // schema creates.
       const rows = db
         .prepare(
           `SELECT * FROM threads
@@ -2251,9 +2323,10 @@ export class ConversationStore {
       // reaches it is a cycle or a corrupted chain, and the caller's guard
       // treats the finite-but-absurd value as "too deep to trust".
       while (depth < 64) {
-        const row = parentOf.get(current) as
-          | { parent_thread_id: string | null }
-          | undefined;
+      // SAFETY: the projection names only parent_thread_id (nullable TEXT).
+      const row = parentOf.get(current) as
+        | { parent_thread_id: string | null }
+        | undefined;
         const parent = row?.parent_thread_id;
         if (!parent) break;
         if (visited.has(parent)) return 64;
@@ -2276,10 +2349,11 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: the DISTINCT projection names only threads.thread_id.
       const rows = db
         .prepare(
           `SELECT DISTINCT t.thread_id
-             FROM threads t
+              FROM threads t
             WHERE t.parent_thread_id IS NOT NULL
               AND EXISTS (
                 SELECT 1 FROM blocks b
@@ -2306,6 +2380,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: the projection names only the newest assistant block's
+      // nullable turn_id.
       const block = db
         .prepare(
           `SELECT turn_id FROM blocks
@@ -2314,6 +2390,7 @@ export class ConversationStore {
         )
         .get(threadId) as { turn_id: string | null } | undefined;
       if (!block?.turn_id) return null;
+      // SAFETY: the projection names only items.text (NOT NULL TEXT).
       const items = db
         .prepare(
           `SELECT text FROM items
@@ -2341,6 +2418,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: every selected value is an aliased aggregate or a scalar
+      // subselect named in the projection below.
       const row = db
         .prepare(
           `SELECT MIN(at) AS started_at,
@@ -2385,6 +2464,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
+      // SAFETY: the projection is the column list ScratchpadRow is declared
+      // from.
       const rows = db
         .prepare(
           `SELECT id, project_path, title, body, created_at, updated_at, sort_index, revision
@@ -2405,6 +2486,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: same column list keyed on the primary key, so at most one row
+      // of exactly that shape.
       const row = db
         .prepare(
           `SELECT id, project_path, title, body, created_at, updated_at, sort_index, revision
@@ -2438,6 +2521,8 @@ export class ConversationStore {
     if (!db) return null;
     const savedAt = Date.now();
     try {
+      // SAFETY: four named columns of scratchpads — timestamps and counters
+      // are NOT NULL, body is the written TEXT.
       const existing = db
         .prepare(
           `SELECT created_at, sort_index, revision, body FROM scratchpads WHERE id = ?`,
@@ -2452,6 +2537,7 @@ export class ConversationStore {
       ) {
         return { conflict: existing.revision };
       }
+      // SAFETY: a COALESCE'd MAX aggregate aliased to next, as the roster's.
       const sortIndex =
         existing?.sort_index ??
         ((db
@@ -2535,6 +2621,8 @@ export class ConversationStore {
         )
         .run(input.threadId, input.turnId, input.requestId, input.kind, input.fingerprint, Date.now());
       if (Number(inserted.changes) > 0) return { kind: "reserved" };
+      // SAFETY: the projection names the two TEXT columns written by
+      // reserveGatewayOp itself.
       const prior = db
         .prepare(
           `SELECT fingerprint, result_json FROM gateway_ops
@@ -3230,11 +3318,17 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
+      // SAFETY: project_boards stores one NOT NULL TEXT layout column per
+      // project path.
       const row = db
         .prepare(`SELECT layout FROM project_boards WHERE project_path = ?`)
         .get(projectPath) as { layout: string } | undefined;
       if (!row?.layout) return null;
+      // SAFETY: layout is untrusted disk content — parse to unknown first and
+      // let the checks below decide.
       const parsed = JSON.parse(row.layout) as unknown;
+      // SAFETY: probing two fields of unknown needs the object view; these
+      // checks are themselves the validation gate.
       if (
         !parsed ||
         typeof parsed !== "object" ||
@@ -3243,6 +3337,8 @@ export class ConversationStore {
       ) {
         return null;
       }
+      // SAFETY: version === 1 and the pane array were just verified; deeper
+      // per-pane structure is validated downstream by the renderer.
       return parsed as StoredBoardLayout;
     } catch (err) {
       console.error("[conversation-store] loadBoard failed:", err);

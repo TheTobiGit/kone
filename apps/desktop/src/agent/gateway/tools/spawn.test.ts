@@ -375,13 +375,16 @@ describe("spawn gateway tools", () => {
     });
     // Teammates fold in too — but the nameless one is dropped, since delegation
     // resolves by name.
-    const report = res.structuredContent?.report as FakeTargetsReport;
-    expect(report.teammates).toEqual([
-      { id: "agent-backend", name: "Backend", summary: "You own the API layer." },
-    ]);
+    expect(res.structuredContent).toMatchObject({
+      report: {
+        teammates: [
+          { id: "agent-backend", name: "Backend", summary: "You own the API layer." },
+        ],
+      },
+    });
     // The plain-text summary names both surfaces so even a client that ignores
     // structuredContent sees them.
-    const text = (res.content[0] as { text: string }).text;
+    const text = res.content[0]?.text ?? "";
     expect(text).toContain("Explorer");
     expect(text).toContain("Backend");
   });
@@ -418,8 +421,8 @@ describe("spawn gateway tools", () => {
       allTerminal: false,
       timedOut: true,
       turnIds: ["turn-1", "turn-9"],
+      threads: [{ threadId: "child-1" }, { threadId: "child-2" }],
     });
-    expect((res.structuredContent as { threads: SpawnedThread[] }).threads).toHaveLength(2);
   });
 
   test("kone_wait_for_threads forwards ctx.signal into engine.waitFor", async () => {
@@ -519,7 +522,11 @@ describe("spawn gateway tools", () => {
       maxTextChars: 200,
     });
     expect(res.isError).toBeUndefined();
-    const messages = (res.structuredContent as { messages: Array<{ role: string; text: string }> }).messages;
+    const sc = res.structuredContent;
+    const messages =
+      sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
+        ? sc.messages
+        : [];
     expect(messages[0]).toEqual({ role: "user", text: "second" });
     expect(messages[1].role).toBe("assistant");
     // Truncated with the visible marker, under the cap, tail intact.
@@ -549,7 +556,11 @@ describe("spawn gateway tools", () => {
     };
     const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
     const res = await registry.call(ctx, "kone_read_thread", { threadId: "child-1" });
-    const messages = (res.structuredContent as { messages: Array<{ text: string }> }).messages;
+    const sc = res.structuredContent;
+    const messages =
+      sc !== undefined && sc !== null && "messages" in sc && Array.isArray(sc.messages)
+        ? sc.messages
+        : [];
     expect(messages).toHaveLength(20);
     expect(messages[0]).toEqual({ role: "user", text: "message 5" });
     expect(messages[19]).toEqual({ role: "user", text: "message 24" });
@@ -785,10 +796,10 @@ describe("kone_delegate", () => {
     expect(res.structuredContent).toMatchObject({
       agent: "Backend",
       selection: "caller-default",
-    });
-    expect((res.structuredContent as { delegation: SpawnThreadResult }).delegation).toMatchObject({
-      threadId: "child-1",
-      status: "dispatched",
+      delegation: {
+        threadId: "child-1",
+        status: "dispatched",
+      },
     });
   });
 

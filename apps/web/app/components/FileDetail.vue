@@ -131,7 +131,7 @@ watch(scheme, async () => {
 // Grow from the clicked card's centre — ProjectView's <Transition> reads these.
 const originStyle = computed(() => {
   const r = props.origin;
-  if (!r || typeof window === "undefined") return {};
+  if (!r || !("window" in globalThis)) return {};
   const ox = ((r.left + r.width / 2) / window.innerWidth) * 100;
   const oy = ((r.top + r.height / 2) / window.innerHeight) * 100;
   return { "--ox": `${ox}%`, "--oy": `${oy}%` };
@@ -173,10 +173,9 @@ const boxes = computed<("add" | "del")[]>(() => {
   let greens = Math.round((n * a) / total);
   if (a > 0) greens = Math.max(1, greens);
   if (r > 0) greens = Math.min(n - 1, greens);
-  return [
-    ...(Array(greens).fill("add") as "add"[]),
-    ...(Array(n - greens).fill("del") as "del"[]),
-  ];
+  const out: ("add" | "del")[] = [];
+  for (let index = 0; index < n; index += 1) out.push(index < greens ? "add" : "del");
+  return out;
 });
 
 // The rows to render: coloured token lines when highlighting succeeded,
@@ -249,7 +248,8 @@ function onTrapKeydown(e: KeyboardEvent) {
   if (!items.length) return;
   const first = items[0]!;
   const last = items[items.length - 1]!;
-  const active = document.activeElement as HTMLElement | null;
+  const activeNode = document.activeElement;
+  const active = activeNode instanceof HTMLElement ? activeNode : null;
   if (e.shiftKey && (active === first || !root.contains(active))) {
     e.preventDefault();
     last.focus();

@@ -7,9 +7,14 @@ import { ipcMain } from "electron";
 import { withTimeout } from "./ipcTimeout.js";
 
 // `stat` accepts `{ signal }` at runtime so an in-flight probe is cancelled,
-// but the installed @types/node predates that field on StatOptions — the cast
-// pins the options to what the overloads actually accept.
+// but the installed @types/node predates that field on StatOptions.
 type StatOptions = Parameters<typeof stat>[1];
+
+function statOptions(signal: AbortSignal): StatOptions {
+  // SAFETY: the object carries only the runtime-accepted `signal` field that
+  // @types/node does not declare yet; every caller passes exactly this shape.
+  return { signal } as StatOptions;
+}
 
 // ── Data model ──────────────────────────────────────────────────────────────
 // Serializable — everything here crosses the IPC boundary to the renderer.
@@ -49,7 +54,7 @@ function isHidden(name: string): boolean {
  *  just probe for its presence rather than shelling out to git. */
 async function isRepoRoot(dir: string, signal?: AbortSignal): Promise<boolean> {
   try {
-    await stat(path.join(dir, ".git"), signal ? ({ signal } as StatOptions) : undefined);
+    await stat(path.join(dir, ".git"), signal ? statOptions(signal) : undefined);
     return true;
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -94,7 +99,7 @@ export async function listDir(dir: unknown, signal?: AbortSignal): Promise<DirLi
 
   let stats;
   try {
-    stats = await stat(abs, signal ? ({ signal } as StatOptions) : undefined);
+    stats = await stat(abs, signal ? statOptions(signal) : undefined);
   } catch (error) {
     if (signal?.aborted) throw error;
     throw new Error(`Path not found: ${abs}`);
@@ -113,7 +118,7 @@ export async function listDir(dir: unknown, signal?: AbortSignal): Promise<DirLi
     if (!isDir && dirent.isSymbolicLink()) {
       try {
         isDir = (
-          await stat(path.join(abs, dirent.name), signal ? ({ signal } as StatOptions) : undefined)
+          await stat(path.join(abs, dirent.name), signal ? statOptions(signal) : undefined)
         ).isDirectory();
       } catch (error) {
         if (signal?.aborted) throw error;

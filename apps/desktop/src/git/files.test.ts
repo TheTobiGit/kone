@@ -25,7 +25,7 @@ function countLsFilesStarts(trace: string): number {
   for (const line of trace.split("\n")) {
     if (!line.trim()) continue;
     try {
-      const ev = JSON.parse(line) as { event?: string; argv?: unknown };
+      const ev: { event?: string; argv?: unknown } = JSON.parse(line);
       if (ev.event !== "start" || !Array.isArray(ev.argv)) continue;
       if (ev.argv.some((part) => part === "ls-files")) n += 1;
     } catch {

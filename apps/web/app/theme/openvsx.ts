@@ -172,9 +172,7 @@ type ThemeContribution = { label?: unknown; uiTheme?: unknown; path?: unknown };
 
 function themeContributions(manifest: Record<string, unknown>): ThemeContribution[] {
   const contributes = isRecord(manifest.contributes) ? manifest.contributes : null;
-  return Array.isArray(contributes?.themes)
-    ? (contributes.themes.filter(isRecord) as ThemeContribution[])
-    : [];
+  return Array.isArray(contributes?.themes) ? contributes.themes.filter(isRecord) : [];
 }
 
 function manifestLicenseMatches(manifest: Record<string, unknown>, license: string): boolean {
@@ -275,7 +273,9 @@ export async function searchOpenVsxThemes(
       "Open VSX returned an unexpectedly large response.",
     );
     try {
-      return JSON.parse(new TextDecoder().decode(searchBytes)) as unknown;
+      // SAFETY: JSON.parse yields unknown; consumers probe fields before use.
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(searchBytes));
+      return parsed;
     } catch {
       throw new Error("Open VSX returned an unreadable response.");
     }
@@ -505,6 +505,8 @@ function inspectZipDirectory(bytes: Uint8Array): Uint8Array {
 }
 
 function inspectZip(zip: JSZip): void {
+  // SAFETY: JSZip types omit its private _data/internalStream fields, which
+  // every entry carries at runtime; InspectableZipObject names them for probing.
   const entries = Object.values(zip.files) as InspectableZipObject[];
   if (entries.length > MAX_ZIP_ENTRIES)
     throw new Error("That extension package has too many files.");
@@ -521,6 +523,8 @@ async function readZipText(
   signal?: AbortSignal,
 ): Promise<string> {
   signal?.throwIfAborted();
+  // SAFETY: same JSZip-private fields as inspectZip — zip.file's declared
+  // return type omits them, so the narrower view is asserted at this I/O boundary.
   const file = zip.file(path) as InspectableZipObject | null;
   if (!file) throw new Error(`${description} is missing from the extension package.`);
   if (typeof file._data?.uncompressedSize !== "number" || !file.internalStream) {

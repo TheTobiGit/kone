@@ -44,6 +44,21 @@ interface CurveSegment {
   to: Point;
 }
 
+interface ChartPath {
+  provider: (typeof PROVIDER_ORDER)[number];
+  total: number;
+  area: string;
+  line: string;
+}
+
+interface ChartModel {
+  paths: ChartPath[];
+  ticks: number[];
+  stepX: number;
+  toY: (value: number) => number;
+  series: DayColumn[];
+}
+
 function valueFor(
   daily: UsageDay | undefined,
   provider: (typeof PROVIDER_ORDER)[number],
@@ -148,20 +163,15 @@ const byDay = computed(() => new Map(props.daily.map((entry) => [entry.date, ent
 const hoverIndex = ref<number | null>(null);
 const plotRef = ref<HTMLDivElement | null>(null);
 
-const chart = computed(() => {
+const chart = computed<ChartModel>(() => {
   const days = props.days;
   if (days.length === 0) {
     return {
-      paths: [] as {
-        provider: (typeof PROVIDER_ORDER)[number];
-        total: number;
-        area: string;
-        line: string;
-      }[],
-      ticks: [0] as number[],
+      paths: [],
+      ticks: [0],
       stepX: 0,
       toY: (_value: number) => VIEW_HEIGHT,
-      series: [] as DayColumn[],
+      series: [],
     };
   }
 

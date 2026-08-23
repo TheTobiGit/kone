@@ -148,11 +148,9 @@ describe("clone", () => {
     const dest = path.join(parent, "proj");
     const url = "https://github.com/owner/repo.git";
 
-    // SAFETY: toBeInstanceOf(GitError) pins this rejection's type below.
-    const first = (await api
-      .clone(url, dest, () => {})
-      .catch((e: unknown) => e)) as GitError;
+    const first = await api.clone(url, dest, () => {}).catch((e) => e);
     expect(first).toBeInstanceOf(GitError);
+    if (!(first instanceof GitError)) throw first;
 
     // The partial checkout must be swept so the destination is reusable.
     expect(existsSync(dest)).toBe(false);
@@ -160,11 +158,9 @@ describe("clone", () => {
 
     // Retrying into the same dest must reach the fake git again and fail on
     // its own failure — never on "a folder already exists".
-    // SAFETY: toBeInstanceOf(GitError) pins this rejection's type below.
-    const retry = (await api
-      .clone(url, dest, () => {})
-      .catch((e: unknown) => e)) as GitError;
+    const retry = await api.clone(url, dest, () => {}).catch((e) => e);
     expect(retry).toBeInstanceOf(GitError);
+    if (!(retry instanceof GitError)) throw retry;
     expect(retry.message).not.toMatch(/already exists/);
     expect(existsSync(dest)).toBe(false);
   });
@@ -194,9 +190,9 @@ describe("clone", () => {
     const p2 = api.clone(src, dest2, () => {}, { signal: second.signal });
     first.abort();
 
-    // SAFETY: toBeInstanceOf(GitError) pins this rejection's type below.
-    const err1 = (await p1.catch((e: unknown) => e)) as GitError;
+    const err1 = await p1.catch((e) => e);
     expect(err1).toBeInstanceOf(GitError);
+    if (!(err1 instanceof GitError)) throw err1;
     expect(err1.message).toBe("Clone cancelled");
     expect(existsSync(dest1)).toBe(false);
 
@@ -218,13 +214,13 @@ describe("clone", () => {
     const p2 = api.clone("https://github.com/owner/b.git", dest2, () => {});
     api.cancelAllClones();
 
-    // SAFETY: toBeInstanceOf(GitError) pins this rejection's type below.
-    const err1 = (await p1.catch((e: unknown) => e)) as GitError;
+    const err1 = await p1.catch((e) => e);
     expect(err1).toBeInstanceOf(GitError);
+    if (!(err1 instanceof GitError)) throw err1;
     expect(err1.message).toBe("Clone cancelled");
-    // SAFETY: toBeInstanceOf(GitError) pins this rejection's type above — same sweep.
-    const err2 = (await p2.catch((e: unknown) => e)) as GitError;
+    const err2 = await p2.catch((e) => e);
     expect(err2).toBeInstanceOf(GitError);
+    if (!(err2 instanceof GitError)) throw err2;
     expect(err2.message).toBe("Clone cancelled");
     expect(existsSync(dest1)).toBe(false);
     expect(existsSync(dest2)).toBe(false);
@@ -239,11 +235,11 @@ describe("clone", () => {
     const parent = newTempParent();
     const dest = path.join(parent, "proj");
 
-    // SAFETY: toBeInstanceOf(GitError) pins this rejection's type below.
-    const err = (await api
+    const err = await api
       .clone("https://github.com/owner/a.git", dest, () => {})
-      .catch((e: unknown) => e)) as GitError;
+      .catch((e) => e);
     expect(err).toBeInstanceOf(GitError);
+    if (!(err instanceof GitError)) throw err;
     expect(err.kind).toBe("TIMEOUT");
     expect(err.message).toMatch(/\[kone:TIMEOUT\]/);
     expect(existsSync(dest)).toBe(false);

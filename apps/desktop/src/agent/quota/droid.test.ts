@@ -225,6 +225,8 @@ describe("Plan label from auth", () => {
 
 describe("fetchDroidQuota", () => {
   function jsonFetch(routes: Record<string, { status: number; body: unknown }>) {
+    // SAFETY: the fake only ever returns the route's own JSON body; tests
+    // assert against that same shape.
     return (async (input: RequestInfo | URL) => {
       const url = String(input);
       const route = routes[url];
@@ -263,6 +265,8 @@ describe("fetchDroidQuota", () => {
 
   test("billing-limits billing drives the report; the usage endpoint is untouched", async () => {
     let usageCalled = false;
+    // SAFETY: the fake only ever returns the route's own JSON body; tests
+    // assert against that same shape.
     const fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/api/app/auth/me")) {

@@ -35,6 +35,10 @@ import {
 } from "./adapters/OpenCodeAdapter.js";
 import type { RuntimeEvent } from "./types.js";
 
+function ofType<T extends RuntimeEvent["type"]>(events: RuntimeEvent[], type: T) {
+  return events.filter((e): e is Extract<RuntimeEvent, { type: T }> => e.type === type);
+}
+
 describe("OpenCode pure translation helpers", () => {
   test("parses verbose multiline model blocks and skips malformed blocks", () => {
     const output = [
@@ -275,6 +279,8 @@ async function loadOpenCodeAdapterWithStubbedServer(): Promise<OpenCodeAdapterMo
   );
   const copy = path.join(dir, "OpenCodeAdapter.ts");
   writeFileSync(copy, source);
+  // SAFETY: the copied module is OpenCodeAdapter.ts with only the server import
+  // rewritten, so its exports match OpenCodeAdapterModule.
   return (await import(pathToFileURL(copy).href)) as OpenCodeAdapterModule;
 }
 
@@ -295,10 +301,11 @@ describe("OpenCode steerTurn", () => {
   // tests — leaking the stub across the suite (an unhandled route answered
   // another file's HTTP tests with 404).
   beforeEach(() => {
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const route = String(input).replace(/^https?:\/\/[^/]+/, "");
       const method = init?.method ?? "GET";
-      const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      const rawBody = init?.body;
+      const body = rawBody == null ? undefined : JSON.parse(String(rawBody));
       calls.push({ method, route, body });
       if (method === "GET" && route === "/event") {
         return new Response(new ReadableStream({ start(controller) { controller.close(); } }), {
@@ -321,7 +328,7 @@ describe("OpenCode steerTurn", () => {
       return new Response(JSON.stringify({ error: `unhandled ${method} ${route}` }), {
         status: 404,
       });
-    }) as typeof fetch;
+    };
   });
 
   afterEach(() => {
@@ -354,23 +361,20 @@ describe("OpenCode steerTurn", () => {
     });
 
     expect(result.turnId).toBe(first.turnId);
-    expect(events.filter((e) => e.type === "turn.started")).toHaveLength(1);
+    expect(ofType(events, "turn.started")).toHaveLength(1);
 
     // The steer is announced into the live turn.
-    const steered = events.filter((e) => e.type === "turn.steered");
+    const steered = ofType(events, "turn.steered");
     expect(steered).toHaveLength(1);
-    expect((steered[0] as Extract<RuntimeEvent, { type: "turn.steered" }>).turnId).toBe(
-      first.turnId,
-    );
-    expect((steered[0] as Extract<RuntimeEvent, { type: "turn.steered" }>).message).toBe(
-      "keep going",
-    );
+    expect(steered[0]?.turnId).toBe(first.turnId);
+    expect(steered[0]?.message).toBe("keep going");
 
     // The steer rode the same prompt_async channel as any live-session send.
     const promptPosts = calls.filter((c) => c.route === "/session/ses_1/prompt_async");
     expect(promptPosts).toHaveLength(2);
-    const steerParts = (promptPosts[1]?.body as { parts: Array<{ text?: string }> }).parts;
-    expect(steerParts.some((part) => part.text === "keep going")).toBe(true);
+    // SAFETY: prompt_async posts always carry a JSON body with a parts array.
+    const steerBody = promptPosts[1]?.body as { parts: Array<{ text?: string }> } | undefined;
+    expect(steerBody?.parts.some((part) => part.text === "keep going")).toBe(true);
   });
 
   test("steer with no live turn falls back to sendTurn", async () => {
@@ -385,12 +389,10 @@ describe("OpenCode steerTurn", () => {
     });
 
     // The fallback opened a real turn.
-    const started = events.filter((e) => e.type === "turn.started");
+    const started = ofType(events, "turn.started");
     expect(started).toHaveLength(1);
-    expect((started[0] as Extract<RuntimeEvent, { type: "turn.started" }>).turnId).toBe(
-      result.turnId,
-    );
-    expect(events.filter((e) => e.type === "turn.steered")).toHaveLength(0);
+    expect(started[0]?.turnId).toBe(result.turnId);
+    expect(ofType(events, "turn.steered")).toHaveLength(0);
     const sessions = await adapter.listSessions();
     expect(sessions[0]?.activeTurnId).toBe(result.turnId);
   });
@@ -420,7 +422,7 @@ describe("OpenCode tool status ladder", () => {
   beforeEach(() => {
     pushEvent = null;
     closeStream = null;
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const route = String(input).replace(/^https?:\/\/[^/]+/, "");
       const method = init?.method ?? "GET";
       if (method === "GET" && route === "/event") {
@@ -455,7 +457,7 @@ describe("OpenCode tool status ladder", () => {
       return new Response(JSON.stringify({ error: `unhandled ${method} ${route}` }), {
         status: 404,
       });
-    }) as typeof fetch;
+    };
   });
 
   afterEach(() => {

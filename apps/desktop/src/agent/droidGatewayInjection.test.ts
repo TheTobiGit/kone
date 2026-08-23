@@ -50,6 +50,9 @@ class FakeJsonRpcClient {
   readonly calls: { method: string; params?: unknown }[] = [];
   constructor(_command: string, _args: string[], opts: { cwd?: string }) {
     if (opts?.cwd && opts.cwd !== "/tmp/kone-test-project") return;
+    // The adapter constructs its own RPC client, so the fake can only reach
+    // the tests by registering the constructed instance here.
+    // eslint-disable-next-line typescript/no-this-alias
     sessionRpc = this;
   }
   async call<T = unknown>(method: string, params?: unknown): Promise<T> {

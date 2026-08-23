@@ -1076,7 +1076,10 @@ export type RuntimeEventSource =
   | "antigravity.cli.stderr"
   | "antigravity.cli.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
-  | "kone.store";
+  | "kone.store"
+  // Renderer-synthesized mock traffic (useAgentMock) — browser-dev only, it
+  // never crosses the bridge, so nothing downstream can observe this source.
+  | "kone.mock";
 
 type AgentBaseEvent = {
   threadId: string;

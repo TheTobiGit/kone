@@ -31,16 +31,11 @@ export function useBoardPersistence(projectPath: string | (() => string)) {
     try {
       const raw = localStorage.getItem(storageKey(path));
       if (!raw) return null;
-      const parsed = JSON.parse(raw) as unknown;
-      if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        (parsed as { version?: unknown }).version !== 1 ||
-        !Array.isArray((parsed as { panes?: unknown }).panes)
-      ) {
-        return null;
-      }
-      return parsed as BoardLayout;
+      // The key is written only by this app's writeLocal; the version gate is
+      // the contract check on whatever comes back.
+      const doc: BoardLayout | null = JSON.parse(raw);
+      if (!doc || doc.version !== 1 || !Array.isArray(doc.panes)) return null;
+      return doc;
     } catch {
       return null;
     }

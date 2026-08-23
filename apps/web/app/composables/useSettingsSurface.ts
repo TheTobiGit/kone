@@ -33,8 +33,15 @@ const STAGE_REMAINDER = 300;
 /** Past this the page stops growing — the same measure the git space caps at,
  *  because a 1600px-wide settings page is just a long line of text. */
 const PAGE_MAX = 1040;
+/** A reading rather than a board: one agent's facts and its brief. Past this
+ *  the values sit in a void, and the launcher they came from is pushed too far
+ *  aside for a page that is still a list of rows. */
+const COMPACT_MAX = 640;
 
 const pane = ref<SettingsPane>("root");
+/** When true, the open page uses COMPACT_MAX instead of PAGE_MAX. The agent
+ *  detail sets this for as long as it is on screen; everything else leaves it. */
+const compact = ref(false);
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
 const PAGE_PANES: SettingsPane[] = [
@@ -61,18 +68,15 @@ export function useSettingsSurface() {
   const revealWidth = computed(() => {
     if (!isPage.value) return COLUMN_WIDTH;
 
-    // Every page takes the same measure. Thread strip used to be capped narrower on
-    // the grounds that a single column of options would strand its prose at an
-    // unreadable line length — but that page carries no prose now beyond one capped
-    // line, and what it does carry is three miniatures of the strip, which get more
-    // honest the closer they run to the width they're modelling. The only line long
-    // enough to need protecting sets its own `max-width`.
-    return Math.round(Math.min(PAGE_MAX, Math.max(COLUMN_WIDTH, width.value - STAGE_REMAINDER)));
+    // Most pages take the full measure. A compact page (one agent's details) is
+    // a facts table, so it stops earlier — the same formula, a tighter cap.
+    const cap = compact.value ? COMPACT_MAX : PAGE_MAX;
+    return Math.round(Math.min(cap, Math.max(COLUMN_WIDTH, width.value - STAGE_REMAINDER)));
   });
 
   function openPane(target: SettingsPane) {
     pane.value = target;
   }
 
-  return { pane, isPage, revealWidth, COLUMN_WIDTH, openPane };
+  return { pane, isPage, compact, revealWidth, COLUMN_WIDTH, openPane };
 }

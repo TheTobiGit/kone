@@ -1,4 +1,5 @@
 import { useTheme } from "~/composables/useTheme";
+import { bundledLanguages, bundledThemes } from "shiki";
 import type { BundledLanguage, BundledTheme, Highlighter, ThemedToken } from "shiki";
 
 // Syntax highlighting for the file-detail preview, using Shiki with TextMate
@@ -51,6 +52,21 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 const failed = new Set<string>(); // grammars that wouldn't load — don't retry
 const inflight = new Map<string, Promise<void>>(); // in-progress grammar loads
 
+// Shiki's loaders take literal union ids, but the names we hold are free-form
+// strings from file extensions and fence info strings. Resolving against the
+// shipped catalogue turns a bad name into plain data ("skip it") instead of a
+// thrown error.
+const BUNDLED_LANG_IDS: ReadonlySet<string> = new Set(Object.keys(bundledLanguages));
+const BUNDLED_THEME_IDS: ReadonlySet<string> = new Set(Object.keys(bundledThemes));
+
+function isBundledLang(lang: string): lang is BundledLanguage {
+  return BUNDLED_LANG_IDS.has(lang);
+}
+
+function isBundledTheme(theme: string): theme is BundledTheme {
+  return BUNDLED_THEME_IDS.has(theme);
+}
+
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = import("shiki").then(({ createHighlighter }) =>
@@ -65,8 +81,9 @@ function getHighlighter(): Promise<Highlighter> {
  *  can't be resolved to a theme Shiki ships. */
 async function ensureTheme(hl: Highlighter, theme: string): Promise<boolean> {
   if (hl.getLoadedThemes().includes(theme)) return true;
+  if (!isBundledTheme(theme)) return false;
   try {
-    await hl.loadTheme(theme as BundledTheme);
+    await hl.loadTheme(theme);
     return true;
   } catch {
     return false;
@@ -112,9 +129,13 @@ async function ensureLang(hl: Highlighter, lang: string): Promise<string> {
   if (lang === "plaintext") return "plaintext";
   if (hl.getLoadedLanguages().includes(lang)) return lang;
   if (failed.has(lang)) return "plaintext";
+  if (!isBundledLang(lang)) {
+    void failed.add(lang);
+    return "plaintext";
+  }
   let load = inflight.get(lang);
   if (!load) {
-    load = hl.loadLanguage(lang as BundledLanguage).then(
+    load = hl.loadLanguage(lang).then(
       () => {},
       () => void failed.add(lang),
     );
@@ -158,8 +179,9 @@ export function useHighlighter() {
       const hl = await getHighlighter();
       if (!(await ensureTheme(hl, extras.value.syntax))) return null;
       const lang = await ensureLang(hl, langFor(path));
+      if (!isBundledLang(lang)) return null;
       const { tokens } = hl.codeToTokens(code, {
-        lang: lang as BundledLanguage,
+        lang,
         theme: extras.value.syntax,
       });
       return tokens;
@@ -182,8 +204,9 @@ export function useHighlighter() {
       const hl = await getHighlighter();
       if (!(await ensureTheme(hl, extras.value.syntax))) return { lines: null, lang: resolved };
       const lang = await ensureLang(hl, resolved);
+      if (!isBundledLang(lang)) return { lines: null, lang: resolved };
       const { tokens } = hl.codeToTokens(code, {
-        lang: lang as BundledLanguage,
+        lang,
         theme: extras.value.syntax,
       });
       return { lines: tokens, lang: resolved };

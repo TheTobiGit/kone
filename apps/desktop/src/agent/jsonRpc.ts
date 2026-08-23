@@ -23,6 +23,8 @@ type JsonRpcOutbound =
   | { jsonrpc: "2.0"; id: JsonRpcId; error: { code: number; message: string } };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the guard proves value is a non-null object, so treating it as a
+  // string-keyed record is sound; every property still reads back as unknown.
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
@@ -155,6 +157,8 @@ export class JsonRpcClient {
       return;
     }
     if ("id" in msg) {
+      // SAFETY: a JSON-RPC id is a number or string; a malformed id from a
+      // buggy child is only echoed back to match the pending call, never used.
       const id = msg.id as JsonRpcId;
       const pending = this.pending.get(id);
       if (!pending) return;
@@ -218,10 +222,16 @@ export class JsonRpcClient {
       this.pending.set(id, {
         resolve: (v) => {
           clearTimeout(timer);
+          // SAFETY: T is the caller's declared result shape; the JSON-RPC
+          // envelope cannot verify it, and a mismatch surfaces in the caller's
+          // own validation of the value.
           resolve(v as T);
         },
         reject: (e) => {
           clearTimeout(timer);
+          // SAFETY: every path that stores a rejection places an Error (or
+          // JsonRpcError) into `pending` — timeouts, process exit, and error
+          // responses all construct one.
           reject(e as Error);
         },
       });

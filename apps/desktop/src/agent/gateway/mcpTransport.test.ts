@@ -159,8 +159,9 @@ describe("gateway transport methods", () => {
   test("tools/list omits denied tools", async () => {
     const { transport, auth } = authed();
     const res = await post(transport, auth, { jsonrpc: "2.0", id: 3, method: "tools/list" });
-    const names = (res.body as any).result.tools.map((t: any) => t.name);
-    expect(names).toEqual(["echo", "write_only"]);
+    expect(res.body).toMatchObject({
+      result: { tools: [{ name: "echo" }, { name: "write_only" }] },
+    });
   });
 
   test("tools/call round-trips a result", async () => {
@@ -253,8 +254,7 @@ describe("gateway transport methods", () => {
       { jsonrpc: "2.0", id: 43, method: "ping" },
     ]);
     expect(res.status).toBe(200);
-    const ids = (res.body as any[]).map((r) => r.id);
-    expect(ids).toEqual([43]);
+    expect(res.body).toMatchObject([{ id: 43 }]);
   });
 
   test("batch returns an array response; single returns a single response", async () => {
@@ -264,7 +264,7 @@ describe("gateway transport methods", () => {
       { jsonrpc: "2.0", id: 2, method: "ping" },
     ]);
     expect(Array.isArray(batch.body)).toBe(true);
-    expect((batch.body as any[]).map((r) => r.id)).toEqual([1, 2]);
+    expect(batch.body).toMatchObject([{ id: 1 }, { id: 2 }]);
     const single = await post(transport, auth, { jsonrpc: "2.0", id: 3, method: "ping" });
     expect(Array.isArray(single.body)).toBe(false);
   });
@@ -283,8 +283,11 @@ describe("gateway transport methods", () => {
   test("invalid JSON-RPC message in a batch → error response for that slot", async () => {
     const { transport, auth } = authed();
     const res = await post(transport, auth, [{ jsonrpc: "2.0", id: 1, method: "ping" }, "junk"]);
-    expect((res.body as any[]).length).toBe(2);
-    expect((res.body as any[])[1].error.code).toBe(-32600);
+    if (!Array.isArray(res.body)) {
+      throw new Error("a batch request must answer with an array");
+    }
+    expect(res.body).toHaveLength(2);
+    expect(res.body[1]).toMatchObject({ error: { code: -32600 } });
   });
 });
 
@@ -427,7 +430,10 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
     release();
     const callRes = await callP;
     expect(callRes.status).toBe(200);
-    expect((callRes.body as any).result.content[0].text).toBe("landed");
+    expect(callRes.body).toMatchObject({
+      id: 42,
+      result: { content: [{ type: "text", text: "landed" }] },
+    });
     expect(sawAbort).toBe(false);
   });
 

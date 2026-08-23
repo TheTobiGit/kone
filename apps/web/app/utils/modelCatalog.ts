@@ -348,6 +348,7 @@ const MODEL_TSV_HEADER_CELLS = new Set([
  *    never emitted as garbage entries. */
 export function parseModelTsvRows(text: string): ParsedModelRow[] {
   const rows: ParsedModelRow[] = [];
+  // eslint-disable-next-line no-control-regex
   const lines = String(text ?? "").replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/);
   for (const raw of lines) {
     const line = raw.trim();

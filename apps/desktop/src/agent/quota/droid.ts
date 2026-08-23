@@ -134,31 +134,65 @@ export async function detectDroidCredential(): Promise<boolean> {
 
 // ── decoding ─────────────────────────────────────────────────────────────────
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+/** One decoded Factory API document. getJson parses bytes once at its
+ *  boundary; everything downstream branches on these domain values, so no
+ *  step has to interrogate a representation. */
+type FactoryApiValue =
+  | string
+  | number
+  | boolean
+  | null
+  | FactoryApiValue[]
+  | { [key: string]: FactoryApiValue };
+
+type FactoryApiRecord = { [key: string]: FactoryApiValue };
+
+/** Decoded JSON numbers are always finite, so finiteness separates the number
+ *  variant from every other JSON variant without inspecting representations. */
+function isApiNumber(value: FactoryApiValue | undefined): value is number {
+  return Number.isFinite(value);
 }
 
-function readNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function isApiRecord(value: FactoryApiValue | undefined): value is FactoryApiRecord {
+  return value instanceof Object && !Array.isArray(value);
 }
 
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+function apiRecord(value: FactoryApiValue | undefined): FactoryApiRecord | undefined {
+  return isApiRecord(value) ? value : undefined;
+}
+
+/** Text is the one JSON variant left after every other variant is excluded by
+ *  identity — booleans by value, numbers by finiteness, composites by their
+ *  constructors. */
+function apiText(value: FactoryApiValue | undefined): string | null {
+  if (value === undefined || value === null || value === true || value === false) return null;
+  if (Array.isArray(value) || value instanceof Object || isApiNumber(value)) return null;
+  return value;
+}
+
+function readNumber(value: FactoryApiValue | undefined): number | null {
+  return isApiNumber(value) ? value : null;
+}
+
+function readString(value: FactoryApiValue | undefined): string | null {
+  const text = apiText(value);
+  return text !== null && text.trim().length > 0 ? text.trim() : null;
 }
 
 /** `windowEnd` arrives as epoch seconds, epoch milliseconds, or an ISO string. */
-function parseWindowEnd(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
+function parseWindowEnd(value: FactoryApiValue | undefined): number | null {
+  if (isApiNumber(value)) {
     const ms = value > 1e12 ? value : value * 1000;
     return ms > 0 ? ms : null;
   }
-  if (typeof value === "string") {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric) && value.trim() !== "") {
+  const text = apiText(value);
+  if (text !== null) {
+    const numeric = Number(text);
+    if (Number.isFinite(numeric) && text.trim() !== "") {
       const ms = numeric > 1e12 ? numeric : numeric * 1000;
       return ms > 0 ? ms : null;
     }
-    const parsed = Date.parse(value);
+    const parsed = Date.parse(text);
     return Number.isNaN(parsed) ? null : parsed;
   }
   return null;
@@ -171,8 +205,13 @@ function windowState(frac: number, resetsAt: string | null): QuotaWindowState {
 /** One pool window → a kone meter. Factory can leave stale values after a
  *  short rolling window expires; a window whose reset has passed with no
  *  seconds remaining reads as reset (0%), matching the web UI. */
-export function billingWindowOf(id: string, label: string, raw: unknown, now: number): QuotaWindow | null {
-  const window = asRecord(raw);
+export function billingWindowOf(
+  id: string,
+  label: string,
+  raw: FactoryApiValue | undefined,
+  now: number,
+): QuotaWindow | null {
+  const window = apiRecord(raw);
   if (!window) return null;
   const usedPercent = readNumber(window.usedPercent);
   const secondsRemaining = readNumber(window.secondsRemaining);
@@ -206,16 +245,16 @@ export function billingWindowOf(id: string, label: string, raw: unknown, now: nu
 /** The six meters the billing-limits payload can report: the standard pool
  *  plus — only when it carries real data — the `core` pool, with the weekly
  *  window as primary. */
-export function decodeBillingLimits(payload: unknown, now: number): QuotaWindow[] {
-  const root = asRecord(payload);
+export function decodeBillingLimits(payload: FactoryApiValue | undefined, now: number): QuotaWindow[] {
+  const root = apiRecord(payload);
   if (!root) return [];
-  const limits = asRecord(root.limits);
+  const limits = apiRecord(root.limits);
   if (!limits) return [];
-  const standard = asRecord(limits.standard);
+  const standard = apiRecord(limits.standard);
   if (!standard) return [];
 
   const windows: QuotaWindow[] = [];
-  const push = (id: string, label: string, raw: unknown) => {
+  const push = (id: string, label: string, raw: FactoryApiValue | undefined) => {
     const window = billingWindowOf(id, label, raw, now);
     if (window) windows.push(window);
   };
@@ -223,9 +262,9 @@ export function decodeBillingLimits(payload: unknown, now: number): QuotaWindow[
   push("droid-weekly", "Weekly", standard.weekly);
   push("droid-monthly", "Monthly", standard.monthly);
 
-  const core = asRecord(limits.core);
+  const core = apiRecord(limits.core);
   if (core && ["fiveHour", "weekly", "monthly"].some((name) => {
-    const raw = asRecord(core[name]);
+    const raw = apiRecord(core[name]);
     if (!raw) return false;
     return raw.usedPercent !== undefined || raw.windowEnd !== undefined || raw.secondsRemaining !== undefined;
   })) {
@@ -240,15 +279,15 @@ export function decodeBillingLimits(payload: unknown, now: number): QuotaWindow[
  *  allowance (or an org total). `usedRatio` (0..1) is preferred when present;
  *  otherwise tokens/allowance. An allowance past a trillion is unlimited —
  *  kone draws no meter there rather than inventing a percentage. */
-export function decodeLegacyUsage(payload: unknown, now: number): QuotaWindow[] {
-  const root = asRecord(payload);
-  const usage = asRecord(root?.usage);
+export function decodeLegacyUsage(payload: FactoryApiValue | undefined, now: number): QuotaWindow[] {
+  const root = apiRecord(payload);
+  const usage = apiRecord(root?.usage);
   if (!usage) return [];
   const periodEndMs = parseWindowEnd(usage.endDate);
 
   const windows: QuotaWindow[] = [];
-  const push = (id: string, label: string, raw: unknown) => {
-    const bucket = asRecord(raw);
+  const push = (id: string, label: string, raw: FactoryApiValue | undefined) => {
+    const bucket = apiRecord(raw);
     if (!bucket) return;
     const usedRatio = readNumber(bucket.usedRatio);
     const used = readNumber(bucket.userTokens) ?? readNumber(bucket.orgTotalTokensUsed) ?? null;
@@ -287,12 +326,12 @@ export function decodeLegacyUsage(payload: unknown, now: number): QuotaWindow[] 
 
 /** Plan label from the auth payload: Factory tier + plan name, with the
  *  overage preference appended when the account declares one. */
-export function planLabelFromAuth(body: unknown): string | null {
-  const root = asRecord(body);
-  const organization = asRecord(root?.organization);
-  const subscription = asRecord(organization?.subscription);
-  const orb = asRecord(subscription?.orbSubscription);
-  const plan = asRecord(orb?.plan);
+export function planLabelFromAuth(body: FactoryApiValue | undefined): string | null {
+  const root = apiRecord(body);
+  const organization = apiRecord(root?.organization);
+  const subscription = apiRecord(organization?.subscription);
+  const orb = apiRecord(subscription?.orbSubscription);
+  const plan = apiRecord(orb?.plan);
   const parts: string[] = [];
   const tier = readString(subscription?.factoryTier);
   if (tier) parts.push(`Factory ${tier.charAt(0)!.toUpperCase()}${tier.slice(1)}`);
@@ -302,9 +341,9 @@ export function planLabelFromAuth(body: unknown): string | null {
   return parts.join(" · ");
 }
 
-function userIdFromAuth(body: unknown): string | null {
-  const root = asRecord(body);
-  return readString(asRecord(root?.userProfile)?.id);
+function userIdFromAuth(body: FactoryApiValue | undefined): string | null {
+  const root = apiRecord(body);
+  return readString(apiRecord(root?.userProfile)?.id);
 }
 
 // ── the provider surface ─────────────────────────────────────────────────────
@@ -326,15 +365,17 @@ async function getJson(
   url: string,
   key: string,
   signal: AbortSignal,
-): Promise<{ status: number; body: unknown; retryAfterSeconds?: number }> {
+): Promise<{ status: number; body: FactoryApiValue | null; retryAfterSeconds?: number }> {
   const response = await deps.fetch(url, {
     method: "GET",
     signal,
     headers: { ...WEB_APP_HEADERS, Authorization: `Bearer ${key}` },
   });
-  let body: unknown = null;
+  let body: FactoryApiValue | null = null;
   try {
-    body = (await response.json()) as unknown;
+    // SAFETY: the HTTP layer hands back arbitrary JSON; every consumer
+    // re-validates fields through the decoders above before use.
+    body = (await response.json()) as FactoryApiValue;
   } catch {
     body = null;
   }
@@ -355,6 +396,8 @@ export type DroidQuotaResult = { report: QuotaProviderReport; retryAfterSeconds?
 export async function fetchDroidQuota(
   options: { signal?: AbortSignal; deps?: Partial<DroidDeps> } = {},
 ): Promise<DroidQuotaResult> {
+  // SAFETY: Partial<DroidDeps> only omits optional hooks; the spread always
+  // leaves the required defaults in place.
   const deps = { ...defaultDeps(), ...options.deps } as DroidDeps;
   const signal = quotaRequestSignal(options.signal);
   try {
@@ -393,7 +436,7 @@ export async function fetchDroidQuota(
     // endpoint.
     let windows: QuotaWindow[] | null = null;
     const billing = await getJson(deps, `${API_BASE}/api/billing/limits`, key, signal);
-    if (billing.status === 200 && asRecord(billing.body)?.usesTokenRateLimitsBilling === true) {
+    if (billing.status === 200 && apiRecord(billing.body)?.usesTokenRateLimitsBilling === true) {
       windows = decodeBillingLimits(billing.body, deps.now());
     }
     if (windows === null || windows.length === 0) {

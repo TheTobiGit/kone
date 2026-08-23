@@ -96,6 +96,8 @@ export function usageReportFromStore(
     }
 
     const promptsArgs = [...projectArgs, ...providerArgs, ...(startMs !== null ? [startMs] : [])];
+    // SAFETY: the SELECT aliases its two columns to exactly these names,
+    // and COUNT(*) never returns null.
     const promptsRow = db
       .prepare(
         `SELECT COUNT(*) AS prompts, COUNT(DISTINCT b.thread_id) AS threads
@@ -106,6 +108,8 @@ export function usageReportFromStore(
       .get(...promptsArgs) as { prompts: number; threads: number };
 
     const usageArgs = [...projectArgs, ...providerArgs, ...(startMs !== null ? [startMs] : [])];
+    // SAFETY: every selected column is aliased to the matching field of this
+    // row type; SUM/COUNT are non-null and COALESCEd to 0.
     const rawUsageRows = db
       .prepare(
         `SELECT COALESCE(t.model, '') AS model, t.provider AS provider, t.project_path AS project_path,
@@ -134,6 +138,8 @@ export function usageReportFromStore(
       ),
     }));
 
+    // SAFETY: every selected column is aliased to the matching field of this
+    // row type; strftime yields the date string, SUM is COALESCEd to 0.
     const rawDayRows = db
       .prepare(
         `SELECT strftime('%Y-%m-%d', u.at / 1000, 'unixepoch', 'localtime') AS date,
@@ -163,6 +169,8 @@ export function usageReportFromStore(
       ),
     }));
 
+    // SAFETY: the SELECT aliases its two columns to exactly these names;
+    // strftime yields the date string and COUNT(*) is non-null.
     const promptsByDayRows = db
       .prepare(
         `SELECT strftime('%Y-%m-%d', b.at / 1000, 'unixepoch', 'localtime') AS date,

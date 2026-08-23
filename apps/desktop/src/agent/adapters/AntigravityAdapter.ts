@@ -157,6 +157,7 @@ function trim(value: string | null | undefined): string | undefined {
 function resumeConversationId(value: unknown): string | undefined {
   if (typeof value === "string") return trim(value);
   if (!value || typeof value !== "object") return undefined;
+  // SAFETY: the typeof-object/null checks above are the narrowing itself.
   const record = value as Record<string, unknown>;
   for (const key of ["conversationId", "providerThreadId", "id"]) {
     if (typeof record[key] === "string" && record[key].trim()) return record[key].trim();
@@ -207,6 +208,7 @@ function effortLabel(value: string): string {
 export function parseAntigravityCliModelLabel(
   value: string,
 ): { model: string; effort?: string } | null {
+  // eslint-disable-next-line no-control-regex
   const stripped = value.replace(/\x1b\[[0-9;]*m/g, "").trim();
   if (!stripped) return null;
 
@@ -237,8 +239,12 @@ export function parseAntigravityModelLines(output: string): ModelDescriptor[] {
     groups.set(parsed.model, efforts);
   }
   return [...groups.entries()].map(([model, discoveredEfforts]) => {
+    // SAFETY: indexOf returns -1 for efforts missing from EFFORT_ORDER, and the
+    // comparison below handles that; the casts only name the element type.
     const efforts = discoveredEfforts.toSorted((left, right) => {
+      // SAFETY: indexOf returns -1 for efforts missing from EFFORT_ORDER; the comparison below handles that.
       const leftIndex = EFFORT_ORDER.indexOf(left as (typeof EFFORT_ORDER)[number]);
+      // SAFETY: indexOf returns -1 for efforts missing from EFFORT_ORDER; the comparison below handles that.
       const rightIndex = EFFORT_ORDER.indexOf(right as (typeof EFFORT_ORDER)[number]);
       return (
         (leftIndex < 0 ? EFFORT_ORDER.length : leftIndex) -
@@ -1051,6 +1057,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     session.processedTranscriptPath = session.transcriptPath;
     const steps = batch.lines.flatMap((line) => {
       try {
+        // SAFETY: JSON.parse yields unknown; consumers probe fields before use.
         return [JSON.parse(line) as TranscriptStep];
       } catch {
         return [];
@@ -1136,6 +1143,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       const eventName = line.slice(0, tab);
       let payload: Record<string, unknown>;
       try {
+        // SAFETY: JSON.parse yields unknown; the field probes below validate before use.
         payload = JSON.parse(line.slice(tab + 1)) as Record<string, unknown>;
       } catch {
         continue;
@@ -1157,6 +1165,7 @@ export class AntigravityAdapter implements ProviderAdapter {
           ? payload.stepIdx
           : undefined;
       if (eventName === "pre-tool" && stepIndex !== undefined && session.activeTurnId) {
+        // SAFETY: the typeof-object check in this ternary is the narrowing itself.
         const toolCall =
           payload.toolCall && typeof payload.toolCall === "object"
             ? (payload.toolCall as Record<string, unknown>)

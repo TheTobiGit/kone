@@ -29,6 +29,7 @@ mock.module("./cursorDashboardUsage.js", () => ({
   clearCursorDashboardCache: () => {},
 }));
 
+import type { ConversationStore } from "../ConversationStore.js";
 import type { StoreUsageReport } from "./storeUsage.js";
 
 const EMPTY: StoreUsageReport = {
@@ -40,6 +41,14 @@ const EMPTY: StoreUsageReport = {
 
 type CapturedFilter = { excludeProviders: string[]; onlyProviders?: readonly string[] };
 
+function stubStore(
+  readStoreUsageReport: (options: CapturedFilter) => StoreUsageReport,
+): ConversationStore {
+  // SAFETY: buildAgentUsageReport's store surface reduces to this one method
+  // for these tests; every filter decision it makes is captured and asserted.
+  return { readStoreUsageReport } as never;
+}
+
 describe("buildAgentUsageReport store-provider filter", () => {
   afterEach(() => {
     mock.restore();
@@ -48,14 +57,12 @@ describe("buildAgentUsageReport store-provider filter", () => {
   test("project-scoped reports keep OpenCode in the store slice", async () => {
     const { buildAgentUsageReport } = await import("./buildUsageReport.js");
     let captured: CapturedFilter | undefined;
-    const store = {
-      readStoreUsageReport: (opts: CapturedFilter) => {
-        captured = opts;
-        return EMPTY;
-      },
-    };
+    const store = stubStore((opts) => {
+      captured = opts;
+      return EMPTY;
+    });
 
-    await buildAgentUsageReport(store as never, { range: "1d", projectPath: "/some/project", forceRefresh: true });
+    await buildAgentUsageReport(store, { range: "1d", projectPath: "/some/project", forceRefresh: true });
 
     expect(captured).toBeDefined();
     // OpenCode emits per-turn usage that is recorded against the thread's
@@ -68,14 +75,12 @@ describe("buildAgentUsageReport store-provider filter", () => {
   test("global reports still exclude OpenCode (it comes from the transcript scan)", async () => {
     const { buildAgentUsageReport } = await import("./buildUsageReport.js");
     let captured: CapturedFilter | undefined;
-    const store = {
-      readStoreUsageReport: (opts: CapturedFilter) => {
-        captured = opts;
-        return EMPTY;
-      },
-    };
+    const store = stubStore((opts) => {
+      captured = opts;
+      return EMPTY;
+    });
 
-    await buildAgentUsageReport(store as never, { range: "1d", projectPath: null, forceRefresh: true });
+    await buildAgentUsageReport(store, { range: "1d", projectPath: null, forceRefresh: true });
 
     expect(captured).toBeDefined();
     expect(captured!.excludeProviders).toContain("opencode");
@@ -93,14 +98,12 @@ describe("buildAgentUsageReport store-provider filter", () => {
     const { buildAgentUsageReport: build2 } = await import("./buildUsageReport.js");
 
     let captured: CapturedFilter | undefined;
-    const store = {
-      readStoreUsageReport: (opts: CapturedFilter) => {
-        captured = opts;
-        return EMPTY;
-      },
-    };
+    const store = stubStore((opts) => {
+      captured = opts;
+      return EMPTY;
+    });
 
-    await build2(store as never, { range: "1d", projectPath: null, forceRefresh: true });
+    await build2(store, { range: "1d", projectPath: null, forceRefresh: true });
 
     expect(captured).toBeDefined();
     // Cursor is no longer excluded, and it is the only store provider asked for.

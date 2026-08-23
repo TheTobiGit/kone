@@ -294,6 +294,11 @@ function isMac(): boolean {
 const MOD_ORDER = ["mod", "ctrl", "alt", "shift"] as const;
 type ModToken = (typeof MOD_ORDER)[number];
 
+function isModToken(s: string): s is ModToken {
+  const order: readonly string[] = MOD_ORDER;
+  return order.includes(s);
+}
+
 // Translate a KeyboardEvent's modifier state into the binding tokens it should
 // contribute. `mod` is reported when metaKey is held on mac, or ctrlKey on
 // non-mac (so the default ⌘, also works as Ctrl+, on win/linux without the user
@@ -318,8 +323,8 @@ function modsFromBinding(binding: string): ModToken[] {
   const parts = binding.split("+");
   const out: ModToken[] = [];
   for (const p of parts.slice(0, -1)) {
-    if ((MOD_ORDER as readonly string[]).includes(p)) {
-      out.push(p as ModToken);
+    if (isModToken(p)) {
+      out.push(p);
     }
   }
   return out;
@@ -367,8 +372,7 @@ function normalizeStored(binding: string): string {
   const key = last.toLowerCase();
   const mods = parts
     .slice(0, -1)
-    .filter((p) => (MOD_ORDER as readonly string[]).includes(p))
-    .map((p) => p as ModToken)
+    .filter(isModToken)
     .sort(byModOrder);
   return [...mods, key].join("+");
 }
@@ -408,7 +412,7 @@ export function matchesBinding(e: KeyboardEvent, binding: string): boolean {
 function bindingFor(id: string): string {
   const action = ACTIONS_BY_ID.get(id);
   if (!action) return "";
-  const override = (overrides.value as Record<string, string | undefined>)[id];
+  const override = overrides.value[id];
   if (override && typeof override === "string") {
     return normalizeStored(override);
   }
@@ -542,13 +546,11 @@ export function useShortcuts() {
   });
 
   const hasOverrides = computed(
-    () => Object.keys(overrides.value as Record<string, string>).length > 0,
+    () => Object.keys(overrides.value).length > 0,
   );
 
-  // Cast helper so we can index a RemovableRef<Record<…>> without TS guessing the
-  // default branch and widening to `undefined` everywhere.
   function store(): Record<string, string> {
-    return overrides.value as Record<string, string>;
+    return overrides.value;
   }
 
   function isCustomized(id: string): boolean {

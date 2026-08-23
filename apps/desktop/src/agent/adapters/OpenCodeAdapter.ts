@@ -72,7 +72,10 @@ type PendingApproval = {
 
 const SLUG_LINE = /^(\S+\/\S+)\s*$/;
 
-function record(value: unknown): RecordLike | undefined { return value && typeof value === "object" ? value as RecordLike : undefined; }
+function record(value: unknown): RecordLike | undefined {
+  // SAFETY: the truthiness + typeof-object check in this ternary is the narrowing itself.
+  return value && typeof value === "object" ? value as RecordLike : undefined;
+}
 function responseData(value: any): any { return value?.data ?? value; }
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -94,6 +97,7 @@ export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
   const flush = () => {
     if (!slug) return;
     try {
+       // SAFETY: JSON.parse yields unknown; the field probes below validate before use.
        const model = JSON.parse(json.join("\n")) as RecordLike;
        const name = typeof model.name === "string" ? model.name.trim() : "";
        if (!name) return;
@@ -348,6 +352,7 @@ function toolStatus(status: string): RuntimeItemStatus { return status === "erro
 function detailForTool(state: RecordLike): string | undefined { return typeof state.output === "string" ? state.output : typeof state.error === "string" ? state.error : typeof state.title === "string" ? state.title : undefined; }
 
 function base(session: OpenCodeSession, source: RuntimeEvent["source"] = "opencode.sse.message"): Omit<RuntimeEvent, "type"> {
+  // SAFETY: the literal supplies every field Omit leaves required.
   return { threadId: session.threadId, provider: "opencode", at: Date.now(), source, refs: { conversationId: session.openCodeSessionId } } as Omit<RuntimeEvent, "type">;
 }
 
@@ -355,7 +360,10 @@ function makeClient(baseUrl: string): OpenCodeClient {
   const url = (route: string) => `${baseUrl.replace(/\/$/, "")}${route}`;
   return {
     async request(method, route, body, signal) {
-      const response = await fetch(url(route), { method, signal, headers: body === undefined ? undefined : { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+      // GET requests reject a body at the fetch level; attach payload keys only when one exists.
+      const init: RequestInit = { method, signal };
+      if (body !== undefined) Object.assign(init, { headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const response = await fetch(url(route), init);
       const text = await response.text(); let parsed: any; try { parsed = text ? JSON.parse(text) : undefined; } catch { parsed = text; }
       if (!response.ok) { const error = new Error(`OpenCode ${method} ${route} failed with ${response.status}`); Object.assign(error, { status: response.status, body: parsed }); throw error; }
       return parsed;
@@ -368,7 +376,14 @@ function makeClient(baseUrl: string): OpenCodeClient {
         while (true) {
           const next = await reader.read(); if (next.done) break; buffer += decoder.decode(next.value, { stream: true });
           const frames = buffer.split(/\n\n/); buffer = frames.pop() ?? "";
-          for (const frame of frames) { const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n"); if (data) { try { yield JSON.parse(data) as OpenCodeEvent; } catch { /* ignore malformed SSE */ } } }
+          // SAFETY: JSON.parse yields unknown and malformed SSE frames are skipped by the catch below.
+          for (const frame of frames) {
+            const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+            if (!data) continue;
+            // SAFETY: JSON.parse yields unknown; malformed SSE frames are skipped by the catch below.
+            const event = JSON.parse(data) as OpenCodeEvent;
+            yield event;
+          }
         }
       } finally { reader.releaseLock(); }
     },

@@ -49,6 +49,13 @@ function readStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  // SAFETY: the typeof-object/null/array checks on this line are the narrowing itself.
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 // A tool result is opaque JSON text; this unwraps it one level. What it holds is
 // the caller's to narrow — there is no single domain type at this layer.
 // eslint-disable-next-line anti-slop/no-unknown-returns
@@ -67,8 +74,8 @@ function parseToolResultValue(value: unknown): unknown {
     }
     return undefined;
   }
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
+  const record = asRecord(value);
+  if (!record) return undefined;
   if (record.type === "text" && typeof record.text === "string") {
     return parseToolResultValue(record.text);
   }
@@ -76,10 +83,7 @@ function parseToolResultValue(value: unknown): unknown {
 }
 
 function parseToolResultRecord(block: Record<string, unknown>): Record<string, unknown> | undefined {
-  const parsed = parseToolResultValue(block.content);
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : undefined;
+  return asRecord(parseToolResultValue(block.content));
 }
 
 function trackedTaskFromRecord(
@@ -131,9 +135,9 @@ function taskUpdateInput(
   result: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   if (input.status !== undefined) return input;
-  const change = result?.statusChange;
-  if (!change || typeof change !== "object" || Array.isArray(change)) return input;
-  const to = readTrackedTaskStatus((change as Record<string, unknown>).to);
+  const change = asRecord(result?.statusChange);
+  if (!change) return input;
+  const to = readTrackedTaskStatus(change.to);
   if (!to || to === "deleted") return input;
   return { ...input, status: to };
 }
@@ -164,11 +168,6 @@ export function isClaudeTaskTool(toolName: string | undefined): boolean {
   );
 }
 
-function structuredToolResult(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
-
 export function applyClaudeTaskToolResult(
   tasks: Map<string, ClaudeTrackedTask>,
   tool: ClaudeTaskToolCall,
@@ -183,15 +182,11 @@ export function applyClaudeTaskToolResult(
   // back as a JSON-encoded string. Run it through parseToolResultValue() so a
   // string payload is decoded before we interpret it — otherwise TaskCreate is
   // dropped and TaskUpdate misses statusChange.to, leaving the checklist stale.
-  const result =
-    structuredToolResult(parseToolResultValue(structuredResult)) ?? parseToolResultRecord(resultBlock);
+  const result = asRecord(parseToolResultValue(structuredResult)) ?? parseToolResultRecord(resultBlock);
 
   switch (toolName) {
     case "TaskCreate": {
-      const resultTask =
-        result?.task && typeof result.task === "object" && !Array.isArray(result.task)
-          ? (result.task as Record<string, unknown>)
-          : undefined;
+      const resultTask = asRecord(result?.task);
       if (!resultTask) return false;
       const id = readTaskId(resultTask);
       const subject = readTaskString(resultTask, "subject") ?? readTaskString(tool.input, "subject");
@@ -237,8 +232,8 @@ export function applyClaudeTaskToolResult(
       if (!result || !("task" in result)) return false;
       const requestedTaskId = readTaskId(tool.input);
       if (result.task === null) return requestedTaskId ? tasks.delete(requestedTaskId) : false;
-      if (typeof result.task !== "object" || Array.isArray(result.task)) return false;
-      const taskRecord = result.task as Record<string, unknown>;
+      const taskRecord = asRecord(result.task);
+      if (!taskRecord) return false;
       const taskId = readTaskId(taskRecord);
       const task = trackedTaskFromRecord(taskRecord, taskId ? tasks.get(taskId) : undefined);
       if (!task) return false;
@@ -250,8 +245,8 @@ export function applyClaudeTaskToolResult(
       if (!result || !Array.isArray(result.tasks)) return false;
       const snapshot = new Map<string, ClaudeTrackedTask>();
       for (const entry of result.tasks) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-        const record = entry as Record<string, unknown>;
+        const record = asRecord(entry);
+        if (!record) continue;
         const taskId = readTaskId(record);
         const task = trackedTaskFromRecord(record, taskId ? tasks.get(taskId) : undefined);
         if (task) snapshot.set(task.id, task);

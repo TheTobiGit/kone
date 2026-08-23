@@ -257,7 +257,8 @@ function onEditResize() {
 }
 
 async function openEdit(): Promise<void> {
-  editOpener = document.activeElement as HTMLElement | null;
+  const active = document.activeElement;
+  editOpener = active instanceof HTMLElement ? active : null;
   editing.value = true;
   await nextTick();
   anchorToDrawer();
@@ -290,7 +291,9 @@ function pickPhoto(): void {
   fileEl.value?.click();
 }
 async function onPhoto(e: Event): Promise<void> {
-  const file = (e.target as HTMLInputElement).files?.[0];
+  const input = e.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  const file = input.files?.[0];
   if (!file) return;
   // Compress on-device to a small square data URL — nothing leaves the machine.
   const url = URL.createObjectURL(file);
@@ -312,7 +315,7 @@ async function onPhoto(e: Event): Promise<void> {
     /* ignore a bad image */
   } finally {
     URL.revokeObjectURL(url);
-    (e.target as HTMLInputElement).value = "";
+    input.value = "";
   }
 }
 function removePhoto(): void {

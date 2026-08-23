@@ -49,7 +49,8 @@ export function useComposerMentions(deps: {
   function makeChipEl(path: string): HTMLElement {
     const host = document.createElement("div");
     render(h(MentionChip, { path }), host);
-    const chip = host.firstElementChild as HTMLElement | null;
+    const mounted = host.firstElementChild;
+    const chip = mounted instanceof HTMLElement ? mounted : null;
     if (!chip) {
       render(null, host);
       const span = document.createElement("span");
@@ -71,8 +72,8 @@ export function useComposerMentions(deps: {
 
   function serializeNode(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
-    if (node.nodeType !== Node.ELEMENT_NODE) return "";
-    const el = node as HTMLElement;
+    const el = node instanceof HTMLElement ? node : null;
+    if (!el) return "";
     if (el.dataset.mentionPath !== undefined) return formatFileMention(el.dataset.mentionPath);
     if (el.tagName === "BR") return "\n";
     let inner = "";
@@ -96,12 +97,12 @@ export function useComposerMentions(deps: {
 
   function readDomTrigger(): { trigger: FileMentionTrigger; dom: DomTrigger } | null {
     const root = field.value;
-    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    const sel = "window" in globalThis ? window.getSelection() : null;
     if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
     const range = sel.getRangeAt(0);
     const node = range.startContainer;
-    if (node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return null;
-    const textNode = node as Text;
+    if (!(node instanceof Text) || !root.contains(node)) return null;
+    const textNode = node;
     const trigger = detectFileMentionTrigger(textNode.data, range.startOffset);
     if (!trigger) return null;
     return { trigger, dom: { node: textNode, start: trigger.rangeStart, end: range.startOffset } };
@@ -140,7 +141,7 @@ export function useComposerMentions(deps: {
 
     let caretNode: Node;
     let caretOffset: number;
-    if (after.nodeType === Node.TEXT_NODE && (after as Text).data.startsWith(" ")) {
+    if (after.data.startsWith(" ")) {
       caretNode = after;
       caretOffset = 1;
     } else {

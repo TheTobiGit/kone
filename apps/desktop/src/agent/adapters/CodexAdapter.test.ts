@@ -33,6 +33,7 @@ async function loadRealCodexAdapter(): Promise<CodexAdapterHelpers> {
   const dir = mkdtempSync(path.join(tmpdir(), "kone-codex-adapter-real-"));
   const copy = path.join(dir, "CodexAdapter.ts");
   writeFileSync(copy, source);
+  // SAFETY: the copied module is CodexAdapter.ts itself, so its exports match CodexAdapterHelpers.
   return (await import(pathToFileURL(copy).href)) as CodexAdapterHelpers;
 }
 

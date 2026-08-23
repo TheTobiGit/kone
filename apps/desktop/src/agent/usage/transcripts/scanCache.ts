@@ -107,6 +107,13 @@ function isRecordArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
 }
 
+/** Every intern-table entry must be a string: a numeric entry would pass the
+ *  undefined guard below, land in a record's model, and crash the aggregate
+ *  at normalizeModelName. A corrupt table rejects the whole cache. */
+function isStringArray(value: readonly unknown[]): value is readonly string[] {
+  return value.every((value) => typeof value === "string");
+}
+
 /**
  * Rebuilds the cache from a parsed document.
  *
@@ -117,21 +124,20 @@ export function decodeScanCache(document: unknown): ScanCache {
   const cache: ScanCache = new Map();
   if (typeof document !== "object" || document === null) return cache;
 
+  // SAFETY: the guard above proved document is a non-null object, so reading
+  // its cache fields through this partial view is sound; the version and both
+  // intern tables are re-checked below and malformed files yield an empty map.
   const root = document as Partial<SerializedCache>;
   if (root.version !== USAGE_SCAN_CACHE_VERSION) return cache;
   if (!isRecordArray(root.models) || !isRecordArray(root.sessions)) return cache;
   if (typeof root.files !== "object" || root.files === null) return cache;
 
-  // The intern tables must be all strings: a numeric entry would pass the
-  // undefined guard below, land in a record's model, and crash the aggregate
-  // at normalizeModelName. A corrupt table rejects the whole cache.
-  if (!root.models.every((value) => typeof value === "string")) return cache;
-  if (!root.sessions.every((value) => typeof value === "string")) return cache;
-  const models = root.models as readonly string[];
-  const sessions = root.sessions as readonly string[];
+  if (!isStringArray(root.models) || !isStringArray(root.sessions)) return cache;
 
   for (const [path, raw] of Object.entries(root.files)) {
     if (typeof raw !== "object" || raw === null) continue;
+    // SAFETY: the guard above proved raw is a non-null object; its fields are
+    // read as optionals and each one is re-checked below before use.
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
     if (entry.p !== "claude" && entry.p !== "codex") continue;
@@ -148,6 +154,9 @@ export function decodeScanCache(document: unknown): ScanCache {
         corrupt = true;
         break;
       }
+      // SAFETY: the length check above proved row carries all ten positional
+      // fields, and every element is re-validated below before it reaches a
+      // record.
       const [
         timestampMs,
         modelIndex,
@@ -161,7 +170,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         reportedCostUsd,
       ] = row as SerializedRecord;
 
-      const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
+      const model = typeof modelIndex === "number" ? root.models[modelIndex] : undefined;
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
@@ -180,7 +189,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         provider,
         timestampMs,
         model,
-        sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
+        sessionId: (typeof sessionIndex === "number" ? root.sessions[sessionIndex] : undefined) ?? "",
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,

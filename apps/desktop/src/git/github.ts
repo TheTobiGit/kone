@@ -298,6 +298,7 @@ function isRepoViewAbsence(error: unknown): boolean {
  *  Every caller feeds this only freshly parsed gh CLI records and probes each
  *  field with typeof/=== before trusting it. */
 function jsonRecord(raw: unknown): Record<string, unknown> | null {
+  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
   return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : null;
 }
 

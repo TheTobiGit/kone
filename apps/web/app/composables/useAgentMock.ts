@@ -52,11 +52,12 @@ export function createMockTurnRunner(deps: {
     mockTurnId = null;
   }
 
-  function base(_type: string) {
+  function base() {
     return {
       threadId: threadId.value,
       provider: provider.value,
       at: Date.now(),
+      source: "kone.mock" as const,
     };
   }
 
@@ -66,13 +67,13 @@ export function createMockTurnRunner(deps: {
    *  renderer's own id back as userBlockId, which the real store can't. */
   function mockQueueFollowUp(blockId: string, dispatchMode: "queue" | "steer"): void {
     reduce({
-      ...base("turn.queued"),
+      ...base(),
       type: "turn.queued",
       queueId: uid(),
       userBlockId: blockId,
       dispatchMode,
       position: queuedTurnsRaw.value.length + 2,
-    } as RuntimeEvent);
+    });
     sessionState.value = "running";
   }
 
@@ -91,10 +92,10 @@ export function createMockTurnRunner(deps: {
     sessionState.value = "running";
     // The turn starts immediately but produces nothing yet — we simulate the
     // model connecting before the first item arrives.
-    reduce({ ...base("turn.started"), type: "turn.started", turnId } as RuntimeEvent);
+    reduce({ ...base(), type: "turn.started", turnId });
 
     const emit = (item: RuntimeItem, type: "item.started" | "item.updated" | "item.completed") =>
-      reduce({ ...base(type), type, turnId, item: { ...item } } as RuntimeEvent);
+      reduce({ ...base(), type, turnId, item: { ...item } });
     const wait = (ms: number) =>
       new Promise<void>((resolve) => {
         const t = setTimeout(() => {
@@ -204,7 +205,7 @@ export function createMockTurnRunner(deps: {
       if (opts.model) snapshot.model = opts.model;
       if (opts.effort) snapshot.effort = opts.effort;
       const emitRun = (type: "subagent.started" | "subagent.updated" | "subagent.completed") =>
-        reduce({ ...base(type), type, turnId, subagent: { ...snapshot } } as RuntimeEvent);
+        reduce({ ...base(), type, turnId, subagent: { ...snapshot } });
       // 2 — the run is recognized and nested onto its parent tool call.
       emitRun("subagent.started");
       await wait(320);
@@ -223,7 +224,7 @@ export function createMockTurnRunner(deps: {
           text: step.kind === "tool_call" && step.name ? `${step.name}: ${step.text}` : step.text,
         };
         if (step.name) child.name = step.name;
-        reduce({ ...base("item.started"), type: "item.started", turnId, item: { ...child }, subagentToolUseId: toolUseId } as RuntimeEvent);
+        reduce({ ...base(), type: "item.started", turnId, item: { ...child }, subagentToolUseId: toolUseId });
         if (step.kind === "tool_call") {
           toolUses += 1;
           snapshot.toolUses = toolUses;
@@ -233,7 +234,7 @@ export function createMockTurnRunner(deps: {
         await wait(step.ms);
         if (cancelled) return;
         child.status = "completed";
-        reduce({ ...base("item.completed"), type: "item.completed", turnId, item: { ...child }, subagentToolUseId: toolUseId } as RuntimeEvent);
+        reduce({ ...base(), type: "item.completed", turnId, item: { ...child }, subagentToolUseId: toolUseId });
       }
       if (cancelled) return;
       // 4 — the run settles with its report…
@@ -554,12 +555,12 @@ export function createMockTurnRunner(deps: {
       const nextQueued = queuedTurnsRaw.value[0];
       if (nextQueued) {
         reduce({
-          ...base("turn.promoted"),
+          ...base(),
           type: "turn.promoted",
           queueId: nextQueued.queueId,
-        } as RuntimeEvent);
+        });
       }
-      reduce({ ...base("turn.completed"), type: "turn.completed", turnId } as RuntimeEvent);
+      reduce({ ...base(), type: "turn.completed", turnId });
       sessionState.value = "ready";
       stopMock();
     })();

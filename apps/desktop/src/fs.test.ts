@@ -4,8 +4,6 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 
-import type { DirListing } from "./fs.js";
-
 // fs.ts imports electron bindings at module top, and Bun cannot load the
 // electron package outside Electron — so stub the package before importing the
 // module under test. `app`, `screen`, `ipcMain`, `nativeTheme`, and `shell`
@@ -87,9 +85,9 @@ describe("listDir", () => {
     // Electron process working directory to the renderer.
     const result = await listDir("").catch((err: unknown) => err);
     if (!(result instanceof Error)) {
-      expect((result as DirListing).path).not.toBe(path.resolve(process.cwd()));
+      throw new Error('listDir("") resolved instead of rejecting');
     }
-    expect(result).toBeInstanceOf(Error);
+    expect(result.message).not.toContain(path.resolve(process.cwd()));
   });
 
   test("rejects a whitespace-only path", async () => {
@@ -97,9 +95,9 @@ describe("listDir", () => {
   });
 
   test("rejects non-string inputs", async () => {
-    await expect(listDir(undefined as never)).rejects.toThrow(/Missing path/);
-    await expect(listDir(null as never)).rejects.toThrow(/Missing path/);
-    await expect(listDir(42 as never)).rejects.toThrow(/Missing path/);
+    await expect(listDir(undefined)).rejects.toThrow(/Missing path/);
+    await expect(listDir(null)).rejects.toThrow(/Missing path/);
+    await expect(listDir(42)).rejects.toThrow(/Missing path/);
   });
 
   test("rejects a relative path instead of resolving it against the cwd", async () => {
@@ -122,7 +120,7 @@ describe("listDir", () => {
 
   test("rejects when the caller's AbortSignal is already aborted", async () => {
     const signal = AbortSignal.abort();
-    await expect(listDir(tempDir, signal as never)).rejects.toMatchObject({
+    await expect(listDir(tempDir, signal)).rejects.toMatchObject({
       name: "AbortError",
     });
   });

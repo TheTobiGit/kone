@@ -36,6 +36,8 @@ function parseCredential(raw: string): ClaudeCredential | null {
   // JSON with stray indentation — strip that before parsing rather than
   // trusting it's always compact.
   const clean = raw.replace(/\r/g, "").replace(/\n[ \t]*/g, "");
+  // SAFETY: JSON.parse yields unknown; the accessToken guard below rejects a
+  // payload without Claude's oauth envelope.
   const oauth = (JSON.parse(clean) as { claudeAiOauth?: Record<string, unknown> }).claudeAiOauth;
   if (!oauth || typeof oauth.accessToken !== "string" || oauth.accessToken.length === 0) return null;
   return {
@@ -104,6 +106,7 @@ function windowState(frac: number, resetsAt: string | null): QuotaWindowState {
 
 function windowOf(id: string, label: string, value: unknown): QuotaWindow | null {
   if (!value || typeof value !== "object") return null;
+  // SAFETY: the object check above narrows value before field reads.
   const row = value as Record<string, unknown>;
   const frac = fraction(row.utilization);
   if (frac === null) return null;
@@ -135,6 +138,8 @@ function tierLabel(raw: string | undefined): string {
 /** Decodes the oauth/usage payload into a report. Exported for tests — the
  *  window/limits shape is worth locking down independent of the network. */
 export function decodeClaudeUsage(body: unknown, credential: ClaudeCredential): QuotaProviderReport {
+  // SAFETY: the ternary guard keeps only objects; a primitive body reads as
+  // an empty payload.
   const data = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const five = windowOf("five_hour", "5-hour", data.five_hour);
   const weekly = windowOf("weekly", "Weekly", data.seven_day);
@@ -144,6 +149,7 @@ export function decodeClaudeUsage(body: unknown, credential: ClaudeCredential): 
   if (Array.isArray(data.limits)) {
     for (const item of data.limits) {
       if (!item || typeof item !== "object") continue;
+      // SAFETY: the object check above narrows the array element before reads.
       const row = item as Record<string, any>;
       const display = row.scope?.model?.display_name;
       const frac = fraction(row.percent);
@@ -228,6 +234,8 @@ export async function fetchClaudeQuota(
     if (response.status === 429) {
       let hint: unknown;
       try {
+        // SAFETY: only the retry_after field is read; a non-JSON body is
+        // caught and treated as no hint.
         hint = (await (response.json() as Promise<Record<string, unknown>>)).retry_after;
       } catch {
         hint = undefined;

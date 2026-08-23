@@ -18,7 +18,7 @@ interface Move {
 function solveCycle(time: number, count: number, slotDur: number, rest: number) {
   const cyc = 2 * count * slotDur + rest;
   const tc = time % cyc;
-  const amount = new Array<number>(count).fill(0);
+  const amount = Array.from({ length: count }, () => 0);
   let active = -1;
   if (tc < 2 * count * slotDur) {
     const slot = Math.floor(tc / slotDur);
