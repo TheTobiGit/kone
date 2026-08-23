@@ -33,6 +33,7 @@ import type {
 } from "~/types/board";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
+import { rememberSideChatSource } from "~/composables/useSideChats";
 import type { ThreadSession, useAgent } from "~/composables/useAgent";
 import type { TerminalSession, useTerminal } from "~/composables/useTerminal";
 import type { ScratchpadSession, useScratchpad } from "~/composables/useScratchpad";
@@ -71,6 +72,8 @@ export interface OpenOptions {
   focus?: boolean;
   /** Restore/continue a specific stored thread rather than spawning a blank one. */
   threadId?: string;
+  /** The source thread id if this is a side chat. */
+  sideChatSource?: string;
 }
 
 export interface RestoreOptions {
@@ -275,6 +278,62 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     return e.anchor.kind === "thread" ? e.anchor.threadId : null;
   }
 
+  /** The source thread id a side-chat entry was forked from, or null if it is
+   *  a root thread / non-thread pane. */
+  function entrySideChatSource(e: PaneEntry): string | null {
+    if (e.kind !== "thread") return null;
+    const sk = sessionKeyById.value[e.id];
+    if (sk) {
+      const s = agent.sessions.value.find((x) => x.key === sk);
+      if (s?.isSideChat?.value) return s.sideChatSource?.value ?? null;
+    }
+    return e.anchor.kind === "thread" ? e.anchor.sideChatSource ?? null : null;
+  }
+
+  /** A contiguous run of strip positions, inclusive at both ends. */
+  type ClusterRange = { start: number; end: number };
+
+  /** The contiguous strip index range `[start, end]` of a thread and all its
+   *  attached side chats. If `index` points at a standalone pane, returns
+   *  `{ start: index, end: index }`. */
+  function clusterRangeFor(index: number, list: PaneEntry[]): ClusterRange {
+    if (index < 0 || index >= list.length) return { start: index, end: index };
+    const current = list[index]!;
+    if (current.kind !== "thread") return { start: index, end: index };
+
+    const currentSource = entrySideChatSource(current);
+    const rootId = currentSource ?? entryThreadId(current);
+    if (!rootId) return { start: index, end: index };
+
+    let start = index;
+    while (start > 0) {
+      const prev = list[start - 1]!;
+      if (prev.kind !== "thread") break;
+      const prevId = entryThreadId(prev);
+      const prevSource = entrySideChatSource(prev);
+      if (prevId === rootId || (prevSource && prevSource === rootId)) {
+        start -= 1;
+      } else {
+        break;
+      }
+    }
+
+    let end = index;
+    while (end < list.length - 1) {
+      const next = list[end + 1]!;
+      if (next.kind !== "thread") break;
+      const nextId = entryThreadId(next);
+      const nextSource = entrySideChatSource(next);
+      if (nextId === rootId || (nextSource && nextSource === rootId)) {
+        end += 1;
+      } else {
+        break;
+      }
+    }
+
+    return { start, end };
+  }
+
   // ── anchor sync ───────────────────────────────────────────────────────────
   // A pane's anchor is what lets a dormant pane re-attach to the right backend,
   // and what serialize() persists. A thread adopted blank carries `threadId:
@@ -362,7 +421,11 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
           continue;
         }
       }
-      queueAdopt("thread", s.key, { kind: "thread", threadId: tid });
+      const isSide = Boolean(s.isSideChat?.value);
+      const sideSrc = isSide ? s.sideChatSource?.value ?? null : null;
+      const anchor: PaneAnchor = { kind: "thread", threadId: tid };
+      if (sideSrc) anchor.sideChatSource = sideSrc;
+      queueAdopt("thread", s.key, anchor);
     }
     for (const s of terminal.sessions.value)
       if (!claimed.has(s.key))
@@ -558,7 +621,13 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
 
     const id = mintPaneId();
     const anchor = anchorFor(kind);
-    if (kind === "thread" && o.threadId && anchor.kind === "thread") anchor.threadId = o.threadId;
+    if (kind === "thread" && anchor.kind === "thread") {
+      if (o.threadId) anchor.threadId = o.threadId;
+      if (o.sideChatSource) {
+        anchor.sideChatSource = o.sideChatSource;
+        if (o.threadId) rememberSideChatSource(o.threadId, o.sideChatSource);
+      }
+    }
     const entry: PaneEntry = { id, kind, anchor, width: 0 };
 
     // The dedup checks above all read pre-mutation state — two concurrent opens
@@ -659,14 +728,56 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   }
 
   function move(id: PaneId, delta: number): void {
+    if (delta === 0) return;
     const list = [...entries.value];
     const i = list.findIndex((e) => e.id === id);
     if (i === -1) return;
-    const j = Math.min(list.length - 1, Math.max(0, i + delta));
-    if (i === j) return;
-    const [e] = list.splice(i, 1);
-    if (!e) return;
-    list.splice(j, 0, e);
+
+    const range = clusterRangeFor(i, list);
+    const clusterLen = range.end - range.start + 1;
+
+    if (clusterLen === 1) {
+      if (delta > 0 && i < list.length - 1) {
+        const nextRange = clusterRangeFor(i + 1, list);
+        const [e] = list.splice(i, 1);
+        if (e) list.splice(nextRange.end, 0, e);
+      } else if (delta < 0 && i > 0) {
+        const prevRange = clusterRangeFor(i - 1, list);
+        const [e] = list.splice(i, 1);
+        if (e) list.splice(prevRange.start, 0, e);
+      }
+      entries.value = list;
+      return;
+    }
+
+    const currentEntry = list[i]!;
+    const isMain = !entrySideChatSource(currentEntry);
+
+    // Moving a side chat within sibling side chats of the same cluster
+    if (!isMain && delta < 0 && i > range.start + 1) {
+      const [e] = list.splice(i, 1);
+      if (e) list.splice(i - 1, 0, e);
+      entries.value = list;
+      return;
+    }
+    if (!isMain && delta > 0 && i < range.end) {
+      const [e] = list.splice(i, 1);
+      if (e) list.splice(i + 1, 0, e);
+      entries.value = list;
+      return;
+    }
+
+    // Moving the whole cluster across outside panes
+    if (delta > 0 && range.end < list.length - 1) {
+      const nextRange = clusterRangeFor(range.end + 1, list);
+      const cluster = list.splice(range.start, clusterLen);
+      const insertAt = nextRange.end - clusterLen + 1;
+      list.splice(insertAt, 0, ...cluster);
+    } else if (delta < 0 && range.start > 0) {
+      const prevRange = clusterRangeFor(range.start - 1, list);
+      const cluster = list.splice(range.start, clusterLen);
+      list.splice(prevRange.start, 0, ...cluster);
+    }
     entries.value = list;
   }
 
@@ -743,8 +854,11 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   // falling back to the entry's stored anchor when it's dormant.
   function liveAnchor(p: Pane): PaneAnchor {
     switch (p.kind) {
-      case "thread":
-        return {
+      case "thread": {
+        const sideSrc =
+          p.session?.sideChatSource?.value ??
+          (p.entry.anchor.kind === "thread" ? p.entry.anchor.sideChatSource ?? null : null);
+        const anchor: PaneAnchor = {
           kind: "thread",
           // Attached → the live emptiness check (blank slates persist as null so
           // they don't resurrect); dormant → fall back to the stored anchor id.
@@ -757,6 +871,9 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
                 ? p.entry.anchor.threadId
                 : null,
         };
+        if (sideSrc) anchor.sideChatSource = sideSrc;
+        return anchor;
+      }
       case "terminal":
         // A terminal anchor is a slot marker only — the live terminalId lets a
         // dormant pane re-attach within this session, but persisting it would
@@ -778,7 +895,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   function anchorId(a: PaneAnchor): string {
     switch (a.kind) {
       case "thread":
-        return a.threadId ?? "";
+        return `${a.threadId ?? ""}${a.sideChatSource ? `:${a.sideChatSource}` : ""}`;
       case "terminal":
         return a.terminalId ?? "";
       case "scratchpad":
@@ -825,8 +942,25 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       if (!raw || typeof raw !== "object") continue;
       const kind = raw.kind;
       if (kind !== "thread" && kind !== "terminal" && kind !== "scratchpad") continue;
-      const anchor = raw.anchor;
-      if (!anchor || anchor.kind !== kind) continue;
+      const rawAnchor = raw.anchor;
+      if (!rawAnchor || rawAnchor.kind !== kind) continue;
+      // Branch on the ANCHOR's own discriminant, not on `kind`: the two are
+      // proven equal a line above, but `kind` is a variable, so comparing
+      // against it narrows nothing and every field read below is off the whole
+      // union. Reading rawAnchor.kind directly narrows it to the thread arm.
+      let anchor: PaneAnchor = rawAnchor;
+      if (rawAnchor.kind === "thread") {
+        anchor = {
+          kind: "thread",
+          threadId: typeof rawAnchor.threadId === "string" ? rawAnchor.threadId : null,
+        };
+        if (typeof rawAnchor.sideChatSource === "string") {
+          anchor.sideChatSource = rawAnchor.sideChatSource;
+        }
+      }
+      if (anchor.kind === "thread" && anchor.threadId && anchor.sideChatSource) {
+        rememberSideChatSource(anchor.threadId, anchor.sideChatSource);
+      }
       // A blank thread slot (no remembered id) is preserved at most once — it
       // restores as an empty column with a composer, not a phantom conversation.
       // Positioned after the phantom filter so an unknown id is dropped, not
@@ -942,18 +1076,24 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   function focusedIndex(): number {
     return focusedIndexIn();
   }
-  /** Where a new pane lands: explicit `at`, else right of `near`, else right of
-   *  the focused column (append when the board is bare or focus is stale). */
+  /** Where a new pane lands: explicit `at`, else right of `near` (after any
+   *  attached side chats), else right of the focused column (after its side
+   *  chats; append when the board is bare or focus is stale). */
   function insertIndexFor(
     o: { at?: number; near?: PaneId },
     list: PaneEntry[],
   ): number {
     if (typeof o.at === "number") return Math.min(Math.max(0, o.at), list.length);
+    let anchorIndex: number;
     if (o.near) {
-      const i = list.findIndex((e) => e.id === o.near);
-      return i === -1 ? list.length : i + 1;
+      anchorIndex = list.findIndex((e) => e.id === o.near);
+      if (anchorIndex === -1) return list.length;
+    } else {
+      anchorIndex = focusedIndexIn(list);
+      if (anchorIndex === -1) return list.length;
     }
-    return focusedIndexIn(list) + 1;
+    const range = clusterRangeFor(anchorIndex, list);
+    return range.end + 1;
   }
 
   return {

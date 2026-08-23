@@ -56,6 +56,7 @@ import {
 } from "./useAgentPrefetch";
 
 import { createMockTurnRunner } from "./useAgentMock";
+import { getSideChatSource, rememberSideChatSource } from "./useSideChats";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
@@ -99,6 +100,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const sideChat = ref(false);
   /** The thread this side chat was forked from (forkContext.sourceThreadId). */
   const sideChatSource = ref<string | null>(null);
+  /** Did the last openStored read come back empty-handed? The honest signal
+   *  behind the "this conversation didn't load" banner — an empty timeline is
+   *  NOT the same thing (a side chat's whole transcript is hidden by design,
+   *  so inferring failure from emptiness accuses every fresh side chat of a
+   *  load it never attempted). Only a read that found neither a page nor a
+   *  thread sets this. */
+  const transcriptLoadFailed = ref(false);
   const isSideChat = computed(() => sideChat.value);
   /** The timeline the conversation view renders: a side chat hides its
    *  fork-imported transcript (reference-only context — the model sees it via
@@ -567,6 +575,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  must move together — otherwise we'd hand a Codex thread id to Claude (or a
    *  Claude model id to Codex). */
   function adoptStoredThread(stored: {
+    /** The stored thread's own id — what a side-chat hint is filed under. */
+    threadId: string;
     provider?: ProviderKind;
     model?: string;
     /** Claude-only resume cursor (see SessionStartInput.resumeSessionAt). */
@@ -615,6 +625,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (stored.forkContext) {
       sideChat.value = true;
       sideChatSource.value = stored.forkContext.sourceThreadId;
+      rememberSideChatSource(stored.threadId, stored.forkContext.sourceThreadId);
     }
     // Restore the last context-window snapshot so a reopened thread shows its
     // meter filled straight away (sweeping in), instead of an empty ring until
@@ -916,6 +927,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // start() must not reload the project's *latest* thread over this one.
     rehydratedOnce = true;
     threadId.value = id;
+    const source = getSideChatSource(id);
+    if (source) {
+      sideChat.value = true;
+      sideChatSource.value = source;
+    }
   }
 
   /** Bring a specific stored thread on-screen and continue it: adopt the
@@ -931,6 +947,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  conversation with its full context. */
   async function openStored(id: string): Promise<void> {
     claimStoredId(id);
+    transcriptLoadFailed.value = false;
     const api = bridge();
     // Browser dev has no history bridge — just bring a (mock) session up so the
     // composer is live rather than leaving the view without a session.
@@ -974,6 +991,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // way: keeping it would have the first send hand `startSession` the id of a
     // thread the user just deleted, and ensureThread would write the row back.
     if (!stored && !page) {
+      transcriptLoadFailed.value = true;
       threadId.value = uid();
       deferStart();
       return;
@@ -1397,9 +1415,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     olderError.value = null;
     sessionState.value = "starting";
     // A restart is a deliberate re-birth: the new thread is a fresh
-    // conversation, never a side chat.
+    // conversation, never a side chat, and nothing was read to fail.
     sideChat.value = false;
     sideChatSource.value = null;
+    transcriptLoadFailed.value = false;
     // …and it has spawned nothing yet — the old thread's children belong to
     // the old thread, not this brand-new one.
     spawnedChildren.value = [];
@@ -1452,6 +1471,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     error,
     warning,
     tokenUsage,
+    // The stored-transcript read came back empty-handed — what the thread's
+    // "didn't load" banner is allowed to key off.
+    transcriptLoadFailed,
     // keyset pagination: the load-older affordance reads these; loadOlder
     // fetches the next strictly older page and prepends it.
     hasOlder,

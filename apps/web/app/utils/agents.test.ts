@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { ref } from "vue";
 
+import { rememberSideChatSource } from "~/composables/useSideChats";
 import {
   addAgentToProject,
   agentById,
@@ -275,6 +276,37 @@ describe("a thread reborn under a new id", () => {
     expect(() => carryThreadAgent(from, null)).not.toThrow();
     expect(() => carryThreadAgent(null, threadId())).not.toThrow();
     expect(() => carryThreadAgent(undefined, undefined)).not.toThrow();
+  });
+});
+
+describe("a side chat forked from a thread", () => {
+  test("inherits the named agent from the source thread", () => {
+    const main = threadId();
+    const side = threadId();
+    settleThreadAgent(main, KONE.id);
+    rememberSideChatSource(side, main);
+    expect(agentForThread(side)?.id).toBe(KONE.id);
+    expect(agentPersonaForThread(side)?.name).toBe(KONE.name);
+  });
+
+  test("carrying the thread agent explicitly also resolves the named agent", () => {
+    const main = threadId();
+    const side = threadId();
+    settleThreadAgent(main, KONE.id);
+    rememberSideChatSource(side, main);
+    carryThreadAgent(main, side);
+    expect(agentForThread(side)?.id).toBe(KONE.id);
+    expect(agentPersonaForThread(side)?.name).toBe(KONE.name);
+  });
+
+  test("inherits a guest binding when the source was a guest", () => {
+    const main = threadId();
+    const side = threadId();
+    settleThreadAgent(main, null);
+    rememberSideChatSource(side, main);
+    carryThreadAgent(main, side);
+    expect(agentForThread(side)).toBeUndefined();
+    expect(agentPersonaForThread(side)).toBeUndefined();
   });
 });
 

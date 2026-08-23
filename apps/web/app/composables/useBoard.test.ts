@@ -15,9 +15,15 @@ interface FakeThread {
   provider: Ref<string>;
   title: Ref<string>;
   error: Ref<unknown>;
+  isSideChat?: Ref<boolean>;
+  sideChatSource?: Ref<string | null>;
 }
 
-function makeThread(key: string, threadId: string | null = null): FakeThread {
+function makeThread(
+  key: string,
+  threadId: string | null = null,
+  sideChatSource: string | null = null,
+): FakeThread {
   return {
     key,
     threadId: ref(threadId),
@@ -26,6 +32,8 @@ function makeThread(key: string, threadId: string | null = null): FakeThread {
     provider: ref("codex"),
     title: ref(""),
     error: ref(null),
+    isSideChat: ref(Boolean(sideChatSource)),
+    sideChatSource: ref(sideChatSource),
   };
 }
 
@@ -864,5 +872,146 @@ describe("useBoard — one pane per thread, however it arrives", () => {
 
     expect(a).toBe(b);
     expect(board.entries.value.length).toBe(1);
+  });
+});
+
+describe("useBoard — side chat clustering and strip order", () => {
+  test("opening a new pane while focused on a main chat with side chats places the new pane after the side chats", async () => {
+    const { board, agentSessions } = harness();
+
+    // Set up main thread and two side chats
+    const mainThread = makeThread("main-session", "main-1");
+    mainThread.blocks.value = [{ role: "user" }];
+    const side1 = makeThread("side1-session", "side-1", "main-1");
+    side1.blocks.value = [{ role: "user" }];
+    const side2 = makeThread("side2-session", "side-2", "main-1");
+    side2.blocks.value = [{ role: "user" }];
+
+    agentSessions.value = [mainThread];
+    await settle();
+    const mainPaneId = board.entries.value[0]!.id;
+
+    // Open side chats near the main thread
+    agentSessions.value = [mainThread, side1];
+    const s1Id = await board.open("thread", { threadId: "side-1", near: mainPaneId, sideChatSource: "main-1" });
+    agentSessions.value = [mainThread, side1, side2];
+    const s2Id = await board.open("thread", { threadId: "side-2", near: mainPaneId, sideChatSource: "main-1" });
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id]);
+
+    // Focus main thread and open a terminal (e.g. keyboard shortcut)
+    board.focus(mainPaneId);
+    const termId = await board.open("terminal");
+    await settle();
+
+    // Terminal must land AFTER both side chats, not between main and side chats
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id, termId]);
+  });
+
+  test("opening a new pane while focused on a side chat places the new pane after all side chats of the cluster", async () => {
+    const { board, agentSessions } = harness();
+
+    const mainThread = makeThread("main-session", "main-1");
+    mainThread.blocks.value = [{ role: "user" }];
+    const side1 = makeThread("side1-session", "side-1", "main-1");
+    side1.blocks.value = [{ role: "user" }];
+    const side2 = makeThread("side2-session", "side-2", "main-1");
+    side2.blocks.value = [{ role: "user" }];
+
+    agentSessions.value = [mainThread, side1, side2];
+    const mainPaneId = await board.open("thread", { threadId: "main-1" });
+    const s1Id = await board.open("thread", { threadId: "side-1", near: mainPaneId, sideChatSource: "main-1" });
+    const s2Id = await board.open("thread", { threadId: "side-2", near: mainPaneId, sideChatSource: "main-1" });
+    await settle();
+
+    // Focus the first side chat and open a terminal
+    board.focus(s1Id);
+    const termId = await board.open("terminal");
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id, termId]);
+  });
+
+  test("opening a second side chat off the main thread places it after existing side chats", async () => {
+    const { board, agentSessions } = harness();
+
+    const mainThread = makeThread("main-session", "main-1");
+    mainThread.blocks.value = [{ role: "user" }];
+    const side1 = makeThread("side1-session", "side-1", "main-1");
+    side1.blocks.value = [{ role: "user" }];
+    const side2 = makeThread("side2-session", "side-2", "main-1");
+    side2.blocks.value = [{ role: "user" }];
+
+    agentSessions.value = [mainThread, side1, side2];
+    const mainPaneId = await board.open("thread", { threadId: "main-1" });
+    const s1Id = await board.open("thread", { threadId: "side-1", near: mainPaneId, sideChatSource: "main-1" });
+    const s2Id = await board.open("thread", { threadId: "side-2", near: mainPaneId, sideChatSource: "main-1" });
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id]);
+  });
+
+  test("moving a main thread moves its side chats with it as an atomic cluster", async () => {
+    const { board, agentSessions } = harness();
+
+    const leftTerm = await board.open("terminal");
+    const mainThread = makeThread("main-session", "main-1");
+    mainThread.blocks.value = [{ role: "user" }];
+    const side1 = makeThread("side1-session", "side-1", "main-1");
+    side1.blocks.value = [{ role: "user" }];
+
+    agentSessions.value = [mainThread, side1];
+    await settle();
+    const mainPaneId = board.entries.value.find(
+      (e) => e.anchor.kind === "thread" && e.anchor.threadId === "main-1",
+    )!.id;
+    const s1Id = board.entries.value.find(
+      (e) => e.anchor.kind === "thread" && e.anchor.threadId === "side-1",
+    )!.id;
+    board.focus(s1Id);
+    const rightTerm = await board.open("terminal");
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual([leftTerm, mainPaneId, s1Id, rightTerm]);
+
+    // Move main thread right: the cluster [mainPaneId, s1Id] moves past rightTerm
+    board.move(mainPaneId, 1);
+    expect(board.entries.value.map((e) => e.id)).toEqual([leftTerm, rightTerm, mainPaneId, s1Id]);
+
+    // Move main thread left: the cluster moves back past rightTerm
+    board.move(mainPaneId, -1);
+    expect(board.entries.value.map((e) => e.id)).toEqual([leftTerm, mainPaneId, s1Id, rightTerm]);
+
+    // Move leftTerm right: it jumps past the entire cluster [mainPaneId, s1Id]
+    board.move(leftTerm, 1);
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, leftTerm, rightTerm]);
+  });
+
+  test("reordering sibling side chats moves within the cluster", async () => {
+    const { board, agentSessions } = harness();
+
+    const mainThread = makeThread("main-session", "main-1");
+    mainThread.blocks.value = [{ role: "user" }];
+    const side1 = makeThread("side1-session", "side-1", "main-1");
+    side1.blocks.value = [{ role: "user" }];
+    const side2 = makeThread("side2-session", "side-2", "main-1");
+    side2.blocks.value = [{ role: "user" }];
+
+    agentSessions.value = [mainThread, side1, side2];
+    const mainPaneId = await board.open("thread", { threadId: "main-1" });
+    const s1Id = await board.open("thread", { threadId: "side-1", near: mainPaneId, sideChatSource: "main-1" });
+    const s2Id = await board.open("thread", { threadId: "side-2", near: mainPaneId, sideChatSource: "main-1" });
+    await settle();
+
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id]);
+
+    // Move s1 right: swaps s1 and s2
+    board.move(s1Id, 1);
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s2Id, s1Id]);
+
+    // Move s1 left: swaps back
+    board.move(s1Id, -1);
+    expect(board.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id]);
   });
 });

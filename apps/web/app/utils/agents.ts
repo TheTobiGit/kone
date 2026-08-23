@@ -54,6 +54,7 @@ import {
   threadBindings,
 } from "~/utils/agentStore";
 import { readBot, type AgentBot } from "~/utils/bot";
+import { resolveRootThreadId } from "~/composables/useSideChats";
 import { sampleFace } from "~/utils/sphereFace";
 
 /**
@@ -537,7 +538,19 @@ export function selectAgent(id: string | null): void {
  * work they never did.
  */
 export function agentForThread(threadId: string | null | undefined): Agent | undefined {
-  return agentOrDeparted(threadId ? threadBindings.value[threadId] : undefined);
+  if (!threadId) return undefined;
+  const bound = threadBindings.value[threadId];
+  if (bound !== undefined) {
+    return agentOrDeparted(bound);
+  }
+  const rootId = resolveRootThreadId(threadId);
+  if (rootId && rootId !== threadId) {
+    const rootBound = threadBindings.value[rootId];
+    if (rootBound !== undefined) {
+      return agentOrDeparted(rootBound);
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -389,6 +389,13 @@ export function createSidechatThread(input: CreateSideChatInput): CreateSideChat
     throw new Error(`Could not persist side chat thread: ${input.threadId}`);
   }
 
+  // A side chat carries whoever worked the source thread — a named agent or
+  // guest binding alike follows the fork, write-once.
+  const carried = store.carryThreadAgent(input.sourceThreadId, input.threadId);
+  if (!carried) {
+    store.bindThreadAgent(input.threadId, null);
+  }
+
   return {
     requestId: input.requestId,
     threadId: input.threadId,

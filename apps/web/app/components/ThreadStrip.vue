@@ -27,7 +27,7 @@ import {
 } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/board";
@@ -936,6 +936,35 @@ function canClose(): boolean {
 /** Is any blank thread column on the board? Drives the seam menu's greyed
  *  "New thread" row (L3) — board-wide, not only when it's the lone column. */
 const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)));
+
+function paneThreadId(p: Pane): string | null {
+  if (p.kind !== "thread") return null;
+  return p.session?.threadId.value ?? (p.entry.anchor.kind === "thread" ? p.entry.anchor.threadId : null);
+}
+
+function paneSideChatSource(p: Pane): string | null {
+  if (p.kind !== "thread") return null;
+  return (
+    p.session?.sideChatSource.value ??
+    (p.entry.anchor.kind === "thread" ? p.entry.anchor.sideChatSource ?? null : null)
+  );
+}
+
+function isLinkedToNext(i: number): boolean {
+  if (i < 0 || i >= props.panes.length - 1) return false;
+  const current = props.panes[i];
+  const next = props.panes[i + 1];
+  if (!current || !next) return false;
+  if (current.kind !== "thread" || next.kind !== "thread") return false;
+
+  const nextSource = paneSideChatSource(next);
+  if (!nextSource) return false;
+
+  const currentId = paneThreadId(current);
+  const currentSource = paneSideChatSource(current);
+
+  return nextSource === currentId || (Boolean(currentSource) && currentSource === nextSource);
+}
 </script>
 
 <template>
@@ -1157,6 +1186,7 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
                     :session-error="c.session.error.value"
                     :source-key="c.id"
                     :thread-id="anchoredThreadId(c)"
+                    :load-failed="c.session.transcriptLoadFailed.value"
                     :agent-seed="c.session.threadId.value"
                     :loading="c.session.sessionState.value === 'starting'"
                     :busy="c.session.busy.value"
@@ -1220,7 +1250,20 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
               </span>
             </section>
 
+            <template v-if="isLinkedToNext(i)">
+              <div
+                class="col-joint col-joint--linked"
+                aria-label="Linked to conversation"
+                title="Linked to conversation"
+                :inert="overview"
+              >
+                <span class="col-joint__link" aria-hidden="true">
+                  <HugeiconsIcon :icon="Link05Icon" :size="12" :stroke-width="2.2" />
+                </span>
+              </div>
+            </template>
             <button
+              v-else
               type="button"
               class="col-joint"
               aria-label="Insert column"
@@ -1692,6 +1735,21 @@ const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)))
 .col-joint[aria-expanded="true"] .col-joint__pill {
   background: color-mix(in srgb, var(--ink) 48%, transparent);
   transform: scaleY(1.08);
+}
+
+.col-joint--linked {
+  cursor: default;
+  pointer-events: none;
+  width: 14px;
+}
+.col-joint__link {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 18px;
+  color: color-mix(in srgb, var(--accent) 76%, var(--ink-soft));
+  background: transparent;
+  transition: color 0.25s ease;
 }
 
 .col__head {

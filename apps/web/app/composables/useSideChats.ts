@@ -3,6 +3,7 @@ import type {
   CreateSideChatResult,
   CreateSideChatTarget,
 } from "~/types/desktop";
+import { carryThreadAgent } from "~/utils/agents";
 
 // Side chat creation, renderer side (docs/side-chat-design.md §5). The desktop
 // IPC channel (`agent:create-side-chat`) is one-shot and idempotent on the
@@ -28,6 +29,43 @@ type SideChatFlight = {
 };
 
 const flights = new Map<string, SideChatFlight>();
+/** Side chats minted in THIS renderer session, so a pane can mark itself a
+ *  side chat synchronously — before openStored's transcript read comes back
+ *  with the thread's own forkContext, which is the durable answer and the only
+ *  one that survives a reload. A hint, never the source of truth.
+ *
+ *  Bounded: a fresh session's worth of side chats is a handful, and the oldest
+ *  entries are dropped rather than kept forever — a hint nobody has asked for
+ *  by now has already been superseded by the stored forkContext. */
+const SIDE_CHAT_SOURCE_HINTS = 64;
+const sideChatSourceByThreadId = new Map<string, string>();
+
+export function getSideChatSource(threadId: string): string | undefined {
+  return sideChatSourceByThreadId.get(threadId);
+}
+
+export function rememberSideChatSource(threadId: string, sourceThreadId: string): void {
+  sideChatSourceByThreadId.set(threadId, sourceThreadId);
+  while (sideChatSourceByThreadId.size > SIDE_CHAT_SOURCE_HINTS) {
+    const oldest = sideChatSourceByThreadId.keys().next();
+    if (oldest.done) break;
+    sideChatSourceByThreadId.delete(oldest.value);
+  }
+}
+
+/** Walk side chat sources back to the root conversation thread id. */
+export function resolveRootThreadId(threadId: string | null | undefined): string | null | undefined {
+  if (!threadId) return threadId;
+  let current = threadId;
+  const visited = new Set<string>();
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const parent = getSideChatSource(current);
+    if (!parent) break;
+    current = parent;
+  }
+  return current;
+}
 
 function uid(): string {
   return "randomUUID" in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2);
@@ -91,6 +129,8 @@ export async function createOrJoinSidechat(
 
   const threadId = uid();
   const requestId = uid();
+  rememberSideChatSource(threadId, sourceThreadId);
+  carryThreadAgent(sourceThreadId, threadId);
   const creation = (async (): Promise<{ threadId: string; status: "created" | "exists" }> => {
     if (!api) {
       // Browser dev has no bridge — the flight still resolves so the join
