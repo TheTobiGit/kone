@@ -38,7 +38,8 @@ import {
 import SubagentShell from "~/components/SubagentShell.vue";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
-import { createOrJoinSidechat } from "~/composables/useSideChats";
+import { createOrJoinSidechat, getSideChatSource } from "~/composables/useSideChats";
+import { agentForThread } from "~/utils/agents";
 
 const props = defineProps<{ project: Project }>();
 const emit = defineEmits<{ close: []; profile: [] }>();
@@ -280,7 +281,11 @@ function openSideChat(paneId: string): void {
         sendPrompt: () => {},
         onPromptError: () => {},
       });
-      const id = await board.open("thread", { threadId, near: sourcePaneId });
+      const id = await board.open("thread", {
+        threadId,
+        near: sourcePaneId,
+        sideChatSource: sourceThreadId,
+      });
       if (id) void composerRef.value?.wake();
     } catch (err) {
       // Creation is best-effort: a missing source thread or an idempotency
@@ -1239,6 +1244,20 @@ const pickedForProject = computed(() =>
   pickedAgent.value && isOnTeam(pickedAgent.value.id) ? pickedAgent.value : undefined,
 );
 
+const focusedIsSideChat = computed(() => {
+  const currentId = focusedThread.value?.threadId.value;
+  return Boolean(focusedThread.value?.isSideChat?.value || (currentId && getSideChatSource(currentId)));
+});
+
+const composerAgentId = computed(() => {
+  const currentId = focusedThread.value?.threadId.value;
+  if (!currentId) return pickedForProject.value?.id ?? null;
+  if (focusedIsSideChat.value) {
+    return agentForThread(currentId)?.id ?? null;
+  }
+  return pickedForProject.value?.id ?? null;
+});
+
 function onAgentPick(id: string | null) {
   selectAgent(id);
 }
@@ -1287,7 +1306,14 @@ async function onSend(text: string, files?: File[]) {
   // be recorded against it — this is the moment the thread acquires a face. Every
   // send runs this and only the first one lands: the record is write-once, so a
   // second message can't hand the thread to whoever is selected by then.
-  settleThreadAgent(focusedThread.value?.threadId.value, pickedForProject.value?.id ?? null);
+  const currentId = focusedThread.value?.threadId.value;
+  if (focusedIsSideChat.value && currentId) {
+    const sourceId = focusedThread.value?.sideChatSource?.value ?? getSideChatSource(currentId);
+    const sourceAgent = sourceId ? agentForThread(sourceId) : undefined;
+    settleThreadAgent(currentId, sourceAgent?.id ?? null);
+  } else {
+    settleThreadAgent(currentId, pickedForProject.value?.id ?? null);
+  }
   // Persist any picked files first — now that the thread is settled, uploads are
   // scoped to the right one. Each resolves to bytes-free metadata the turn
   // carries; a failed upload is dropped rather than sinking the whole send.
@@ -2217,15 +2243,15 @@ function onDiscardFile(path: string) {
           :project-path="project.path"
           :project-name="project.name"
           :branch="g.branch.value ?? undefined"
-          :branch-switchable="threadIsBlank"
+          :branch-switchable="threadIsBlank && !focusedIsSideChat"
           :thread-name="focusedThread?.title.value"
           :thread-id="focusedThread?.threadId.value"
           :busy="busy"
           :queued="queuedTurns"
           :picking="modelPickerOpen"
           :agents="agents"
-          :agent-id="pickedForProject?.id ?? null"
-          :agent-switchable="threadIsBlank"
+          :agent-id="composerAgentId"
+          :agent-switchable="threadIsBlank && !focusedIsSideChat"
           :models="modelOptions"
           :model-id="model"
           :reasoning="reasoning"

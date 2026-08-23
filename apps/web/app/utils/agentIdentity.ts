@@ -18,6 +18,7 @@
 import { createAvatar } from "@dicebear/core";
 import { thumbs } from "@dicebear/collection";
 import { agentForThread } from "~/utils/agents";
+import { resolveRootThreadId } from "~/composables/useSideChats";
 
 export interface AgentIdentity {
   /** The id this identity was derived from. */
@@ -130,20 +131,21 @@ export function agentIdentity(seed: string | null | undefined): AgentIdentity {
   }
 
   if (!seed) return ANONYMOUS;
-  const hit = cache.get(seed);
+  const effectiveSeed = resolveRootThreadId(seed) ?? seed;
+  const hit = cache.get(effectiveSeed);
   if (hit) return hit;
 
-  const h = hash(seed);
+  const h = hash(effectiveSeed);
   // The name and the body are taken from different ends of the hash so two
   // threads that happen to share a call sign don't also share a colour.
   const name = NAMES[h % NAMES.length]!;
   const body = BODIES[(h >>> 11) % BODIES.length]!;
 
   const identity: AgentIdentity = {
-    seed,
+    seed: effectiveSeed,
     name,
     svg: createAvatar(thumbs, {
-      seed,
+      seed: effectiveSeed,
       // The tile is the body's own hue washed out, so an agent stays one colour
       // and the face keeps a ground of its own on both schemes — a body alone
       // has nothing to sit on once the surface behind it goes near-black.
@@ -170,6 +172,6 @@ export function agentIdentity(seed: string | null | undefined): AgentIdentity {
     }).toString(),
   };
 
-  cache.set(seed, identity);
+  cache.set(effectiveSeed, identity);
   return identity;
 }

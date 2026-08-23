@@ -1,5 +1,6 @@
 import type { StoredThreadMeta } from "~/types/desktop";
 import { SESSION_BRAND, type SessionSummary } from "~/types/session";
+import { rememberSideChatSource } from "~/composables/useSideChats";
 
 // Shared helpers behind the Project Home and App Home "recent conversations"
 // lists (useRecentSessions / useAllRecentSessions). Both draw the same rows
@@ -24,6 +25,9 @@ export function summarizeSession(
   pinned: boolean,
   project?: SessionProjectTag,
 ): SessionSummary {
+  if (meta.forkContext?.sourceThreadId) {
+    rememberSideChatSource(meta.threadId, meta.forkContext.sourceThreadId);
+  }
   return {
     threadId: meta.threadId,
     title: meta.title?.trim() || "Untitled session",

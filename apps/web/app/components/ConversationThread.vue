@@ -61,6 +61,9 @@ const props = defineProps<{
    *  conversation. Its presence is what distinguishes "transcript didn't load"
    *  from a fresh blank thread (which carries no id yet). */
   threadId?: string | null;
+  /** The session's stored-transcript read came back empty-handed — the only
+   *  thing that puts the "didn't load" banner up. */
+  loadFailed?: boolean;
   /** The session's own durable thread id — what this thread's agent is derived
    *  from. Distinct from `threadId` above, which is deliberately absent on a
    *  blank column; the agent has to have a face before its first reply, so it
@@ -421,17 +424,18 @@ function saveEditUser(): void {
 }
 
 // ── a stored conversation whose transcript never arrived ─────────────────────
-// threadId present + no blocks + nothing loading/running = the open failed
-// (or the stored thread vanished mid-read). A fresh blank thread carries no
-// threadId, so it can never hit this state. Dismiss is presentational — the
-// banner comes back on the next reopen, which is honest: nothing was fixed.
+// The host tells us the read failed (`loadFailed`) — we never infer it from an
+// empty timeline. An empty timeline is a legitimate state: a side chat hides
+// its whole imported transcript, so emptiness would accuse every fresh one of
+// a failure that never happened. Dismiss is presentational — the banner comes
+// back on the next reopen, which is honest: nothing was fixed.
 const loadDismissed = ref(false);
 const failedLoad = computed(
   () =>
+    Boolean(props.loadFailed) &&
     Boolean(props.threadId) &&
     !props.loading &&
     !props.busy &&
-    props.blocks.length === 0 &&
     !props.sessionError &&
     !loadDismissed.value,
 );
@@ -580,9 +584,9 @@ function requestOlder(): void {
       </div>
     </div>
 
-    <!-- A stored conversation whose transcript never arrived — threadId known,
-         nothing loading, no blocks, no session error. Retry re-runs the open;
-         dismiss hides the card for this session. -->
+    <!-- A stored conversation whose transcript never arrived — the session's
+         read came back empty-handed, nothing loading, no session error. Retry
+         re-runs the open; dismiss hides the card for this session. -->
     <div v-if="failedLoad" class="thread__error" role="alert">
       <p class="body body--error">
         This conversation didn't load — its transcript may have been removed or

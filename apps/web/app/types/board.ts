@@ -27,7 +27,7 @@ export type PaneId = string;
 /** What a pane needs to re-attach to a backend after a restart. Kept as a
  *  discriminated union so a future kind can carry different restore data. */
 export type PaneAnchor =
-  | { kind: "thread"; threadId: string | null }
+  | { kind: "thread"; threadId: string | null; sideChatSource?: string | null }
   | { kind: "terminal"; terminalId: string | null }
   | { kind: "scratchpad"; scratchpadId: string | null };
 
