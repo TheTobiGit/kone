@@ -102,6 +102,10 @@ import type { TokenUsageSplits } from "../usage/report.js";
 //     Never gate behaviour on a version — the mode/config surface above is
 //     resolved from the live handshake instead.
 
+/** How this adapter's child is named in transport-level errors (JsonRpcClient
+ *  is shared with Codex and Cursor, so each names its own). */
+const DROID_RPC_LABEL = "droid exec";
+
 const DROID_INITIALIZE_PARAMS = {
   protocolVersion: 1,
   clientInfo: { name: "kone", title: "kone", version: "0.1.0" },
@@ -646,6 +650,7 @@ export class DroidAdapter implements ProviderAdapter {
     const rpc = new JsonRpcClient(this.binary, ["exec", "--output-format", "acp"], {
       cwd: homedir(),
       env,
+      label: DROID_RPC_LABEL,
     });
     const state: Pick<DroidSession, "configOptions"> = { configOptions: [] };
     rpc.onNotification("session/update", (params) => {
@@ -747,6 +752,7 @@ export class DroidAdapter implements ProviderAdapter {
     const rpc = new JsonRpcClient(this.binary, ["exec", "--output-format", "acp"], {
       cwd: input.cwd,
       env,
+      label: DROID_RPC_LABEL,
     });
     // The teardown gate's completion signal: resolves when this child's
     // process actually closes, so a replacement session can await the

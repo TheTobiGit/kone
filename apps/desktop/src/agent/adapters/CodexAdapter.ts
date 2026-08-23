@@ -83,6 +83,10 @@ import {
 
 const CODEX_BINARY = "codex";
 
+/** How this adapter's child is named in transport-level errors (JsonRpcClient
+ *  is shared with Cursor and Droid, so each names its own). */
+const CODEX_RPC_LABEL = "codex app-server";
+
 const CODEX_INITIALIZE_PARAMS = {
   clientInfo: { name: "kone", title: "kone", version: "0.1.0" },
   capabilities: { experimentalApi: true },
@@ -628,7 +632,7 @@ export class CodexAdapter implements ProviderAdapter {
    *  calls this once at app open). */
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildAgentEnv();
-    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: homedir(), env });
+    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: homedir(), env, label: CODEX_RPC_LABEL });
     try {
       await rpc.call("initialize", CODEX_INITIALIZE_PARAMS);
       rpc.notify("initialized");
@@ -653,7 +657,7 @@ export class CodexAdapter implements ProviderAdapter {
     if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
 
     const env = await buildAgentEnv();
-    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: input.cwd, env });
+    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: input.cwd, env, label: CODEX_RPC_LABEL });
     const mode: InteractionMode = input.mode ?? "accept-edits";
 
     const session: CodexSession = {
