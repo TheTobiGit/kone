@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import type { RuntimeEvent } from "./types.js";
+
 class DatabaseSyncShim {
   private readonly db: Database;
   constructor(filePath: string, options?: { readOnly?: boolean }) {
@@ -32,6 +34,7 @@ import {
 import {
   AntigravityAdapter,
   antigravityPromptCommandLineIssue,
+  antigravityTurnOutcome,
   buildKoneCaptureCommand,
   buildKoneHookConfig,
   hookScriptSource,
@@ -418,3 +421,187 @@ describe("Antigravity turn guards", () => {
 });
 
 
+
+/** A stand-in for `agy -p` that replays a scripted print-mode turn: it writes
+ *  the transcripts and the capture-hook stream a real turn produces, in two
+ *  stages, then waits to be torn down. Stage one ends with the agent going
+ *  quiet while its subagent is still working — the moment the adapter must not
+ *  mistake for the end of the turn. */
+function writeScriptedAntigravityCli(dir: string): string {
+  const scriptPath = path.join(dir, "agy-scripted.sh");
+  const script = `#!/bin/sh
+EV="$KONE_ANTIGRAVITY_EVENTS"
+# Not a turn (the plugin-install probe runs the same binary): nothing to replay.
+[ -n "$EV" ] || exit 0
+RUN=$(dirname "$EV")
+PARENT="$RUN/parent.jsonl"
+CHILD="$RUN/child.jsonl"
+
+cat > "$PARENT" <<'PARENT_EOF'
+{"step_index":0,"type":"USER_INPUT","content":"go"}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"Spawning a worker.","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":"[{\\"Role\\":\\"Test Worker\\",\\"TypeName\\":\\"research\\",\\"Prompt\\":\\"Check the tests.\\",\\"Model\\":\\"inherit\\"}]"}}]}
+PARENT_EOF
+cat >> "$PARENT" <<CREATED_EOF
+{"step_index":3,"type":"GENERIC","content":"Created the following subagents:\\n{\\n  \\"conversationId\\": \\"child-1\\",\\n  \\"logAbsoluteUri\\": \\"file://$CHILD\\"\\n}"}
+CREATED_EOF
+
+printf 'pre-invocation\t{"conversationId":"parent-1","transcriptPath":"%s"}\n' "$PARENT" >> "$EV"
+printf 'pre-tool\t{"conversationId":"parent-1","transcriptPath":"%s","toolCall":{"name":"invoke_subagent"},"stepIdx":3}\n' "$PARENT" >> "$EV"
+printf 'post-tool\t{"conversationId":"parent-1","stepIdx":3}\n' >> "$EV"
+printf 'stop\t{"conversationId":"parent-1","fullyIdle":false}\n' >> "$EV"
+
+sleep 1
+
+cat > "$CHILD" <<'CHILD_EOF'
+{"step_index":0,"type":"USER_INPUT","content":"Check the tests."}
+{"step_index":2,"type":"PLANNER_RESPONSE","content":"Listing the directory.","tool_calls":[{"name":"list_dir"}]}
+{"step_index":4,"type":"PLANNER_RESPONSE","content":"Done. Every test passes."}
+CHILD_EOF
+printf 'pre-invocation\t{"conversationId":"child-1"}\n' >> "$EV"
+printf 'pre-tool\t{"conversationId":"child-1","toolCall":{"name":"list_dir"},"stepIdx":3}\n' >> "$EV"
+printf 'post-tool\t{"conversationId":"child-1","stepIdx":3}\n' >> "$EV"
+printf 'stop\t{"conversationId":"child-1","fullyIdle":true}\n' >> "$EV"
+
+cat >> "$PARENT" <<'REPORT_EOF'
+{"step_index":5,"type":"SYSTEM_MESSAGE","content":"<SYSTEM_MESSAGE>\\n[Message] sender=child-1 priority=MESSAGE_PRIORITY_HIGH content=Every test passes.\\n</SYSTEM_MESSAGE>"}
+{"step_index":6,"type":"PLANNER_RESPONSE","content":"The worker reports that every test passes."}
+REPORT_EOF
+printf 'stop\t{"conversationId":"parent-1","fullyIdle":true}\n' >> "$EV"
+
+sleep 30
+`;
+  writeFileSync(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+async function waitForEvent(
+  events: RuntimeEvent[],
+  match: (event: RuntimeEvent) => boolean,
+  timeoutMs = 15_000,
+): Promise<RuntimeEvent> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const found = events.find(match);
+    if (found) return found;
+    if (Date.now() > deadline) throw new Error("timed out waiting for event");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+describe("Antigravity native subagents", () => {
+  test("surfaces a native subagent run without losing the parent conversation", async () => {
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-antigravity-sub-"));
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => writeScriptedAntigravityCli(runDir),
+    });
+    try {
+      await adapter.startSession({
+        threadId: "t-sub",
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId: "t-sub", input: "go" });
+
+      const completed = await waitForEvent(events, (event) => event.type === "turn.completed");
+
+      // The regression: a child's hook lines carry the child's conversation id,
+      // and adopting one as the session's would repoint the thread at the
+      // subagent — wrong resume id, wrong transcript.
+      expect(completed.type === "turn.completed" && completed.conversationId).toBe("parent-1");
+
+      const started = events.find((event) => event.type === "subagent.started");
+      expect(started?.type === "subagent.started" && started.subagent).toMatchObject({
+        toolUseId: "child-1",
+        agentType: "research",
+        description: "Test Worker",
+        prompt: "Check the tests.",
+        status: "running",
+        background: true,
+      });
+      // The run hangs off the tool call that spawned it.
+      const spawnItem = events.find(
+        (event) => event.type === "item.started" && event.item.text === "invoke_subagent",
+      );
+      expect(started?.type === "subagent.started" && started.subagent.parentItemId).toBe(
+        spawnItem?.type === "item.started" ? spawnItem.item.itemId : undefined,
+      );
+
+      // The child's own work, attributed to the child and not to the parent.
+      const childItems = events.filter(
+        (event) =>
+          (event.type === "item.started" || event.type === "item.completed") &&
+          event.subagentToolUseId === "child-1",
+      );
+      expect(childItems.some((event) => "item" in event && event.item.text === "list_dir")).toBe(true);
+      expect(
+        childItems.some((event) => "item" in event && event.item.text === "Done. Every test passes."),
+      ).toBe(true);
+
+      // Two settlements are normal: the child goes idle on the hook stream, and
+      // its report arrives in the parent transcript a beat later. The last one
+      // is the run as it ends up.
+      const settled = events.filter((event) => event.type === "subagent.completed").at(-1);
+      expect(settled?.type === "subagent.completed" && settled.subagent.status).toBe("completed");
+      expect(settled?.type === "subagent.completed" && settled.subagent.summary).toBe(
+        "Every test passes.",
+      );
+      expect(settled?.type === "subagent.completed" && settled.subagent.lastToolName).toBe("list_dir");
+
+      // The parent's own reply — written after the child reported, so it only
+      // exists here because the turn was still alive to see it.
+      expect(
+        events.some(
+          (event) =>
+            event.type === "item.completed" &&
+            event.subagentToolUseId === undefined &&
+            event.item.text === "The worker reports that every test passes.",
+        ),
+      ).toBe(true);
+    } finally {
+      await adapter.stopSession("t-sub");
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("antigravityTurnOutcome", () => {
+  const outcome = (over: Partial<Parameters<typeof antigravityTurnOutcome>[0]>) =>
+    antigravityTurnOutcome({
+      interrupted: false,
+      agentStopped: false,
+      code: 0,
+      signal: null,
+      ...over,
+    });
+
+  test("a clean exit completes the turn", () => {
+    expect(outcome({})).toBe("completed");
+  });
+
+  test("a non-zero exit with no Stop behind it fails the turn", () => {
+    expect(outcome({ code: 1 })).toBe("failed");
+    expect(outcome({ code: null })).toBe("failed");
+  });
+
+  test("a signalled exit with no Stop behind it reads as interrupted", () => {
+    expect(outcome({ code: null, signal: "SIGKILL" })).toBe("interrupted");
+  });
+
+  test("the user's interrupt wins over everything", () => {
+    expect(outcome({ interrupted: true, agentStopped: true, code: 1 })).toBe("interrupted");
+  });
+
+  // The regression: a turn that leaves a background subagent running keeps
+  // print mode waiting, the Stop-hook teardown kills it, and the CLI exits
+  // non-zero after printing its wait timeout. The turn still completed.
+  test("a non-zero exit after the Stop hook completes the turn", () => {
+    expect(outcome({ agentStopped: true, code: 1 })).toBe("completed");
+  });
+
+  test("the teardown escalating to SIGKILL still completes the turn", () => {
+    expect(outcome({ agentStopped: true, code: null, signal: "SIGKILL" })).toBe("completed");
+  });
+});
