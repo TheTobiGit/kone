@@ -133,6 +133,7 @@ import {
   recognizedSubagentToolUseId,
   scopeItemId,
   toPermissionMode,
+  toSessionPermissionUpdates,
   type ClaudeItemBuffer,
   type ClaudeScope,
   type ClaudeSession,
@@ -368,9 +369,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       // its tool blocks, so a run's transcript is real rather than a spinner.
       forwardSubagentText: true,
       // The one channel that reaches a RUNNING subagent: queued steer messages
-      // are injected as extra context on the child's next tool call.
+      // are injected as extra context on the child's next tool call. The audit
+      // hook rides the same event: under full-access nothing else sees a tool
+      // call before it runs, so this is the only trace one leaves.
       hooks: {
-        PreToolUse: [{ hooks: [(hookInput) => this.subagentSteerHook(session, hookInput)] }],
+        PreToolUse: [
+          { hooks: [(hookInput) => this.subagentSteerHook(session, hookInput)] },
+          { hooks: [(hookInput) => this.fullAccessAuditHook(session, hookInput)] },
+        ],
       },
       settingSources: ["user", "project", "local"],
       includePartialMessages: true,
@@ -420,7 +426,6 @@ export class ClaudeAdapter implements ProviderAdapter {
       taskPlanStarted: false,
       pendingUserInputs: new Map(),
       pendingApprovals: new Map(),
-      approvalsAlwaysAllowed: false,
     };
     session.consumer = this.consume(session);
 
@@ -457,16 +462,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
     // AskUserQuestion is a real question for the human, not a permission gate —
-    // it must reach the renderer even under "always allow for this session"
-    // (auto-allowing it would resolve the question empty). Same ordering as
+    // it must reach the renderer even when earlier calls were allowed for the
+    // session (auto-allowing it would resolve the question empty).
     if (toolName === "AskUserQuestion") {
       return this.askUserQuestion(session, input, options);
-    }
-    // "Allow always for this session" outranks everything else, including the
-    // no-active-turn fail-closed: it is the user's explicit per-session choice,
-    // so a replay/recovery callback is auto-allowed exactly like any live one.
-    if (session.approvalsAlwaysAllowed) {
-      return Promise.resolve({ behavior: "allow", updatedInput: input });
     }
     // Fail closed: a canUseTool callback with no active turn (a recovery or
     // replay callback after a crash/interrupt) has no trustworthy mode behind
@@ -481,12 +480,13 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   /** Park a tool approval: normalize the ask, emit `approval.requested`, and
-   *  await the renderer's decision. "Always allow" flips the per-session flag
-   *  (so this session stops asking, live-session-only) and passes the SDK's own
-   *  permission suggestions back as `updatedPermissions` — kone's mode rung
-   *  (not a session permission-mode mutation) stays the standing gate. If the
-   *  turn is interrupted (abort signal) or torn down, the parked promise
-   *  resolves rejected so the SDK stops waiting. */
+   *  await the renderer's decision. "Always allow" applies the SDK's own
+   *  permission suggestions rescoped to session-only rules (`see
+   *  toSessionPermissionUpdates`) — a scoped rule for what was just approved,
+   *  never a blanket bypass, so later, different calls still come back here,
+   *  and nothing is written to the user's settings files. If the turn is
+   *  interrupted (abort signal) or torn down, the parked promise resolves
+   *  rejected so the SDK stops waiting. */
   private async askToolApproval(
     session: ClaudeSession,
     toolName: string,
@@ -523,16 +523,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
 
     if (decision === "allow-always") {
-      // Live-session-only: from here on this session auto-allows (checked at
-      // the top of canUseTool) and, where the SDK offered one, its persistent
-      // suggestion rides back so the CLI also stops re-prompting in-session.
-      session.approvalsAlwaysAllowed = true;
-      const allowAlways: Awaited<ReturnType<CanUseTool>> = {
+      // Scoped, session-only rules — the CLI stops re-asking for this exact
+      // shape for the rest of the session; nothing persists to disk and no
+      // other tool shape is affected.
+      return {
         behavior: "allow",
         updatedInput: input,
+        updatedPermissions: toSessionPermissionUpdates(toolName, options.suggestions),
       };
-      if (options.suggestions) allowAlways.updatedPermissions = [...options.suggestions];
-      return allowAlways;
     }
     if (decision === "reject-and-stop") {
       return {
@@ -543,6 +541,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     if (decision === "reject-once") {
       return { behavior: "deny", message: "The user rejected this tool call." };
+    }
+    // `allow-once` is the remaining valid decision; anything unrecognized is
+    // denied rather than allowed — a gate must not fail open on bad input.
+    if (decision !== "allow-once") {
+      return { behavior: "deny", message: `Unrecognized approval decision.` };
     }
     return { behavior: "allow", updatedInput: input };
   }
@@ -1607,6 +1610,25 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId,
       subagent: { ...run.snapshot },
     });
+  }
+
+  /** Audit trail for full-access sessions. `bypassPermissions` never consults
+   *  canUseTool, so without this a full-access turn leaves no record of what
+   *  it executed. PreToolUse fires for every tool call regardless of mode;
+   *  outside full-access this is a cheap no-op, which also keeps the log honest
+   *  when the mode is stepped down mid-session. */
+  private async fullAccessAuditHook(
+    session: ClaudeSession,
+    hookInput: HookInput,
+  ): Promise<HookJSONOutput> {
+    if (session.mode !== "full-access") return {};
+    const toolName = readString(hookInput, "tool_name") ?? "unknown";
+    // SAFETY: a hook payload is a JSON object by the SDK's own contract; the
+    // read is widened only to reach `tool_input`, which asRecord then probes.
+    const rawInput = asRecord((hookInput as Record<string, unknown>).tool_input);
+    const summary = summarizeToolInput(toolName, JSON.stringify(rawInput ?? {})).text || toolName;
+    console.warn(`[kone] full-access ${session.threadId}: ${toolName} ${summary}`);
+    return {};
   }
 
   /** PreToolUse hook — the only channel that reaches a RUNNING subagent. When
