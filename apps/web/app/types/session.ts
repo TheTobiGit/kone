@@ -35,6 +35,8 @@ export type SessionSummary = {
   removed?: number;
   /** Total tokens spent across the thread, when known. */
   tokens?: number;
+  /** Estimated or recorded USD cost across the thread, when known. */
+  costUsd?: number;
   /** Epoch ms of the last turn — drives the "2d ago" stamp and the sort. */
   updatedAt: number;
   /** Kept in front of the list under a PINNED header. */

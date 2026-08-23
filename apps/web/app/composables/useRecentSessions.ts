@@ -27,6 +27,7 @@ function mockSessions(): SessionSummary[] {
       added: 410,
       removed: 88,
       tokens: 3_200_000,
+      costUsd: 15.36,
       updatedAt: now - 7 * DAY,
       pinned: true,
     },
@@ -39,6 +40,7 @@ function mockSessions(): SessionSummary[] {
       added: 256,
       removed: 40,
       tokens: 1_900_000,
+      costUsd: 6.65,
       updatedAt: now - 7 * DAY,
       pinned: true,
     },
@@ -51,6 +53,7 @@ function mockSessions(): SessionSummary[] {
       added: 128,
       removed: 34,
       tokens: 1_240_000,
+      costUsd: 5.95,
       updatedAt: now - 2 * DAY,
     },
     {
@@ -62,6 +65,7 @@ function mockSessions(): SessionSummary[] {
       added: 342,
       removed: 96,
       tokens: 2_100_000,
+      costUsd: 10.08,
       updatedAt: now - 2 * DAY,
     },
     {
@@ -73,6 +77,7 @@ function mockSessions(): SessionSummary[] {
       added: 64,
       removed: 20,
       tokens: 480_000,
+      costUsd: 1.68,
       updatedAt: now - 3 * DAY,
     },
     {
@@ -84,6 +89,7 @@ function mockSessions(): SessionSummary[] {
       added: 118,
       removed: 31,
       tokens: 740_000,
+      costUsd: 2.59,
       updatedAt: now - 0.6 * DAY,
     },
   ];
