@@ -25,14 +25,19 @@ import { remotes, repoState } from "./state.js";
 import { stashes, stashApply, stashDrop, stashPush } from "./stash.js";
 import { detect, status } from "./status.js";
 import { fetch as gitFetch, pull as gitPull, push as gitPush } from "./sync.js";
+import { generateCommitMessage } from "./textGen.js";
+import { runStackedAction } from "./stacked.js";
 import { watchStatus } from "./watch.js";
 import type {
+  CommitMessageGenerationInput,
   CreateProjectOptions,
   GitCommitOptions,
   GitHubPrCreateOptions,
   GitPullOptions,
   GitPushOptions,
+  GitRunStackedActionInput,
 } from "./types.js";
+
 
 // Live watchers, one fs watch per (renderer, dir). A renderer can watch many
 // repos at once — the open project *and* every folder on the launcher grid — so
@@ -203,6 +208,21 @@ export function registerGitIpc(): void {
   ipcMain.handle("git:commit", (_event, dir: string, opts: GitCommitOptions) =>
     commit(dir, opts),
   );
+  ipcMain.handle(
+    "git:generate-commit-message",
+    (_event, dir: string, opts?: Partial<CommitMessageGenerationInput>) =>
+      generateCommitMessage(dir, opts),
+  );
+  ipcMain.handle(
+    "git:run-stacked-action",
+    (event, dir: string, input: GitRunStackedActionInput) =>
+      runStackedAction(dir, input, (p) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send("git:action-progress", p);
+        }
+      }),
+  );
+
   ipcMain.handle("git:fetch", (_event, dir: string, remote?: string) =>
     gitFetch(dir, remote),
   );

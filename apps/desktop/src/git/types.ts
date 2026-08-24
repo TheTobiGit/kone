@@ -507,3 +507,63 @@ export const GIT_AUTHOR_AVATAR_CAP = 24;
  *  put a real face next to a commit. Built from the repository's recent commits,
  *  which is exactly the stretch of history anyone scrolls. */
 export type GitCommitAuthors = Record<string, GitHubPerson>;
+
+// ── Stacked actions & AI Generation ───────────────────────────────────────────
+
+export type GitStackedAction =
+  | "commit"
+  | "commit_push"
+  | "commit_new_branch"
+  | "commit_push_pr";
+
+export type GitActionProgressPhase = "branch" | "stage" | "commit" | "push" | "pr";
+
+export type GitActionProgressEvent = {
+  phase: GitActionProgressPhase;
+  message: string;
+  exitCode?: number;
+  error?: string;
+};
+
+export type CommitMessageGenerationInput = {
+  dir: string;
+  branch?: string | null;
+  stagedSummary?: string;
+  stagedPatch?: string;
+  includeBranch?: boolean;
+  model?: string;
+  provider?: string;
+};
+
+export type CommitMessageGenerationResult = {
+  subject: string;
+  body: string;
+  branch?: string;
+};
+
+export type GitRunStackedActionInput = {
+  dir: string;
+  action: GitStackedAction;
+  message: string;
+  body?: string;
+  featureBranch?: boolean;
+  branchName?: string;
+  /** null commits all currently staged files; string[] stages and commits only the listed paths. */
+  filePaths?: string[] | null;
+  pushTarget?: string;
+  prTitle?: string;
+  prBody?: string;
+  prDraft?: boolean;
+};
+
+export type GitRunStackedActionResult = {
+  action: GitStackedAction;
+  commitSha?: string;
+  subject?: string;
+  branch?: string;
+  pushed?: boolean;
+  upstreamBranch?: string;
+  prNumber?: number;
+  prUrl?: string;
+};
+

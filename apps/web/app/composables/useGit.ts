@@ -1,4 +1,7 @@
 import type {
+  CommitMessageGenerationInput,
+  CommitMessageGenerationResult,
+  GitActionProgressEvent,
   GitBranch,
   GitCommit,
   GitCommitAuthors,
@@ -23,9 +26,12 @@ import type {
   GitRemote,
   GitRepo,
   GitRepoState,
+  GitRunStackedActionInput,
+  GitRunStackedActionResult,
   GitStashEntry,
   GitStatus,
 } from "~/types/desktop";
+
 import {
   mockBranches,
   mockCommitAuthors,
@@ -147,7 +153,36 @@ export function useGit() {
     commit(dir: string, opts: GitCommitOptions): Promise<void> {
       return git ? git.commit(dir, opts) : beat();
     },
+    generateCommitMessage(
+      dir: string,
+      opts?: Partial<CommitMessageGenerationInput>,
+    ): Promise<CommitMessageGenerationResult> {
+      if (git) return git.generateCommitMessage(dir, opts);
+      return withLatency({
+        subject: "feat: add OAuth login flow",
+        body: "Wire up the provider handshake and persist the session token",
+      }).then((r) => r!);
+    },
+    runStackedAction(
+      dir: string,
+      input: GitRunStackedActionInput,
+    ): Promise<GitRunStackedActionResult> {
+      if (git) return git.runStackedAction(dir, input);
+      return withLatency({
+        action: input.action,
+        commitSha: "a1b9f3c9e4c0b91d7f2a3d8b8c7e6f5a4b3c2d1e",
+        subject: input.message,
+        branch: input.branchName || "main",
+        pushed: input.action.includes("push"),
+      }).then((r) => r!);
+    },
+
+    onActionProgress(cb: (event: GitActionProgressEvent) => void): () => void {
+      if (git) return git.onActionProgress(cb);
+      return () => {};
+    },
     fetch(dir: string, remote?: string): Promise<void> {
+
       return git ? git.fetch(dir, remote) : beat();
     },
     pull(dir: string, opts?: GitPullOptions): Promise<void> {

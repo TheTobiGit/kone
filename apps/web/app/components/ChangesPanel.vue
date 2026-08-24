@@ -3,6 +3,9 @@ import { computed } from "vue";
 import { CountUp } from "~/components/ui/count-up";
 import type { ChangeItem } from "~/types/change";
 
+
+
+
 // The file-changes block that heads the project rail. Splits the working tree
 // into two lanes — Staged and Changed — each a ChangeLane with its own sweep
 // (Unstage all / Stage all), and the Changed lane owns Discard (it only ever
@@ -165,26 +168,6 @@ function discardUnstaged() {
   </div>
 
   <div v-else class="panel">
-    <!-- Header: Commit alone. The tree-wide +/− tally and per-file dots live on
-         the Changed lane's header row (far right), beside the files they
-         describe. -->
-    <header v-if="canCommit" class="ch">
-      <span class="ch__meta">
-        <button
-          type="button"
-          class="ch__btn ch__btn--primary"
-          @click="emit('commit')"
-        >
-          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2.4" />
-            <line x1="3" y1="12" x2="9" y2="12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
-            <line x1="15" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
-          </svg>
-          Commit
-        </button>
-      </span>
-    </header>
-
     <!-- The two lanes. Each only appears when it has something in it. -->
     <div class="lanes">
       <ChangeLane
@@ -197,7 +180,23 @@ function discardUnstaged() {
         @sweep="emit('unstageAll')"
         @open="(item, rect) => emit('open', item, rect)"
         @peek="emit('peek')"
-      />
+      >
+        <template #stat>
+          <button
+            type="button"
+            class="ch__btn ch__btn--primary"
+            @click="emit('commit')"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2.4" />
+              <line x1="3" y1="12" x2="9" y2="12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+              <line x1="15" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+            </svg>
+            Commit
+          </button>
+        </template>
+      </ChangeLane>
+
       <ChangeLane
         v-if="unstaged.length"
         title="Changed"
