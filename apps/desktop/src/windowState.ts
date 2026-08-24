@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { z } from "zod";
+
 import { writeFileAtomicSync } from "./atomicWrite.js";
-import type { JsonObject } from "./jsonValue.js";
+import type { JsonValue } from "./jsonValue.js";
 
 import { app, type Rectangle, screen } from "electron";
 
@@ -42,8 +44,7 @@ function stateFilePath() {
 
 // Reads the persisted window-state JSON as-is; the caller validates it before
 // trusting any field, so this reader names no domain type.
-// eslint-disable-next-line anti-slop/no-unknown-returns
-function readState(): unknown {
+function readState(): JsonValue | null {
   try {
     return JSON.parse(fs.readFileSync(stateFilePath(), "utf8"));
   } catch {
@@ -51,48 +52,47 @@ function readState(): unknown {
   }
 }
 
+const WindowStateWire = z.object({
+  width: z.number().finite().positive(),
+  height: z.number().finite().positive(),
+  x: z.unknown().optional(),
+  y: z.unknown().optional(),
+  isMaximized: z.unknown().optional(),
+});
+
 /**
  * Validates the on-disk state and picks only the fields that are trustworthy.
  * A corrupt or non-finite entry collapses the whole state to null so the
  * caller falls back to the default window rather than opening an infinite or
  * zero-sized window.
  */
-export function parsePersistedWindowState(value: unknown): {
+export function parsePersistedWindowState(value: JsonValue | null | undefined): {
   width: number;
   height: number;
   x?: number;
   y?: number;
   isMaximized?: boolean;
 } | null {
-  if (typeof value !== "object" || value === null) return null;
-
-  // SAFETY: the guard proved value is a non-null object, and it came straight
-  // out of JSON.parse, so it satisfies JsonObject; every field is still
-  // re-validated below before use.
-  const record = value as JsonObject;
-
-  if (
-    typeof record.width !== "number" ||
-    !Number.isFinite(record.width) ||
-    record.width <= 0 ||
-    typeof record.height !== "number" ||
-    !Number.isFinite(record.height) ||
-    record.height <= 0
-  ) {
-    return null;
-  }
+  const parsed = WindowStateWire.safeParse(value);
+  if (!parsed.success) return null;
 
   const state: Pick<WindowState, "width" | "height" | "x" | "y" | "isMaximized"> = {
-    width: record.width,
-    height: record.height,
-    isMaximized: record.isMaximized === true,
+    width: parsed.data.width,
+    height: parsed.data.height,
+    isMaximized: parsed.data.isMaximized === true,
   };
 
   // Coordinates are optional on disk; a missing or unusable one just means
   // Electron picks a position this launch. Only junk that parses as a finite
   // number is worth keeping.
-  if (typeof record.x === "number" && Number.isFinite(record.x)) state.x = record.x;
-  if (typeof record.y === "number" && Number.isFinite(record.y)) state.y = record.y;
+  if (Number.isFinite(parsed.data.x)) {
+    // SAFETY: Number.isFinite guarantees parsed.data.x is a finite number.
+    state.x = parsed.data.x as number;
+  }
+  if (Number.isFinite(parsed.data.y)) {
+    // SAFETY: Number.isFinite guarantees parsed.data.y is a finite number.
+    state.y = parsed.data.y as number;
+  }
 
   return state;
 }

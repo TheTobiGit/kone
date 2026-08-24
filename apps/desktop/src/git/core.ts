@@ -47,11 +47,11 @@ export function lastStderrLine(stderr: string, fallback: string): string {
 
 /** Whether a rejected child_process run died from its own timeout (killed by
  *  the `timeout` option) rather than a real exit. */
-export function isExecTimeout(err: unknown): boolean {
-  if (!(err instanceof Object)) return false;
+export function isExecTimeout(cause: unknown): boolean {
+  if (!(cause instanceof Object)) return false;
   return (
-    ("killed" in err && err.killed === true) ||
-    ("code" in err && err.code === "ETIMEDOUT")
+    ("killed" in cause && cause.killed === true) ||
+    ("code" in cause && cause.code === "ETIMEDOUT")
   );
 }
 
@@ -89,7 +89,8 @@ export async function git(
       (error instanceof Error ? error.message : "git command failed");
     const rawCode =
       error instanceof Error && "code" in error ? error.code : undefined;
-    const code = typeof rawCode === "number" ? rawCode : null;
+    // SAFETY: Number.isInteger verified rawCode is an integer exit code.
+    const code = Number.isInteger(rawCode) ? (rawCode as number) : null;
     throw new GitError(message, code, stdout);
   }
 }

@@ -42,11 +42,12 @@ const {
   RENDERER_RECOVERY_WINDOW_MS,
   resolveVisibleWindowState,
 } = await import("./windowState.js");
+import type { JsonValue } from "./jsonValue.js";
 
 const STATE_FILE = path.join(USER_DATA, "window-state.json");
 const PRIMARY = { x: 0, y: 0, width: 1920, height: 1040 };
 
-function writeSavedState(state: unknown) {
+function writeSavedState(state: JsonValue) {
   mkdirSync(USER_DATA, { recursive: true });
   writeFileSync(STATE_FILE, JSON.stringify(state));
 }
@@ -248,7 +249,7 @@ describe("parsePersistedWindowState", () => {
   });
 
   test("rejects a non-positive, non-number, or missing width", () => {
-    const rejects = (value: unknown) =>
+    const rejects = (value: JsonValue | null | undefined) =>
       expect(parsePersistedWindowState(value)).toBeNull();
 
     rejects({ width: -1, height: 800 });

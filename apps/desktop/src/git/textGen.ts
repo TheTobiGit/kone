@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { z } from "zod";
+
 import { git, repoRoot } from "./core.js";
 import type {
   CommitMessageGenerationInput,
@@ -138,11 +140,14 @@ export function createFallbackCommitSuggestion(
   includeBranch?: boolean,
 ): CommitMessageGenerationResult {
   const subject = deriveFallbackCommitSubject(stagedSummary);
-  return {
+  const result: CommitMessageGenerationResult = {
     subject,
     body: "",
-    ...(includeBranch ? { branch: sanitizeBranchFragment(subject) } : {}),
   };
+  if (includeBranch) {
+    result.branch = sanitizeBranchFragment(subject);
+  }
+  return result;
 }
 
 export function buildCommitPrompt(input: {
@@ -175,6 +180,12 @@ export function buildCommitPrompt(input: {
   ].join("\n");
 }
 
+const CommitOutputWire = z.object({
+  subject: z.string(),
+  body: z.string().optional().default(""),
+  branch: z.string().optional(),
+});
+
 async function tryGenerateWithCli(
   prompt: string,
   cwd: string,
@@ -204,30 +215,41 @@ async function tryGenerateWithCli(
   ];
 
   for (const cmd of commands) {
+    let stdout: string;
     try {
-      const { stdout } = await execFileAsync(cmd.bin, cmd.args, {
+      const res = await execFileAsync(cmd.bin, cmd.args, {
         cwd,
         timeout: CLI_TIMEOUT_MS,
         maxBuffer: 2 * 1024 * 1024,
       });
-
-      const jsonStr = extractJsonObject(stdout);
-      if (!jsonStr) continue;
-
-      const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
-      if (typeof parsed.subject === "string" && parsed.subject.trim().length > 0) {
-        return {
-          subject: sanitizeCommitSubject(parsed.subject),
-          body: typeof parsed.body === "string" ? parsed.body.trim() : "",
-          ...(typeof parsed.branch === "string" && parsed.branch.trim()
-            ? { branch: sanitizeBranchFragment(parsed.branch) }
-            : {}),
-        };
-      }
+      stdout = res.stdout;
     } catch {
-      // Try next CLI candidate
+      // CLI candidate failed or is not installed; try next
       continue;
     }
+
+    const jsonStr = extractJsonObject(stdout);
+    if (!jsonStr) continue;
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(jsonStr);
+    } catch {
+      // CLI returned malformed JSON; try next
+      continue;
+    }
+
+    const decoded = CommitOutputWire.safeParse(raw);
+    if (!decoded.success || !decoded.data.subject.trim()) continue;
+
+    const result: CommitMessageGenerationResult = {
+      subject: sanitizeCommitSubject(decoded.data.subject),
+      body: decoded.data.body.trim(),
+    };
+    if (decoded.data.branch && decoded.data.branch.trim()) {
+      result.branch = sanitizeBranchFragment(decoded.data.branch);
+    }
+    return result;
   }
 
   return null;

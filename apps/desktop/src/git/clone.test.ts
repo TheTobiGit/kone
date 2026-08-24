@@ -52,7 +52,7 @@ const raw = cloneModule as unknown as {
 };
 
 function requireExport(name: string): void {
-  if (typeof raw[name] !== "function") {
+  if (!(raw[name] instanceof Function)) {
     throw new Error(
       `clone.ts does not export ${name} — the frozen clone API is not implemented yet`,
     );
@@ -89,8 +89,8 @@ const savedPath = process.env.PATH;
 const tempDirs: string[] = [];
 
 afterEach(() => {
-  if (typeof raw.resetCloneForTests === "function") {
-    // SAFETY: the typeof check on the line above gated the cast.
+  if (raw.resetCloneForTests instanceof Function) {
+    // SAFETY: the instanceof check on the line above gated the cast.
     (raw.resetCloneForTests as () => void)();
   }
   if (savedPath !== undefined) process.env.PATH = savedPath;
@@ -141,7 +141,7 @@ function makeSourceRepo(): string {
 
 /** Clone leftovers (staging dirs) a correct implementation must never leave. */
 function stagingLeftovers(parent: string): string[] {
-  return readdirSync(parent).filter((entry) => entry.startsWith(".kone-clone-"));
+  return existsSync(parent) ? readdirSync(parent).filter((entry) => entry.startsWith(".kone-clone-")) : [];
 }
 
 describe("clone", () => {
