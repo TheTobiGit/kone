@@ -13,7 +13,7 @@
 
 import { z } from "zod";
 
-import type { JsonValue } from "../../../jsonValue.js";
+import type { JsonValue } from "../../../lib/jsonValue.js";
 import type { ModelRates, PricingTable } from "./types.js";
 
 const TierBlockSchema = z.object({

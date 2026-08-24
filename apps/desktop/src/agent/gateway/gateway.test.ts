@@ -18,7 +18,7 @@ mock.module("../sqlite.js", () => ({
 }));
 
 import type { RuntimeEvent } from "../types.js";
-import type { JsonValue } from "../../jsonValue.js";
+import type { JsonValue } from "../../lib/jsonValue.js";
 
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
 function useUserDataDir(dir: string): string {

@@ -18,7 +18,7 @@ import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { clone } from "../../git/clone.js";
+import { clone } from "../../modules/git/clone.js";
 import { userDataPath } from "../userDataDir.js";
 
 import { parseFrontmatter } from "./frontmatter.js";

@@ -1,4 +1,4 @@
-import { detect, diffStatBetween, snapshotWorkingTree } from "../git/status.js";
+import { detect, diffStatBetween, snapshotWorkingTree } from "../modules/git/status.js";
 import type { AgentService } from "./AgentService.js";
 import type { ConversationStore } from "./ConversationStore.js";
 import { buildResumeContext } from "./resumeContext.js";

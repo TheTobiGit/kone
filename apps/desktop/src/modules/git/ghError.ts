@@ -1,4 +1,4 @@
-import type { IpcErrorKind } from "../ipcError.js";
+import type { IpcErrorKind } from "../../lib/ipcError.js";
 
 // The pure mapping from a gh CLI stderr line to the semantic failure kind it
 // represents. Kept free of any electron import so it is unit-testable without

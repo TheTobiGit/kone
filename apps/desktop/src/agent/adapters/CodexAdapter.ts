@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { readCodexAuth, isCodexCliVersionSupported, MIN_CODEX_CLI_VERSION, parseCodexCliVersion } from "../codexHome.js";
 import { CODEX_GATEWAY_TOKEN_ENV, prepareCodexHomeOverlay } from "../codexOverlay.js";
 import { JsonRpcClient } from "../jsonRpc.js";
-import type { JsonObject, JsonValue } from "../../jsonValue.js";
+import type { JsonObject, JsonValue } from "../../lib/jsonValue.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { probe } from "../spawn.js";
 import type {

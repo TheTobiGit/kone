@@ -11,7 +11,7 @@ import {
   type GatewayTransportStore,
 } from "./mcpTransport.js";
 import { z } from "zod";
-import type { JsonValue } from "../../jsonValue.js";
+import type { JsonValue } from "../../lib/jsonValue.js";
 
 const PROJECT = "/tmp/proj";
 

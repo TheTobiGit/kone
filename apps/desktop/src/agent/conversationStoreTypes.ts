@@ -1,4 +1,4 @@
-import type { JsonObject } from "../jsonValue.js";
+import type { JsonObject } from "../lib/jsonValue.js";
 import type {
   ChatAttachment,
   ProviderKind,

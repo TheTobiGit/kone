@@ -3,8 +3,8 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { writeFileAtomicSync } from "./atomicWrite.js";
-import type { JsonValue } from "./jsonValue.js";
+import { writeFileAtomicSync } from "./lib/atomicWrite.js";
+import type { JsonValue } from "./lib/jsonValue.js";
 
 import { app, type Rectangle, screen } from "electron";
 

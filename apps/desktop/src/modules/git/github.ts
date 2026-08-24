@@ -5,8 +5,8 @@ import path from "node:path";
 import { shell } from "electron";
 import { z } from "zod";
 
-import { parseSafeExternalUrl } from "../safeExternalUrl.js";
-import type { JsonValue } from "../jsonValue.js";
+import { parseSafeExternalUrl } from "../../lib/safeExternalUrl.js";
+import type { JsonValue } from "../../lib/jsonValue.js";
 import { GitError, lastStderrLine, repoRoot, run } from "./core.js";
 import { parseFileDiff } from "./diff.js";
 import { classifyGhError } from "./ghError.js";
