@@ -4,11 +4,14 @@ import type { useProjectGit } from "~/composables/useProjectGit";
 import { createSectionSerializer } from "~/utils/latestWins";
 import { classifyIpcError, kindHint } from "~/utils/ipcError";
 import type {
+  CommitMessageGenerationInput,
+  CommitMessageGenerationResult,
   GitBranch,
   GitCommit,
   GitCommitAuthors,
   GitCommitDetail,
   GitCommitOptions,
+
   GitContributors,
   GitFileDiff,
   GitHubPerson,
@@ -341,12 +344,22 @@ export function useGitSpace(
     return act("commit", () => bridge.commit(dir(), opts), afterHistoryMoved);
   }
 
+  function generateCommitMessage(
+    opts?: Partial<CommitMessageGenerationInput>,
+  ): Promise<CommitMessageGenerationResult> {
+    return bridge.generateCommitMessage(dir(), {
+      branch: git.branch.value,
+      ...opts,
+    });
+  }
+
   /** Commit, then push — but only if the commit landed, so a rejected commit
    *  never pushes something the user didn't mean to send. */
   async function commitAndPush(opts: GitCommitOptions): Promise<boolean> {
     if (!(await commit(opts))) return false;
     return push();
   }
+
 
   function createBranch(
     name: string,
@@ -488,7 +501,9 @@ export function useGitSpace(
     pull,
     push,
     commit,
+    generateCommitMessage,
     commitAndPush,
+
     createBranch,
     deleteBranch,
     renameBranch,

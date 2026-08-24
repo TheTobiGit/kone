@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { AiBrain01Icon } from "@hugeicons/core-free-icons";
 import type { useGitSpace } from "~/composables/useGitSpace";
 
 // Where a commit gets written.
@@ -17,13 +19,16 @@ const props = defineProps<{
   canPush: boolean;
 }>();
 
+const git = useGit();
 const { cue } = useSound();
 
 const summary = ref("");
 const body = ref("");
 const amend = ref(false);
+const isGenerating = ref(false);
 const summaryEl = ref<HTMLTextAreaElement | null>(null);
 const bodyEl = ref<HTMLTextAreaElement | null>(null);
+
 
 const busy = computed(() => props.space.op.value !== null);
 const ready = computed(() => summary.value.trim().length > 0 && !busy.value);
@@ -64,6 +69,29 @@ function reset() {
     grow(bodyEl.value);
   });
 }
+
+async function generateAiMessage() {
+  if (isGenerating.value || busy.value) return;
+  cue("press");
+  isGenerating.value = true;
+  try {
+    const res = await props.space.generateCommitMessage();
+    if (res.subject) {
+      summary.value = res.subject;
+      body.value = res.body || "";
+      void nextTick(() => {
+        grow(summaryEl.value);
+        grow(bodyEl.value);
+      });
+    }
+  } catch {
+    /* fallback to manual */
+  } finally {
+    isGenerating.value = false;
+  }
+}
+
+
 
 async function run(alsoPush: boolean) {
   if (!ready.value) return;
@@ -146,6 +174,15 @@ function onBodyKey(e: KeyboardEvent) {
           <button
             type="button"
             class="cb__ghost"
+            :disabled="busy || isGenerating"
+            @click="generateAiMessage"
+          >
+            <HugeiconsIcon :icon="AiBrain01Icon" :size="12" />
+            {{ isGenerating ? 'Generating...' : (summary ? 'Regenerate' : 'Generate') }}
+          </button>
+          <button
+            type="button"
+            class="cb__ghost"
             :class="{ 'cb__ghost--on': amend }"
             :disabled="busy"
             :aria-pressed="amend"
@@ -153,6 +190,7 @@ function onBodyKey(e: KeyboardEvent) {
           >
             Amend
           </button>
+
           <button
             v-if="canPush"
             type="button"

@@ -32,4 +32,7 @@ export { contributors, identity, logo, readme } from "./about.js";
 export * as github from "./github.js";
 export { cancelAllClones, cancelClone, clone } from "./clone.js";
 export { createProject } from "./create.js";
+export { generateCommitMessage } from "./textGen.js";
+export { runStackedAction } from "./stacked.js";
 export { registerGitIpc } from "./ipc.js";
+
