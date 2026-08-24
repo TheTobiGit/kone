@@ -62,7 +62,7 @@ describe("Droid install detection", () => {
     // check (which may or may not find a device-pairing login) and never
     // claim the API-key label.
     const fallthrough = await detectDroidAuth({ FACTORY_API_KEY: "   " });
-    expect(typeof fallthrough.authenticated).toBe("boolean");
+    expect(fallthrough.authenticated).toBeBoolean();
     expect(fallthrough.label).not.toBe("Factory API Key");
   });
 });

@@ -32,7 +32,7 @@ type RecordLike = {
 const noopEmit = (() => {}) as EmitEvent;
 
 /** The text blocks of an outgoing session/prompt. */
-function promptParts(params: unknown): { type: string; text: string }[] {
+function promptParts(params: RecordLike | undefined): { type: string; text: string }[] {
   // SAFETY: the fake client records exactly what the adapter sent; its prompt
   // is always this list of text blocks.
   return (params as RecordLike).prompt as { type: string; text: string }[];
@@ -46,7 +46,7 @@ function sessionResponse(): RecordLike {
 }
 
 class FakeJsonRpcClient {
-  readonly calls: { method: string; params?: unknown }[] = [];
+  readonly calls: { method: string; params?: RecordLike }[] = [];
   constructor(_command: string, _args: string[], opts: { cwd?: string }) {
     if (opts?.cwd && opts.cwd !== "/tmp/kone-test-project") return;
     // The adapter constructs its own RPC client, so the fake can only reach
@@ -54,7 +54,7 @@ class FakeJsonRpcClient {
     // eslint-disable-next-line typescript/no-this-alias
     sessionRpc = this;
   }
-  async call<T = unknown>(method: string, params?: unknown): Promise<T> {
+  async call<T = RecordLike>(method: string, params?: RecordLike): Promise<T> {
     this.calls.push({ method, params });
     let response: unknown;
     switch (method) {

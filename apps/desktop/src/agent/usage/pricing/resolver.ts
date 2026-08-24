@@ -41,7 +41,7 @@ const memoBySnapshot = new WeakMap<PricingSnapshot, Map<string, ModelRates | nul
  *  gateway prefixes or turn-parameter suffixes; the fuzzy matcher in
  *  catalog.ts is boundary-aware enough to see through those on its own. */
 export function resolveModelRates(snapshot: PricingSnapshot, model: string | null | undefined): ModelRates | null {
-  if (!model || typeof model !== "string") return null;
+  if (!model) return null;
   const trimmed = model.trim();
   if (!trimmed) return null;
 

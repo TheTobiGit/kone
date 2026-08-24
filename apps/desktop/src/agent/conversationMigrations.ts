@@ -1092,7 +1092,7 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
           // starts with no row rather than failing the whole upgrade.
           continue;
         }
-        if (!parsed || typeof parsed !== "object") continue;
+        if (!parsed || !(parsed instanceof Object)) continue;
         // SAFETY: reading fields off unknown needs the object view, and the
         // checks below are themselves the gate — one view rather than an
         // assertion per field.
@@ -1102,7 +1102,7 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
         rows.push({
           projectPath: b.project_path,
           panes: doc.panes,
-          focusedId: typeof doc.focusedId === "string" ? doc.focusedId : null,
+          focusedId: doc.focusedId && !(doc.focusedId instanceof Object) ? String(doc.focusedId) : null,
         });
       }
       if (rows.length > 0) {

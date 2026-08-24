@@ -399,7 +399,7 @@ describe("installSkillFromGit", () => {
     const manifest = JSON.parse(readFileSync(path.join(dir, SOURCE_MANIFEST_FILENAME), "utf8"));
     expect(manifest.source).toBe("git");
     expect(manifest.url).toBe(repo);
-    expect(typeof manifest.installedAt).toBe("string");
+    expect(manifest.installedAt).toBeString();
   });
 
   test("renames the clone when the frontmatter name does not match the repo folder", async () => {

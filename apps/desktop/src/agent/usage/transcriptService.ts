@@ -8,6 +8,7 @@ import path from "node:path";
 import { resolveClaudeConfigDir } from "../claudeHome.js";
 import { resolveCodexHome } from "../codexHome.js";
 import { userDataPath } from "../userDataDir.js";
+import type { JsonValue } from "../../jsonValue.js";
 import type { UsageRange } from "./report.js";
 import { rangeStart, localDateLabel, startOfLocalDay } from "./report.js";
 import {
@@ -110,9 +111,9 @@ async function ensureScanCacheLoaded(): Promise<void> {
   cacheLoaded = true;
   try {
     const raw = await fs.readFile(SCAN_CACHE_PATH(), "utf8");
-    // SAFETY: asserting unknown narrows JSON.parse's any, so every access must
+    // SAFETY: asserting JsonValue narrows JSON.parse's any, so every access must
     // survive decodeScanCache below.
-    const doc = JSON.parse(raw) as unknown;
+    const doc = JSON.parse(raw) as JsonValue;
     for (const [p, entry] of decodeScanCache(doc)) fileCache.set(p, entry);
   } catch {
     // Cold start — empty cache.

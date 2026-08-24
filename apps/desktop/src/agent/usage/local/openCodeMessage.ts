@@ -3,24 +3,33 @@
 import type { TranscriptProviderKind, UsageTokenTotals } from "../transcripts/types.js";
 import type { UsageRecord } from "../transcripts/transcripts.js";
 
-type OpenCodeMessagePayload = {
-  id?: string;
-  sessionID?: string;
-  modelID?: string;
-  providerID?: string;
-  cost?: number;
-  tokens?: {
-    input?: number;
-    output?: number;
-    total?: number;
-    reasoning?: number;
-    cache?: { read?: number; write?: number };
-  };
-  time?: { created?: number };
-};
+import { z } from "zod";
 
-function int(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+const OpenCodeMessagePayloadSchema = z.object({
+  id: z.string().optional(),
+  sessionID: z.string().optional(),
+  modelID: z.string().optional(),
+  providerID: z.string().optional(),
+  cost: z.number().finite().optional(),
+  tokens: z.object({
+    input: z.number().finite().optional(),
+    output: z.number().finite().optional(),
+    total: z.number().finite().optional(),
+    reasoning: z.number().finite().optional(),
+    cache: z.object({
+      read: z.number().finite().optional(),
+      write: z.number().finite().optional(),
+    }).optional(),
+  }).optional(),
+  time: z.object({
+    created: z.number().finite().optional(),
+  }).optional(),
+}).passthrough();
+
+type OpenCodeMessagePayload = z.infer<typeof OpenCodeMessagePayloadSchema>;
+
+function int(value: number | null | undefined): number {
+  return value && value > 0 ? Math.trunc(value) : 0;
 }
 
 function resolveOpenCodeModelName(model: string): string {
@@ -112,33 +121,24 @@ export function parseOpenCodeMessageJson(
   } catch {
     return null;
   }
-  if (!value || typeof value !== "object") return null;
-  // SAFETY: value passed the object check above; every field read off payload
-  // is individually guarded (totalsFromPayload returns null otherwise).
-  const payload = value as OpenCodeMessagePayload;
+  const parsed = OpenCodeMessagePayloadSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const payload = parsed.data;
   const totals = totalsFromPayload(payload.tokens);
   if (!totals) return null;
 
-  const modelRaw = typeof payload.modelID === "string" ? payload.modelID.trim() : "";
-  const providerRaw = typeof payload.providerID === "string" ? payload.providerID.trim() : "";
+  const modelRaw = payload.modelID?.trim() ?? "";
+  const providerRaw = payload.providerID?.trim() ?? "";
   if (!modelRaw) return null;
 
   const timestampMs =
-    typeof payload.time?.created === "number" && Number.isFinite(payload.time.created)
-      ? payload.time.created
-      : extractMessageTimestampMs(raw) ?? 0;
+    payload.time?.created ?? extractMessageTimestampMs(raw) ?? 0;
   if (timestampMs <= 0) return null;
 
-  const messageId = ids?.messageId ?? (typeof payload.id === "string" ? payload.id.trim() : "");
-  const sessionId =
-    ids?.sessionId ??
-    (typeof payload.sessionID === "string" ? payload.sessionID.trim() : "") ??
-    "";
+  const messageId = ids?.messageId ?? (payload.id ? payload.id.trim() : "");
+  const sessionId = ids?.sessionId ?? (payload.sessionID ? payload.sessionID.trim() : "");
 
-  const reportedCostUsd =
-    typeof payload.cost === "number" && Number.isFinite(payload.cost) && payload.cost > 0
-      ? payload.cost
-      : null;
+  const reportedCostUsd = payload.cost !== undefined && payload.cost > 0 ? payload.cost : null;
 
   const model = pickPricedModel(modelRaw, providerRaw);
 

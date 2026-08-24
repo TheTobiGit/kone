@@ -48,18 +48,18 @@ export type AntigravityInboundMessage = {
 
 // ── decoding ─────────────────────────────────────────────────────────────────
 
-/** One decoded value from an agy transcript. The transcript is parsed once at
- *  its boundary; everything below branches on these domain values, so no step
- *  has to interrogate a representation. */
 export type AntigravityJsonValue =
   | string
   | number
   | boolean
   | null
-  | AntigravityJsonValue[]
-  | { [key: string]: AntigravityJsonValue };
+  | undefined
+  | AntigravityJsonRecord
+  | AntigravityJsonValue[];
 
-export type AntigravityJsonRecord = { [key: string]: AntigravityJsonValue };
+export interface AntigravityJsonRecord {
+  [key: string]: AntigravityJsonValue;
+}
 
 function isRecord(value: AntigravityJsonValue | undefined): value is AntigravityJsonRecord {
   return value instanceof Object && !Array.isArray(value);
@@ -77,7 +77,7 @@ function isNumber(value: AntigravityJsonValue | undefined): value is number {
 function readText(value: AntigravityJsonValue | undefined): string | undefined {
   if (value === undefined || value === null || value === true || value === false) return undefined;
   if (Array.isArray(value) || value instanceof Object || isNumber(value)) return undefined;
-  const trimmed = value.trim();
+  const trimmed = String(value).trim();
   return trimmed ? trimmed : undefined;
 }
 

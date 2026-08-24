@@ -197,11 +197,11 @@ export function recognizedSubagentToolUseId(
   return undefined;
 }
 
-function readParentToolUseId(value: unknown): string | undefined {
-  if (typeof value === "object" && value !== null && "parent_tool_use_id" in value) {
-    // SAFETY: the typeof-object + `"parent_tool_use_id" in value` checks on this line are the narrowing.
-    const parent = (value as { parent_tool_use_id?: unknown }).parent_tool_use_id;
-    return typeof parent === "string" ? parent : undefined;
+function readParentToolUseId(message: SDKMessage | null | undefined): string | undefined {
+  if (message && "parent_tool_use_id" in message) {
+    // SAFETY: "parent_tool_use_id" in message narrows message before reading property.
+    const parent = (message as { parent_tool_use_id?: string | null }).parent_tool_use_id;
+    return parent && parent.trim() ? parent : undefined;
   }
   return undefined;
 }

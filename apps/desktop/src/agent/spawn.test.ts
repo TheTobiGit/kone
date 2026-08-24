@@ -61,7 +61,7 @@ describe("probe", () => {
       {},
       15_000,
     );
-    expect(typeof result).toBe("string");
+    expect(result).toBeString();
     // The cap stops appending at ~1 MiB; chunk granularity can overshoot by a
     // pipe buffer, so assert against the full 1.5 MiB the child wrote instead
     // of a tight byte bound.

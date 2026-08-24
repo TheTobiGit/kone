@@ -81,7 +81,7 @@ export function hasLocalOAuthLogin(env: NodeJS.ProcessEnv = process.env): boolea
     if (!oauth?.accessToken) return false;
     // A refresh token would let the CLI renew, but we don't have it here — treat
     // a not-yet-expired access token as a usable login and let the CLI refresh.
-    if (typeof oauth.expiresAt === "number" && oauth.expiresAt < Date.now()) return false;
+    if (oauth.expiresAt !== undefined && oauth.expiresAt !== null && Number.isFinite(oauth.expiresAt) && oauth.expiresAt < Date.now()) return false;
     return true;
   } catch {
     return false;

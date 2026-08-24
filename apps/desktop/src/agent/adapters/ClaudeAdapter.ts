@@ -142,6 +142,7 @@ import {
 
 import {
   type ClaudeJsonObject,
+  type ClaudeWirePayload,
   MessageQueue,
   applyPlanSnapshot,
   asRecord,
@@ -157,6 +158,8 @@ import {
   readString,
   summarizeToolInput,
 } from "./claudeAdapterHelpers.js";
+
+type ClaudeStreamEvent = Extract<SDKMessage, { type: "stream_event" }>["event"];
 
 export class ClaudeAdapter implements ProviderAdapter {
   readonly provider = "claudeAgent" as const;
@@ -605,7 +608,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.emit({ ...this.base(session), type: "user-input.resolved", requestId, answers });
 
     const answered = Object.values(answers).some((value) =>
-      Array.isArray(value) ? value.length > 0 : typeof value === "string" && value.length > 0,
+      Array.isArray(value) ? value.length > 0 : Boolean(value && value.length > 0),
     );
     if (!answered) {
       return { behavior: "deny", message: "The user dismissed the question without answering." };
@@ -956,7 +959,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         // thread can always resume at the last assistant message, even when a
         // turn dies mid-flight (subagent-scoped messages were routed above and
         // never reach this switch).
-        if (typeof message.uuid === "string" && message.uuid.length > 0) {
+        if (message.uuid && message.uuid.length > 0) {
           session.lastAssistantUuid = message.uuid;
         }
         return;
@@ -992,7 +995,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.emit(rerouted);
   }
 
-  private handleStreamEvent(session: ClaudeSession, scope: ClaudeScope, rawEvent: unknown): void {
+  private handleStreamEvent(session: ClaudeSession, scope: ClaudeScope, rawEvent: ClaudeStreamEvent): void {
     const event = asRecord(rawEvent);
     const type = readString(event, "type");
     if (!event || !type) return;
@@ -1036,7 +1039,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         const blockInput = block?.input;
         if (blockInput !== undefined && blockInput !== null && !isEmptyToolInput(blockInput)) {
           const raw =
-            typeof blockInput === "string" ? blockInput : JSON.stringify(blockInput);
+            blockInput instanceof Object ? JSON.stringify(blockInput) : String(blockInput);
           buffer.detail = raw;
           buffer.toolInputRaw = raw;
         }
@@ -1164,9 +1167,9 @@ export class ClaudeAdapter implements ProviderAdapter {
         const rawInput =
           block?.input === undefined || block?.input === null
             ? ""
-            : typeof block.input === "string"
-              ? block.input
-              : JSON.stringify(block.input);
+            : block.input instanceof Object
+              ? JSON.stringify(block.input)
+              : String(block.input);
         const buffer: ClaudeItemBuffer = {
           // The tool-use id is already unique and is what the result references.
           itemId: toolUseId ?? itemId,
@@ -1201,7 +1204,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     message: Extract<SDKMessage, { type: "user" }>,
   ): void {
     // SAFETY: probing the optional `tool_use_result` field on the SDK message shape.
-    const structuredResult = (message as { tool_use_result?: unknown }).tool_use_result;
+    const structuredResult = (message as { tool_use_result?: ClaudeWirePayload }).tool_use_result;
     const content = asRecord(message.message)?.content;
     const blocks = Array.isArray(content) ? content : [];
     let handledTaskTool = false;
@@ -1219,7 +1222,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       const failed = settled !== undefined ? settled === "failed" : block?.is_error === true;
 
       if (
-        this.applyTaskToolResult(session, buffer, block ?? {}, structuredResult, failed)
+        this.applyTaskToolResult(
+          session,
+          buffer,
+          // SAFETY: block is a tool_result content block object or an empty fallback object.
+          (block ?? {}) as ClaudeJsonObject,
+          structuredResult,
+          failed,
+        )
       ) {
         handledTaskTool = true;
       }
@@ -1243,7 +1253,13 @@ export class ClaudeAdapter implements ProviderAdapter {
       const buffer = scope.toolItems.get(message.parent_tool_use_id);
       if (buffer && isClaudeTaskTool(buffer.toolName)) {
         if (
-          this.applyTaskToolResult(session, buffer, {}, structuredResult, false)
+          this.applyTaskToolResult(
+            session,
+            buffer,
+            {},
+            structuredResult,
+            false,
+          )
         ) {
           scope.toolItems.delete(message.parent_tool_use_id);
           this.emitItem(session, scope, "item.completed", buffer, "completed");
@@ -1256,7 +1272,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     session: ClaudeSession,
     buffer: ClaudeItemBuffer,
     resultBlock: ClaudeJsonObject,
-    structuredResult: unknown,
+    structuredResult: ClaudeWirePayload,
     isError: boolean,
   ): boolean {
     if (!isClaudeTaskTool(buffer.toolName)) return false;
@@ -1281,8 +1297,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (!raw.trim()) return {};
     try {
       const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null) {
-        // SAFETY: the typeof-object/null checks above are the narrowing itself.
+      if (parsed instanceof Object && !Array.isArray(parsed)) {
+        // SAFETY: parsed is a non-null object that is not an array.
         return parsed as ClaudeJsonObject;
       }
     } catch {
@@ -1633,7 +1649,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     // callback with the whole HookInput union — narrow on its discriminant.
     if (hookInput.hook_event_name !== "PreToolUse") return {};
     const toolName = hookInput.tool_name;
-    const rawInput = asRecord(hookInput.tool_input);
+    // SAFETY: hookInput.tool_input is an unparsed tool input from the SDK hook.
+    const rawInput = asRecord(hookInput.tool_input as ClaudeWirePayload);
     const summary = summarizeToolInput(toolName, JSON.stringify(rawInput ?? {})).text || toolName;
     console.warn(`[kone] full-access ${session.threadId}: ${toolName} ${summary}`);
     return {};

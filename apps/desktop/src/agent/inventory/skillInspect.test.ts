@@ -38,7 +38,7 @@ describe("lintSkillAt", () => {
 
     const findings = await lintSkillAt(path.join(skillDir, "SKILL.md"));
     expect(findings.length).toBeGreaterThan(0);
-    expect(findings.every((f) => typeof f.message === "string" && f.message.length > 0)).toBe(true);
+    expect(findings.every((f) => Boolean(f.message && f.message.length > 0))).toBe(true);
   });
 
   test("yields no findings for a path that is not a readable SKILL.md", async () => {

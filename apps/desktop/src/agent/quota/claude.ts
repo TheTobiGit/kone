@@ -151,7 +151,7 @@ function windowState(frac: number, resetsAt: string | null): QuotaWindowState {
 function windowOf(id: string, label: string, value: ClaudeApiValue | undefined): QuotaWindow | null {
   const row = apiRecord(value);
   if (!row) return null;
-  const frac = fraction(row.utilization);
+  const frac = fraction(readNumber(row.utilization));
   if (frac === null) return null;
   const resetsAt = isoResetTime(row.resets_at);
   return { id, label, used: percentValue(frac), limit: null, percent: frac, state: windowState(frac, resetsAt), resetsAt };
@@ -190,7 +190,7 @@ export function decodeClaudeUsage(body: ClaudeApiValue | undefined, credential: 
     const row = apiRecord(item);
     if (!row) continue;
     const display = apiText(apiRecord(apiRecord(row.scope)?.model)?.display_name);
-    const frac = fraction(row.percent);
+    const frac = fraction(readNumber(row.percent));
     if (row.kind !== "weekly_scoped" || display === null || frac === null) continue;
     const resetsAt = isoResetTime(row.resets_at);
     scoped.push({

@@ -136,6 +136,8 @@ describe("CodexAdapter mode → approval/sandbox mapping", () => {
     // SAFETY: deliberately out-of-vocabulary inputs; the cast only routes them
     // through the typed parameter so the default branch can be observed.
     expect(helpers.mapModeToThreadOverrides("mystery" as never)).toEqual(helpers.mapModeToThreadOverrides("accept-edits"));
+    // SAFETY: deliberately out-of-vocabulary inputs; the cast only routes them
+    // through the typed parameter so the default branch can be observed.
     expect(helpers.mapModeToTurnOverrides("mystery" as never)).toEqual(helpers.mapModeToTurnOverrides("accept-edits"));
   });
 });

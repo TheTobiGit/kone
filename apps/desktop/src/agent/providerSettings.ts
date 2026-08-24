@@ -1,6 +1,8 @@
 import fs from "node:fs";
 
-import type { JsonObject } from "../jsonValue.js";
+import { z } from "zod";
+
+import type { JsonValue } from "../jsonValue.js";
 import { writeFileAtomicSync } from "../atomicWrite.js";
 
 import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.js";
@@ -17,6 +19,12 @@ import { userDataPath } from "./userDataDir.js";
 
 const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"];
 
+const ProviderConfigWire = z.object({
+  binaryPath: z.string().trim().min(1).optional(),
+});
+
+const ProviderSettingsWire = z.record(z.string(), ProviderConfigWire);
+
 let cachedPath: string | null = null;
 function settingsFilePath(): string {
   cachedPath ??= userDataPath("provider-settings.json");
@@ -25,24 +33,15 @@ function settingsFilePath(): string {
 
 /** Keep only the fields we recognise, dropping anything malformed on disk so a
  *  hand-edited or version-skewed file can never feed junk into an adapter. */
-function sanitize(raw: unknown): ProviderSettingsMap {
-  if (!raw || typeof raw !== "object") return {};
+function sanitize(raw: JsonValue | null | undefined): ProviderSettingsMap {
+  const parsed = ProviderSettingsWire.safeParse(raw);
+  if (!parsed.success) return {};
   const out: ProviderSettingsMap = {};
   for (const provider of KNOWN_PROVIDERS) {
-    // SAFETY: raw passed the object check at the top of sanitize() and came
-    // out of JSON.parse, so it satisfies JsonObject; indexing by a
-    // KNOWN_PROVIDERS name reads a JsonValue, re-checked below.
-    const entry = (raw as JsonObject)[provider];
-    if (!entry || typeof entry !== "object") continue;
-    const config: ProviderConfig = {};
-    // SAFETY: entry passed the object check above and is wire JSON, so it
-    // satisfies JsonObject; binaryPath reads back as JsonValue and its type is
-    // verified before use.
-    const binaryPath = (entry as JsonObject).binaryPath;
-    if (typeof binaryPath === "string" && binaryPath.trim()) {
-      config.binaryPath = binaryPath.trim();
+    const entry = parsed.data[provider];
+    if (entry?.binaryPath) {
+      out[provider] = { binaryPath: entry.binaryPath };
     }
-    if (Object.keys(config).length) out[provider] = config;
   }
   return out;
 }

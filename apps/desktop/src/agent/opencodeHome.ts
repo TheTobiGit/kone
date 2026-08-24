@@ -24,8 +24,8 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-export function classifyOpenCodeSpawnFailure(error: unknown): ProviderStatus {
-  const message = error instanceof Error ? error.message : String(error);
+export function classifyOpenCodeSpawnFailure(cause: unknown): ProviderStatus {
+  const message = cause instanceof Error ? cause.message : String(cause);
   const lower = message.toLowerCase();
   if (lower.includes("enoent") || lower.includes("notfound")) {
     return { provider: "opencode", label: "OpenCode", available: false, authStatus: "unknown", readiness: "not-installed", message: "OpenCode CLI (`opencode`) is not installed or not on PATH." };

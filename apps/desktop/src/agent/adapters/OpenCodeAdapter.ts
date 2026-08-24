@@ -19,12 +19,16 @@ type OpenCodeJsonValue =
   | number
   | boolean
   | null
-  | OpenCodeJsonValue[]
-  | { [key: string]: OpenCodeJsonValue };
+  | undefined
+  | RecordLike
+  | OpenCodeJsonValue[];
+
 /** A string-keyed JSON object as opencode returns it, before fields are trusted. */
-export type RecordLike = { [key: string]: OpenCodeJsonValue };
+export interface RecordLike {
+  [key: string]: OpenCodeJsonValue;
+}
 type OpenCodeEvent = { type: string; properties?: RecordLike };
-type OpenCodeClient = { request(method: string, route: string, body?: unknown, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
+type OpenCodeClient = { request(method: string, route: string, body?: OpenCodeJsonValue, signal?: AbortSignal): Promise<any>; events(signal: AbortSignal): AsyncIterable<OpenCodeEvent> };
 /** One opencode `task` tool call, recognized from its tool part. opencode runs
  *  the child as a *separate session* on the same server, so we also track the
  *  child session id (from `state.metadata.sessionId`) to route its events back
@@ -86,22 +90,32 @@ type PendingApproval = {
 
 const SLUG_LINE = /^(\S+\/\S+)\s*$/;
 
-function record(value: unknown): RecordLike | undefined {
-  // SAFETY: the truthiness + typeof-object check in this ternary is the narrowing itself.
-  return value && typeof value === "object" ? value as RecordLike : undefined;
+function record(value: OpenCodeJsonValue | null | undefined): RecordLike | undefined {
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
+  return value && value instanceof Object && !Array.isArray(value) ? (value as RecordLike) : undefined;
 }
 function responseData(value: any): any { return value?.data ?? value; }
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
+function errorMessage(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
   // Provider payloads (e.g. session.error) carry plain `{ message }` objects —
   // String() would render "[object Object]".
-  const r = record(error);
-  if (r && typeof r.message === "string" && r.message) return r.message;
-  return String(error);
+  // SAFETY: error payload may be a record carrying a message field.
+  const r = record(cause as RecordLike | undefined);
+  const msg = textField(r?.message);
+  if (msg) return msg;
+  return String(cause);
 }
-function statusOf(error: unknown): number | undefined {
-  const r = record(error); const response = record(r?.response);
-  return typeof r?.status === "number" ? r.status : typeof r?.statusCode === "number" ? r.statusCode : typeof response?.status === "number" ? response.status : undefined;
+function statusOf(cause: unknown): number | undefined {
+  // SAFETY: error payload may be a record carrying status or statusCode.
+  const r = record(cause as RecordLike | undefined);
+  const response = record(r?.response);
+  const status = r?.status;
+  if (jsonNumber(status)) return status;
+  const statusCode = r?.statusCode;
+  if (jsonNumber(statusCode)) return statusCode;
+  const resStatus = response?.status;
+  if (jsonNumber(resStatus)) return resStatus;
+  return undefined;
 }
 
 /** Parses OpenCode's pretty-printed, slug-prefixed model inventory. */
@@ -113,32 +127,33 @@ export function parseOpenCodeModels(stdout: string): ModelDescriptor[] {
     try {
        // SAFETY: JSON.parse yields unknown; the field probes below validate before use.
        const model = JSON.parse(json.join("\n")) as RecordLike;
-       const name = typeof model.name === "string" ? model.name.trim() : "";
+       const name = textField(model.name)?.trim() ?? "";
        if (!name) return;
-       const providerId = typeof model.providerID === "string" ? model.providerID.trim() : "";
-       const modelId = typeof model.id === "string" ? model.id.trim() : "";
+       const providerId = textField(model.providerID)?.trim() ?? "";
+       const modelId = textField(model.id)?.trim() ?? "";
        const id = providerId && modelId ? `${providerId}/${modelId}` : slug;
        const variants = record(model.variants);
        const efforts = variants ? Object.keys(variants) : [];
-        const limit = record(model.limit);
-        const contextWindowTokens = typeof limit?.context === "number" && Number.isFinite(limit.context) && limit.context > 0 ? limit.context : undefined;
-        const descriptor: ModelDescriptor = { id, label: name };
-        if (contextWindowTokens !== undefined) descriptor.contextWindowTokens = contextWindowTokens;
-        if (efforts.length) descriptor.reasoningEfforts = efforts;
-        if (efforts.includes("medium")) descriptor.defaultReasoningEffort = "medium";
-        else if (efforts.includes("high")) descriptor.defaultReasoningEffort = "high";
-        models.push(descriptor);
+       const limit = record(model.limit);
+       const contextWindowTokens = jsonNumber(limit?.context) && limit.context > 0 ? limit.context : undefined;
+       const descriptor: ModelDescriptor = { id, label: name };
+       if (contextWindowTokens !== undefined) descriptor.contextWindowTokens = contextWindowTokens;
+       if (efforts.length) descriptor.reasoningEfforts = efforts;
+       if (efforts.includes("medium")) descriptor.defaultReasoningEffort = "medium";
+       else if (efforts.includes("high")) descriptor.defaultReasoningEffort = "high";
+       models.push(descriptor);
     } catch { /* skip one malformed block */ }
   };
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = SLUG_LINE.exec(line);
-    if (match) { flush(); slug = match[1]; json = []; }
-    else if (slug) json.push(line);
+  for (const line of stdout.split("\n")) {
+    const match = line.match(SLUG_LINE);
+    if (match) { flush(); slug = match[1]; json = []; continue; }
+    if (slug) json.push(line);
   }
   flush();
   return models;
 }
 
+/** OpenCode deltas can be full replacement snapshots rather than incremental appends. */
 export type OpenCodeTextDelta = { text: string; delta: string };
 
 export function reconcileOpenCodeText(previous: string | undefined, snapshot: string): OpenCodeTextDelta {
@@ -153,12 +168,16 @@ export function appendOpenCodeTextDelta(previous: string, delta: string): OpenCo
 }
 
 /** Only structured 404s permit a resume cursor to be discarded. */
-export function isOpenCodeNotFound(value: unknown): boolean {
-  const queue: unknown[] = [value]; const seen = new Set<unknown>();
+export function isOpenCodeNotFound(cause: unknown): boolean {
+  const queue: unknown[] = [cause]; const seen = new Set<unknown>();
   for (let i = 0; queue.length && i < 32; i += 1) {
-    const node = queue.shift(); const r = record(node); if (!r || seen.has(node)) continue; seen.add(node);
+    const node = queue.shift();
+    // SAFETY: error cause/body nodes may be records probed for HTTP status.
+    const r = record(node as OpenCodeJsonValue | undefined);
+    if (!r || seen.has(node)) continue;
+    seen.add(node);
     const status = statusOf(r); if (status === 404) return true; if (status !== undefined) continue;
-    if (typeof r.name === "string" && r.name.toLowerCase() === "notfounderror") return true;
+    if (textField(r.name)?.toLowerCase() === "notfounderror") return true;
     for (const key of ["cause", "body", "error", "data"]) if (r[key] !== undefined) queue.push(r[key]);
   }
   return false;
@@ -166,18 +185,17 @@ export function isOpenCodeNotFound(value: unknown): boolean {
 
 export type OpenCodeTokenTally = { input: number; output: number };
 
-export function accumulateOpenCodeTokens(current: { input: number; output: number }, tokens: unknown): OpenCodeTokenTally {
+export function accumulateOpenCodeTokens(current: { input: number; output: number }, tokens: OpenCodeJsonValue | null | undefined): OpenCodeTokenTally {
   const t = record(tokens); if (!t) return current;
-  return { input: current.input + (typeof t.input === "number" ? t.input : 0), output: current.output + (typeof t.output === "number" ? t.output : 0) + (typeof t.reasoning === "number" ? t.reasoning : 0) };
+  return { input: current.input + (jsonNumber(t.input) ? t.input : 0), output: current.output + (jsonNumber(t.output) ? t.output : 0) + (jsonNumber(t.reasoning) ? t.reasoning : 0) };
 }
 
-function nonNegativeInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && Number.isInteger(value) ? value : undefined;
+function nonNegativeInteger(value: OpenCodeJsonValue | null | undefined): number | undefined {
+  return jsonNumber(value) && value >= 0 && Number.isInteger(value) ? value : undefined;
 }
 
-function stringField(value: unknown, key: string): string | undefined {
-  const field = record(value)?.[key];
-  return typeof field === "string" ? field : undefined;
+function stringField(value: OpenCodeJsonValue | null | undefined, key: string): string | undefined {
+  return textField(record(value)?.[key]);
 }
 
 /** A decoded JSON number — finiteness separates the number variant from every
@@ -192,7 +210,7 @@ function jsonNumber(value: OpenCodeJsonValue | undefined): value is number {
 function textField(value: OpenCodeJsonValue | undefined): string | undefined {
   if (value === undefined || value === null || value === true || value === false) return undefined;
   if (Array.isArray(value) || value instanceof Object || jsonNumber(value)) return undefined;
-  return value;
+  return String(value);
 }
 
 /** Per-question selections opencode echoes back on reply events — an array of
@@ -209,8 +227,8 @@ function openCodeModelName(metadata: RecordLike | undefined): string | undefined
 }
 
 /** The one-line brief the parent handed the child. */
-function subagentDescription(input: RecordLike | undefined, title: unknown): string | undefined {
-  return stringField(input, "description") ?? (typeof title === "string" && title ? title : undefined);
+function subagentDescription(input: RecordLike | undefined, title: OpenCodeJsonValue | null | undefined): string | undefined {
+  return stringField(input, "description") ?? (textField(title) || undefined);
 }
 
 /** The agent definition invoked, e.g. `explore` / `general`. */
@@ -218,7 +236,7 @@ function subagentType(input: RecordLike | undefined): string | undefined {
   return stringField(input, "subagent_type");
 }
 
-function subagentStatus(status: unknown): SubagentStatus {
+function subagentStatus(status: OpenCodeJsonValue | null | undefined): SubagentStatus {
   if (status === "completed") return "completed";
   if (status === "error") return "failed";
   if (status === "pending") return "starting";
@@ -227,15 +245,16 @@ function subagentStatus(status: unknown): SubagentStatus {
 
 /** Strip the `<task>`/`<task_result>` wrapper opencode renders around the
  *  child's final output into a plain summary. */
-function openCodeTaskSummary(output: unknown): string | undefined {
-  if (typeof output !== "string" || !output) return undefined;
-  const cleaned = output.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+function openCodeTaskSummary(output: OpenCodeJsonValue | null | undefined): string | undefined {
+  const text = textField(output);
+  if (!text) return undefined;
+  const cleaned = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   return cleaned || undefined;
 }
 
 /** OpenCode reports cumulative session totals on assistant messages and step ends. */
 export function normalizeOpenCodeTokenUsage(
-  tokens: unknown,
+  tokens: OpenCodeJsonValue | null | undefined,
   contextWindow?: number,
 ): (TokenUsage & TokenUsageSplits) | undefined {
   const tokenRecord = record(tokens);
@@ -258,7 +277,7 @@ export function normalizeOpenCodeTokenUsage(
   const cachedInputTokens = cacheReadTokens + cacheWriteTokens;
   const total = inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens;
   if (total <= 0) return undefined;
-  const normalizedContextWindow = typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+  const normalizedContextWindow = contextWindow !== undefined && contextWindow !== null && Number.isFinite(contextWindow) && contextWindow > 0
     ? contextWindow
     : undefined;
   const contextUsed = normalizedContextWindow !== undefined ? Math.min(total, normalizedContextWindow) : total;
@@ -282,7 +301,7 @@ export function normalizeOpenCodeTokenUsage(
 
 export function buildOpenCodeTokenUsageKey(input: {
   messageId: string;
-  tokens: unknown;
+  tokens: OpenCodeJsonValue | null | undefined;
   contextWindow?: number;
 }): string | undefined {
   const tokenRecord = record(input.tokens);
@@ -302,7 +321,7 @@ export function buildOpenCodeTokenUsageKey(input: {
   ) {
     return undefined;
   }
-  const normalizedContextWindow = typeof input.contextWindow === "number" && Number.isFinite(input.contextWindow) && input.contextWindow > 0
+  const normalizedContextWindow = input.contextWindow !== undefined && input.contextWindow !== null && Number.isFinite(input.contextWindow) && input.contextWindow > 0
     ? input.contextWindow
     : "";
   return [
@@ -354,11 +373,11 @@ function toolKind(tool: string): RuntimeItemKind { return /^todo(write|read)$/i.
 /** Normalize an opencode permission ask into the neutral approval request. The
  *  ask names the permission being requested (`bash`, `edit:path`, a URL for
  *  webfetch); the kind follows its family. */
-function openCodeApprovalRequest(permission: unknown): ApprovalRequest {
+function openCodeApprovalRequest(permission: OpenCodeJsonValue | null | undefined): ApprovalRequest {
   const permissionRecord = record(permission);
   const raw =
-    typeof permission === "string"
-      ? permission
+    permission && !(permission instanceof Object)
+      ? String(permission)
       : permissionRecord
         ? String(permissionRecord.type ?? permissionRecord.permission ?? "")
         : String(permission ?? "");
@@ -385,7 +404,9 @@ function toOpenCodeReply(decision: ApprovalDecision): "once" | "always" | "rejec
   }
 }
 function toolStatus(status: string): RuntimeItemStatus { return status === "error" ? "failed" : status === "completed" ? "completed" : "in-progress"; }
-function detailForTool(state: RecordLike): string | undefined { return typeof state.output === "string" ? state.output : typeof state.error === "string" ? state.error : typeof state.title === "string" ? state.title : undefined; }
+function detailForTool(state: RecordLike): string | undefined {
+  return textField(state.output) ?? textField(state.error) ?? textField(state.title);
+}
 
 function base(session: OpenCodeSession, source: RuntimeEvent["source"] = "opencode.sse.message"): Omit<RuntimeEvent, "type"> {
   // SAFETY: the literal supplies every field Omit leaves required.
@@ -452,7 +473,7 @@ export function buildOpenCodeSubagentSnapshot(input: {
   status: SubagentStatus;
   toolInput: RecordLike;
   toolMetadata: RecordLike;
-  stateTitle: unknown;
+  stateTitle: OpenCodeJsonValue;
   childSessionId: string | undefined;
   variant?: string;
 }): SubagentRunSnapshot {
@@ -563,7 +584,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         const koneStatus = record(record(mcpResult)?.kone);
         if (koneStatus?.status !== "connected") {
           console.error(
-            `[opencode] kone MCP server did not connect: ${koneStatus?.error ?? "unknown status"}`,
+            `[opencode] kone MCP server did not connect: ${String(koneStatus?.error ?? "unknown status")}`,
           );
         }
       } catch (error) {
@@ -684,8 +705,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
   /** The session id an SSE event belongs to, wherever opencode stashed it. */
   private eventSessionId(event: OpenCodeEvent): string | undefined {
     const p = event.properties ?? {};
-    return typeof p.sessionID === "string" ? p.sessionID
-      : stringField(p.info, "sessionID") ?? stringField(p.part, "sessionID") ?? stringField(p.tool, "sessionID");
+    return textField(p.sessionID)
+      ?? stringField(p.info, "sessionID")
+      ?? stringField(p.part, "sessionID")
+      ?? stringField(p.tool, "sessionID");
   }
 
   private unexpectedExit(session: OpenCodeSession, code: number | null, message?: string): void {
@@ -714,7 +737,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     this.emit({ ...base(session), type: "thread.token-usage.updated", usage });
   }
 
-  private maybeEmitAssistantTokenUsage(session: OpenCodeSession, messageId: string, tokens: unknown): void {
+  private maybeEmitAssistantTokenUsage(session: OpenCodeSession, messageId: string, tokens: OpenCodeJsonValue | null | undefined): void {
     const usage = normalizeOpenCodeTokenUsage(tokens, session.contextWindow);
     const usageKey = usage ? buildOpenCodeTokenUsageKey({ messageId, tokens, contextWindow: session.contextWindow }) : undefined;
     if (!usage || !usageKey || usageKey === session.lastEmittedTokenUsageKey) return;
@@ -739,7 +762,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         break;
       }
       case "message.removed": { const removedId = textField(p.messageID); if (removedId) session.messageRoleById.delete(removedId); break; }
-      case "message.part.delta": { const partId = textField(p.partID); const part = partId !== undefined ? session.partById.get(partId) : undefined; const role = part?.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined; if (!part || partId === undefined || (role !== undefined && role !== "assistant") || !active || typeof p.delta !== "string") break; const prior = session.emittedTextByPartId.get(partId) ?? ""; const merged = appendOpenCodeTextDelta(prior, p.delta); session.emittedTextByPartId.set(partId, merged.text); this.emit({ ...base(session), type: "item.updated", turnId: active, item: { itemId: partId, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text } }); break; }
+      case "message.part.delta": { const partId = textField(p.partID); const part = partId !== undefined ? session.partById.get(partId) : undefined; const role = part?.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined; const delta = textField(p.delta); if (!part || partId === undefined || (role !== undefined && role !== "assistant") || !active || delta === undefined) break; const prior = session.emittedTextByPartId.get(partId) ?? ""; const merged = appendOpenCodeTextDelta(prior, delta); session.emittedTextByPartId.set(partId, merged.text); this.emit({ ...base(session), type: "item.updated", turnId: active, item: { itemId: partId, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text } }); break; }
       case "message.part.updated": this.handlePart(session, record(p.part)); break;
       case "session.next.step.ended": {
         const usage = normalizeOpenCodeTokenUsage(p.tokens, session.contextWindow);
@@ -866,9 +889,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
         const partId = textField(p.partID);
         const part = partId !== undefined ? session.partById.get(partId) : undefined;
         const role = part?.messageID !== undefined ? session.messageRoleById.get(textField(part.messageID) ?? "") : undefined;
-        if (!part || partId === undefined || (role !== undefined && role !== "assistant") || !session.activeTurnId || typeof p.delta !== "string") break;
+        const delta = textField(p.delta);
+        if (!part || partId === undefined || (role !== undefined && role !== "assistant") || !session.activeTurnId || delta === undefined) break;
         const prior = session.emittedTextByPartId.get(partId) ?? "";
-        const merged = appendOpenCodeTextDelta(prior, p.delta);
+        const merged = appendOpenCodeTextDelta(prior, delta);
         session.emittedTextByPartId.set(partId, merged.text);
         this.emit({ ...base(session), type: "item.updated", turnId: session.activeTurnId, item: { itemId: partId, kind: part.type === "reasoning" ? "reasoning_text" : "assistant_text", status: "in-progress", text: merged.text }, subagentToolUseId: toolUseId });
         break;
@@ -914,7 +938,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       const summary = openCodeTaskSummary(state.output);
       if (summary) run.snapshot.summary = summary;
     } else {
-      const error = typeof state.error === "string" && state.error ? state.error : openCodeTaskSummary(state.output);
+      const error = textField(state.error) || openCodeTaskSummary(state.output);
       if (error) run.snapshot.summary = error;
     }
     this.emitSubagent(session, run, "subagent.completed");

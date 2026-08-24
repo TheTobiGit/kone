@@ -49,11 +49,12 @@ function decodeKeychainValue(raw: string): string {
 // exit 44 / "could not be found" is a genuine miss; anything else non-zero
 // (interaction not allowed, user canceled/denied, or a timeout kill while the
 // dialog waited) means the item is there but access wasn't granted.
-function classifyKeychainError(error: unknown): "notFound" | "accessDenied" {
+function classifyKeychainError(cause: unknown): "notFound" | "accessDenied" {
   // SAFETY: only optional fields are probed off the caught error; anything
   // shapeless simply fails every match and lands on accessDenied below.
-  const err = error as { code?: number | string; stderr?: string; message?: string };
-  const code = typeof err.code === "number" ? err.code : undefined;
+  const err = cause as { code?: number | string; stderr?: string; message?: string };
+  // SAFETY: Number.isInteger verifies err.code is an integer exit code.
+  const code = Number.isInteger(err.code) ? (err.code as number) : undefined;
   const text = `${err.stderr ?? ""} ${err.message ?? ""}`.toLowerCase();
   if (code === 44 || text.includes("could not be found") || text.includes("specified item could not be found")) {
     return "notFound";
@@ -106,8 +107,8 @@ export async function detectKeychainItem(
 /** Strips anything token-shaped out of an error's message before it's ever
  *  allowed near a log line — the one place quota errors are allowed to
  *  surface at all. */
-export function sanitizeError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
+export function sanitizeError(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause);
   return raw
     .replace(/\0/g, "")
     .replace(/Bearer\s+[^\s,;"']+/gi, "Bearer [REDACTED]")
@@ -197,7 +198,7 @@ export function quotaRequestSignal(parent?: AbortSignal): AbortSignal {
 /** Coerces a provider's percent-used value — which arrives as 0..1 from some
  *  fields and 0..100 from others — into a safe 0..1 fraction. Anything
  *  non-finite (missing field, string garbage) is `null`, not a false 0. */
-export function fraction(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+export function fraction(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
   return Math.min(1, Math.max(0, value / 100));
 }

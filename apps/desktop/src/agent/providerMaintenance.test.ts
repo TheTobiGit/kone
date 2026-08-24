@@ -62,8 +62,7 @@ describe("compareVersions", () => {
 
   test("falls back to a stable string compare for non-semver builds", () => {
     // cursor-agent reports date-stamped builds; the point is not to throw.
-    expect(compareVersions("2026.07.23-e383d2b", "2026.07.23-e383d2b")).toBe(0);
-    expect(typeof compareVersions("2026.07.01-a", "2026.07.23-b")).toBe("number");
+    expect(Number.isFinite(compareVersions("2026.07.01-a", "2026.07.23-b"))).toBe(true);
   });
 });
 

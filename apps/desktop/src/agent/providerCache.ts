@@ -18,6 +18,10 @@ import { userDataPath } from "./userDataDir.js";
 // the CLI has since dropped (the adapters degrade to their own default).
 // Written with the same plain best-effort file I/O as providerSettings.ts.
 
+import { z } from "zod";
+
+import type { JsonValue } from "../jsonValue.js";
+
 const VERSION = 1;
 
 export interface ProviderSurfaceSnapshot {
@@ -32,14 +36,30 @@ function emptySnapshot(): ProviderSurfaceSnapshot {
   return { version: VERSION, savedAt: 0, statuses: [], models: {} };
 }
 
-/** The persisted document as far as sanitisation cares: fields are known by
- *  name, but each arrives unparsed and is re-checked below before use. */
-interface WireSnapshot {
-  version?: unknown;
-  savedAt?: unknown;
-  statuses?: unknown;
-  models?: unknown;
-}
+const ModelDescriptorWire = z.object({
+  id: z.string(),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  contextWindow: z.number().optional(),
+  maxOutputTokens: z.number().optional(),
+  isDefault: z.boolean().optional(),
+}).passthrough();
+
+const ProviderStatusWire = z.object({
+  provider: z.string(),
+  label: z.string(),
+  available: z.boolean(),
+  authStatus: z.enum(["logged-in", "logged-out", "unknown"]),
+  readiness: z.enum(["ready", "needs-auth", "not-installed", "error", "unsupported"]),
+  message: z.string().optional(),
+}).passthrough();
+
+const WireSnapshotSchema = z.object({
+  version: z.number(),
+  savedAt: z.number().optional(),
+  statuses: z.array(ProviderStatusWire).optional(),
+  models: z.record(z.string(), z.array(ModelDescriptorWire)).optional(),
+});
 
 let cachedPath: string | null = null;
 function cacheFilePath(): string {
@@ -49,34 +69,21 @@ function cacheFilePath(): string {
 
 /** Keep only well-shaped entries so a hand-edited or version-skewed file can
  *  never feed junk ids into an adapter or the renderer's picker. */
-function sanitize(raw: unknown): ProviderSurfaceSnapshot {
+function sanitize(raw: JsonValue | null | undefined): ProviderSurfaceSnapshot {
   const out = emptySnapshot();
-  if (!raw || typeof raw !== "object") return out;
-  // SAFETY: the guard above proved raw is a non-null object, so reading its
-  // snapshot fields through this partial view is sound; every field still
-  // arrives as unknown and is re-checked before it reaches the output.
-  const obj = raw as Partial<WireSnapshot>;
-  if (obj.version !== VERSION) return out;
-  if (typeof obj.savedAt === "number") out.savedAt = obj.savedAt;
-  if (Array.isArray(obj.statuses)) {
-    out.statuses = obj.statuses.filter(
-      (s): s is ProviderStatus =>
-        Boolean(s) && typeof s === "object" && typeof s.provider === "string",
-    );
+  const parsed = WireSnapshotSchema.safeParse(raw);
+  if (!parsed.success || parsed.data.version !== VERSION) return out;
+  if (parsed.data.savedAt !== undefined) out.savedAt = parsed.data.savedAt;
+  if (parsed.data.statuses) {
+    // SAFETY: ProviderStatusWire validates the structure of each status entry.
+    out.statuses = parsed.data.statuses as ProviderStatus[];
   }
-  const models = obj.models;
-  if (models && typeof models === "object") {
-    for (const [provider, list] of Object.entries(models)) {
-      if (!Array.isArray(list)) continue;
-      const clean = list.filter(
-        (m): m is ModelDescriptor =>
-          Boolean(m) && typeof m === "object" && typeof m.id === "string",
-      );
-      if (!clean.length) continue;
-      // SAFETY: provider is an Object.entries key over the persisted models
-      // map, and cacheModels, the sole writer, only stores ProviderKind
-      // strings there; a stray key could at worst add an entry nothing reads.
-      out.models[provider as ProviderKind] = clean;
+  if (parsed.data.models) {
+    for (const [provider, list] of Object.entries(parsed.data.models)) {
+      if (list.length > 0) {
+        // SAFETY: ModelDescriptorWire validates each model descriptor.
+        out.models[provider as ProviderKind] = list as ModelDescriptor[];
+      }
     }
   }
   return out;

@@ -11,27 +11,45 @@
 // no principled way to know which reseller a given kone install actually
 // routes through. This port keeps that rule so results reproduce.
 
+import { z } from "zod";
+
+import type { JsonValue } from "../../../jsonValue.js";
 import type { ModelRates, PricingTable } from "./types.js";
 
-interface CostBlock {
-  input?: number;
-  output?: number;
-  cache_read?: number;
-  cache_write?: number;
-}
+const TierBlockSchema = z.object({
+  input: z.number().finite().optional(),
+  output: z.number().finite().optional(),
+  cache_read: z.number().finite().optional(),
+  cache_write: z.number().finite().optional(),
+  tier: z.object({
+    type: z.string().optional(),
+    size: z.number().finite().optional(),
+  }).optional(),
+}).passthrough();
 
-interface TierBlock extends CostBlock {
-  tier?: { type?: string; size?: number };
-}
+const CostBlockSchema = z.object({
+  input: z.number().finite().optional(),
+  output: z.number().finite().optional(),
+  cache_read: z.number().finite().optional(),
+  cache_write: z.number().finite().optional(),
+  tiers: z.array(TierBlockSchema).optional(),
+}).passthrough();
 
-function isCostBlock(value: unknown): value is CostBlock & { tiers?: TierBlock[] } {
-  return Boolean(value) && typeof value === "object";
-}
+const ModelBlockSchema = z.object({
+  cost: CostBlockSchema.optional(),
+}).passthrough();
 
-function longContextTier(cost: CostBlock & { tiers?: TierBlock[] }, baseInput: number) {
+const ProviderBlockSchema = z.object({
+  models: z.record(z.string(), ModelBlockSchema).optional(),
+}).passthrough();
+
+const ModelsDevFeedSchema = z.record(z.string(), ProviderBlockSchema);
+
+function longContextTier(cost: z.infer<typeof CostBlockSchema>, baseInput: number) {
   const tier = cost.tiers?.[0];
-  if (!tier || typeof tier.tier?.size !== "number") return undefined;
-  if (typeof tier.input !== "number" || typeof tier.output !== "number") return undefined;
+  if (!tier || tier.tier?.size === undefined || tier.input === undefined || tier.output === undefined) {
+    return undefined;
+  }
   return {
     thresholdTokens: tier.tier.size,
     inputPerMillion: tier.input,
@@ -45,31 +63,29 @@ function longContextTier(cost: CostBlock & { tiers?: TierBlock[] }, baseInput: n
  *  entries with both an input and output rate are kept — the feed also
  *  carries embedding/image/speech models with a differently-shaped `cost`
  *  block that this codec deliberately doesn't try to price. */
-export function parseModelsDev(raw: unknown, retrievedAt?: string): PricingTable {
-  if (!raw || typeof raw !== "object") throw new Error("models.dev feed is not a JSON object");
+export function parseModelsDev(raw: JsonValue | null | undefined, retrievedAt?: string): PricingTable {
+  const parsed = ModelsDevFeedSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("models.dev feed is not a JSON object");
   const entries: Record<string, ModelRates> = {};
   // Name-sorted entries keep the documented "first provider in sorted order
   // wins" rule deterministic.
-  const providerBlocks = Object.entries(raw).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const providerBlocks = Object.entries(parsed.data).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   for (const [, provider] of providerBlocks) {
-    if (!provider || typeof provider !== "object") continue;
-    const models = provider.models;
-    if (!models || typeof models !== "object") continue;
-    for (const [modelId, value] of Object.entries(models)) {
+    if (!provider.models) continue;
+    for (const [modelId, value] of Object.entries(provider.models)) {
       if (entries[modelId]) continue; // first provider in sorted order wins
-      if (!value || typeof value !== "object") continue;
-      const costRaw = "cost" in value ? value.cost : undefined;
-      if (!isCostBlock(costRaw)) continue;
-      const { input, output } = costRaw;
-      if (typeof input !== "number" || typeof output !== "number") continue;
+      const cost = value.cost;
+      if (!cost) continue;
+      const { input, output } = cost;
+      if (input === undefined || output === undefined) continue;
       entries[modelId] = {
         inputPerMillion: input,
         outputPerMillion: output,
-        cacheWritePerMillion: costRaw.cache_write ?? input,
-        cacheReadPerMillion: costRaw.cache_read ?? input * 0.1,
-        cacheReadIsExplicit: costRaw.cache_read !== undefined,
+        cacheWritePerMillion: cost.cache_write ?? input,
+        cacheReadPerMillion: cost.cache_read ?? input * 0.1,
+        cacheReadIsExplicit: cost.cache_read !== undefined,
         fastMultiplier: 1,
-        longContext: longContextTier(costRaw, input),
+        longContext: longContextTier(cost, input),
       };
     }
   }
