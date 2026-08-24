@@ -17,7 +17,7 @@ import { writeFileAtomicSync } from "../../../atomicWrite.js";
 
 import litellmSnapshot from "./snapshots/litellm.snapshot.json" with { type: "json" };
 import modelsDevSnapshot from "./snapshots/models-dev.snapshot.json" with { type: "json" };
-import { decodeCompact, encodeCompact, parseCompactJson, type CompactFile } from "./compact.js";
+import { decodeCompact, encodeCompact, type CompactFile } from "./compact.js";
 import { parseLiteLLM } from "./litellmCodec.js";
 import { parseModelsDev } from "./modelsDevCodec.js";
 import { mergeTables } from "./catalog.js";
@@ -84,7 +84,9 @@ function readJsonFile<T>(path: string | undefined): T | undefined {
   }
 }
 
-function writeJsonFile(path: string | undefined, data: unknown): void {
+import type { JsonValue } from "../../../jsonValue.js";
+
+function writeJsonFile(path: string | undefined, data: JsonValue | Record<string, SourceState> | Record<SourceId, SourceState>): void {
   if (path === undefined) return;
   try {
     writeFileAtomicSync(path, JSON.stringify(data));
@@ -104,10 +106,10 @@ function loadTable(source: SourceId): PricingTable {
   // repo, so they match the CompactFile shape decodeCompact consumes.
   const bundled = decodeCompact((source === "litellm" ? litellmSnapshot : modelsDevSnapshot) as CompactFile);
   let table = bundled;
-  const cached = readJsonFile<string>(cacheFile(source));
-  if (cached !== undefined) {
+  const cached = readJsonFile<CompactFile>(cacheFile(source));
+  if (cached && cached.models instanceof Object) {
     try {
-      table = mergeTables(bundled, parseCompactJson(typeof cached === "string" ? cached : JSON.stringify(cached)));
+      table = mergeTables(bundled, decodeCompact(cached));
     } catch {
       // Corrupt cache file — keep serving the bundled snapshot.
     }

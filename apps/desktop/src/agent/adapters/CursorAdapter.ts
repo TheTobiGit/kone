@@ -12,6 +12,7 @@ import {
   resolveCursorBinary,
 } from "../cursorHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
+import type { JsonObject, JsonValue } from "../../jsonValue.js";
 import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
 import { isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
@@ -220,33 +221,35 @@ type CursorConfigOption = {
 
 // ── small JSON helpers ───────────────────────────────────────────────────────
 
-/** Any JSON value as it arrives off the ACP wire. */
-export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
-
-/** A JSON object: every property is another JSON value. */
-export type JsonObject = { [key: string]: JsonValue };
-
-function asRecord(value: unknown): JsonObject | undefined {
-  // SAFETY: every value here came out of JSON.parse of a protocol frame, so a
-  // non-null object is exactly a JsonObject; the typeof/null checks are the
-  // narrowing itself.
-  return typeof value === "object" && value !== null ? (value as JsonObject) : undefined;
+function asRecord(value: JsonValue): JsonObject | undefined {
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
+  return value && value instanceof Object && !Array.isArray(value) ? (value as JsonObject) : undefined;
 }
 
-function readString(value: unknown, ...path: string[]): string | undefined {
-  let cursor: unknown = value;
+function readString(value: JsonValue | null | undefined, ...path: string[]): string | undefined {
+  let cursor: JsonValue | null | undefined = value;
   for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "string" ? cursor : undefined;
+  if (
+    cursor === undefined ||
+    cursor === null ||
+    cursor instanceof Object ||
+    Number.isFinite(cursor) ||
+    cursor === true ||
+    cursor === false
+  ) {
+    return undefined;
+  }
+  return String(cursor);
 }
 
-function asArray(value: unknown): unknown[] {
+function asArray(value: JsonValue | null | undefined): JsonValue[] {
   return Array.isArray(value) ? value : [];
 }
 
 /** Normalize an ACP `session/request_permission` payload into the neutral ask
  *  the renderer shows. The request names the tool call it wants to allow, so
  *  the headline is the command/title and the kind follows the tool family. */
-function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
+function buildAcpApprovalRequest(params: JsonValue | null | undefined): ApprovalRequest {
   const toolCall = asRecord(asRecord(params)?.toolCall);
   const toolKind = readString(toolCall, "kind") ?? "";
   const kind: ApprovalRequestKind = /^bash$/i.test(toolKind)
@@ -275,7 +278,7 @@ function buildAcpApprovalRequest(params: unknown): ApprovalRequest {
  *  option; `reject-and-stop` deliberately matches NOTHING — the provider gets a
  *  cancelled outcome and the adapter interrupts the turn (the ACP spell of
  *  undefined for "cancel"). No match returns undefined (a cancelled outcome). */
-function selectPermissionOption(options: unknown[], decision: ApprovalDecision): string | undefined {
+function selectPermissionOption(options: JsonValue[], decision: ApprovalDecision): string | undefined {
   if (decision === "reject-and-stop") return undefined;
   const wanted = decision === "allow-once" ? "allow_once" : decision === "allow-always" ? "allow_always" : "reject_once";
   const direct = options.find((option) => readString(option, "kind")?.startsWith(wanted));
@@ -291,7 +294,7 @@ function selectPermissionOption(options: unknown[], decision: ApprovalDecision):
 
 /** Parse a Cursor config option (`{ id, name, category, currentValue, options:
  *  [{ value, name }] }`), tolerating the fields it omits. */
-export function parseConfigOptions(value: unknown): CursorConfigOption[] {
+export function parseConfigOptions(value: JsonValue | null | undefined): CursorConfigOption[] {
   const out: CursorConfigOption[] = [];
   for (const raw of asArray(value)) {
     const id = readString(raw, "id");
@@ -348,7 +351,7 @@ type AcpSessionResult = {
  *  fallback) is only knowable from this matrix. An empty or missing bag is a
  *  valid response — later set_config_option / config_option_update still fill
  *  it — so this must not throw. */
-export function seedFromSessionResponse(response: unknown): CursorSessionSeed {
+export function seedFromSessionResponse(response: JsonValue | null | undefined): CursorSessionSeed {
   const record = asRecord(response);
   const modeIds = asArray(asRecord(asRecord(record)?.modes)?.availableModes)
     .map((raw) => readString(raw, "id"))
@@ -467,10 +470,14 @@ export function parseStoredCursorContext(
         // Sanity: the window must look like a real token budget and the fill
         // must fit inside it. Anything else means the format shifted.
         if (
-          typeof window === "number" &&
+          window !== undefined &&
+          window !== null &&
+          Number.isFinite(window) &&
           window >= 10_000 &&
           window <= 10_000_000 &&
-          typeof used === "number" &&
+          used !== undefined &&
+          used !== null &&
+          Number.isFinite(used) &&
           used >= 0 &&
           used <= window
         ) {
@@ -496,7 +503,7 @@ export function parseStoredCursorContext(
  *  context window, and a speed tier — under different names. The fourth axis,
  *  `thinking` (a plain on/off that only some Anthropic bases carry), has no
  *  ModelDescriptor equivalent, so it keeps Cursor's own default. */
-export function toModelDescriptor(raw: unknown): ModelDescriptor | undefined {
+export function toModelDescriptor(raw: JsonValue | null | undefined): ModelDescriptor | undefined {
   const id = readString(raw, "value");
   if (!id) return undefined;
   const configOptions = parseConfigOptions(asRecord(raw)?.configOptions);
@@ -716,7 +723,7 @@ const SESSION_UPDATE_KINDS: ReadonlySet<string> = new Set([
  *  is the whole validation: every field across every variant is optional, so
  *  any object carrying a known kind satisfies its variant. */
 function isAcpSessionUpdate(value: JsonObject): value is AcpSessionUpdate {
-  return typeof value.sessionUpdate === "string" && SESSION_UPDATE_KINDS.has(value.sessionUpdate);
+  return Boolean(value.sessionUpdate && !(value.sessionUpdate instanceof Object) && SESSION_UPDATE_KINDS.has(String(value.sessionUpdate)));
 }
 
 /** Token counts as Cursor spells them over ACP: camelCase today, with the
@@ -828,9 +835,9 @@ export class CursorAdapter implements ProviderAdapter {
 
   async listModels(): Promise<ModelDescriptor[]> {
     if (!this.modelsCache) {
-      this.modelsCache = this.fetchModels().catch((error: unknown) => {
+      this.modelsCache = this.fetchModels().catch((cause: unknown) => {
         this.modelsCache = null;
-        throw error;
+        throw cause;
       });
     }
     return this.modelsCache;
@@ -1072,7 +1079,7 @@ export class CursorAdapter implements ProviderAdapter {
       )
       .then(
         (response) => this.completeTurn(session, turnId, response),
-        (error: unknown) => this.failTurn(session, turnId, error),
+        (cause: unknown) => this.failTurn(session, turnId, cause),
       );
 
     return { threadId: input.threadId, turnId };
@@ -1256,7 +1263,7 @@ export class CursorAdapter implements ProviderAdapter {
    *  back to a cancelled outcome when none matches. */
   private async requestPermission(
     session: CursorSession,
-    params: unknown,
+    params: JsonValue | null | undefined,
   ): Promise<{ outcome: { outcome: string; optionId?: string } }> {
     const options = asArray(asRecord(params)?.options);
     // Fail closed: a permission request with no active turn (a recovery or
@@ -1488,7 +1495,7 @@ export class CursorAdapter implements ProviderAdapter {
         // SAFETY: the row shape is fixed by the SQL's single selected column.
         const metaRow = db.prepare("SELECT value FROM meta").get() as { value: string | Uint8Array } | undefined;
         if (!metaRow) return undefined;
-        const hex = typeof metaRow.value === "string" ? metaRow.value : Buffer.from(metaRow.value).toString("latin1");
+        const hex = metaRow.value instanceof Uint8Array ? Buffer.from(metaRow.value).toString("latin1") : String(metaRow.value);
         // SAFETY: JSON.parse yields unknown; consumers probe fields before use.
         const meta = JSON.parse(Buffer.from(hex, "hex").toString("utf8")) as { latestRootBlobId?: string };
         const latest = meta.latestRootBlobId;
@@ -1622,14 +1629,14 @@ export class CursorAdapter implements ProviderAdapter {
     });
   }
 
-  private failTurn(session: CursorSession, turnId: string, error: unknown): void {
+  private failTurn(session: CursorSession, turnId: string, cause: unknown): void {
     if (session.activeTurnId !== turnId) return;
     this.endTurn(session, turnId, "failed");
     void this.emitUsageFallback(session);
     // A prompt rejected because the child died is already covered by the
     // `session.exited` event; report the turn as failed either way so the
     // renderer never keeps a turn spinning.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = cause instanceof Error ? cause.message : String(cause);
     const reason = session.interrupting ? "interrupted" : "failed";
     session.interrupting = false;
     this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason, message });
@@ -1640,8 +1647,8 @@ export class CursorAdapter implements ProviderAdapter {
   /** A degraded-but-continuing condition (a rejected model, a mode Cursor
    *  doesn't have). Surfaced as session state, never thrown — none of these are
    *  worth losing a session over. */
-  private warn(session: CursorSession, summary: string, error: unknown): void {
-    const detail = error instanceof Error ? error.message : String(error);
+  private warn(session: CursorSession, summary: string, cause: unknown): void {
+    const detail = cause instanceof Error ? cause.message : String(cause);
     this.emit({
       ...this.base(session),
       source: "cursor.acp.lifecycle",

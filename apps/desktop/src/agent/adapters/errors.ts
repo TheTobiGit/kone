@@ -49,8 +49,8 @@ export function classifyProviderError(message: string): ProviderErrorClass {
  *  would reopen on a blank conversation and the user would never know why).
  *  session-closed classifiers, where the process is dead and a fresh start is
  *  genuinely the only option). */
-export function isRecoverableCodexResumeError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+export function isRecoverableCodexResumeError(cause: unknown): boolean {
+  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
   if (!message.includes("thread/resume")) return false;
   return [
     "not found",
@@ -73,8 +73,8 @@ export function isRecoverableCodexResumeError(error: unknown): boolean {
  *  stored session id: Cursor (`session/load`), Droid (`session/resume`/
  *  `session/load`) and Claude (`query` resume). Codex uses the method-scoped
  *  isRecoverableCodexResumeError above. */
-export function isResumeRefusalError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+export function isResumeRefusalError(cause: unknown): boolean {
+  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
   return [
     "not found",
     "does not exist",

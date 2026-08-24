@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { readCodexAuth, isCodexCliVersionSupported, MIN_CODEX_CLI_VERSION, parseCodexCliVersion } from "../codexHome.js";
 import { CODEX_GATEWAY_TOKEN_ENV, prepareCodexHomeOverlay } from "../codexOverlay.js";
 import { JsonRpcClient } from "../jsonRpc.js";
+import type { JsonObject, JsonValue } from "../../jsonValue.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { probe } from "../spawn.js";
 import type {
@@ -39,7 +40,7 @@ import {
   isRecoverableCodexResumeError,
 } from "./errors.js";
 import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from "../gateway/appContext.js";
-import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks } from "../planTasks.js";
+import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "../planTasks.js";
 import {
   buildCodexAttachmentInput,
   composePromptText,
@@ -176,31 +177,33 @@ type PendingApproval = {
 /** One decoded JSON value from a codex app-server frame. Every RPC response,
  *  notification params, and nested item payload lands here first; field-level
  *  probes (`readString`, `numberOrUndefined`, …) narrow it at the read sites. */
-type CodexJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | CodexJsonValue[]
-  | { [key: string]: CodexJsonValue };
+export type CodexJsonValue = JsonValue;
 
-/** A string-keyed JSON object as the app-server sends it — the decoded shape
- *  of an RPC payload before individual fields are trusted. */
-type CodexJsonObject = { [key: string]: CodexJsonValue };
+export type CodexJsonObject = JsonObject;
 
-function asRecord(value: unknown): CodexJsonObject | undefined {
-  // SAFETY: the object check on the line above is the gate; readers probe fields.
-  return typeof value === "object" && value !== null ? (value as CodexJsonObject) : undefined;
+export function asRecord(value: CodexJsonValue): CodexJsonObject | undefined {
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
+  return value && value instanceof Object && !Array.isArray(value) ? (value as CodexJsonObject) : undefined;
 }
 
-function readString(value: unknown, ...path: string[]): string | undefined {
-  let cursor: unknown = value;
+function readString(value: CodexJsonValue | null | undefined, ...path: string[]): string | undefined {
+  let cursor: CodexJsonValue | null | undefined = value;
   for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "string" ? cursor : undefined;
+  if (
+    cursor === undefined ||
+    cursor === null ||
+    cursor instanceof Object ||
+    Number.isFinite(cursor) ||
+    cursor === true ||
+    cursor === false
+  ) {
+    return undefined;
+  }
+  return String(cursor);
 }
 
-function numberOrUndefined(value: unknown): number | undefined {
-  return typeof value === "number" ? value : undefined;
+function numberOrUndefined(value: CodexJsonValue | null | undefined): number | undefined {
+  return value !== undefined && value !== null && Number.isFinite(value) ? Number(value) : undefined;
 }
 
 /** Normalize one Codex `requestApproval` payload into the neutral ask the
@@ -208,7 +211,7 @@ function numberOrUndefined(value: unknown): number | undefined {
  *  carries the command line, file change/read carry the path (or root), and a
  *  permissions grant carries the concrete profile it wants (filesystem paths
  *  and/or network), which is the only subject the user can judge it by. */
-function buildApprovalRequest(kind: ApprovalRequestKind, params: unknown): ApprovalRequest {
+function buildApprovalRequest(kind: ApprovalRequestKind, params: CodexJsonValue | null | undefined): ApprovalRequest {
   const reason = readString(params, "reason")?.trim();
   const withDetail = (request: ApprovalRequest, detail?: string): ApprovalRequest => {
     if (reason) request.detail = reason;
@@ -237,7 +240,7 @@ function buildApprovalRequest(kind: ApprovalRequestKind, params: unknown): Appro
 /** One-line human summary of a Codex requested-permission profile — the paths
  *  it wants to write or read and whether it wants network. Empty when the
  *  profile names nothing recognizable; the reason field then stands alone. */
-export function describePermissionProfile(profile: unknown): string | undefined {
+export function describePermissionProfile(profile: CodexJsonValue | null | undefined): string | undefined {
   if (!profile) return undefined;
   const record = asRecord(profile);
   if (!record) return undefined;
@@ -245,7 +248,9 @@ export function describePermissionProfile(profile: unknown): string | undefined 
   const parts: string[] = [];
   const pathsUnder = (key: "write" | "read"): string[] => {
     const raw = asArray(record.fileSystem ? asRecord(record.fileSystem)?.[key] : undefined);
-    return raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+    return raw
+      .filter((v): v is string => Boolean(v && !(v instanceof Object)))
+      .map(String);
   };
   const writePaths = pathsUnder("write");
   const readPaths = pathsUnder("read").filter((p) => !writePaths.includes(p));
@@ -254,8 +259,9 @@ export function describePermissionProfile(profile: unknown): string | undefined 
   const entries = asArray(asRecord(record.fileSystem)?.entries)
     .map((entry) => {
       const r = asRecord(entry);
-      const path = typeof r?.path === "string" ? r.path : typeof r?.path === "object" && r.path !== null ? readString(r.path, "text") : undefined;
-      const access = typeof r?.access === "string" ? r.access : undefined;
+      const rawPath = r?.path;
+      const path = rawPath && !(rawPath instanceof Object) ? String(rawPath) : rawPath instanceof Object ? readString(rawPath, "text") : undefined;
+      const access = r?.access && !(r.access instanceof Object) ? String(r.access) : undefined;
       return path ? `${access ?? "access"} ${path}` : undefined;
     })
     .filter((v): v is string => v !== undefined);
@@ -271,9 +277,8 @@ export function describePermissionProfile(profile: unknown): string | undefined 
 /** The filesystem/network profile a permission request asks for, verbatim —
  *  it came off the wire from the app-server itself, and the approval reply
  *  must echo exactly these grants back. */
-function requestedPermissionProfile(params: unknown): unknown {
-  const profile = asRecord(params)?.permissions;
-  return profile !== null && typeof profile === "object" ? profile : {};
+function requestedPermissionProfile(params: CodexJsonValue | null | undefined): CodexJsonObject {
+  return asRecord(asRecord(params)?.permissions) ?? {};
 }
 
 /** kone's ApprovalDecision → Codex's `requestApproval` reply vocabulary.
@@ -304,8 +309,8 @@ function toCodexApprovalDecision(decision: ApprovalDecision): string {
 export function buildApprovalReply(
   kind: ApprovalRequestKind,
   decision: ApprovalDecision,
-  params: unknown,
-): Record<string, unknown> {
+  params: CodexJsonValue | null | undefined,
+): CodexJsonObject {
   if (kind !== "permission") {
     return { decision: toCodexApprovalDecision(decision) };
   }
@@ -318,15 +323,15 @@ export function buildApprovalReply(
 
 /** The fail-closed reply for a request we decline without asking anyone (no
  *  live turn behind it): same per-kind shapes as a real refusal. */
-export function declinedApprovalReply(kind: ApprovalRequestKind): Record<string, unknown> {
+export function declinedApprovalReply(kind: ApprovalRequestKind): CodexJsonObject {
   return kind === "permission" ? { permissions: {}, scope: "turn" } : { decision: "decline" };
 }
 
 /** Coerce a resolved answer value (string | string[] | null) into the flat
  *  string[] Codex expects per question. */
-function toStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
-  if (typeof value === "string" && value.length > 0) return [value];
+function toStringArray(value: string | string[] | null | undefined): string[] {
+  if (Array.isArray(value)) return value.filter((entry): entry is string => Boolean(entry && entry.length > 0));
+  if (value && value.length > 0) return [value];
   return [];
 }
 
@@ -334,7 +339,7 @@ function toStringArray(value: unknown): string[] {
  *  UserInputQuestion[]. Codex questions carry their own `id` (echoed back in the
  *  answer map) and options are `{ label, description }`; Codex has no per-question
  *  multi-select flag, so it's always single-select. */
-function parseCodexUserInputQuestions(params: unknown): UserInputQuestion[] {
+function parseCodexUserInputQuestions(params: CodexJsonValue | null | undefined): UserInputQuestion[] {
   const rawQuestions = asRecord(params)?.questions;
   if (!Array.isArray(rawQuestions)) return [];
 
@@ -413,17 +418,17 @@ export function mapModeToTurnOverrides(mode: InteractionMode): Pick<
 // and the mode overrides; model/effort/serviceTier/collaborationMode are
 // optional per the app-server protocol (only those four ride a turn, see the
 // context-window note at the call site).
-type CodexTurnStartParams = {
+interface CodexTurnStartParams extends CodexJsonObject {
   threadId: string;
   input: Array<{ type: "text"; text: string; text_elements: [] } | CodexImageItem>;
   approvalPolicy: string;
   approvalsReviewer: string;
-  sandboxPolicy: { type: string };
+  sandboxPolicy: { type: string; [key: string]: string };
   model?: string;
   effort?: string;
   serviceTier?: string;
   collaborationMode?: CodexTurnCollaborationMode;
-};
+}
 
 // ── item type canonicalization ───────────────────────────────────────────────
 // Codex's raw item.type spellings vary (camelCase/kebab/etc.); normalize then
@@ -431,9 +436,9 @@ type CodexTurnStartParams = {
 // render (the user's own message echoed back, review-mode markers, raw
 // protocol errors, anything unrecognized) return null and are dropped.
 
-function normalizeItemType(raw: unknown): string {
-  if (typeof raw !== "string") return "";
-  return raw
+function normalizeItemType(raw: CodexJsonValue | null | undefined): string {
+  if (!raw || raw instanceof Object) return "";
+  return String(raw)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[._/-]/g, " ")
     .replace(/\s+/g, " ")
@@ -441,7 +446,7 @@ function normalizeItemType(raw: unknown): string {
     .toLowerCase();
 }
 
-function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultName?: string } | null {
+function toRuntimeItemKind(rawType: CodexJsonValue | null | undefined): { kind: RuntimeItemKind; defaultName?: string } | null {
   const type = normalizeItemType(rawType);
   if (!type || type.includes("user")) return null;
   if (type.includes("agent message") || type.includes("assistant") || type.includes("exited review")) {
@@ -467,10 +472,11 @@ function toRuntimeItemKind(rawType: unknown): { kind: RuntimeItemKind; defaultNa
 
 /** Join a multi-part string array (Codex sometimes sends `summary`/`content`
  */
-export function joinedText(value: unknown): string | undefined {
+export function joinedText(value: CodexJsonValue | null | undefined): string | undefined {
   if (!Array.isArray(value)) return undefined;
   const parts = value
-    .filter((entry): entry is string => typeof entry === "string")
+    .filter((entry): entry is string => Boolean(entry && !(entry instanceof Object)))
+    .map(String)
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   return parts.length > 0 ? parts.join("\n\n") : undefined;
@@ -494,7 +500,7 @@ export function itemDetail(item: CodexJsonObject | undefined): string | undefine
     nestedResult?.command,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+    if (candidate && !(candidate instanceof Object) && String(candidate).trim().length > 0) return String(candidate).trim();
   }
   return undefined;
 }
@@ -512,14 +518,14 @@ export function mapCodexItemStatus(status: string | undefined, hasError: boolean
  *  another Codex client, so this is NOT a recoverable refusal — a fresh
  *  start would abandon the original thread and the user would never know why
  */
-export function formatCodexThreadResumeError(error: unknown, threadId: string): Error {
-  const message = error instanceof Error ? error.message : String(error);
+export function formatCodexThreadResumeError(cause: unknown, threadId: string): Error {
+  const message = cause instanceof Error ? cause.message : String(cause);
   if (!message.toLowerCase().includes("already has an active writer")) {
-    return error instanceof Error ? error : new Error(message);
+    return cause instanceof Error ? cause : new Error(message);
   }
   return new Error(
     `Codex thread ${threadId} is open in another Codex client. Close that client before continuing the original thread, or start a new thread instead.`,
-    { cause: error },
+    { cause },
   );
 }
 
@@ -530,10 +536,10 @@ function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
   if (!item) return undefined;
   const nestedResult = asRecord(item.result);
 
-  if (typeof item.diff === "string" && item.diff.trim().length > 0) return item.diff;
+  if (item.diff && !(item.diff instanceof Object) && String(item.diff).trim().length > 0) return String(item.diff);
 
-  const oldText = typeof item.oldText === "string" ? item.oldText : undefined;
-  const newText = typeof item.newText === "string" ? item.newText : undefined;
+  const oldText = item.oldText && !(item.oldText instanceof Object) ? String(item.oldText) : undefined;
+  const newText = item.newText && !(item.newText instanceof Object) ? String(item.newText) : undefined;
   if (oldText || newText) {
     const parts: string[] = [];
     if (oldText) parts.push(`--- before\n${oldText}`);
@@ -541,8 +547,8 @@ function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
     return parts.join("\n\n");
   }
 
-  const stdout = typeof item.stdout === "string" ? item.stdout : undefined;
-  const stderr = typeof item.stderr === "string" ? item.stderr : undefined;
+  const stdout = item.stdout && !(item.stdout instanceof Object) ? String(item.stdout) : undefined;
+  const stderr = item.stderr && !(item.stderr instanceof Object) ? String(item.stderr) : undefined;
   if (stdout || stderr) return [stdout, stderr].filter((v): v is string => Boolean(v)).join("\n");
 
   const output = stringIn([item.output, nestedResult?.output]);
@@ -550,7 +556,10 @@ function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
 
   const fileList = Array.isArray(item.files) ? item.files : Array.isArray(item.paths) ? item.paths : undefined;
   if (fileList) {
-    const joined = fileList.filter((v): v is string => typeof v === "string").join("\n");
+    const joined = fileList
+      .filter((v): v is string => Boolean(v && !(v instanceof Object)))
+      .map(String)
+      .join("\n");
     if (joined.length > 0) return joined;
   }
 
@@ -558,15 +567,25 @@ function itemDetailBody(item: CodexJsonObject | undefined): string | undefined {
 }
 
 /** The first string among the values. */
-function stringIn(values: unknown[]): string | undefined {
-  return values.find((v): v is string => typeof v === "string");
+function stringIn(values: (CodexJsonValue | null | undefined)[]): string | undefined {
+  const match = values.find(
+    (v) =>
+      v !== undefined &&
+      v !== null &&
+      !(v instanceof Object) &&
+      !Number.isFinite(v) &&
+      v !== true &&
+      v !== false &&
+      String(v).length > 0,
+  );
+  return match !== undefined ? String(match) : undefined;
 }
 
 /** The array under `key` when it is one.
  *  SAFETY: Array.isArray is checked before the cast, so only arrays pass. */
-function asArray(value: unknown): unknown[] {
+function asArray(value: CodexJsonValue | null | undefined): CodexJsonValue[] {
   // SAFETY: Array.isArray is checked before the cast, so only arrays pass.
-  return Array.isArray(value) ? (value as unknown[]) : [];
+  return Array.isArray(value) ? (value as CodexJsonValue[]) : [];
 }
 
 function parseModelListResponse(response: CodexJsonObject | undefined): ModelDescriptor[] {
@@ -590,36 +609,44 @@ function parseModelListResponse(response: CodexJsonObject | undefined): ModelDes
       ? asArray(record.supportedReasoningEfforts)
       : [];
     const reasoningEfforts = effortEntries
-      .map((entry) => asRecord(entry)?.reasoningEffort)
-      .filter((v): v is string => typeof v === "string");
+      .map((e) => asRecord(e)?.reasoningEffort)
+      .filter((v): v is string => Boolean(v && !(v instanceof Object)))
+      .map(String);
     const defaultReasoningEffort =
-      typeof record.defaultReasoningEffort === "string" ? record.defaultReasoningEffort : undefined;
+      record.defaultReasoningEffort && !(record.defaultReasoningEffort instanceof Object)
+        ? String(record.defaultReasoningEffort)
+        : undefined;
     // Real `serviceTiers` entries carry {id, name, description}; the older
     // `additionalSpeedTiers` a bare id list (deprecated, "fast" in practice).
     // Either way we normalize to the same {id, label, description} shape.
     const serviceTierEntries = asArray(record.serviceTiers);
     const serviceTiers = serviceTierEntries
-      .map((entry) => {
-        const r = asRecord(entry);
-        const tierId = typeof r?.id === "string" ? r.id : undefined;
-        const name = typeof r?.name === "string" ? r.name : undefined;
+      .map((e) => {
+        const r = asRecord(e);
+        const tierId = r?.id && !(r.id instanceof Object) ? String(r.id) : undefined;
+        const name = r?.name && !(r.name instanceof Object) ? String(r.name) : undefined;
         if (!tierId) return undefined;
         const tier = { id: tierId, label: name ?? tierId };
-        return typeof r?.description === "string" && r.description
-          ? { ...tier, description: r.description }
+        return r?.description && !(r.description instanceof Object)
+          ? { ...tier, description: String(r.description) }
           : tier;
       })
       .filter((v): v is { id: string; label: string; description?: string } => v !== undefined);
     if (!serviceTiers.length && Array.isArray(record.additionalSpeedTiers)) {
       for (const tierId of asArray(record.additionalSpeedTiers)) {
-        if (typeof tierId === "string") serviceTiers.push({ id: tierId, label: tierId === "fast" ? "Fast" : tierId });
+        if (tierId && !(tierId instanceof Object)) {
+          const s = String(tierId);
+          serviceTiers.push({ id: s, label: s === "fast" ? "Fast" : s });
+        }
       }
     }
     // Real `model/list` models carry the catalog's default speed tier
     // (`defaultServiceTier`, e.g. "fast") so the picker can pre-set the
     // fast-mode toggle to the provider's default instead of guessing.
     const defaultServiceTier =
-      typeof record.defaultServiceTier === "string" ? record.defaultServiceTier : undefined;
+      record.defaultServiceTier && !(record.defaultServiceTier instanceof Object)
+        ? String(record.defaultServiceTier)
+        : undefined;
     const model: ModelDescriptor = {
       id,
       label: label ?? id,
@@ -720,9 +747,9 @@ export class CodexAdapter implements ProviderAdapter {
 
   async listModels(): Promise<ModelDescriptor[]> {
     if (!this.modelsCache) {
-      this.modelsCache = this.fetchModels().catch((error: unknown) => {
+      this.modelsCache = this.fetchModels().catch((cause: unknown) => {
         this.modelsCache = null;
-        throw error;
+        throw cause;
       });
     }
     return this.modelsCache;
@@ -1046,7 +1073,8 @@ export class CodexAdapter implements ProviderAdapter {
         readString(params, "msg", "turnId") ??
         session.activeTurnId;
       if (!turnId) return;
-      const snapshot = parseCodexPlanSnapshot(params);
+      // SAFETY: params is wire payload from Codex turn/plan/updated notification.
+      const snapshot = parseCodexPlanSnapshot(params as CodexPlanPayload);
       if (!snapshot) return;
       const itemId = `${turnId}:plan`;
       const existing = session.items.get(itemId);
@@ -1271,9 +1299,9 @@ export class CodexAdapter implements ProviderAdapter {
    *  buildApprovalReply. */
   private async requestApproval(
     session: CodexSession,
-    params: unknown,
+    params: CodexJsonValue | null | undefined,
     kind: ApprovalRequestKind,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<CodexJsonObject> {
     // Fail closed: an approval request with no live turn (a recovery or replay
     // callback after a crash/interrupt) has no trustworthy mode behind it —
     // decline rather than park a gate nobody is watching.
@@ -1325,7 +1353,7 @@ export class CodexAdapter implements ProviderAdapter {
    *  RPC reply, shaped as `{ answers: { [questionId]: { answers: string[] } } }`. */
   private async requestUserInput(
     session: CodexSession,
-    params: unknown,
+    params: CodexJsonValue | null | undefined,
   ): Promise<{ answers: Record<string, { answers: string[] }> }> {
     const questions = parseCodexUserInputQuestions(params);
     if (questions.length === 0) return { answers: {} };
@@ -1369,7 +1397,7 @@ export class CodexAdapter implements ProviderAdapter {
     }
   }
 
-  private handleItemLifecycle(session: CodexSession, params: unknown, lifecycle: "started" | "completed"): void {
+  private handleItemLifecycle(session: CodexSession, params: CodexJsonValue | null | undefined, lifecycle: "started" | "completed"): void {
     const payload = asRecord(params);
     const raw = asRecord(payload?.item) ?? payload;
     if (!raw) return;
@@ -1417,7 +1445,7 @@ export class CodexAdapter implements ProviderAdapter {
     );
   }
 
-  private handleDelta(session: CodexSession, params: unknown): void {
+  private handleDelta(session: CodexSession, params: CodexJsonValue | null | undefined): void {
     const payload = asRecord(params);
     if (!payload) return;
     const itemId = readString(payload, "itemId") ?? readString(payload.item, "id");

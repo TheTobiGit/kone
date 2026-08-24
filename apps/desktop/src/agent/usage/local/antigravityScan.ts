@@ -316,7 +316,7 @@ function parseDbFile(filePath: string, cascadeId: string, mtimeMs: number): Usag
     const records: UsageRecord[] = [];
     const seenResponseIds = new Set<string>();
     for (const row of rows) {
-      const data = typeof row.data === "string" ? new TextEncoder().encode(row.data) : row.data;
+      const data = row.data instanceof Uint8Array ? row.data : new TextEncoder().encode(String(row.data));
       const parsed = parseAntigravityGenMetadataRow(data, row.idx);
       if (!parsed) continue;
       const dedupeKey = `antigravity:${cascadeId}:${parsed.responseId}`;
@@ -469,7 +469,7 @@ export function readAntigravityConversationUsage(
         const rows = db.prepare("SELECT idx, data FROM gen_metadata ORDER BY idx").all() as GenMetadataRow[];
         const seenResponseIds = new Set<string>();
         for (const row of rows) {
-          const data = typeof row.data === "string" ? new TextEncoder().encode(row.data) : row.data;
+          const data = row.data instanceof Uint8Array ? row.data : new TextEncoder().encode(String(row.data));
           const parsed = parseAntigravityGenMetadataRow(data, row.idx);
           if (!parsed) continue;
           const dedupeKey = `antigravity:${cid}:${parsed.responseId}`;

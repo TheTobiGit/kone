@@ -87,10 +87,8 @@ type AdapterHarnessState = {
 
 const state: AdapterHarnessState = { feed: null, stopTask: null, interrupt: null, promptIterable: null, initializationResult: null };
 
-const stubQuery = mock((input: unknown) => {
-  state.promptIterable =
-    // SAFETY: the SDK query input carries the prompt iterable under `prompt`.
-    (input as { prompt?: AsyncIterable<SDKUserMessage> }).prompt ?? null;
+const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage> }) => {
+  state.promptIterable = input.prompt ?? null;
   return {
     initializationResult: async () => state.initializationResult?.() ?? {},
     interrupt: () => state.interrupt?.(),
@@ -338,7 +336,7 @@ describe("Claude steerTurn", () => {
     // The message was offered into the prompt queue...
     const { value, done } = await iterator.next();
     expect(done).toBe(false);
-    if (!value || typeof value.message.content === "string") throw new Error("the queued steer never arrived as content blocks");
+    if (!value || !Array.isArray(value.message.content)) throw new Error("the queued steer never arrived as content blocks");
     const first = value.message.content[0];
     if (first?.type !== "text") throw new Error("the queued steer is not a text block");
     expect(first.text).toBe("keep going");

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { z } from "zod";
+
 import type { PlanTask, PlanTaskStatus } from "./types.js";
 
 function mintPlanTaskId(): string {
@@ -52,31 +54,32 @@ export function formatPlanTasks(tasks: readonly PlanTask[]): string {
   return tasks.map((t) => `- ${markerForStatus(t.status)} ${labelForTask(t)}`).join("\n");
 }
 
+const TodoItemWire = z.object({
+  content: z.string().optional(),
+  activeForm: z.string().optional(),
+  status: z.string().optional(),
+}).passthrough();
+
+const TodoWritePayloadWire = z.object({
+  todos: z.array(TodoItemWire),
+}).passthrough();
+
 /** Parse a TodoWrite tool call's streamed JSON input. Partial JSON is normal
  *  mid-stream — returns undefined on parse failure. */
 export function parseTodoWriteInput(rawJson: string): Omit<PlanTask, "id">[] | undefined {
   try {
     const parsed: unknown = JSON.parse(rawJson);
-    if (typeof parsed !== "object" || parsed === null) return undefined;
-    if (!("todos" in parsed)) return undefined;
-    const todos: unknown = parsed.todos;
-    if (!Array.isArray(todos)) return undefined;
+    const result = TodoWritePayloadWire.safeParse(parsed);
+    if (!result.success) return undefined;
     const out: Omit<PlanTask, "id">[] = [];
-    for (const entry of todos) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const contentRaw = "content" in entry ? entry.content : undefined;
-      const content = typeof contentRaw === "string" ? contentRaw.trim() : "";
+    for (const entry of result.data.todos) {
+      const content = entry.content?.trim() ?? "";
       if (!content) continue;
-      const activeFormRaw = "activeForm" in entry ? entry.activeForm : undefined;
-      const activeForm =
-        typeof activeFormRaw === "string" && activeFormRaw.trim()
-          ? activeFormRaw.trim()
-          : undefined;
-      const statusRaw = "status" in entry ? entry.status : undefined;
+      const activeForm = entry.activeForm?.trim() || undefined;
       const status: PlanTaskStatus =
-        statusRaw === "completed"
+        entry.status === "completed"
           ? "completed"
-          : statusRaw === "in_progress"
+          : entry.status === "in_progress"
             ? "in-progress"
             : "pending";
       const task: Omit<PlanTask, "id"> = { content, status };
@@ -89,23 +92,34 @@ export function parseTodoWriteInput(rawJson: string): Omit<PlanTask, "id">[] | u
   }
 }
 
+const CodexPlanItemWire = z.object({
+  step: z.string().optional(),
+  status: z.string().optional(),
+}).passthrough();
+
+const CodexPlanPayloadWire = z.object({
+  plan: z.array(CodexPlanItemWire),
+}).passthrough();
+
+export interface CodexPlanPayload {
+  plan?: Array<{
+    step?: string;
+    status?: string;
+  }>;
+}
+
 /** Map a Codex `turn/plan/updated` payload to a task snapshot. */
-export function parseCodexPlanSnapshot(payload: unknown): Omit<PlanTask, "id">[] | undefined {
-  if (typeof payload !== "object" || payload === null) return undefined;
-  if (!("plan" in payload)) return undefined;
-  const plan: unknown = payload.plan;
-  if (!Array.isArray(plan)) return undefined;
+export function parseCodexPlanSnapshot(payload: CodexPlanPayload | null | undefined): Omit<PlanTask, "id">[] | undefined {
+  const parsed = CodexPlanPayloadWire.safeParse(payload);
+  if (!parsed.success) return undefined;
   const out: Omit<PlanTask, "id">[] = [];
-  for (const entry of plan) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const stepRaw = "step" in entry ? entry.step : undefined;
-    const content = typeof stepRaw === "string" ? stepRaw.trim() : "";
+  for (const entry of parsed.data.plan) {
+    const content = entry.step?.trim() ?? "";
     if (!content) continue;
-    const statusRaw = "status" in entry ? entry.status : undefined;
     const status: PlanTaskStatus =
-      statusRaw === "completed"
+      entry.status === "completed"
         ? "completed"
-        : statusRaw === "inProgress"
+        : entry.status === "inProgress"
           ? "in-progress"
           : "pending";
     out.push({ content, status });

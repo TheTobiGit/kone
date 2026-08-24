@@ -3,7 +3,7 @@
 // (TodoWrite is the older/alternate path).
 
 import type { PlanTask, PlanTaskStatus } from "./types.js";
-import type { ClaudeJsonObject } from "./adapters/claudeAdapterHelpers.js";
+import type { ClaudeJsonObject, ClaudeJsonValue, ClaudeWirePayload } from "./adapters/claudeAdapterHelpers.js";
 
 type ClaudeTrackedTaskStatus = "pending" | "in_progress" | "completed";
 
@@ -25,7 +25,7 @@ type ClaudeTaskToolCall = {
 function readTaskString(input: ClaudeJsonObject, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const value = input[key];
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    if (value && !(value instanceof Object) && String(value).trim().length > 0) return String(value).trim();
   }
   return undefined;
 }
@@ -33,26 +33,28 @@ function readTaskString(input: ClaudeJsonObject, ...keys: string[]): string | un
 function readTaskId(input: ClaudeJsonObject): string | undefined {
   for (const key of ["taskId", "id", "task_id"]) {
     const value = input[key];
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (value && !(value instanceof Object) && String(value).trim().length > 0) return String(value).trim();
+    if (value !== undefined && value !== null && Number.isFinite(value)) return String(value);
   }
   return undefined;
 }
 
-function readTrackedTaskStatus(value: unknown): ClaudeTrackedTaskStatus | "deleted" | undefined {
+function readTrackedTaskStatus(value: ClaudeJsonValue | null | undefined): ClaudeTrackedTaskStatus | "deleted" | undefined {
   return value === "pending" || value === "in_progress" || value === "completed" || value === "deleted"
     ? value
     : undefined;
 }
 
-function readStringArray(value: unknown): string[] {
+function readStringArray(value: ClaudeJsonValue | null | undefined): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  return value
+    .filter((entry): entry is string => Boolean(entry && !(entry instanceof Object) && String(entry).trim().length > 0))
+    .map((entry) => String(entry).trim());
 }
 
-function asRecord(value: unknown): ClaudeJsonObject | undefined {
-  // SAFETY: the typeof-object/null/array checks on this line are the narrowing itself.
-  return typeof value === "object" && value !== null && !Array.isArray(value)
+function asRecord(value: ClaudeWirePayload): ClaudeJsonObject | undefined {
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
+  return value && value instanceof Object && !Array.isArray(value)
     ? (value as ClaudeJsonObject)
     : undefined;
 }
@@ -60,10 +62,11 @@ function asRecord(value: unknown): ClaudeJsonObject | undefined {
 // A tool result is opaque JSON text; this unwraps it one level. What it holds is
 // the caller's to narrow — there is no single domain type at this layer.
 // eslint-disable-next-line anti-slop/no-unknown-returns
-function parseToolResultValue(value: unknown): unknown {
-  if (typeof value === "string") {
+function parseToolResultValue(value: ClaudeWirePayload): ClaudeJsonValue | undefined {
+  if (value && !(value instanceof Object) && !Number.isFinite(value) && value !== true) {
     try {
-      return JSON.parse(value);
+      // SAFETY: JSON.parse yields unknown/JsonValue; parsed as ClaudeJsonValue.
+      return JSON.parse(String(value)) as ClaudeJsonValue;
     } catch {
       return undefined;
     }
@@ -77,7 +80,7 @@ function parseToolResultValue(value: unknown): unknown {
   }
   const record = asRecord(value);
   if (!record) return undefined;
-  if (record.type === "text" && typeof record.text === "string") {
+  if (record.type === "text" && record.text && !(record.text instanceof Object)) {
     return parseToolResultValue(record.text);
   }
   return record;
@@ -173,7 +176,7 @@ export function applyClaudeTaskToolResult(
   tasks: Map<string, ClaudeTrackedTask>,
   tool: ClaudeTaskToolCall,
   resultBlock: ClaudeJsonObject,
-  structuredResult: unknown,
+  structuredResult: ClaudeWirePayload,
   isError: boolean,
 ): boolean {
   if (isError) return false;

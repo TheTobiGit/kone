@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { createInterface } from "node:readline";
 
-import type { JsonObject } from "../jsonValue.js";
+import type { JsonObject, JsonValue } from "../jsonValue.js";
 import { killTree } from "./spawn.js";
 
 // Generic bidirectional JSON-RPC 2.0 client over a persistent child process's
@@ -14,21 +14,19 @@ import { killTree } from "./spawn.js";
 
 type JsonRpcId = number | string;
 
-type JsonRpcRequest = { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: unknown };
+type JsonRpcRequest = { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: JsonValue };
 
 /** Every frame this client writes to the child's stdin: an outbound request or
  *  notification, or a response to a server→client request. */
 type JsonRpcOutbound =
-  | { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: unknown }
-  | { jsonrpc: "2.0"; method: string; params?: unknown }
-  | { jsonrpc: "2.0"; id: JsonRpcId; result: unknown }
+  | { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: JsonValue }
+  | { jsonrpc: "2.0"; method: string; params?: JsonValue }
+  | { jsonrpc: "2.0"; id: JsonRpcId; result: JsonValue }
   | { jsonrpc: "2.0"; id: JsonRpcId; error: { code: number; message: string } };
 
-function asRecord(value: unknown): JsonObject | undefined {
-  // SAFETY: the guard proves value is a non-null object, and every frame here
-  // came out of JSON.parse, so it satisfies JsonObject; fields still read
-  // back as JsonValue and are verified before use.
-  return typeof value === "object" && value !== null ? (value as JsonObject) : undefined;
+function asRecord(value: JsonValue | null | undefined): JsonObject | undefined {
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
+  return value && value instanceof Object && !Array.isArray(value) ? (value as JsonObject) : undefined;
 }
 
 /** A usable inbound frame must be a JSON-RPC-shaped envelope: a request or
@@ -37,7 +35,7 @@ function asRecord(value: unknown): JsonObject | undefined {
  *  merely parses as JSON — the child's tool subprocesses share its stdout
  */
 function isJsonRpcEnvelope(value: JsonObject): boolean {
-  if (typeof value.method === "string") return true;
+  if (value.method && !(value.method instanceof Object)) return true;
   return (
     Object.prototype.hasOwnProperty.call(value, "id") &&
     (Object.prototype.hasOwnProperty.call(value, "result") ||
@@ -49,7 +47,7 @@ export class JsonRpcError extends Error {
   constructor(
     message: string,
     readonly code: number,
-    readonly data?: unknown,
+    readonly data?: JsonValue,
   ) {
     super(message);
     this.name = "JsonRpcError";
@@ -62,7 +60,7 @@ export class JsonRpcError extends Error {
  *  transport primitive names no return type; its callers own the shape.
  */
 // eslint-disable-next-line anti-slop/no-unknown-returns
-export type JsonRpcRequestHandler = (params: unknown) => Promise<unknown>;
+export type JsonRpcRequestHandler = (params: JsonValue | null | undefined) => Promise<JsonValue>;
 
 /** A persistent JSON-RPC-over-stdio child process. */
 export class JsonRpcClient {
@@ -70,9 +68,9 @@ export class JsonRpcClient {
   private nextId = 1;
   private readonly pending = new Map<
     JsonRpcId,
-    { resolve: (v: unknown) => void; reject: (e: unknown) => void }
+    { resolve: (v: JsonValue) => void; reject: (cause: unknown) => void }
   >();
-  private readonly notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private readonly notificationHandlers = new Map<string, Set<(params: JsonValue | null | undefined) => void>>();
   private readonly requestHandlers = new Map<string, JsonRpcRequestHandler>();
   private readonly exitHandlers = new Set<(code: number | null) => void>();
   private readonly stderrHandlers = new Set<(line: string) => void>();
@@ -128,9 +126,10 @@ export class JsonRpcClient {
 
   private handleLine(line: string): void {
     if (!line.trim()) return;
-    let parsed: unknown;
+    let parsed: JsonValue;
     try {
-      parsed = JSON.parse(line);
+      // SAFETY: JSON.parse yields any; parsed envelope is verified before use.
+      parsed = JSON.parse(line) as JsonValue;
     } catch {
       // Not a protocol line. The child's tool subprocesses and hooks leak
       // arbitrary output (including fragments that begin like JSON-RPC) onto
@@ -156,16 +155,16 @@ export class JsonRpcClient {
       return;
     }
 
-    if (typeof msg.method === "string") {
+    if (msg.method && !(msg.method instanceof Object)) {
       if ("id" in msg) {
-        // SAFETY: `isJsonRpcEnvelope` verified `method` is a string and `id` is
+        // SAFETY: `isJsonRpcEnvelope` verified `method` is present and `id` is
         // present; a JSON-RPC id is a number or string. A malformed id from a
         // buggy child is only echoed back in the response, never trusted.
         const id = msg.id as JsonRpcId;
-        void this.handleIncomingRequest({ jsonrpc: "2.0", id, method: msg.method, params: msg.params });
+        void this.handleIncomingRequest({ jsonrpc: "2.0", id, method: String(msg.method), params: msg.params });
         return;
       }
-      const handlers = this.notificationHandlers.get(msg.method);
+      const handlers = this.notificationHandlers.get(String(msg.method));
       if (handlers) for (const handler of handlers) handler(msg.params);
       return;
     }
@@ -178,10 +177,12 @@ export class JsonRpcClient {
       this.pending.delete(id);
       if ("error" in msg) {
         const rawError = asRecord(msg.error);
+        const errMsg = rawError?.message && !(rawError.message instanceof Object) ? String(rawError.message) : "Unknown JSON-RPC error";
+        const errCode = rawError?.code !== undefined && rawError.code !== null && Number.isFinite(rawError.code) ? Number(rawError.code) : -32000;
         pending.reject(
           new JsonRpcError(
-            rawError && typeof rawError.message === "string" ? rawError.message : "Unknown JSON-RPC error",
-            rawError && typeof rawError.code === "number" ? rawError.code : -32000,
+            errMsg,
+            errCode,
             rawError?.data,
           ),
         );
@@ -204,11 +205,11 @@ export class JsonRpcClient {
     try {
       const result = await handler(req.params);
       this.writeRaw({ jsonrpc: "2.0", id: req.id, result });
-    } catch (error) {
+    } catch (cause) {
       this.writeRaw({
         jsonrpc: "2.0",
         id: req.id,
-        error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+        error: { code: -32000, message: cause instanceof Error ? cause.message : String(cause) },
       });
     }
   }
@@ -224,7 +225,7 @@ export class JsonRpcClient {
 
   /** Send a request; resolves with its result. Rejects on an error response,
    *  process exit, or timeout. */
-  call<T = unknown>(method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
+  call<T = JsonValue>(method: string, params?: JsonValue, timeoutMs = 30_000): Promise<T> {
     if (this.exited) return Promise.reject(new Error(`${this.label} process has exited`));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
@@ -240,12 +241,12 @@ export class JsonRpcClient {
           // own validation of the value.
           resolve(v as T);
         },
-        reject: (e) => {
+        reject: (cause) => {
           clearTimeout(timer);
           // SAFETY: every path that stores a rejection places an Error (or
           // JsonRpcError) into `pending` — timeouts, process exit, and error
           // responses all construct one.
-          reject(e as Error);
+          reject(cause as Error);
         },
       });
       this.writeRaw({ jsonrpc: "2.0", id, method, params });
@@ -253,13 +254,13 @@ export class JsonRpcClient {
   }
 
   /** Send a one-way notification — no response expected. */
-  notify(method: string, params?: unknown): void {
+  notify(method: string, params?: JsonValue): void {
     this.writeRaw({ jsonrpc: "2.0", method, params });
   }
 
   /** Register a handler for a server→client notification. Returns an
    *  unsubscribe fn. Multiple handlers per method are allowed. */
-  onNotification(method: string, handler: (params: unknown) => void): () => void {
+  onNotification(method: string, handler: (params: JsonValue | null | undefined) => void): () => void {
     let set = this.notificationHandlers.get(method);
     if (!set) {
       set = new Set();

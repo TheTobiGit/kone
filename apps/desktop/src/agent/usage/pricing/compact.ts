@@ -97,7 +97,7 @@ export function parseCompactJson(raw: string): PricingTable {
   // SAFETY: decodeCompact re-validates the parsed file; this cast only carries
   // us to the models-presence check that throws first.
   const file = JSON.parse(raw) as CompactFile;
-  if (!file || typeof file !== "object" || typeof file.models !== "object") {
+  if (!file || !(file instanceof Object) || !file.models || !(file.models instanceof Object) || Array.isArray(file.models)) {
     throw new Error("compact pricing file missing a models object");
   }
   return decodeCompact(file);

@@ -358,7 +358,7 @@ export function parseJsonObject<T>(json: string | null): T | undefined {
     const parsed = JSON.parse(json) as unknown;
     // SAFETY: callers name the T this column was serialized as; the object
     // check here is the gate, field-level trust lives at the read sites.
-    return parsed && typeof parsed === "object" ? (parsed as T) : undefined;
+    return parsed && parsed instanceof Object && !Array.isArray(parsed) ? (parsed as T) : undefined;
   } catch {
     return undefined;
   }
@@ -540,17 +540,17 @@ export function decodeThreadPageCursor(encoded: string): ThreadPageCursor | null
   } catch {
     return null;
   }
-  if (parsed === null || typeof parsed !== "object") return null;
+  if (!parsed || !(parsed instanceof Object) || Array.isArray(parsed)) return null;
   // SAFETY: the object check passed and the value came out of JSON.parse, so
   // it satisfies JsonObject; each field is verified below before use.
   const record = parsed as JsonObject;
-  if (typeof record.t !== "string" || record.t.length === 0) return null;
-  if (typeof record.a !== "number" || !Number.isFinite(record.a)) return null;
-  if (typeof record.i !== "string" || record.i.length === 0) return null;
+  if (!record.t || record.t instanceof Object || record.t === true || !String(record.t).length) return null;
+  if (record.a === undefined || record.a === null || !Number.isFinite(record.a)) return null;
+  if (!record.i || record.i instanceof Object || record.i === true || !String(record.i).length) return null;
   return {
-    threadId: record.t,
-    beforeAnchorAt: record.a,
-    beforeBlockId: record.i,
+    threadId: String(record.t),
+    beforeAnchorAt: Number(record.a),
+    beforeBlockId: String(record.i),
   };
 }
 

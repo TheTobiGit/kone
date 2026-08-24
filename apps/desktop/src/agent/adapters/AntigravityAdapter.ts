@@ -17,6 +17,7 @@ import {
   parseInboundMessage,
   parseInvokeSubagentSpecs,
   type AntigravityJsonRecord,
+  type AntigravityJsonValue,
   type AntigravitySubagentSpec,
 } from "../antigravitySubagents.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
@@ -244,13 +245,14 @@ function trim(value: string | null | undefined): string | undefined {
   return result ? result : undefined;
 }
 
-function resumeConversationId(value: unknown): string | undefined {
-  if (typeof value === "string") return trim(value);
-  if (!value || typeof value !== "object") return undefined;
-  // SAFETY: the typeof-object/null checks above are the narrowing itself.
+function resumeConversationId(value: AntigravityJsonValue | null | undefined): string | undefined {
+  if (value && !(value instanceof Object) && value !== true) return trim(String(value));
+  if (!value || !(value instanceof Object) || Array.isArray(value)) return undefined;
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
   const record = value as AntigravityJsonRecord;
   for (const key of ["conversationId", "providerThreadId", "id"]) {
-    if (typeof record[key] === "string" && record[key].trim()) return record[key].trim();
+    const v = record[key];
+    if (v && !(v instanceof Object) && v !== true && String(v).trim()) return String(v).trim();
   }
   return undefined;
 }
@@ -579,7 +581,7 @@ export async function runAntigravityHelperProcess(
   });
 }
 
-function appendBounded(current: string, chunk: unknown): string {
+function appendBounded(current: string, chunk: string | Buffer | Uint8Array): string {
   const next = current + String(chunk);
   return next.length > HELPER_OUTPUT_MAX_CHARS ? next.slice(-HELPER_OUTPUT_MAX_CHARS) : next;
 }
@@ -809,9 +811,9 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   async listModels(): Promise<ModelDescriptor[]> {
     if (!this.modelsCache) {
-      this.modelsCache = this.fetchModels().catch((error: unknown) => {
+      this.modelsCache = this.fetchModels().catch((cause: unknown) => {
         this.modelsCache = null;
-        throw error;
+        throw cause;
       });
     }
     return this.modelsCache;
@@ -1248,14 +1250,14 @@ export class AntigravityAdapter implements ProviderAdapter {
   private failTurn(
     session: AntigravitySession,
     turnId: string,
-    error: unknown,
+    cause: unknown,
     fallback: string,
   ): void {
     if (session.turnTerminalEmitted || session.activeTurnId !== turnId) return;
     this.emitUsage(session);
     session.turnTerminalEmitted = true;
     delete session.activeTurnId;
-    const message = messageFromCause(error, fallback);
+    const message = messageFromCause(cause, fallback);
     this.emit({
       ...this.base(session),
       source: "antigravity.cli.lifecycle",
@@ -1292,16 +1294,16 @@ export class AntigravityAdapter implements ProviderAdapter {
     // On the first read of a resumed conversation, everything up to the latest
     // user input is history — only steps after it belong to this turn.
     const latestUserIndex = isInitialRead
-      ? steps.reduce(
-          (latest, step) =>
-            step.type === "USER_INPUT" && typeof step.step_index === "number"
-              ? Math.max(latest, step.step_index)
-              : latest,
-          -1,
-        )
+      ? steps.reduce((latest, step) => {
+          const idx = step.step_index;
+          return step.type === "USER_INPUT" && idx !== undefined && Number.isFinite(idx)
+            ? Math.max(latest, idx)
+            : latest;
+        }, -1)
       : -1;
     for (const step of steps) {
-      if (typeof step.step_index === "number" && step.step_index > latestUserIndex) {
+      const idx = step.step_index;
+      if (idx !== undefined && Number.isFinite(idx) && idx > latestUserIndex) {
         this.processTranscriptStep(session, step);
       }
     }
@@ -1322,7 +1324,7 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   private processTranscriptStep(session: AntigravitySession, step: TranscriptStep): void {
     const stepIndex = step.step_index;
-    if (typeof stepIndex !== "number" || session.processedSteps.has(stepIndex)) return;
+    if (stepIndex === undefined || !Number.isFinite(stepIndex) || session.processedSteps.has(stepIndex)) return;
     session.processedSteps.add(stepIndex);
 
     if (step.type === "PLANNER_RESPONSE") {
@@ -1485,8 +1487,8 @@ export class AntigravityAdapter implements ProviderAdapter {
           continue;
         }
         const stepIndex = step.step_index;
-        if (typeof stepIndex !== "number" || run.processedSteps.has(stepIndex)) continue;
-        run.processedSteps.add(stepIndex);
+        if (!Number.isFinite(stepIndex) || run.processedSteps.has(stepIndex!)) continue;
+        run.processedSteps.add(stepIndex!);
         if (step.type !== "PLANNER_RESPONSE") continue;
         const content = trim(step.content);
         if (!content) continue;
@@ -1580,8 +1582,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       } catch {
         continue;
       }
-      const conversationId =
-        typeof payload.conversationId === "string" ? payload.conversationId : undefined;
+      const conversationId = payload.conversationId?.trim() || undefined;
       // The parent always speaks first: its own hooks fire before it can have
       // invoked anything, so the first id on the stream is this turn's.
       if (conversationId && !session.conversationId) session.conversationId = conversationId;
@@ -1596,8 +1597,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       if (session.backgroundIdleSince !== undefined) session.backgroundIdleSince = Date.now();
 
       if (isParent) {
-        const transcriptPath =
-          typeof payload.transcriptPath === "string" ? payload.transcriptPath : undefined;
+        const transcriptPath = payload.transcriptPath?.trim() || undefined;
         if (transcriptPath && transcriptPath !== session.transcriptPath) {
           session.transcriptPath = transcriptPath;
           session.processedTranscriptBytes = 0;
@@ -1605,13 +1605,13 @@ export class AntigravityAdapter implements ProviderAdapter {
         }
       }
       const stepIndex =
-        typeof payload.stepIdx === "number" &&
+        payload.stepIdx !== undefined && payload.stepIdx !== null &&
         Number.isInteger(payload.stepIdx) &&
         payload.stepIdx >= 0
           ? payload.stepIdx
           : undefined;
       if (eventName === "pre-tool" && stepIndex !== undefined && session.activeTurnId) {
-        const name = typeof payload.toolCall?.name === "string" ? trim(payload.toolCall.name) : undefined;
+        const name = payload.toolCall?.name ? trim(payload.toolCall.name) : undefined;
         if (name) {
           const owner = run ?? session;
           const scope = run ? `sub-${run.snapshot.toolUseId}-tool` : "tool";
@@ -1633,7 +1633,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         if (pending) {
           const failed =
             payload.failed === true ||
-            (typeof payload.error === "string" && payload.error.trim().length > 0);
+            Boolean(payload.error && payload.error.trim().length > 0);
           this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed", run);
         }
       } else if (eventName === "stop") {

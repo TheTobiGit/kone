@@ -37,7 +37,7 @@ async function reservePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve()); });
   const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
+  const port = address && address instanceof Object && "port" in address ? address.port : 0;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   if (!port) throw new Error("Could not reserve an OpenCode server port.");
   return port;

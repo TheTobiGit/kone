@@ -314,7 +314,9 @@ export class ConversationStore {
           // SAFETY: result_json here is only ever written by setGatewayOpResult
           // from the spawn engine's own `{ threadId }` payload.
           const parsed = JSON.parse(row.result_json) as { threadId?: string };
-          if (typeof parsed.threadId === "string") childId = parsed.threadId;
+          if (parsed.threadId) {
+            childId = String(parsed.threadId).trim() || undefined;
+          }
         } catch {
           childId = undefined;
         }
@@ -375,6 +377,7 @@ export class ConversationStore {
   /** Backfill token totals and context window for stored Antigravity threads. */
   private backfillAntigravityTokens(db: DatabaseSync): void {
     try {
+      // SAFETY: SQLite query returns row objects matching the queried thread columns.
       const rows = db
         .prepare(
           `SELECT thread_id, conversation_id, model FROM threads
@@ -932,7 +935,7 @@ export class ConversationStore {
           // usage state.
           withTransaction(db, () => {
             const total = event.usage.total;
-            if (typeof total === "number" && Number.isFinite(total)) {
+            if (total !== undefined && total !== null && Number.isFinite(total)) {
               // Codex, OpenCode, Cursor and Antigravity report running thread totals
               // (keep the max); Claude reports per-turn spend (accumulate).
               const isRunningTotal =
@@ -953,8 +956,8 @@ export class ConversationStore {
             // partial payload must never blank a value the thread already knew.
             const { contextUsed, contextWindow, compactsAutomatically } = event.usage;
             if (
-              (typeof contextWindow === "number" && Number.isFinite(contextWindow)) ||
-              (typeof contextUsed === "number" && Number.isFinite(contextUsed))
+              (contextWindow !== undefined && contextWindow !== null && Number.isFinite(contextWindow)) ||
+              (contextUsed !== undefined && contextUsed !== null && Number.isFinite(contextUsed))
             ) {
               const compacts =
                 compactsAutomatically === undefined ? null : compactsAutomatically ? 1 : 0;
@@ -965,10 +968,10 @@ export class ConversationStore {
                        compacts_auto  = COALESCE(?, compacts_auto)
                  WHERE thread_id = ?`,
               ).run(
-                typeof contextUsed === "number" && Number.isFinite(contextUsed)
+                contextUsed !== undefined && contextUsed !== null && Number.isFinite(contextUsed)
                   ? Math.round(contextUsed)
                   : null,
-                typeof contextWindow === "number" && Number.isFinite(contextWindow)
+                contextWindow !== undefined && contextWindow !== null && Number.isFinite(contextWindow)
                   ? Math.round(contextWindow)
                   : null,
                 compacts,
@@ -1070,9 +1073,9 @@ export class ConversationStore {
     ).run(
       threadId,
       turnId,
-      typeof usage.input === "number" && Number.isFinite(usage.input) ? Math.round(usage.input) : null,
-      typeof usage.output === "number" && Number.isFinite(usage.output) ? Math.round(usage.output) : null,
-      typeof usage.total === "number" && Number.isFinite(usage.total) ? Math.round(usage.total) : null,
+      usage.input !== undefined && usage.input !== null && Number.isFinite(usage.input) ? Math.round(usage.input) : null,
+      usage.output !== undefined && usage.output !== null && Number.isFinite(usage.output) ? Math.round(usage.output) : null,
+      usage.total !== undefined && usage.total !== null && Number.isFinite(usage.total) ? Math.round(usage.total) : null,
       Math.round(usage.cacheReadTokens ?? 0),
       Math.round(usage.cacheCreationTokens ?? 0),
       Math.round(usage.reasoningTokens ?? 0),
@@ -3388,7 +3391,7 @@ export class ConversationStore {
       // checks are themselves the validation gate.
       if (
         !parsed ||
-        typeof parsed !== "object" ||
+        !(parsed instanceof Object) ||
         (parsed as { version?: unknown }).version !== 2 ||
         !Array.isArray((parsed as { rows?: unknown }).rows)
       ) {

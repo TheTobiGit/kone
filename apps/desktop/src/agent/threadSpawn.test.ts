@@ -33,19 +33,19 @@ import type {
 /** The caught rejection as a plain Error.
  *  SAFETY: every caller runs expect(error).toBeInstanceOf(Error)
  *  immediately before reading name/message off it. */
-function errorOf(e: unknown): Error {
+function errorOf(cause: unknown): Error {
   // SAFETY: every caller runs expect(error).toBeInstanceOf(Error)
   // immediately before reading name/message off it.
-  return e as Error;
+  return cause as Error;
 }
 
 /** The caught rejection as its domain error.
  *  SAFETY: every caller runs expect(error).toBeInstanceOf(SpawnError)
  *  immediately before reading fields off it. */
-function spawnErrorOf(e: unknown): SpawnError {
+function spawnErrorOf(cause: unknown): SpawnError {
   // SAFETY: every caller runs expect(error).toBeInstanceOf(SpawnError)
   // immediately before reading fields off it.
-  return e as SpawnError;
+  return cause as SpawnError;
 }
 
 // The spawn engine against in-memory fakes: no sqlite, no electron, no real

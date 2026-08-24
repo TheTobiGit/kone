@@ -103,16 +103,35 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
   return { version: USAGE_SCAN_CACHE_VERSION, models, sessions, files };
 }
 
-function isRecordArray(value: unknown): value is readonly unknown[] {
-  return Array.isArray(value);
-}
+import { z } from "zod";
+import type { JsonValue } from "../../../jsonValue.js";
 
-/** Every intern-table entry must be a string: a numeric entry would pass the
- *  undefined guard below, land in a record's model, and crash the aggregate
- *  at normalizeModelName. A corrupt table rejects the whole cache. */
-function isStringArray(value: readonly unknown[]): value is readonly string[] {
-  return value.every((value) => typeof value === "string");
-}
+const SerializedRecordSchema = z.tuple([
+  z.number().finite(),
+  z.number().int().nonnegative(),
+  z.number().int().nonnegative(),
+  z.number().finite(),
+  z.number().finite(),
+  z.number().finite(),
+  z.number().finite(),
+  z.number().finite(),
+  z.string().nullable(),
+  z.number().finite().nullable(),
+]);
+
+const SerializedFileSchema = z.object({
+  s: z.number().finite(),
+  m: z.number().finite(),
+  p: z.enum(["claude", "codex"]),
+  r: z.array(SerializedRecordSchema),
+});
+
+const SerializedCacheSchema = z.object({
+  version: z.literal(USAGE_SCAN_CACHE_VERSION),
+  models: z.array(z.string()),
+  sessions: z.array(z.string()),
+  files: z.record(z.string(), SerializedFileSchema),
+});
 
 /**
  * Rebuilds the cache from a parsed document.
@@ -120,43 +139,18 @@ function isStringArray(value: readonly unknown[]): value is readonly string[] {
  * Anything malformed yields an empty cache rather than an error: a corrupt
  * cache should cost one cold scan, never a broken page.
  */
-export function decodeScanCache(document: unknown): ScanCache {
+export function decodeScanCache(document: JsonValue | null | undefined): ScanCache {
   const cache: ScanCache = new Map();
-  if (typeof document !== "object" || document === null) return cache;
+  const parsed = SerializedCacheSchema.safeParse(document);
+  if (!parsed.success) return cache;
+  const { models, sessions, files } = parsed.data;
 
-  // SAFETY: the guard above proved document is a non-null object, so reading
-  // its cache fields through this partial view is sound; the version and both
-  // intern tables are re-checked below and malformed files yield an empty map.
-  const root = document as Partial<SerializedCache>;
-  if (root.version !== USAGE_SCAN_CACHE_VERSION) return cache;
-  if (!isRecordArray(root.models) || !isRecordArray(root.sessions)) return cache;
-  if (typeof root.files !== "object" || root.files === null) return cache;
-
-  if (!isStringArray(root.models) || !isStringArray(root.sessions)) return cache;
-
-  for (const [path, raw] of Object.entries(root.files)) {
-    if (typeof raw !== "object" || raw === null) continue;
-    // SAFETY: the guard above proved raw is a non-null object; its fields are
-    // read as optionals and each one is re-checked below before use.
-    const entry = raw as Partial<SerializedFile>;
-    if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex") continue;
-    if (!isRecordArray(entry.r)) continue;
-
-    const provider: TranscriptProviderKind = entry.p;
+  for (const [path, entry] of Object.entries(files)) {
+    const provider = entry.p;
     const records: UsageRecord[] = [];
-    // Any corrupt row disqualifies the whole entry. Keeping the survivors
-    // under the original (size, mtime) would read as a valid warm hit and the
-    // file would never be re-parsed, silently losing the dropped rows' usage.
     let corrupt = false;
+
     for (const row of entry.r) {
-      if (!isRecordArray(row) || row.length < 10) {
-        corrupt = true;
-        break;
-      }
-      // SAFETY: the length check above proved row carries all ten positional
-      // fields, and every element is re-validated below before it reaches a
-      // record.
       const [
         timestampMs,
         modelIndex,
@@ -168,19 +162,10 @@ export function decodeScanCache(document: unknown): ScanCache {
         reasoning,
         dedupeKey,
         reportedCostUsd,
-      ] = row as SerializedRecord;
+      ] = row;
 
-      const model = typeof modelIndex === "number" ? root.models[modelIndex] : undefined;
-      if (
-        typeof timestampMs !== "number" ||
-        !Number.isFinite(timestampMs) ||
-        model === undefined ||
-        !Number.isFinite(uncached) ||
-        !Number.isFinite(cached) ||
-        !Number.isFinite(cacheCreation) ||
-        !Number.isFinite(output) ||
-        !Number.isFinite(reasoning)
-      ) {
+      const model = models[modelIndex];
+      if (model === undefined) {
         corrupt = true;
         break;
       }
@@ -189,7 +174,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         provider,
         timestampMs,
         model,
-        sessionId: (typeof sessionIndex === "number" ? root.sessions[sessionIndex] : undefined) ?? "",
+        sessionId: sessions[sessionIndex] ?? "",
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,
@@ -197,8 +182,8 @@ export function decodeScanCache(document: unknown): ScanCache {
           outputTokens: output,
           reasoningTokens: reasoning,
         },
-        reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
-        dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
+        reportedCostUsd,
+        dedupeKey,
       });
     }
 

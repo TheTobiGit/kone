@@ -130,8 +130,8 @@ function extractTitle(raw: string): string | null {
     // SAFETY: each CLI's JSON envelope differs; all fields are optional and
     // every read below re-checks its value before use.
     const parsed = JSON.parse(text) as Partial<TitleCliOutput>;
-    if (parsed.part?.type === "text" && typeof parsed.part.text === "string") {
-      return extractTitle(parsed.part.text);
+    if (parsed.part?.type === "text" && parsed.part.text && !(parsed.part.text instanceof Object)) {
+      return extractTitle(String(parsed.part.text));
     }
     // Claude `-p --output-format json` wraps the schema result in
     // `{ structured_output: … }`.
@@ -139,13 +139,14 @@ function extractTitle(raw: string): string | null {
       parsed.structured_output !== undefined ? parsed.structured_output : parsed;
     if (
       payload &&
-      typeof payload === "object" &&
+      payload instanceof Object &&
       "title" in payload &&
-      typeof payload.title === "string"
+      payload.title &&
+      !(payload.title instanceof Object)
     ) {
-      return payload.title;
+      return String(payload.title);
     }
-    if (typeof parsed.title === "string") return parsed.title;
+    if (parsed.title && !(parsed.title instanceof Object)) return String(parsed.title);
   } catch {
     // Bare text when schema decode is soft — treat the whole payload as the
     // title candidate.

@@ -5,22 +5,26 @@ import path from "node:path";
 
 import type { UsageRecord } from "../transcripts/transcripts.js";
 
-type DroidSettings = {
-  model?: string;
-  providerLock?: string;
-  providerLockTimestamp?: string;
-  tokenUsage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheCreationTokens?: number;
-    cacheReadTokens?: number;
-    thinkingTokens?: number;
-    totalTokens?: number;
-  };
-};
+import { z } from "zod";
 
-function int(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+const DroidSettingsSchema = z.object({
+  model: z.string().optional(),
+  providerLock: z.string().optional(),
+  providerLockTimestamp: z.string().optional(),
+  tokenUsage: z.object({
+    inputTokens: z.number().finite().optional(),
+    outputTokens: z.number().finite().optional(),
+    cacheCreationTokens: z.number().finite().optional(),
+    cacheReadTokens: z.number().finite().optional(),
+    thinkingTokens: z.number().finite().optional(),
+    totalTokens: z.number().finite().optional(),
+  }).optional(),
+}).passthrough();
+
+type DroidSettings = z.infer<typeof DroidSettingsSchema>;
+
+function int(value: number | null | undefined): number {
+  return value && value > 0 ? Math.trunc(value) : 0;
 }
 
 export function normalizeDroidModelName(model: string): string {
@@ -188,10 +192,9 @@ export function parseDroidSettingsFile(filePath: string, raw: string): UsageReco
   } catch {
     return null;
   }
-  if (!value || typeof value !== "object") return null;
-  // SAFETY: value passed the object check above; settings.tokenUsage is
-  // undefined-checked before any field is read.
-  const settings = value as DroidSettings;
+  const parsed = DroidSettingsSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const settings = parsed.data;
   const usage = settings.tokenUsage;
   if (!usage) return null;
 

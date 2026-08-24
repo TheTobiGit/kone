@@ -440,8 +440,8 @@ async function fetchJson(url: string): Promise<unknown | null> {
   }
 }
 
-function trimmed(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+function trimmed(value: string | null | undefined): string | null {
+  return value && value.trim() ? value.trim() : null;
 }
 
 async function fetchLatest(source: LatestSource): Promise<string | null> {
@@ -451,14 +451,14 @@ async function fetchLatest(source: LatestSource): Promise<string | null> {
     );
     // SAFETY: fetchJson resolves unknown-or-null; the only field read here goes
     // through optional chaining and trimmed()'s string guard.
-    return trimmed((payload as { version?: unknown } | null)?.version);
+    return trimmed((payload as { version?: string } | null)?.version);
   }
   const kind = source.cask ? "cask" : "formula";
   // SAFETY: fetchJson resolves unknown-or-null; both fields read off the payload
   // go through optional chaining and trimmed()'s string guard.
   const payload = (await fetchJson(
     `https://formulae.brew.sh/api/${kind}/${encodeURIComponent(source.name)}.json`,
-  )) as { version?: unknown; versions?: { stable?: unknown } } | null;
+  )) as { version?: string; versions?: { stable?: string } } | null;
   return trimmed(source.cask ? payload?.version : payload?.versions?.stable);
 }
 

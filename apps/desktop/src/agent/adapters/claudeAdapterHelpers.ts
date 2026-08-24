@@ -1,4 +1,4 @@
-import type { CanUseTool, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, HookInput, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ApprovalRequest,
   ApprovalRequestKind,
@@ -8,21 +8,34 @@ import type {
 import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
 import type { ClaudeItemBuffer } from "./claudeAdapterTypes.js";
 
+/** A decoded JSON value from the Claude CLI's stream-json wire: scalars,
+ *  null, arrays, or nested objects of the same. */
+export type ClaudeJsonValue = string | number | boolean | null | ClaudeJsonObject | ClaudeJsonValue[];
+
 /** One level of a decoded Claude CLI JSON payload (tool inputs, tool_result
  *  bodies, hook data): a string-keyed object whose values are plain JSON. */
 export interface ClaudeJsonObject {
   [key: string]: ClaudeJsonValue;
 }
 
-/** A decoded JSON value from the Claude CLI's stream-json wire: scalars,
- *  null, arrays, or nested objects of the same. */
-export type ClaudeJsonValue = string | number | boolean | null | ClaudeJsonObject | ClaudeJsonValue[];
+/** One level of a decoded Claude CLI JSON payload (tool inputs, tool_result
+ *  bodies, hook data): a string-keyed object whose values are plain JSON. */
+export type ClaudeWirePayload =
+  | ClaudeJsonValue
+  | SDKMessage
+  | Extract<SDKMessage, { type: "assistant" }>["message"]
+  | Extract<SDKMessage, { type: "user" }>["message"]
+  | Extract<SDKMessage, { type: "stream_event" }>["event"]
+  | HookInput
+  | Parameters<CanUseTool>[1]
+  | null
+  | undefined;
 
 /** Narrow an opaque payload to the CLI's JSON object contract, or undefined
  *  when it is not an object. */
-export function asRecord(value: unknown): ClaudeJsonObject | undefined {
-  // SAFETY: the typeof-object/null checks on this line are the narrowing itself.
-  return typeof value === "object" && value !== null ? (value as ClaudeJsonObject) : undefined;
+export function asRecord(value: ClaudeWirePayload): ClaudeJsonObject | undefined {
+  // SAFETY: value instanceof Object && !Array.isArray(value) verifies it is a record object.
+  return value && value instanceof Object && !Array.isArray(value) ? (value as ClaudeJsonObject) : undefined;
 }
 
 /** A terminal iterator result; the done slot must still carry the value type. */
@@ -31,16 +44,52 @@ function doneResult(): IteratorResult<SDKUserMessage> {
   return { value: undefined as never, done: true };
 }
 
-export function readString(value: unknown, ...path: string[]): string | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "string" ? cursor : undefined;
+export function readString(value: ClaudeWirePayload, ...path: string[]): string | undefined {
+  if (path.length === 0) {
+    if (
+      value === undefined ||
+      value === null ||
+      value instanceof Object ||
+      Number.isFinite(value) ||
+      value === true ||
+      value === false
+    ) {
+      return undefined;
+    }
+    return String(value);
+  }
+  let cursor: ClaudeJsonValue | null | undefined = asRecord(value);
+  for (const key of path) {
+    cursor = asRecord(cursor)?.[key];
+  }
+  if (
+    cursor === undefined ||
+    cursor === null ||
+    cursor instanceof Object ||
+    Number.isFinite(cursor) ||
+    cursor === true ||
+    cursor === false
+  ) {
+    return undefined;
+  }
+  return String(cursor);
 }
 
-export function readNumber(value: unknown, ...path: string[]): number | undefined {
-  let cursor: unknown = value;
-  for (const key of path) cursor = asRecord(cursor)?.[key];
-  return typeof cursor === "number" ? cursor : undefined;
+export function readNumber(value: ClaudeWirePayload, ...path: string[]): number | undefined {
+  if (path.length === 0) {
+    if (value === undefined || value === null || value instanceof Object || !Number.isFinite(value)) {
+      return undefined;
+    }
+    return Number(value);
+  }
+  let cursor: ClaudeJsonValue | null | undefined = asRecord(value);
+  for (const key of path) {
+    cursor = asRecord(cursor)?.[key];
+  }
+  if (cursor === undefined || cursor === null || cursor instanceof Object || !Number.isFinite(cursor)) {
+    return undefined;
+  }
+  return Number(cursor);
 }
 
 /** Normalize a Claude tool call into the neutral ask the renderer shows. */
@@ -48,7 +97,8 @@ export function claudeApprovalRequest(
   toolName: string,
   input: Parameters<CanUseTool>[1],
 ): ApprovalRequest {
-  const record = asRecord(input);
+  // SAFETY: CanUseTool second parameter is JSON-compatible tool input.
+  const record = asRecord(input as ClaudeJsonObject | undefined);
   const subject =
     readString(record, "command")?.trim() ??
     readString(record, "file_path")?.trim() ??
@@ -70,7 +120,7 @@ export function claudeApprovalRequest(
   return request;
 }
 
-export function parseAskUserQuestions(input: unknown): UserInputQuestion[] {
+export function parseAskUserQuestions(input: ClaudeWirePayload): UserInputQuestion[] {
   const rawQuestions = asRecord(input)?.questions;
   if (!Array.isArray(rawQuestions)) return [];
 
@@ -84,8 +134,13 @@ export function parseAskUserQuestions(input: unknown): UserInputQuestion[] {
     const options: UserInputQuestionOption[] = [];
     const rawOptions = Array.isArray(record?.options) ? record!.options : [];
     for (const rawOption of rawOptions) {
-      if (typeof rawOption === "string") {
-        const label = rawOption.trim();
+      if (
+        rawOption &&
+        !(rawOption instanceof Object) &&
+        !Number.isFinite(rawOption) &&
+        rawOption !== true
+      ) {
+        const label = String(rawOption).trim();
         if (label) options.push({ label });
         continue;
       }
@@ -130,15 +185,16 @@ export function summarizeToolInput(
     parsed.url,
     parsed.description,
     parsed.prompt,
-  ].find((v) => typeof v === "string" && v.trim().length > 0) as string | undefined;
+  ].find((v) => v && !(v instanceof Object) && String(v).trim().length > 0) as string | undefined;
 
   const detail = JSON.stringify(parsed, null, 2);
   return { text: target?.trim() ?? toolName ?? "", detail };
 }
 
-export function isEmptyToolInput(input: unknown): boolean {
-  if (typeof input === "string") return input.trim().length === 0;
-  if (typeof input === "object" && input !== null && !Array.isArray(input)) {
+export function isEmptyToolInput(input: ClaudeJsonValue | null | undefined): boolean {
+  if (input === undefined || input === null) return true;
+  if (!(input instanceof Object)) return String(input).trim().length === 0;
+  if (!Array.isArray(input)) {
     return Object.keys(input).length === 0;
   }
   return false;
@@ -151,7 +207,7 @@ export function isClaudeFileEditTool(toolName: string | undefined): boolean {
 }
 
 /** Rebuild a unified-diff body from a file tool's structured `tool_use_result`. */
-export function fileEditDiffBody(structuredResult: unknown): string | undefined {
+export function fileEditDiffBody(structuredResult: ClaudeWirePayload): string | undefined {
   const record = asRecord(structuredResult);
   if (!record) return undefined;
 
@@ -161,13 +217,20 @@ export function fileEditDiffBody(structuredResult: unknown): string | undefined 
     for (const hunk of patch) {
       const hunkLines = asRecord(hunk)?.lines;
       if (!Array.isArray(hunkLines)) continue;
-      for (const line of hunkLines) if (typeof line === "string") lines.push(line);
+      for (const line of hunkLines) {
+        if (line && !(line instanceof Object)) lines.push(String(line));
+      }
     }
     if (lines.length > 0) return lines.join("\n");
   }
 
-  if (record.originalFile == null && typeof record.content === "string" && record.content.length > 0) {
-    return record.content
+  if (
+    record.originalFile == null &&
+    record.content &&
+    !(record.content instanceof Object) &&
+    String(record.content).length > 0
+  ) {
+    return String(record.content)
       .replace(/\n$/, "")
       .split("\n")
       .map((line) => `+${line}`)
@@ -186,8 +249,9 @@ export function applyPlanSnapshot(buffer: ClaudeItemBuffer, rawJson: string): bo
 }
 
 /** Pull display text out of a tool_result's `content`. */
-export function extractToolResultText(content: unknown): string {
-  if (typeof content === "string") return content;
+export function extractToolResultText(content: ClaudeJsonValue | null | undefined): string {
+  if (!content) return "";
+  if (!(content instanceof Object)) return String(content);
   if (Array.isArray(content)) {
     return content
       .map((block) => readString(block, "text") ?? "")

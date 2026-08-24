@@ -116,10 +116,7 @@ export async function lintSkillAt(skillMdPath: string): Promise<SkillFinding[]> 
   if (!loaded) return [];
 
   const directoryName = path.basename(loaded.directory);
-  const name =
-    typeof loaded.frontmatter.name === "string" && loaded.frontmatter.name.trim()
-      ? loaded.frontmatter.name.trim()
-      : directoryName;
+  const name = loaded.frontmatter.name?.trim() || directoryName;
 
   return lintSkill({
     name,

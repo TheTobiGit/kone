@@ -215,7 +215,7 @@ export class AgentService {
     // SAFETY: the enqueueQueuedTurn probe below confirms this really is the
     // store's landed queue slice before it is ever handed out.
     const candidate = store as QueuedTurnStore | null;
-    if (!candidate || typeof candidate.enqueueQueuedTurn !== "function") {
+    if (!candidate || !(candidate.enqueueQueuedTurn instanceof Function)) {
       if (!this.queueUnavailableWarned) {
         this.queueUnavailableWarned = true;
         console.warn(
@@ -998,7 +998,7 @@ export class AgentService {
     const store = this.queueStore;
     if (!store) return null;
     try {
-      if (typeof store.latestUserBlockId === "function") {
+      if (store.latestUserBlockId instanceof Function) {
         const id = store.latestUserBlockId(threadId);
         if (id) return id;
       }

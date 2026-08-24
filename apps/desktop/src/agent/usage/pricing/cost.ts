@@ -6,7 +6,7 @@ import { resolveModelRates, type PricingSnapshot } from "./resolver.js";
 import type { ModelRates, PricedTotal, TokenBuckets } from "./types.js";
 
 function positive(n: number | undefined): number {
-  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+  return n !== undefined && n !== null && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 /** Dollar cost of one usage event's tokens against already-resolved rates.
