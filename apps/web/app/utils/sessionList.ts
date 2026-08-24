@@ -1,6 +1,6 @@
 import type { StoredThreadMeta } from "~/types/desktop";
 import { SESSION_BRAND, type SessionSummary } from "~/types/session";
-import { rememberSideChatSource } from "~/composables/useSideChats";
+import { rememberSideChatSource } from "~/composables/sideChats";
 
 // Shared helpers behind the Project Home and App Home "recent conversations"
 // lists (useRecentSessions / useAllRecentSessions). Both draw the same rows

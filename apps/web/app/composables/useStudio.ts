@@ -33,7 +33,7 @@ import type {
 } from "~/types/studio";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
-import { rememberSideChatSource } from "~/composables/useSideChats";
+import { rememberSideChatSource } from "~/composables/sideChats";
 import type { ThreadSession, useAgent } from "~/composables/useAgent";
 import type { TerminalSession, useTerminal } from "~/composables/useTerminal";
 import type { ScratchpadSession, useScratchpad } from "~/composables/useScratchpad";

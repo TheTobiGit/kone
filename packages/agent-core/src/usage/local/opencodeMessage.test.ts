@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { totalTokens } from "../transcripts/transcripts.js";
-import { parseOpenCodeMessageJson } from "./openCodeMessage.js";
+import { parseOpenCodeMessageJson } from "./opencodeMessage.js";
 
 describe("parseOpenCodeMessageJson", () => {
   test("maps tokens and uses provider-scoped model id", () => {

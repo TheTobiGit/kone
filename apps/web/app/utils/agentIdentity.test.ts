@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { rememberSideChatSource } from "~/composables/useSideChats";
+import { rememberSideChatSource } from "~/composables/sideChats";
 import { agentIdentity } from "./agentIdentity";
 import { KONE, settleThreadAgent } from "./agents";
 

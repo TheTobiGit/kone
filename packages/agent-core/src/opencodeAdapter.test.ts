@@ -236,7 +236,7 @@ describe("OpenCode permission rules per mode", () => {
 // The adapter spawns a real opencode server and speaks HTTP to it, so the
 // server module is stubbed out (a temp copy of the adapter source with its
 // `../opencodeServer.js` import rewritten to a stub file — the
-// CodexAdapter.test.ts pattern, which also dodges mock.module registry
+// codexAdapter.test.ts pattern, which also dodges mock.module registry
 // collisions) and global fetch answers the HTTP surface: session create,
 // prompt_async, and an event stream that ends immediately. No real binary
 // runs; the event pump just drains to completion.

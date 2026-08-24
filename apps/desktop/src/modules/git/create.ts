@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { GitError, exists, git, lastStderrLine, run } from "@kone/git-core/core.js";
+import { execFileAsync, GitError, git, lastStderrLine, pathExists } from "@kone/git-core/core.js";
 import type { CreateProjectOptions, CreateProjectResult } from "@kone/git-core/types.js";
 
 // The counterpart to clone: instead of pulling a repo down, we lay a fresh
@@ -84,7 +84,7 @@ async function createRemote(
   visibility: "public" | "private",
 ): Promise<void> {
   try {
-    await run(
+    await execFileAsync(
       "gh",
       [
         "repo",
@@ -133,7 +133,7 @@ export async function createProject(
   }
 
   const target = path.resolve(parent, name);
-  if (await exists(target)) {
+  if (await pathExists(target)) {
     throw new GitError(`A folder already exists at ${target}`, null);
   }
 
@@ -152,18 +152,18 @@ export async function createProject(
   }
 
   // Seed files, but never clobber anything the command already produced.
-  if (readme && !(await exists(path.join(target, "README.md")))) {
+  if (readme && !(await pathExists(path.join(target, "README.md")))) {
     await writeFile(path.join(target, "README.md"), `# ${name}\n`, "utf8");
   }
   const template = opts.gitignore
     ? GITIGNORE_TEMPLATES[opts.gitignore.toLowerCase()]
     : undefined;
-  if (template && !(await exists(path.join(target, ".gitignore")))) {
+  if (template && !(await pathExists(path.join(target, ".gitignore")))) {
     await writeFile(path.join(target, ".gitignore"), template, "utf8");
   }
 
   // A scaffolder may have already initialized git; only init when it didn't.
-  if (initGit && !(await exists(path.join(target, ".git")))) {
+  if (initGit && !(await pathExists(path.join(target, ".git")))) {
     const branch = opts.branch?.trim() || "main";
     // `git init -b` sets the initial branch in one shot; on an older git that
     // doesn't know the flag, init plain and point HEAD at the branch by hand.

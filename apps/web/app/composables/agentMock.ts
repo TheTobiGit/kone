@@ -9,8 +9,8 @@ import type {
   TokenUsage,
 } from "~/types/desktop";
 import { formatPlanTasks, type PlanTask } from "~/utils/planTasks";
-import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "./useAgentTypes.js";
-import { titleFromPrompt, uid } from "./useAgentPrefetch.js";
+import type { QueuedTurnEntry, ReasoningTier, ThreadBlock } from "./agentTypes.js";
+import { titleFromPrompt, uid } from "./agentPrefetch.js";
 
 export function createMockTurnRunner(deps: {
   threadId: Ref<string>;

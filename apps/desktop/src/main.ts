@@ -13,8 +13,8 @@ import { cancelAllClones, registerGitIpc } from "./modules/git/index.js";
 import { registerSystemIpc } from "./modules/system/system.js";
 import { registerStudioIpc } from "./modules/studio/index.js";
 import { registerRosterIpc } from "./modules/roster/index.js";
-import { registerAvatarIpc } from "./modules/avatars/index.js";
-import { registerPresetIpc } from "./modules/presets/index.js";
+import { registerAvatarsIpc } from "./modules/avatars/index.js";
+import { registerPresetsIpc } from "./modules/presets/index.js";
 import { registerScratchpadIpc } from "./modules/scratchpad/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./modules/terminal/index.js";
 import {
@@ -132,10 +132,10 @@ function registerIpc() {
   registerRosterIpc();
 
   // Preset sub-agents: reusable definitions a spawn is cut from.
-  registerPresetIpc();
+  registerPresetsIpc();
 
   // Pictures for agents: one network read the renderer isn't allowed to do.
-  registerAvatarIpc();
+  registerAvatarsIpc();
 
   // Window chrome: minimize/maximize/close for the renderer's caption buttons.
   registerWindowControlsIpc(() => mainWindow);

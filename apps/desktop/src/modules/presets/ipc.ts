@@ -6,7 +6,7 @@ import type { PresetCreateInput, PresetDeleteInput, PresetUpdateInput } from "./
 let registered = false;
 
 /** Register the presets:* IPC handlers. Call once, before creating the window. */
-export function registerPresetIpc(): void {
+export function registerPresetsIpc(): void {
   if (registered) return;
   registered = true;
 

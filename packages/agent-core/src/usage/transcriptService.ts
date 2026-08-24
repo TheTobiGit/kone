@@ -25,7 +25,7 @@ import {
   type ScanCache,
 } from "./transcripts/scanCache.js";
 import { scanDroidUsage } from "./local/droidScan.js";
-import { scanOpenCodeUsage } from "./local/openCodeScan.js";
+import { scanOpenCodeUsage } from "./local/opencodeScan.js";
 import { scanAntigravityUsage } from "./local/antigravityScan.js";
 import {
   listTranscriptFiles,

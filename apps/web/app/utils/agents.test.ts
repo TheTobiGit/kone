@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { ref } from "vue";
 
-import { rememberSideChatSource } from "~/composables/useSideChats";
+import { rememberSideChatSource } from "~/composables/sideChats";
 import {
   addAgentToProject,
   agentById,

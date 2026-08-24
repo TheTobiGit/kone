@@ -186,12 +186,12 @@ const CodexPlanPayloadWire = z.object({
   plan: z.array(CodexPlanItemWire),
 }).passthrough();
 
-export interface CodexPlanPayload {
+export type CodexPlanPayload = {
   plan?: Array<{
     step?: string;
     status?: string;
   }>;
-}
+};
 
 /** Map a Codex `turn/plan/updated` payload to a task snapshot. */
 export function parseCodexPlanSnapshot(payload: CodexPlanPayload | null | undefined): Omit<PlanTask, "id">[] | undefined {

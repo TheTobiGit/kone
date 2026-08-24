@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { parseSafeExternalUrl } from "../../lib/safeExternalUrl.js";
 import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
-import { GitError, lastStderrLine, repoRoot, run } from "@kone/git-core/core.js";
+import { execFileAsync, GitError, lastStderrLine, repoRoot } from "@kone/git-core/core.js";
 import { parseFileDiff } from "./diff.js";
 import { classifyGhError } from "./ghError.js";
 import { GIT_AUTHOR_AVATAR_CAP, GIT_CONTRIBUTOR_CAP } from "@kone/git-core/types.js";
@@ -51,7 +51,7 @@ const NOT_AUTHENTICATED_MESSAGE = "Sign in to GitHub with gh auth login to see p
  *  stderr line, classified onto a semantic kind. */
 async function gh(cwd: string | undefined, args: string[]): Promise<string> {
   try {
-    const { stdout } = await run("gh", args, {
+    const { stdout } = await execFileAsync("gh", args, {
       cwd,
       env: { ...process.env },
       maxBuffer: GH_MAX_BUFFER,

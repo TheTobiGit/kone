@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { highlightThrottleMs, type CodeLine } from "~/composables/useHighlighter";
-import { createStreamGate } from "~/composables/useStreamGate";
+import { createStreamGate } from "~/composables/streamGate";
 
 // A fenced code block inside an agent reply — syntax-highlighted with the same
 // Shiki engine (and VSCode themes) the file viewer uses, so code in the chat

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { createStreamGate } from "./useStreamGate";
+import { createStreamGate } from "./streamGate";
 import { highlightThrottleMs } from "./useHighlighter";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

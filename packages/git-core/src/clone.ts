@@ -4,7 +4,7 @@ import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { killProcessTree } from "./processTree.js";
-import { GitError, exists, lastStderrLine } from "./core.js";
+import { pathExists, GitError, lastStderrLine } from "./core.js";
 import type { CloneProgress, CloneResult } from "./types.js";
 
 // `git clone --progress` narrates its work on stderr, updating a line in place
@@ -202,7 +202,7 @@ export function clone(
         return;
       }
 
-      if (await exists(target)) {
+      if (await pathExists(target)) {
         finish(() =>
           reject(new GitError(`A folder already exists at ${target}`, null)),
         );
@@ -265,7 +265,7 @@ export function clone(
         }
         if (code === 0) {
           void (async () => {
-            if (await exists(target)) {
+            if (await pathExists(target)) {
               sweepAndReject(
                 new GitError(`A folder already exists at ${target}`, null),
               );

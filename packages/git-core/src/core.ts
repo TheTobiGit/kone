@@ -10,7 +10,7 @@ import type { IpcErrorKind } from "@kone/protocol/ipc-error";
 // runner, the error type it throws, and the path/fs guards that keep operations
 // inside the repository.
 
-export const run = promisify(execFile);
+export const execFileAsync = promisify(execFile);
 
 export class GitError extends Error {
   constructor(
@@ -63,7 +63,7 @@ export async function git(
   extraEnv?: Record<string, string>,
 ): Promise<string> {
   try {
-    const { stdout } = await run("git", args, {
+    const { stdout } = await execFileAsync("git", args, {
       cwd,
       // Deterministic, machine-readable output regardless of user config.
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", ...extraEnv },
@@ -107,7 +107,7 @@ export async function repoRoot(dir: string): Promise<string | null> {
 }
 
 /** Whether `dir` exists (as anything). */
-export async function exists(dir: string): Promise<boolean> {
+export async function pathExists(dir: string): Promise<boolean> {
   try {
     await access(dir);
     return true;
