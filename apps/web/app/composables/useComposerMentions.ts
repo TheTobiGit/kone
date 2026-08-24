@@ -6,7 +6,7 @@ import {
   render,
   type Ref,
 } from "vue";
-import MentionChip from "~/components/MentionChip.vue";
+import MentionChip from "~/components/composer/MentionChip.vue";
 import type { GitProjectFile } from "~/types/desktop";
 import {
   detectFileMentionTrigger,

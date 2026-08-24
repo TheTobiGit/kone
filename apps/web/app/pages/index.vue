@@ -237,7 +237,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           @profile="onOpenProfile"
           @summon="summonStudio"
         />
-        <AppHomeRecent
+        <HomeRecent
           v-else-if="showRecent"
           :recents="recents"
           :pending="pending"
@@ -250,13 +250,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           @settings="settingsOpen = true"
           @profile="onOpenProfile"
         />
-        <AppHomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />
+        <HomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />
 
         <!-- The studio plane, over whichever page is showing. Unkeyed and never
              unmounted: the pages above are keyed on their project path and go
              away on a switch, while the rows in here have to keep their turns
              folding and their terminals alive. -->
-        <AppStudio
+        <StudioAppStudio
           :open="studioOpen"
           :active-project="project"
           @summon="summonStudio"
@@ -278,19 +278,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       />
     </motion.div>
 
-    <FolderPickerModal
+    <UiFolderPickerModal
       v-if="pickerOpen"
       @select="onPicked"
       @cancel="onPickerCancel"
     />
 
-    <GitHubCloneModal
+    <UiGitHubCloneModal
       v-if="cloneOpen"
       @clone="onCloned"
       @cancel="onCloneCancel"
     />
 
-    <CreateProjectModal
+    <ProjectCreateProjectModal
       v-if="createOpen"
       @create="onCreated"
       @cancel="onCreateCancel"

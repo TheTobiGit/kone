@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import ProviderLogo from "~/components/ProviderLogo.vue";
+import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { SESSION_BRAND } from "~/types/session";
 import type { UsageDay } from "~/types/desktop";
 import { formatDayShort, formatTokens, formatUsd } from "~/utils/usageFormat";
