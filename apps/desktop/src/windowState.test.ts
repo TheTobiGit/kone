@@ -42,7 +42,7 @@ const {
   RENDERER_RECOVERY_WINDOW_MS,
   resolveVisibleWindowState,
 } = await import("./windowState.js");
-import type { JsonValue } from "./jsonValue.js";
+import type { JsonValue } from "./lib/jsonValue.js";
 
 const STATE_FILE = path.join(USER_DATA, "window-state.json");
 const PRIMARY = { x: 0, y: 0, width: 1920, height: 1040 };

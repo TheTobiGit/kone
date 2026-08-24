@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { writeFileAtomicSync } from "../atomicWrite.js";
+import { writeFileAtomicSync } from "../lib/atomicWrite.js";
 
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "./types.js";
 import { userDataPath } from "./userDataDir.js";
@@ -20,7 +20,7 @@ import { userDataPath } from "./userDataDir.js";
 
 import { z } from "zod";
 
-import type { JsonValue } from "../jsonValue.js";
+import type { JsonValue } from "../lib/jsonValue.js";
 
 const VERSION = 1;
 

@@ -104,7 +104,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
 }
 
 import { z } from "zod";
-import type { JsonValue } from "../../../jsonValue.js";
+import type { JsonValue } from "../../../lib/jsonValue.js";
 
 const SerializedRecordSchema = z.tuple([
   z.number().finite(),

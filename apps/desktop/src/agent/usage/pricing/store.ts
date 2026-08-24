@@ -13,7 +13,7 @@
 // keeps serving until the next attempt.
 
 import fs from "node:fs";
-import { writeFileAtomicSync } from "../../../atomicWrite.js";
+import { writeFileAtomicSync } from "../../../lib/atomicWrite.js";
 
 import litellmSnapshot from "./snapshots/litellm.snapshot.json" with { type: "json" };
 import modelsDevSnapshot from "./snapshots/models-dev.snapshot.json" with { type: "json" };
@@ -84,7 +84,7 @@ function readJsonFile<T>(path: string | undefined): T | undefined {
   }
 }
 
-import type { JsonValue } from "../../../jsonValue.js";
+import type { JsonValue } from "../../../lib/jsonValue.js";
 
 function writeJsonFile(path: string | undefined, data: JsonValue | Record<string, SourceState> | Record<SourceId, SourceState>): void {
   if (path === undefined) return;

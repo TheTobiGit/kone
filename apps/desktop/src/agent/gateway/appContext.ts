@@ -21,7 +21,7 @@
 // Everything is gated on the session actually having a gateway connection:
 // never promise tools the agent doesn't have.
 
-import type { JsonObject } from "../../jsonValue.js";
+import type { JsonObject } from "../../lib/jsonValue.js";
 import type { AgentPersona } from "../types.js";
 
 /** Versioned marker so a host-context block in a transcript can be dated —

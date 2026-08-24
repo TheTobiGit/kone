@@ -6,17 +6,17 @@ import { app, BrowserWindow, nativeTheme, net, protocol, shell } from "electron"
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
 import { setUserDataDir } from "./agent/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
-import { isRendererOriginNavigation, parseSafeExternalUrl } from "./safeExternalUrl.js";
+import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
-import { registerFsIpc } from "./fs.js";
-import { cancelAllClones, registerGitIpc } from "./git/index.js";
-import { registerSystemIpc } from "./system.js";
-import { registerStudioIpc } from "./studio/index.js";
-import { registerRosterIpc } from "./roster/index.js";
-import { registerAvatarIpc } from "./avatars/index.js";
-import { registerPresetIpc } from "./presets/index.js";
-import { registerScratchpadIpc } from "./scratchpad/index.js";
-import { registerTerminalIpc, shutdownTerminals } from "./terminal/index.js";
+import { registerFsIpc } from "./modules/fs/fs.js";
+import { cancelAllClones, registerGitIpc } from "./modules/git/index.js";
+import { registerSystemIpc } from "./modules/system/system.js";
+import { registerStudioIpc } from "./modules/studio/index.js";
+import { registerRosterIpc } from "./modules/roster/index.js";
+import { registerAvatarIpc } from "./modules/avatars/index.js";
+import { registerPresetIpc } from "./modules/presets/index.js";
+import { registerScratchpadIpc } from "./modules/scratchpad/index.js";
+import { registerTerminalIpc, shutdownTerminals } from "./modules/terminal/index.js";
 import {
   bindWindowChromeEvents,
   registerWindowControlsIpc,

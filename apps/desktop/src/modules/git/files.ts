@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { createKeyedSingleFlightCache } from "../singleFlightCache.js";
+import { createKeyedSingleFlightCache } from "../../lib/singleFlightCache.js";
 import { git } from "./core.js";
 import type { GitProjectFile } from "./types.js";
 

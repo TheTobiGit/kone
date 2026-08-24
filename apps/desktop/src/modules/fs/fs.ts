@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { ipcMain } from "electron";
 
-import { withTimeout } from "./ipcTimeout.js";
+import { withTimeout } from "../../lib/ipcTimeout.js";
 
 // `stat` accepts `{ signal }` at runtime so an in-flight probe is cancelled,
 // but the installed @types/node predates that field on StatOptions.

@@ -1,6 +1,6 @@
 import { ipcMain } from "electron";
 
-import { withTimeout } from "../ipcTimeout.js";
+import { withTimeout } from "../../lib/ipcTimeout.js";
 import { clone } from "./clone.js";
 import { createProject } from "./create.js";
 import { contributors, identity, logo, readme } from "./about.js";

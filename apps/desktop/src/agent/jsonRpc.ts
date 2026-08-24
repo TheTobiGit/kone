@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { createInterface } from "node:readline";
 
-import type { JsonObject, JsonValue } from "../jsonValue.js";
+import type { JsonObject, JsonValue } from "../lib/jsonValue.js";
 import { killTree } from "./spawn.js";
 
 // Generic bidirectional JSON-RPC 2.0 client over a persistent child process's

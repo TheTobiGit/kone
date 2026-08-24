@@ -1,6 +1,6 @@
 import { ipcMain } from "electron";
 
-import { getConversationStore } from "../agent/ConversationStore.js";
+import { getConversationStore } from "../../agent/ConversationStore.js";
 import type { StudioSaveInput } from "./types.js";
 
 let registered = false;

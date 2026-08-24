@@ -25,7 +25,7 @@ import type {
 import type { QuotaCapableProvider } from "./agent/quota/index.js";
 import type { QuotaProviderReport } from "./agent/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "./agent/usage/report.js";
-import type { StudioSaveInput } from "./studio/index.js";
+import type { StudioSaveInput } from "./modules/studio/index.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -60,13 +60,13 @@ import type {
   TerminalRestartInput,
   TerminalSessionSnapshot,
   TerminalWriteInput,
-} from "./terminal/index.js";
+} from "./modules/terminal/index.js";
 import type {
   ScratchpadDeleteInput,
   ScratchpadListInput,
   ScratchpadSaveInput,
   ScratchpadSaveResult,
-} from "./scratchpad/index.js";
+} from "./modules/scratchpad/index.js";
 import type {
   RosterBindInput,
   RosterCarryInput,
@@ -79,15 +79,15 @@ import type {
   RosterTeamInput,
   RosterTeamMemberInput,
   RosterUpdateInput,
-} from "./roster/index.js";
+} from "./modules/roster/index.js";
 import type {
   PresetCreateInput,
   PresetDeleteInput,
   PresetUpdateInput,
-} from "./presets/index.js";
-import type { AvatarFetchInput, AvatarFetchResult } from "./avatars/index.js";
-import type { DirListing } from "./fs.js";
-import type { ThemeMode } from "./system.js";
+} from "./modules/presets/index.js";
+import type { AvatarFetchInput, AvatarFetchResult } from "./modules/avatars/index.js";
+import type { DirListing } from "./modules/fs/fs.js";
+import type { ThemeMode } from "./modules/system/system.js";
 import type {
   CloneProgress,
   CloneResult,
@@ -124,7 +124,7 @@ import type {
   GitHubRepoInfo,
   GitHubStatus,
   GitHubUser,
-} from "./git/index.js";
+} from "./modules/git/index.js";
 
 
 const api = {

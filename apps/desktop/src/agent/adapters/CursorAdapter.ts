@@ -12,7 +12,7 @@ import {
   resolveCursorBinary,
 } from "../cursorHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
-import type { JsonObject, JsonValue } from "../../jsonValue.js";
+import type { JsonObject, JsonValue } from "../../lib/jsonValue.js";
 import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
 import { isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";

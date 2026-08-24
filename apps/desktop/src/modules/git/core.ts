@@ -3,8 +3,8 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { markKind } from "../ipcError.js";
-import type { IpcErrorKind } from "../ipcError.js";
+import { markKind } from "../../lib/ipcError.js";
+import type { IpcErrorKind } from "../../lib/ipcError.js";
 
 // The shared foundation every git feature module builds on: the git process
 // runner, the error type it throws, and the path/fs guards that keep operations

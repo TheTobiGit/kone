@@ -2,8 +2,8 @@ import fs from "node:fs";
 
 import { z } from "zod";
 
-import type { JsonValue } from "../jsonValue.js";
-import { writeFileAtomicSync } from "../atomicWrite.js";
+import type { JsonValue } from "../lib/jsonValue.js";
+import { writeFileAtomicSync } from "../lib/atomicWrite.js";
 
 import type { ProviderConfig, ProviderKind, ProviderSettingsMap } from "./types.js";
 import { userDataPath } from "./userDataDir.js";
