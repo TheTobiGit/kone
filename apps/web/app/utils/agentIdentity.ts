@@ -18,7 +18,7 @@
 import { createAvatar } from "@dicebear/core";
 import { thumbs } from "@dicebear/collection";
 import { agentForThread } from "~/utils/agents";
-import { resolveRootThreadId } from "~/composables/useSideChats";
+import { resolveRootThreadId } from "~/composables/sideChats";
 
 export interface AgentIdentity {
   /** The id this identity was derived from. */

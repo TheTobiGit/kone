@@ -2,7 +2,7 @@
 import { computed, defineComponent, Fragment, h, onBeforeUnmount, ref, watch } from "vue";
 import type { VNode } from "vue";
 import type Token from "markdown-it/lib/token.mjs";
-import { createStreamGate } from "~/composables/useStreamGate";
+import { createStreamGate } from "~/composables/streamGate";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   InformationCircleIcon,

@@ -1,6 +1,6 @@
 import { computed, shallowRef } from "vue";
 import type { ApprovalDecision, StoredThread } from "~/types/desktop";
-import type { AssistantBlock, PendingApproval, ThreadBlock } from "./useAgentTypes.js";
+import type { AssistantBlock, PendingApproval, ThreadBlock } from "./agentTypes.js";
 
 // ── transcript prefetch ───────────────────────────────────────────────────────
 // A thread's transcript read is the one unavoidable round-trip left on the open

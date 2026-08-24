@@ -40,7 +40,7 @@ import {
   type UseAgentOptions,
   type ThreadSummary,
   type SessionCtx,
-} from "./useAgentTypes";
+} from "./agentTypes";
 
 import {
   takePrefetched,
@@ -53,10 +53,10 @@ import {
   clearChildApprovalFor,
   originSubagentOfApproval,
   titleFromPrompt,
-} from "./useAgentPrefetch";
+} from "./agentPrefetch";
 
-import { createMockTurnRunner } from "./useAgentMock";
-import { getSideChatSource, rememberSideChatSource } from "./useSideChats";
+import { createMockTurnRunner } from "./agentMock";
+import { getSideChatSource, rememberSideChatSource } from "./sideChats";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
@@ -2220,6 +2220,6 @@ export function useAgent(options: UseAgentOptions) {
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
 
-export * from "./useAgentTypes.js";
-export * from "./useAgentPrefetch.js";
+export * from "./agentTypes.js";
+export * from "./agentPrefetch.js";
 

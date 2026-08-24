@@ -63,7 +63,7 @@ async function fetchAvatar(url: string): Promise<AvatarFetchResult> {
 }
 
 /** Register the avatars:* IPC handlers. Call once, before creating the window. */
-export function registerAvatarIpc(): void {
+export function registerAvatarsIpc(): void {
   if (registered) return;
   registered = true;
 

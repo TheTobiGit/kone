@@ -32,7 +32,7 @@ import { deriveActiveSubagents, deriveDelegates, type DelegateRow } from "~/util
 import SubagentShell from "~/components/conversation/SubagentShell.vue";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
-import { createOrJoinSidechat, getSideChatSource } from "~/composables/useSideChats";
+import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
 import { agentForThread } from "~/utils/agents";
 import { usePendingThread } from "~/composables/useProject";
 import { useStudioRowRegistry, type StudioRowApi } from "~/composables/useStudioRowRegistry";

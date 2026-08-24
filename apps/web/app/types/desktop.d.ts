@@ -1146,7 +1146,7 @@ export type RuntimeEventSource =
   | "antigravity.cli.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store"
-  // Renderer-synthesized mock traffic (useAgentMock) — browser-dev only, it
+  // Renderer-synthesized mock traffic (agentMock) — browser-dev only, it
   // never crosses the bridge, so nothing downstream can observe this source.
   | "kone.mock";
 

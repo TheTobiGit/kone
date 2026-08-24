@@ -54,7 +54,7 @@ import {
   threadBindings,
 } from "~/utils/agentStore";
 import { readBot, type AgentBot } from "~/utils/bot";
-import { resolveRootThreadId } from "~/composables/useSideChats";
+import { resolveRootThreadId } from "~/composables/sideChats";
 import { sampleFace } from "~/utils/sphereFace";
 
 /**

@@ -8,7 +8,7 @@ import { listOpenCodeDatabasePaths, resolveOpenCodeDataDirs } from "../../quota/
 import {
   extractMessageTimestampMs,
   parseOpenCodeMessageJson,
-} from "./openCodeMessage.js";
+} from "./opencodeMessage.js";
 import type { UsageRecord } from "../transcripts/transcripts.js";
 
 const MIN_MILLIS_SCALE = 100_000_000_000;

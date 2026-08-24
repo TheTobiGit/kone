@@ -11,13 +11,13 @@ import { git } from "./core.js";
 /** One `--numstat` record: a file's line delta, plus the path it came from when
  *  the entry is a rename or copy. Binary files report no counts, which reads as
  *  0/0 with `binary` set rather than NaN. */
-export interface NumstatEntry {
+export type NumstatEntry = {
   path: string;
   from?: string;
   added: number;
   removed: number;
   binary: boolean;
-}
+};
 
 /** Parse `git diff --numstat -z` output.
  *
