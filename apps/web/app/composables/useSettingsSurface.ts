@@ -42,6 +42,8 @@ const pane = ref<SettingsPane>("root");
 /** When true, the open page uses COMPACT_MAX instead of PAGE_MAX. The agent
  *  detail sets this for as long as it is on screen; everything else leaves it. */
 const compact = ref(false);
+/** Whether the settings drawer is open. */
+const isOpen = ref(false);
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
 const PAGE_PANES: SettingsPane[] = [
@@ -78,5 +80,14 @@ export function useSettingsSurface() {
     pane.value = target;
   }
 
-  return { pane, isPage, compact, revealWidth, COLUMN_WIDTH, openPane };
+  function openDrawer(target?: SettingsPane) {
+    if (target) pane.value = target;
+    isOpen.value = true;
+  }
+
+  function closeDrawer() {
+    isOpen.value = false;
+  }
+
+  return { pane, isPage, compact, isOpen, revealWidth, COLUMN_WIDTH, openPane, openDrawer, closeDrawer };
 }

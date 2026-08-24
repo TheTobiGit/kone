@@ -20,7 +20,6 @@ const pending = ref<"create" | "open" | "clone" | null>(null);
 const pickerOpen = ref(false);
 const cloneOpen = ref(false); // clone-from-github modal
 const createOpen = ref(false); // create-new-project modal
-const settingsOpen = ref(false); // settings / personalization drawer
 
 function onStart(key: "create" | "open" | "clone") {
   if (pending.value) return;
@@ -136,12 +135,17 @@ const stageSpring = {
   mass: 0.8,
 } as const;
 
-const { revealWidth: settingsWidth, openPane } = useSettingsSurface();
+const {
+  revealWidth: settingsWidth,
+  openPane,
+  isOpen: settingsOpen,
+  closeDrawer,
+  openDrawer,
+} = useSettingsSurface();
 
 function onOpenProfile() {
   cue("press");
-  settingsOpen.value = true;
-  openPane("profile");
+  openDrawer("profile");
 }
 
 // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the

@@ -86,6 +86,10 @@ const props = defineProps<{
   agentSwitchable?: boolean;
   /** The provider's models, grouped into families with real efforts. */
   models?: ModelOption[];
+  /** When true (the default), the model name opens the full picker. The host
+   *  turns it off when there is only one model to be had — a pinned agent, one
+   *  visible model — and the slot is then only a label. */
+  modelSwitchable?: boolean;
   /** The selected raw model id (carries the effort for a baked-suffix provider),
    *  or undefined for default. */
   modelId?: string;
@@ -241,6 +245,7 @@ watch(canSwitchAgent, (can) => {
 // The family comes from the model id; the effort within it comes from the
 // reasoning tier (not the id — a synthetic ladder's rungs all share one id).
 const catalog = computed<ModelOption[]>(() => props.models ?? []);
+const canSwitchModel = computed(() => props.modelSwitchable !== false);
 const currentFamily = computed(() => familyForId(catalog.value, props.modelId));
 const currentEffort = computed(() => effortForTier(currentFamily.value, props.reasoning));
 const showEffort = computed(() => hasEffortChoice(currentFamily.value));
@@ -270,8 +275,10 @@ const modelName = computed(
 const modelBrand = computed(() => currentFamily.value?.brand ?? "generic");
 
 // The model name opens the full picker (hosted by the parent); the composer
-// only displays the current family + brand.
+// only displays the current family + brand. With nothing to switch to the slot
+// is inert, so a click can't raise a picker holding a single row.
 function openModels() {
+  if (!canSwitchModel.value) return;
   emit("open-models");
   cue("toggle");
 }
@@ -888,11 +895,21 @@ defineExpose({ wake, setDraft });
           </div>
 
           <div class="bar__group bar__group--end">
-            <!-- Model — the name opens the full providers→models→effort picker. -->
-            <button type="button" class="barbtn model" @click.stop="openModels">
+            <!-- Model — the name opens the full providers→models→effort picker,
+                 or is a plain label when there is only the one model. -->
+            <button
+              v-if="canSwitchModel"
+              type="button"
+              class="barbtn model"
+              @click.stop="openModels"
+            >
               <ProviderLogo :brand="modelBrand" :size="15" />
               <span class="model__name">{{ modelName }}</span>
             </button>
+            <span v-else class="barbtn model barbtn--fixed" :title="`Running on ${modelName}`">
+              <ProviderLogo :brand="modelBrand" :size="15" />
+              <span class="model__name">{{ modelName }}</span>
+            </span>
 
             <!-- Effort — no dropdown. Clicking the brain steps to the next real
                  effort for this model and wraps. -->
@@ -1597,6 +1614,10 @@ html.dark .dock {
   background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .barbtn:active { transform: scale(0.95); }
+/* A slot that only reports — same clothes, none of the affordance. */
+.barbtn--fixed { cursor: default; }
+.barbtn--fixed:hover { opacity: 0.78; background: transparent; }
+.barbtn--fixed:active { transform: none; }
 
 /* ── Context tray ─────────────────────────────────────────────────────────── */
 /* Who takes the turn and where it lands — agent, project, branch, thread —
