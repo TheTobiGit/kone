@@ -167,7 +167,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     const raw = new Database(dbPath());
     // SAFETY: PRAGMA user_version projects exactly one column, named user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
     const idx = raw
       .prepare(
         `SELECT 1 FROM sqlite_master

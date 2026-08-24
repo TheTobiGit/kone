@@ -21,6 +21,7 @@ import {
   colorsFor,
   schemesOf,
   type AppearanceMode,
+  type ThemeColors,
   type ThemeDefinition,
   type ThemeScheme,
 } from "~/theme/roles";

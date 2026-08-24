@@ -1,9 +1,9 @@
-import type { Pane } from "~/types/board";
+import type { Pane } from "~/types/studio";
 import type { ThreadSession } from "~/composables/useAgent";
 
 /** A thread session with no transcript yet and no turn in flight — the blank
  *  slate the composer shows before the first send. Shared by the pane-level and
- *  session-level predicates so "empty" never diverges across useBoard, the strip
+ *  session-level predicates so "empty" never diverges across useStudio, the strip
  *  and useAgent's resident cap. */
 export function isThreadSessionBlank(s: ThreadSession): boolean {
   return s.blocks.value.length === 0 && !s.busy.value;

@@ -148,6 +148,51 @@ function onOpenProfile() {
   openDrawer("profile");
 }
 
+// ── the studio plane ─────────────────────────────────────────────────────────
+// One layer over every page, mounted once for the life of the app. ⌘B summons it
+// from wherever you are — a project page or the launcher — because the work it
+// holds is not any one page's; a project's row keeps running whether or not its
+// page is on screen.
+const studioOpen = ref(false);
+// The page under the plane, so a row's request for something the page owns (a
+// file's diff, the branch picker) can be handed down to it.
+const pageRef = ref<{ openFile: (p: string, r: DOMRect | null) => void; openBranch: () => void } | null>(null);
+
+function summonStudio() {
+  if (studioOpen.value) return;
+  cue("expand");
+  studioOpen.value = true;
+}
+
+// Leaving the plane on another project's row: the page follows it out. Decided
+// on exit only, so travelling the axis never yanks the page around underneath.
+function onStudioExitTo(target: { path: string; name: string }) {
+  if (target.path === project.value?.path) return;
+  openProject({ path: target.path, name: target.name });
+}
+
+// A row asked for something the page owns. The plane has already stepped aside
+// by the time these arrive, so they land on the page that was underneath all
+// along — and are simply dropped when there is no project page to receive them.
+function onStudioOpenFile(path: string, rect: DOMRect | null) {
+  pageRef.value?.openFile(path, rect);
+}
+function onStudioOpenBranch() {
+  pageRef.value?.openBranch();
+}
+
+const { matchesShortcut: matchesStudioHotkey } = useShortcuts();
+function onStudioHotkey(e: KeyboardEvent) {
+  if (!matchesStudioHotkey("open-studio", e)) return;
+  // Not while a launcher modal owns the screen — the plane would cover it.
+  if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
+  e.preventDefault();
+  if (studioOpen.value) studioOpen.value = false;
+  else summonStudio();
+}
+onMounted(() => window.addEventListener("keydown", onStudioHotkey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onStudioHotkey));
+
 // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the
 // same keystroke opens and closes it (Escape also closes, via the drawer). The
 // binding lives in the shortcuts registry (see useShortcuts), so a rebind in
@@ -184,10 +229,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       <div class="h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
         <ProjectView
           v-if="project"
+          ref="pageRef"
           :key="project.path"
           :project="project"
+          :studio-open="studioOpen"
           @close="project = null"
           @profile="onOpenProfile"
+          @summon="summonStudio"
         />
         <AppHomeRecent
           v-else-if="showRecent"
@@ -203,6 +251,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           @profile="onOpenProfile"
         />
         <AppHomeEmpty v-else :pending="pending" @start="onStart" @settings="settingsOpen = true" />
+
+        <!-- The studio plane, over whichever page is showing. Unkeyed and never
+             unmounted: the pages above are keyed on their project path and go
+             away on a switch, while the rows in here have to keep their turns
+             folding and their terminals alive. -->
+        <AppStudio
+          :open="studioOpen"
+          :active-project="project"
+          @summon="summonStudio"
+          @close="studioOpen = false"
+          @exit-to="onStudioExitTo"
+          @open-file="onStudioOpenFile"
+          @open-branch="onStudioOpenBranch"
+        />
       </div>
 
       <!-- While open, tapping the shoved-aside stage closes the drawer (and

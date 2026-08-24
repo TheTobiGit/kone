@@ -1,36 +1,36 @@
-// useBoard — the project board's runtime.
+// useStudio — one row of the studio plane, at runtime.
 //
-// The board owns the layout: an ordered list of `PaneEntry` (plain, serialisable
-// JSON) plus the focused pane id. Sessions are a *runtime attachment* to an
-// entry, minted by the three existing composables (useAgent / useTerminal /
-// useScratchpad) and reached through thin adapters here. The board never
-// reimplements what those composables already do — it wraps them.
+// The studio's rows are projects and its columns are panes. This owns one row:
+// an ordered list of `PaneEntry` (plain, serialisable JSON) plus the focused
+// pane id, for one project. Sessions are a *runtime attachment* to an entry,
+// minted by the three existing composables (useAgent / useTerminal /
+// useScratchpad) and reached through thin adapters here. It never reimplements
+// what those composables already do — it wraps them.
 //
-// The single source of truth for strip order is `entries`. useAgent keeps its
-// own internal session order for its own bookkeeping, but nothing here reads it:
-// the strip renders `panes` (entries joined to their live sessions), so the
-// board decides where a pane sits and the composables just supply the session.
+// The single source of truth for order within the row is `entries`. useAgent
+// keeps its own internal session order for its own bookkeeping, but nothing here
+// reads it: the strip renders `panes` (entries joined to their live sessions),
+// so this decides where a pane sits and the composables just supply the session.
 //
 // Entry ↔ session matching. A session carries its own stable `key`; we record
 // that on `sessionKeyById` (a runtime-only map, PaneId → session key) at attach
 // time. `panes` looks the key up, then the session by key. The map is NOT part
 // of `PaneEntry` — the entry must stay serialisable.
 //
-// Phase 3 scope: every pane attaches immediately on open, exactly as the old
-// four-watch reconciliation did. Persistence (phase 6) and dormancy (phase 7)
-// layer on top without changing this contract.
+// Every pane attaches immediately on open, exactly as the old four-watch
+// reconciliation did; dormancy layers on top without changing this contract.
 
 import { computed, nextTick, ref, watch } from "vue";
 import type { ComputedRef, Ref } from "vue";
 import type {
-  BoardIntent,
-  BoardLayout,
   Pane,
   PaneAnchor,
   PaneEntry,
   PaneId,
   PaneKind,
-} from "~/types/board";
+  StudioIntent,
+  StudioRow,
+} from "~/types/studio";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 import { rememberSideChatSource } from "~/composables/useSideChats";
@@ -45,13 +45,17 @@ type SessionRegistry = ReturnType<typeof useAgent>;
 type Terminal = ReturnType<typeof useTerminal>;
 type Scratchpad = ReturnType<typeof useScratchpad>;
 
-export interface UseBoardOptions {
+export interface UseStudioOptions {
   agent: SessionRegistry;
   terminal: Terminal;
   scratchpad: Scratchpad;
-  /** UI-only side effects the dispatcher fires but doesn't own. The board runs
-   *  the layout half of a cross-pane action (open/append); these finish it in
-   *  ProjectView's world (the composer, the index-dash pulse). */
+  /** The project this row belongs to. A row's identity on the plane, so a
+   *  serialized row can say which project it is without the caller restating
+   *  what it already told the three session composables. */
+  projectPath: string | (() => string);
+  /** UI-only side effects the dispatcher fires but doesn't own. This runs the
+   *  layout half of a cross-pane action (open/append); these finish it in the
+   *  caller's world (the composer, the index-dash pulse). */
   hooks?: {
     /** Flash the target pad's index dash after a capture — today's pulsePadColumn. */
     pulsePad?: (padPaneId: PaneId) => void;
@@ -61,7 +65,7 @@ export interface UseBoardOptions {
   };
 }
 
-export type { BoardIntent } from "~/types/board";
+export type { StudioIntent } from "~/types/studio";
 
 export interface OpenOptions {
   /** Insert to the right of this pane. Defaults to the right of the focused pane. */
@@ -80,17 +84,17 @@ export interface RestoreOptions {
   /** Skip eager attach of the focused thread/terminal (and the boot-thread
    *  consumer) on restore. The project home opens on the working-tree overview,
    *  so spawning a stored conversation here would block git/history IPC behind a
-   *  heavy openThread + agent start. Heavy panes attach when the board surface
+   *  heavy openThread + agent start. Heavy panes attach when the studio surface
    *  is shown or the pane is focused. */
   deferHeavyAttach?: boolean;
 }
 
-export interface UseBoardReturn {
+export interface UseStudioReturn {
   entries: Ref<PaneEntry[]>;
   panes: ComputedRef<Pane[]>;
   focusedId: Ref<PaneId | null>;
   focusedPane: ComputedRef<Pane | null>;
-  /** The board's single blank thread column, if any — a runtime singleton like the
+  /** The row's single blank thread column, if any — a runtime singleton like the
    *  scratchpad, but keyed off session state rather than kind. */
   blankThreadPane: ComputedRef<Pane | null>;
   open: (kind: PaneKind, o?: OpenOptions) => Promise<PaneId>;
@@ -102,7 +106,7 @@ export interface UseBoardReturn {
   /** Bind a dormant pane to a live session on demand (the focus-attaches path).
    *  Idempotent and de-duped: concurrent calls for the same pane share one spawn. */
   attach: (id: PaneId) => Promise<void>;
-  /** Attach every dormant thread pane. Used when the board surface is revealed
+  /** Attach every dormant thread pane. Used when the studio surface is revealed
    *  after a deferred restore, so off-screen columns load their transcripts
    *  instead of sitting on the Opening placeholder until they're focused. */
   wakeThreadPanes: () => Promise<void>;
@@ -110,27 +114,27 @@ export interface UseBoardReturn {
    *  Every agent thread is adopted as a pane, so it always resolves to one. */
   focusThreadById: (threadId: string) => void;
   /** The one path for cross-pane actions — selection→pad, selection→new thread,
-   *  copy. See BoardIntent. */
-  dispatch: (intent: BoardIntent) => Promise<void>;
-  /** Rebuild the persisted layout from the live board — pane order, kinds, the
-   *  current backend ids (read from live sessions when attached) and widths. */
-  serialize: () => BoardLayout;
+   *  copy. See StudioIntent. */
+  dispatch: (intent: StudioIntent) => Promise<void>;
+  /** Rebuild this project's persisted row from the live panes — order, kinds,
+   *  the current backend ids (read from live sessions when attached) and widths. */
+  serialize: () => StudioRow;
   /** A cheap string that changes whenever the *persisted* shape does (order,
    *  kind, backend id, width, focus) — never on a streamed token. Feed the save
    *  debounce off this, not a deep watch of `entries`. */
   saveSignature: ComputedRef<string>;
-  /** Apply a persisted layout on mount. Returns true when a layout was applied
-   *  (including an intentionally empty desktop); false when every stored pane
+  /** Apply a persisted row on mount. Returns true when one was applied
+   *  (including an intentionally empty row); false when every stored pane
    *  failed sanitising and nothing could be restored. */
   restore: (
-    layout: BoardLayout | null,
+    row: StudioRow | null,
     knownThreadIds?: ReadonlySet<string>,
     opts?: RestoreOptions,
   ) => Promise<boolean>;
 }
 
 /** The strip's practical column limit — also the cap on how many panes a
- *  restored layout may bring back, which bounds restore cost (each pane past the
+ *  restored row may bring back, which bounds restore cost (each pane past the
  *  focused one attaches on demand, but they still cost DOM + a join entry). */
 const MAX_RESTORED_PANES = 8;
 
@@ -165,7 +169,7 @@ function sessionMatchesKind(
  *  never sent carries a truthy `threadId.value` — but there's no conversation in
  *  storage behind it. Persisting that phantom id is what let empty columns pile
  *  up on every relaunch: the "no threadId → nothing to restore" guards in
- *  reconcile/sanitizeLayout never fired. Return null for a blank thread (no
+ *  reconcile/sanitizeRow never fired. Return null for a blank thread (no
  *  transcript, not running) so those guards drop it; a real one keeps its id. */
 function persistableThreadId(s: ThreadSession): string | null {
   return s.blocks.value.length === 0 && !s.busy.value ? null : s.threadId.value;
@@ -182,8 +186,10 @@ function persistableThreadId(s: ThreadSession): string | null {
     }
   }
 
-export function useBoard(opts: UseBoardOptions): UseBoardReturn {
+export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   const { agent, terminal, scratchpad } = opts;
+  const resolveProjectPath = () =>
+    typeof opts.projectPath === "function" ? opts.projectPath() : opts.projectPath;
   let warnedMismatch = false;
 
   const entries = ref<PaneEntry[]>([]);
@@ -192,8 +198,8 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   // mutated in place) so `panes` recomputes. Never persisted.
   const sessionKeyById = ref<Record<PaneId, string>>({});
 
-  // Suspend the reconcile watcher while the board mutates its own state, so a
-  // session the board just created (which fires the watcher as it lands in a
+  // Suspend the reconcile watcher while the row mutates its own state, so a
+  // session it just created (which fires the watcher as it lands in a
   // composable's list) isn't double-adopted before its mapping is recorded. A
   // counter, because open()/close() can nest through attach(). Only the
   // outermost mutation reconciles on the way out — an inner one returning at
@@ -236,7 +242,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       if (session && !sessionMatchesKind(entry.kind, session)) {
         if (!warnedMismatch) {
           warnedMismatch = true;
-          console.warn(`[board] session/kind mismatch on pane ${entry.id} (${entry.kind}); treating as dormant`);
+          console.warn(`[studio] session/kind mismatch on pane ${entry.id} (${entry.kind}); treating as dormant`);
         }
         session = null;
       }
@@ -250,7 +256,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     () => panes.value.find((p) => p.id === focusedId.value) ?? null,
   );
 
-  // The blank thread is a board-level singleton, like the scratchpad — it just isn't
+  // The blank thread is a row-level singleton, like the scratchpad — it just isn't
   // declared in the kind registry because "blank" is a runtime state, not a kind.
   // Anywhere on the strip, focused or not, one empty slot is enough: a second would
   // be indistinguishable from the first and would tempt us into minting a second
@@ -361,19 +367,19 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   );
 
   // ── reconcile ───────────────────────────────────────────────────────────────
-  // The board owns entries, but sessions also come and go outside board.open():
+  // The row owns entries, but sessions also come and go outside studio.open():
   // useAgent spawns its first thread at construction, opens a stored thread when
   // a pill is clicked, and evicts idle background threads past MAX_RESIDENT. This
   // keeps the two in sync.
   //
   //   · ADOPT — a live session no entry claims: if a thread entry already
   //     anchors its thread id (a dormant pane whose session was evicted, or a
-  //     restored pane for a thread opened outside the board), re-attach that
+  //     restored pane for a thread opened outside the studio), re-attach that
   //     pane in place — one pane per conversation, however the session arrives.
   //     Otherwise append an entry for it. This is how the boot thread and
-  //     pill-opened threads get on the board.
+  //     pill-opened threads get into the row.
   //   · DORMANT — an entry whose mapped session vanished. A session disappears
-  //     for two reasons and only one is a close: a board close() already removed
+  //     for two reasons and only one is a close: a studio close() already removed
   //     the entry (so this never sees it), while a useAgent eviction leaves the
   //     conversation alive in SQLite. So drop the *mapping* only and keep the
   //     entry — the pane goes dormant and re-attaches on focus. The one entry we
@@ -405,7 +411,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       if (tid) {
         // A thread pane is the one host of its conversation. If an entry
         // already anchors this id — a dormant pane whose session was evicted,
-        // or a restored pane for a thread opened outside the board (launcher
+        // or a restored pane for a thread opened outside the studio (launcher
         // resume, recent click, shell reveal) — re-attach it in place instead
         // of minting a second column for the same thread. Blank threads (no
         // persistable id) still mint, exactly as before.
@@ -416,7 +422,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
             changed = true;
           }
           // A live host (or one claimed earlier in this pass) means a duplicate
-          // session for an id the board already hosts — never a second pane;
+          // session for an id the row already hosts — never a second pane;
           // the stray session just stays unclaimed.
           continue;
         }
@@ -552,7 +558,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
         } catch (err) {
           // The thread wouldn't open (deleted underneath us, adapter error). Don't
           // strand a dormant pane that can never attach — close it.
-          console.warn(`[board] failed to attach thread pane ${id}; closing`, err);
+          console.warn(`[studio] failed to attach thread pane ${id}; closing`, err);
           void close(id);
           return;
         }
@@ -585,7 +591,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     const doFocus = o.focus !== false;
 
     // A thread is hosted by exactly one pane: opening a thread that is already
-    // on the board (live, or dormant with its anchor remembering the id)
+    // in the row (live, or dormant with its anchor remembering the id)
     // focuses its pane instead of minting a second column. The side-chat join
     // path leans on this — one side chat per source thread means one pane for
     // it, however the button is reached (in-flight join, or a reopen of an
@@ -608,7 +614,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       }
     }
 
-    // Blank-thread suppression is a board invariant (L3), not a caller opt-in.
+    // Blank-thread suppression is a studio invariant (L3), not a caller opt-in.
     // Reuse the one blank column instead of stacking a second — including a
     // restored dormant blank slot, which we attach here so the reused pane is
     // live on return (matching the mint path's `await attach` below).
@@ -684,9 +690,9 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     await mutate(async () => {
       entries.value = entries.value.filter((e) => e.id !== id);
       drop(id);
-      // Teardown. Closing the last window leaves an empty desktop — nothing is
-      // respawned to fill it. ProjectView shows the chooser over a zero-pane
-      // board, which is the way back.
+      // Teardown. Closing the last pane leaves the row empty — nothing is
+      // respawned to fill it, and an empty row is not a row: the studio shows
+      // the chooser over it, which is the way back.
       if (entry.kind === "thread") {
         if (sk) await agent.closeThread(sk);
       } else if (entry.kind === "terminal") {
@@ -805,7 +811,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   }
 
   // ── dispatch — the one cross-pane action path ────────────────────────────────
-  async function dispatch(intent: BoardIntent): Promise<void> {
+  async function dispatch(intent: StudioIntent): Promise<void> {
     switch (intent.type) {
       case "copy": {
         if (!import.meta.client) return;
@@ -903,9 +909,9 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     }
   }
 
-  function serialize(): BoardLayout {
+  function serialize(): StudioRow {
     return {
-      version: 1,
+      projectPath: resolveProjectPath(),
       panes: panes.value.map((p) => ({
         id: p.id,
         kind: p.kind,
@@ -922,23 +928,26 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       .join("|") + `#${focusedId.value ?? ""}`,
   );
 
-  /** Trim a persisted layout to what can be safely restored: known kinds only; a
+  /** Trim a persisted row to what can be safely restored: known kinds only; a
    *  thread must remember its id (or be the one preserved blank slot); one
    *  singleton max; leftmost MAX_RESTORED_PANES. Pane ids are *carried through*
    *  (validated + de-duped) rather than re-minted, so focus and any id-keyed UI
    *  state survive a relaunch (G1) — an invalid or duplicate id falls back to a
-   *  fresh mint. */
-  function sanitizeLayout(
-    layout: BoardLayout | null,
+   *  fresh mint.
+   *
+   *  No version check here: the version belongs to the plane, not to one row of
+   *  it, and the loader gates on it before any row is handed over. */
+  function sanitizeRow(
+    row: StudioRow | null,
     knownThreadIds?: ReadonlySet<string>,
   ): PaneEntry[] {
-    if (!layout || layout.version !== 1 || !Array.isArray(layout.panes)) return [];
+    if (!row || !Array.isArray(row.panes)) return [];
     const seenSingleton = new Set<PaneKind>();
     const seenIds = new Set<string>();
     const seenThreadIds = new Set<string>();
     let keptBlankThread = false;
     const kept: PaneEntry[] = [];
-    for (const raw of layout.panes) {
+    for (const raw of row.panes) {
       if (!raw || typeof raw !== "object") continue;
       const kind = raw.kind;
       if (kind !== "thread" && kind !== "terminal" && kind !== "scratchpad") continue;
@@ -973,7 +982,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       // phantom (a blank thread persisted before this guard existed, or a thread
       // since deleted). Drop it so it can't come back as an empty column. Only
       // filter when we actually have the stored set — no bridge (nuxt dev) means
-      // no list, so fall back to keeping the id rather than wiping the board.
+      // no list, so fall back to keeping the id rather than wiping the row.
       if (
         anchor.kind === "thread" &&
         knownThreadIds &&
@@ -1006,25 +1015,25 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
     return kept;
   }
 
-  // Returns whether a persisted layout was applied. An intentionally EMPTY desktop
-  // counts as true: closing every window is a layout the user chose. A layout
-  // whose panes all failed sanitising (every stored thread a phantom) returns
-  // false — the board keeps whatever reconcile already adopted.
+  // Returns whether a persisted row was applied. An intentionally EMPTY row
+  // counts as true: closing every pane is a layout the user chose. A row whose
+  // panes all failed sanitising (every stored thread a phantom) returns false —
+  // the row keeps whatever reconcile already adopted.
   async function restore(
-    layout: BoardLayout | null,
+    row: StudioRow | null,
     knownThreadIds?: ReadonlySet<string>,
     opts?: RestoreOptions,
   ): Promise<boolean> {
-    if (!layout || layout.version !== 1 || !Array.isArray(layout.panes)) return false;
-    const sanitized = sanitizeLayout(layout, knownThreadIds);
-    if (!sanitized.length && layout.panes.length > 0) return false;
+    if (!row || !Array.isArray(row.panes)) return false;
+    const sanitized = sanitizeRow(row, knownThreadIds);
+    if (!sanitized.length && row.panes.length > 0) return false;
     const deferHeavy = opts?.deferHeavyAttach ?? false;
 
     await mutate(async () => {
       entries.value = sanitized;
       sessionKeyById.value = {};
-      focusedId.value = sanitized.some((e) => e.id === layout.focusedId)
-        ? layout.focusedId
+      focusedId.value = sanitized.some((e) => e.id === row.focusedId)
+        ? row.focusedId
         : sanitized[0]?.id ?? null;
 
       // Attach eagerly only what's cheap or needed to land on content:
@@ -1051,7 +1060,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
       // G6 — dispose stray idle blank threads. useAgent still spawns one session at
       // construction; if restore attached a stored thread, openThread should have
       // evicted that idle boot, but no primitive lets us *reuse* it. Also catches
-      // sessions that appear from outside the board (launcher resume, away-pill open)
+      // sessions that appear from outside the studio (launcher resume, away-pill open)
       // when they weren't claimed by a pane. Only ever a blank, idle, unclaimed
       // session — never one we just bound or that carries a turn.
       const claimed = new Set(Object.values(sessionKeyById.value));
@@ -1078,7 +1087,7 @@ export function useBoard(opts: UseBoardOptions): UseBoardReturn {
   }
   /** Where a new pane lands: explicit `at`, else right of `near` (after any
    *  attached side chats), else right of the focused column (after its side
-   *  chats; append when the board is bare or focus is stale). */
+   *  chats; append when the row is bare or focus is stale). */
   function insertIndexFor(
     o: { at?: number; near?: PaneId },
     list: PaneEntry[],

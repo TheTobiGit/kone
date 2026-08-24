@@ -8,13 +8,25 @@ import type {
   SubagentRun,
 } from "./types.js";
 
-/** The board document as it lives in the store — a serialisable layout blob.
- *  desktop package stays free of a web-package dependency; the renderer owns the
- *  canonical `BoardLayout` type and the hard pane validation. */
-export type StoredBoardLayout = {
-  version: 1;
+/** One project's row of the studio — its panes, in left-to-right order, and
+ *  which of them it was left focused on. `panes` stays `unknown[]` because the
+ *  store holds no opinion about a pane's shape: the renderer owns the canonical
+ *  type and the hard validation, and that is what lets a pane field be added
+ *  without a migration here. */
+export type StoredStudioRow = {
+  projectPath: string;
   panes: unknown[];
   focusedId: string | null;
+};
+
+/** The studio document as it lives in the store — one plane, one row per
+ *  project that has work on it. Read and written whole, like the per-project
+ *  board blob it replaced, so the desktop package stays free of a web-package
+ *  dependency. `rows` order IS the plane's vertical order. */
+export type StoredStudioLayout = {
+  version: 2;
+  rows: StoredStudioRow[];
+  focusedRow: string | null;
 };
 
 export type ScratchpadRecord = {
