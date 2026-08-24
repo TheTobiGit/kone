@@ -101,13 +101,13 @@ function callerOf(ctx: GatewayToolContext): SpawnCaller {
 /** Map an engine refusal onto the gateway's error vocabulary — the code
  *  strings are identical by construction, so they cross unchanged. Anything
  *  that is not a SpawnError is rethrown for the registry's internal handling. */
-function mapSpawnError(error: unknown): GatewayToolError {
-  if (error instanceof SpawnError) {
+function mapSpawnError(cause: unknown): GatewayToolError {
+  if (cause instanceof SpawnError) {
     // SAFETY: engine refusals carry plain-JSON detail bags that are embedded
     // verbatim into the tool result without further interpretation.
-    return new GatewayToolError(error.code, error.message, error.details as GatewayValue);
+    return new GatewayToolError(cause.code, cause.message, cause.details as GatewayValue);
   }
-  throw error;
+  throw cause;
 }
 
 /** Find a preset by the agent's reference: an exact id first, then a

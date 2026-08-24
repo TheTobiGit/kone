@@ -12,8 +12,10 @@ import type {
   GatewayRecord,
   GatewayToolContext,
   GatewayToolResult,
+  GatewayValue,
   ToolEntry,
-} from "./schemas.js";import { GatewayToolError } from "./schemas.js";
+} from "./schemas.js";
+import { GatewayToolError } from "./schemas.js";
 
 export type { GatewayToolContext, GatewayToolResult, ToolEntry } from "./schemas.js";
 
@@ -45,7 +47,7 @@ export interface GatewayRegistry {
    *  inputSchema is the tool's hand-written JSON Schema object. */
   listTools(): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
   /** Dispatch one tools/call through the full dispatch order. Never throws. */
-  call(ctx: GatewayToolContext, name: string, args: unknown): Promise<GatewayToolResult>;
+  call(ctx: GatewayToolContext, name: string, args: GatewayValue | undefined): Promise<GatewayToolResult>;
 }
 
 export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry {
@@ -61,7 +63,7 @@ export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry
   async function call(
     ctx: GatewayToolContext,
     name: string,
-    args: unknown,
+    args: GatewayValue | undefined,
   ): Promise<GatewayToolResult> {
     const tool = toolsByName.get(name);
     if (!tool) {
@@ -97,16 +99,16 @@ export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry
       // SAFETY: every tool's inputSchema is a zod object schema, so validated
       // args are a JSON object by construction before the handler sees them.
       return await tool.handler(ctx, parsed.data as GatewayRecord);
-    } catch (error) {
-      if (error instanceof GatewayToolError) {
-        return gatewayToolErrorResult(error);
+    } catch (cause) {
+      if (cause instanceof GatewayToolError) {
+        return gatewayToolErrorResult(cause);
       }
       // A cancelled in-flight call is not a tool failure — the transport
       // turns AbortError into an empty 202. Swallowing it here would log a
       // fake crash and return isError to a client that already hung up.
-      if (error instanceof Error && error.name === "AbortError") throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[gateway] tool "${name}" failed:`, error);
+      if (cause instanceof Error && cause.name === "AbortError") throw cause;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      console.error(`[gateway] tool "${name}" failed:`, cause);
       return gatewayToolErrorResult(
         new GatewayToolError("internal", `Tool "${name}" failed: ${message}`),
       );

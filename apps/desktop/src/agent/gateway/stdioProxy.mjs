@@ -79,10 +79,10 @@ async function resolveToken() {
         throw new Error("kone gateway bootstrap failed with HTTP " + response.status);
       }
       const payload = await response.json();
-      if (!isRecord(payload) || typeof payload.bearerToken !== "string") {
+      if (!isRecord(payload) || !payload.bearerToken || payload.bearerToken instanceof Object) {
         throw new Error("kone gateway bootstrap returned an invalid response");
       }
-      token = payload.bearerToken;
+      token = String(payload.bearerToken);
       return token;
     })().finally(() => {
       if (bootstrapController === controller) bootstrapController = undefined;
@@ -109,16 +109,18 @@ function writeMessage(message) {
 }
 
 function requestKey(id) {
-  return typeof id === "string" || typeof id === "number" ? `${typeof id}:${String(id)}` : null;
+  if (id === undefined || id === null || id instanceof Object || id === true || id === false) return null;
+  const tag = Number.isFinite(id) ? "number" : "string";
+  return `${tag}:${String(id)}`;
 }
 
 function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return Boolean(value && value instanceof Object && !Array.isArray(value));
 }
 
 function requestKeyForMessage(message) {
   if (!isRecord(message)) return null;
-  if (message.jsonrpc !== "2.0" || typeof message.method !== "string") return null;
+  if (message.jsonrpc !== "2.0" || !message.method || message.method instanceof Object) return null;
   return requestKey(message.id);
 }
 
@@ -193,7 +195,7 @@ async function forwardMessage(message, controller) {
     }
     const payload = await response.json();
     const messages = Array.isArray(payload) ? payload : [payload];
-    return messages.filter((value) => value && typeof value === "object");
+    return messages.filter((value) => value && value instanceof Object);
   } catch (error) {
     if (controller.signal.aborted || !hasId) return [];
     return [
