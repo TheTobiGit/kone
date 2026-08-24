@@ -11,6 +11,7 @@ import {
   type GatewayTransportStore,
 } from "./mcpTransport.js";
 import { z } from "zod";
+import type { JsonValue } from "../../jsonValue.js";
 
 const PROJECT = "/tmp/proj";
 
@@ -62,7 +63,7 @@ function fixture() {
   return { credentials, store, registry, turnState, transport };
 }
 
-function post(transport: ReturnType<typeof fixture>["transport"], auth: string | undefined, body: unknown) {
+function post(transport: ReturnType<typeof fixture>["transport"], auth: string | undefined, body: JsonValue | string) {
   return transport.handlePost({ authorizationHeader: auth, body });
 }
 

@@ -16,7 +16,6 @@ import { fileURLToPath } from "node:url";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import type { GatewayConnection } from "../types.js";
-import type { JsonObject } from "../../jsonValue.js";
 
 /** The ACP MCP server name both entry shapes ship under. */
 export const KONE_MCP_SERVER_NAME = "kone";
@@ -51,13 +50,23 @@ export type AcpStdioMcpServer = {
 };
 export type AcpMcpServer = AcpHttpMcpServer | AcpStdioMcpServer;
 
+import { z } from "zod";
+import type { JsonValue } from "../../jsonValue.js";
+
+const AcpCapabilitiesWire = z.object({
+  agentCapabilities: z.object({
+    mcpCapabilities: z.object({
+      http: z.boolean().optional(),
+    }).optional(),
+  }).optional(),
+}).passthrough();
+
 /** Whether an ACP initialize result advertises HTTP MCP servers — the decision
  *  that picks the direct HTTP entry over the stdio proxy fallback. Same field
  *  `initializeResult.agentCapabilities.mcpCapabilities.http === true`. */
-export function acpAgentSupportsHttp(initializeResult: unknown): boolean {
-  const agentCapabilities = record(initializeResult)?.agentCapabilities;
-  const mcpCapabilities = record(agentCapabilities)?.mcpCapabilities;
-  return record(mcpCapabilities)?.http === true;
+export function acpAgentSupportsHttp(initializeResult: JsonValue | null | undefined): boolean {
+  const parsed = AcpCapabilitiesWire.safeParse(initializeResult);
+  return parsed.success && parsed.data.agentCapabilities?.mcpCapabilities?.http === true;
 }
 
 /** The Cursor/Droid (ACP) MCP server config for one gateway connection
@@ -91,13 +100,6 @@ export function acpMcpServers(
       ],
     },
   ];
-}
-
-function record(value: unknown): JsonObject | undefined {
-  // SAFETY: the ternary excludes null and non-objects; every value probed here
-  // is an ACP initialize result (parsed wire JSON), so it satisfies JsonObject
-  // and each field reads back as JsonValue for the === probes above.
-  return value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
 }
 
 /** The Claude SDK's HTTP MCP server config, injected into

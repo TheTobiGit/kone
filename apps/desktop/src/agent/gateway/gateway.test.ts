@@ -18,6 +18,7 @@ mock.module("../sqlite.js", () => ({
 }));
 
 import type { RuntimeEvent } from "../types.js";
+import type { JsonValue } from "../../jsonValue.js";
 
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
 function useUserDataDir(dir: string): string {
@@ -57,7 +58,7 @@ function makeGateway(store: ConversationStoreType) {
 }
 
 /** The JSON-RPC envelope's `result` member — the only part these tests read. */
-function rpcResult(res: { json: unknown }): any {
+function rpcResult(res: { json: RpcEnvelope | RpcEnvelope[] | undefined }): any {
   // SAFETY: every MCP reply below is a JSON-RPC response whose payload sits
   // under `result`; each expect pins the exact field it asserts on.
   return (res.json as { result?: unknown }).result;
@@ -72,7 +73,7 @@ type RpcEnvelope = {
   error?: unknown;
 };
 
-async function mcpPost(url: string, token: string, body: unknown) {
+async function mcpPost(url: string, token: string, body: JsonValue | string) {
   const res = await fetch(url, {
     method: "POST",
     headers: {
