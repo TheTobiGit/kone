@@ -17,6 +17,10 @@ import type {
 } from "./types.js";
 import type { TokenUsageSplits, UsageRange } from "./usage/report.js";
 import { usageReportFromStore } from "./usage/storeUsage.js";
+import {
+  readAntigravityConversationUsage,
+  resolveAntigravityContextWindow,
+} from "./usage/local/antigravityScan.js";
 import { getUserDataDir } from "./userDataDir.js";
 
 import {
@@ -164,6 +168,9 @@ export class ConversationStore {
       // claim and promote/release) belongs to no live process — release it
       // back to 'queued' so the next drain retries instead of skipping it.
       this.releaseOrphanedClaims(db);
+      // Fourth pass: populate token totals for stored Antigravity threads whose
+      // tokens were not backfilled at turn run time.
+      this.backfillAntigravityTokens(db);
       return db;
     } catch (err) {
       // The constructor opens the file, so anything that throws after it — a
@@ -362,6 +369,48 @@ export class ConversationStore {
       ).run(now);
     } catch (err) {
       console.error("[conversation-store] could not release orphaned claims:", err);
+    }
+  }
+
+  /** Backfill token totals and context window for stored Antigravity threads. */
+  private backfillAntigravityTokens(db: DatabaseSync): void {
+    try {
+      const rows = db
+        .prepare(
+          `SELECT thread_id, conversation_id, model FROM threads
+           WHERE provider = 'antigravity'`,
+        )
+        .all() as Array<{ thread_id: string; conversation_id: string | null; model: string | null }>;
+
+      for (const row of rows) {
+        const contextWindow = resolveAntigravityContextWindow(row.model ?? undefined);
+        let tokens: number | undefined;
+        let contextUsed: number | undefined;
+
+        if (row.conversation_id) {
+          const usage = readAntigravityConversationUsage([row.conversation_id]);
+          if (usage && usage.totalTokens > 0) {
+            tokens = Math.round(usage.totalTokens);
+            contextUsed = usage.latestContextUsed !== undefined ? Math.round(usage.latestContextUsed) : tokens;
+          }
+        }
+
+        db.prepare(
+          `UPDATE threads
+             SET tokens = COALESCE(?, tokens),
+                 context_used = COALESCE(?, context_used),
+                 context_window = COALESCE(context_window, ?),
+                 compacts_auto = COALESCE(compacts_auto, 1)
+           WHERE thread_id = ?`,
+        ).run(
+          tokens ?? null,
+          contextUsed ?? null,
+          contextWindow,
+          row.thread_id,
+        );
+      }
+    } catch (err) {
+      console.error("[conversation-store] could not backfill antigravity tokens:", err);
     }
   }
 
@@ -884,12 +933,13 @@ export class ConversationStore {
           withTransaction(db, () => {
             const total = event.usage.total;
             if (typeof total === "number" && Number.isFinite(total)) {
-              // Codex, OpenCode and Cursor report running thread totals (keep the
-              // max); Claude reports per-turn spend (accumulate).
+              // Codex, OpenCode, Cursor and Antigravity report running thread totals
+              // (keep the max); Claude reports per-turn spend (accumulate).
               const isRunningTotal =
                 event.provider === "codex" ||
                 event.provider === "opencode" ||
-                event.provider === "cursor";
+                event.provider === "cursor" ||
+                event.provider === "antigravity";
               const sql = isRunningTotal
                   ? `UPDATE threads SET tokens = MAX(COALESCE(tokens, 0), ?) WHERE thread_id = ?`
                   : `UPDATE threads SET tokens = COALESCE(tokens, 0) + ? WHERE thread_id = ?`;

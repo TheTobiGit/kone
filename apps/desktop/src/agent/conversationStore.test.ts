@@ -23,8 +23,26 @@ function useUserDataDir(dir: string): string {
 }
 useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-store-test-")));
 
+class DatabaseSyncShim {
+  private readonly db: Database;
+  constructor(filePath: string, options?: { readOnly?: boolean }) {
+    this.db = options?.readOnly
+      ? new Database(filePath, { readonly: true })
+      : new Database(filePath);
+  }
+  prepare(sql: string) {
+    return this.db.prepare(sql);
+  }
+  exec(sql: string) {
+    this.db.exec(sql);
+  }
+  close() {
+    this.db.close();
+  }
+}
+
 mock.module("./sqlite.js", () => ({
-  DatabaseSync: Database,
+  DatabaseSync: DatabaseSyncShim,
 }));
 
 type ConversationStoreType = import("./ConversationStore.js").ConversationStore;
@@ -829,6 +847,96 @@ describe("live capture contracts", () => {
       usage: { contextWindow: 200000, contextUsed: 120000, compactsAutomatically: true },
     } as RuntimeEvent);
     expect(store.threadMeta("t-1")?.compactsAutomatically).toBe(true);
+  });
+
+  test("token-usage for antigravity keeps the max running total across turns", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-anty", projectPath: "/p", provider: "antigravity" });
+    store.applyEvent(turnStarted("t-anty", "turn-1", 10));
+    store.applyEvent(
+      tokenUsage(
+        "t-anty",
+        15,
+        { input: 100, output: 50, total: 150 },
+        "antigravity",
+      ),
+    );
+    // Running total: next turn reports cumulative total 220
+    store.applyEvent(
+      tokenUsage(
+        "t-anty",
+        20,
+        { input: 140, output: 80, total: 220 },
+        "antigravity",
+      ),
+    );
+    expect(store.threadMeta("t-anty")?.tokens).toBe(220);
+  });
+
+  test("backfills token totals for stored Antigravity threads on store initialization", async () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-backfill", projectPath: "/p", provider: "antigravity" });
+
+    // Set conversation_id on the thread row, with tokens as NULL
+    const raw = rawDb();
+    raw.prepare("UPDATE threads SET conversation_id = 'conv-backfill-1', tokens = NULL WHERE thread_id = 't-backfill'").run();
+    raw.close();
+
+    // Create the conversation database under temporary ANTIGRAVITY_CONVERSATIONS_DIR
+    const antyDir = mkdtempSync(path.join(tmpdir(), "kone-anty-backfill-"));
+    const convDb = new Database(path.join(antyDir, "conv-backfill-1.db"));
+    convDb.exec("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)");
+    const insert = convDb.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+
+    function varint(value: number): number[] {
+      const out: number[] = [];
+      let v = BigInt(value);
+      while (v > 0x7fn) {
+        out.push(Number(v & 0x7fn) | 0x80);
+        v >>= 7n;
+      }
+      out.push(Number(v));
+      return out;
+    }
+    function key(field: number, wireType: number): number[] {
+      return varint((field << 3) | wireType);
+    }
+    function fieldVarint(field: number, value: number): number[] {
+      return [...key(field, 0), ...varint(value)];
+    }
+    function fieldBytes(field: number, bytes: Uint8Array): number[] {
+      return [...key(field, 2), ...varint(bytes.length), ...bytes];
+    }
+    function encodeMessage(fields: number[][]): Uint8Array {
+      return Uint8Array.from(fields.flat());
+    }
+    const rowBytes = encodeMessage([
+      fieldBytes(1, encodeMessage([
+        fieldBytes(4, encodeMessage([
+          fieldVarint(2, 500),
+          fieldVarint(3, 200),
+          fieldVarint(9, 150),
+          fieldVarint(10, 50),
+          fieldBytes(11, new TextEncoder().encode("r1")),
+        ])),
+        fieldBytes(21, new TextEncoder().encode("Gemini 3.5 Flash (High)")),
+      ])),
+    ]);
+    insert.run(0, rowBytes);
+    convDb.close();
+
+    process.env.ANTIGRAVITY_CONVERSATIONS_DIR = antyDir;
+    try {
+      const rehydrated = new ConversationStoreCtor();
+      const meta = rehydrated.threadMeta("t-backfill");
+      expect(meta?.tokens).toBe(700);
+      expect(meta?.contextUsed).toBe(700);
+      expect(meta?.contextWindow).toBe(1_000_000);
+      expect(meta?.compactsAutomatically).toBe(true);
+    } finally {
+      delete process.env.ANTIGRAVITY_CONVERSATIONS_DIR;
+      rmSync(antyDir, { recursive: true, force: true });
+    }
   });
 });
 

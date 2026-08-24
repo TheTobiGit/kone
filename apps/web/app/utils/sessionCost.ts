@@ -26,7 +26,9 @@ export function sessionCost(s: SessionSummary): number {
     ratePerMillion = 4.8;
   } else if (model.includes("flash")) {
     ratePerMillion = 0.2;
-  } else if (model.includes("mini") || model.includes("deepseek") || model.includes("r1")) {
+  } else if (model.includes("pro") && (model.includes("gemini") || provider === "antigravity")) {
+    ratePerMillion = 1.5;
+  } else if ((model.includes("mini") && !model.includes("gemini")) || model.includes("deepseek") || model.includes("r1")) {
     ratePerMillion = 0.45;
   } else if (model.includes("o1") || model.includes("o3")) {
     ratePerMillion = 6.0;
