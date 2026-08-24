@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
-  buildScheme,
   buildTheme,
   createDefaultThemeSpec,
   extractThemeSpec,
@@ -74,9 +73,9 @@ describe("Custom Theme Engine", () => {
 
       for (const role of THEME_ROLES) {
         expect(lightColors[role]).toBeDefined();
-        expect(typeof lightColors[role]).toBe("string");
+        expect(lightColors[role]).toBeString();
         expect(darkColors[role]).toBeDefined();
-        expect(typeof darkColors[role]).toBe("string");
+        expect(darkColors[role]).toBeString();
       }
     });
 

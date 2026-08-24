@@ -20,6 +20,7 @@ import {
   isVsCodeThemeFile,
   parseVsCodeThemeEntry,
   type ThemeJsonObject,
+  type ThemeJsonValue,
   type VsCodeImportEntry,
 } from "./import-vscode";
 import type { ThemeDefinition, ThemeScheme } from "./roles";
@@ -127,6 +128,24 @@ export type OpenVsxThemeSearchOptions = {
   size?: number;
 };
 
+function readStr(obj: ThemeJsonObject | null | undefined, key: string): string | null {
+  if (!obj) return null;
+  const val = obj[key];
+  if (val === null || val === undefined || val instanceof Object || val === true || val === false || Number.isFinite(val)) {
+    return null;
+  }
+  return String(val);
+}
+
+function readNum(obj: ThemeJsonObject | null | undefined, key: string): number | null {
+  if (!obj) return null;
+  const val = obj[key];
+  if (val !== null && val !== undefined && Number.isFinite(val)) {
+    return Number(val);
+  }
+  return null;
+}
+
 /** 6-byte hash — enough to tell theme ids apart, short enough to read. */
 async function shortHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(new TextEncoder().encode(value)));
@@ -137,8 +156,8 @@ async function shortHash(value: string): Promise<string> {
 
 /** Only absolute URLs on the registry's own host are trusted — the detail
  *  response is remote data, and every fetch from it must stay in one domain. */
-function trustedOpenVsxUrl(value: unknown): string | null {
-  if (typeof value !== "string") return null;
+function trustedOpenVsxUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
   try {
     const url = new URL(value);
     return url.protocol === "https:" && url.hostname.toLowerCase() === "open-vsx.org"
@@ -150,66 +169,74 @@ function trustedOpenVsxUrl(value: unknown): string | null {
 }
 
 /** Public https URLs only (repository/homepage links shown to the user). */
-function publicSourceUrl(value: unknown): string | null {
-  const rawValue =
-    typeof value === "string"
-      ? value
-      : isRecord(value) && typeof value.url === "string"
-        ? value.url
-        : null;
-  if (!rawValue) return null;
+function publicSourceUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
   try {
-    const url = new URL(rawValue);
+    const url = new URL(value);
     return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null;
   } catch {
     return null;
   }
 }
 
-type ThemeContribution = { label?: unknown; uiTheme?: unknown; path?: unknown };
+type ThemeContribution = { label?: string; uiTheme?: string; path?: string };
 
 function themeContributions(manifest: ThemeJsonObject): ThemeContribution[] {
   const contributes = isRecord(manifest.contributes) ? manifest.contributes : null;
-  return Array.isArray(contributes?.themes) ? contributes.themes.filter(isRecord) : [];
+  if (!Array.isArray(contributes?.themes)) return [];
+  const result: ThemeContribution[] = [];
+  for (const item of contributes.themes) {
+    if (isRecord(item)) {
+      result.push({
+        label: readStr(item, "label") ?? undefined,
+        uiTheme: readStr(item, "uiTheme") ?? undefined,
+        path: readStr(item, "path") ?? undefined,
+      });
+    }
+  }
+  return result;
 }
 
 function manifestLicenseMatches(manifest: ThemeJsonObject, license: string): boolean {
-  return (
-    typeof manifest.license === "string" &&
-    manifest.license.trim().toLowerCase() === license.toLowerCase()
+  const manifestLicense = readStr(manifest, "license");
+  return Boolean(
+    manifestLicense && manifestLicense.trim().toLowerCase() === license.toLowerCase(),
   );
 }
 
-function extensionFromDetail(value: unknown): OpenVsxThemeExtension | null {
-  if (!isRecord(value) || !isRecord(value.files)) {
-    throw new Error("Open VSX returned malformed theme details.");
-  }
-  const namespace = typeof value.namespace === "string" ? value.namespace.trim() : "";
-  const extensionName = typeof value.name === "string" ? value.name.trim() : "";
-  const displayName =
-    (typeof value.displayName === "string" ? value.displayName.trim() : "") || extensionName;
-  const version = typeof value.version === "string" ? value.version.trim() : "";
-  const license = typeof value.license === "string" ? value.license.trim() : "";
-  const manifestUrl = trustedOpenVsxUrl(value.files.manifest);
-  const sha256Url = trustedOpenVsxUrl(value.files.sha256);
-  const vsixUrl = trustedOpenVsxUrl(value.files.download);
+function extensionFromDetail(value: ThemeJsonValue | null | undefined): OpenVsxThemeExtension | null {
+  if (!isRecord(value)) throw new Error("Open VSX returned malformed theme details.");
+  const files = isRecord(value.files) ? value.files : null;
+  if (!files) throw new Error("Open VSX returned malformed theme details.");
+
+  const namespace = readStr(value, "namespace")?.trim() ?? "";
+  const extensionName = readStr(value, "name")?.trim() ?? "";
+  const displayName = readStr(value, "displayName")?.trim() || extensionName;
+  const version = readStr(value, "version")?.trim() ?? "";
+  const license = readStr(value, "license")?.trim() ?? "";
+  const manifestUrl = trustedOpenVsxUrl(readStr(files, "manifest"));
+  const sha256Url = trustedOpenVsxUrl(readStr(files, "sha256"));
+  const vsixUrl = trustedOpenVsxUrl(readStr(files, "download"));
+
   if (!namespace || !extensionName || !version || !manifestUrl || !sha256Url || !vsixUrl) {
     throw new Error("Open VSX returned malformed theme details.");
   }
   if (!SUPPORTED_LICENSES.has(license)) return null;
+
+  const repo = readStr(value, "repository") ?? (isRecord(value.repository) ? readStr(value.repository, "url") : null);
+  const home = readStr(value, "homepage") ?? (isRecord(value.homepage) ? readStr(value.homepage, "url") : null);
+  const urlVal = readStr(value, "url") ?? (isRecord(value.url) ? readStr(value.url, "url") : null);
+
   return {
     id: `${namespace}.${extensionName}`,
     name: displayName,
     publisher: namespace,
-    description: typeof value.description === "string" ? value.description : "",
-    downloadCount:
-      typeof value.downloadCount === "number" && Number.isFinite(value.downloadCount)
-        ? value.downloadCount
-        : 0,
+    description: readStr(value, "description") ?? "",
+    downloadCount: readNum(value, "downloadCount") ?? 0,
     sourceUrl:
-      publicSourceUrl(value.repository) ??
-      publicSourceUrl(value.homepage) ??
-      publicSourceUrl(value.url),
+      publicSourceUrl(repo) ??
+      publicSourceUrl(home) ??
+      publicSourceUrl(urlVal),
     manifestUrl,
     sha256Url,
     vsixUrl,
@@ -271,8 +298,8 @@ export async function searchOpenVsxThemes(
       "Open VSX returned an unexpectedly large response.",
     );
     try {
-      // SAFETY: JSON.parse yields unknown; consumers probe fields before use.
-      const parsed: unknown = JSON.parse(new TextDecoder().decode(searchBytes));
+      // SAFETY: JSON.parse yields any; consumers probe fields before use.
+      const parsed = JSON.parse(new TextDecoder().decode(searchBytes)) as ThemeJsonValue;
       return parsed;
     } catch {
       throw new Error("Open VSX returned an unreadable response.");
@@ -283,8 +310,8 @@ export async function searchOpenVsxThemes(
   }
   const identities = value.extensions.flatMap((candidate): Array<[string, string]> => {
     if (!isRecord(candidate)) return [];
-    const namespace = typeof candidate.namespace === "string" ? candidate.namespace : "";
-    const name = typeof candidate.name === "string" ? candidate.name : "";
+    const namespace = readStr(candidate, "namespace") ?? "";
+    const name = readStr(candidate, "name") ?? "";
     return namespace && name ? [[namespace, name]] : [];
   });
   const details = await Promise.allSettled(
@@ -363,7 +390,8 @@ export function popularThemes(): Promise<OpenVsxThemeExtension[]> {
 
 function parseJsoncObject(source: string, description: string): ThemeJsonObject {
   const errors: ParseError[] = [];
-  const value: unknown = parse(source, errors, { allowTrailingComma: true });
+  // SAFETY: parse yields any; isRecord verifies it is a valid JSON object.
+  const value = parse(source, errors, { allowTrailingComma: true }) as ThemeJsonValue;
   if (errors.length > 0 || !isRecord(value)) throw new Error(`${description} is not valid JSON.`);
   return value;
 }
@@ -382,14 +410,16 @@ function sanitizeThemeObject(value: ThemeJsonObject): SanitizedThemeFile {
     for (const [key, color] of Object.entries(value.colors)) {
       if (
         USED_WORKBENCH_COLORS.has(key) &&
-        typeof color === "string" &&
-        color.length <= MAX_COLOR_VALUE_LENGTH
+        color &&
+        !(color instanceof Object) &&
+        String(color).length <= MAX_COLOR_VALUE_LENGTH
       ) {
-        colors[key] = color;
+        colors[key] = String(color);
       }
     }
   }
-  return typeof value.include === "string" ? { include: value.include, colors } : { colors };
+  const include = value.include && !(value.include instanceof Object) ? String(value.include) : undefined;
+  return include ? { include, colors } : { colors };
 }
 
 /** Resolve a theme path inside the package, resolving `..` without ever
@@ -420,7 +450,7 @@ function normalizePackagePath(path: string, relativeTo = "extension/"): string {
 }
 
 /** `vs`/`vs-dark`/`hc-*` from the manifest's contribution into kone's scheme. */
-function contributionType(uiTheme: unknown): ThemeScheme | null {
+function contributionType(uiTheme: string | null | undefined): ThemeScheme | null {
   if (uiTheme === "vs") return "light";
   if (uiTheme === "vs-dark") return "dark";
   if (uiTheme === "hc-black" || uiTheme === "hc-light") {
@@ -532,10 +562,12 @@ async function readZipText(
   // return type omits them, so the narrower view is asserted at this I/O boundary.
   const file = zip.file(path) as InspectableZipObject | null;
   if (!file) throw new Error(`${description} is missing from the extension package.`);
-  if (typeof file._data?.uncompressedSize !== "number" || !file.internalStream) {
+  const uncompressedSize = file._data?.uncompressedSize;
+  if (!Number.isFinite(uncompressedSize) || !file.internalStream) {
     throw new Error(`${description} has unreadable size metadata.`);
   }
-  if (file._data.uncompressedSize > MAX_THEME_BYTES) {
+  // SAFETY: Number.isFinite checks that uncompressedSize is a valid number.
+  if ((uncompressedSize as number) > MAX_THEME_BYTES) {
     throw new Error(`${description} is too large.`);
   }
 
@@ -750,13 +782,15 @@ export async function importOpenVsxThemeExtension(
     await readZipText(zip, "extension/package.json", "Extension manifest", signal),
     "Extension manifest",
   );
+  const pkgPublisher = readStr(packagedManifest, "publisher");
+  const pkgName = readStr(packagedManifest, "name");
+  const pkgVersion = readStr(packagedManifest, "version");
   if (
-    typeof packagedManifest.publisher !== "string" ||
-    packagedManifest.publisher.toLowerCase() !== extension.publisher.toLowerCase() ||
-    typeof packagedManifest.name !== "string" ||
-    `${packagedManifest.publisher}.${packagedManifest.name}`.toLowerCase() !==
-      extension.id.toLowerCase() ||
-    packagedManifest.version !== extension.version
+    !pkgPublisher ||
+    pkgPublisher.toLowerCase() !== extension.publisher.toLowerCase() ||
+    !pkgName ||
+    `${pkgPublisher}.${pkgName}`.toLowerCase() !== extension.id.toLowerCase() ||
+    pkgVersion !== extension.version
   ) {
     throw new Error("That extension package does not match the selected Open VSX theme.");
   }
@@ -774,17 +808,14 @@ export async function importOpenVsxThemeExtension(
   const themeBudget = { files: 0 };
   for (const contribution of contributions) {
     signal?.throwIfAborted();
-    if (typeof contribution.path !== "string") {
+    if (!contribution.path) {
       throw new Error("A colour theme in that extension has no file path.");
     }
     try {
       const path = normalizePackagePath(contribution.path);
       const themeValue = await loadThemeObject(zip, path, themeCache, themeBudget, new Set(), signal);
       const type = contributionType(contribution.uiTheme);
-      const label =
-        typeof contribution.label === "string" && contribution.label.trim()
-          ? contribution.label.trim()
-          : extension.name;
+      const label = contribution.label?.trim() || extension.name;
       const decorated = type
         ? { ...themeValue, displayName: label, type }
         : { ...themeValue, displayName: label };

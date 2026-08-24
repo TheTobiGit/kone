@@ -31,11 +31,13 @@ const DARK_THEME = {
   },
 };
 
-function entryOf(theme: unknown, stem = "theme"): VsCodeImportEntry {
+import type { ThemeJsonValue } from "./import-vscode";
+
+function entryOf(theme: ThemeJsonValue | null | undefined, stem = "theme"): VsCodeImportEntry {
   return parseVsCodeThemeEntry(theme, stem);
 }
 
-function buildOne(theme: unknown, stem = "theme", taken: ReadonlySet<string> = new Set()) {
+function buildOne(theme: ThemeJsonValue | null | undefined, stem = "theme", taken: ReadonlySet<string> = new Set()) {
   return buildImportedThemes([entryOf(theme, stem)], taken)[0]!;
 }
 

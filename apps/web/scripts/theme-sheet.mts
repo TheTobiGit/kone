@@ -22,7 +22,7 @@ import { registerHooks } from "node:module";
 // The app source imports its own modules with extensionless specifiers. Node's
 // type stripper resolves exactly what it is given, so teach resolution to fall
 // back to the `.ts` neighbour rather than re-implementing the source.
-if (typeof registerHooks === "function") {
+if (registerHooks) {
   registerHooks({
     resolve(specifier, context, nextResolve) {
       if (specifier.startsWith(".") && !/\.[a-zA-Z0-9]+$/.test(specifier)) {

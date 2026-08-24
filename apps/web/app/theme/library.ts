@@ -27,32 +27,31 @@ function readStoredThemes(key: string): ThemeDefinition[] {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isStoredTheme);
+    // SAFETY: items from parsed JSON array are cast to candidate shapes; isStoredTheme verifies required fields.
+    return (parsed as (StoredThemeCandidate | null | undefined)[]).filter(isStoredTheme);
   } catch {
     return [];
   }
 }
 
-interface StoredThemeFields {
-  id?: unknown;
-  label?: unknown;
-  kind?: unknown;
-  appearance?: unknown;
-  colors?: unknown;
+interface StoredThemeCandidate {
+  id?: string;
+  label?: string;
+  kind?: string;
+  appearance?: string;
+  colors?: ThemeDefinition["colors"];
 }
 
-function isStoredTheme(value: unknown): value is ThemeDefinition {
-  if (typeof value !== "object" || value === null) return false;
-  const t = value as StoredThemeFields;
+function isStoredTheme(value: StoredThemeCandidate | null | undefined): value is ThemeDefinition {
+  if (!value || !(value instanceof Object)) return false;
   return (
-    typeof t.id === "string" &&
-    typeof t.label === "string" &&
-    (t.kind === "adaptive" || t.kind === "fixed") &&
-    (t.appearance === "light" || t.appearance === "dark") &&
-    typeof t.colors === "object" &&
-    t.colors !== null
+    Boolean(value.id?.trim()) &&
+    Boolean(value.label?.trim()) &&
+    (value.kind === "adaptive" || value.kind === "fixed") &&
+    (value.appearance === "light" || value.appearance === "dark") &&
+    value.colors instanceof Object
   );
 }
 
