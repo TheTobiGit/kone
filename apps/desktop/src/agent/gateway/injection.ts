@@ -2,10 +2,14 @@
 //
 // Each adapter turns the gateway connection (loopback URL + per-session bearer
 // token) into whatever config its CLI's MCP surface wants. Claude ships the
-// SDK-native `mcpServers` builder; OpenCode ships the runtime `mcp.add` config
-// `acpMcpServers` builder here — HTTP when the agent advertises
-// `agentCapabilities.mcpCapabilities.http`, else the stdio proxy fallback
-// `bearer_token_env_var`) is the remaining sibling.
+// SDK-native `mcpServers` builder; OpenCode ships the runtime `mcp.add` config;
+// Cursor/Droid ship the ACP `acpMcpServers` builder here — HTTP when the agent
+// advertises `agentCapabilities.mcpCapabilities.http`, else the stdio proxy
+// fallback. Codex reads MCP servers only from its config.toml, which is shared
+// by every session of one Codex home — so its builder (`codexGatewayConfigToml`)
+// emits a managed TOML block that references the bearer token BY NAME
+// (`bearer_token_env_var`) and is written into kone's private CODEX_HOME
+// overlay (see codexOverlay.ts), never into the user's own config file.
 
 import { fileURLToPath } from "node:url";
 
@@ -133,4 +137,113 @@ export function buildOpenCodeMcpServer(connection: GatewayConnection): OpenCodeM
     headers: { Authorization: `Bearer ${connection.bearerToken}` },
     oauth: false,
   };
+}
+
+// ── Codex managed config block ───────────────────────────────────────────────
+// The app-server is handed a private CODEX_HOME overlay whose config.toml is
+// the user's config plus this one managed region. The bearer token exists only
+// in the app-server process's env; the config names the env var, never the
+// value, so nothing secret ever lands on disk.
+
+/** Comment fences bracketing kone's region inside the overlay config.toml.
+ *  Comments are inert to TOML, so fencing real tables this way is safe — and
+  *  lets a later rebuild strip exactly what kone wrote last time. */
+export const CODEX_MANAGED_REGION_BEGIN = "# --- kone managed config (begin) ---";
+export const CODEX_MANAGED_REGION_END = "# --- kone managed config (end) ---";
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+/** The managed region for one gateway endpoint: the kone MCP server entry plus
+ *  — when the user's own config has no `[shell_environment_policy]` table of
+ *  its own (`includeShellPolicy`) — one that keeps the bearer-token var out of
+ *  exec'd commands. When the user DOES have a policy table, their policy
+ *  governs and the caller must merge the exclusion into it instead (see
+ *  insertShellEnvPolicyExclude); emitting two tables with one header would be
+ *  invalid TOML. */
+export function codexGatewayConfigToml(endpointUrl: string, includeShellPolicy: boolean): string {
+  const lines = [
+    `[mcp_servers.${KONE_MCP_SERVER_NAME}]`,
+    `url = ${tomlString(endpointUrl)}`,
+    `bearer_token_env_var = ${tomlString(KONE_GATEWAY_TOKEN_ENV)}`,
+  ];
+  if (includeShellPolicy) {
+    lines.push("", "[shell_environment_policy]", `exclude = [${tomlString(KONE_GATEWAY_TOKEN_ENV)}]`);
+  }
+  return lines.join("\n");
+}
+
+/** True when the user's config already defines the exact
+ *  `[shell_environment_policy]` table (not a subtable like
+ *  `[shell_environment_policy.set]`). */
+export function hasShellEnvironmentPolicyTable(contents: string): boolean {
+  return /^[\t ]*\[shell_environment_policy\][\t ]*$/m.test(contents);
+}
+
+/** Add `envVar` to the existing `[shell_environment_policy]` table's exclude
+ *  list. Handles a single-line array; returns contents unchanged when there is
+ *  no table or the exclude key is absent/multi-line — callers then fall back to
+ *  emitting kone's own policy row in the managed region. */
+export function insertShellEnvPolicyExclude(contents: string, envVar: string): string {
+  if (!hasShellEnvironmentPolicyTable(contents)) return contents;
+  const lines = contents.split("\n");
+  // Bounds of the exact-header table: from its header line to the next table
+  // header. Subtable headers also end the scan — entries after them belong to
+  // the subtable, not this one.
+  const start = lines.findIndex((line) => /^[\t ]*\[shell_environment_policy\][\t ]*$/.test(line));
+  if (start === -1) return contents;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^[\t ]*\[/.test(lines[i]!)) {
+      end = i;
+      break;
+    }
+  }
+  const excludeLine = lines.findIndex(
+    (line) => /^[\t ]*exclude[\t ]*=/.test(line),
+  );
+  if (excludeLine < start || excludeLine >= end) {
+    lines.splice(start + 1, 0, `exclude = [${tomlString(envVar)}]`);
+    return lines.join("\n");
+  }
+  const match = /^([\t ]*exclude[\t ]*=\s*)\[((?:[^\][]|\[[^\]]*\])*)\](.*)$/.exec(lines[excludeLine]!);
+  if (!match?.[1] || match[2] === undefined) return contents; // multi-line or exotic array — leave the user's file alone
+  const prefix = match[1];
+  const body = match[2];
+  const suffix = match[3] ?? "";
+  const items = body.trim().length > 0 ? body.split(",").map((item) => item.trim()) : [];
+  const quoted = tomlString(envVar);
+  if (items.includes(quoted)) return contents;
+  items.push(quoted);
+  lines[excludeLine] = `${prefix}[${items.join(", ")}]${suffix}`;
+  return lines.join("\n");
+}
+
+/** Drop everything between the managed-region markers (inclusive), wherever a
+ *  previous overlay build left them. */
+export function stripCodexManagedRegion(contents: string): string {
+  const begin = contents.indexOf(CODEX_MANAGED_REGION_BEGIN);
+  if (begin === -1) return contents;
+  const endMarkerIndex = contents.indexOf(CODEX_MANAGED_REGION_END, begin);
+  const end = endMarkerIndex === -1 ? contents.length : endMarkerIndex + CODEX_MANAGED_REGION_END.length;
+  return (contents.slice(0, begin) + contents.slice(end)).replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
+
+/** Remove any `[mcp_servers.kone…]` table the overlay doesn't own — a leftover
+ *  from an interrupted write, or a hand-added duplicate that would collide with
+ *  kone's entry (two tables under one header is invalid TOML). */
+export function removeKoneMcpTables(contents: string): string {
+  const lines = contents.split("\n");
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (/^[\t ]*\[+\s*mcp_servers\.kone(?:[.\].]|])/i.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping && /^[\t ]*\[/.test(line)) skipping = false;
+    if (!skipping) out.push(line);
+  }
+  return out.join("\n");
 }

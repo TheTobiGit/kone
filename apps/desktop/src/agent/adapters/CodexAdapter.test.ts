@@ -88,3 +88,116 @@ describe("CodexAdapter resume error formatting", () => {
     expect(helpers.formatCodexThreadResumeError("raw string", "t-1").message).toBe("raw string");
   });
 });
+
+describe("CodexAdapter mode → approval/sandbox mapping", () => {
+  test("ask runs untrusted approvals inside a read-only sandbox", () => {
+    expect(helpers.mapModeToThreadOverrides("ask")).toEqual({
+      approvalPolicy: "untrusted",
+      sandbox: "read-only",
+      approvalsReviewer: "user",
+    });
+    expect(helpers.mapModeToTurnOverrides("ask")).toEqual({
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "readOnly" },
+    });
+  });
+
+  test("accept-edits auto-runs inside workspace-write but still asks outside it", () => {
+    expect(helpers.mapModeToThreadOverrides("accept-edits")).toEqual({
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      approvalsReviewer: "user",
+    });
+    expect(helpers.mapModeToTurnOverrides("accept-edits")).toEqual({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "workspaceWrite" },
+    });
+  });
+
+  test("full-access runs everything without asking in danger-full-access", () => {
+    expect(helpers.mapModeToThreadOverrides("full-access")).toEqual({
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      approvalsReviewer: "user",
+    });
+    expect(helpers.mapModeToTurnOverrides("full-access")).toEqual({
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+  });
+
+  test("an unknown mode falls back to the accept-edits rung, never something wider", () => {
+    // The adapter treats the middle rung as the default everywhere else
+    // (startSession/sendTurn both do `?? "accept-edits"`), so a stray value
+    // must land there too — thread and turn spellings alike.
+    // SAFETY: deliberately out-of-vocabulary inputs; the cast only routes them
+    // through the typed parameter so the default branch can be observed.
+    expect(helpers.mapModeToThreadOverrides("mystery" as never)).toEqual(helpers.mapModeToThreadOverrides("accept-edits"));
+    expect(helpers.mapModeToTurnOverrides("mystery" as never)).toEqual(helpers.mapModeToTurnOverrides("accept-edits"));
+  });
+});
+
+describe("CodexAdapter approval replies", () => {
+  const PERMISSION_PARAMS = {
+    cwd: "/proj",
+    permissions: { fileSystem: { write: ["/proj/out"] }, network: { enabled: true } },
+    reason: "needs to export",
+  };
+
+  test("command/file asks answer the decision vocabulary", () => {
+    expect(helpers.buildApprovalReply("command", "allow-once", {})).toEqual({ decision: "accept" });
+    expect(helpers.buildApprovalReply("command", "allow-always", {})).toEqual({ decision: "acceptForSession" });
+    expect(helpers.buildApprovalReply("file-change", "reject-once", {})).toEqual({ decision: "decline" });
+    expect(helpers.buildApprovalReply("file-read", "reject-and-stop", {})).toEqual({ decision: "cancel" });
+  });
+
+  test("permission asks answer permissions+scope — echoing exactly what was granted", () => {
+    expect(helpers.buildApprovalReply("permission", "allow-once", PERMISSION_PARAMS)).toEqual({
+      permissions: PERMISSION_PARAMS.permissions,
+      scope: "turn",
+    });
+    expect(helpers.buildApprovalReply("permission", "allow-always", PERMISSION_PARAMS)).toEqual({
+      permissions: PERMISSION_PARAMS.permissions,
+      scope: "session",
+    });
+  });
+
+  test("a refused permission grant echoes no permissions at all", () => {
+    expect(helpers.buildApprovalReply("permission", "reject-once", PERMISSION_PARAMS)).toEqual({
+      permissions: {},
+      scope: "turn",
+    });
+    expect(helpers.buildApprovalReply("permission", "reject-and-stop", PERMISSION_PARAMS)).toEqual({
+      permissions: {},
+      scope: "turn",
+    });
+  });
+
+  test("fail-closed declines use each kind's own refusal shape", () => {
+    expect(helpers.declinedApprovalReply("command")).toEqual({ decision: "decline" });
+    expect(helpers.declinedApprovalReply("file-change")).toEqual({ decision: "decline" });
+    expect(helpers.declinedApprovalReply("permission")).toEqual({ permissions: {}, scope: "turn" });
+  });
+});
+
+describe("CodexAdapter permission ask normalization", () => {
+  test("describes write/read paths and network from the requested profile", () => {
+    expect(
+      helpers.describePermissionProfile({
+        fileSystem: { write: ["/a"], read: ["/b"] },
+        network: { enabled: true },
+      }),
+    ).toBe("write: /a · read: /b · network");
+  });
+
+  test("handles entry-style profiles and returns nothing for an empty one", () => {
+    expect(
+      helpers.describePermissionProfile({ fileSystem: { entries: [{ access: "write", path: { text: "/c" } }] } }),
+    ).toBe("write /c");
+    expect(helpers.describePermissionProfile({})).toBeUndefined();
+    expect(helpers.describePermissionProfile(undefined)).toBeUndefined();
+  });
+});

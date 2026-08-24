@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import { readCodexAuth, isCodexCliVersionSupported, MIN_CODEX_CLI_VERSION, parseCodexCliVersion } from "../codexHome.js";
+import { CODEX_GATEWAY_TOKEN_ENV, prepareCodexHomeOverlay } from "../codexOverlay.js";
 import { JsonRpcClient } from "../jsonRpc.js";
 import { buildAgentEnv } from "../processEnv.js";
 import { probe } from "../spawn.js";
@@ -54,15 +55,17 @@ import {
 // "Bring your own subscription": kone never runs `codex login` or writes
 // auth.json — see codexHome.ts. discover() only reads what's already there.
 //
-// Every server-initiated approval request (command execution, file change,
-// file read, permissions) is parked and surfaced to the user via an
-// `approval.requested` event instead of being auto-resolved — see
-// wireRequests(). The user's decision (respondToRequest) resolves the parked
-// RPC handler with Codex's own reply. This makes the mode ladder honest: in
-// `ask` (approvalPolicy "untrusted") every action stops to ask, in
-// `accept-edits` ("on-request") only the non-file-edit actions do, and in
-// `full-access` ("never") nothing does. The mode still controls the sandbox
-// (what Codex is actually allowed to touch) and whether it stops to ask first.
+// Every server-initiated approval request is parked and surfaced to the user
+// via an `approval.requested` event instead of being auto-resolved — see
+// wireRequests(). The user's decision resolves the parked RPC handler with the
+// reply shape THAT REQUEST KIND expects (buildApprovalReply): command and file
+// asks answer `{ decision }`, while a permissions grant answers
+// `{ permissions, scope }` echoing exactly the accepted grants — there is no
+// `decision` field on that shape. This makes the mode ladder honest: in `ask`
+// (approvalPolicy "untrusted") every action stops to ask, in `accept-edits`
+// ("on-request") only the non-file-edit actions do, and in `full-access`
+// ("never") nothing does. The mode still controls the sandbox (what Codex is
+// actually allowed to touch) and whether it stops to ask first.
 //
 // kone's three InteractionModes ARE the approval-policy ladder: ask →
 // "approval-required", accept-edits → "auto-accept-edits", full-access →
@@ -73,6 +76,19 @@ import {
 // — a different axis kone doesn't expose yet; don't confuse it with this
 // ladder.) mapModeTo*Overrides below is the exact per-rung mapping
 // (approvalPolicy/sandbox/approvalsReviewer).
+//
+// The overrides ride both thread/start (and thread/resume) AND every
+// turn/start, so a mid-session mode change lands on the next turn and a
+// resumed thread can't inherit a stale policy from disk. Allow-always
+// (`acceptForSession`) memory lives inside the app-server's own session state,
+// which stays alive for the whole kone session here — re-sending the policy
+// each turn sets how new actions are evaluated; it does not wipe what was
+// already accepted for the session.
+//
+// Gateway sessions spawn against kone's CODEX_HOME overlay (codexOverlay.ts):
+// the kone MCP server exists for this process only, its URL refreshed on every
+// start, and the token never reaches disk. The overlay links the real home's
+// sessions/auth so resume and login keep working.
 //
 // Verified against the app-server protocol's generated JSON-RPC method table
 // (meta.gen.ts): there's no standalone `turn/aborted` server notification —
@@ -119,6 +135,12 @@ type CodexSession = {
    *  keeps its name without kone having to replay anything. */
   agent?: AgentPersona;
   activeTurnId?: string;
+  /** Every turn started and not yet finished — the active one plus any queued
+   *  behind it. Codex runs turns serially but accepts queued follow-ups, and
+   *  between one turn's completion and the next turn/started there is a window
+   *  where neither is the "active" id; approvals must still park then rather
+   *  than fail closed against a user who is right there watching the queue. */
+  readonly liveTurnIds: Set<string>;
   rpc: JsonRpcClient;
   items: Map<string, CodexItemBuffer>;
   /** In-flight `item/tool/requestUserInput` round-trips, keyed by our requestId.
@@ -138,9 +160,13 @@ type PendingUserInput = {
   resolve: (answers: UserInputAnswers) => void;
 };
 
-/** A parked Codex approval request: what we asked the user to approve and the
- *  resolver the awaited `requestApproval` RPC handler is blocked on. */
+/** A parked Codex approval request: what we asked the user to approve, which
+ *  wire kind it arrived as (the reply shape differs per kind), the raw params
+ *  the reply must echo for permission grants, and the resolver the awaited
+ *  `requestApproval` RPC handler is blocked on. */
 type PendingApproval = {
+  kind: ApprovalRequestKind;
+  params: unknown;
   approval: ApprovalRequest;
   resolve: (decision: ApprovalDecision) => void;
 };
@@ -179,48 +205,75 @@ function numberOrUndefined(value: unknown): number | undefined {
 
 /** Normalize one Codex `requestApproval` payload into the neutral ask the
  *  renderer shows. Each request kind has its own fields — command execution
- *  carries the command line, file change/read carry the path (or root), the
- *  permissions grant carries no single subject. */
+ *  carries the command line, file change/read carry the path (or root), and a
+ *  permissions grant carries the concrete profile it wants (filesystem paths
+ *  and/or network), which is the only subject the user can judge it by. */
 function buildApprovalRequest(kind: ApprovalRequestKind, params: unknown): ApprovalRequest {
   const reason = readString(params, "reason")?.trim();
+  const withDetail = (request: ApprovalRequest, detail?: string): ApprovalRequest => {
+    if (reason) request.detail = reason;
+    else if (detail) request.detail = detail;
+    return request;
+  };
   switch (kind) {
     case "command": {
       const command = readString(params, "command")?.trim();
-      const request: ApprovalRequest = {
-        kind,
-        title: command ?? "Run a command",
-      };
-      if (reason) request.detail = reason;
-      return request;
+      return withDetail({ kind, title: command ?? "Run a command" });
     }
     case "file-change": {
       const grantRoot = readString(params, "grantRoot")?.trim();
-      const request: ApprovalRequest = {
-        kind,
-        title: grantRoot ?? "Change files",
-      };
-      if (reason) request.detail = reason;
-      return request;
+      return withDetail({ kind, title: grantRoot ?? "Change files" });
     }
     case "file-read": {
       const path = readString(params, "path")?.trim() ?? readString(params, "grantRoot")?.trim();
-      const request: ApprovalRequest = {
-        kind,
-        title: path ?? "Read files",
-      };
-      if (reason) request.detail = reason;
-      return request;
+      return withDetail({ kind, title: path ?? "Read files" });
     }
     case "permission":
-    default: {
-      const request: ApprovalRequest = {
-        kind,
-        title: "Grant expanded permissions",
-      };
-      if (reason) request.detail = reason;
-      return request;
-    }
+    default:
+      return withDetail({ kind, title: "Grant expanded permissions" }, describePermissionProfile(asRecord(params)?.permissions));
   }
+}
+
+/** One-line human summary of a Codex requested-permission profile — the paths
+ *  it wants to write or read and whether it wants network. Empty when the
+ *  profile names nothing recognizable; the reason field then stands alone. */
+export function describePermissionProfile(profile: unknown): string | undefined {
+  if (!profile) return undefined;
+  const record = asRecord(profile);
+  if (!record) return undefined;
+
+  const parts: string[] = [];
+  const pathsUnder = (key: "write" | "read"): string[] => {
+    const raw = asArray(record.fileSystem ? asRecord(record.fileSystem)?.[key] : undefined);
+    return raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+  };
+  const writePaths = pathsUnder("write");
+  const readPaths = pathsUnder("read").filter((p) => !writePaths.includes(p));
+  // Newer profiles carry { access, path } entries instead of the split
+  // read/write lists; collect them so either wire shape renders.
+  const entries = asArray(asRecord(record.fileSystem)?.entries)
+    .map((entry) => {
+      const r = asRecord(entry);
+      const path = typeof r?.path === "string" ? r.path : typeof r?.path === "object" && r.path !== null ? readString(r.path, "text") : undefined;
+      const access = typeof r?.access === "string" ? r.access : undefined;
+      return path ? `${access ?? "access"} ${path}` : undefined;
+    })
+    .filter((v): v is string => v !== undefined);
+
+  if (writePaths.length > 0) parts.push(`write: ${writePaths.join(", ")}`);
+  if (readPaths.length > 0) parts.push(`read: ${readPaths.join(", ")}`);
+  parts.push(...entries);
+  if (asRecord(record.network)?.enabled === true) parts.push("network");
+
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/** The filesystem/network profile a permission request asks for, verbatim —
+ *  it came off the wire from the app-server itself, and the approval reply
+ *  must echo exactly these grants back. */
+function requestedPermissionProfile(params: unknown): unknown {
+  const profile = asRecord(params)?.permissions;
+  return profile !== null && typeof profile === "object" ? profile : {};
 }
 
 /** kone's ApprovalDecision → Codex's `requestApproval` reply vocabulary.
@@ -239,6 +292,34 @@ function toCodexApprovalDecision(decision: ApprovalDecision): string {
     case "reject-and-stop":
       return "cancel";
   }
+}
+
+/** The JSON-RPC result for one settled approval request. Command and file
+ *  requests answer `{ decision }`; a permissions grant answers a DIFFERENT
+ *  shape — `{ permissions, scope }`, echoing back exactly the grants the user
+ *  accepted (`{}` when refused) plus how long they last ("session" only when
+ *  the user chose allow-always). There is no `decision` field on that shape,
+ *  so replying one uniformly would make every permission ask unusable: an
+ *  allow would grant nothing and a deny would send an unknown field. */
+export function buildApprovalReply(
+  kind: ApprovalRequestKind,
+  decision: ApprovalDecision,
+  params: unknown,
+): Record<string, unknown> {
+  if (kind !== "permission") {
+    return { decision: toCodexApprovalDecision(decision) };
+  }
+  const allowed = decision === "allow-once" || decision === "allow-always";
+  return {
+    permissions: allowed ? requestedPermissionProfile(params) : {},
+    scope: decision === "allow-always" ? "session" : "turn",
+  };
+}
+
+/** The fail-closed reply for a request we decline without asking anyone (no
+ *  live turn behind it): same per-kind shapes as a real refusal. */
+export function declinedApprovalReply(kind: ApprovalRequestKind): Record<string, unknown> {
+  return kind === "permission" ? { permissions: {}, scope: "turn" } : { decision: "decline" };
 }
 
 /** Coerce a resolved answer value (string | string[] | null) into the flat
@@ -286,6 +367,12 @@ function parseCodexUserInputQuestions(params: unknown): UserInputQuestion[] {
 // typo. `approvalsReviewer` is sent explicitly on every mode change (thread AND
 // turn) regardless — it's always "user" here since kone's ladder has no "auto"
 // rung (the only one that would set it to "auto_review").
+//
+// workspaceWrite keeps Codex's default networkAccess: false. The kone gateway
+// needs no exception — the app-server itself opens the loopback MCP connection,
+// outside any sandbox; the flag only governs commands exec'd inside it, and
+// those also can't see the gateway token (the overlay config excludes it from
+// the exec environment).
 
 type CodexThreadModeOverrides = {
   approvalPolicy: string;
@@ -293,7 +380,7 @@ type CodexThreadModeOverrides = {
   approvalsReviewer: string;
 };
 
-function mapModeToThreadOverrides(
+export function mapModeToThreadOverrides(
   mode: InteractionMode,
 ): CodexThreadModeOverrides {
   switch (mode) {
@@ -307,7 +394,7 @@ function mapModeToThreadOverrides(
   }
 }
 
-function mapModeToTurnOverrides(mode: InteractionMode): Pick<
+export function mapModeToTurnOverrides(mode: InteractionMode): Pick<
   CodexTurnStartParams,
   "approvalPolicy" | "approvalsReviewer" | "sandboxPolicy"
 > {
@@ -672,7 +759,31 @@ export class CodexAdapter implements ProviderAdapter {
     if (this.sessions.has(input.threadId)) await this.stopSession(input.threadId);
 
     const env = await buildAgentEnv();
-    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: input.cwd, env, label: CODEX_RPC_LABEL });
+
+    // Gateway sessions spawn against kone's private CODEX_HOME overlay, which
+    // registers the kone MCP server for this process only (the bearer token
+    // rides the env under the name the config references — never on disk). If
+    // the overlay cannot be built, drop the connection rather than keep it:
+    // the host context would otherwise promise gateway tools no config ever
+    // installed. The model probe (fetchModels) keeps the plain home — it needs
+    // no gateway and must not touch the user's setup.
+    let spawnEnv = env;
+    let gatewayConnection = input.gatewayConnection;
+    if (gatewayConnection) {
+      try {
+        const overlayHome = prepareCodexHomeOverlay({ endpointUrl: gatewayConnection.url });
+        spawnEnv = {
+          ...env,
+          CODEX_HOME: overlayHome,
+          [CODEX_GATEWAY_TOKEN_ENV]: gatewayConnection.bearerToken,
+        };
+      } catch (error) {
+        console.warn("[codex] gateway overlay unavailable; continuing without kone tools:", error);
+        gatewayConnection = undefined;
+      }
+    }
+
+    const rpc = new JsonRpcClient(this.binary, ["app-server"], { cwd: input.cwd, env: spawnEnv, label: CODEX_RPC_LABEL });
     const mode: InteractionMode = input.mode ?? "accept-edits";
 
     const session: CodexSession = {
@@ -680,9 +791,10 @@ export class CodexAdapter implements ProviderAdapter {
       cwd: input.cwd,
       model: input.model,
       mode,
-      gatewayConnection: input.gatewayConnection,
+      gatewayConnection,
       agent: input.agent,
       rpc,
+      liveTurnIds: new Set(),
       items: new Map(),
       pendingUserInputs: new Map(),
       pendingApprovals: new Map(),
@@ -827,6 +939,7 @@ export class CodexAdapter implements ProviderAdapter {
     const response = await session.rpc.call<CodexJsonObject>("turn/start", turnStartInput);
     const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
     if (!turnId) throw new Error("turn/start response did not include a turn id.");
+    session.liveTurnIds.add(turnId);
     // Codex accepts queued follow-ups while the current turn is still
     // running: the turn/start response carries the queued turn id, but
     // turn/interrupt only accepts the id of the turn that's active right
@@ -868,6 +981,7 @@ export class CodexAdapter implements ProviderAdapter {
     const turnId = session.activeTurnId;
     if (!turnId) return;
     session.activeTurnId = undefined;
+    session.liveTurnIds.delete(turnId);
     this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "interrupted" });
   }
 
@@ -915,6 +1029,7 @@ export class CodexAdapter implements ProviderAdapter {
       const turnId = readString(params, "turn", "id") ?? readString(params, "turnId");
       if (!turnId) return;
       session.activeTurnId = turnId;
+      session.liveTurnIds.add(turnId);
       this.emit({ ...this.base(session), type: "turn.started", turnId });
     });
 
@@ -957,7 +1072,10 @@ export class CodexAdapter implements ProviderAdapter {
       const turn = asRecord(params)?.turn;
       const turnId = readString(turn, "id") ?? readString(params, "turnId") ?? session.activeTurnId;
       const status = readString(turn, "status") ?? "completed";
-      if (turnId) this.completePlanItem(session, turnId);
+      if (turnId) {
+        this.completePlanItem(session, turnId);
+        session.liveTurnIds.delete(turnId);
+      }
       session.activeTurnId = undefined;
       if (!turnId) return;
       if (status === "completed") {
@@ -1095,6 +1213,7 @@ export class CodexAdapter implements ProviderAdapter {
       // stops pretending a turn is running.
       if (turnId && session.activeTurnId === turnId) {
         session.activeTurnId = undefined;
+        session.liveTurnIds.delete(turnId);
         this.emit({ ...this.base(session), type: "turn.aborted", turnId, reason: "failed", message: fullMessage });
       }
       this.emit({ ...this.base(session), type: "session.state.changed", state: "error", message: fullMessage });
@@ -1148,23 +1267,24 @@ export class CodexAdapter implements ProviderAdapter {
   /** Park one Codex approval request: normalize the ask, emit
    *  `approval.requested`, and block the RPC handler on the resolver until the
    *  renderer answers (or we drain on interrupt/stop). The user's decision is
-   *  mapped to Codex's own reply vocabulary. */
+   *  mapped onto the reply shape that request kind expects — see
+   *  buildApprovalReply. */
   private async requestApproval(
     session: CodexSession,
     params: unknown,
     kind: ApprovalRequestKind,
-  ): Promise<{ decision: string }> {
-    // Fail closed: a permission request with no active turn (a recovery or
-    // replay callback after a crash/interrupt) has no trustworthy mode behind
-    // it — decline rather than park a gate nobody is watching.
-    if (!session.activeTurnId) {
-      return { decision: "decline" };
+  ): Promise<Record<string, unknown>> {
+    // Fail closed: an approval request with no live turn (a recovery or replay
+    // callback after a crash/interrupt) has no trustworthy mode behind it —
+    // decline rather than park a gate nobody is watching.
+    if (session.liveTurnIds.size === 0) {
+      return declinedApprovalReply(kind);
     }
     const requestId = randomUUID();
     const turnId = readString(params, "turnId") ?? session.activeTurnId;
     const approval = buildApprovalRequest(kind, params);
     const decision = await new Promise<ApprovalDecision>((resolve) => {
-      session.pendingApprovals.set(requestId, { approval, resolve });
+      session.pendingApprovals.set(requestId, { kind, params, approval, resolve });
       this.emit({
         ...this.base(session),
         type: "approval.requested",
@@ -1174,7 +1294,13 @@ export class CodexAdapter implements ProviderAdapter {
       });
     });
     this.emit({ ...this.base(session), type: "approval.resolved", requestId, decision });
-    return { decision: toCodexApprovalDecision(decision) };
+    // A permission grant has no "cancel" reply — refusals are just empty
+    // permissions. reject-and-stop still means stop, so the interruption that
+    // `cancel` would have carried is done explicitly here.
+    if (kind === "permission" && decision === "reject-and-stop") {
+      void this.interruptTurn(session.threadId).catch(() => undefined);
+    }
+    return buildApprovalReply(kind, decision, params);
   }
 
   /** Settle one parked approval (idempotent — a no-op once drained). */
