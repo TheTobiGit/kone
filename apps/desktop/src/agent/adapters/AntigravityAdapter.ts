@@ -21,7 +21,12 @@ import {
 } from "../antigravitySubagents.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { STDIO_PROXY_PATH } from "../gateway/injection.js";
-import { probe, killTree } from "../spawn.js";
+import { killTree, probe } from "../spawn.js";
+import {
+  readAntigravityConversationUsage,
+  resolveAntigravityContextWindow,
+} from "../usage/local/antigravityScan.js";
+import type { TokenUsageSplits } from "../usage/report.js";
 import type {
   AdapterCapabilities,
   AgentPersona,
@@ -40,6 +45,7 @@ import type {
   SessionStartInput,
   SubagentRunSnapshot,
   SubagentStatus,
+  TokenUsage,
   TurnStartResult,
 } from "../types.js";
 
@@ -64,8 +70,11 @@ import type {
 //     (resolveAntigravityCliModelLabel).
 //  3. The capture plugin's hooks fire for EVERY agy session (global install).
 //     Outside kone-managed sessions (no KONE_ANTIGRAVITY_EVENTS) the hook
-//     wrapper must answer `{"decision":"ask"}` on PreToolUse — an empty object
-//     is treated as a denial with an empty reason and blocks every tool call
+//     wrapper must carry explicit decisions where the CLI expects them:
+//     `{"decision":"ask"}` on PreToolUse and `{"decision":"allow"}` on
+//     PreInvocation — an empty object is treated as a denial with an empty
+//     reason, which blocks every tool call on PreToolUse and refuses the
+//     subagent launch PreInvocation gates (the parent then exits 1).
 //     Stop hooks stay `{}`: `{"decision":"stop"}` is not a valid stop
 //     decision and can hang the print process after the reply.
 //  4. The mcp_config.json in the plugin is secret-free: it references
@@ -275,11 +284,20 @@ export function antigravityTurnOutcome(input: {
  *  Antigravity requires PreToolUse output to carry a `decision`: an empty
  *  object is treated as a denial with an empty reason, which blocks every tool
  *  call because the hook is installed globally with `matcher: "*"`. "ask"
- *  preserves the permission flow the user would have without the hook. `{}`
- *  stays correct for the other hook points, including Stop, where an inactive
- *  hook must not force a decision over Antigravity's default. */
+ *  preserves the permission flow the user would have without the hook.
+ *
+ *  PreInvocation is a veto point with the same decision semantics over the
+ *  model call it precedes: an empty object denies that call. The CLI raises it
+ *  for a native subagent's first model call, so `{}` there refuses the
+ *  subagent launch and the parent CLI exits 1 — "allow" keeps sessions outside
+ *  kone behaving as if the hook were absent.
+ *
+ *  `{}` stays correct for the other hook points, including Stop, where an
+ *  inactive hook must not force a decision over Antigravity's default. */
 function inactiveHookOutput(event: string): string {
-  return event === "pre-tool" ? '{"decision":"ask"}' : "{}";
+  if (event === "pre-tool") return '{"decision":"ask"}';
+  if (event === "pre-invocation") return '{"decision":"allow"}';
+  return "{}";
 }
 
 
@@ -356,6 +374,7 @@ export function parseAntigravityModelLines(output: string): ModelDescriptor[] {
     const descriptor: ModelDescriptor = {
       id: model,
       label: model,
+      contextWindowTokens: resolveAntigravityContextWindow(model),
     };
     if (efforts.length > 0) {
       descriptor.reasoningEfforts = efforts;
@@ -419,11 +438,19 @@ export function buildKoneCaptureCommand(
   event: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const invocation = `${shellQuote(executablePath, platform)} ${shellQuote(scriptPath, platform)} ${shellQuote(event, platform)}`;
   const fallback = inactiveHookOutput(event);
   if (platform === "win32") {
-    return `if not defined ${HOOK_EVENTS_ENV} (more >nul 2>nul & echo ${fallback}) else (set "ELECTRON_RUN_AS_NODE=1" && ${invocation})`;
+    // The CLI hands hook command strings to cmd.exe without decoding the
+    // escapes its own serialization added: every `"` in the command arrives as
+    // `\"`, which derails cmd's quote parsing so a quoted program path is
+    // executed literally and the hook never runs. Keep the whole invocation
+    // free of double quotes — the helper paths are space-free in every
+    // supported install layout (dev Electron binaries and packaged apps under
+    // %LOCALAPPDATA%\Programs).
+    const invocation = `${executablePath} ${scriptPath} ${event}`;
+    return `if not defined ${HOOK_EVENTS_ENV} (more >nul 2>nul & echo ${fallback}) else (set ELECTRON_RUN_AS_NODE=1&& ${invocation})`;
   }
+  const invocation = `${shellQuote(executablePath, platform)} ${shellQuote(scriptPath, platform)} ${shellQuote(event, platform)}`;
   return `if [ -z "\${${HOOK_EVENTS_ENV}:-}" ]; then cat >/dev/null 2>&1 || :; printf '%s\\n' '${fallback}'; else ELECTRON_RUN_AS_NODE=1 ${invocation}; fi`;
 }
 
@@ -440,7 +467,11 @@ process.stdin.on("data", (chunk) => { payload += chunk; });
 process.stdin.on("end", () => {
   const target = process.env.${HOOK_EVENTS_ENV};
   if (!target) {
-    process.stdout.write((event === "pre-tool" ? '{"decision":"ask"}' : "{}") + "\\n");
+    // Mirrors the shell wrapper's inactive fallback: PreToolUse must carry a
+    // decision or the tool call is denied with an empty reason, PreInvocation
+    // must carry "allow" or the model call it gates (a subagent launch) is
+    // denied and the parent CLI exits 1.
+    process.stdout.write((event === "pre-tool" ? '{"decision":"ask"}' : event === "pre-invocation" ? '{"decision":"allow"}' : "{}") + "\\n");
     return;
   }
   let capturedPayload = payload.trim();
@@ -469,6 +500,11 @@ process.stdin.on("end", () => {
   if (event === "pre-tool") {
     const decision = process.env.${HOOK_DECISION_ENV} === "allow" ? "allow" : "ask";
     process.stdout.write(JSON.stringify({ decision }) + "\\n");
+  } else if (event === "pre-invocation") {
+    // PreInvocation vetoes the model call that follows; kone-managed sessions
+    // spawn native subagents deliberately, so the launch it gates must never
+    // be blocked — an empty object denies it and the parent CLI exits 1.
+    process.stdout.write('{"decision":"allow"}\\n');
   } else {
     process.stdout.write("{}\\n");
   }
@@ -864,6 +900,20 @@ export class AntigravityAdapter implements ProviderAdapter {
     if (input.effort) session.modelOptions = { reasoningEffort: input.effort };
     this.sessions.set(input.threadId, session);
     this.emit({ ...this.base(session), source: "antigravity.cli.lifecycle", type: "session.started" });
+    if (conversationId) {
+      this.emitUsage(session);
+    } else {
+      const initialContextWindow = resolveAntigravityContextWindow(session.model);
+      this.emit({
+        ...this.base(session),
+        source: "antigravity.cli.lifecycle",
+        type: "thread.token-usage.updated",
+        usage: {
+          contextWindow: initialContextWindow,
+          compactsAutomatically: true,
+        },
+      });
+    }
     return this.toSession(session);
   }
 
@@ -1123,6 +1173,44 @@ export class AntigravityAdapter implements ProviderAdapter {
     );
   }
 
+  /** Read the cumulative usage across the session's conversation SQLite database
+   *  (and any subagent runs), and emit a thread.token-usage.updated event. */
+  private emitUsage(session: AntigravitySession): void {
+    const conversationIds: string[] = [];
+    if (session.conversationId) conversationIds.push(session.conversationId);
+    for (const subId of session.subagentRuns.keys()) {
+      if (subId && !conversationIds.includes(subId)) conversationIds.push(subId);
+    }
+    if (conversationIds.length === 0) return;
+
+    const usageResult = readAntigravityConversationUsage(conversationIds, this.homeDir);
+    const contextWindow = resolveAntigravityContextWindow(session.model);
+    if (!usageResult) {
+      this.emit({
+        ...this.base(session),
+        type: "thread.token-usage.updated",
+        usage: {
+          contextWindow,
+          compactsAutomatically: true,
+        },
+      });
+      return;
+    }
+
+    const usage: TokenUsage & TokenUsageSplits = {
+      input: usageResult.inputTokens,
+      output: usageResult.outputTokens,
+      total: usageResult.totalTokens,
+      contextWindow,
+      contextUsed: usageResult.latestContextUsed ?? usageResult.totalTokens,
+      compactsAutomatically: true,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      reasoningTokens: usageResult.thinkingTokens,
+    };
+    this.emit({ ...this.base(session), type: "thread.token-usage.updated", usage });
+  }
+
   /** Settle the active turn exactly once — process close, interrupt and stop
    *  can all race, and the guard makes the first one win. */
   private settleActiveTurn(
@@ -1134,6 +1222,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     // Before the turn loses its id: a run still open has to be closed out
     // while there is still a turn to attach the event to.
     this.settleLiveSubagentRuns(session);
+    this.emitUsage(session);
     session.turnTerminalEmitted = true;
     delete session.activeProcess;
     delete session.activeTurnId;
@@ -1163,6 +1252,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     fallback: string,
   ): void {
     if (session.turnTerminalEmitted || session.activeTurnId !== turnId) return;
+    this.emitUsage(session);
     session.turnTerminalEmitted = true;
     delete session.activeTurnId;
     const message = messageFromCause(error, fallback);

@@ -12,6 +12,7 @@
 // server's `GetCascadeTrajectoryGeneratorMetadata` RPC to decode, which is a
 // live-process dependency this scan deliberately does not take.
 
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -43,7 +44,7 @@ export function conversationRoots(home = os.homedir()): AntigravityConversationR
   ];
 }
 
-function resolveScanRoots(): string[] {
+export function resolveScanRoots(home = os.homedir()): string[] {
   const raw = process.env[ANTIGRAVITY_CONVERSATIONS_DIR_ENV]?.trim();
   if (raw) {
     return raw
@@ -52,7 +53,7 @@ function resolveScanRoots(): string[] {
       .filter((part) => part.length > 0)
       .map((part) => path.resolve(part));
   }
-  return conversationRoots().map((root) => root.dir);
+  return conversationRoots(home).map((root) => root.dir);
 }
 
 
@@ -410,4 +411,94 @@ export async function scanAntigravityUsage(options: {
   }
 
   return { records, sources };
+}
+
+export const DEFAULT_ANTIGRAVITY_CONTEXT_WINDOW = 1_000_000;
+
+export function resolveAntigravityContextWindow(modelId?: string): number {
+  if (!modelId) return DEFAULT_ANTIGRAVITY_CONTEXT_WINDOW;
+  const lower = modelId.toLowerCase();
+  if (lower.includes("claude")) return 200_000;
+  if (lower.includes("gpt-oss")) return 128_000;
+  return 1_000_000;
+}
+
+export type AntigravityConversationUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  totalTokens: number;
+  latestContextUsed?: number;
+  model?: string;
+};
+
+/** Reads usage records across one or more conversation IDs (e.g. parent conversation
+ *  plus any subagent runs) from on-disk SQLite conversation databases. */
+export function readAntigravityConversationUsage(
+  conversationIds: readonly string[],
+  homeDir?: string,
+): AntigravityConversationUsage | undefined {
+  if (conversationIds.length === 0) return undefined;
+
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalThinking = 0;
+  let latestContextUsed: number | undefined;
+  let latestModel: string | undefined;
+  let foundAny = false;
+
+  const roots = resolveScanRoots(homeDir);
+
+  for (const cid of conversationIds) {
+    if (!cid) continue;
+    let dbPath: string | undefined;
+    for (const root of roots) {
+      const candidate = path.join(root, `${cid}.db`);
+      if (existsSync(candidate)) {
+        dbPath = candidate;
+        break;
+      }
+    }
+    if (!dbPath) continue;
+
+    try {
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        // SAFETY: the projection names exactly idx and data, the two columns of
+        // GenMetadataRow.
+        const rows = db.prepare("SELECT idx, data FROM gen_metadata ORDER BY idx").all() as GenMetadataRow[];
+        const seenResponseIds = new Set<string>();
+        for (const row of rows) {
+          const data = typeof row.data === "string" ? new TextEncoder().encode(row.data) : row.data;
+          const parsed = parseAntigravityGenMetadataRow(data, row.idx);
+          if (!parsed) continue;
+          const dedupeKey = `antigravity:${cid}:${parsed.responseId}`;
+          if (seenResponseIds.has(dedupeKey)) continue;
+          seenResponseIds.add(dedupeKey);
+
+          totalInput += parsed.inputTokens;
+          totalOutput += parsed.outputTokens;
+          totalThinking += parsed.thinkingTokens;
+          latestContextUsed = parsed.inputTokens + parsed.outputTokens;
+          if (parsed.model && parsed.model !== "unknown") latestModel = parsed.model;
+          foundAny = true;
+        }
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Best-effort read: unreadable/locked file is skipped
+    }
+  }
+
+  if (!foundAny) return undefined;
+
+  return {
+    inputTokens: totalInput,
+    outputTokens: totalOutput,
+    thinkingTokens: totalThinking,
+    totalTokens: totalInput + totalOutput,
+    latestContextUsed,
+    model: latestModel,
+  };
 }

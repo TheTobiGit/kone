@@ -33,6 +33,9 @@ const {
   canonicalAntigravityModelId,
   parseAntigravityGenMetadataRow,
   scanAntigravityUsage,
+  readAntigravityConversationUsage,
+  resolveAntigravityContextWindow,
+  DEFAULT_ANTIGRAVITY_CONTEXT_WINDOW,
   antigravityCascadeIdFromPath,
   conversationRoots,
 } = await import("./antigravityScan.js");
@@ -311,5 +314,53 @@ describe("antigravity conversation scan", () => {
     expect(copy).toEqual(bytes);
     writeFileSync(path.join(tmpdir(), "kone-anty-roundtrip.bin"), bytes);
     rmSync(path.join(tmpdir(), "kone-anty-roundtrip.bin"), { force: true });
+  });
+
+  test("readAntigravityConversationUsage sums tokens across parent and subagent databases", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-anty-read-usage-"));
+    const conversations = path.join(dir, "conversations");
+    mkdirSync(conversations, { recursive: true });
+
+    // Parent conversation: cascade-parent.db with 2 generations
+    const dbParent = new Database(path.join(conversations, "cascade-parent.db"));
+    dbParent.exec("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)");
+    const insertParent = dbParent.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+    insertParent.run(0, genMetadataRow(chatMessage(usageMessage(100, 50, 20, "r1"), { displayName: "Gemini 3.5 Flash (High)" })));
+    insertParent.run(1, genMetadataRow(chatMessage(usageMessage(150, 70, 30, "r2"), { displayName: "Gemini 3.5 Flash (High)" })));
+    dbParent.close();
+
+    // Subagent conversation: cascade-sub.db with 1 generation
+    const dbSub = new Database(path.join(conversations, "cascade-sub.db"));
+    dbSub.exec("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)");
+    const insertSub = dbSub.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+    insertSub.run(0, genMetadataRow(chatMessage(usageMessage(80, 40, 10, "sub-r1"), { displayName: "Gemini 3.5 Flash (High)" })));
+    dbSub.close();
+
+    process.env.ANTIGRAVITY_CONVERSATIONS_DIR = conversations;
+    try {
+      const usage = readAntigravityConversationUsage(["cascade-parent", "cascade-sub"]);
+      expect(usage).toBeDefined();
+      expect(usage?.inputTokens).toBe(100 + 150 + 80);
+      expect(usage?.outputTokens).toBe(50 + 70 + 40);
+      expect(usage?.thinkingTokens).toBe(20 + 30 + 10);
+      expect(usage?.totalTokens).toBe((100 + 150 + 80) + (50 + 70 + 40));
+      expect(usage?.latestContextUsed).toBe(80 + 40);
+
+      // Empty list or missing conversation returns undefined
+      expect(readAntigravityConversationUsage([])).toBeUndefined();
+      expect(readAntigravityConversationUsage(["non-existent"])).toBeUndefined();
+    } finally {
+      delete process.env.ANTIGRAVITY_CONVERSATIONS_DIR;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveAntigravityContextWindow resolves model-appropriate capacity", () => {
+    expect(DEFAULT_ANTIGRAVITY_CONTEXT_WINDOW).toBe(1_000_000);
+    expect(resolveAntigravityContextWindow(undefined)).toBe(1_000_000);
+    expect(resolveAntigravityContextWindow("Gemini 3.5 Flash")).toBe(1_000_000);
+    expect(resolveAntigravityContextWindow("Gemini 3.1 Pro")).toBe(1_000_000);
+    expect(resolveAntigravityContextWindow("Claude Sonnet 4.6")).toBe(200_000);
+    expect(resolveAntigravityContextWindow("GPT-OSS 120B")).toBe(128_000);
   });
 });

@@ -84,30 +84,35 @@ GPT-OSS 120B (Medium)
       {
         id: "Gemini 3.5 Flash",
         label: "Gemini 3.5 Flash",
+        contextWindowTokens: 1_000_000,
         reasoningEfforts: ["low", "medium", "high"],
         defaultReasoningEffort: "medium",
       },
       {
         id: "Gemini 3.1 Pro",
         label: "Gemini 3.1 Pro",
+        contextWindowTokens: 1_000_000,
         reasoningEfforts: ["low", "high"],
         defaultReasoningEffort: "low",
       },
       {
         id: "Claude Sonnet 4.6",
         label: "Claude Sonnet 4.6",
+        contextWindowTokens: 200_000,
         reasoningEfforts: ["thinking"],
         defaultReasoningEffort: "thinking",
       },
       {
         id: "Claude Opus 4.6",
         label: "Claude Opus 4.6",
+        contextWindowTokens: 200_000,
         reasoningEfforts: ["thinking"],
         defaultReasoningEffort: "thinking",
       },
       {
         id: "GPT-OSS 120B",
         label: "GPT-OSS 120B",
+        contextWindowTokens: 128_000,
         reasoningEfforts: ["medium"],
         defaultReasoningEffort: "medium",
       },
@@ -128,18 +133,21 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
       {
         id: "Gemini 3.6 Flash",
         label: "Gemini 3.6 Flash",
+        contextWindowTokens: 1_000_000,
         reasoningEfforts: ["low", "medium", "high"],
         defaultReasoningEffort: "medium",
       },
       {
         id: "Gemini 3.1 Pro",
         label: "Gemini 3.1 Pro",
+        contextWindowTokens: 1_000_000,
         reasoningEfforts: ["low", "high"],
         defaultReasoningEffort: "low",
       },
       {
         id: "Claude Sonnet 4.6",
         label: "Claude Sonnet 4.6",
+        contextWindowTokens: 200_000,
         reasoningEfforts: ["thinking"],
         defaultReasoningEffort: "thinking",
       },
@@ -187,12 +195,14 @@ Claude Sonnet 5 (Thinking)
       {
         id: "Gemini 4 Pro",
         label: "Gemini 4 Pro",
+        contextWindowTokens: 1_000_000,
         reasoningEfforts: ["low", "ultra"],
         defaultReasoningEffort: "low",
       },
       {
         id: "Claude Sonnet 5",
         label: "Claude Sonnet 5",
+        contextWindowTokens: 200_000,
         reasoningEfforts: ["thinking"],
         defaultReasoningEffort: "thinking",
       },
@@ -222,7 +232,9 @@ describe("Antigravity install detection", () => {
 describe("Antigravity capture plugin", () => {
   test("keeps the globally installed hook neutral outside kone sessions", () => {
     // PreToolUse must carry a `decision` — an empty object is treated as a
-    // denial with an empty reason that blocks every tool call.
+    // denial with an empty reason that blocks every tool call. PreInvocation
+    // is the same kind of veto point over the model call it precedes, so an
+    // empty object there refuses a subagent launch and exits the parent.
     const preToolResult = runCaptureCommand(
       buildKoneCaptureCommand("__kone_gui_must_not_launch__", "__capture_script_must_not_run__", "pre-tool"),
       JSON.stringify({ payload: "x".repeat(32 * 1024) }),
@@ -231,6 +243,15 @@ describe("Antigravity capture plugin", () => {
     expect(preToolResult.error).toBeUndefined();
     expect(preToolResult.status).toBe(0);
     expect(preToolResult.stdout.trim()).toBe('{"decision":"ask"}');
+
+    const preInvocationResult = runCaptureCommand(
+      buildKoneCaptureCommand("__kone_gui_must_not_launch__", "__capture_script_must_not_run__", "pre-invocation"),
+      JSON.stringify({ payload: "x" }),
+      { KONE_ANTIGRAVITY_EVENTS: "" },
+    );
+    expect(preInvocationResult.error).toBeUndefined();
+    expect(preInvocationResult.status).toBe(0);
+    expect(preInvocationResult.stdout.trim()).toBe('{"decision":"allow"}');
 
     const postToolResult = runCaptureCommand(
       buildKoneCaptureCommand("__kone_gui_must_not_launch__", "__capture_script_must_not_run__", "post-tool"),
@@ -256,6 +277,25 @@ describe("Antigravity capture plugin", () => {
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(0);
       expect(result.stdout.trim()).toBe('{"decision":"ask"}');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("answers pre-invocation allow from the capture script when capture is inactive", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "kone-antigravity-hook-test-"));
+    try {
+      const scriptPath = path.join(directory, "capture.cjs");
+      writeFileSync(scriptPath, hookScriptSource(), { mode: 0o700 });
+      const result = spawnSync(process.execPath, [scriptPath, "pre-invocation"], {
+        env: { ...process.env, KONE_ANTIGRAVITY_EVENTS: "" },
+        input: JSON.stringify({ conversationId: "conversation-1" }),
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('{"decision":"allow"}');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -289,6 +329,40 @@ describe("Antigravity capture plugin", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test("answers pre-invocation allow for kone-managed sessions so subagent launches survive", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "kone-antigravity-hook-test-"));
+    const scriptPath = path.join(directory, "capture.cjs");
+    const eventPath = path.join(directory, "events.ndjson");
+    try {
+      writeFileSync(scriptPath, hookScriptSource(), { mode: 0o700 });
+      const result = runCaptureCommand(
+        buildKoneCaptureCommand(process.execPath, scriptPath, "pre-invocation"),
+        JSON.stringify({ stepIdx: 3, conversationId: "conversation-1" }),
+        { KONE_ANTIGRAVITY_EVENTS: eventPath },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('{"decision":"allow"}');
+      const captured = readFileSync(eventPath, "utf8");
+      expect(captured).toBe('pre-invocation\t{"stepIdx":3,"conversationId":"conversation-1"}\n');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the windows wrapper invocation free of double quotes", () => {
+    // The CLI passes hook commands to cmd.exe with serialization escapes
+    // undecoded, so any `"` around paths derails quote parsing and the hook
+    // never runs; the fallback JSON itself is the only quoted content allowed.
+    const command = buildKoneCaptureCommand("C:\\electron.exe", "C:\\capture.cjs", "pre-invocation", "win32");
+    expect(command).toContain("(set ELECTRON_RUN_AS_NODE=1&& C:\\electron.exe C:\\capture.cjs pre-invocation)");
+    expect(command).toContain('echo {"decision":"allow"}');
+    expect(command).not.toContain('"C:\\');
+
+    const posix = buildKoneCaptureCommand("/opt/electron", "/opt/capture.cjs", "pre-invocation", "darwin");
+    expect(posix).toContain("printf '%s\\n' '{\"decision\":\"allow\"}'");
   });
 
   test("marks every generated hook as a command hook", () => {
@@ -565,6 +639,129 @@ describe("Antigravity native subagents", () => {
       rmSync(runDir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("Antigravity token usage emission", () => {
+  function varint(value: number): number[] {
+    const out: number[] = [];
+    let v = BigInt(value);
+    while (v > 0x7fn) {
+      out.push(Number(v & 0x7fn) | 0x80);
+      v >>= 7n;
+    }
+    out.push(Number(v));
+    return out;
+  }
+  function key(field: number, wireType: number): number[] {
+    return varint((field << 3) | wireType);
+  }
+  function fieldVarint(field: number, value: number): number[] {
+    return [...key(field, 0), ...varint(value)];
+  }
+  function fieldBytes(field: number, bytes: Uint8Array): number[] {
+    return [...key(field, 2), ...varint(bytes.length), ...bytes];
+  }
+  function encodeMessage(fields: number[][]): Uint8Array {
+    return Uint8Array.from(fields.flat());
+  }
+  function genMetadataRow(chatFields: number[][]): Uint8Array {
+    return encodeMessage([fieldBytes(1, encodeMessage(chatFields))]);
+  }
+  function usageMessage(input: number, output: number, thinking: number, responseId: string): number[][] {
+    return [
+      fieldVarint(2, input),
+      fieldVarint(3, output),
+      fieldVarint(9, Math.max(0, output - thinking)),
+      fieldVarint(10, thinking),
+      fieldBytes(11, new TextEncoder().encode(responseId)),
+    ];
+  }
+  function chatMessage(usage: number[][]): number[][] {
+    return [
+      fieldBytes(4, encodeMessage(usage)),
+      fieldBytes(21, new TextEncoder().encode("Gemini 3.5 Flash (High)")),
+    ];
+  }
+
+  test("emits thread.token-usage.updated on turn completion and on session resume", async () => {
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-antigravity-usage-"));
+    const conversationsDir = path.join(TEST_HOME, ".gemini", "antigravity-cli", "conversations");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(conversationsDir, { recursive: true });
+
+    // Seed conversation database for conv-123
+    const dbPath = path.join(conversationsDir, "conv-123.db");
+    const db = new Database(dbPath);
+    db.exec("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)");
+    const insert = db.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+    insert.run(0, genMetadataRow(chatMessage(usageMessage(1200, 450, 150, "resp-1"))));
+    db.close();
+
+    const scriptPath = path.join(runDir, "agy-usage.sh");
+    const script = `#!/bin/sh
+EV="$KONE_ANTIGRAVITY_EVENTS"
+[ -n "$EV" ] || exit 0
+printf 'pre-invocation\t{"conversationId":"conv-123"}\n' >> "$EV"
+printf 'stop\t{"conversationId":"conv-123","fullyIdle":true}\n' >> "$EV"
+`;
+    writeFileSync(scriptPath, script, { mode: 0o755 });
+
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+
+    try {
+      await adapter.startSession({
+        threadId: "t-usage",
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId: "t-usage", input: "hello" });
+
+      await waitForEvent(events, (event) => event.type === "turn.completed");
+
+      const usageEvents = events.filter((e) => e.type === "thread.token-usage.updated");
+      expect(usageEvents.length).toBeGreaterThan(0);
+      const lastUsage = usageEvents.at(-1);
+      expect(lastUsage?.type === "thread.token-usage.updated" && lastUsage.usage).toEqual({
+        input: 1200,
+        output: 450,
+        total: 1650,
+        contextWindow: 1_000_000,
+        contextUsed: 1650,
+        compactsAutomatically: true,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 150,
+      });
+
+      // Resume test: a new session starting with resume: "conv-123" emits usage right away
+      const resumeEvents: RuntimeEvent[] = [];
+      const resumeAdapter = new AntigravityAdapter((event) => resumeEvents.push(event), undefined, {
+        homeDir: TEST_HOME,
+        resolveBinary: () => scriptPath,
+      });
+      await resumeAdapter.startSession({
+        threadId: "t-resume",
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+        resume: "conv-123",
+      });
+
+      const resumeUsage = resumeEvents.find((e) => e.type === "thread.token-usage.updated");
+      expect(resumeUsage).toBeDefined();
+      expect(resumeUsage?.type === "thread.token-usage.updated" && resumeUsage.usage.total).toBe(1650);
+
+      await resumeAdapter.stopSession("t-resume");
+    } finally {
+      await adapter.stopSession("t-usage");
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("antigravityTurnOutcome", () => {
