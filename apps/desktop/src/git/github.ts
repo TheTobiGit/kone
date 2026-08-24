@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { shell } from "electron";
+import { z } from "zod";
 
 import { parseSafeExternalUrl } from "../safeExternalUrl.js";
-import type { JsonObject } from "../jsonValue.js";
+import type { JsonValue } from "../jsonValue.js";
 import { GitError, lastStderrLine, repoRoot, run } from "./core.js";
 import { parseFileDiff } from "./diff.js";
 import { classifyGhError } from "./ghError.js";
@@ -73,74 +74,132 @@ async function gh(cwd: string | undefined, args: string[]): Promise<string> {
   }
 }
 
-interface GhAccount {
-  state: string;
-  active: boolean;
-  login: string;
-  host: string;
+/** The GitError kinds that mean "the About section has nothing to show" — a
+ *  missing gh, a logged-out gh, or a repo whose remotes point nowhere GitHub
+ *  hosts. Each is a normal empty state (null), not something to crash on. */
+const REPO_VIEW_ABSENCE_KINDS: ReadonlySet<string> = new Set([
+  "NOT_INSTALLED",
+  "NOT_AUTHENTICATED",
+  "NO_GITHUB_REMOTE",
+]);
+
+// ── wire decoders ─────────────────────────────────────────────────────────────
+// Every payload out of `gh --json` runs through one schema here, at the I/O
+// boundary. Downstream code branches only on the decoded domain values these
+// produce, never on representations. Tolerance lives in the schemas, in one
+// place: an optional wire field reads as its absence value instead of making
+// the whole record suspect, while a record missing something essential (an
+// id, a path) fails loudly enough for the caller to skip just that record.
+
+/** An optional wire string, collapsed to null when absent or blank — gh
+ *  answers "" for an unset optional field, and the renderer wants "absent",
+ *  not empty. */
+const WireText = z.string().transform((s) => (s.trim() ? s : null)).catch(null);
+
+/** A non-negative integer count; anything else reads as zero. */
+const WireCount = z.number().int().nonnegative().catch(0);
+
+/** Tolerant row list: decodes each entry against `schema`, dropping the ones
+ *  that don't clear it. One malformed record — a gh quirk, an API oddity —
+ *  must not lose its healthy siblings. */
+function rows<Schema extends z.ZodType>(schema: Schema) {
+  return z
+    .array(z.unknown())
+    .transform((items): z.output<Schema>[] =>
+      items.flatMap((item) => {
+        const parsed = schema.safeParse(item);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    );
 }
 
-/** Whether gh is installed and logged in, and as whom. */
-export async function status(): Promise<GitHubStatus> {
-  let out: string;
-  try {
-    out = await gh(os.homedir(), ["auth", "status", "--json", "hosts"]);
-  } catch (error) {
-    if (error instanceof GitError && error.kind === "NOT_INSTALLED") {
-      return { installed: false, authenticated: false, user: null, message: NOT_INSTALLED_MESSAGE };
-    }
-    // gh runs but reported a problem (typically "please run: gh auth login").
-    // gh's own line is friendlier than our canned one — keep it.
-    const message = error instanceof GitError ? error.message : NOT_AUTHENTICATED_MESSAGE;
-    return { installed: true, authenticated: false, user: null, message };
-  }
+/** One `{ login, name }` actor — gh's shape for every person field. A blank
+ *  login decodes to null; callers decide whether that's skippable. */
+const ActorWire = z
+  .object({
+    login: z.string().catch(""),
+    name: z.string().nullish(),
+  })
+  .transform((p): GitHubPerson | null => {
+    const login = p.login.trim();
+    if (!login) return null;
+    return { login, name: p.name?.trim() ? p.name : null, avatarDataUrl: null };
+  });
 
-  let hosts: { hosts?: Record<string, GhAccount[]> };
-  try {
-    hosts = JSON.parse(out.trim());
-  } catch {
-    return { installed: true, authenticated: false, user: null, message: NOT_AUTHENTICATED_MESSAGE };
-  }
-  const accounts = Object.values(hosts?.hosts ?? {}).flat();
-  // Prefer the active account, then any authenticated one.
-  const user = (accounts.find((a) => a.state === "success" && a.active) ??
-    accounts.find((a) => a.state === "success"))?.login ?? null;
-  if (user) {
-    return { installed: true, authenticated: true, user, message: null };
-  }
-  return { installed: true, authenticated: false, user: null, message: NOT_AUTHENTICATED_MESSAGE };
-}
+/** A person field where absence reads as the anonymous author, not null. */
+const AuthorLoginWire = z
+  .object({ login: z.string().catch("") })
+  .transform((p) => p.login.trim() || "unknown");
 
-// The one field list for every PR fetch, so the list and any later view
-// shapes cannot drift.
-const PR_JSON_FIELDS =
-  "number,title,state,isDraft,author,headRefName,baseRefName,url,createdAt,additions,deletions,statusCheckRollup,reviewDecision,comments,mergedAt";
+const PeopleListWire = rows(ActorWire)
+  .catch([])
+  .transform((people) => people.filter((p): p is GitHubPerson => p !== null));
 
-// The field list for the About section's repo view. Kept to the flat gh
-// names; the nested licenseInfo/primaryLanguage/repositoryTopics/
-// defaultBranchRef are unwrapped in mapRepoInfo.
-const REPO_JSON_FIELDS =
-  "nameWithOwner,description,homepageUrl,stargazerCount,forkCount,licenseInfo,primaryLanguage,repositoryTopics,visibility,isFork,defaultBranchRef,pushedAt,createdAt,url";
+// One check run or status context, flattened to the fields either carries.
+const CheckRunWire = z.object({
+  // A CheckRun is named; a StatusContext carries its name in `context`.
+  name: z.string().catch(""),
+  context: z.string().catch(""),
+  state: z.string().catch(""),
+  status: z.string().catch(""),
+  conclusion: z.string().catch(""),
+  detailsUrl: z.string().catch(""),
+  targetUrl: z.string().catch(""),
+  workflowName: WireText,
+});
+
+type CheckRun = z.output<typeof CheckRunWire>;
+
+const RollupWire = rows(CheckRunWire).catch([]);
 
 const FAILED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 const FAILED_STATES = new Set(["FAILURE", "ERROR"]);
 
-/** Fold gh's statusCheckRollup — a mix of CheckRun and StatusContext nodes —
+/** One check run or status context as a single verdict. Skipped and neutral
+ *  runs are their own state rather than a pass: a repo that skips half its
+ *  matrix shouldn't read as half-green. */
+function checkStateOf(run: CheckRun): GitHubCheck["state"] {
+  if (FAILED_STATES.has(run.state) || FAILED_CONCLUSIONS.has(run.conclusion)) return "failing";
+  if (run.conclusion === "SKIPPED" || run.conclusion === "NEUTRAL") return "skipped";
+  if (run.state === "SUCCESS" || run.conclusion === "SUCCESS") return "passing";
+  if (
+    run.state === "PENDING" ||
+    run.state === "EXPECTED" ||
+    (run.status !== "" && run.status !== "COMPLETED")
+  ) {
+    return "pending";
+  }
+  return "none";
+}
+
+/** One rollup node as the detail view draws it, or null when it names itself
+ *  nowhere (neither a check-run name nor a status context). */
+function checkOf(run: CheckRun): GitHubCheck | null {
+  const name = run.name || run.context;
+  if (!name) return null;
+  return {
+    name,
+    workflow: run.workflowName,
+    state: checkStateOf(run),
+    url: run.detailsUrl || run.targetUrl || null,
+  };
+}
+
+/** Fold the statusCheckRollup — a mix of CheckRun and StatusContext nodes —
  *  into one verdict: any failure fails the whole PR; otherwise any pending
  *  waits; otherwise passing needs at least one success. */
-function rollupChecks(rollup: unknown): "passing" | "failing" | "pending" | "none" {
-  if (!Array.isArray(rollup) || rollup.length === 0) return "none";
+function rollupChecks(runs: CheckRun[]): "passing" | "failing" | "pending" | "none" {
+  if (runs.length === 0) return "none";
   let pending = 0;
   let passing = 0;
-  for (const item of rollup) {
-    const rec = jsonRecord(item);
-    if (!rec) continue;
-    const state = typeof rec.state === "string" ? rec.state : "";
-    const status = typeof rec.status === "string" ? rec.status : "";
-    const conclusion = typeof rec.conclusion === "string" ? rec.conclusion : "";
-    if (FAILED_STATES.has(state) || FAILED_CONCLUSIONS.has(conclusion)) return "failing";
-    if (state === "SUCCESS" || conclusion === "SUCCESS") passing += 1;
-    else if (state === "PENDING" || state === "EXPECTED" || (status !== "" && status !== "COMPLETED")) {
+  for (const run of runs) {
+    if (FAILED_STATES.has(run.state) || FAILED_CONCLUSIONS.has(run.conclusion)) return "failing";
+    if (run.state === "SUCCESS" || run.conclusion === "SUCCESS") passing += 1;
+    else if (
+      run.state === "PENDING" ||
+      run.state === "EXPECTED" ||
+      (run.status !== "" && run.status !== "COMPLETED")
+    ) {
       pending += 1;
     }
   }
@@ -149,39 +208,367 @@ function rollupChecks(rollup: unknown): "passing" | "failing" | "pending" | "non
   return "none";
 }
 
-function normalizeReviewDecision(
-  value: unknown,
-): "approved" | "changes-requested" | "review-required" | null {
-  switch (value) {
-    case "APPROVED":
-      return "approved";
-    case "CHANGES_REQUESTED":
-      return "changes-requested";
-    case "REVIEW_REQUIRED":
-    case "REVIEW_REQUESTED":
-      return "review-required";
-    default:
-      return null;
-  }
-}
+const ReviewDecisionWire = z
+  .enum(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", "REVIEW_REQUESTED"])
+  .nullish()
+  .catch(undefined)
+  .transform((value): "approved" | "changes-requested" | "review-required" | null => {
+    switch (value) {
+      case "APPROVED":
+        return "approved";
+      case "CHANGES_REQUESTED":
+        return "changes-requested";
+      case "REVIEW_REQUIRED":
+      case "REVIEW_REQUESTED":
+        return "review-required";
+      default:
+        return null;
+    }
+  });
+
+const ReviewStateWire = z
+  .enum(["APPROVED", "CHANGES_REQUESTED", "DISMISSED", "PENDING", "COMMENTED"])
+  .catch("COMMENTED")
+  .transform((value): GitHubReview["state"] => {
+    switch (value) {
+      case "APPROVED":
+        return "approved";
+      case "CHANGES_REQUESTED":
+        return "changes-requested";
+      case "DISMISSED":
+        return "dismissed";
+      case "PENDING":
+        return "pending";
+      default:
+        return "commented";
+    }
+  });
 
 /** gh reports comments as a count on `pr list` and as an array on `pr view` —
  *  accept both. */
-function commentCount(value: unknown): number {
-  if (typeof value === "number") return Math.max(0, Math.floor(value));
-  if (Array.isArray(value)) return value.length;
-  return 0;
+const CommentCountWire = z
+  .union([z.number(), z.array(z.unknown())])
+  .catch(0)
+  .transform((value): number => (Array.isArray(value) ? value.length : Math.max(0, Math.floor(value))));
+
+const ReviewWire = z.object({
+  author: ActorWire.catch(null),
+  state: ReviewStateWire,
+  body: z.string().catch(""),
+  submittedAt: WireText,
+});
+
+const CommentWire = z.object({
+  author: ActorWire.catch(null),
+  body: z.string().catch(""),
+  createdAt: z.string().catch(""),
+  url: z.string().catch(""),
+  // Minimised comments are GitHub's own "this is spam / off-topic" verdict;
+  // they read as absent.
+  isMinimized: z.boolean().catch(false),
+});
+
+const CommitAuthorWire = z.object({
+  name: z.string().catch(""),
+  login: z.string().catch(""),
+});
+
+const PrCommitWire = z.object({
+  oid: z.string().min(1),
+  messageHeadline: z.string().catch(""),
+  messageBody: z.string().catch(""),
+  committedDate: WireText,
+  authoredDate: WireText,
+  authors: rows(CommitAuthorWire).catch([]),
+});
+
+const PrFileWire = z
+  .object({
+    path: z.string().min(1),
+    changeType: z.string().catch(""),
+    additions: WireCount,
+    deletions: WireCount,
+  })
+  .transform((file): GitHubPrFile => ({
+    path: file.path,
+    additions: file.additions,
+    deletions: file.deletions,
+    change: fileChangeOf(file.changeType),
+  }));
+
+/** gh spells a file's change as an uppercase token; anything unrecognised
+ *  draws as the plain "changed". */
+function fileChangeOf(raw: string): GitHubPrFile["change"] {
+  switch (raw.toLowerCase()) {
+    case "added":
+      return "added";
+    case "modified":
+      return "modified";
+    case "removed":
+      return "removed";
+    case "renamed":
+      return "renamed";
+    case "copied":
+      return "copied";
+    default:
+      return "changed";
+  }
 }
 
-function nonNegative(value: unknown): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+const LabelWire = z
+  .object({
+    name: z.string().min(1),
+    description: WireText,
+    color: z.string().catch(""),
+  })
+  .transform((label): GitHubLabel => {
+    const hex = label.color.replace(/^#/, "");
+    // A label with no colour still needs one to draw; grey reads as "unset".
+    return {
+      name: label.name,
+      description: label.description,
+      color: /^[0-9a-f]{6}$/i.test(hex) ? hex.toLowerCase() : "8b949e",
+    };
+  });
+
+// The one field list for every PR fetch, so the list and any later view
+// shapes cannot drift.
+const PR_JSON_FIELDS =
+  "number,title,state,isDraft,author,headRefName,baseRefName,url,createdAt,additions,deletions,statusCheckRollup,reviewDecision,comments,mergedAt";
+
+const PullRequestWire = z.object({
+  number: z.number().int().positive(),
+  title: z.string().catch(""),
+  state: z.string().catch(""),
+  isDraft: z.boolean().catch(false),
+  author: AuthorLoginWire.catch("unknown"),
+  headRefName: z.string().catch(""),
+  baseRefName: z.string().catch(""),
+  url: z.string().catch(""),
+  createdAt: z.string().catch(""),
+  additions: WireCount,
+  deletions: WireCount,
+  statusCheckRollup: RollupWire,
+  reviewDecision: ReviewDecisionWire,
+  comments: CommentCountWire,
+  // gh reports merged PRs as CLOSED unless mergedAt is set — the timestamp
+  // is authoritative.
+  mergedAt: WireText,
+});
+
+type DecodedPullRequest = z.output<typeof PullRequestWire>;
+
+function pullRequestOf(pr: DecodedPullRequest): GitHubPullRequest {
+  const state =
+    pr.mergedAt !== null || pr.state === "MERGED"
+      ? "merged"
+      : pr.state === "CLOSED"
+        ? "closed"
+        : "open";
+  return {
+    number: pr.number,
+    title: pr.title,
+    state,
+    isDraft: pr.isDraft,
+    author: pr.author,
+    branch: pr.headRefName,
+    base: pr.baseRefName,
+    url: pr.url,
+    createdAt: pr.createdAt,
+    relative: relativeTime(pr.createdAt),
+    additions: pr.additions,
+    deletions: pr.deletions,
+    checks: rollupChecks(pr.statusCheckRollup),
+    reviewDecision: pr.reviewDecision,
+    comments: pr.comments,
+  };
 }
 
-/** gh returns "" for an unset optional string (no description, no homepage) —
- *  collapse those to null so the renderer sees "absent", not empty. */
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
+// The field list for the About section's repo view. Kept to the flat gh
+// names; the nested licenseInfo/primaryLanguage/repositoryTopics/
+// defaultBranchRef are unwrapped by the schema.
+const REPO_JSON_FIELDS =
+  "nameWithOwner,description,homepageUrl,stargazerCount,forkCount,licenseInfo,primaryLanguage,repositoryTopics,visibility,isFork,defaultBranchRef,pushedAt,createdAt,url";
+
+const LicenseWire = z.object({
+  // nickname is the short form ("MIT"); an empty nickname means "no
+  // nickname", so the full name wins.
+  name: WireText,
+  nickname: WireText,
+});
+
+const NamedWire = z.object({ name: z.string().catch("") });
+
+const RepoInfoWire = z.object({
+  nameWithOwner: z.string().min(1),
+  description: WireText,
+  homepageUrl: WireText,
+  stargazerCount: WireCount,
+  forkCount: WireCount,
+  licenseInfo: LicenseWire.nullish(),
+  primaryLanguage: NamedWire.nullish(),
+  // gh 2.96 reports repositoryTopics as a plain [{ name }] array (null when
+  // the repo has no topics).
+  repositoryTopics: rows(NamedWire.transform((t) => t.name)).nullish(),
+  visibility: z
+    .string()
+    .catch("")
+    .transform((value): GitHubRepoInfo["visibility"] => {
+      const lowered = value.toLowerCase();
+      return lowered === "public" || lowered === "internal" ? lowered : "private";
+    }),
+  isFork: z.boolean().catch(false),
+  defaultBranchRef: NamedWire.nullish(),
+  pushedAt: WireText,
+  createdAt: WireText,
+  url: z.string().catch(""),
+});
+
+type DecodedRepoInfo = z.output<typeof RepoInfoWire>;
+
+function repoInfoOf(repo: DecodedRepoInfo): GitHubRepoInfo {
+  return {
+    nameWithOwner: repo.nameWithOwner,
+    description: repo.description,
+    homepageUrl: repo.homepageUrl,
+    stars: repo.stargazerCount,
+    forks: repo.forkCount,
+    license: repo.licenseInfo?.nickname ?? repo.licenseInfo?.name ?? null,
+    language: repo.primaryLanguage?.name || null,
+    topics: repo.repositoryTopics ?? [],
+    visibility: repo.visibility,
+    isFork: repo.isFork,
+    defaultBranch: repo.defaultBranchRef?.name || null,
+    pushedAt: repo.pushedAt,
+    createdAt: repo.createdAt,
+    url: repo.url || `https://github.com/${repo.nameWithOwner}`,
+  };
 }
+
+const ContributorWire = z
+  .object({
+    // Bots (dependabot[bot], …) come through as `type: Bot` — a calm surface
+    // shouldn't list them as top contributors, so only real Users count.
+    type: z.string().catch(""),
+    login: z.string().catch(""),
+    contributions: WireCount,
+    avatar_url: z.string().catch(""),
+  })
+  .transform((row) => {
+    const login = row.login.trim();
+    if (row.type !== "User" || !login) return null;
+    return { login, commits: row.contributions, avatarUrl: row.avatar_url || null };
+  });
+
+const UserWire = z.object({
+  login: z.string().min(1),
+  name: WireText,
+  bio: WireText,
+  avatar_url: WireText,
+  html_url: z.string().catch(""),
+});
+
+const MilestoneWire = z.object({ title: z.string().catch("") });
+
+// Everything the dedicated pull-request view draws, in one `gh pr view`.
+const PR_DETAIL_JSON_FIELDS =
+  "number,title,body,url,author,state,isDraft,mergeable,mergeStateStatus," +
+  "additions,deletions,changedFiles,files,headRefName,headRepositoryOwner,baseRefName," +
+  "reviewDecision,reviewRequests,latestReviews,comments,statusCheckRollup," +
+  "commits,labels,assignees,milestone,createdAt,updatedAt,mergedAt,closedAt,mergedBy";
+
+const PullRequestDetailWire = z.object({
+  number: z.number().int().positive(),
+  title: z.string().catch(""),
+  body: z.string().catch(""),
+  url: z.string().catch(""),
+  state: z.string().catch(""),
+  isDraft: z.boolean().catch(false),
+  mergeable: z.string().catch(""),
+  mergeStateStatus: z.string().catch(""),
+  additions: WireCount,
+  deletions: WireCount,
+  changedFiles: WireCount,
+  author: ActorWire.catch(null),
+  mergedBy: ActorWire.catch(null),
+  headRepositoryOwner: ActorWire.catch(null),
+  assignees: PeopleListWire,
+  headRefName: z.string().catch(""),
+  baseRefName: z.string().catch(""),
+  reviewDecision: ReviewDecisionWire,
+  reviewRequests: PeopleListWire,
+  latestReviews: rows(ReviewWire).catch([]),
+  comments: rows(CommentWire)
+    .catch([])
+    .transform((list) => list.filter((comment) => !comment.isMinimized)),
+  statusCheckRollup: RollupWire,
+  commits: rows(PrCommitWire).catch([]),
+  files: rows(PrFileWire).catch([]),
+  labels: rows(LabelWire).catch([]),
+  milestone: MilestoneWire.nullish(),
+  createdAt: z.string().catch(""),
+  updatedAt: WireText,
+  mergedAt: WireText,
+  closedAt: WireText,
+});
+
+type DecodedPullRequestDetail = z.output<typeof PullRequestDetailWire>;
+
+/** Whether GitHub could merge this, in the one word worth saying. `mergeable`
+ *  answers "do the trees conflict"; `mergeStateStatus` answers "would the repo
+ *  let you" — a conflict outranks everything, and a draft outranks the lot,
+ *  because nothing else about mergeability matters until it's ready. */
+function mergeabilityOf(
+  mergeable: string,
+  stateStatus: string,
+  isDraft: boolean,
+): GitHubPullRequestDetail["mergeability"] {
+  if (isDraft) return "draft";
+  if (mergeable === "CONFLICTING") return "conflicting";
+  switch (stateStatus) {
+    case "CLEAN":
+      return "clean";
+    case "BLOCKED":
+      return "blocked";
+    case "BEHIND":
+      return "behind";
+    case "UNSTABLE":
+      return "unstable";
+    case "DIRTY":
+      return "conflicting";
+    case "DRAFT":
+      return "draft";
+    default:
+      return mergeable === "MERGEABLE" ? "clean" : "unknown";
+  }
+}
+
+const CommitIdentityWire = z.object({
+  name: z.string().catch(""),
+  email: z.string().catch(""),
+});
+
+const ApiCommitWire = z.object({
+  commit: z
+    .object({ author: CommitIdentityWire.nullish() })
+    .nullish(),
+  author: z
+    .object({
+      login: z.string().catch(""),
+      avatar_url: z.string().catch(""),
+    })
+    .nullish(),
+});
+
+const GhAccountWire = z.object({
+  state: z.string().catch(""),
+  active: z.boolean().catch(false),
+  login: z.string().catch(""),
+});
+
+const AuthHostsWire = z.object({
+  hosts: z.record(z.string(), z.array(GhAccountWire)).catch({}),
+});
 
 /** "2 hours ago"-style relative time for an ISO date. */
 function relativeTime(iso: string): string {
@@ -200,41 +587,62 @@ function relativeTime(iso: string): string {
   return `${years} year${years === 1 ? "" : "s"} ago`;
 }
 
-/** Map one gh PR JSON record onto the contract shape. Throws on a malformed
- *  entry so the list caller can skip it without losing the healthy ones. */
-function mapPullRequest(pr: JsonObject): GitHubPullRequest {
-  const number = Number(pr.number);
-  if (!Number.isInteger(number) || number <= 0) throw new Error("bad number");
-  const stateRaw = typeof pr.state === "string" ? pr.state : "";
-  // gh reports merged PRs as CLOSED unless mergedAt is set — the timestamp is
-  // authoritative.
-  const mergedAt = typeof pr.mergedAt === "string" && pr.mergedAt.trim() ? pr.mergedAt : null;
-  const state =
-    mergedAt !== null || stateRaw === "MERGED"
-      ? "merged"
-      : stateRaw === "CLOSED"
-        ? "closed"
-        : "open";
-  const createdAt = typeof pr.createdAt === "string" ? pr.createdAt : "";
-  const author = jsonRecord(pr.author);
-  return {
-    number,
-    title: typeof pr.title === "string" ? pr.title : "",
-    state,
-    isDraft: pr.isDraft === true,
-    author:
-      author && typeof author.login === "string" && author.login ? author.login : "unknown",
-    branch: typeof pr.headRefName === "string" ? pr.headRefName : "",
-    base: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
-    url: typeof pr.url === "string" ? pr.url : "",
-    createdAt,
-    relative: relativeTime(createdAt),
-    additions: nonNegative(pr.additions),
-    deletions: nonNegative(pr.deletions),
-    checks: rollupChecks(pr.statusCheckRollup),
-    reviewDecision: normalizeReviewDecision(pr.reviewDecision),
-    comments: commentCount(pr.comments),
-  };
+/** Parse a gh stdout payload, throwing the caller's error when the CLI
+ *  answered with something unparseable. */
+function decodeOrThrow<Schema extends z.ZodType>(
+  out: string,
+  schema: Schema,
+  message: string,
+): z.output<Schema> | null {
+  let raw: JsonValue;
+  try {
+    raw = JSON.parse(out.trim());
+  } catch {
+    throw new GitError(message, null);
+  }
+  const parsed = schema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Whether gh is installed and logged in, and as whom. */
+export async function status(): Promise<GitHubStatus> {
+  let out: string;
+  try {
+    out = await gh(os.homedir(), ["auth", "status", "--json", "hosts"]);
+  } catch (error) {
+    if (error instanceof GitError && error.kind === "NOT_INSTALLED") {
+      return { installed: false, authenticated: false, user: null, message: NOT_INSTALLED_MESSAGE };
+    }
+    // gh runs but reported a problem (typically "please run: gh auth login").
+    // gh's own line is friendlier than our canned one — keep it.
+    const message = error instanceof GitError ? error.message : NOT_AUTHENTICATED_MESSAGE;
+    return { installed: true, authenticated: false, user: null, message };
+  }
+
+  const trimmed = out.trim();
+  if (!trimmed) {
+    return { installed: true, authenticated: false, user: null, message: NOT_AUTHENTICATED_MESSAGE };
+  }
+  let raw: JsonValue;
+  try {
+    raw = JSON.parse(trimmed);
+  } catch {
+    return { installed: true, authenticated: false, user: null, message: NOT_AUTHENTICATED_MESSAGE };
+  }
+  const decoded = AuthHostsWire.safeParse(raw);
+  if (!decoded.success) {
+    return { installed: true, authenticated: false, user: null, message: NOT_AUTHENTICATED_MESSAGE };
+  }
+  const accounts = Object.values(decoded.data.hosts).flat();
+  // Prefer the active account, then any authenticated one.
+  const user =
+    accounts.find((a) => a.state === "success" && a.active)?.login ??
+    accounts.find((a) => a.state === "success")?.login ??
+    null;
+  if (user) {
+    return { installed: true, authenticated: true, user, message: null };
+  }
+  return { installed: true, authenticated: false, user: null, message: NOT_AUTHENTICATED_MESSAGE };
 }
 
 /** List pull requests for the repo `dir` sits in. */
@@ -258,100 +666,17 @@ export async function prs(
   ]);
   const trimmed = out.trim();
   if (!trimmed) return [];
-  let raw: unknown;
-  try {
-    raw = JSON.parse(trimmed);
-  } catch {
-    throw new GitError("The GitHub CLI returned unparseable pull request data.", null);
-  }
-  if (!Array.isArray(raw)) {
+  const decoded = decodeOrThrow(
+    trimmed,
+    rows(PullRequestWire).nullable().catch(null),
+    "The GitHub CLI returned unparseable pull request data.",
+  );
+  // A non-array answer means gh changed shape under us — say so rather than
+  // show an empty list.
+  if (decoded === null) {
     throw new GitError("The GitHub CLI returned unexpected pull request data.", null);
   }
-  // One malformed entry (a gh quirk or API oddity) must not hide the healthy
-  // PRs in the same list.
-  const result: GitHubPullRequest[] = [];
-  for (const entry of raw) {
-    const rec = jsonRecord(entry);
-    if (!rec) continue;
-    try {
-      result.push(mapPullRequest(rec));
-    } catch {
-      // skip the malformed entry
-    }
-  }
-  return result;
-}
-
-/** The "repo has no GitHub info for the About section" set — a missing gh,
- *  a logged-out gh, or a repo whose remotes point nowhere GitHub hosts. Each
- *  is a normal empty state (null), not something the About section should
- *  crash on. Anything else stays an error. */
-function isRepoViewAbsence(error: unknown): boolean {
-  if (!(error instanceof GitError)) return false;
-  return (
-    error.kind === "NOT_INSTALLED" ||
-    error.kind === "NOT_AUTHENTICATED" ||
-    error.kind === "NO_GITHUB_REMOTE"
-  );
-}
-
-/** A JSON object straight out of `gh --json` output, or null.
- *  Every caller feeds this only freshly parsed gh CLI records and probes each
- *  field with typeof/=== before trusting it. */
-function jsonRecord(raw: unknown): JsonObject | null {
-  // SAFETY: the typeof-object/null checks on this line are the narrowing itself;
-  // gh output is wire JSON, so a non-null object satisfies JsonObject and every
-  // field reads back as JsonValue.
-  return typeof raw === "object" && raw !== null ? (raw as JsonObject) : null;
-}
-
-/** Map one `gh repo view --json` record onto the flat About shape, unwrapping
- *  the nested licenseInfo/primaryLanguage/repositoryTopics/defaultBranchRef. */
-function mapRepoInfo(raw: unknown): GitHubRepoInfo | null {
-  const rec = jsonRecord(raw);
-  if (!rec || typeof rec.nameWithOwner !== "string" || !rec.nameWithOwner) return null;
-  const license = jsonRecord(rec.licenseInfo);
-  const language = jsonRecord(rec.primaryLanguage);
-  const branch = jsonRecord(rec.defaultBranchRef);
-  // gh 2.96 reports repositoryTopics as a plain [{ name }] array (null when the
-  // repo has no topics).
-  const topics = Array.isArray(rec.repositoryTopics)
-    ? rec.repositoryTopics
-        .map((t) => (jsonRecord(t))?.name)
-        .filter((n): n is string => typeof n === "string")
-    : [];
-  // SAFETY: gh's fields are probed above; visibility is one of its fixed
-  // lowercase tokens and every other read is typeof-guarded.
-  return {
-    nameWithOwner: rec.nameWithOwner,
-    description: stringOrNull(rec.description),
-    homepageUrl: stringOrNull(rec.homepageUrl),
-    stars: nonNegative(rec.stargazerCount),
-    forks: nonNegative(rec.forkCount),
-    // nickname is the short form ("MIT"); an empty nickname means "no
-    // nickname", so it falls back to the full name.
-    license:
-      license && typeof license.name === "string" && license.name
-        ? typeof license.nickname === "string" && license.nickname
-          ? license.nickname
-          : license.name
-        : null,
-    language:
-      language && typeof language.name === "string" && language.name
-        ? language.name
-        : null,
-    topics,
-    visibility:
-      typeof rec.visibility === "string" && rec.visibility
-        ? (rec.visibility.toLowerCase() as GitHubRepoInfo["visibility"])
-        : "private",
-    isFork: rec.isFork === true,
-    defaultBranch:
-      branch && typeof branch.name === "string" && branch.name ? branch.name : null,
-    pushedAt: stringOrNull(rec.pushedAt),
-    createdAt: stringOrNull(rec.createdAt),
-    url: typeof rec.url === "string" && rec.url ? rec.url : `https://github.com/${rec.nameWithOwner}`,
-  };
+  return decoded.map(pullRequestOf);
 }
 
 /** The repo's public GitHub surface (About section). Null when `dir` isn't in
@@ -364,38 +689,17 @@ export async function repo(dir: string): Promise<GitHubRepoInfo | null> {
   try {
     out = await gh(root, ["repo", "view", "--json", REPO_JSON_FIELDS]);
   } catch (error) {
-    if (isRepoViewAbsence(error)) return null;
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
     throw error;
   }
   const trimmed = out.trim();
   if (!trimmed) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(trimmed);
-  } catch {
-    throw new GitError("The GitHub CLI returned unparseable repository data.", null);
-  }
-  return mapRepoInfo(raw);
-}
-
-/** Map one GitHub contributors record onto a row, or null to skip it. One
- *  malformed record (a gh quirk) must not lose the rest of the list. */
-function mapContributor(
-  raw: unknown,
-): { login: string; commits: number; avatarUrl: string | null } | null {
-  const rec = jsonRecord(raw);
-  if (!rec) return null;
-  // Bots (dependabot[bot], …) come through as `type: Bot` — a calm surface
-  // shouldn't list them as top contributors, so only real Users count.
-  if (rec.type !== "User") return null;
-  const login = typeof rec.login === "string" ? rec.login.trim() : "";
-  if (!login) return null;
-  return {
-    login,
-    commits: nonNegative(rec.contributions),
-    avatarUrl:
-      typeof rec.avatar_url === "string" && rec.avatar_url ? rec.avatar_url : null,
-  };
+  const decoded = decodeOrThrow(
+    trimmed,
+    RepoInfoWire.nullable().catch(null),
+    "The GitHub CLI returned unparseable repository data.",
+  );
+  return decoded === null ? null : repoInfoOf(decoded);
 }
 
 /** The repository's contributors, via the GitHub API. It trades git's real
@@ -411,29 +715,26 @@ export async function contributors(dir: string): Promise<GitContributors | null>
     // not a slug we plumb in.
     out = await gh(root, ["api", "repos/{owner}/{repo}/contributors?per_page=100"]);
   } catch (error) {
-    if (isRepoViewAbsence(error)) return null;
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
     throw error;
   }
   // An empty repo answers 204 No Content — nothing to show, not an error.
-  const trimmed = out.trim();
-  if (!trimmed) return null;
-  let raw: unknown;
+  let rowsIn: (z.output<typeof ContributorWire> | null)[] | null = null;
   try {
-    raw = JSON.parse(trimmed);
+    const trimmed = out.trim();
+    if (!trimmed) return null;
+    const parsed = rows(ContributorWire).safeParse(JSON.parse(trimmed));
+    if (parsed.success) rowsIn = parsed.data;
   } catch {
     return null;
   }
-  if (!Array.isArray(raw)) return null;
-  const rows: { login: string; commits: number; avatarUrl: string | null }[] = [];
-  for (const entry of raw) {
-    const row = mapContributor(entry);
-    if (row) rows.push(row);
-  }
-  rows.sort((a, b) => b.commits - a.commits);
+  if (rowsIn === null) return null;
+  const rowsOut = rowsIn.filter((row): row is NonNullable<typeof row> => row !== null);
+  rowsOut.sort((a, b) => b.commits - a.commits);
   // Fetch avatars for the shown people only, in parallel — those past the cap
   // aren't rendered, so their fetch would be wasted network. An avatar is
   // decorative by contract: a failure is a null, never a failed call.
-  const shown = rows.slice(0, GIT_CONTRIBUTOR_CAP);
+  const shown = rowsOut.slice(0, GIT_CONTRIBUTOR_CAP);
   const people: GitContributor[] = await Promise.all(
     shown.map(async (row) => ({
       name: row.login,
@@ -445,7 +746,7 @@ export async function contributors(dir: string): Promise<GitContributors | null>
       commits: row.commits,
     })),
   );
-  return { source: "github", people, total: rows.length };
+  return { source: "github", people, total: rowsOut.length };
 }
 
 const AVATAR_TIMEOUT_MS = 5_000;
@@ -481,31 +782,31 @@ export async function me(): Promise<GitHubUser | null> {
   try {
     out = await gh(os.homedir(), ["api", "user"]);
   } catch (error) {
-    if (isRepoViewAbsence(error)) return null;
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
     throw error;
   }
-  let raw: unknown;
+  const trimmed = out.trim();
+  if (!trimmed) return null;
+  let raw: JsonValue;
   try {
-    raw = JSON.parse(out.trim());
+    raw = JSON.parse(trimmed);
   } catch {
-    throw new GitError("The GitHub CLI returned unparseable user data.", null);
+    return null;
   }
-  const rec = jsonRecord(raw);
-  if (!rec || typeof rec.login !== "string" || !rec.login) return null;
-  const avatarUrl = stringOrNull(rec.avatar_url);
+  const decoded = UserWire.safeParse(raw);
+  if (!decoded.success) return null;
+  const wire = decoded.data;
+  const htmlUrl = wire.html_url || `https://github.com/${wire.login}`;
   const user: GitHubUser = {
-    login: rec.login,
-    name: stringOrNull(rec.name),
-    bio: stringOrNull(rec.bio),
-    avatarUrl,
+    login: wire.login,
+    name: wire.name,
+    bio: wire.bio,
+    avatarUrl: wire.avatar_url,
     avatarDataUrl: null,
-    htmlUrl:
-      typeof rec.html_url === "string" && rec.html_url
-        ? rec.html_url
-        : `https://github.com/${rec.login}`,
+    htmlUrl,
   };
-  if (avatarUrl) {
-    user.avatarDataUrl = await fetchAvatarDataUrl(avatarUrl).catch(() => null);
+  if (wire.avatar_url) {
+    user.avatarDataUrl = await fetchAvatarDataUrl(wire.avatar_url).catch(() => null);
   }
   return user;
 }
@@ -537,17 +838,6 @@ async function avatarFor(login: string, known?: string | null): Promise<string |
   return face;
 }
 
-/** Read one `{ login, name }` actor — gh's shape for every person field — as a
- *  faceless person. `fillAvatars` completes the whole set in one pass, so a
- *  view with forty comments makes one fetch per *person*, not per mention. */
-function actor(raw: unknown): GitHubPerson | null {
-  const rec = jsonRecord(raw);
-  if (!rec) return null;
-  const login = typeof rec.login === "string" ? rec.login.trim() : "";
-  if (!login) return null;
-  return { login, name: stringOrNull(rec.name), avatarDataUrl: null };
-}
-
 /** Fetch every distinct face in one parallel pass and hand it to each record
  *  that names that person. Faces are decorative by contract: a miss is a null
  *  the caller renders an initial for, never a failure. */
@@ -565,108 +855,88 @@ async function fillAvatars(people: (GitHubPerson | null)[]): Promise<void> {
 
 // ── pull request detail ───────────────────────────────────────────────────────
 
-/** Everything the dedicated pull-request view draws, in one `gh pr view`. */
-const PR_DETAIL_JSON_FIELDS =
-  "number,title,body,url,author,state,isDraft,mergeable,mergeStateStatus," +
-  "additions,deletions,changedFiles,files,headRefName,headRepositoryOwner,baseRefName," +
-  "reviewDecision,reviewRequests,latestReviews,comments,statusCheckRollup," +
-  "commits,labels,assignees,milestone,createdAt,updatedAt,mergedAt,closedAt,mergedBy";
+/** Map one decoded `gh pr view` payload onto the view shape. Pure: everything
+ *  representation-shaped already happened in the schema above. */
+function pullRequestDetailOf(wire: DecodedPullRequestDetail): GitHubPullRequestDetail {
+  const state =
+    wire.mergedAt !== null || wire.state === "MERGED"
+      ? "merged"
+      : wire.state === "CLOSED"
+        ? "closed"
+        : "open";
 
-/** Whether GitHub could merge this, in the one word worth saying. `mergeable`
- *  answers "do the trees conflict"; `mergeStateStatus` answers "would the repo
- *  let you" — a conflict outranks everything, and a draft outranks the lot,
- *  because nothing else about mergeability matters until it's ready. */
-function mergeabilityOf(
-  mergeable: unknown,
-  stateStatus: unknown,
-  isDraft: boolean,
-): GitHubPullRequestDetail["mergeability"] {
-  if (isDraft) return "draft";
-  if (mergeable === "CONFLICTING") return "conflicting";
-  switch (stateStatus) {
-    case "CLEAN":
-      return "clean";
-    case "BLOCKED":
-      return "blocked";
-    case "BEHIND":
-      return "behind";
-    case "UNSTABLE":
-      return "unstable";
-    case "DIRTY":
-      return "conflicting";
-    case "DRAFT":
-      return "draft";
-    default:
-      return mergeable === "MERGEABLE" ? "clean" : "unknown";
+  // Who has looked at this, and who is still being waited on. `latestReviews`
+  // holds one current verdict per reviewer; a request with no review yet is a
+  // person too, and reads as pending rather than being left off the list.
+  const reviews: GitHubReview[] = wire.latestReviews.map((row) => ({
+    author: row.author,
+    state: row.state,
+    body: row.body,
+    submittedAt: row.submittedAt,
+    relative: row.submittedAt ? relativeTime(row.submittedAt) : "",
+  }));
+  const reviewed = new Set(reviews.map((r) => r.author?.login).filter(Boolean));
+  for (const person of wire.reviewRequests) {
+    if (reviewed.has(person.login)) continue;
+    reviews.push({ author: person, state: "pending", body: "", submittedAt: null, relative: "" });
   }
-}
 
-/** One check run or status context as a single verdict. Skipped and neutral
- *  runs are their own state rather than a pass: a repo that skips half its
- *  matrix shouldn't read as half-green. */
-function checkStateOf(rec: JsonObject): GitHubCheck["state"] {
-  const state = typeof rec.state === "string" ? rec.state : "";
-  const status = typeof rec.status === "string" ? rec.status : "";
-  const conclusion = typeof rec.conclusion === "string" ? rec.conclusion : "";
-  if (FAILED_STATES.has(state) || FAILED_CONCLUSIONS.has(conclusion)) return "failing";
-  if (conclusion === "SKIPPED" || conclusion === "NEUTRAL") return "skipped";
-  if (state === "SUCCESS" || conclusion === "SUCCESS") return "passing";
-  if (state === "PENDING" || state === "EXPECTED" || (status !== "" && status !== "COMPLETED")) {
-    return "pending";
-  }
-  return "none";
-}
+  const comments: GitHubComment[] = wire.comments.map((row) => ({
+    author: row.author,
+    body: row.body,
+    createdAt: row.createdAt,
+    relative: row.createdAt ? relativeTime(row.createdAt) : "",
+    url: row.url,
+  }));
 
-function mapCheck(raw: unknown): GitHubCheck | null {
-  const rec = jsonRecord(raw);
-  if (!rec) return null;
-  // A CheckRun is named; a StatusContext carries its name in `context`.
-  const name =
-    (typeof rec.name === "string" && rec.name) ||
-    (typeof rec.context === "string" && rec.context) ||
-    "";
-  if (!name) return null;
-  const url =
-    (typeof rec.detailsUrl === "string" && rec.detailsUrl) ||
-    (typeof rec.targetUrl === "string" && rec.targetUrl) ||
-    null;
+  const commits: GitHubPrCommit[] = wire.commits.map((row) => {
+    const first = row.authors[0];
+    const date = row.committedDate ?? row.authoredDate ?? wire.createdAt;
+    return {
+      oid: row.oid,
+      short: row.oid.slice(0, 7),
+      headline: row.messageHeadline,
+      body: row.messageBody,
+      author: (first?.name || first?.login || "").trim(),
+      date,
+      relative: relativeTime(date),
+    };
+  });
+
   return {
-    name,
-    workflow: stringOrNull(rec.workflowName),
-    state: checkStateOf(rec),
-    url,
+    number: wire.number,
+    title: wire.title,
+    state,
+    isDraft: wire.isDraft,
+    url: wire.url,
+    body: wire.body,
+    author: wire.author,
+    branch: wire.headRefName,
+    base: wire.baseRefName,
+    forkOwner: wire.headRepositoryOwner?.login ?? null,
+    createdAt: wire.createdAt,
+    relative: wire.createdAt ? relativeTime(wire.createdAt) : "",
+    updatedAt: wire.updatedAt,
+    mergedAt: wire.mergedAt,
+    closedAt: wire.closedAt,
+    mergedBy: wire.mergedBy,
+    additions: wire.additions,
+    deletions: wire.deletions,
+    changedFiles: wire.changedFiles,
+    mergeability: mergeabilityOf(wire.mergeable, wire.mergeStateStatus, wire.isDraft),
+    reviewDecision: wire.reviewDecision,
+    checks: rollupChecks(wire.statusCheckRollup),
+    checkRuns: wire.statusCheckRollup
+      .map(checkOf)
+      .filter((check): check is GitHubCheck => check !== null),
+    labels: wire.labels,
+    assignees: wire.assignees,
+    reviews,
+    comments,
+    commits,
+    files: wire.files,
+    milestone: wire.milestone?.title || null,
   };
-}
-
-function reviewStateOf(value: unknown): GitHubReview["state"] {
-  switch (value) {
-    case "APPROVED":
-      return "approved";
-    case "CHANGES_REQUESTED":
-      return "changes-requested";
-    case "DISMISSED":
-      return "dismissed";
-    case "PENDING":
-      return "pending";
-    default:
-      return "commented";
-  }
-}
-
-function mapLabel(raw: unknown): GitHubLabel | null {
-  const rec = jsonRecord(raw);
-  if (!rec || typeof rec.name !== "string" || !rec.name) return null;
-  const color = typeof rec.color === "string" ? rec.color.replace(/^#/, "") : "";
-  return {
-    name: rec.name,
-    description: stringOrNull(rec.description),
-    // A label with no colour still needs one to draw; grey reads as "unset".
-    color: /^[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : "8b949e",
-  };
-}
-
-function arrayOf(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 /** One pull request in full. Null when there's no such PR, or when gh is
@@ -684,7 +954,7 @@ export async function prDetail(
   try {
     out = await gh(root, ["pr", "view", String(number), "--json", PR_DETAIL_JSON_FIELDS]);
   } catch (error) {
-    if (isRepoViewAbsence(error)) return null;
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return null;
     // A number that doesn't exist is an empty view, not a broken one.
     if (error instanceof GitError && error.kind === "NOT_FOUND") {
       return null;
@@ -693,160 +963,21 @@ export async function prDetail(
   }
   const trimmed = out.trim();
   if (!trimmed) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(trimmed);
-  } catch {
-    throw new GitError("The GitHub CLI returned unparseable pull request data.", null);
-  }
-  const rec = jsonRecord(raw);
-  if (!rec || !Number.isInteger(Number(rec.number))) return null;
+  const decoded = decodeOrThrow(
+    trimmed,
+    PullRequestDetailWire.nullable().catch(null),
+    "The GitHub CLI returned unparseable pull request data.",
+  );
+  if (decoded === null) return null;
 
-  const isDraft = rec.isDraft === true;
-  const mergedAt = stringOrNull(rec.mergedAt);
-  const stateRaw = typeof rec.state === "string" ? rec.state : "";
-  const state =
-    mergedAt !== null || stateRaw === "MERGED"
-      ? "merged"
-      : stateRaw === "CLOSED"
-        ? "closed"
-        : "open";
-  const createdAt = typeof rec.createdAt === "string" ? rec.createdAt : "";
-
-  const author = actor(rec.author);
-  const mergedBy = actor(rec.mergedBy);
-  const assignees = arrayOf(rec.assignees)
-    .map(actor)
-    .filter((p): p is GitHubPerson => p !== null);
-
-  // Who has looked at this, and who is still being waited on. `latestReviews`
-  // holds one current verdict per reviewer; a request with no review yet is a
-  // person too, and reads as pending rather than being left off the list.
-  const reviews: GitHubReview[] = [];
-  for (const entry of arrayOf(rec.latestReviews)) {
-    const row = jsonRecord(entry);
-    if (!row) continue;
-    const submittedAt = stringOrNull(row.submittedAt);
-    reviews.push({
-      author: actor(row.author),
-      state: reviewStateOf(row.state),
-      body: typeof row.body === "string" ? row.body : "",
-      submittedAt,
-      relative: submittedAt ? relativeTime(submittedAt) : "",
-    });
-  }
-  const reviewed = new Set(reviews.map((r) => r.author?.login).filter(Boolean));
-  for (const entry of arrayOf(rec.reviewRequests)) {
-    const person = actor(entry);
-    // A team request has no login; there's no face to draw, so it's dropped.
-    if (!person || reviewed.has(person.login)) continue;
-    reviews.push({ author: person, state: "pending", body: "", submittedAt: null, relative: "" });
-  }
-
-  // Minimised comments are GitHub's own "this is spam / off-topic" verdict.
-  // Repeating it in a calm surface would be the one thing on the page shouting.
-  const comments: GitHubComment[] = [];
-  for (const entry of arrayOf(rec.comments)) {
-    const row = jsonRecord(entry);
-    if (!row || row.isMinimized === true) continue;
-    const at = typeof row.createdAt === "string" ? row.createdAt : "";
-    comments.push({
-      author: actor(row.author),
-      body: typeof row.body === "string" ? row.body : "",
-      createdAt: at,
-      relative: at ? relativeTime(at) : "",
-      url: typeof row.url === "string" ? row.url : "",
-    });
-  }
-
-  const commits: GitHubPrCommit[] = [];
-  for (const entry of arrayOf(rec.commits)) {
-    const row = jsonRecord(entry);
-    if (!row) continue;
-    const oid = typeof row.oid === "string" ? row.oid : "";
-    if (!oid) continue;
-    const first = jsonRecord(arrayOf(row.authors)[0]);
-    const date =
-      stringOrNull(row.committedDate) ?? stringOrNull(row.authoredDate) ?? createdAt;
-    commits.push({
-      oid,
-      short: oid.slice(0, 7),
-      headline: typeof row.messageHeadline === "string" ? row.messageHeadline : "",
-      body: typeof row.messageBody === "string" ? row.messageBody : "",
-      author:
-        (first && typeof first.name === "string" && first.name) ||
-        (first && typeof first.login === "string" && first.login) ||
-        "",
-      date,
-      relative: relativeTime(date),
-    });
-  }
-
-  const files: GitHubPrFile[] = [];
-  for (const entry of arrayOf(rec.files)) {
-    const row = jsonRecord(entry);
-    if (!row || typeof row.path !== "string" || !row.path) continue;
-    const change = typeof row.changeType === "string" ? row.changeType.toLowerCase() : "";
-    // SAFETY: the includes guard in the literal below narrows change to the
-    // union's members; path/additions/deletions are probed above.
-    files.push({
-      path: row.path,
-      additions: nonNegative(row.additions),
-      deletions: nonNegative(row.deletions),
-      change: (["added", "modified", "removed", "renamed", "copied"].includes(change)
-        ? change
-        : "changed") as GitHubPrFile["change"],
-    });
-  }
-
-  const rollup = arrayOf(rec.statusCheckRollup);
-  const milestone = jsonRecord(rec.milestone);
-  const headOwner = actor(rec.headRepositoryOwner);
-
-  const detail: GitHubPullRequestDetail = {
-    number: Number(rec.number),
-    title: typeof rec.title === "string" ? rec.title : "",
-    state,
-    isDraft,
-    url: typeof rec.url === "string" ? rec.url : "",
-    body: typeof rec.body === "string" ? rec.body : "",
-    author,
-    branch: typeof rec.headRefName === "string" ? rec.headRefName : "",
-    base: typeof rec.baseRefName === "string" ? rec.baseRefName : "",
-    forkOwner: headOwner?.login ?? null,
-    createdAt,
-    relative: createdAt ? relativeTime(createdAt) : "",
-    updatedAt: stringOrNull(rec.updatedAt),
-    mergedAt,
-    closedAt: stringOrNull(rec.closedAt),
-    mergedBy,
-    additions: nonNegative(rec.additions),
-    deletions: nonNegative(rec.deletions),
-    changedFiles: nonNegative(rec.changedFiles),
-    mergeability: mergeabilityOf(rec.mergeable, rec.mergeStateStatus, isDraft),
-    reviewDecision: normalizeReviewDecision(rec.reviewDecision),
-    checks: rollupChecks(rollup),
-    checkRuns: rollup.map(mapCheck).filter((c): c is GitHubCheck => c !== null),
-    labels: arrayOf(rec.labels)
-      .map(mapLabel)
-      .filter((l): l is GitHubLabel => l !== null),
-    assignees,
-    reviews,
-    comments,
-    commits,
-    files,
-    milestone:
-      milestone && typeof milestone.title === "string" && milestone.title
-        ? milestone.title
-        : null,
-  };
+  const detail = pullRequestDetailOf(decoded);
 
   await fillAvatars([
     detail.author,
     detail.mergedBy,
     ...detail.assignees,
     ...detail.reviews.map((r) => r.author),
-    ...detail.comments.map((c) => c.author),
+    ...detail.comments.map((comment) => comment.author),
   ]);
   return detail;
 }
@@ -864,7 +995,7 @@ export async function prDiff(dir: string, number: number): Promise<GitFileDiff[]
   try {
     out = await gh(root, ["pr", "diff", String(number), "--patch", "--color", "never"]);
   } catch (error) {
-    if (isRepoViewAbsence(error)) return [];
+    if (error instanceof GitError && REPO_VIEW_ABSENCE_KINDS.has(error.kind ?? "")) return [];
     throw error;
   }
   // Each file's section starts at its own `diff --git` line, which is exactly
@@ -901,33 +1032,35 @@ function pathOfPatchChunk(chunk: string): string | null {
 export async function commitAuthors(dir: string): Promise<GitCommitAuthors | null> {
   const root = await repoRoot(dir);
   if (!root) return null;
-  let raw: unknown;
+  let decoded: z.output<typeof ApiCommitWire>[] | null = null;
   try {
     const out = await gh(root, ["api", "repos/{owner}/{repo}/commits?per_page=100"]);
     const trimmed = out.trim();
     if (!trimmed) return null;
-    raw = JSON.parse(trimmed);
+    const parsed = rows(ApiCommitWire).safeParse(JSON.parse(trimmed));
+    if (parsed.success) decoded = parsed.data;
   } catch {
     return null;
   }
-  if (!Array.isArray(raw)) return null;
+  if (decoded === null) return null;
 
   // One entry per address, first sighting wins — the newest commit's account is
   // the current one if an address ever changed hands.
   const byEmail = new Map<string, GitHubPerson>();
   const urls = new Map<string, string>();
-  for (const entry of raw) {
-    const rec = jsonRecord(entry);
-    if (!rec) continue;
-    const commit = jsonRecord(rec.commit);
-    const committed = jsonRecord(commit?.author);
-    const email = typeof committed?.email === "string" ? committed.email.toLowerCase() : "";
-    const account = jsonRecord(rec.author);
-    const login = typeof account?.login === "string" ? account.login : "";
+  for (const entry of decoded) {
+    const committed = entry.commit?.author ?? null;
+    const email = (committed?.email ?? "").toLowerCase();
+    const login = entry.author?.login ?? "";
     if (!email || !login || byEmail.has(email)) continue;
-    byEmail.set(email, { login, name: stringOrNull(committed?.name), avatarDataUrl: null });
-    if (typeof account?.avatar_url === "string" && account.avatar_url) {
-      urls.set(login, account.avatar_url);
+    const name = committed?.name ?? null;
+    byEmail.set(email, {
+      login,
+      name: name?.trim() ? name : null,
+      avatarDataUrl: null,
+    });
+    if (entry.author?.avatar_url) {
+      urls.set(login, entry.author.avatar_url);
     }
   }
 
@@ -939,11 +1072,11 @@ export async function commitAuthors(dir: string): Promise<GitCommitAuthors | nul
       faces.set(login, await avatarFor(login, urls.get(login) ?? null));
     }),
   );
-  const out: GitCommitAuthors = {};
+  const authors: GitCommitAuthors = {};
   for (const [email, person] of byEmail) {
-    out[email] = { ...person, avatarDataUrl: faces.get(person.login) ?? null };
+    authors[email] = { ...person, avatarDataUrl: faces.get(person.login) ?? null };
   }
-  return out;
+  return authors;
 }
 
 /** Create a pull request. The body travels by file, never argv — argv is
