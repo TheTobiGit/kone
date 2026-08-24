@@ -210,11 +210,11 @@ const ctxUsed = computed(() => {
   const u = usage.value;
   if (!u) return undefined;
   const n = u.contextUsed ?? u.total;
-  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+  return n !== undefined && n !== null && Number.isFinite(n) ? n : undefined;
 });
 const ctxWindow = computed(() => {
   const m = usage.value?.contextWindow;
-  return typeof m === "number" && m > 0 ? m : undefined;
+  return m !== undefined && m !== null && Number.isFinite(m) && m > 0 ? m : undefined;
 });
 const tokenRows = computed(() => {
   const u = usage.value;
@@ -227,9 +227,9 @@ const tokenRows = computed(() => {
     const remaining = ctxWindow.value - ctxUsed.value;
     if (remaining > 0) out.push({ label: "Remaining", value: fmt(remaining) });
   }
-  if (typeof u.input === "number" && Number.isFinite(u.input)) out.push({ label: "Input", value: fmt(u.input) });
-  if (typeof u.output === "number" && Number.isFinite(u.output)) out.push({ label: "Output", value: fmt(u.output) });
-  if (typeof u.total === "number" && Number.isFinite(u.total)) out.push({ label: "Total", value: fmt(u.total) });
+  if (u.input !== undefined && u.input !== null && Number.isFinite(u.input)) out.push({ label: "Input", value: fmt(u.input) });
+  if (u.output !== undefined && u.output !== null && Number.isFinite(u.output)) out.push({ label: "Output", value: fmt(u.output) });
+  if (u.total !== undefined && u.total !== null && Number.isFinite(u.total)) out.push({ label: "Total", value: fmt(u.total) });
   return out;
 });
 const hasTokens = computed(() => tokenRows.value.length > 0);
@@ -240,7 +240,7 @@ const PANEL_W = 320;
 const MARGIN = 12;
 const pos = computed(() => {
   const a = props.anchor;
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vw = "window" in globalThis ? window.innerWidth : 1280;
   const centre = a.left + a.width / 2;
   let left = centre - PANEL_W / 2;
   left = Math.max(MARGIN, Math.min(left, vw - PANEL_W - MARGIN));

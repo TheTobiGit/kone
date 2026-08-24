@@ -30,7 +30,7 @@ const props = withDefaults(
 const host = shallowRef<HTMLElement | null>(null);
 
 const reduced =
-  typeof window !== "undefined" &&
+  "window" in globalThis &&
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -91,7 +91,7 @@ function step(now: number) {
 function shouldRun() {
   if (reduced) return false;
   if (props.covered) return false;
-  if (typeof document !== "undefined" && document.hidden) return false;
+  if ("document" in globalThis && document.hidden) return false;
   return true;
 }
 function play() {

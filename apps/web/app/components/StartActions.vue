@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ComponentPublicInstance } from "vue";
 import { Magnet } from "~/components/ui/magnet";
 import PlusSign from "~/components/icons/animated/PlusSign.vue";
 import FolderOpen from "~/components/icons/animated/FolderOpen.vue";
@@ -23,12 +24,14 @@ const emit = defineEmits<{ start: [key: ActionKey] }>();
 // The whole row is the hover target, not the tiny glyph — so the icon replays
 // its gesture (plus pops, folder opens, github nudges) when the action is hovered.
 const iconHandles = new Map<ActionKey, AnimatedIconHandle>();
-function setIcon(key: ActionKey, el: unknown): void {
-  if (el)
+function setIcon(key: ActionKey, el: Element | ComponentPublicInstance | null): void {
+  if (el && "startAnimation" in el && "stopAnimation" in el) {
     // SAFETY: the :ref sits on one of this app's animated icon components,
     // which defineExpose exactly startAnimation/stopAnimation — AnimatedIconHandle.
     iconHandles.set(key, el as AnimatedIconHandle);
-  else iconHandles.delete(key);
+  } else {
+    iconHandles.delete(key);
+  }
 }
 function playIcon(key: ActionKey): void {
   iconHandles.get(key)?.startAnimation();

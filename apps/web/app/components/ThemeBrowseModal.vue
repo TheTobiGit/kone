@@ -210,8 +210,8 @@ function anchorToDrawer() {
 
 /** How tall the card may grow: the padded host, so it never spills the drawer. */
 function maxCardHeight(): number {
-  const raw = hostStyle.value.height;
-  if (typeof raw === "string" && raw.endsWith("px")) {
+  const raw = String(hostStyle.value.height ?? "");
+  if (raw.endsWith("px")) {
     const host = Number.parseFloat(raw);
     if (Number.isFinite(host)) return Math.max(160, host - 48);
   }

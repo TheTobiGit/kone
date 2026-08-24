@@ -26,7 +26,7 @@ export type PadBarAnchor = {
  * and its position can't fall out of step — which is what a hard-coded height in
  * the pane had been quietly doing.
  */
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, type ComponentPublicInstance } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -113,10 +113,10 @@ const bar = ref<HTMLElement | null>(null);
 
 /** `motion.div` is a component, so its template ref is an instance — the element
  *  is what we need to measure and to walk for keyboard focus. */
-function setBar(el: unknown): void {
+function setBar(el: Element | ComponentPublicInstance | null): void {
   // SAFETY: the `"$el" in el` test above narrows el to the motion.div component
   // instance shape before we read its $el property.
-  const node = el && typeof el === "object" && "$el" in el ? (el as { $el: unknown }).$el : el;
+  const node = el && "$el" in el ? (el as { $el: Element | null }).$el : el;
   bar.value = node instanceof HTMLElement ? node : null;
 }
 

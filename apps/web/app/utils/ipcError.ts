@@ -35,8 +35,8 @@ function stripKindMarker(message: string): string {
 
 /** The shared unwrapping: Electron's wrapper, the thrown error's own name, and
  *  git's "fatal:" prefix, with the kind marker left in place for parsing. */
-function peel(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
+function peel(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause ?? "");
   return raw
     .replace(/^Error invoking remote method '[^']*':\s*/, "")
     .replace(/^\w*Error:\s*/, "")
@@ -44,16 +44,16 @@ function peel(error: unknown): string {
     .trim();
 }
 
-export function peelIpcError(error: unknown, fallback: string): string {
-  return stripKindMarker(peel(error)) || fallback;
+export function peelIpcError(cause: unknown, fallback: string): string {
+  return stripKindMarker(peel(cause)) || fallback;
 }
 
 /** `peelIpcError`, then collapsed to the one line a compact surface can show.
  *  git writes multi-line stderr; a masthead has room for a single line, so the
  *  wrappers are stripped first and the last non-empty line — the part that
  *  names the failure — is what survives. */
-export function peelIpcErrorLine(error: unknown, fallback: string): string {
-  const cleaned = peelIpcError(error, "");
+export function peelIpcErrorLine(cause: unknown, fallback: string): string {
+  const cleaned = peelIpcError(cause, "");
   const lines = cleaned
     .split("\n")
     .map((line) => line.trim())
@@ -67,10 +67,10 @@ export type ClassifiedIpcError = { kind: IpcErrorKind | null; message: string };
  *  instead of discarding it. Unmarked messages come back with `kind: null` and
  *  their peeled text as `message`; `fallback` stands in when nothing remains. */
 export function classifyIpcError(
-  error: unknown,
+  cause: unknown,
   fallback: string,
 ): ClassifiedIpcError {
-  const cleaned = peel(error);
+  const cleaned = peel(cause);
   const match = KIND_MARKER.exec(cleaned);
   // SAFETY: markers are written only by the desktop main process, from its
   // copy of IPC_ERROR_KINDS (kept in lockstep per the type above); a stray

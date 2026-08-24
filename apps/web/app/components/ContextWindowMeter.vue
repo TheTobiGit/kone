@@ -18,7 +18,7 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 const drawn = ref(false);
 onMounted(() => {
   const reduce =
-    typeof window !== "undefined" &&
+    "window" in globalThis &&
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   if (reduce) {
     drawn.value = true;
@@ -43,10 +43,10 @@ function formatTokens(value: number | undefined): string {
 // "nothing consumed", which is false.
 const usedKnown = computed(() => {
   const n = props.usage.contextUsed ?? props.usage.total;
-  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+  return n !== undefined && n !== null && Number.isFinite(n) ? n : undefined;
 });
 const max = computed(() => props.usage.contextWindow);
-const hasWindow = computed(() => typeof max.value === "number" && max.value > 0);
+const hasWindow = computed(() => max.value !== undefined && max.value !== null && Number.isFinite(max.value) && max.value > 0);
 // A ring is a fraction — "x of a window" — so it needs BOTH halves. A window
 // with no reported fill (Cursor derives the window from the selected model but
 // its ACP transport never reports usage) would otherwise sit forever on an
@@ -112,13 +112,13 @@ const rows = computed(() => {
     const remaining = m - used.value;
     if (remaining > 0) out.push({ label: "Remaining", value: formatTokens(remaining) });
   }
-  if (typeof u.input === "number" && Number.isFinite(u.input)) {
+  if (u.input !== undefined && u.input !== null && Number.isFinite(u.input)) {
     out.push({ label: "Input", value: formatTokens(u.input) });
   }
-  if (typeof u.output === "number" && Number.isFinite(u.output)) {
+  if (u.output !== undefined && u.output !== null && Number.isFinite(u.output)) {
     out.push({ label: "Output", value: formatTokens(u.output) });
   }
-  if (typeof u.total === "number" && Number.isFinite(u.total)) {
+  if (u.total !== undefined && u.total !== null && Number.isFinite(u.total)) {
     out.push({ label: "Total", value: formatTokens(u.total) });
   }
   if (m !== undefined && m > 0) out.push({ label: "Window", value: formatTokens(m) });

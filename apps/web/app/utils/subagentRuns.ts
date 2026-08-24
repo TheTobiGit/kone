@@ -81,7 +81,7 @@ export function deriveActiveSubagents(blocks: ThreadBlock[]): ActiveSubagentsSta
 const WORKER_TIER = /^worker-(?:low|medium|high|xhigh)$/i;
 
 export function isWorkerTier(role: string | undefined): boolean {
-  return typeof role === "string" && WORKER_TIER.test(role.trim());
+  return Boolean(role && WORKER_TIER.test(role.trim()));
 }
 
 /** The run's label: its Task-tool `description`, else the agent definition
@@ -220,7 +220,7 @@ function threadHint(thread: SpawnedThread): DelegateRowHint {
     case "starting":
       return { hint: "" };
     case "working":
-      return typeof thread.elapsedMs === "number"
+      return thread.elapsedMs !== undefined && thread.elapsedMs !== null && Number.isFinite(thread.elapsedMs)
         ? { hint: formatElapsed(thread.elapsedMs) }
         : { hint: "" };
     case "waiting-for-approval":
@@ -254,7 +254,7 @@ function threadStatusText(thread: SpawnedThread): string {
     case "waiting-for-user-input":
       return "Waiting for your answer";
     case "completed":
-      return typeof thread.elapsedMs === "number"
+      return thread.elapsedMs !== undefined && thread.elapsedMs !== null && Number.isFinite(thread.elapsedMs)
         ? `Done in ${formatElapsed(thread.elapsedMs)}`
         : "Done";
     case "failed":

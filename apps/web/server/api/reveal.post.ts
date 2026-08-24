@@ -6,7 +6,7 @@ import nodePath from "node:path";
 // execFile + arg array (never a shell string) so paths can't inject.
 export default defineEventHandler(async (event) => {
   const { path } = await readBody<{ path?: string }>(event);
-  if (typeof path !== "string" || path.trim() === "") return { ok: false };
+  if (!path || !path.trim()) return { ok: false };
 
   const resolved = nodePath.resolve(path);
 

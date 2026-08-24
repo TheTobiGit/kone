@@ -85,7 +85,7 @@ function emptyPlane(): StudioLayout {
 
 export function useStudioPersistence(projectPath: string | (() => string)) {
   const resolvePath = () =>
-    typeof projectPath === "function" ? projectPath() : projectPath;
+    projectPath instanceof Function ? projectPath() : projectPath;
   const bridge = () => (import.meta.client ? window.koneDesktop?.studio : undefined);
 
   function readLocal(): StudioLayout | null {

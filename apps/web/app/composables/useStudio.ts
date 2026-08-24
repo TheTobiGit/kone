@@ -189,7 +189,7 @@ function persistableThreadId(s: ThreadSession): string | null {
 export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   const { agent, terminal, scratchpad } = opts;
   const resolveProjectPath = () =>
-    typeof opts.projectPath === "function" ? opts.projectPath() : opts.projectPath;
+    opts.projectPath instanceof Function ? opts.projectPath() : opts.projectPath;
   let warnedMismatch = false;
 
   const entries = ref<PaneEntry[]>([]);
@@ -948,7 +948,7 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     let keptBlankThread = false;
     const kept: PaneEntry[] = [];
     for (const raw of row.panes) {
-      if (!raw || typeof raw !== "object") continue;
+      if (!raw || !(raw instanceof Object)) continue;
       const kind = raw.kind;
       if (kind !== "thread" && kind !== "terminal" && kind !== "scratchpad") continue;
       const rawAnchor = raw.anchor;
@@ -959,12 +959,16 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
       // union. Reading rawAnchor.kind directly narrows it to the thread arm.
       let anchor: PaneAnchor = rawAnchor;
       if (rawAnchor.kind === "thread") {
+        const rawThreadId = rawAnchor.threadId;
+        const threadId = rawThreadId ? String(rawThreadId).trim() || null : null;
         anchor = {
           kind: "thread",
-          threadId: typeof rawAnchor.threadId === "string" ? rawAnchor.threadId : null,
+          threadId,
         };
-        if (typeof rawAnchor.sideChatSource === "string") {
-          anchor.sideChatSource = rawAnchor.sideChatSource;
+        const rawSource = rawAnchor.sideChatSource;
+        if (rawSource) {
+          const sideChatSource = String(rawSource).trim();
+          if (sideChatSource) anchor.sideChatSource = sideChatSource;
         }
       }
       if (anchor.kind === "thread" && anchor.threadId && anchor.sideChatSource) {
@@ -1006,9 +1010,9 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
         seenSingleton.add(kind);
       }
       const rawId = raw.id;
-      const id = typeof rawId === "string" && rawId && !seenIds.has(rawId) ? rawId : mintPaneId();
+      const id = rawId && !seenIds.has(String(rawId)) ? String(rawId) : mintPaneId();
       seenIds.add(id);
-      const width = typeof raw.width === "number" ? raw.width : 0;
+      const width = raw.width !== undefined && raw.width !== null && Number.isFinite(raw.width) ? Number(raw.width) : 0;
       kept.push({ id, kind, anchor, width });
       if (kept.length >= MAX_RESTORED_PANES) break;
     }
@@ -1092,7 +1096,7 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     o: { at?: number; near?: PaneId },
     list: PaneEntry[],
   ): number {
-    if (typeof o.at === "number") return Math.min(Math.max(0, o.at), list.length);
+    if (o.at !== undefined && o.at !== null && Number.isFinite(o.at)) return Math.min(Math.max(0, o.at), list.length);
     let anchorIndex: number;
     if (o.near) {
       anchorIndex = list.findIndex((e) => e.id === o.near);

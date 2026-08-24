@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, type ComponentPublicInstance } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Add01Icon } from "@hugeicons/core-free-icons";
 import type { useGitSpace } from "~/composables/useGitSpace";
@@ -24,10 +24,8 @@ const renameTo = ref("");
 // A plain `ref` inside a v-for collects into an array; only one row is ever in
 // rename, so take the element by hand instead.
 const renameEl = ref<HTMLInputElement | null>(null);
-function setRenameEl(el: unknown) {
-  // SAFETY: Vue template ref — the element is the rename <input> this is bound
-  // to, or null on unmount; both map onto HTMLInputElement | null.
-  renameEl.value = (el as HTMLInputElement | null) ?? null;
+function setRenameEl(el: Element | ComponentPublicInstance | null) {
+  renameEl.value = el instanceof HTMLInputElement ? el : null;
 }
 
 const busy = computed(() => props.space.op.value !== null);

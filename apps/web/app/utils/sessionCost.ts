@@ -6,7 +6,7 @@ import type { SessionSummary } from "~/types/session";
  * Otherwise, estimates the spend from the thread's accumulated tokens and model family rates.
  */
 export function sessionCost(s: SessionSummary): number {
-  if (typeof s.costUsd === "number" && s.costUsd >= 0) {
+  if (s.costUsd !== undefined && s.costUsd !== null && Number.isFinite(s.costUsd) && s.costUsd >= 0) {
     return s.costUsd;
   }
   const tokens = s.tokens ?? 0;

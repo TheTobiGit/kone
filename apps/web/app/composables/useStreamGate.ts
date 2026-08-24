@@ -25,14 +25,14 @@ export interface StreamGate {
 }
 
 export function createStreamGate(intervalMs: number | (() => number)): StreamGate {
-  const resolve = typeof intervalMs === "function" ? intervalMs : () => intervalMs;
+  const resolve = intervalMs instanceof Function ? intervalMs : () => (Number.isFinite(intervalMs) ? intervalMs : 0);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastRun = 0;
 
   return {
     request(task) {
       // No timer environment (server render) — nothing to coalesce against.
-      if (typeof setTimeout !== "function") {
+      if (!("setTimeout" in globalThis)) {
         task();
         return;
       }

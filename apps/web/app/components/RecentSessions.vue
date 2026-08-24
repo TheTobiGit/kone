@@ -204,7 +204,7 @@ function setSentinel(el: Element | null | any): void {
   // element itself here, typed as Element; the `any` slot just absorbs the
   // unmount call where Vue passes null.
   sentinelEl = (el as Element | null) ?? null;
-  if (!el || typeof IntersectionObserver === "undefined") return;
+  if (!el || !("IntersectionObserver" in globalThis)) return;
   observer = new IntersectionObserver(
     (entries) => {
       if (entries.some((e) => e.isIntersecting)) revealMore();
@@ -258,7 +258,10 @@ function timeAgo(ms: number): string {
 // A row shows the diff lane only when a source attributed one; otherwise the
 // model name stands in so the meta line never reads empty on the desktop path.
 function hasDiff(s: SessionSummary): boolean {
-  return typeof s.added === "number" || typeof s.removed === "number";
+  return (
+    (s.added !== undefined && s.added !== null && Number.isFinite(s.added)) ||
+    (s.removed !== undefined && s.removed !== null && Number.isFinite(s.removed))
+  );
 }
 
 const METRIC_KEY = "kone:recent-sessions-metric";
@@ -283,7 +286,7 @@ watch(metric, (val) => {
 
 function hasMetricValue(s: SessionSummary): boolean {
   if (metric.value === "cost") return sessionCost(s) > 0;
-  return typeof s.tokens === "number" && s.tokens > 0;
+  return s.tokens !== undefined && s.tokens !== null && Number.isFinite(s.tokens) && s.tokens > 0;
 }
 </script>
 

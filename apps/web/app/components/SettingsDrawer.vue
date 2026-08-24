@@ -92,11 +92,13 @@ function onSoundToggle() {
   void nextTick(() => volumeHandle.value?.startAnimation());
 }
 
+import type { ComponentPublicInstance } from "vue";
+
 // The nav rows and the volume glyph drive their own icons. Hover on a row replays
 // its glyph (row-level, not the tiny icon); toggling sound fires the volume glyph
 // on demand. Manual trigger in both cases — the row/switch is the hover target.
 const navIconHandles = new Map<string, AnimatedIconHandle>();
-function setNavIcon(key: string, el: unknown): void {
+function setNavIcon(key: string, el: AnimatedIconHandle | Element | ComponentPublicInstance | null): void {
   if (el)
     // SAFETY: every :ref wired to setNavIcon sits on an animated icon component
     // that defineExposes exactly startAnimation/stopAnimation — AnimatedIconHandle.
@@ -107,7 +109,7 @@ function playNavIcon(key: string): void {
   navIconHandles.get(key)?.startAnimation();
 }
 const volumeHandle = ref<AnimatedIconHandle | null>(null);
-function setVolumeIcon(el: unknown): void {
+function setVolumeIcon(el: AnimatedIconHandle | Element | ComponentPublicInstance | null): void {
   // SAFETY: the :ref is on the VolumeHigh/VolumeMute01 animated icon, whose
   // defineExpose is exactly startAnimation/stopAnimation — AnimatedIconHandle.
   volumeHandle.value = el as AnimatedIconHandle | null;

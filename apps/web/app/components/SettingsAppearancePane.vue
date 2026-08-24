@@ -119,7 +119,7 @@ function onRovingKeydown(e: KeyboardEvent, i: number, list: RovingList) {
 }
 
 const modeEls = ref<HTMLElement[]>([]);
-function setModeEl(el: unknown, i: number) {
+function setModeEl(el: Element | ComponentPublicInstance | null, i: number) {
   if (el instanceof HTMLElement) modeEls.value[i] = el;
 }
 
@@ -194,7 +194,7 @@ function chooseTheme(id: string) {
 }
 
 const themeEls = ref<HTMLElement[]>([]);
-function setThemeEl(el: unknown, i: number) {
+function setThemeEl(el: Element | ComponentPublicInstance | null, i: number) {
   if (el instanceof HTMLElement) themeEls.value[i] = el;
 }
 
@@ -266,6 +266,7 @@ function showNotice(kind: "ok" | "error", text: string) {
 }
 
 async function onFilesPicked(event: Event) {
+  // SAFETY: event target is the file input triggering the change event.
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   input.value = "";

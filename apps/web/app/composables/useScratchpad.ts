@@ -115,7 +115,7 @@ function writeLocal(projectPath: string, records: ScratchpadRecord[]): void {
  */
 export function useScratchpad(options: UseScratchpadOptions) {
   const resolvePath = () =>
-    typeof options.projectPath === "function" ? options.projectPath() : options.projectPath;
+    options.projectPath instanceof Function ? options.projectPath() : options.projectPath;
   const bridge = () => (import.meta.client ? window.koneDesktop?.scratchpad : undefined);
 
   const { render } = useMarkdown();

@@ -210,12 +210,12 @@ export function useSkills(projectPath: () => string | null) {
   /** Every mutation answers the same way: the backend's own finished sentence,
    *  said back to the user unchanged. Composing wording here would mean guessing
    *  at what happened on disk from a boolean. */
-  function failed(action: string, error: unknown): SkillMutateResult {
+  function failed(action: string, cause: unknown): SkillMutateResult {
     return {
       ok: false,
       action,
       path: null,
-      detail: error instanceof Error ? error.message : "The action failed.",
+      detail: cause instanceof Error ? cause.message : "The action failed.",
     };
   }
 

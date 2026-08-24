@@ -56,7 +56,7 @@ export function useStripPresets(deps: {
   function presetIndexFor(key: string): number {
     if (isSideChatPane(key)) return 0;
     const fromEntry = panes().find((c) => c.id === key)?.entry.width;
-    return typeof fromEntry === "number" ? clampPreset(fromEntry) : DEFAULT_PRESET;
+    return fromEntry !== undefined && fromEntry !== null && Number.isFinite(fromEntry) ? clampPreset(fromEntry) : DEFAULT_PRESET;
   }
 
   function zenPreset(): Preset {

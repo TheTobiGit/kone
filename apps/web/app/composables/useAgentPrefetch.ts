@@ -65,7 +65,7 @@ export function fileToBase64(file: File): Promise<string> {
     const reader = new FileReader();
     reader.onload = () => {
       const res = reader.result;
-      if (typeof res !== "string") return reject(new Error("Unexpected file read result"));
+      if (!res || res instanceof ArrayBuffer) return reject(new Error("Unexpected file read result"));
       const comma = res.indexOf(",");
       resolve(comma >= 0 ? res.slice(comma + 1) : res);
     };

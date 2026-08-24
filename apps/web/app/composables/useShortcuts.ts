@@ -443,7 +443,7 @@ function bindingFor(id: string): string {
   const action = ACTIONS_BY_ID.get(id);
   if (!action) return "";
   const override = overrides.value[id];
-  if (override && typeof override === "string") {
+  if (override) {
     return normalizeStored(override);
   }
   return action.default;

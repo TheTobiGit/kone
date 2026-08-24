@@ -265,6 +265,7 @@ function onKeydown(e: KeyboardEvent) {
 let opener: HTMLElement | null = null;
 
 onMounted(async () => {
+  // SAFETY: activeElement in browser DOM is an Element, cast to HTMLElement | null for focus restoration.
   opener = document.activeElement as HTMLElement | null;
   initSelection();
   window.addEventListener("keydown", onKeydown);

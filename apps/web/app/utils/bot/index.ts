@@ -78,30 +78,25 @@ export const DEFAULT_BOT: AgentBot = {
 /** A bot as persisted on an agent record: the three ids, plus the pre-rename
  *  `shape` key, each unvalidated until read. */
 export interface StoredBot {
-  form?: unknown;
-  color?: unknown;
-  expression?: unknown;
-  "shape"?: unknown;
+  form?: string | null;
+  color?: string | null;
+  expression?: string | null;
+  "shape"?: string | null;
 }
 
-export function readBot(value: unknown): AgentBot | null {
-  if (!value || typeof value !== "object") return null;
-  // SAFETY: the object check above is all this cast claims; every field read
-  // off `raw` is re-validated (typeof / trim / membership) before use, so a
-  // row of any other shape still degrades to the default.
-  const raw = value as StoredBot;
-  // A present-but-blank `form` falls back to the legacy key rather than
-  // reading as unknown and taking the default.
+export function readBot(value: StoredBot | null | undefined): AgentBot | null {
+  if (!value || !(value instanceof Object)) return null;
+  const legacy = value["shape"];
   const form =
-    typeof raw.form === "string" && raw.form.trim()
-      ? raw.form
-      : typeof raw["shape"] === "string" && raw["shape"].trim()
-        ? raw["shape"]
+    value.form && value.form.trim()
+      ? value.form
+      : legacy && legacy.trim()
+        ? legacy
         : null;
   return {
     form: botForm(form).id,
-    color: botColor(typeof raw.color === "string" ? raw.color : null).id,
-    expression: botExpression(typeof raw.expression === "string" ? raw.expression : null).id,
+    color: botColor(value.color ?? null).id,
+    expression: botExpression(value.expression ?? null).id,
   };
 }
 

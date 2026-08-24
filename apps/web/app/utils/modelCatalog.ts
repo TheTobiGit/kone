@@ -393,7 +393,7 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
     // A malformed descriptor — blank id, or a non-string sneaking over IPC —
     // can't key a family: skip it rather than emitting a garbage entry or
     // throwing inside splitEffort.
-    if (!m || typeof m.id !== "string" || !m.id.trim()) continue;
+    if (!m || !m.id || !m.id.trim()) continue;
     const { core, tier } = splitEffort(m.id);
     if (!byCore.has(core)) {
       // The id's own label (e.g. Codex's real `displayName`) IS the family
