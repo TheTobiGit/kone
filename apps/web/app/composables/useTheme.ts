@@ -2,13 +2,18 @@ import { computed, readonly, ref, watch } from "vue";
 import { applyThemeColors } from "~/theme/apply";
 import { buildImportedThemes, isVsCodeThemeFile, parseVsCodeThemeEntry, type VsCodeImportEntry } from "~/theme/import-vscode";
 import {
-  hydrateImportedThemes,
+  exportThemeJson,
+  hydrateThemes,
+  isCustom,
   isImported,
   registerImportedThemes,
+  removeCustomTheme as dropCustomTheme,
   removeImportedTheme as dropImportedTheme,
   reservedThemeIds,
   resolveTheme,
+  saveCustomTheme as storeCustomTheme,
   themes as libraryThemes,
+  updateCustomTheme as editCustomTheme,
 } from "~/theme/library";
 import {
   colorsFor,
@@ -20,17 +25,13 @@ import {
   type ThemeExtras,
   type ThemeScheme,
 } from "~/theme/roles";
+import type { ThemeSpec } from "~/theme/build";
 import { DEFAULT_THEME_ID } from "~/theme/themes";
 
 const STORAGE_THEME = "kone:theme";
 const STORAGE_APPEARANCE = "kone:appearance";
 
 // ── Module-scope singleton ──────────────────────────────────────────────────
-// The state lives here, not in the composable, so every caller shares one copy:
-// a theme change in the appearance pane is instantly visible to the canvas
-// shaders and the terminal the moment the ref flips. Nothing is applied at
-// import time — initTheme() owns the first paint and the plugin calls it.
-
 /** True when the OS reports dark, driven by the single shared media listener. */
 const systemDark = ref(false);
 
@@ -43,21 +44,40 @@ const themeId = ref<string>(DEFAULT_THEME_ID);
  */
 const mode = ref<AppearanceMode>("system");
 
-const theme = computed<ThemeDefinition>(() => resolveTheme(themeId.value));
+/** Temporary theme applied to the document while editing a custom theme in-place. */
+const previewOverride = ref<ThemeDefinition | null>(null);
+const previewSchemeOverride = ref<ThemeScheme | null>(null);
+
+const activeState = computed(() => {
+  const activeTheme = previewOverride.value ?? resolveTheme(themeId.value);
+  const activeScheme =
+    previewSchemeOverride.value ??
+    schemeFor(activeTheme, mode.value, systemDark.value);
+  const colors = colorsFor(activeTheme, activeScheme);
+  const locked = locksAppearance(activeTheme);
+  const themeExtras = extrasFor(activeTheme, activeScheme);
+  return {
+    theme: activeTheme,
+    scheme: activeScheme,
+    colors,
+    locked,
+    extras: themeExtras,
+  };
+});
+
+const theme = computed<ThemeDefinition>(() => activeState.value.theme);
 
 /**
  * The appearance actually being painted. A fixed theme answers with the one
  * scheme it was designed as and never consults `mode` — selecting such a theme
  * is itself the decision to stop following the system.
  */
-const scheme = computed<ThemeScheme>(() =>
-  schemeFor(theme.value, mode.value, systemDark.value),
-);
+const scheme = computed<ThemeScheme>(() => activeState.value.scheme);
 
 /** True while the active theme is overriding the appearance control. */
-const modeLocked = computed<boolean>(() => locksAppearance(theme.value));
+const modeLocked = computed<boolean>(() => activeState.value.locked);
 
-const extras = computed<ThemeExtras>(() => extrasFor(theme.value, scheme.value));
+const extras = computed<ThemeExtras>(() => activeState.value.extras);
 
 // ── System scheme listener ──────────────────────────────────────────────────
 let mediaQuery: MediaQueryList | null = null;
@@ -74,8 +94,6 @@ function bindMediaListener(): void {
   mediaBound = true;
 }
 
-// Bound once for the module's lifetime. In SSR there is no window, so the
-// listener waits until a client caller runs initTheme().
 bindMediaListener();
 
 // ── Persistence ─────────────────────────────────────────────────────────────
@@ -101,25 +119,23 @@ function writeStored(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // Storage may be unavailable (private mode, file://). The session still
-    // works — the preference just doesn't survive a reload.
+    // Storage unavailable
   }
 }
 
 // ── Apply ───────────────────────────────────────────────────────────────────
 /** Paint the active theme onto <html>. Idempotent. */
 function apply(): void {
-  const active = theme.value;
-  applyThemeColors(colorsFor(active, scheme.value), scheme.value, active.id);
+  const state = activeState.value;
+  applyThemeColors(state.colors, state.scheme, state.theme.id);
 }
 
-// Every state change — a setTheme/setMode call or the OS flipping dark on a
-// system-following user — lands here. Flush is sync so the swap happens before
-// the next frame rather than on a batched tick.
-watch([theme, scheme], apply, { flush: "sync" });
+watch(activeState, apply, { flush: "sync" });
 
 // ── Public API ──────────────────────────────────────────────────────────────
 function setTheme(id: string): void {
+  previewOverride.value = null;
+  previewSchemeOverride.value = null;
   themeId.value = id;
   writeStored(STORAGE_THEME, id);
 }
@@ -127,6 +143,37 @@ function setTheme(id: string): void {
 function setMode(next: AppearanceMode): void {
   mode.value = next;
   writeStored(STORAGE_APPEARANCE, next);
+}
+
+/** Temporarily paint a draft theme onto the entire app during theme editing. */
+function previewTheme(draft: ThemeDefinition | null, previewScheme?: ThemeScheme | null): void {
+  previewOverride.value = draft;
+  previewSchemeOverride.value = previewScheme ?? null;
+}
+
+function cancelPreview(): void {
+  previewOverride.value = null;
+  previewSchemeOverride.value = null;
+}
+
+function saveCustomTheme(spec: ThemeSpec): ThemeDefinition {
+  const created = storeCustomTheme(spec);
+  setTheme(created.id);
+  return created;
+}
+
+function updateCustomTheme(id: string, spec: ThemeSpec): ThemeDefinition {
+  const updated = editCustomTheme(id, spec);
+  setTheme(updated.id);
+  return updated;
+}
+
+function removeCustomTheme(id: string): void {
+  dropCustomTheme(id);
+  if (themeId.value === id) {
+    themeId.value = DEFAULT_THEME_ID;
+    writeStored(STORAGE_THEME, DEFAULT_THEME_ID);
+  }
 }
 
 /** One file that failed to become a theme, with a reason the pane can show. */
@@ -142,14 +189,12 @@ export interface ThemeImportResult {
 }
 
 /**
- * Import one or more VS Code colour-theme files. Each file is read, parsed and
- * judged on its own; the ones that make it are paired into adaptive themes
- * where the batch allows and registered with the library. Nothing here selects
- * the new themes — importing is not choosing.
+ * Import one or more VS Code colour-theme files or kone theme JSON files.
  */
 async function importThemes(files: File[]): Promise<ThemeImportResult> {
   const entries: VsCodeImportEntry[] = [];
   const failures: ThemeImportFailure[] = [];
+  const directCustomAdded: ThemeDefinition[] = [];
 
   for (const file of files) {
     const stem = file.name.replace(/\.[^.]+$/, "");
@@ -160,8 +205,31 @@ async function importThemes(files: File[]): Promise<ThemeImportResult> {
       failures.push({ name: file.name, reason: "That file isn't valid JSON." });
       continue;
     }
+
+    // Check if file is a native kone theme export
+    if (
+      typeof json === "object" &&
+      json !== null &&
+      "koneTheme" in json &&
+      "spec" in json &&
+      typeof (json as { spec: unknown }).spec === "object"
+    ) {
+      try {
+        const spec = (json as { spec: ThemeSpec }).spec;
+        const importedCustom = storeCustomTheme(spec);
+        directCustomAdded.push(importedCustom);
+        continue;
+      } catch (err) {
+        failures.push({
+          name: file.name,
+          reason: err instanceof Error ? err.message : "Invalid kone theme JSON format.",
+        });
+        continue;
+      }
+    }
+
     if (!isVsCodeThemeFile(json)) {
-      failures.push({ name: file.name, reason: "That file isn't a VS Code colour theme." });
+      failures.push({ name: file.name, reason: "That file isn't a VS Code colour theme or kone theme." });
       continue;
     }
     try {
@@ -172,8 +240,14 @@ async function importThemes(files: File[]): Promise<ThemeImportResult> {
     }
   }
 
-  const added = buildImportedThemes(entries, reservedThemeIds());
-  registerImportedThemes(added);
+  const added = [
+    ...directCustomAdded,
+    ...buildImportedThemes(entries, reservedThemeIds()),
+  ];
+  if (entries.length > 0) {
+    const vscodeThemes = added.filter((t) => !directCustomAdded.includes(t));
+    registerImportedThemes(vscodeThemes);
+  }
   return { added, failures };
 }
 
@@ -188,13 +262,10 @@ function removeImportedTheme(id: string): void {
 }
 
 /**
- * Read persisted preferences, restore the imported library, paint the first
- * theme and ensure the system listener is live. Safe to call more than once.
- * This is the only entry point that applies without a prior user action — the
- * plugin calls it on boot.
+ * Read persisted preferences, restore library, paint the first theme.
  */
 export function initTheme(): void {
-  hydrateImportedThemes();
+  hydrateThemes();
   bindMediaListener();
   themeId.value = readStoredThemeId();
   mode.value = readStoredMode();
@@ -212,8 +283,16 @@ export function useTheme() {
     themes: libraryThemes,
     setTheme,
     setMode,
+    previewTheme,
+    cancelPreview,
+    saveCustomTheme,
+    updateCustomTheme,
+    removeCustomTheme,
     importThemes,
     removeImportedTheme,
     isImported,
+    isCustom,
+    exportThemeJson,
   };
 }
+

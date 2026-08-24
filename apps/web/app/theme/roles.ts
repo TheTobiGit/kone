@@ -226,6 +226,10 @@ export type ThemeDefinition = Readonly<{
    * when it was imported from one. Lets the picker hide what's already here.
    */
   source?: string;
+  /** True when the theme was authored by the user in the theme editor. */
+  custom?: boolean;
+  /** The authored spec the theme was built from, if preserved for editing. */
+  spec?: unknown;
 }>;
 
 /**
