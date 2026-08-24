@@ -110,7 +110,7 @@ export function createModeReplayTracker(cols: number, rows: number): ModeReplayT
   const rawOptions = internals._core?.optionsService?.rawOptions;
   const writeBuffer = internals._core?._writeBuffer;
 
-  if (!rawOptions || typeof writeBuffer?.writeSync !== "function") {
+  if (!rawOptions || !(writeBuffer?.writeSync instanceof Function)) {
     terminal.dispose();
     throw new Error("@xterm/headless internals unavailable for terminal mode replay");
   }

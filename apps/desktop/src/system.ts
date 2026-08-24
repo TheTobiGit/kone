@@ -10,9 +10,9 @@ export type ThemeMode = "light" | "dark" | "system";
 
 const THEME_MODES = new Set<ThemeMode>(["light", "dark", "system"]);
 
-function isThemeMode(value: unknown): value is ThemeMode {
+function isThemeMode(value: string | null | undefined): value is ThemeMode {
   // SAFETY: value is a string here; THEME_MODES membership is itself the runtime check.
-  return typeof value === "string" && THEME_MODES.has(value as ThemeMode);
+  return Boolean(value && THEME_MODES.has(value as ThemeMode));
 }
 
 export function username(): string | null {
@@ -28,8 +28,8 @@ export function username(): string | null {
  *  default app. A missing path or a non-string IPC payload is a hard error
  *  so the renderer can fall through to its own fallback instead of
  *  swallowing a no-op. */
-export async function reveal(target: unknown): Promise<void> {
-  if (typeof target !== "string" || target.trim() === "") {
+export async function reveal(target: string): Promise<void> {
+  if (!target || !target.trim()) {
     throw new Error("Missing path.");
   }
   const resolved = path.resolve(target);
@@ -41,7 +41,7 @@ export async function reveal(target: unknown): Promise<void> {
   }
   if (stats.isDirectory()) {
     const errorMessage = await shell.openPath(resolved);
-    if (typeof errorMessage === "string" && errorMessage.trim().length > 0) {
+    if (errorMessage && errorMessage.trim().length > 0) {
       throw new Error(errorMessage);
     }
     return;
@@ -52,13 +52,13 @@ export async function reveal(target: unknown): Promise<void> {
 // Apply the renderer's appearance choice. "system" defers to the OS. Values
 // outside the known modes are ignored so a stale renderer can't wedge the
 // theme into an unknown state.
-export function setTheme(mode: unknown): void {
+export function setTheme(mode: ThemeMode | string): void {
   if (!isThemeMode(mode)) return;
   nativeTheme.themeSource = mode;
 }
 
 export function registerSystemIpc(): void {
   ipcMain.handle("system:username", () => username());
-  ipcMain.handle("system:reveal", (_event, target: unknown) => reveal(target));
-  ipcMain.handle("theme:set", (_event, mode: unknown) => setTheme(mode));
+  ipcMain.handle("system:reveal", (_event, target: string) => reveal(target));
+  ipcMain.handle("theme:set", (_event, mode: ThemeMode) => setTheme(mode));
 }

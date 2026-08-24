@@ -83,7 +83,7 @@ describe("listDir", () => {
   test("never reports the process cwd as the listing path", async () => {
     // Guard the exact regression: resolving "" must not silently expose the
     // Electron process working directory to the renderer.
-    const result = await listDir("").catch((err: unknown) => err);
+    const result = await listDir("").catch((cause: unknown) => cause);
     if (!(result instanceof Error)) {
       throw new Error('listDir("") resolved instead of rejecting');
     }
@@ -95,9 +95,12 @@ describe("listDir", () => {
   });
 
   test("rejects non-string inputs", async () => {
-    await expect(listDir(undefined)).rejects.toThrow(/Missing path/);
-    await expect(listDir(null)).rejects.toThrow(/Missing path/);
-    await expect(listDir(42)).rejects.toThrow(/Missing path/);
+    // SAFETY: deliberate test of non-string inputs at runtime boundary
+    await expect(listDir(undefined as never)).rejects.toThrow(/Missing path/);
+    // SAFETY: deliberate test of non-string inputs at runtime boundary
+    await expect(listDir(null as never)).rejects.toThrow(/Missing path/);
+    // SAFETY: deliberate test of non-string inputs at runtime boundary
+    await expect(listDir(42 as never)).rejects.toThrow();
   });
 
   test("rejects a relative path instead of resolving it against the cwd", async () => {

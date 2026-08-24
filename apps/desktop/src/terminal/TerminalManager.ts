@@ -363,8 +363,8 @@ export class TerminalManager {
         session.pollTimer = null;
       }
       session.status = "exited";
-      session.exitCode = typeof exitCode === "number" ? exitCode : null;
-      session.exitSignal = typeof signal === "number" ? signal : null;
+      session.exitCode = exitCode !== undefined && exitCode !== null && Number.isFinite(exitCode) ? exitCode : null;
+      session.exitSignal = signal !== undefined && signal !== null && Number.isFinite(signal) ? signal : null;
       this.fire(
         this.stamp(session, {
           terminalId: session.terminalId,

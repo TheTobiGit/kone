@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 import type {
   AgentRecord,
@@ -258,7 +258,7 @@ const api = {
       // Pushes are tagged with the dir they belong to, so several watchers can
       // share the one channel — the open project and every launcher folder —
       // each firing its callback only for its own repo.
-      const listener = (_event: unknown, pushedDir: string, status: GitStatus) => {
+      const listener = (_event: IpcRendererEvent, pushedDir: string, status: GitStatus) => {
         if (pushedDir === dir) cb(status);
       };
       ipcRenderer.on("git:status-changed", listener);
@@ -284,7 +284,7 @@ const api = {
     // Subscribe to clone progress; returns an unsubscribe fn. Only meaningful
     // while a git.clone() invoke is in flight.
     onCloneProgress: (cb: (p: CloneProgress) => void): (() => void) => {
-      const listener = (_event: unknown, p: CloneProgress) => cb(p);
+      const listener = (_event: IpcRendererEvent, p: CloneProgress) => cb(p);
       ipcRenderer.on("git:clone-progress", listener);
       return () => ipcRenderer.removeListener("git:clone-progress", listener);
     },
@@ -302,7 +302,7 @@ const api = {
       ipcRenderer.invoke("git:run-stacked-action", dir, input),
     // Stream stacked action progress
     onActionProgress: (cb: (event: GitActionProgressEvent) => void): (() => void) => {
-      const listener = (_event: unknown, event: GitActionProgressEvent) => cb(event);
+      const listener = (_event: IpcRendererEvent, event: GitActionProgressEvent) => cb(event);
       ipcRenderer.on("git:action-progress", listener);
       return () => ipcRenderer.removeListener("git:action-progress", listener);
     },
@@ -328,7 +328,7 @@ const api = {
     getState: (): Promise<{ isMaximized: boolean; isFullscreen: boolean }> =>
       ipcRenderer.invoke("window:get-state"),
     onState: (cb: (state: { isMaximized: boolean; isFullscreen: boolean }) => void): (() => void) => {
-      const listener = (_event: unknown, state: { isMaximized: boolean; isFullscreen: boolean }) => cb(state);
+      const listener = (_event: IpcRendererEvent, state: { isMaximized: boolean; isFullscreen: boolean }) => cb(state);
       ipcRenderer.on("window:state", listener);
       return () => ipcRenderer.removeListener("window:state", listener);
     },
@@ -505,7 +505,7 @@ const api = {
     // The ONE runtime event stream. Subscribing registers this renderer in the
     // main process; the returned fn unsubscribes and detaches the listener.
     onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {
-      const listener = (_event: unknown, ev: RuntimeEvent) => cb(ev);
+      const listener = (_event: IpcRendererEvent, ev: RuntimeEvent) => cb(ev);
       ipcRenderer.on("agent:event", listener);
       void ipcRenderer.invoke("agent:subscribe");
       return () => {
@@ -530,7 +530,7 @@ const api = {
     ack: (input: TerminalAckInput): Promise<void> =>
       ipcRenderer.invoke("terminal:ack", input),
     onEvent: (cb: (event: TerminalEvent) => void): (() => void) => {
-      const listener = (_event: unknown, ev: TerminalEvent) => cb(ev);
+      const listener = (_event: IpcRendererEvent, ev: TerminalEvent) => cb(ev);
       ipcRenderer.on("terminal:event", listener);
       void ipcRenderer.invoke("terminal:subscribe");
       return () => {

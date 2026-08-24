@@ -55,27 +55,27 @@ export function classifyNetworkError(message: string): IpcErrorKind | null {
 
 /** Reword a network git failure into a one-line hint carrying its semantic
  *  kind; pass anything else through untouched. */
-export function rewordNetworkError(error: unknown, remote: string): GitError {
-  if (error instanceof GitError) {
-    const kind = classifyNetworkError(error.message);
+export function rewordNetworkError(cause: unknown, remote: string): GitError {
+  if (cause instanceof GitError) {
+    const kind = classifyNetworkError(cause.message);
     if (kind === "AUTH_FAILURE") {
       return GitError.classified(
         "AUTH_FAILURE",
         `Authentication failed while talking to ${remote} — check your git credentials.`,
-        error.code,
+        cause.code,
       );
     }
     if (kind === "NETWORK") {
       return GitError.classified(
         "NETWORK",
         `Can't reach ${remote} — check your connection.`,
-        error.code,
+        cause.code,
       );
     }
-    return error;
+    return cause;
   }
-  return error instanceof Error
-    ? new GitError(error.message, null)
+  return cause instanceof Error
+    ? new GitError(cause.message, null)
     : new GitError("git failed.", null);
 }
 

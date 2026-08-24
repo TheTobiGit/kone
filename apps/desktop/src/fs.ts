@@ -69,8 +69,8 @@ async function isRepoRoot(dir: string, signal?: AbortSignal): Promise<boolean> {
  *  this process's cwd, the directory the Electron binary was launched from and
  *  never a folder the user asked to browse, and a relative path would silently
  *  list a directory next to the binary instead of failing loudly. */
-export async function listDir(dir: unknown, signal?: AbortSignal): Promise<DirListing> {
-  if (typeof dir !== "string" || dir.trim() === "") {
+export async function listDir(dir: string, signal?: AbortSignal): Promise<DirListing> {
+  if (!dir || !dir.trim()) {
     throw new Error("Missing path.");
   }
 
@@ -89,7 +89,7 @@ export async function listDir(dir: unknown, signal?: AbortSignal): Promise<DirLi
   // An already-cancelled caller (the IPC deadline) must surface as the abort,
   // not as a path-shaped error below.
   if (signal) {
-    if (typeof signal.throwIfAborted === "function") {
+    if (signal.throwIfAborted) {
       signal.throwIfAborted();
     } else if (signal.aborted) {
       const reason = signal.reason;
@@ -167,7 +167,7 @@ export const FS_LIST_TIMEOUT_MS = 20_000;
 /** Register the fs:* IPC handlers. Call once, before creating the window. */
 export function registerFsIpc(): void {
   ipcMain.handle("fs:home", () => homeDir());
-  ipcMain.handle("fs:list-dir", (_event, dir: unknown) =>
+  ipcMain.handle("fs:list-dir", (_event, dir: string) =>
     withTimeout((signal) => listDir(dir, signal), {
       channel: "fs:list-dir",
       timeoutMs: FS_LIST_TIMEOUT_MS,

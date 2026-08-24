@@ -41,7 +41,9 @@ describe("parseSafeExternalUrl", () => {
   });
 
   test("refuses non-string inputs", () => {
-    for (const input of [42, null, undefined, {}]) {
+    // SAFETY: testing runtime boundary with invalid non-string inputs
+    const invalidInputs: (string | null | undefined)[] = [42 as never, null, undefined, {} as never];
+    for (const input of invalidInputs) {
       expect(parseSafeExternalUrl(input)).toBeNull();
     }
   });

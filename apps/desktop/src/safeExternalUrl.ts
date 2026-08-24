@@ -3,8 +3,8 @@
  * Only http and https survive: file:, javascript:, custom schemes, and
  * unparseable strings would otherwise reach the OS protocol handler.
  */
-export function parseSafeExternalUrl(rawUrl: unknown): string | null {
-  if (typeof rawUrl !== "string" || rawUrl.length === 0) return null;
+export function parseSafeExternalUrl(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl || rawUrl.length === 0) return null;
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
