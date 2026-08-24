@@ -92,8 +92,8 @@ function anchorToDrawer() {
 }
 
 function maxCardHeight(): number {
-  const raw = hostStyle.value.height;
-  if (typeof raw === "string" && raw.endsWith("px")) {
+  const raw = String(hostStyle.value.height ?? "");
+  if (raw.endsWith("px")) {
     const host = Number.parseFloat(raw);
     if (Number.isFinite(host)) return Math.max(160, host - 48);
   }
@@ -363,6 +363,7 @@ function onKeydown(e: KeyboardEvent) {
     const first = els[0];
     const last = els[els.length - 1];
     if (!first || !last) return;
+    // SAFETY: activeElement is an Element in DOM, cast to HTMLElement | null for focus checking.
     const active = document.activeElement as HTMLElement | null;
     const inTrap = active != null && els.includes(active);
     const atEdge = e.shiftKey ? active === first : active === last;
@@ -392,6 +393,7 @@ onMounted(async () => {
     }
   }
 
+  // SAFETY: activeElement is an Element in DOM, cast to HTMLElement | null for focus restoration.
   opener = document.activeElement as HTMLElement | null;
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", onWindowResize);

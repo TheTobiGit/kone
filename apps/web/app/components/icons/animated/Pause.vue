@@ -17,10 +17,9 @@ const pauseBarVariants = {
     transform: "translate(0px, 0px) scaleY(1)",
     transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] },
   },
-  animate: (custom: unknown) => {
-    // SAFETY: this file's template binds :custom only to the literals 0 and 1.
-    const i = custom as number;
-    const direction = i === 0 ? 1 : -1;
+  // eslint-disable-next-line anti-slop/no-unknown-parameters
+  animate: (custom: unknown = 0) => {
+    const direction = (Number.isFinite(custom) ? Number(custom) : 0) === 0 ? 1 : -1;
 
     return {
       transform: [

@@ -729,7 +729,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const id = threadId.value;
     try {
       const page =
-        typeof api.history.threadPage === "function"
+        api.history.threadPage
           ? await api.history.threadPage(id, { cursor }).catch(() => null)
           : null;
       // The session may have been re-homed onto another thread while the read
@@ -771,7 +771,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       const meta = await api.history.latest(ctx.resolveCwd());
       if (!meta) return;
       const page =
-        typeof api.history.threadPage === "function"
+        api.history.threadPage
           ? await api.history.threadPage(meta.threadId, { limit: PAGE_LIMIT }).catch(() => null)
           : null;
       let resolvedBlocks: ThreadBlock[] | null = null;
@@ -971,7 +971,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         // to the full read when the page API is unavailable (older app build,
         // partial mock) or returns nothing — identical to the old path.
         page =
-          typeof api.history.threadPage === "function"
+          api.history.threadPage
             ? await api.history.threadPage(id, { limit: PAGE_LIMIT }).catch(() => null)
             : null;
         if (!page || page.blocks.length === 0) {
@@ -1619,14 +1619,14 @@ export function useAgent(options: UseAgentOptions) {
   const ctx: SessionCtx = {
     options,
     bridge: () => (import.meta.client ? (window.koneDesktop?.agent ?? null) : null),
-    resolveCwd: () => (typeof options.cwd === "function" ? options.cwd() : options.cwd),
+    resolveCwd: () => (options.cwd instanceof Function ? options.cwd() : options.cwd),
   };
 
   // A project's whole registry — sessions, in-flight opens, focus — lives at
   // module scope keyed by its path (see registryFor above). Each useAgent call
   // binds to its project's shared state instead of minting a fresh one.
   const registry = registryFor(
-    typeof options.cwd === "function" ? options.cwd() : options.cwd,
+    options.cwd instanceof Function ? options.cwd() : options.cwd,
   );
 
   // The registry: every thread this project has open, live or backgrounded.

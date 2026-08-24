@@ -43,15 +43,17 @@ const cellMove = {
 // not a mouse — a scrollbar would just be visual noise. Instead the selected
 // cell scrolls itself into view as the index moves, so cycling past the edge
 // of the shelf brings the next folder into frame automatically.
+import type { ComponentPublicInstance } from "vue";
+
 const cellRefs = ref<(HTMLElement | null)[]>([]);
-function setCellRef(el: unknown, i: number) {
+function setCellRef(el: Element | ComponentPublicInstance | null, i: number) {
   // The ref sits on a <motion.div> (a component), so a template ref hands back
   // the component instance, not the DOM node — reach through `$el` to the real
   // element (plain elements pass straight through) so scrollIntoView exists.
   // SAFETY: Vue template ref from the bound motion.div — either a component
   // instance (which exposes $el) or null; the optional chain handles null and
   // the instanceof check below rejects anything else.
-  const node = (el as { $el?: unknown } | null)?.$el ?? el;
+  const node = (el as { $el?: Element | null } | null)?.$el ?? el;
   cellRefs.value[i] = node instanceof HTMLElement ? node : null;
 }
 watch(

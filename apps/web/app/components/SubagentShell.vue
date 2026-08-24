@@ -144,7 +144,7 @@ watch(
 );
 const elapsed = computed(() => {
   const t = props.thread;
-  if (!t || typeof t.elapsedMs !== "number") return "";
+  if (!t || t.elapsedMs === undefined || t.elapsedMs === null || !Number.isFinite(t.elapsedMs)) return "";
   if (t.status === "working") return formatElapsed(t.elapsedMs + Math.max(0, now.value - t.updatedAt));
   return formatElapsed(t.elapsedMs);
 });

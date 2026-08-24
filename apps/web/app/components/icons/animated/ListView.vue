@@ -11,16 +11,19 @@ defineExpose({ startAnimation, stopAnimation });
 // Existing rows contract and settle in reading order, alternating their anchored edge.
 const rowVariants = {
   normal: { transform: "scaleX(1)" },
-  // SAFETY: this file's template binds :custom only to the literals 0, 1 and 2.
-  animate: (custom: unknown) => ({
-    transform: ["scaleX(1)", "scaleX(0.68)", "scaleX(1.04)", "scaleX(0.98)", "scaleX(1)"],
-    transition: {
-      duration: 0.44,
-      delay: (custom as number) * 0.06,
-      ease: [0.77, 0, 0.175, 1],
-      times: [0, 0.28, 0.56, 0.76, 1],
-    },
-  }),
+  // eslint-disable-next-line anti-slop/no-unknown-parameters
+  animate: (custom: unknown = 0) => {
+    const idx = Number.isFinite(custom) ? Number(custom) : 0;
+    return {
+      transform: ["scaleX(1)", "scaleX(0.68)", "scaleX(1.04)", "scaleX(0.98)", "scaleX(1)"],
+      transition: {
+        duration: 0.44,
+        delay: idx * 0.06,
+        ease: [0.77, 0, 0.175, 1],
+        times: [0, 0.28, 0.56, 0.76, 1],
+      },
+    };
+  },
 };
 </script>
 

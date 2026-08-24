@@ -231,7 +231,7 @@ const railPads = computed(() => {
 
 // ── the rail ──────────────────────────────────────────────────────────────────
 const colEls = new Map<string, HTMLElement>();
-function setCol(key: string, el: unknown): void {
+function setCol(key: string, el: Element | ComponentPublicInstance | null): void {
   if (el instanceof HTMLElement) colEls.set(key, el);
   else colEls.delete(key);
 }

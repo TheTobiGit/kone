@@ -332,7 +332,7 @@ function setCenterMode(mode: CenterMode) {
 // and any arrow while the drawer is shut must pass straight through — a radio that
 // still holds focus mustn't swallow the app's shortcuts.
 const radioEls = ref<HTMLElement[]>([]);
-function setRadioEl(el: unknown, i: number) {
+function setRadioEl(el: Element | ComponentPublicInstance | null, i: number) {
   if (el instanceof HTMLElement) radioEls.value[i] = el;
 }
 

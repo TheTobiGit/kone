@@ -55,7 +55,7 @@ function measureCentroid(): Centroid {
 const CENTROID = measureCentroid();
 
 const updateColor = () => {
-  if (typeof window !== "undefined") {
+  if ("window" in globalThis) {
     const root = document.documentElement;
     const accent = getComputedStyle(root).getPropertyValue("--accent").trim();
     if (accent) accentColorStr.value = accent;

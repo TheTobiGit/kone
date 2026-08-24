@@ -74,7 +74,8 @@ describe("reading one back", () => {
   test("nothing at all is no bot, not the default one", () => {
     expect(readBot(null)).toBeNull();
     expect(readBot(undefined)).toBeNull();
-    expect(readBot("pebble")).toBeNull();
+    // SAFETY: testing runtime boundary with invalid non-object input
+    expect(readBot("pebble" as never)).toBeNull();
   });
 
   test("a bot naming what this build no longer ships falls back per field", () => {

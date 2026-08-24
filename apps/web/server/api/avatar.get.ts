@@ -19,7 +19,7 @@ const MAX_BYTES = 8 * 1024 * 1024;
 
 export default defineEventHandler(async (event) => {
   const { url } = getQuery<{ url?: string }>(event);
-  if (typeof url !== "string" || url.trim() === "") {
+  if (!url || !url.trim()) {
     throw createError({ statusCode: 400, statusMessage: "No url" });
   }
 

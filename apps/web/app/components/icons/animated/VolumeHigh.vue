@@ -28,22 +28,25 @@ const waveVariants = {
     transform: "translateX(0px) scale(1)",
     transition: { duration: 0.22 },
   },
-  animate: (custom: unknown) => ({
-    visibility: ["visible", "visible", "visible"],
-    transform: [
-      "translateX(-0.6px) scale(0.82)",
-      "translateX(0px) scale(1.06)",
-      "translateX(0px) scale(1)",
-    ],
-    transition: {
-      duration: 0.9,
-      ease: [0.23, 1, 0.32, 1],
-      repeat: Infinity,
-      repeatDelay: 0.08,
-      // SAFETY: this file's template binds :custom only to the literals 0 and 1.
-      delay: (custom as number) * 0.14,
-    },
-  }),
+  // eslint-disable-next-line anti-slop/no-unknown-parameters
+  animate: (custom: unknown = 0) => {
+    const idx = Number.isFinite(custom) ? Number(custom) : 0;
+    return {
+      visibility: ["visible", "visible", "visible"],
+      transform: [
+        "translateX(-0.6px) scale(0.82)",
+        "translateX(0px) scale(1.06)",
+        "translateX(0px) scale(1)",
+      ],
+      transition: {
+        duration: 0.9,
+        ease: [0.23, 1, 0.32, 1],
+        repeat: Infinity,
+        repeatDelay: 0.08,
+        delay: idx * 0.14,
+      },
+    };
+  },
 };
 </script>
 

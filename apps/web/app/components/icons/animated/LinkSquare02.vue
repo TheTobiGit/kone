@@ -13,8 +13,9 @@ defineExpose({ startAnimation, stopAnimation });
 // overshoot into rest.
 const pathVariants = {
   normal: { pathLength: 1, visibility: "visible", transform: "translate(0, 0)" },
-  animate: (custom: unknown) =>
-    custom === 0
+  // eslint-disable-next-line anti-slop/no-unknown-parameters
+  animate: (custom: unknown = 0) =>
+    (Number.isFinite(custom) ? Number(custom) : 0) === 0
       ? {
           transform: ["scale(1)", "scale(0.95)", "scale(1.025)", "scale(1)"],
           pathLength: [1, 0.72, 1, 1],

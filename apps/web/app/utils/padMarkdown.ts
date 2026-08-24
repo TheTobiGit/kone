@@ -193,7 +193,7 @@ function blockToMarkdown(node: Node, out: string[]): void {
 
 /** The pad document as Markdown — what Copy and Export hand over. */
 export function padHtmlToMarkdown(html: string): string {
-  if (!html.trim() || typeof DOMParser === "undefined") return "";
+  if (!html.trim() || !("DOMParser" in globalThis)) return "";
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
   const out: string[] = [];
   for (const child of Array.from(doc.body.childNodes)) blockToMarkdown(child, out);
@@ -205,7 +205,7 @@ export function padHtmlToMarkdown(html: string): string {
 
 /** Plain text of the pad document — the word count reads this. */
 export function padHtmlToText(html: string): string {
-  if (!html.trim() || typeof DOMParser === "undefined") return "";
+  if (!html.trim() || !("DOMParser" in globalThis)) return "";
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
   return (doc.body.textContent ?? "").replaceAll(ZWSP, "");
 }
@@ -232,7 +232,7 @@ export function padHtmlToText(html: string): string {
  * holding it and the document that leaves is clean.
  */
 export function cleanPadHtml(html: string): string {
-  if (!html.trim() || typeof DOMParser === "undefined") return html;
+  if (!html.trim() || !("DOMParser" in globalThis)) return html;
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
   const root = doc.body;
 
@@ -305,7 +305,7 @@ function isResidualBackground(el: HTMLElement): boolean {
  * a captured checklist arrives as a real checklist.
  */
 export function normalizeTaskLists(html: string): string {
-  if (typeof DOMParser === "undefined") return html;
+  if (!("DOMParser" in globalThis)) return html;
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
   for (const li of Array.from(doc.body.querySelectorAll("li"))) {
     const first = li.firstChild;

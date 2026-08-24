@@ -64,7 +64,7 @@ function uid(): string {
 }
 
 export function useTerminal(options: UseTerminalOptions) {
-  const resolveCwd = () => (typeof options.cwd === "function" ? options.cwd() : options.cwd);
+  const resolveCwd = () => (options.cwd instanceof Function ? options.cwd() : options.cwd);
   const bridge = () => (import.meta.client ? window.koneDesktop?.terminal : undefined);
 
   // Reactive list (status only). Buffers + sinks are kept off to the side, keyed

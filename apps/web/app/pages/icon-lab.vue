@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import type { Component } from "vue";
+import { computed, ref, type Component, type ComponentPublicInstance } from "vue";
 import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
 
 // Auto-collect every animated icon so the lab stays complete as the set grows.
@@ -23,7 +22,7 @@ const size = ref(28);
 
 // One handle per rendered icon, keyed by name, for replay + play-all.
 const handles = ref<Record<string, AnimatedIconHandle | null>>({});
-function setHandle(name: string, el: unknown) {
+function setHandle(name: string, el: AnimatedIconHandle | Element | ComponentPublicInstance | null) {
   // SAFETY: every animated icon defineExpose()s { startAnimation,
   // stopAnimation } (the useIconAnimation contract); el is that exposed
   // instance, or null while unmounting.
@@ -69,7 +68,7 @@ function playAll() {
         <span class="cell__icon">
           <component
             :is="icon.component"
-            :ref="(el: unknown) => setHandle(icon.name, el)"
+            :ref="(el: any) => setHandle(icon.name, el)"
             :size="size"
           />
         </span>

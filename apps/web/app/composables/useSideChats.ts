@@ -89,7 +89,7 @@ export type SideChatCreationOptions = {
    *  types into the child's composer). */
   sendPrompt?: (threadId: string, prompt: string) => Promise<void> | void;
   /** Error surface for a queued prompt's send failure. */
-  onPromptError?: (error: unknown, prompt: string) => void;
+  onPromptError?: (cause: unknown, prompt: string) => void;
 };
 
 export type SideChatCreationResult = {
@@ -178,12 +178,12 @@ async function dispatchPrompt(
   creation: Promise<{ threadId: string; status: string }>,
   prompt: string,
   sendPrompt: (threadId: string, prompt: string) => Promise<void> | void,
-  onPromptError?: (error: unknown, prompt: string) => void,
+  onPromptError?: (cause: unknown, prompt: string) => void,
 ): Promise<void> {
   const { threadId } = await creation;
   try {
     await sendPrompt(threadId, prompt);
-  } catch (error) {
-    onPromptError?.(error, prompt);
+  } catch (cause) {
+    onPromptError?.(cause, prompt);
   }
 }

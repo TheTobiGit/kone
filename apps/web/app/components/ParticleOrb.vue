@@ -71,7 +71,7 @@ let raf = 0
 let phase = 0
 let last = 0
 let ctx: CanvasRenderingContext2D | null = null
-const reduced = typeof window !== 'undefined'
+const reduced = "window" in globalThis
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 // The particles ARE the orb — there's no disc behind them, so they're toned to
@@ -195,7 +195,7 @@ function loop(now: number) {
   raf = requestAnimationFrame(loop)
 }
 function shouldRun() {
-  return props.active && !(typeof document !== 'undefined' && document.hidden)
+  return Boolean(props.active && !("document" in globalThis && document.hidden))
 }
 function play() {
   if (raf || !shouldRun()) return
