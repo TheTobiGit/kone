@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { git, GitError } from "./core.js";
+import { git, GitError } from "@kone/git-core/core.js";
 import { classifyNetworkError, fetch, isAuthFailure, rewordNetworkError } from "./sync.js";
 import { remoteExists } from "./state.js";
 

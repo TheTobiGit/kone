@@ -1,8 +1,8 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { git, repoRoot } from "./core.js";
-import type { GitRemote, GitRepoState } from "./types.js";
+import { git, repoRoot } from "@kone/git-core/core.js";
+import type { GitRemote, GitRepoState } from "@kone/git-core/types.js";
 
 // Repo-level facts the Git Space masthead hangs on: the configured remotes
 // (origin first) and whether the repo is parked mid-operation. Operation state

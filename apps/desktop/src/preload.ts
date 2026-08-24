@@ -8,23 +8,23 @@ import type {
   StoredThreadPage,
   SubagentPresetRecord,
   ThreadAgentBinding,
-} from "./agent/ConversationStore.js";
-import type { AgentInventory } from "./agent/inventory/types.js";
-import type { SkillDetail } from "./agent/inventory/skillDetail.js";
-import type { SkillSignalsContext } from "./agent/inventory/skillInspect.js";
-import type { SkillFinding } from "./agent/inventory/skillLint.js";
-import type { SkillSignals } from "./agent/inventory/skillSignals.js";
-import type { FrontmatterEdit, MutateResult } from "./agent/inventory/skillMutate.js";
-import type { SkillRootTarget } from "./agent/inventory/skills.js";
+} from "@kone/agent-core/ConversationStore.js";
+import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
+import type { SkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
+import type { SkillSignalsContext } from "@kone/agent-core/inventory/skillInspect.js";
+import type { SkillFinding } from "@kone/agent-core/inventory/skillLint.js";
+import type { SkillSignals } from "@kone/agent-core/inventory/skillSignals.js";
+import type { FrontmatterEdit, MutateResult } from "@kone/agent-core/inventory/skillMutate.js";
+import type { SkillRootTarget } from "@kone/agent-core/inventory/skills.js";
 import type {
   SkillStateQuery,
   SkillStateResult,
   StateWriteResult,
   WritableSkillState,
-} from "./agent/inventory/skillState.js";
-import type { QuotaCapableProvider } from "./agent/quota/index.js";
-import type { QuotaProviderReport } from "./agent/quota/types.js";
-import type { AgentUsageReport, UsageRange } from "./agent/usage/report.js";
+} from "@kone/agent-core/inventory/skillState.js";
+import type { QuotaCapableProvider } from "@kone/agent-core/quota/index.js";
+import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
+import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
 import type { StudioSaveInput } from "./modules/studio/index.js";
 import type {
   ApprovalDecision,
@@ -50,7 +50,7 @@ import type {
   TurnStartResult,
   UploadAttachmentInput,
   UserInputAnswers,
-} from "./agent/index.js";
+} from "@kone/agent-core/index.js";
 import type {
   TerminalAckInput,
   TerminalCloseInput,

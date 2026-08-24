@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { GitError, exists, git, lastStderrLine, run } from "./core.js";
-import type { CreateProjectOptions, CreateProjectResult } from "./types.js";
+import { GitError, exists, git, lastStderrLine, run } from "@kone/git-core/core.js";
+import type { CreateProjectOptions, CreateProjectResult } from "@kone/git-core/types.js";
 
 // The counterpart to clone: instead of pulling a repo down, we lay a fresh
 // folder on disk and (optionally) turn it into a git repo. Small, seeded files

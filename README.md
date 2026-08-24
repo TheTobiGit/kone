@@ -47,9 +47,13 @@ kone/
 │   ├── web/         # Nuxt renderer (web + desktop UI)
 │   └── desktop/     # Electron shell: main/preload at src root,
 │                    #   src/lib/ = pure utilities, src/modules/ = IPC domains,
-│                    #   src/agent/ = provider adapters, gateway, quota, usage
+│                    #   src/agent/agent-ipc.ts = the Electron IPC bridge
 ├── packages/
+│   ├── agent-core/  # @kone/agent-core — provider adapters, gateway, inventory,
+│   │                #   quota & usage; plain Node only (no electron)
 │   ├── config/      # Shared TypeScript config
+│   ├── git-core/    # @kone/git-core — git runner/status/clone + process-tree
+│   │                #   walks shared by the agent core and desktop modules
 │   └── protocol/    # Contracts shared by renderer & main (IPC error kinds,
 │                    #   plan-task types/parsers) — environment-agnostic only
 └── tools/

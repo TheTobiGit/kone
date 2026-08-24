@@ -129,7 +129,7 @@ export type GitRepo = {
   removed: number;
 };
 
-// ── Git Space surface (mirrors apps/desktop/src/git/types.ts) ────────────────
+// ── Git Space surface (mirrors @kone/git-core types + desktop git modules) ───
 
 export type GitRemote = {
   name: string; // "origin"
@@ -646,7 +646,7 @@ export type KoneSystemApi = {
 };
 
 // ── Agent layer ────────────────────────────────────────────────────────────
-// Mirrors apps/desktop/src/agent/types.ts. "Bring your own subscription": kone
+// Mirrors packages/agent-core/src/types.ts. "Bring your own subscription": kone
 // drives the agent CLIs the user already installed + logged into; it never
 // stores provider credentials.
 
@@ -666,7 +666,7 @@ export type ProviderStatus = {
 };
 
 /** The user's persisted per-provider install settings (mirrors
- *  apps/desktop/src/agent/types.ts). Credential-free by design — only how to
+ *  packages/agent-core/src/types.ts). Credential-free by design — only how to
  *  reach the CLI the user already installed + logged into. */
 export type ProviderConfig = {
   /** Override the CLI executable (absolute path or a name on PATH). Empty falls
@@ -677,7 +677,7 @@ export type ProviderConfig = {
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
 
-// ── Install maintenance (mirrors apps/desktop/src/agent/providerMaintenance.ts) ─
+// ── Install maintenance (mirrors packages/agent-core/src/providerMaintenance.ts) ─
 
 /** Which channel installed a provider's CLI, and therefore which one has to
  *  update it. `native` — the CLI's own updater; `bundled` — kone ships the
@@ -812,7 +812,7 @@ export type SessionStartInput = {
 };
 
 /** Loopback MCP gateway connection for one provider session
- *  (apps/desktop/src/agent/gateway). */
+ *  (packages/agent-core/src/gateway). */
 export type GatewayConnection = {
   url: string;
   bearerToken: string;
@@ -845,7 +845,7 @@ export type Session = {
   mode: InteractionMode;
 };
 
-// ── Attachments (mirror apps/desktop/src/agent/types.ts) ─────────────────────
+// ── Attachments (mirror packages/agent-core/src/types.ts) ─────────────────────
 /** How an attachment is fed to the agent. `image` → native vision block;
  *  `file` → an on-disk path the agent reads with its own tools. */
 export type AttachmentKind = "image" | "file";
@@ -888,7 +888,7 @@ export type SendTurnInput = {
 
 export type TurnStartResult = { threadId: string; turnId: string };
 
-// ── durable turn queue (mirror apps/desktop/src/agent/ConversationStore.ts) ─
+// ── durable turn queue (mirror packages/agent-core/src/ConversationStore.ts) ─
 /** A follow-up durably enqueued while the thread's turn ran (survives
  *  crashes), promoted automatically when the active turn settles, and
  *  cancelled on stop/thread-delete. `userBlockId` anchors the queued chip to
@@ -918,7 +918,7 @@ export type QueuedTurnRow = {
   promotedAt?: number;
 };
 
-// ── side chat creation (mirror apps/desktop/src/agent/types.ts) ──────────────
+// ── side chat creation (mirror packages/agent-core/src/types.ts) ──────────────
 // A side chat is a root thread with a fork pointer back at its source: the
 // renderer mints the threadId + requestId, the desktop side validates + imports
 // the source transcript, and the result streams as `thread.sidechat-created`.
@@ -968,7 +968,7 @@ export type CreateSideChatResult = {
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
 
-// ── tool approvals (mirror apps/desktop/src/agent/types.ts) ──────────────────
+// ── tool approvals (mirror packages/agent-core/src/types.ts) ──────────────────
 // When the thread's InteractionMode is restrictive enough that the provider
 // asks before an action, the adapter parks the request and emits
 // `approval.requested` instead of auto-answering it. The renderer shows the
@@ -989,7 +989,7 @@ export type ApprovalRequest = {
   detail?: string;
 };
 
-// ── mid-turn user-input questions (mirror apps/desktop/src/agent/types.ts) ────
+// ── mid-turn user-input questions (mirror packages/agent-core/src/types.ts) ────
 /** One choice offered for a question; `description` is a short gloss. */
 export type UserInputQuestionOption = {
   label: string;
@@ -1040,7 +1040,7 @@ export type PlanTask = {
 // A provider-native nested agent: the main agent's Task/Agent tool call spawns a
 // child agent that runs its own turn and reports back as the tool's result. NOT
 // a second thread/session — the run stays nested inside the parent turn, hanging
-// off the `tool_call` item that spawned it. Mirrors apps/desktop/src/agent/types.ts.
+// off the `tool_call` item that spawned it. Mirrors packages/agent-core/src/types.ts.
 
 /** Lifecycle of one subagent run. `stopped` is a user/parent-initiated kill,
  *  distinct from a `failed` run. */
@@ -1304,7 +1304,7 @@ export type RuntimeEvent =
 // ── persisted conversation history ───────────────────────────────────────────
 // What the main-process ConversationStore reads back off disk. Kept in the same
 // UserBlock | AssistantBlock timeline shape the renderer uses, so a reloaded
-// thread drops straight into `blocks`. Mirrors apps/desktop/src/agent/types.ts.
+// thread drops straight into `blocks`. Mirrors packages/agent-core/src/types.ts.
 
 export type StoredThreadMeta = {
   threadId: string;
@@ -1367,7 +1367,7 @@ export type StoredThreadMeta = {
 // runs as its own root thread, and never pollutes the parent. The
 // discriminator for "is this thread a side chat" is
 // `lineage.relationshipToParent === "side_chat"` — never a title prefix, never
-// a message source. Mirrors apps/desktop/src/agent/types.ts.
+// a message source. Mirrors packages/agent-core/src/types.ts.
 
 /** How an app-owned thread relates to another thread. `"subagent"` =
  *  agent-initiated work unit (spawn design, Phase 0); `"side_chat"` =
@@ -1413,7 +1413,7 @@ export type BlockSource = "native" | "fork-import";
 // "subagent" in the UI; `lineage.relationshipToParent === "subagent"` is the
 // discriminator for the app-owned kind.
 //
-// Mirrors apps/desktop/src/agent/types.ts.
+// Mirrors packages/agent-core/src/types.ts.
 
 /** Where a spawned child should run. `provider` is required; the rest fall
  *  back to the parent's when the parent is on the same provider. */
@@ -1670,7 +1670,7 @@ export type KoneAgentUsageApi = {
 // Nothing is read or sent until the user opts that provider in, and no
 // credential is ever stored or forwarded anywhere by kone.
 //
-// Mirrors apps/desktop/src/agent/quota/types.ts — keep the two in step.
+// Mirrors packages/agent-core/src/quota/types.ts — keep the two in step.
 
 /** Providers kone can report a quota card for. Factory Droid reads through
  *  Factory's billing/usage APIs with the user's own Factory API key. */

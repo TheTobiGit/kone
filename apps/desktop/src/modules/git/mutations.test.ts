@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { git } from "./core.js";
+import { git } from "@kone/git-core/core.js";
 import { createBranch, stage } from "./mutations.js";
 
 // repos' worktree setup: the branch is created before the (risky) checkout and

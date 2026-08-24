@@ -1,3 +1,4 @@
 [test]
-# Stands `node:sqlite` up before any test module is transpiled — see test-setup.ts.
+# Stands `node:sqlite` up before any test module is transpiled — see test-setup.ts
+# (the agent core moved to packages/agent-core, which preloads its own copy).
 preload = ["./test-setup.ts"]

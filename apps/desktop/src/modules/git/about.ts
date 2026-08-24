@@ -1,9 +1,9 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { GitError, git, repoRoot, safeRepoPath } from "./core.js";
-import { GIT_CONTRIBUTOR_CAP } from "./types.js";
-import type { GitContributor, GitContributors, GitIdentity, GitLogo, GitReadme } from "./types.js";
+import { GitError, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
+import { GIT_CONTRIBUTOR_CAP } from "@kone/git-core/types.js";
+import type { GitContributor, GitContributors, GitIdentity, GitLogo, GitReadme } from "@kone/git-core/types.js";
 
 // The About section of the git space — the repository's presentation surface:
 // its README, its identity (git config), and a logo. Everything here is a

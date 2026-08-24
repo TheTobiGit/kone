@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 
 import * as nodePty from "node-pty";
 
-import { buildAgentEnv } from "../../agent/processEnv.js";
+import { buildAgentEnv } from "@kone/agent-core/processEnv.js";
 
 /** Env keys carrying the *host* terminal's identity, plus Electron/dev-server
  *  runtime vars. We inherit the user's full environment (PATH, toolchains) but

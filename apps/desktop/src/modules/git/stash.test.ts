@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { git } from "./core.js";
+import { git } from "@kone/git-core/core.js";
 import { stashes, stashDrop, stashPush } from "./stash.js";
 
 async function makeRepo(): Promise<string> {

@@ -1,6 +1,6 @@
 import { ipcMain } from "electron";
 
-import { getConversationStore } from "../../agent/ConversationStore.js";
+import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
 import type { PresetCreateInput, PresetDeleteInput, PresetUpdateInput } from "./types.js";
 
 let registered = false;

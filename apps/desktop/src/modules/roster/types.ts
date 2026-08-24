@@ -13,7 +13,7 @@ import type {
   AgentPatch,
   AgentRecord,
   ThreadAgentBinding,
-} from "../../agent/ConversationStore.js";
+} from "@kone/agent-core/ConversationStore.js";
 
 /**
  * Ensure-and-list, in one round trip.

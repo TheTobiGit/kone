@@ -1,4 +1,4 @@
-import { GitError, assertWithinRepo, git, repoRoot } from "./core.js";
+import { GitError, assertWithinRepo, git, repoRoot } from "@kone/git-core/core.js";
 import * as github from "./github.js";
 import { withRepoMutation } from "./mutationLock.js";
 import { sanitizeBranchFragment } from "./textGen.js";
@@ -6,7 +6,7 @@ import type {
   GitActionProgressEvent,
   GitRunStackedActionInput,
   GitRunStackedActionResult,
-} from "./types.js";
+} from "@kone/git-core/types.js";
 
 function notify(
   onProgress: ((event: GitActionProgressEvent) => void) | undefined,
