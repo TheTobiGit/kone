@@ -1,6 +1,13 @@
 import { computed, readonly, ref, watch } from "vue";
 import { applyThemeColors } from "~/theme/apply";
-import { buildImportedThemes, isVsCodeThemeFile, parseVsCodeThemeEntry, type VsCodeImportEntry } from "~/theme/import-vscode";
+import {
+  buildImportedThemes,
+  isRecord,
+  isVsCodeThemeFile,
+  parseVsCodeThemeEntry,
+  type ThemeJsonValue,
+  type VsCodeImportEntry,
+} from "~/theme/import-vscode";
 import {
   exportThemeJson,
   hydrateThemes,
@@ -85,7 +92,7 @@ let mediaBound = false;
 
 /** Register the one shared (prefers-color-scheme) listener, at most once. */
 function bindMediaListener(): void {
-  if (mediaBound || typeof window === "undefined") return;
+  if (mediaBound || !("window" in globalThis)) return;
   mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
   systemDark.value = mediaQuery.matches;
   mediaQuery.addEventListener("change", (event) => {
@@ -198,9 +205,10 @@ async function importThemes(files: File[]): Promise<ThemeImportResult> {
 
   for (const file of files) {
     const stem = file.name.replace(/\.[^.]+$/, "");
-    let json: unknown;
+    let json: ThemeJsonValue;
     try {
-      json = JSON.parse(await file.text());
+      // SAFETY: JSON.parse yields any; isVsCodeThemeFile and isRecord validate before use.
+      json = JSON.parse(await file.text()) as ThemeJsonValue;
     } catch {
       failures.push({ name: file.name, reason: "That file isn't valid JSON." });
       continue;
@@ -208,14 +216,14 @@ async function importThemes(files: File[]): Promise<ThemeImportResult> {
 
     // Check if file is a native kone theme export
     if (
-      typeof json === "object" &&
-      json !== null &&
+      isRecord(json) &&
       "koneTheme" in json &&
-      "spec" in json &&
-      typeof (json as { spec: unknown }).spec === "object"
+      isRecord(json.spec)
     ) {
       try {
-        const spec = (json as { spec: ThemeSpec }).spec;
+        const specPayload: unknown = json.spec;
+        // SAFETY: json.spec was verified as a record object; storeCustomTheme validates its spec contents.
+        const spec = specPayload as ThemeSpec;
         const importedCustom = storeCustomTheme(spec);
         directCustomAdded.push(importedCustom);
         continue;

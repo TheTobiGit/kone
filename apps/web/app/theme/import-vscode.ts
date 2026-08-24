@@ -32,6 +32,7 @@ export type ThemeJsonValue =
   | number
   | boolean
   | null
+  | undefined
   | ThemeJsonObject
   | ThemeJsonValue[];
 
@@ -41,8 +42,8 @@ export interface ThemeJsonObject {
   [key: string]: ThemeJsonValue;
 }
 
-export function isRecord(value: unknown): value is ThemeJsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+export function isRecord(value: ThemeJsonValue | null | undefined): value is ThemeJsonObject {
+  return value instanceof Object && !Array.isArray(value);
 }
 
 /** sRGB transfer function, and its inverse, shared by the wide-gamut path. */
@@ -106,9 +107,9 @@ function parseColorFunction(value: string): VsCodeRgba | null {
 
 /** VS Code accepts #RGB, #RGBA, #RRGGBB and #RRGGBBAA; some themes also use
  *  CSS `color()` notation for wide-gamut palettes. */
-export function parseVsCodeColor(value: unknown): VsCodeRgba | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
+export function parseVsCodeColor(value: ThemeJsonValue | null | undefined): VsCodeRgba | null {
+  if (value === null || value === undefined || value instanceof Object || Number.isFinite(value) || value === true || value === false) return null;
+  const trimmed = String(value).trim();
   if (trimmed.startsWith("color(")) return parseColorFunction(trimmed);
   const hex = trimmed.replace(/^#/, "");
   if (!/^(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(hex)) return null;
@@ -142,7 +143,7 @@ function flattenOver(color: VsCodeRgba, base: VsCodeRgb): string {
  * A VS Code theme is recognised by its workbench colours: the keys are dotted
  * paths (`editor.background`), which kone's own theme data never uses.
  */
-export function isVsCodeThemeFile(value: unknown): boolean {
+export function isVsCodeThemeFile(value: ThemeJsonValue | null | undefined): boolean {
   if (!isRecord(value)) return false;
   const hasWorkbenchColors =
     isRecord(value.colors) && Object.keys(value.colors).some((key) => key.includes("."));
@@ -201,8 +202,8 @@ const ANSI_SLOTS = [
  *  humanizes to nothing and must fall through to the name. */
 function resolveThemeLabel(value: ThemeJsonObject): string {
   for (const candidate of [value.displayName, value.name]) {
-    if (typeof candidate !== "string") continue;
-    const humanized = humanizeThemeName(candidate);
+    if (!candidate || candidate instanceof Object) continue;
+    const humanized = humanizeThemeName(String(candidate));
     if (humanized.length > 0) return humanized.slice(0, 48);
   }
   return "VS Code theme";
@@ -210,7 +211,7 @@ function resolveThemeLabel(value: ThemeJsonObject): string {
 
 /** How light or dark a theme is, when the file doesn't say. */
 function resolveAppearance(value: ThemeJsonObject, canvasHex: string): ThemeScheme {
-  const type = typeof value.type === "string" ? value.type.toLowerCase() : null;
+  const type = value.type && !(value.type instanceof Object) ? String(value.type).toLowerCase() : null;
   if (type === "light" || type === "hc-light") return "light";
   if (type === "dark" || type === "hc-black") return "dark";
   // Unlabelled themes (and the odd custom `type`) follow the editor surface.
@@ -221,7 +222,7 @@ function resolveAppearance(value: ThemeJsonObject, canvasHex: string): ThemeSche
  * Parse one VS Code theme file into an import entry. Throws with a readable
  * reason when the file cannot become a kone theme at all.
  */
-export function parseVsCodeThemeEntry(value: unknown, sourceStem: string): VsCodeImportEntry {
+export function parseVsCodeThemeEntry(value: ThemeJsonValue | null | undefined, sourceStem: string): VsCodeImportEntry {
   if (!isRecord(value)) throw new Error("Theme files must contain a JSON object.");
   const colors: ThemeJsonObject = isRecord(value.colors) ? value.colors : {};
 

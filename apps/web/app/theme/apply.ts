@@ -11,7 +11,7 @@ export function applyThemeColors(
   scheme: ThemeScheme,
   themeId: string,
 ): void {
-  if (typeof document === "undefined") return;
+  if (!("document" in globalThis)) return;
   const root = document.documentElement;
 
   // Suppress transitions for the swap so every surface lands on its new colour
@@ -39,7 +39,7 @@ export function applyThemeColors(
  * own table here and nothing else needs to know about it.
  */
 export function clearThemeColors(): void {
-  if (typeof document === "undefined") return;
+  if (!("document" in globalThis)) return;
   const root = document.documentElement;
 
   for (const variable of Object.values(THEME_VARIABLES)) {

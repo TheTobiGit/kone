@@ -68,7 +68,7 @@ const MANIFEST = {
 async function buildVsix(files: Record<string, string | ThemeJsonObject>): Promise<{ bytes: Uint8Array; sha256: string }> {
   const zip = new JSZip();
   for (const [path, content] of Object.entries(files)) {
-    zip.file(path, typeof content === "string" ? content : JSON.stringify(content));
+    zip.file(path, content instanceof Object ? JSON.stringify(content) : content);
   }
   const bytes = await zip.generateAsync({ type: "uint8array" });
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes));
@@ -129,7 +129,7 @@ afterEach(() => {
 
 describe("Open VSX theme import", () => {
   /** The standard happy-path router: manifest, checksum, and package. */
-  function installPackageFetch(pkg: { bytes: Uint8Array; sha256: string }, manifest: unknown = MANIFEST) {
+  function installPackageFetch(pkg: { bytes: Uint8Array; sha256: string }, manifest: ThemeJsonObject = MANIFEST) {
     // SAFETY: the stand-in implements exactly the fetch surface this test hits.
     // eslint-disable-next-line anti-slop/no-chained-type-assertions
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

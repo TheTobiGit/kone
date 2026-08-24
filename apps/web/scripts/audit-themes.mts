@@ -20,7 +20,7 @@ import type { ThemeDefinition, ThemeScheme } from "../app/theme/roles";
 // (`./kone`, `./derive`). Node's type stripper resolves exactly what it is
 // given and nothing more, so those imports would fail as-is; teach resolution
 // to fall back to the `.ts` neighbour instead of re-implementing the source.
-if (typeof registerHooks === "function") {
+if (registerHooks) {
   registerHooks({
     resolve(specifier, context, nextResolve) {
       if (specifier.startsWith(".") && !/\.[a-zA-Z0-9]+$/.test(specifier)) {
@@ -258,7 +258,7 @@ function createResolver(colors: RoleColorTable, varToRole: Map<string, string>) 
       throw new Error(`reference cycle ${[...resolving, role].join(" -> ")}`);
     }
     const raw = colors[role];
-    if (typeof raw !== "string" || raw.trim() === "") {
+    if (!raw || !raw.trim()) {
       throw new Error("role has no usable value");
     }
     resolving.add(role);
@@ -327,7 +327,7 @@ const roleList = (roles: readonly string[], colors: RoleColorTable) => {
   for (const role of roles) {
     const v = colors[role];
     if (v == null) bad.push(`\`${role}\` missing`);
-    else if (typeof v !== "string" || v.trim() === "") bad.push(`\`${role}\` empty`);
+    else if (!v || !v.trim()) bad.push(`\`${role}\` empty`);
   }
   return bad;
 };
@@ -420,7 +420,7 @@ function auditScheme(
   }
   if (Array.isArray(plasma)) {
     plasma.forEach((stop, i) => {
-      if (typeof stop !== "string" || !/^#[0-9a-f]{6}$/i.test(stop)) {
+      if (!stop || stop instanceof Object || !/^#[0-9a-f]{6}$/i.test(String(stop))) {
         plasmaBad.push(`stop ${i} \`${stop}\` is not a 6-digit hex`);
       }
     });
