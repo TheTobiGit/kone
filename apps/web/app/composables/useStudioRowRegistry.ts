@@ -1,6 +1,6 @@
 // useStudioRowRegistry — reach a project's studio row without holding a ref to it.
 //
-// A row is mounted by the plane (<AppStudio>), but the things that need to drive
+// A row is mounted by the plane (<StudioAppStudio>), but the things that need to drive
 // one are elsewhere: the project page's conversation list archives a thread, a
 // teardown flushes the layout, a pill opens a thread. Those used to be a
 // template ref, which only worked while the row was the page's own child. Now
