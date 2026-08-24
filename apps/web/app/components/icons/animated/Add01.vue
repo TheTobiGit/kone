@@ -12,12 +12,20 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a soft scale pop — the glyph acknowledges the action and settles back.
-const iconVariants = {
-  normal: { transform: "scale(1)" },
+// the plus stems extend outward along their axes and snap shut into alignment
+const stemVariants = {
+  normal: { transform: "scaleY(1)" },
   animate: {
-    transform: ["scale(1)", "scale(0.6)", "scale(1.15)", "scale(1)"],
-    transition: { duration: 0.5, times: [0, 0.35, 0.7, 1], ease: [0.34, 1.56, 0.64, 1] },
+    transform: ["scaleY(1)", "scaleY(1.22)", "scaleY(0.96)", "scaleY(1)"],
+    transition: { duration: 0.48, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const armVariants = {
+  normal: { transform: "scaleX(1)" },
+  animate: {
+    transform: ["scaleX(1)", "scaleX(1.22)", "scaleX(0.96)", "scaleX(1)"],
+    transition: { duration: 0.48, ease: [0.23, 1, 0.32, 1], delay: 0.04 },
   },
 };
 </script>
@@ -36,10 +44,28 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '50% 50%', transformBox: 'fill-box' }">
-        <path d="M12.001 5.00003V19.002" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-        <path d="M19.002 12.002L4.99998 12.002" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-      </motion.g>
+      <motion.path
+        d="M12.001 5.00003V19.002"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="stemVariants"
+        :animate="controls"
+        initial="normal"
+        :style="{ transformOrigin: '12px 12px' }"
+      />
+      <motion.path
+        d="M19.002 12.002L4.99998 12.002"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="armVariants"
+        :animate="controls"
+        initial="normal"
+        :style="{ transformOrigin: '12px 12px' }"
+      />
     </svg>
   </span>
 </template>

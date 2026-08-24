@@ -12,12 +12,32 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a scale beat with a considered overshoot, then rest.
-const iconVariants = {
-  normal: { transform: "scale(1)" },
+// diagonal corner arrows compress inward toward the center, then release with a crisp rebound
+const topArrowVariants = {
+  normal: { transform: "translate(0px, 0px)" },
   animate: {
-    transform: ["scale(1)", "scale(0.85)", "scale(1)"],
-    transition: { duration: 0.5, times: [0.0, 0.5, 1.0], ease: [0.34, 1.56, 0.64, 1] },
+    transform: [
+      "translate(0px, 0px)",
+      "translate(2.5px, 2.5px)",
+      "translate(-0.4px, -0.4px)",
+      "translate(0.2px, 0.2px)",
+      "translate(0px, 0px)",
+    ],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const bottomArrowVariants = {
+  normal: { transform: "translate(0px, 0px)" },
+  animate: {
+    transform: [
+      "translate(0px, 0px)",
+      "translate(-2.5px, -2.5px)",
+      "translate(0.4px, 0.4px)",
+      "translate(-0.2px, -0.2px)",
+      "translate(0px, 0px)",
+    ],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
   },
 };
 </script>
@@ -36,9 +56,26 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '50% 50%', transformBox: 'fill-box' }">
-        <path d="M6.5023 10.7365C7.34671 10.7485 10.1432 11.3294 10.7361 10.7365C11.329 10.1436 10.7481 7.34708 10.7361 6.50267M13.2685 17.5027C13.2565 16.6583 12.6756 13.8618 13.2685 13.2689C13.8614 12.676 16.6579 13.2569 17.5023 13.2689M20.9991 21.001L13.6102 13.6188M10.3691 10.3763L2.99998 2.99902" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-      </motion.g>
+      <motion.path
+        d="M6.5023 10.7365C7.34671 10.7485 10.1432 11.3294 10.7361 10.7365C11.329 10.1436 10.7481 7.34708 10.7361 6.50267M10.3691 10.3763L2.99998 2.99902"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="topArrowVariants"
+        :animate="controls"
+        initial="normal"
+      />
+      <motion.path
+        d="M13.2685 17.5027C13.2565 16.6583 12.6756 13.8618 13.2685 13.2689C13.8614 12.676 16.6579 13.2569 17.5023 13.2689M20.9991 21.001L13.6102 13.6188"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="bottomArrowVariants"
+        :animate="controls"
+        initial="normal"
+      />
     </svg>
   </span>
 </template>

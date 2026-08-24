@@ -12,12 +12,18 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a short travel in its facing direction, then an eased return.
-const iconVariants = {
-  normal: { transform: "translate(0px, 0px)" },
+// a sharp downward surge with directional compression and an elastic rebound
+const arrowVariants = {
+  normal: { transform: "translateY(0px) scaleX(1)" },
   animate: {
-    transform: ["translate(0px, 0px)", "translate(0px, 3px)", "translate(0px, 0px)"],
-    transition: { duration: 0.5, times: [0, 0.4, 1], ease: [0.34, 1.56, 0.64, 1] },
+    transform: [
+      "translateY(0px) scaleX(1)",
+      "translateY(3.2px) scaleX(0.92)",
+      "translateY(-0.4px) scaleX(1.03)",
+      "translateY(0.5px) scaleX(0.99)",
+      "translateY(0px) scaleX(1)",
+    ],
+    transition: { duration: 0.52, ease: [0.23, 1, 0.32, 1] },
   },
 };
 </script>
@@ -36,7 +42,7 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal">
+      <motion.g :variants="arrowVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '12px 12px' }">
         <path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
       </motion.g>
     </svg>

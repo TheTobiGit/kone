@@ -12,12 +12,28 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a quick tilt-shake that reads as activity, damping to still.
-const iconVariants = {
+// the top and bottom serif bars slide while the center stem leans deeper into italic slant
+const stemVariants = {
   normal: { transform: "rotate(0deg)" },
   animate: {
-    transform: ["rotate(0deg)", "rotate(-6deg)", "rotate(6deg)", "rotate(-3.0deg)", "rotate(0deg)"],
-    transition: { duration: 0.55, times: [0, 0.25, 0.55, 0.8, 1], ease: [0.4, 0, 0.2, 1] },
+    transform: ["rotate(0deg)", "rotate(-8deg)", "rotate(2deg)", "rotate(0deg)"],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const topBarVariants = {
+  normal: { transform: "translateX(0px)" },
+  animate: {
+    transform: ["translateX(0px)", "translateX(1.4px)", "translateX(-0.3px)", "translateX(0px)"],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const bottomBarVariants = {
+  normal: { transform: "translateX(0px)" },
+  animate: {
+    transform: ["translateX(0px)", "translateX(-1.4px)", "translateX(0.3px)", "translateX(0px)"],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
   },
 };
 </script>
@@ -36,11 +52,34 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '12px 12px', transformBox: 'view-box' }">
-        <path d="M12 4H19" stroke="currentColor" stroke-linecap="round" :stroke-width="strokeWidth" />
-        <path d="M8 20L16 4" stroke="currentColor" stroke-linecap="round" :stroke-width="strokeWidth" />
-        <path d="M5 20H12" stroke="currentColor" stroke-linecap="round" :stroke-width="strokeWidth" />
-      </motion.g>
+      <motion.path
+        d="M12 4H19"
+        stroke="currentColor"
+        stroke-linecap="round"
+        :stroke-width="strokeWidth"
+        :variants="topBarVariants"
+        :animate="controls"
+        initial="normal"
+      />
+      <motion.path
+        d="M8 20L16 4"
+        stroke="currentColor"
+        stroke-linecap="round"
+        :stroke-width="strokeWidth"
+        :variants="stemVariants"
+        :animate="controls"
+        initial="normal"
+        :style="{ transformOrigin: '12px 12px' }"
+      />
+      <motion.path
+        d="M5 20H12"
+        stroke="currentColor"
+        stroke-linecap="round"
+        :stroke-width="strokeWidth"
+        :variants="bottomBarVariants"
+        :animate="controls"
+        initial="normal"
+      />
     </svg>
   </span>
 </template>

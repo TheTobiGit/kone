@@ -12,12 +12,18 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a quick tilt-shake that reads as activity, damping to still.
-const iconVariants = {
-  normal: { transform: "rotate(0deg)" },
+// the nib dips down to plot a vector anchor point, then resets with a light spring
+const nibVariants = {
+  normal: { transform: "translateY(0px) rotate(0deg)" },
   animate: {
-    transform: ["rotate(0deg)", "rotate(-6deg)", "rotate(6deg)", "rotate(-3.0deg)", "rotate(0deg)"],
-    transition: { duration: 0.55, times: [0, 0.25, 0.55, 0.8, 1], ease: [0.4, 0, 0.2, 1] },
+    transform: [
+      "translateY(0px) rotate(0deg)",
+      "translateY(2.2px) rotate(-4deg)",
+      "translateY(-0.6px) rotate(1.5deg)",
+      "translateY(0.2px) rotate(-0.5deg)",
+      "translateY(0px) rotate(0deg)",
+    ],
+    transition: { duration: 0.58, ease: [0.23, 1, 0.32, 1] },
   },
 };
 </script>
@@ -36,8 +42,13 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '12px 12px', transformBox: 'view-box' }">
-        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
+      <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
+      <motion.g
+        :variants="nibVariants"
+        :animate="controls"
+        initial="normal"
+        :style="{ transformOrigin: '12px 14px' }"
+      >
         <path d="M6.5 20.5L7.90613 15.227C8.19164 14.1564 8.33439 13.621 8.73856 13.3105C9.14274 13 9.69677 13 10.8048 13H13.1952C14.3032 13 14.8573 13 15.2614 13.3105C15.6656 13.621 15.8084 14.1564 16.0939 15.227L17.5 20.5" stroke="currentColor" stroke-linejoin="round" :stroke-width="strokeWidth" />
         <path d="M9.5 13L11.0769 9.36095C11.4701 8.45365 11.6667 8 12 8C12.3333 8 12.5299 8.45365 12.9231 9.36095L14.5 13" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
       </motion.g>

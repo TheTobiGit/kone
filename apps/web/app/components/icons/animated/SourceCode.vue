@@ -12,12 +12,29 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a lateral stretch — the shape breathes outward and returns.
-const iconVariants = {
-  normal: { transform: "scaleX(1)" },
+// the code brackets spread outward while the center slash redraws cleanly
+const leftBracketVariants = {
+  normal: { transform: "translateX(0px)" },
   animate: {
-    transform: ["scaleX(1)", "scaleX(1.12)", "scaleX(1)"],
-    transition: { duration: 0.5, times: [0.0, 0.5, 1.0], ease: [0.34, 1.56, 0.64, 1] },
+    transform: ["translateX(0px)", "translateX(-2px)", "translateX(0.3px)", "translateX(0px)"],
+    transition: { duration: 0.52, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const rightBracketVariants = {
+  normal: { transform: "translateX(0px)" },
+  animate: {
+    transform: ["translateX(0px)", "translateX(2px)", "translateX(-0.3px)", "translateX(0px)"],
+    transition: { duration: 0.52, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const slashVariants = {
+  normal: { pathLength: 1, pathOffset: 0 },
+  animate: {
+    pathLength: [1, 0.3, 1],
+    pathOffset: [0, 0.7, 0],
+    transition: { duration: 0.52, ease: [0.23, 1, 0.32, 1], delay: 0.04 },
   },
 };
 </script>
@@ -36,11 +53,36 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '50% 50%', transformBox: 'fill-box' }">
-        <path d="M17 8L18.8398 9.85008C19.6133 10.6279 20 11.0168 20 11.5C20 11.9832 19.6133 12.3721 18.8398 13.1499L17 15" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-        <path d="M7 8L5.16019 9.85008C4.38673 10.6279 4 11.0168 4 11.5C4 11.9832 4.38673 12.3721 5.16019 13.1499L7 15" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-        <path d="M14.5 4L9.5 20" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-      </motion.g>
+      <motion.path
+        d="M7 8L5.16019 9.85008C4.38673 10.6279 4 11.0168 4 11.5C4 11.9832 4.38673 12.3721 5.16019 13.1499L7 15"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="leftBracketVariants"
+        :animate="controls"
+        initial="normal"
+      />
+      <motion.path
+        d="M14.5 4L9.5 20"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="slashVariants"
+        :animate="controls"
+        initial="normal"
+      />
+      <motion.path
+        d="M17 8L18.8398 9.85008C19.6133 10.6279 20 11.0168 20 11.5C20 11.9832 19.6133 12.3721 18.8398 13.1499L17 15"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="rightBracketVariants"
+        :animate="controls"
+        initial="normal"
+      />
     </svg>
   </span>
 </template>
