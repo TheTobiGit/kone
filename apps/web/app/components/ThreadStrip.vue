@@ -27,7 +27,7 @@ import {
 } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Folder01Icon, GitBranchIcon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
 import type { Pane, PaneId, PaneKind } from "~/types/studio";
@@ -74,6 +74,9 @@ const props = defineProps<{
   chooser?: boolean;
   /** The project's folder name — handed to a thread's info panel. */
   repo?: string;
+  /** The project's absolute path — the chooser pill shows the directories
+   *  before the folder name, faded, so two same-named projects still read apart. */
+  projectPath?: string;
   /** The project's current git branch, if any — handed to a thread's info
    *  panel, where it marks the thread as living in a git project. */
   branch?: string;
@@ -916,6 +919,16 @@ function columnLabel(c: Pane): string {
 const { scheme } = useTheme();
 const plasmaOpacity = computed(() => (scheme.value === "dark" ? 0.5 : 1));
 
+// Everything before the folder's own name in the project path — the faded lead
+// of the chooser pill. The trailing separator is kept so the two spans read as
+// one continuous path; null when there is no parent (a root-level project).
+const chooserDir = computed(() => {
+  if (!props.projectPath) return null;
+  const cut = props.projectPath.lastIndexOf("/");
+  if (cut <= 0) return null;
+  return props.projectPath.slice(0, cut + 1);
+});
+
 const chooserActions = computed(() =>
   PANE_KINDS.map((meta) => ({
     kind: meta.kind,
@@ -1336,6 +1349,24 @@ function isLinkedToNext(i: number): boolean {
         />
       </motion.div>
       <div class="chooser__panel">
+        <!-- The row this empty board belongs to, named above the pick — the
+             chooser covers the whole surface, so without it nothing says
+             which project you'd be starting a column in. -->
+        <p v-if="repo" class="chooser__pill" :title="projectPath">
+          <HugeiconsIcon :icon="Folder01Icon" :size="15" :stroke-width="1.7" aria-hidden="true" />
+          <span class="chooser__path">{{ chooserDir }}</span>
+          <span class="chooser__title">{{ repo }}</span>
+          <template v-if="branch">
+            <span class="chooser__sep" aria-hidden="true"></span>
+            <HugeiconsIcon
+              :icon="GitBranchIcon"
+              :size="13"
+              :stroke-width="1.7"
+              aria-hidden="true"
+            />
+            <span class="chooser__branch">{{ branch }}</span>
+          </template>
+        </p>
         <div class="chooser__actions">
           <!-- Each row leans gently toward the cursor as it approaches, then
                eases back — the same magnet pull the app's other action rows
@@ -1523,12 +1554,80 @@ function isLinkedToNext(i: number): boolean {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: min(16rem, 100%);
+  /* Wider than the action column: the identity pill above it carries a whole
+     path + branch, and crushing it to 16rem ellipsized both into noise. The
+     actions keep their own 16rem column, centred, so the pick stack is
+     unchanged. */
+  width: min(30rem, 100%);
+}
+.chooser__pill {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 auto 1.15rem;
+  color: var(--ink);
+}
+.chooser__pill > svg {
+  align-self: center;
+  flex: none;
+}
+.chooser__path {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 450;
+  letter-spacing: -0.005em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Truncate from the front, not the end: when space runs out, what must
+     survive is the segments nearest the project name — "/…/Developer/" says
+     more than "/Users/gideonsar…". Reversing the direction moves the ellipsis
+     to the left edge while the Latin text itself still lays out left-to-right. */
+  direction: rtl;
+  text-align: left;
+}
+.chooser__title {
+  flex: none;
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+/* The branch tail — a hairline divider, then the checked-out branch beside its
+   glyph. Quieter than the name but firmer than the path: it is state, not
+   location, and it changes as you work. */
+.chooser__sep {
+  align-self: center;
+  width: 1px;
+  height: 13px;
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.chooser__branch {
+  max-width: 14rem;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chooser__actions {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  width: min(16rem, 100%);
+  margin: 0 auto;
 }
 .chooser__row {
   display: flex;

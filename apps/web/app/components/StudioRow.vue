@@ -1335,6 +1335,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         :visible="visible"
         :chooser="showChooser"
         :repo="project.name"
+        :project-path="project.path"
         :branch="branch ?? undefined"
         :origin="origin"
         @choose="onChoosePane"
