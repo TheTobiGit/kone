@@ -12,12 +12,27 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a short travel in its facing direction, then an eased return.
-const iconVariants = {
+// directional flow around the corner: the stem pulses and the arrowhead surges forward
+const arrowheadVariants = {
   normal: { transform: "translate(0px, 0px)" },
   animate: {
-    transform: ["translate(0px, 0px)", "translate(2px, 2px)", "translate(0px, 0px)"],
-    transition: { duration: 0.5, times: [0, 0.4, 1], ease: [0.34, 1.56, 0.64, 1] },
+    transform: [
+      "translate(0px, 0px)",
+      "translate(2.8px, 0px)",
+      "translate(-0.4px, 0px)",
+      "translate(0.3px, 0px)",
+      "translate(0px, 0px)",
+    ],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
+const stemVariants = {
+  normal: { pathLength: 1, pathOffset: 0 },
+  animate: {
+    pathLength: [1, 0.88, 1],
+    pathOffset: [0, 0.12, 0],
+    transition: { duration: 0.54, ease: [0.23, 1, 0.32, 1] },
   },
 };
 </script>
@@ -36,10 +51,26 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal">
-        <path d="M19 15.002H12C8.22876 15.002 6.34315 15.002 5.17157 13.8304C4 12.6588 4 10.7732 4 7.00195V4.00195" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-        <path d="M15 20.002C15 20.002 20 16.3195 20 15.0019C20 13.6843 15 10.002 15 10.002" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-      </motion.g>
+      <motion.path
+        d="M19 15.002H12C8.22876 15.002 6.34315 15.002 5.17157 13.8304C4 12.6588 4 10.7732 4 7.00195V4.00195"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="stemVariants"
+        :animate="controls"
+        initial="normal"
+      />
+      <motion.path
+        d="M15 20.002C15 20.002 20 16.3195 20 15.0019C20 13.6843 15 10.002 15 10.002"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="arrowheadVariants"
+        :animate="controls"
+        initial="normal"
+      />
     </svg>
   </span>
 </template>

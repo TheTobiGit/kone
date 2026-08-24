@@ -12,12 +12,17 @@ const controls = useAnimationControls();
 const { startAnimation, stopAnimation } = useIconAnimation(controls);
 defineExpose({ startAnimation, stopAnimation });
 
-// a soft scale pop — the glyph acknowledges the action and settles back.
-const iconVariants = {
-  normal: { transform: "scale(1)" },
+// the storefront stays grounded while the awning canopy flutters with an inviting lift
+const awningVariants = {
+  normal: { transform: "translateY(0px) scaleY(1)" },
   animate: {
-    transform: ["scale(1)", "scale(1)", "scale(1.06)", "scale(1)"],
-    transition: { duration: 0.5, times: [0, 0.35, 0.7, 1], ease: [0.34, 1.56, 0.64, 1] },
+    transform: [
+      "translateY(0px) scaleY(1)",
+      "translateY(-1.5px) scaleY(1.08)",
+      "translateY(0.4px) scaleY(0.96)",
+      "translateY(0px) scaleY(1)",
+    ],
+    transition: { duration: 0.55, ease: [0.23, 1, 0.32, 1] },
   },
 };
 </script>
@@ -36,11 +41,19 @@ const iconVariants = {
       fill="none"
       overflow="visible"
     >
-      <motion.g :variants="iconVariants" :animate="controls" initial="normal" :style="{ transformOrigin: '50% 50%', transformBox: 'fill-box' }">
-        <path d="M3.5 9.99976V14.9998C3.5 17.8282 3.5 19.2424 4.37868 20.1211C5.25736 20.9998 6.67157 20.9998 9.5 20.9998H14.5C17.3284 20.9998 18.7426 20.9998 19.6213 20.1211C20.5 19.2424 20.5 17.8282 20.5 14.9998V9.99976" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-        <path d="M8 17.9998H16" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-        <path d="M17 7.50159C17 8.8823 15.8807 9.99973 14.5 9.99973C13.1193 9.99973 12 8.88044 12 7.49973C12 8.88044 10.8807 9.99973 9.5 9.99973C8.11929 9.99973 7 8.88044 7 7.49973C7 8.88044 5.82654 9.99973 4.379 9.99973C3.59983 9.99973 2.90007 9.67543 2.41999 9.16063C1.59461 8.27555 2.12559 6.97378 2.81446 5.98818L3.202 5.45827C4.08384 4.25246 4.52476 3.64956 5.16491 3.32469C5.80507 2.99983 6.552 2.99993 8.04586 3.00013L15.9551 3.00119C17.4485 3.00138 18.1952 3.00148 18.8351 3.32634C19.475 3.65119 19.9158 4.2539 20.7974 5.45933L21.1855 5.99004C21.8744 6.97565 22.4054 8.27742 21.58 9.16249C21.0999 9.67729 20.4001 10.0016 19.621 10.0016C18.1734 10.0016 17 8.8823 17 7.50159Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
-      </motion.g>
+      <path d="M3.5 9.99976V14.9998C3.5 17.8282 3.5 19.2424 4.37868 20.1211C5.25736 20.9998 6.67157 20.9998 9.5 20.9998H14.5C17.3284 20.9998 18.7426 20.9998 19.6213 20.1211C20.5 19.2424 20.5 17.8282 20.5 14.9998V9.99976" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
+      <path d="M8 17.9998H16" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" :stroke-width="strokeWidth" />
+      <motion.path
+        d="M17 7.50159C17 8.8823 15.8807 9.99973 14.5 9.99973C13.1193 9.99973 12 8.88044 12 7.49973C12 8.88044 10.8807 9.99973 9.5 9.99973C8.11929 9.99973 7 8.88044 7 7.49973C7 8.88044 5.82654 9.99973 4.379 9.99973C3.59983 9.99973 2.90007 9.67543 2.41999 9.16063C1.59461 8.27555 2.12559 6.97378 2.81446 5.98818L3.202 5.45827C4.08384 4.25246 4.52476 3.64956 5.16491 3.32469C5.80507 2.99983 6.552 2.99993 8.04586 3.00013L15.9551 3.00119C17.4485 3.00138 18.1952 3.00148 18.8351 3.32634C19.475 3.65119 19.9158 4.2539 20.7974 5.45933L21.1855 5.99004C21.8744 6.97565 22.4054 8.27742 21.58 9.16249C21.0999 9.67729 20.4001 10.0016 19.621 10.0016C18.1734 10.0016 17 8.8823 17 7.50159Z"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        :stroke-width="strokeWidth"
+        :variants="awningVariants"
+        :animate="controls"
+        initial="normal"
+        :style="{ transformOrigin: '12px 3px' }"
+      />
     </svg>
   </span>
 </template>
