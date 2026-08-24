@@ -45,10 +45,19 @@ Electron loads `http://localhost:3001` with `KONE_DESKTOP=1`.
 kone/
 ├── apps/
 │   ├── web/         # Nuxt renderer (web + desktop UI)
-│   └── desktop/     # Electron main/preload and packaging
-└── packages/
-    └── config/      # Shared TypeScript config
+│   └── desktop/     # Electron shell: main/preload at src root,
+│                    #   src/lib/ = pure utilities, src/modules/ = IPC domains,
+│                    #   src/agent/ = provider adapters, gateway, quota, usage
+├── packages/
+│   ├── config/      # Shared TypeScript config
+│   └── protocol/    # Contracts shared by renderer & main (IPC error kinds,
+│                    #   plan-task types/parsers) — environment-agnostic only
+└── tools/
+    └── oxlint/      # Custom lint rules
 ```
+
+Anything imported by both apps belongs in `@kone/protocol`; keep it free of
+electron/DOM/node builtins so both sides can consume it directly.
 
 ## Available Scripts
 

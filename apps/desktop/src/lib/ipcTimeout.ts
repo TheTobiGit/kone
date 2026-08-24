@@ -1,4 +1,4 @@
-import { markKind } from "./ipcError.js";
+import { markKind } from "@kone/protocol/ipc-error";
 
 // A bounded, typed request lifetime for subprocess- and fs-backed IPC reads.
 // The git runner already kills a wedged subprocess after its own timeout, but

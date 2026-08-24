@@ -1,7 +1,11 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
+// Sandbox copies of the adapter live inside the app tree (not the OS tmpdir)
+// so bare-specifier workspace imports like @kone/protocol resolve via normal
+// node_modules lookup from the copied module's location.
+const SANDBOX_DIR = path.join(import.meta.dir, ".sandbox");
 
 import { setUserDataDir } from "../userDataDir.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,7 +34,8 @@ async function loadRealCodexAdapter(): Promise<CodexAdapterHelpers> {
     /from "(\.[^"]+?)\.js"/g,
     (_match, spec: string) => `from ${JSON.stringify(new URL(`${spec}.ts`, import.meta.url).href)}`,
   );
-  const dir = mkdtempSync(path.join(tmpdir(), "kone-codex-adapter-real-"));
+  mkdirSync(SANDBOX_DIR, { recursive: true });
+  const dir = mkdtempSync(path.join(SANDBOX_DIR, "kone-codex-adapter-real-"));
   const copy = path.join(dir, "CodexAdapter.ts");
   writeFileSync(copy, source);
   // SAFETY: the copied module is CodexAdapter.ts itself, so its exports match CodexAdapterHelpers.

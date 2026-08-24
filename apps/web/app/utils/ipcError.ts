@@ -6,31 +6,17 @@
 // in the message string — which is stripped here so no caller ever renders it
 // verbatim. Shared by the launcher flows (clone / create), the agent surfaces,
 // and the Git Space.
+//
+// The kinds vocabulary, marker format, and parser live in @kone/protocol —
+// this module only adds the renderer-side unwrapping and presentation hints.
+import { parseKind, type IpcErrorKind } from "@kone/protocol/ipc-error";
 
-/** The machine-readable failure kinds a classified error can carry, kept in
- *  lockstep with the marker the desktop main process writes. */
-export const IPC_ERROR_KINDS = [
-  "AUTH_FAILURE",
-  "NOT_AUTHENTICATED",
-  "NOT_INSTALLED",
-  "NOT_A_REPO",
-  "NO_GITHUB_REMOTE",
-  "NOT_FOUND",
-  "NETWORK",
-  "INVALID_INPUT",
-  "INTERNAL",
-  "TIMEOUT",
-] as const;
+export type { IpcErrorKind };
 
-export type IpcErrorKind = (typeof IPC_ERROR_KINDS)[number];
-
-/** The marker prefix a classified error's message starts with. */
-const KIND_MARKER = /^\[kone:([A-Z_]+)\]\s*/;
-
-/** Drop a leading "[kone:KIND] " marker. The marker is a serialization detail,
- *  never something a user should read. */
+/** Drop a leading kind marker via the shared protocol parser. The marker is a
+ *  serialization detail, never something a user should read. */
 function stripKindMarker(message: string): string {
-  return message.replace(KIND_MARKER, "");
+  return parseKind(message).message;
 }
 
 /** The shared unwrapping: Electron's wrapper, the thrown error's own name, and
@@ -71,13 +57,11 @@ export function classifyIpcError(
   fallback: string,
 ): ClassifiedIpcError {
   const cleaned = peel(cause);
-  const match = KIND_MARKER.exec(cleaned);
-  // SAFETY: markers are written only by the desktop main process, from its
-  // copy of IPC_ERROR_KINDS (kept in lockstep per the type above); a stray
-  // token would still fall through kindHint's switch harmlessly.
-  const kind = match ? (match[1] as IpcErrorKind) : null;
-  const message = (match ? cleaned.slice(match[0].length) : cleaned).trim();
-  return { kind, message: message || fallback };
+  // SAFETY: markers are written only by the desktop main process from the
+  // shared @kone/protocol vocabulary; a stray token would still fall through
+  // kindHint's switch harmlessly.
+  const { kind, message } = parseKind(cleaned);
+  return { kind, message: message.trim() || fallback };
 }
 
 /** A short actionable sentence for a known kind, null when the message itself

@@ -58,7 +58,7 @@ import {
   isClaudeTaskTool,
   planTasksFromClaudeTracked,
 } from "../claudeTaskTracker.js";
-import { formatPlanTasks } from "../planTasks.js";
+import { formatPlanTasks } from "@kone/protocol/plan-tasks";
 import { isResumeRefusalError } from "./errors.js";
 import {
   buildClaudeAttachmentContent,

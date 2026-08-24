@@ -10,7 +10,7 @@ import {
   resolveDroidBinary,
 } from "../droidHome.js";
 import { JsonRpcClient } from "../jsonRpc.js";
-import { formatPlanTasks, reconcilePlanTasks } from "../planTasks.js";
+import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import { isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";

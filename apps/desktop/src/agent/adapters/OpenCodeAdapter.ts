@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
+import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import { probe } from "../spawn.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";

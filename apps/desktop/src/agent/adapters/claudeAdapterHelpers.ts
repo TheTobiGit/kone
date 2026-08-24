@@ -5,7 +5,7 @@ import type {
   UserInputQuestion,
   UserInputQuestionOption,
 } from "../types.js";
-import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "../planTasks.js";
+import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import type { ClaudeItemBuffer } from "./claudeAdapterTypes.js";
 
 /** A decoded JSON value from the Claude CLI's stream-json wire: scalars,
