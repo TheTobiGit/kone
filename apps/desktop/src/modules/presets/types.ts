@@ -11,7 +11,7 @@
 import type {
   SubagentPresetCreateInput,
   SubagentPresetPatch,
-} from "../../agent/ConversationStore.js";
+} from "@kone/agent-core/ConversationStore.js";
 
 export type PresetCreateInput = SubagentPresetCreateInput;
 

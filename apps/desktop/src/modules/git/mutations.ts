@@ -1,9 +1,9 @@
 import { rm } from "node:fs/promises";
 
-import { GitError, assertWithinRepo, git, repoRoot, safeRepoPath } from "./core.js";
+import { GitError, assertWithinRepo, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
 import { repoState } from "./state.js";
-import type { GitCommitOptions } from "./types.js";
+import type { GitCommitOptions } from "@kone/git-core/types.js";
 
 // Write operations behind the changes UI. Each resolves the repo root and runs
 // git; the caller learns the resulting state from the watcher's next status push.

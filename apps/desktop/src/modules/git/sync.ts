@@ -1,8 +1,8 @@
-import { GitError, git, repoRoot } from "./core.js";
+import { GitError, git, repoRoot } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
 import { remoteExists } from "./state.js";
 import type { IpcErrorKind } from "@kone/protocol/ipc-error";
-import type { GitPullOptions, GitPushOptions } from "./types.js";
+import type { GitPullOptions, GitPushOptions } from "@kone/git-core/types.js";
 
 // Network operations behind the Git Space masthead. Two behaviours matter
 // here that the local mutations don't need: upstream resolution happens before

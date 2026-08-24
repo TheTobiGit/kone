@@ -1,7 +1,7 @@
 import { ipcMain } from "electron";
 
 import { withTimeout } from "../../lib/ipcTimeout.js";
-import { clone } from "./clone.js";
+import { clone } from "@kone/git-core/clone.js";
 import { createProject } from "./create.js";
 import { contributors, identity, logo, readme } from "./about.js";
 import { content, diff } from "./diff.js";
@@ -23,7 +23,7 @@ import {
 } from "./mutations.js";
 import { remotes, repoState } from "./state.js";
 import { stashes, stashApply, stashDrop, stashPush } from "./stash.js";
-import { detect, status } from "./status.js";
+import { detect, status } from "@kone/git-core/status.js";
 import { fetch as gitFetch, pull as gitPull, push as gitPush } from "./sync.js";
 import { generateCommitMessage } from "./textGen.js";
 import { runStackedAction } from "./stacked.js";
@@ -36,7 +36,7 @@ import type {
   GitPullOptions,
   GitPushOptions,
   GitRunStackedActionInput,
-} from "./types.js";
+} from "@kone/git-core/types.js";
 
 
 // Live watchers, one fs watch per (renderer, dir). A renderer can watch many

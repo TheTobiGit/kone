@@ -22,16 +22,16 @@
       "name": "desktop",
       "version": "0.1.0",
       "dependencies": {
-        "@anthropic-ai/claude-agent-sdk": "0.3.220",
         "@xterm/headless": "6.0.0",
         "node-pty": "^1.1.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
         "@electron/rebuild": "^4.2.0",
+        "@kone/agent-core": "workspace:*",
         "@kone/config": "workspace:*",
+        "@kone/git-core": "workspace:*",
         "@kone/protocol": "workspace:*",
-        "@modelcontextprotocol/sdk": "^1.30.0",
         "@types/bun": "^1.3.14",
         "electron": "^35.1.5",
         "electron-builder": "^26.0.12",
@@ -74,9 +74,37 @@
         "vue-tsc": "^3.3.7",
       },
     },
+    "packages/agent-core": {
+      "name": "@kone/agent-core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@anthropic-ai/claude-agent-sdk": "0.3.220",
+        "@kone/git-core": "workspace:*",
+        "@kone/protocol": "workspace:*",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@kone/config": "workspace:*",
+        "@types/bun": "^1.3.14",
+        "typescript": "catalog:",
+      },
+    },
     "packages/config": {
       "name": "@kone/config",
       "version": "0.0.0",
+    },
+    "packages/git-core": {
+      "name": "@kone/git-core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@kone/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@kone/config": "workspace:*",
+        "@types/bun": "^1.3.14",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+      },
     },
     "packages/protocol": {
       "name": "@kone/protocol",
@@ -351,7 +379,11 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@kone/agent-core": ["@kone/agent-core@workspace:packages/agent-core"],
+
     "@kone/config": ["@kone/config@workspace:packages/config"],
+
+    "@kone/git-core": ["@kone/git-core@workspace:packages/git-core"],
 
     "@kone/protocol": ["@kone/protocol@workspace:packages/protocol"],
 

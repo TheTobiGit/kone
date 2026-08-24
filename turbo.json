@@ -4,7 +4,12 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*",
+        "../../packages/agent-core/src/**",
+        "../../packages/git-core/src/**"
+      ],
       "outputs": ["dist/**", ".nuxt/**", ".output/**", "resources/**"]
     },
     "package": {
@@ -19,10 +24,20 @@
       "dependsOn": ["^lint"]
     },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": ["^check-types"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../../packages/agent-core/src/**",
+        "../../packages/git-core/src/**"
+      ]
     },
     "test": {
-      "dependsOn": ["^test"]
+      "dependsOn": ["^test"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../../packages/agent-core/src/**",
+        "../../packages/git-core/src/**"
+      ]
     },
     "dev": {
       "cache": false,

@@ -1,10 +1,10 @@
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import path from "node:path";
 
-import { repoRoot } from "./core.js";
+import { repoRoot } from "@kone/git-core/core.js";
 import { invalidateFileIndex } from "./files.js";
-import { status } from "./status.js";
-import type { GitStatus } from "./types.js";
+import { status } from "@kone/git-core/status.js";
+import type { GitStatus } from "@kone/git-core/types.js";
 
 // Keep the open project in sync with the disk: watch the repo and re-read status
 // whenever the working tree or the index moves — an editor save, a `git add` in

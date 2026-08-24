@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
-import { GitError, git, repoRoot, safeRepoPath } from "./core.js";
-import type { GitDiffHunk, GitFileContent, GitFileDiff } from "./types.js";
+import { GitError, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
+import type { GitDiffHunk, GitFileContent, GitFileDiff } from "@kone/git-core/types.js";
 
 // The detail view opens one file at a time, so we ask git for just that file's
 // unified diff and parse it into numbered hunks. Staged files diff index-vs-HEAD;

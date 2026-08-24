@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { git } from "./core.js";
+import { git } from "@kone/git-core/core.js";
 import { files, resetFileIndexForTests } from "./files.js";
 import { watchStatus } from "./watch.js";
 

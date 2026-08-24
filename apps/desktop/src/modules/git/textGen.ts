@@ -3,11 +3,11 @@ import { promisify } from "node:util";
 
 import { z } from "zod";
 
-import { git, repoRoot } from "./core.js";
+import { git, repoRoot } from "@kone/git-core/core.js";
 import type {
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
-} from "./types.js";
+} from "@kone/git-core/types.js";
 
 const execFileAsync = promisify(execFile);
 

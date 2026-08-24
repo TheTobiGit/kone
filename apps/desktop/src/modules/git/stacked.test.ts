@@ -5,9 +5,9 @@ import path from "node:path";
 
 mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 
-const { git } = await import("./core.js");
+const { git } = await import("@kone/git-core/core.js");
 const { runStackedAction } = await import("./stacked.js");
-import type { GitActionProgressEvent } from "./types.js";
+import type { GitActionProgressEvent } from "@kone/git-core/types.js";
 
 async function makeRepo(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "kone-stacked-test-"));

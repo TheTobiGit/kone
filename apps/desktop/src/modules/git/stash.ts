@@ -1,6 +1,6 @@
-import { GitError, git, repoRoot } from "./core.js";
+import { GitError, git, repoRoot } from "@kone/git-core/core.js";
 import { withRepoMutation } from "./mutationLock.js";
-import type { GitStashEntry } from "./types.js";
+import type { GitStashEntry } from "@kone/git-core/types.js";
 
 // The stash surface. Two parsing rules matter: the stash ref comes straight
 // from git's own --format (%gd, the "stash@{N}" string git's apply/drop expect)

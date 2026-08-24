@@ -3,8 +3,8 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { createKeyedSingleFlightCache } from "../../lib/singleFlightCache.js";
-import { git } from "./core.js";
-import type { GitProjectFile } from "./types.js";
+import { git } from "@kone/git-core/core.js";
+import type { GitProjectFile } from "@kone/git-core/types.js";
 
 const MAX_RESULTS = 80;
 const MAX_WALKED_FILES = 10_000;

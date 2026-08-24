@@ -6,11 +6,11 @@ import { shell } from "electron";
 import { z } from "zod";
 
 import { parseSafeExternalUrl } from "../../lib/safeExternalUrl.js";
-import type { JsonValue } from "../../lib/jsonValue.js";
-import { GitError, lastStderrLine, repoRoot, run } from "./core.js";
+import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
+import { GitError, lastStderrLine, repoRoot, run } from "@kone/git-core/core.js";
 import { parseFileDiff } from "./diff.js";
 import { classifyGhError } from "./ghError.js";
-import { GIT_AUTHOR_AVATAR_CAP, GIT_CONTRIBUTOR_CAP } from "./types.js";
+import { GIT_AUTHOR_AVATAR_CAP, GIT_CONTRIBUTOR_CAP } from "@kone/git-core/types.js";
 import type {
   GitCommitAuthors,
   GitContributor,
@@ -30,7 +30,7 @@ import type {
   GitHubReview,
   GitHubStatus,
   GitHubUser,
-} from "./types.js";
+} from "@kone/git-core/types.js";
 
 // The GitHub surface, driven entirely through the `gh` CLI (bring-your-own-
 // account — kone stores no tokens). Everything goes through `--json` so we

@@ -1,6 +1,6 @@
-import { GitError, git, repoRoot, safeRepoPath } from "./core.js";
+import { GitError, git, repoRoot, safeRepoPath } from "@kone/git-core/core.js";
 import { parseFileDiff } from "./diff.js";
-import { numstat } from "./numstat.js";
+import { numstat } from "@kone/git-core/numstat.js";
 import type {
   GitBranch,
   GitCommit,
@@ -8,7 +8,7 @@ import type {
   GitCommitFile,
   GitFileDiff,
   GitFileStatus,
-} from "./types.js";
+} from "@kone/git-core/types.js";
 
 export async function branches(dir: string): Promise<GitBranch[]> {
   const root = await repoRoot(dir);

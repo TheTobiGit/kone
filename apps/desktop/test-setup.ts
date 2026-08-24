@@ -1,19 +1,18 @@
-// Stands the agent layer's SQLite driver up for the test runner.
+// Stands the desktop layer's SQLite driver up for the test runner.
 //
-// See src/agent/sqlite.ts for why the driver is imported through a seam at all.
-// Replacing it here rather than in each test file is what makes it work: bunfig
-// preloads this before it transpiles a single test module, so the seam is
-// already stubbed by the time anything imports a store. Doing it from inside a
-// test file is too late for the files that die at load, and it silently stops
-// applying if that file ever imports certain other test helpers.
+// The agent core's stores (the only sqlite users) moved to
+// packages/agent-core, which carries its own bunfig preload for its own tests.
+// This file stays because `bun test` in apps/desktop still runs the desktop's
+// remaining suites, and the agent-core sources they import (via
+// @kone/agent-core/…) route their node:sqlite through the same seam — which is
+// stubbed here before any test module transpiles, exactly as before the move.
+// See packages/agent-core/src/sqlite.ts for why the seam exists at all.
 //
 // `bun:sqlite`'s Database is API-compatible with DatabaseSync over the surface
 // the stores use — exec / prepare, and get / all / run on the statement.
-// `StatementSync` is only ever imported as a type, so it erases and needs no
-// stand-in here.
 import { Database } from "bun:sqlite";
 import { mock } from "bun:test";
 
-mock.module("./src/agent/sqlite.ts", () => ({
+mock.module("@kone/agent-core/sqlite.js", () => ({
   DatabaseSync: Database,
 }));

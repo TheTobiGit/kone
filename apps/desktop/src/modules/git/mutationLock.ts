@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { GitError, git } from "./core.js";
+import { GitError, git } from "@kone/git-core/core.js";
 
 // Serialize kone-originated git writes per repository.
 //

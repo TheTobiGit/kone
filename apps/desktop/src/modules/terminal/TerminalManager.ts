@@ -16,7 +16,7 @@
 // under the shell, and ACK-based PTY pause/resume so a slow renderer can't
 // balloon memory.
 
-import { inspectSubprocessActivityAsync, killProcessTree } from "./processTree.js";
+import { inspectSubprocessActivityAsync, killProcessTree } from "@kone/git-core/processTree.js";
 import { createModeReplayTracker, type ModeReplayTracker } from "./modeReplay.js";
 import { sanitizeTerminalHistoryChunk } from "./sanitize.js";
 import { spawnPty, type PtyProcess } from "./Pty.js";

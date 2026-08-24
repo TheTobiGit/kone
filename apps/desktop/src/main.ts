@@ -3,8 +3,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { app, BrowserWindow, nativeTheme, net, protocol, shell } from "electron";
 
-import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/index.js";
-import { setUserDataDir } from "./agent/userDataDir.js";
+import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
+import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
 import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";

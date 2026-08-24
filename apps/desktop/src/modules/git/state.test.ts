@@ -3,9 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { git } from "./core.js";
+import { git } from "@kone/git-core/core.js";
 import { repoState } from "./state.js";
-import { status } from "./status.js";
+import { status } from "@kone/git-core/status.js";
 
 /** A repo mid-merge, with `name` conflicted on both sides. */
 async function makeConflict(name: string): Promise<string> {
