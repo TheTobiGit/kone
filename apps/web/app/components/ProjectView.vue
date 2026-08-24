@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, ref, shallowRef, toRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRef, toRef, watch } from "vue";
 import { onClickOutside, onKeyStroke, useDebounceFn, useEventListener, watchDebounced } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
@@ -670,6 +670,13 @@ const pickerProviders = computed<PickerProvider[]>(() => {
     });
 });
 
+// Is there anything to pick? A pinned agent narrows the picker to its one model,
+// and per-model visibility toggles can do the same, and a picker holding a single
+// row is a dead end — so the composer's model slot becomes a label instead.
+const modelSwitchable = computed(
+  () => pickerProviders.value.reduce((n, p) => n + p.models.length, 0) > 1,
+);
+
 // Three views over the same page: the working tree ("overview"), the
 // conversation ("board"), and the repository ("git"). Sending the first turn
 // flips to the board; the corner glyphs move between overview and git.
@@ -1240,10 +1247,26 @@ function onComposerMode(next: InteractionMode) {
 const {
   team: agents,
   selected: pickedAgent,
+  pendingThreadAgent,
   selectAgent,
   settleThreadAgent,
   isOnTeam,
 } = useAgentRoster();
+
+// When an outside surface (such as the agent detail page in settings) requests
+// a new conversation with a specific agent, bring the board forward, spawn a
+// fresh blank thread if the focused one is non-blank or busy, and wake the
+// composer.
+watch(pendingThreadAgent, async (agentId) => {
+  if (!agentId) return;
+  pendingThreadAgent.value = null;
+  surface.value = "board";
+  if (!threadIsBlank.value || busy.value) {
+    await board.open("thread");
+  }
+  await nextTick();
+  void composerRef.value?.wake();
+});
 
 // The composer answers as somebody on this project's team — that is what a team
 // is for. The selection is app-wide, so it can be carrying an agent who is a
@@ -2263,6 +2286,7 @@ function onDiscardFile(path: string) {
           :agent-id="composerAgentId"
           :agent-switchable="threadIsBlank && !focusedIsSideChat"
           :models="modelOptions"
+          :model-switchable="modelSwitchable"
           :model-id="model"
           :reasoning="reasoning"
           :mode="mode"
@@ -2278,7 +2302,7 @@ function onDiscardFile(path: string) {
           @update:mode="onComposerMode"
           @update:fast-mode="onUpdateFastMode"
           @update:context-window="onComposerContextWindow"
-          @open-models="modelPickerOpen = true"
+          @open-models="modelSwitchable && (modelPickerOpen = true)"
           @open-branch="openBranchPicker"
           @update:open="composerOpen = $event"
         />
@@ -2582,12 +2606,21 @@ function onDiscardFile(path: string) {
 }
 
 /* ── Titlebar ─────────────────────────────────────────────────────────────── */
-/* Full-width top band; the controls are absolutely placed within it. */
+/* Full-width top band; the controls are absolutely placed within it. The band
+   itself is pointer-transparent — it sits over the board's own top-edge chrome
+   (the strip's column index), and an empty 3.25rem bar was swallowing those
+   clicks. Each control re-enables hits for itself. */
 .project-chrome {
   position: absolute;
   inset: 0 0 auto;
   z-index: 40;
   height: 3.25rem;
+  pointer-events: none;
+}
+.project-back-magnet,
+.project-nav,
+.project-avatar-slot {
+  pointer-events: auto;
 }
 /* ── Back to launcher ─────────────────────────────────────────────────────── */
 /* A quiet return glyph in the top-left corner — mirrors the folder's own perch

@@ -1,4 +1,4 @@
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import {
   addAgentToProject,
   agentById,
@@ -29,6 +29,9 @@ import { useProject } from "~/composables/useProject";
 // `Agent` is deliberately NOT re-exported here: the util is auto-imported too,
 // so a second path to the same name makes it ambiguous which one a component
 // got.
+
+/** Signals the active board to open/focus a blank thread with this agent. */
+const pendingThreadAgent = ref<string | null>(null);
 
 export function useAgentRoster() {
   const project = useProject();
@@ -82,15 +85,30 @@ export function useAgentRoster() {
     return path ? removeAgentFromProject(path, id) : Promise.resolve();
   }
 
+  /**
+   * Start a thread with an agent: ensures it is on the active project's team,
+   * sets the active agent selection, and requests the board to focus a blank thread.
+   */
+  async function startThreadWithAgent(id: string): Promise<void> {
+    const path = projectPath.value;
+    if (path && !isOnProjectTeam(path, id)) {
+      await addAgentToProject(path, id);
+    }
+    selectAgent(id);
+    pendingThreadAgent.value = id;
+  }
+
   return {
     roster,
     selected,
     team,
     teams,
     projectPath,
+    pendingThreadAgent,
     isOnTeam,
     addToTeam,
     removeFromTeam,
+    startThreadWithAgent,
     loadProjectTeam,
     agentTeamPaths,
     agentById,

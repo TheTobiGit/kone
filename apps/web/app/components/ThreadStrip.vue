@@ -1420,16 +1420,33 @@ function isLinkedToNext(i: number): boolean {
 .index__dash {
   pointer-events: auto;
   cursor: pointer;
+  position: relative;
   width: 13px;
   height: 2px;
   border-radius: 999px;
+  -webkit-tap-highlight-color: transparent;
   background: color-mix(in srgb, var(--ink) 16%, transparent);
   transition:
     width 0.4s cubic-bezier(0.22, 1, 0.36, 1),
     background-color 0.3s ease;
 }
+/* A 2px hairline is not a pointer target. Expand the clickable box off-layout —
+   half the 6px gutter on each side, so neighbouring dashes meet without
+   overlapping — leaving the mark itself the size it wants to be. */
+.index__dash::after {
+  content: "";
+  position: absolute;
+  inset: -8px -3px;
+}
 .index__dash:hover {
   background: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+/* Keyboard arrival has to be visible: the strip's nav is otherwise a row of
+   near-identical hairlines. */
+.index__dash:focus-visible {
+  outline: none;
+  width: 24px;
+  background: var(--accent);
 }
 .index__dash.is-focused {
   width: 24px;
