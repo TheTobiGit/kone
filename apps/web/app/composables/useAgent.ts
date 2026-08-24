@@ -1563,7 +1563,7 @@ const SWEEP_INTERVAL_MS = 60_000;
   * focus, and openThreadHandle reuses resident sessions by id. Sessions are
   * still disposed on explicit thread close; the sweep hibernates idle ones so
   * processes don't pile up across the run. Bounded by the number of projects
-  * opened in one run, like useBoardPersistence's layoutCache. */
+  * opened in one run, like useStudioPersistence's plane cache. */
 type ProjectRegistry = {
   sessions: ShallowRef<ThreadSession[]>;
   opening: Map<string, { key: string; promise: Promise<void> }>;

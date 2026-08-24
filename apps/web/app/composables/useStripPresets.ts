@@ -1,5 +1,5 @@
 import { nextTick, onBeforeUnmount, ref, type Ref } from "vue";
-import type { Pane, PaneId } from "~/types/board";
+import type { Pane, PaneId } from "~/types/studio";
 import { LADDER_PX } from "~/utils/stripScroll";
 import { useSound } from "./useSound";
 

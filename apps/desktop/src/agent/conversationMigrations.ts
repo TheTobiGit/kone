@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 /** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
  *  partially-applied migration — a crash between statements — re-runs
@@ -16,6 +16,24 @@ export function hasColumn(db: DatabaseSync, table: string, column: string): bool
     // Unknown table / unreadable schema — assume present so the ladder fails
     // loudly on a real problem rather than double-adding a column.
     return true;
+  }
+}
+
+/** Whether `table` exists at all. The sibling of `hasColumn`, for a rung that
+ *  has to read a table it did not create — a partially-applied ladder, or a
+ *  database built by hand, can reach a rung without the table its predecessor
+ *  was supposed to leave behind, and a throw inside a rung stops the whole
+ *  upgrade rather than skipping one step. */
+export function hasTable(db: DatabaseSync, table: string): boolean {
+  try {
+    // SAFETY: the row shape is fixed by the SQL's single selected column.
+    return (
+      db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get(table) != null
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -1034,8 +1052,81 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
     version = commitStep(db, 27);
   }
 
+  if (version < 28) {
+    // v28 — the studio. Panes used to be a per-project board, one blob per
+    // project path; they are now one plane whose rows are projects, so the
+    // layout is a single document and `project_boards` has nothing left to key.
+    //
+    // Every stored board becomes a row, most-recently-used first, and that
+    // order is the plane's vertical order — the project you touched last is the
+    // row you land on. A board with no panes becomes no row at all: a row
+    // exists only where work does, so an empty one would be a row you can
+    // travel to and find nothing in.
+    beginStep(db);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS studio (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        layout     TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    if (hasTable(db, "project_boards")) {
+      // SAFETY: the three selected columns are project_boards' whole shape.
+      const boards = db
+        .prepare(
+          `SELECT project_path, layout FROM project_boards ORDER BY updated_at DESC`,
+        )
+        .all() as Array<{ project_path: string; layout: string }>;
+      const rows: Array<{
+        projectPath: string;
+        panes: unknown[];
+        focusedId: string | null;
+      }> = [];
+      for (const b of boards) {
+        let parsed: unknown;
+        try {
+          // SAFETY: untrusted disk content — parsed to unknown and gated below.
+          parsed = JSON.parse(b.layout);
+        } catch {
+          // An unparseable blob is a layout already lost; that project simply
+          // starts with no row rather than failing the whole upgrade.
+          continue;
+        }
+        if (!parsed || typeof parsed !== "object") continue;
+        // SAFETY: reading fields off unknown needs the object view, and the
+        // checks below are themselves the gate — one view rather than an
+        // assertion per field.
+        const doc = parsed as { panes?: unknown; focusedId?: unknown };
+        // A board with no panes is no row.
+        if (!Array.isArray(doc.panes) || doc.panes.length === 0) continue;
+        rows.push({
+          projectPath: b.project_path,
+          panes: doc.panes,
+          focusedId: typeof doc.focusedId === "string" ? doc.focusedId : null,
+        });
+      }
+      if (rows.length > 0) {
+        db.prepare(
+          `INSERT INTO studio (id, layout, updated_at) VALUES (1, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             layout = excluded.layout,
+             updated_at = excluded.updated_at`,
+        ).run(
+          JSON.stringify({
+            version: 2,
+            rows,
+            focusedRow: rows[0]?.projectPath ?? null,
+          }),
+          Date.now(),
+        );
+      }
+      db.exec(`DROP TABLE project_boards`);
+    }
+    version = commitStep(db, 28);
+  }
+
   // Future migrations append here:
-  // `if (version < 28) { beginStep(db); …; version = commitStep(db, 28); }`
+  // `if (version < 29) { beginStep(db); …; version = commitStep(db, 29); }`
 
   // Every rung stamps itself, so the ladder ending anywhere but the current
   // version means a rung is missing for it — a bumped SCHEMA_VERSION that

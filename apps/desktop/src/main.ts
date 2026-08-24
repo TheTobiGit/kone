@@ -11,7 +11,7 @@ import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./fs.js";
 import { cancelAllClones, registerGitIpc } from "./git/index.js";
 import { registerSystemIpc } from "./system.js";
-import { registerBoardIpc } from "./board/index.js";
+import { registerStudioIpc } from "./studio/index.js";
 import { registerRosterIpc } from "./roster/index.js";
 import { registerAvatarIpc } from "./avatars/index.js";
 import { registerPresetIpc } from "./presets/index.js";
@@ -125,8 +125,8 @@ function registerIpc() {
   // Per-project scratchpad documents (markdown notes).
   registerScratchpadIpc();
 
-  // Per-project board layout (pane order, kinds, widths, focus).
-  registerBoardIpc();
+  // The studio plane: one row of panes per project (order, kinds, widths, focus).
+  registerStudioIpc();
 
   // The roster: the agents you can hand work to, and each project's team.
   registerRosterIpc();

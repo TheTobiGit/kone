@@ -4,7 +4,7 @@ import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Add01Icon, Copy01Icon, MessageAdd01Icon } from "@hugeicons/core-free-icons";
-import type { BoardIntent } from "~/types/board";
+import type { StudioIntent } from "~/types/studio";
 
 const props = defineProps<{
   /** The focused pane's id — a change dismisses the in-flight selection bubble. */
@@ -13,7 +13,7 @@ const props = defineProps<{
 
 // One event: every button hands the board a fully-formed intent.
 const emit = defineEmits<{
-  dispatch: [intent: BoardIntent];
+  dispatch: [intent: StudioIntent];
 }>();
 
 const { cue } = useSound();

@@ -79,7 +79,7 @@ import {
   type ScratchpadRecord,
   type ScratchpadRow,
   type StoredAttachment,
-  type StoredBoardLayout,
+  type StoredStudioLayout,
   type StoredThreadPage,
   type SubagentRow,
   type ThreadRow,
@@ -3362,21 +3362,24 @@ export class ConversationStore {
     }
   }
 
-  // ── project board layout ────────────────────────────────────────────────────
+  // ── studio layout ───────────────────────────────────────────────────────────
 
-  /** Read a project's persisted board layout. Never throws: a corrupt JSON blob
-   *  or an unrecognised shape returns `null` so the project still opens (the
-   *  renderer falls back to today's single-thread board). Hard structural
-   *  validation of the panes themselves is the renderer's job (§6.4). */
-  loadBoard(projectPath: string): StoredBoardLayout | null {
+  /** Read the studio plane. Never throws: a corrupt JSON blob or an
+   *  unrecognised shape returns `null` so the app still opens on an empty
+   *  plane. Hard structural validation of the rows and their panes is the
+   *  renderer's job (§6.4) — this checks only that the document is the shape
+   *  this build knows how to hand over.
+   *
+   *  One row, always id 1: the studio is a single plane spanning every project,
+   *  so there is nothing to key it by. */
+  loadStudio(): StoredStudioLayout | null {
     const db = this.handle();
     if (!db) return null;
     try {
-      // SAFETY: project_boards stores one NOT NULL TEXT layout column per
-      // project path.
-      const row = db
-        .prepare(`SELECT layout FROM project_boards WHERE project_path = ?`)
-        .get(projectPath) as { layout: string } | undefined;
+      // SAFETY: studio holds at most one row, with one NOT NULL TEXT layout.
+      const row = db.prepare(`SELECT layout FROM studio WHERE id = 1`).get() as
+        | { layout: string }
+        | undefined;
       if (!row?.layout) return null;
       // SAFETY: layout is untrusted disk content — parse to unknown first and
       // let the checks below decide.
@@ -3386,35 +3389,35 @@ export class ConversationStore {
       if (
         !parsed ||
         typeof parsed !== "object" ||
-        (parsed as { version?: unknown }).version !== 1 ||
-        !Array.isArray((parsed as { panes?: unknown }).panes)
+        (parsed as { version?: unknown }).version !== 2 ||
+        !Array.isArray((parsed as { rows?: unknown }).rows)
       ) {
         return null;
       }
-      // SAFETY: version === 1 and the pane array were just verified; deeper
-      // per-pane structure is validated downstream by the renderer.
-      return parsed as StoredBoardLayout;
+      // SAFETY: version === 2 and the row array were just verified; deeper
+      // per-row and per-pane structure is validated downstream by the renderer.
+      return parsed as StoredStudioLayout;
     } catch (err) {
-      console.error("[conversation-store] loadBoard failed:", err);
+      console.error("[conversation-store] loadStudio failed:", err);
       return null;
     }
   }
 
-  saveBoard(projectPath: string, layout: StoredBoardLayout): { savedAt: number } | null {
+  saveStudio(layout: StoredStudioLayout): { savedAt: number } | null {
     const db = this.handle();
     if (!db) return null;
     const savedAt = Date.now();
     try {
       db.prepare(
-        `INSERT INTO project_boards (project_path, layout, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(project_path) DO UPDATE SET
+        `INSERT INTO studio (id, layout, updated_at)
+         VALUES (1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
            layout = excluded.layout,
            updated_at = excluded.updated_at`,
-      ).run(projectPath, JSON.stringify(layout), savedAt);
+      ).run(JSON.stringify(layout), savedAt);
       return { savedAt };
     } catch (err) {
-      console.error("[conversation-store] saveBoard failed:", err);
+      console.error("[conversation-store] saveStudio failed:", err);
       return null;
     }
   }

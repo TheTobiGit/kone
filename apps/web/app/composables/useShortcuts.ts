@@ -53,11 +53,11 @@ const ACTIONS: ShortcutAction[] = [
     personalize: true,
   },
   {
-    id: "open-board",
-    label: "Open project board",
-    hint: "Leave the working-tree home and reveal the thread strip.",
-    description: "Open the project's board — threads, terminals, and scratchpads on the strip.",
-    group: "Navigation",
+    id: "open-studio",
+    label: "Summon the studio",
+    hint: "Bring the studio over whatever page you are on; press again to send it away.",
+    description: "Every project's work — threads, terminals and scratchpads — on one plane.",
+    group: "Studio",
     default: "mod+b",
     rebindable: true,
     personalize: true,
@@ -186,13 +186,16 @@ const ACTIONS: ShortcutAction[] = [
     rebindable: true,
     personalize: true,
   },
+  // Width is a tuning gesture, not navigation, so it yields Alt+Arrow to the
+  // vertical axis below and takes Shift+Arrow instead. That keeps Alt+Arrow
+  // meaning "move focus" on both axes of the plane.
   {
     id: "grow-thread-width",
     label: "Widen thread",
     hint: "Grow the focused thread column one width step (toward 1240px).",
     description: "Give the focused thread more reading room.",
     group: "Threads",
-    default: "mod+alt+up",
+    default: "mod+shift+up",
     rebindable: true,
     personalize: true,
   },
@@ -202,7 +205,7 @@ const ACTIONS: ShortcutAction[] = [
     hint: "Shrink the focused thread column one width step (toward 840px).",
     description: "Pull the focused thread narrower so more neighbours peek in.",
     group: "Threads",
-    default: "mod+alt+down",
+    default: "mod+shift+down",
     rebindable: true,
     personalize: true,
   },
@@ -226,6 +229,33 @@ const ACTIONS: ShortcutAction[] = [
     group: "Threads",
     // niri uses Mod+O for Overview, but ⌘O is Open on macOS — so shift it.
     default: "mod+shift+o",
+    rebindable: true,
+    personalize: true,
+  },
+
+  // ── the vertical axis ─────────────────────────────────────────────────────
+  // The strip above is one project's row. The studio stacks those rows into a
+  // plane: a row is a project, a column within it is a pane. These step the
+  // camera between whole rows, and they deliberately mirror the horizontal
+  // focus-thread-left/right pair one axis over — Alt+Arrow for the same
+  // layout-safety reason.
+  {
+    id: "focus-row-up",
+    label: "Focus row above",
+    hint: "Move the studio's camera up one row — one project's panes at a time.",
+    description: "Step to the project above on the vertical axis.",
+    group: "Studio",
+    default: "mod+alt+up",
+    rebindable: true,
+    personalize: true,
+  },
+  {
+    id: "focus-row-down",
+    label: "Focus row below",
+    hint: "Move the studio's camera down one row — one project's panes at a time.",
+    description: "Step to the project below on the vertical axis.",
+    group: "Studio",
+    default: "mod+alt+down",
     rebindable: true,
     personalize: true,
   },

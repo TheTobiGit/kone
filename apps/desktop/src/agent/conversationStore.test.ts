@@ -251,13 +251,13 @@ const V17_THREADS = `
 `;
 
 describe("v18 migration", () => {
-  test("fresh DB opens at the current schema (v27) with the new columns, table and indexes", () => {
+  test("fresh DB opens at the current schema (v28) with the new columns, table and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
 
     const threads = columnNames(raw, "threads");
     for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
@@ -388,7 +388,7 @@ describe("v18 migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
     expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
     raw.close();
     // Persistence is live again on the completed schema.
@@ -947,7 +947,7 @@ describe("v19 keyset index migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -968,7 +968,7 @@ describe("v19 keyset index migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -1240,6 +1240,87 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
 
 // ── v20 durable turn queue ────────────────────────────────────────────────────
 
+describe("v28 studio migration", () => {
+  test("fresh DB opens with the studio table and no project_boards", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    const raw = rawDb();
+    // SAFETY: sqlite_master rows carry the object's name in `name`.
+    const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
+      name: string;
+    }>).map((r) => r.name);
+    expect(tables).toContain("studio");
+    // The per-project blob the plane replaced is gone, not merely unused — a
+    // second writer for the same state is exactly how the two drift apart.
+    expect(tables).not.toContain("project_boards");
+    expect(store.loadStudio()).toBeNull();
+    raw.close();
+  });
+
+  test("stored boards fold into the plane as rows, most-recent first", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-v28-"));
+    const legacy = new Database(path.join(dir, "conversations.sqlite"));
+    // V17_THREADS already carries project_boards — the table this rung retires.
+    legacy.exec(V17_THREADS);
+    const pane = (id: string) => ({
+      id,
+      kind: "thread",
+      anchor: { kind: "thread", threadId: `${id}-thread` },
+      width: 0,
+    });
+    const insert = legacy.prepare(
+      `INSERT INTO project_boards (project_path, layout, updated_at) VALUES (?, ?, ?)`,
+    );
+    insert.run("/older", JSON.stringify({ version: 1, panes: [pane("a")], focusedId: "a" }), 100);
+    insert.run("/newer", JSON.stringify({ version: 1, panes: [pane("b")], focusedId: "b" }), 900);
+    // A board with no panes is no row: a row exists only where work does.
+    insert.run("/empty", JSON.stringify({ version: 1, panes: [], focusedId: null }), 500);
+    // An unparseable blob is a layout already lost — that project just gets no
+    // row, rather than failing the whole upgrade.
+    insert.run("/corrupt", "{not json", 700);
+    legacy.exec(`PRAGMA user_version = 17`);
+    legacy.close();
+
+    useUserDataDir(dir);
+    const store = new ConversationStoreCtor();
+    const plane = store.loadStudio();
+    expect(plane?.version).toBe(2);
+    expect(plane?.rows.map((r) => r.projectPath)).toEqual(["/newer", "/older"]);
+    // Most-recently-touched first, and that is the row you land on.
+    expect(plane?.focusedRow).toBe("/newer");
+    expect(plane?.rows[0]?.focusedId).toBe("b");
+    expect(plane?.rows[0]?.panes).toHaveLength(1);
+
+    const raw = rawDb();
+    // SAFETY: sqlite_master rows carry the object's name in `name`.
+    const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
+      name: string;
+    }>).map((r) => r.name);
+    expect(tables).not.toContain("project_boards");
+    raw.close();
+  });
+
+  test("the plane round-trips through save and reopen, and refuses a foreign version", () => {
+    const store = freshStore();
+    const layout = {
+      version: 2 as const,
+      rows: [{ projectPath: "/p", panes: [{ id: "p1" }], focusedId: "p1" }],
+      focusedRow: "/p",
+    };
+    expect(store.saveStudio(layout)?.savedAt).toBeGreaterThan(0);
+    expect(store.loadStudio()).toEqual(layout);
+
+    // A document from a build that moved on is not readable as this shape, and
+    // an unreadable plane is an empty one — never a half-applied layout.
+    const raw = rawDb();
+    raw
+      .prepare(`UPDATE studio SET layout = ? WHERE id = 1`)
+      .run(JSON.stringify({ version: 3, rows: [], focusedRow: null }));
+    raw.close();
+    expect(new ConversationStoreCtor().loadStudio()).toBeNull();
+  });
+});
+
 describe("v20 queued turns migration", () => {
   test("fresh DB opens at the current schema with the queued_turns table, thread index and active partial unique index", () => {
     const store = freshStore();
@@ -1247,7 +1328,7 @@ describe("v20 queued turns migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
     // SAFETY: sqlite_master rows carry the object's name in `name`.
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
@@ -1283,14 +1364,14 @@ describe("v20 queued turns migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(27);
+    expect(version.user_version).toBe(28);
     // A re-open (a second process) runs the ladder again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     // SAFETY: Same PRAGMA row shape as every read above.
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version2.user_version).toBe(27);
+    expect(version2.user_version).toBe(28);
     raw.close();
   });
 

@@ -2,7 +2,7 @@
 // Mirrors apps/desktop/src/git.ts and apps/desktop/src/types/global.d.ts.
 export {};
 
-import type { BoardLayout } from "~/types/board";
+import type { StudioLayout } from "~/types/studio";
 
 export type DirEntry = {
   name: string;
@@ -439,7 +439,66 @@ export type GitContributors = {
   total: number;
 };
 
+// ── Stacked actions & AI Generation ───────────────────────────────────────────
+
+export type GitStackedAction =
+  | "commit"
+  | "commit_push"
+  | "commit_new_branch"
+  | "commit_push_pr";
+
+export type GitActionProgressPhase = "branch" | "stage" | "commit" | "push" | "pr";
+
+export type GitActionProgressEvent = {
+  phase: GitActionProgressPhase;
+  message: string;
+  exitCode?: number;
+  error?: string;
+};
+
+export type CommitMessageGenerationInput = {
+  dir: string;
+  branch?: string | null;
+  stagedSummary?: string;
+  stagedPatch?: string;
+  includeBranch?: boolean;
+  model?: string;
+  provider?: string;
+};
+
+export type CommitMessageGenerationResult = {
+  subject: string;
+  body: string;
+  branch?: string;
+};
+
+export type GitRunStackedActionInput = {
+  dir: string;
+  action: GitStackedAction;
+  message: string;
+  body?: string;
+  featureBranch?: boolean;
+  branchName?: string;
+  filePaths?: string[] | null;
+  pushTarget?: string;
+  prTitle?: string;
+  prBody?: string;
+  prDraft?: boolean;
+};
+
+export type GitRunStackedActionResult = {
+  action: GitStackedAction;
+  commitSha?: string;
+  subject?: string;
+  branch?: string;
+  pushed?: boolean;
+  upstreamBranch?: string;
+  prNumber?: number;
+  prUrl?: string;
+};
+
 export type CloneProgress = {
+
   /** Overall progress across all clone phases, 0..1. */
   progress: number;
   /** Human caption for the current phase, e.g. "Receiving objects…". */
@@ -507,9 +566,19 @@ export type KoneGitApi = {
   repoState: (dir: string) => Promise<GitRepoState | null>;
 
   commit: (dir: string, opts: GitCommitOptions) => Promise<void>;
+  generateCommitMessage: (
+    dir: string,
+    opts?: Partial<CommitMessageGenerationInput>,
+  ) => Promise<CommitMessageGenerationResult>;
+  runStackedAction: (
+    dir: string,
+    input: GitRunStackedActionInput,
+  ) => Promise<GitRunStackedActionResult>;
+  onActionProgress: (cb: (event: GitActionProgressEvent) => void) => () => void;
   fetch: (dir: string, remote?: string) => Promise<void>;
   pull: (dir: string, opts?: GitPullOptions) => Promise<void>;
   push: (dir: string, opts?: GitPushOptions) => Promise<void>;
+
 
   createBranch: (
     dir: string,
@@ -1134,7 +1203,7 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "thread.spawn-updated"; spawned: SpawnedThread })
   // An agent gateway write landed on a project's scratchpad
   // (kone_scratchpad_write). `projectPath` scopes it to the project the pad
-  // belongs to (the board is project-scoped, not thread-scoped); `writer` is
+  // belongs to (a studio row is project-scoped, not thread-scoped); `writer` is
   // the agent session that wrote, null for user edits. Consumers apply it
   // only when `revision` is newer than their own.
   | (AgentBaseEvent & {
@@ -2228,7 +2297,7 @@ export type ScratchpadSaveResult =
   | null;
 
 /** Which agent session wrote a pad — carried by kone_scratchpad_write results
- *  and scratchpad.updated events so the board can attribute agent edits.
+ *  and scratchpad.updated events so the studio can attribute agent edits.
  *  User edits (the web editor) carry no writer. */
 export type ScratchpadWriter = {
   model?: string;
@@ -2245,18 +2314,15 @@ export type KoneScratchpadApi = {
   delete: (input: ScratchpadDeleteInput) => Promise<void>;
 };
 
-export type BoardLoadInput = {
-  projectPath: string;
+export type StudioSaveInput = {
+  layout: StudioLayout;
 };
 
-export type BoardSaveInput = {
-  projectPath: string;
-  layout: BoardLayout;
-};
-
-export type KoneBoardApi = {
-  load: (input: BoardLoadInput) => Promise<BoardLayout | null>;
-  save: (input: BoardSaveInput) => Promise<{ savedAt: number } | null>;
+/** The studio is one plane spanning every project, so a load has nothing to
+ *  address — the whole document comes back or nothing does. */
+export type KoneStudioApi = {
+  load: () => Promise<StudioLayout | null>;
+  save: (input: StudioSaveInput) => Promise<{ savedAt: number } | null>;
 };
 
 /** A skill an agent is assigned, keyed by the path the skills inventory uses.
@@ -2555,7 +2621,7 @@ export type KoneDesktopApi = {
   agent: KoneAgentApi;
   terminal: KoneTerminalApi;
   scratchpad: KoneScratchpadApi;
-  board: KoneBoardApi;
+  studio: KoneStudioApi;
   roster: KoneRosterApi;
   presets: KonePresetsApi;
   avatars: KoneAvatarApi;

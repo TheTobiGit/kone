@@ -30,7 +30,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
-import type { Pane, PaneId, PaneKind } from "~/types/board";
+import type { Pane, PaneId, PaneKind } from "~/types/studio";
 import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 // The scroll rule the centring modes name, and the geometry it reads. Shared with
@@ -1026,7 +1026,7 @@ function isLinkedToNext(i: number): boolean {
                  also the one visible mark of a column's right edge. The leftmost
                  column's left edge — the board's own left bound — has no such mark, so
                  mirror a seam there. Insert index -1 → `seamIndex + 1` = 0, the left
-                 edge (useBoard clamps `at` to [0, length]). -->
+                 edge (useStudio clamps `at` to [0, length]). -->
             <button
               v-if="i === 0"
               type="button"

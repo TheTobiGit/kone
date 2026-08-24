@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { PANE_KINDS } from "~/utils/paneKinds";
-import type { PaneKind } from "~/types/board";
+import type { PaneKind } from "~/types/studio";
 
 const props = defineProps<{
   open: boolean;

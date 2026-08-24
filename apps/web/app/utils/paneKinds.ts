@@ -11,7 +11,7 @@
 
 import { BubbleChatAddIcon, ComputerTerminal01Icon, Note01Icon } from "@hugeicons/core-free-icons";
 import { SCRATCHPAD_TITLE } from "~/composables/useScratchpad";
-import type { PaneKind } from "~/types/board";
+import type { PaneKind } from "~/types/studio";
 
 export interface PaneKindMeta {
   kind: PaneKind;

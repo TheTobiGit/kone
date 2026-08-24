@@ -4,7 +4,7 @@ import type {
   AgentRecord,
   QueuedTurnRow,
   ScratchpadRecord,
-  StoredBoardLayout,
+  StoredStudioLayout,
   StoredThreadPage,
   SubagentPresetRecord,
   ThreadAgentBinding,
@@ -25,7 +25,7 @@ import type {
 import type { QuotaCapableProvider } from "./agent/quota/index.js";
 import type { QuotaProviderReport } from "./agent/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "./agent/usage/report.js";
-import type { BoardLoadInput, BoardSaveInput } from "./board/index.js";
+import type { StudioSaveInput } from "./studio/index.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -91,8 +91,11 @@ import type { ThemeMode } from "./system.js";
 import type {
   CloneProgress,
   CloneResult,
+  CommitMessageGenerationInput,
+  CommitMessageGenerationResult,
   CreateProjectOptions,
   CreateProjectResult,
+  GitActionProgressEvent,
   GitBranch,
   GitCommit,
   GitCommitAuthors,
@@ -110,6 +113,8 @@ import type {
   GitRemote,
   GitRepo,
   GitRepoState,
+  GitRunStackedActionInput,
+  GitRunStackedActionResult,
   GitStashEntry,
   GitStatus,
   GitHubPrCreateOptions,
@@ -120,6 +125,7 @@ import type {
   GitHubStatus,
   GitHubUser,
 } from "./git/index.js";
+
 
 const api = {
   platform: process.platform,
@@ -282,7 +288,26 @@ const api = {
       ipcRenderer.on("git:clone-progress", listener);
       return () => ipcRenderer.removeListener("git:clone-progress", listener);
     },
+    // AI commit message generation
+    generateCommitMessage: (
+      dir: string,
+      opts?: Partial<CommitMessageGenerationInput>,
+    ): Promise<CommitMessageGenerationResult> =>
+      ipcRenderer.invoke("git:generate-commit-message", dir, opts),
+    // Multi-stage stacked action (branch -> stage -> commit -> push -> pr)
+    runStackedAction: (
+      dir: string,
+      input: GitRunStackedActionInput,
+    ): Promise<GitRunStackedActionResult> =>
+      ipcRenderer.invoke("git:run-stacked-action", dir, input),
+    // Stream stacked action progress
+    onActionProgress: (cb: (event: GitActionProgressEvent) => void): (() => void) => {
+      const listener = (_event: unknown, event: GitActionProgressEvent) => cb(event);
+      ipcRenderer.on("git:action-progress", listener);
+      return () => ipcRenderer.removeListener("git:action-progress", listener);
+    },
   },
+
   system: {
     username: (): Promise<string | null> =>
       ipcRenderer.invoke("system:username"),
@@ -522,11 +547,10 @@ const api = {
     delete: (input: ScratchpadDeleteInput): Promise<void> =>
       ipcRenderer.invoke("scratchpad:delete", input),
   },
-  board: {
-    load: (input: BoardLoadInput): Promise<StoredBoardLayout | null> =>
-      ipcRenderer.invoke("board:load", input),
-    save: (input: BoardSaveInput): Promise<{ savedAt: number } | null> =>
-      ipcRenderer.invoke("board:save", input),
+  studio: {
+    load: (): Promise<StoredStudioLayout | null> => ipcRenderer.invoke("studio:load"),
+    save: (input: StudioSaveInput): Promise<{ savedAt: number } | null> =>
+      ipcRenderer.invoke("studio:save", input),
   },
   roster: {
     hydrate: (input: RosterHydrateInput): Promise<RosterSnapshot> =>
