@@ -317,7 +317,7 @@ export function buildTheme(spec: ThemeSpec): ThemeDefinition {
     orbStates: { ...HUES.orbStates, ...spec.hues?.orbStates },
   };
 
-  const base = { id: spec.id, label: spec.label, blurb: spec.blurb, hues };
+  const base = { id: spec.id, label: spec.label, blurb: spec.blurb, hues, spec };
 
   // A fixed theme ships exactly one scheme. Nothing fabricates the other: the
   // accessors in `roles.ts` fall back to `appearance`, so a single-scheme table
@@ -347,3 +347,121 @@ export function buildTheme(spec: ThemeSpec): ThemeDefinition {
     },
   };
 }
+
+/** Starter template for drafting a fresh custom theme. */
+export function createDefaultThemeSpec(
+  kind: "adaptive" | "fixed" = "adaptive",
+  appearance: ThemeScheme = "dark",
+): ThemeSpec {
+  const id = `custom-${Date.now().toString(36)}`;
+  if (kind === "fixed") {
+    return {
+      id,
+      label: "New Theme",
+      blurb: "A custom theme created in kone.",
+      kind: "fixed",
+      appearance,
+      palette:
+        appearance === "light"
+          ? { ground: "#f6f5f3", accent: "#d97757" }
+          : { ground: "#0f1115", accent: "#d97757" },
+    };
+  }
+  return {
+    id,
+    label: "New Theme",
+    blurb: "A custom theme created in kone.",
+    kind: "adaptive",
+    light: { ground: "#f6f5f3", accent: "#d97757" },
+    dark: { ground: "#0f1115", accent: "#d97757" },
+  };
+}
+
+function extractSchemeSpec(colors: ThemeColors, extras?: ThemeExtras): SchemeSpec {
+  return {
+    ground: colors.ground,
+    accent: colors.accent,
+    sunken: colors.sunken,
+    raised: colors.raised,
+    raisedHigh: colors.raisedHigh,
+    strip: colors.strip,
+    panel: colors.panel,
+    field: colors.field,
+    chip: colors.chip,
+    ink: colors.ink,
+    inkSoft: colors.inkSoft,
+    muted: colors.muted,
+    faint: colors.faint,
+    placeholder: colors.placeholder,
+    accentInk: colors.accentInk,
+    accentSecondary: colors.accentSecondary,
+    accentSecondaryInk: colors.accentSecondaryInk,
+    highlight: colors.highlight,
+    folder: colors.folder,
+    file: colors.file,
+    agent: colors.agent,
+    boost: colors.boost,
+    ok: colors.ok,
+    warn: colors.warn,
+    danger: colors.danger,
+    diffAdd: colors.diffAdd,
+    diffDel: colors.diffDel,
+    diffAddSoft: colors.diffAddSoft,
+    diffDelSoft: colors.diffDelSoft,
+    codeBg: colors.codeBg,
+    termBg: colors.termBg,
+    termInk: colors.termInk,
+    termCursor: colors.termCursor,
+    syntax: extras?.syntax,
+    plasma: extras?.plasma,
+    ansi: extras?.ansi,
+  };
+}
+
+/**
+ * Recovers an editable ThemeSpec from any ThemeDefinition so it can be edited,
+ * duplicated or customized.
+ */
+export function extractThemeSpec(
+  theme: ThemeDefinition,
+  overrideId?: string,
+  overrideLabel?: string,
+): ThemeSpec {
+  const id = overrideId ?? theme.id;
+  const label = overrideLabel ?? theme.label;
+  const blurb = theme.blurb;
+  const hues = theme.hues;
+
+  if (theme.kind === "fixed") {
+    const palette = theme.colors[theme.appearance]
+      ? extractSchemeSpec(theme.colors[theme.appearance]!, theme.extras[theme.appearance])
+      : { ground: "#0f1115", accent: "#d97757" };
+    return {
+      id,
+      label,
+      blurb,
+      hues,
+      kind: "fixed",
+      appearance: theme.appearance,
+      palette,
+    };
+  }
+
+  const light = theme.colors.light
+    ? extractSchemeSpec(theme.colors.light, theme.extras.light)
+    : { ground: "#f6f5f3", accent: "#d97757" };
+  const dark = theme.colors.dark
+    ? extractSchemeSpec(theme.colors.dark, theme.extras.dark)
+    : { ground: "#0f1115", accent: "#d97757" };
+
+  return {
+    id,
+    label,
+    blurb,
+    hues,
+    kind: "adaptive",
+    light,
+    dark,
+  };
+}
+

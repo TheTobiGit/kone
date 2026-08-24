@@ -3,7 +3,11 @@ import { computed, ref, type Ref } from "vue";
 import {
   AlertCircleIcon,
   CheckmarkCircle01Icon,
+  CopyIcon,
   Delete01Icon,
+  Download01Icon,
+  Edit02Icon,
+  PaintBoardIcon,
   Store02Icon,
   SwatchIcon,
   Upload01Icon,
@@ -12,6 +16,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import SettingsPageShell from "~/components/SettingsPageShell.vue";
 import AppearanceMiniature from "~/components/AppearanceMiniature.vue";
 import ThemeBrowseModal from "~/components/ThemeBrowseModal.vue";
+import ThemeEditorModal from "~/components/ThemeEditorModal.vue";
 import {
   colorsFor,
   schemesOf,
@@ -25,7 +30,21 @@ const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ back: [] }>();
 
 const { cue } = useSound();
-const { mode, modeLocked, themeId, theme, scheme, setMode, setTheme, importThemes, removeImportedTheme, isImported } = useTheme();
+const {
+  mode,
+  modeLocked,
+  themeId,
+  theme,
+  scheme,
+  setMode,
+  setTheme,
+  importThemes,
+  removeImportedTheme,
+  removeCustomTheme,
+  isImported,
+  isCustom,
+  exportThemeJson,
+} = useTheme();
 
 const MODES = ["system", "light", "dark"] as const satisfies readonly AppearanceMode[];
 
@@ -42,41 +61,37 @@ function chooseMode(m: AppearanceMode) {
 }
 
 // ── Mode tiles ───────────────────────────────────────────────────────────────
-// Each tile is kone drawn small in the *selected theme's* colours for that
-// scheme, so the choice is made by looking rather than by reading three words.
-// The System tile is the same miniature twice, split down the middle, which is
-// the only honest picture of "whichever one the machine is in".
-
 const modeTiles = computed(() =>
-  MODES.map((m) => ({
-    mode: m,
-    label: MODE_LABEL[m],
-    panes:
-      m === "system"
-        ? ([
-            { clip: "left" as const, colors: colorsFor(theme.value, "light") },
-            { clip: "right" as const, colors: colorsFor(theme.value, "dark") },
-          ])
-        : [{ clip: undefined, colors: colorsFor(theme.value, m) }],
-  })),
-);
+  MODES.map((m) => {
+    const isLocked = modeLocked.value;
+    const isCurrentMode = isLocked
+      ? theme.value.appearance === m
+      : mode.value === m;
+    const isDisabled = isLocked && theme.value.appearance !== m;
 
-/** What the locked pane shows instead of the row: the one appearance it has. */
-const lockedTile = computed(() => ({
-  label: theme.value.appearance === "dark" ? "Dark" : "Light",
-  colors: colorsFor(theme.value, scheme.value),
-}));
+    let panes: { clip?: "left" | "right"; colors: ThemeColors }[];
+    if (isLocked) {
+      panes = [{ clip: undefined, colors: colorsFor(theme.value, theme.value.appearance) }];
+    } else if (m === "system") {
+      panes = [
+        { clip: "left" as const, colors: colorsFor(theme.value, "light") },
+        { clip: "right" as const, colors: colorsFor(theme.value, "dark") },
+      ];
+    } else {
+      panes = [{ clip: undefined, colors: colorsFor(theme.value, m) }];
+    }
 
-const lockNote = computed(() =>
-  modeLocked.value
-    ? `${theme.value.label} is designed as ${
-        theme.value.appearance === "dark" ? "a dark" : "a light"
-      } theme, so the interface stays ${theme.value.appearance} whatever your system is doing.`
-    : "",
+    return {
+      mode: m,
+      label: MODE_LABEL[m],
+      panes,
+      active: isCurrentMode,
+      disabled: isDisabled,
+    };
+  }),
 );
 
 // ── Roving focus, shared by both radiogroups ─────────────────────────────────
-
 interface RovingList {
   count: number;
   choose: (index: number) => void;
@@ -119,10 +134,6 @@ function onModeKeydown(e: KeyboardEvent, i: number) {
 }
 
 // ── Theme cards ──────────────────────────────────────────────────────────────
-// A card carries the theme's own light and dark as two soft-lit beads rather
-// than flat swatches: a palette is a ground with colour *in* it, and a blurred
-// wash off the accent says that where a hard disc can only say "orange".
-
 interface Bead {
   key: ThemeScheme;
   ground: string;
@@ -137,10 +148,10 @@ interface ThemeRow {
   beads: Bead[];
   index: number;
   imported: boolean;
+  custom: boolean;
+  theme: ThemeDefinition;
 }
 
-/** The bead's paint: the ground as the base, the accent as a contained glow,
- *  the second voice as a quieter tint from the far corner. */
 function beadWash(theme: ThemeDefinition, s: ThemeScheme): string {
   const c = colorsFor(theme, s);
   const accentAt = s === "dark" ? "30% 76%" : "70% 24%";
@@ -162,6 +173,8 @@ const groups = computed(() => {
       label: t.label,
       blurb: t.blurb,
       imported: isImported(t.id),
+      custom: isCustom(t.id),
+      theme: t,
       beads: schemesOf(t).map((s) => {
         const c = colorsFor(t, s);
         return { key: s, ground: c.ground, ink: c.ink, wash: beadWash(t, s) };
@@ -195,12 +208,50 @@ function onThemeKeydown(e: KeyboardEvent, i: number) {
   });
 }
 
-// ── Import ───────────────────────────────────────────────────────────────────
-// VS Code colour-theme files picked from disk become kone themes: the editor
-// canvas and accent grow a full palette, light/dark siblings pair into one
-// adaptive theme, and the rest is derived. What a file couldn't become is said
-// out loud under the masthead, not buried in a toast.
+// ── Theme Creator / Editor modal ───────────────────────────────────────────
+const editorOpen = ref(false);
+const editingTheme = ref<ThemeDefinition | null>(null);
+const isEditingTheme = ref(false);
 
+function openCreateTheme() {
+  editingTheme.value = null;
+  isEditingTheme.value = false;
+  editorOpen.value = true;
+  cue("toggle");
+}
+
+function openEditTheme(t: ThemeDefinition) {
+  editingTheme.value = t;
+  isEditingTheme.value = true;
+  editorOpen.value = true;
+  cue("toggle");
+}
+
+function openDuplicateTheme(t: ThemeDefinition) {
+  editingTheme.value = t;
+  isEditingTheme.value = false;
+  editorOpen.value = true;
+  cue("toggle");
+}
+
+function exportRow(t: ThemeDefinition) {
+  const jsonStr = exportThemeJson(t);
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${t.label.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "theme"}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  cue("success");
+}
+
+function removeCustomRow(id: string) {
+  removeCustomTheme(id);
+  cue("toggle");
+}
+
+// ── Import ───────────────────────────────────────────────────────────────────
 const fileInput = ref<HTMLInputElement>();
 const notice = ref<{ kind: "ok" | "error"; text: string } | null>(null);
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -214,9 +265,6 @@ function showNotice(kind: "ok" | "error", text: string) {
 }
 
 async function onFilesPicked(event: Event) {
-  // SAFETY: onFilesPicked is bound via @change to this pane's hidden
-  // <input type="file"> (ref="fileInput"), so during dispatch target is
-  // that HTMLInputElement; files ?? [] also tolerates a null.
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   input.value = "";
@@ -262,6 +310,10 @@ const browseOpen = ref(false);
     @back="emit('back')"
   >
     <template #actions>
+      <button type="button" class="ap__import" :tabindex="open ? 0 : -1" @click="openCreateTheme">
+        <HugeiconsIcon :icon="PaintBoardIcon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+        Create theme
+      </button>
       <button type="button" class="ap__import" :tabindex="open ? 0 : -1" @click="browseOpen = true">
         <HugeiconsIcon :icon="Store02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
         Browse themes
@@ -305,7 +357,6 @@ const browseOpen = ref(false);
       <!-- ── Appearance ──────────────────────────────────────────────────── -->
       <section class="ap__section">
         <div
-          v-if="!modeLocked"
           class="ap__modes"
           role="radiogroup"
           aria-label="Appearance mode"
@@ -317,9 +368,14 @@ const browseOpen = ref(false);
             type="button"
             role="radio"
             class="ap__mode"
-            :class="{ 'ap__mode--on': mode === tile.mode }"
-            :aria-checked="mode === tile.mode"
-            :tabindex="open ? (mode === tile.mode ? 0 : -1) : -1"
+            :class="{
+              'ap__mode--on': tile.active,
+              'ap__mode--disabled': tile.disabled,
+            }"
+            :aria-checked="tile.active"
+            :aria-disabled="tile.disabled || undefined"
+            :disabled="tile.disabled"
+            :tabindex="open ? (tile.active ? 0 : -1) : -1"
             @click="chooseMode(tile.mode)"
             @keydown="onModeKeydown($event, i)"
           >
@@ -333,13 +389,6 @@ const browseOpen = ref(false);
             </span>
             <span class="ap__mode-label">{{ tile.label }}</span>
           </button>
-        </div>
-
-        <div v-else class="ap__locked">
-          <span class="ap__frame ap__frame--locked">
-            <AppearanceMiniature :colors="lockedTile.colors" />
-          </span>
-          <p class="ap__locked-note">{{ lockNote }}</p>
         </div>
       </section>
 
@@ -356,7 +405,12 @@ const browseOpen = ref(false);
               :ref="(el) => setThemeEl(el, row.index)"
               role="radio"
               class="ap__card"
-              :class="{ 'ap__card--on': row.id === themeId, 'ap__card--imported': row.imported }"
+              :class="{
+                'ap__card--on': row.id === themeId,
+                'ap__card--imported': row.imported,
+                'ap__card--custom': row.custom,
+                'ap__card--builtin': !row.imported && !row.custom,
+              }"
               :aria-checked="row.id === themeId"
               :aria-label="`${row.label} — ${row.blurb}`"
               :tabindex="open ? (row.id === themeId ? 0 : -1) : -1"
@@ -384,22 +438,66 @@ const browseOpen = ref(false);
                 <span class="ap__blurb">{{ row.blurb }}</span>
               </span>
 
-              <button
-                v-if="row.imported"
-                type="button"
-                class="ap__remove"
-                :tabindex="open ? 0 : -1"
-                :aria-label="`Remove ${row.label}`"
-                @click.stop="removeRow(row.id)"
-                @keydown.stop
-              >
-                <HugeiconsIcon
-                  :icon="Delete01Icon"
-                  :size="13"
-                  :stroke-width="1.8"
-                  aria-hidden="true"
-                />
-              </button>
+              <!-- Hover & Focus Action Controls -->
+              <div v-if="row.custom || row.imported" class="ap__card-actions" @click.stop>
+                <!-- Custom theme actions: Edit, Duplicate, Export, Delete -->
+                <template v-if="row.custom">
+                  <button
+                    type="button"
+                    class="ap__card-btn"
+                    :tabindex="open ? 0 : -1"
+                    :aria-label="`Edit ${row.label}`"
+                    title="Edit theme"
+                    @click.stop="openEditTheme(row.theme)"
+                  >
+                    <HugeiconsIcon :icon="Edit02Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    class="ap__card-btn"
+                    :tabindex="open ? 0 : -1"
+                    :aria-label="`Duplicate ${row.label}`"
+                    title="Duplicate theme"
+                    @click.stop="openDuplicateTheme(row.theme)"
+                  >
+                    <HugeiconsIcon :icon="CopyIcon" :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    class="ap__card-btn"
+                    :tabindex="open ? 0 : -1"
+                    :aria-label="`Export ${row.label}`"
+                    title="Export JSON"
+                    @click.stop="exportRow(row.theme)"
+                  >
+                    <HugeiconsIcon :icon="Download01Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    class="ap__card-btn ap__card-btn--danger"
+                    :tabindex="open ? 0 : -1"
+                    :aria-label="`Remove ${row.label}`"
+                    title="Remove theme"
+                    @click.stop="removeCustomRow(row.id)"
+                  >
+                    <HugeiconsIcon :icon="Delete01Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                </template>
+
+                <!-- Imported theme actions: Remove -->
+                <template v-else-if="row.imported">
+                  <button
+                    type="button"
+                    class="ap__card-btn ap__card-btn--danger"
+                    :tabindex="open ? 0 : -1"
+                    :aria-label="`Remove ${row.label}`"
+                    title="Remove theme"
+                    @click.stop="removeRow(row.id)"
+                  >
+                    <HugeiconsIcon :icon="Delete01Icon" :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                </template>
+              </div>
 
               <svg
                 v-if="row.id === themeId"
@@ -422,6 +520,13 @@ const browseOpen = ref(false);
   </SettingsPageShell>
 
   <ThemeBrowseModal v-if="browseOpen" :open="browseOpen" @close="browseOpen = false" />
+  <ThemeEditorModal
+    v-if="editorOpen"
+    :open="editorOpen"
+    :theme="editingTheme"
+    :is-editing="isEditingTheme"
+    @close="editorOpen = false"
+  />
 </template>
 
 <style scoped>
@@ -573,7 +678,7 @@ const browseOpen = ref(false);
     box-shadow 220ms var(--ap-ease);
 }
 
-.ap__mode:hover .ap__frame {
+.ap__mode:not(.ap__mode--disabled):hover .ap__frame {
   transform: translateY(-2px);
 }
 
@@ -595,28 +700,22 @@ const browseOpen = ref(false);
   transition: color 200ms ease;
 }
 
-.ap__mode:hover .ap__mode-label,
+.ap__mode:not(.ap__mode--disabled):hover .ap__mode-label,
 .ap__mode--on .ap__mode-label {
   color: var(--ink);
 }
 
-.ap__locked {
-  display: flex;
-  align-items: center;
-  gap: 20px;
+.ap__mode--disabled {
+  opacity: 0.36;
+  cursor: default;
 }
 
-.ap__frame--locked {
-  flex: 0 0 auto;
-  width: 176px;
+.ap__mode--disabled:hover .ap__frame {
+  transform: none;
 }
 
-.ap__locked-note {
-  margin: 0;
-  max-width: 40ch;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--muted);
+.ap__mode--disabled .ap__mode-label {
+  color: var(--muted) !important;
 }
 
 /* ── Themes ───────────────────────────────────────────────────────────────── */
@@ -730,46 +829,59 @@ const browseOpen = ref(false);
   overflow: hidden;
 }
 
-/* Imported cards carry their own dismissal. It only appears when the row is
-   being looked at — hover or keyboard focus — so fourteen themes do not all
-   wear a delete glyph at once. */
-.ap__remove {
+/* Card Action Buttons */
+.ap__card-actions {
   position: absolute;
   top: 50%;
   right: 8px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-top: -11px;
-  border-radius: 7px;
-  color: var(--muted);
-  cursor: pointer;
+  gap: 2px;
+  transform: translateY(-50%);
   opacity: 0;
-  transition:
-    opacity 140ms ease,
-    background-color 140ms ease,
-    color 140ms ease;
+  transition: opacity 140ms ease;
+  z-index: 10;
 }
 
-.ap__card:hover .ap__remove,
-.ap__remove:focus-visible {
+.ap__card:hover .ap__card-actions,
+.ap__card-actions:focus-within {
   opacity: 1;
 }
 
-.ap__remove:hover {
+.ap__card-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.ap__card-btn:hover {
   background-color: var(--hover);
   color: var(--ink);
 }
 
-.ap__remove:focus-visible {
+.ap__card-btn--danger:hover {
+  background-color: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.ap__card-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
 
-/* The check steps left of the removal glyph so an active imported theme shows
-   both: it is selected *and* it can go. */
+/* The check steps left of the actions so selected cards still show both clearly */
+.ap__card--custom .ap__check {
+  right: 106px;
+}
+
 .ap__card--imported .ap__check {
   right: 36px;
 }
@@ -805,7 +917,8 @@ const browseOpen = ref(false);
   .ap__card,
   .ap__check,
   .ap__notice,
-  .ap__remove {
+  .ap__card-actions,
+  .ap__card-btn {
     transition: none;
     animation: none;
   }
