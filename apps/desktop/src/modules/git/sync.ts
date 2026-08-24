@@ -1,7 +1,7 @@
 import { GitError, git, repoRoot } from "./core.js";
 import { withRepoMutation } from "./mutationLock.js";
 import { remoteExists } from "./state.js";
-import type { IpcErrorKind } from "../../lib/ipcError.js";
+import type { IpcErrorKind } from "@kone/protocol/ipc-error";
 import type { GitPullOptions, GitPushOptions } from "./types.js";
 
 // Network operations behind the Git Space masthead. Two behaviours matter

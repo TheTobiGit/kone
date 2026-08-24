@@ -40,7 +40,7 @@ import {
   isRecoverableCodexResumeError,
 } from "./errors.js";
 import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from "../gateway/appContext.js";
-import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "../planTasks.js";
+import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "@kone/protocol/plan-tasks";
 import {
   buildCodexAttachmentInput,
   composePromptText,

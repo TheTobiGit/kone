@@ -1,8 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
+// Sandbox copies of the adapter live inside the app tree (not the OS tmpdir)
+// so bare-specifier workspace imports like @kone/protocol resolve via normal
+// node_modules lookup from the copied module's location.
+const SANDBOX_DIR = path.join(import.meta.dir, ".sandbox");
+import { tmpdir } from "node:os";
 
 import { setUserDataDir } from "./userDataDir.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -262,7 +267,8 @@ export async function startOpenCodeServer(): Promise<OpenCodeServer> {
 `;
 
 async function loadOpenCodeAdapterWithStubbedServer(): Promise<OpenCodeAdapterModule> {
-  const dir = mkdtempSync(path.join(tmpdir(), "kone-opencode-adapter-real-"));
+  mkdirSync(SANDBOX_DIR, { recursive: true });
+  const dir = mkdtempSync(path.join(SANDBOX_DIR, "kone-opencode-adapter-real-"));
   const stubServerPath = path.join(dir, "opencodeServerStub.ts");
   writeFileSync(stubServerPath, OPENCODE_SERVER_STUB_SOURCE);
   let source = readFileSync(OPENCODE_ADAPTER_SOURCE, "utf8");
