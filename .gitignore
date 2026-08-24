@@ -76,3 +76,6 @@ temp
 
 # Local UI demos (throwaway design prototypes)
 .ui-demos/
+
+# pi agent local artifacts
+.pi/
