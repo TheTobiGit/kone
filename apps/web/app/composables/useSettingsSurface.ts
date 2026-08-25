@@ -18,6 +18,7 @@ export type SettingsPane =
   | "shortcuts"
   | "motion"
   | "appearance"
+  | "chats"
   | "providers"
   | "agentsUsage"
   | "providerLimits"
@@ -47,6 +48,7 @@ const isOpen = ref(false);
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
 const PAGE_PANES: SettingsPane[] = [
+  "chats",
   "providers",
   "motion",
   "appearance",

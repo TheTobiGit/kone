@@ -14,11 +14,24 @@ export const PROVIDER_KEY = "kone:provider";
 export const MODEL_KEY = "kone:model";
 export const REASONING_KEY = "kone:reasoning";
 
+/** The user's *chosen* default — set only in the Chats settings pane, and never
+ *  written by a live session (unlike the "last used" keys above, which every
+ *  thread rewrites as it runs). When present these win the boot pick, so a
+ *  configured default can't be clobbered by whatever thread ran last. */
+export const DEFAULT_PROVIDER_KEY = "kone:default-provider";
+export const DEFAULT_MODEL_KEY = "kone:default-model";
+export const DEFAULT_REASONING_KEY = "kone:default-reasoning";
+
 /** The permission mode stays PER PROJECT — it's a per-repo trust decision, not
  *  an app-wide preference. */
 export function modeKey(projectPath: string): string {
   return `kone:mode:${projectPath}`;
 }
+
+/** The app-wide fallback permission mode: what a project opens with the first
+ *  time, before it has a per-project mode of its own. Set in the Chats settings
+ *  pane; read at boot only when `modeKey(path)` holds nothing yet. */
+export const DEFAULT_MODE_KEY = "kone:default-mode";
 
 /** A model change on a provider that bakes model/effort at spawn (Claude,
  *  OpenCode, Antigravity — the effort rides the print `--model` label) can't

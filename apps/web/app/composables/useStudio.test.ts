@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { nextTick, ref, shallowRef } from "vue";
 import type { Ref } from "vue";
 import { useStudio } from "./useStudio";
+import type { UseStudioOptions } from "./useStudio";
 
 // Minimal fakes for the three composables useStudio wraps. useStudio only ever
 // touches the surface used here (the `.sessions` list + a few async stubs), so
@@ -37,7 +38,7 @@ function makeThread(
   };
 }
 
-function harness() {
+function harness(hooks?: UseStudioOptions["hooks"]) {
   // shallowRef: like the real composables' session lists, so the nested `.value`
   // refs on a session (threadId, busy, …) aren't auto-unwrapped by deep reactivity.
   const agentSessions = shallowRef<FakeThread[]>([]);
@@ -66,11 +67,46 @@ function harness() {
     openThread: async (threadId: string) => {
       await agent.openThreadHandle(threadId).ready;
     },
-    newThreadAt: async (index: number) => {
+    // The registry maintains at most one blank session. Asking for a new
+    // thread when a blank already exists relocates that blank session to the
+    // requested index and reuses its key rather than minting a duplicate.
+    newThread: async () => {
+      const existingBlank = agentSessions.value.find(
+        (s) => s.blocks.value.length === 0 && !s.busy.value,
+      );
+      if (existingBlank) {
+        agent.activeKey.value = existingBlank.key;
+        agentSessions.value = agentSessions.value.filter(
+          (s) => s.key === existingBlank.key || s.blocks.value.length > 0 || s.busy.value,
+        );
+        return;
+      }
       const t = makeThread(`thread-${agentSessions.value.length + 1}`);
-      const list = [...agentSessions.value];
-      list.splice(Math.min(index, list.length), 0, t);
-      agentSessions.value = list;
+      agentSessions.value = [...agentSessions.value, t];
+      agent.activeKey.value = t.key;
+    },
+    newThreadAt: async (index: number) => {
+      const existingBlank = agentSessions.value.find(
+        (s) => s.blocks.value.length === 0 && !s.busy.value,
+      );
+      if (existingBlank) {
+        const remaining = agentSessions.value.filter(
+          (s) => (s.blocks.value.length > 0 || s.busy.value) && s.key !== existingBlank.key,
+        );
+        const target = Math.max(0, Math.min(index, remaining.length));
+        remaining.splice(target, 0, existingBlank);
+        agentSessions.value = remaining;
+        agent.activeKey.value = existingBlank.key;
+        return existingBlank.key;
+      }
+      const t = makeThread(`thread-${agentSessions.value.length + 1}`);
+      const remaining = agentSessions.value.filter(
+        (s) => s.blocks.value.length > 0 || s.busy.value,
+      );
+      const target = Math.max(0, Math.min(index, remaining.length));
+      remaining.splice(target, 0, t);
+      agentSessions.value = remaining;
+      agent.activeKey.value = t.key;
       return t.key;
     },
     closeThread: async (k: string) => {
@@ -109,10 +145,15 @@ function harness() {
   };
 
   // SAFETY: these three fakes implement exactly the agent/terminal/scratchpad
-  // surface useStudio touches; the cast supplies the rest of the deps shape the
-  // tests never exercise.
-  const studio = useStudio({ agent, terminal, scratchpad, projectPath: "/p" } as any);
-  return { studio, agentSessions, termSessions, padSessions, closedTerminalKeys };
+  // surface useStudio touches; the unchecked cast supplies the test-harness deps shape.
+  const studio = useStudio({
+    agent,
+    terminal,
+    scratchpad,
+    projectPath: "/p",
+    hooks,
+  } as unknown as UseStudioOptions);
+  return { studio, agent, agentSessions, termSessions, padSessions, closedTerminalKeys };
 }
 
 async function settle() {
@@ -875,6 +916,80 @@ describe("useStudio — one pane per thread, however it arrives", () => {
 
     expect(a).toBe(b);
     expect(studio.entries.value.length).toBe(1);
+  });
+
+  test("sequence of open(thread) and dispatch(draft-thread) flows never ends with multiple blank thread panes or sessions", async () => {
+    let lastDraft = "";
+    const { studio, agent, agentSessions } = harness({
+      setDraft: (text: string) => {
+        lastDraft = text;
+      },
+    });
+
+    // Start with a blank boot thread session adopted by studio.
+    agentSessions.value = [makeThread("boot")];
+    await settle();
+    expect(studio.entries.value.length).toBe(1);
+
+    const isBlank = (s: FakeThread) => s.blocks.value.length === 0 && !s.busy.value;
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
+
+    // Opening a blank thread reuses the existing blank pane/session.
+    const firstId = await studio.open("thread");
+    await settle();
+    expect(studio.entries.value.length).toBe(1);
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
+
+    // Open a terminal beside it.
+    const termId = await studio.open("terminal");
+    await settle();
+    expect(studio.entries.value.length).toBe(2);
+
+    // Dispatching draft-thread from terminal reuses the existing blank thread and sets draft.
+    await studio.dispatch({ type: "draft-thread", from: termId, draft: "> quoted log output" });
+    await settle();
+    expect(lastDraft).toBe("> quoted log output");
+    expect(studio.entries.value.length).toBe(2);
+    expect(studio.focusedId.value).toBe(firstId);
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
+
+    // Repeated open(thread) calls while still blank never stack additional columns.
+    await studio.open("thread");
+    await studio.open("thread");
+    await settle();
+    expect(studio.entries.value.length).toBe(2);
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
+
+    // The first thread now receives a turn and becomes non-blank.
+    const active = agentSessions.value.find((s) => s.key === "boot")!;
+    active.threadId.value = "thread-1";
+    active.blocks.value = [{ role: "user", text: "hello" }];
+    await settle();
+    expect(agentSessions.value.filter(isBlank).length).toBe(0);
+
+    // Opening a new thread now mints exactly ONE new blank thread pane and session.
+    const secondThreadId = await studio.open("thread");
+    await settle();
+    expect(studio.entries.value.length).toBe(3);
+    expect(agentSessions.value.length).toBe(2);
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
+
+    // Another dispatch draft-thread reuses the new blank thread without adding another.
+    await studio.dispatch({ type: "draft-thread", from: secondThreadId, draft: "> second draft" });
+    await settle();
+    expect(lastDraft).toBe("> second draft");
+    expect(studio.entries.value.length).toBe(3);
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
+
+    // If multiple blank sessions were somehow seeded in the registry (e.g. race/legacy),
+    // calling agent.newThreadAt relocates/reuses and collapses stray blanks to at most one.
+    const strayBlank = makeThread("stray-blank");
+    agentSessions.value = [...agentSessions.value, strayBlank];
+    await settle();
+    expect(agentSessions.value.filter(isBlank).length).toBe(2);
+    await agent.newThreadAt(0);
+    await settle();
+    expect(agentSessions.value.filter(isBlank).length).toBe(1);
   });
 });
 

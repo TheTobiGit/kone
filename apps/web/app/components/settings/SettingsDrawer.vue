@@ -4,6 +4,7 @@ import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion } from "motion-v";
 import AiChip from "~/components/icons/animated/AiChip.vue";
 import Analytics01 from "~/components/icons/animated/Analytics01.vue";
+import BubbleChatAdd from "~/components/icons/animated/BubbleChatAdd.vue";
 import DistributeHorizontalCenter from "~/components/icons/animated/DistributeHorizontalCenter.vue";
 import Gauge from "~/components/icons/animated/Gauge.vue";
 import Keyboard from "~/components/icons/animated/Keyboard.vue";
@@ -16,6 +17,8 @@ import VolumeHigh from "~/components/icons/animated/VolumeHigh.vue";
 import VolumeMute01 from "~/components/icons/animated/VolumeMute01.vue";
 import type { AnimatedIconHandle } from "~/components/icons/animated/useIconAnimation";
 import { CENTER_MODES } from "~/utils/stripScroll";
+import { describeModelId } from "~/utils/modelCatalog";
+import { DEFAULT_MODEL_KEY } from "~/utils/modelPicker";
 
 // The settings / personalization panel, in the spirit of X's account drawer.
 // It doesn't float over the launcher — it sits pinned to the left edge, and the
@@ -81,6 +84,17 @@ const providerSummary = computed(() => {
 // worth stating outright rather than leaving the row blank.
 const { selected: selectedAgent } = useAgentRoster();
 const agentSummary = computed(() => selectedAgent.value?.name ?? GUEST_LABEL);
+
+// ── chats ────────────────────────────────────────────────────────────────────
+// The row names the current default model without opening the pane. localStorage
+// isn't reactive, so this re-reads whenever the drawer opens (and when a detail
+// pane walks back to root) — the only moments the value on screen can be stale.
+const chatDefaultSummary = ref("");
+function refreshChatSummary() {
+  if (!import.meta.client) return;
+  const id = localStorage.getItem(DEFAULT_MODEL_KEY);
+  chatDefaultSummary.value = id ? describeModelId(id).name : "";
+}
 
 function onSoundToggle() {
   toggleMuted();
@@ -163,6 +177,11 @@ function openProfile() {
   cue("press");
 }
 
+function openChats() {
+  pane.value = "chats";
+  cue("press");
+}
+
 function openProviders() {
   pane.value = "providers";
   cue("press");
@@ -195,6 +214,8 @@ function openAgentPresets() {
 
 function backToRoot() {
   pane.value = "root";
+  // Coming back from the Chats pane, the default may have just changed.
+  refreshChatSummary();
   cue("toggle");
 }
 
@@ -213,6 +234,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 onMounted(() => {
   resolveProfile();
+  refreshChatSummary();
   window.addEventListener("keydown", onKeydown);
 });
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
@@ -221,7 +243,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 watch(
   () => props.open,
   (open) => {
-    if (!open) pane.value = "root";
+    if (open) refreshChatSummary();
+    else pane.value = "root";
   },
 );
 
@@ -252,6 +275,8 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
     <SettingsShortcutsPane v-if="pane === 'shortcuts'" :open="open" @back="backToRoot" />
 
     <SettingsAppearancePane v-if="pane === 'appearance'" :open="open" @back="backToRoot" />
+
+    <SettingsChatsPane v-if="pane === 'chats'" :open="open" @back="backToRoot" />
 
     <SettingsProvidersPane v-if="pane === 'providers'" :open="open" @back="backToRoot" />
 
@@ -444,6 +469,35 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
             />
             <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">
               Sub-agents
+            </span>
+          </button>
+
+          <!-- Chats — the defaults a new conversation inherits: which model
+               answers and how much it may do without asking. Sits above the
+               machinery because it's the choice you make most, and the trailing
+               summary names the current default model at a glance. -->
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open chat defaults settings"
+            @mouseenter="playNavIcon('chats')"
+            @click="openChats"
+          >
+            <BubbleChatAdd
+              :ref="(el) => setNavIcon('chats', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Chats</span>
+            <span
+              v-if="chatDefaultSummary"
+              class="shrink-0 max-w-[45%] truncate text-[12px] leading-tight text-muted"
+            >
+              {{ chatDefaultSummary }}
             </span>
           </button>
 

@@ -1684,11 +1684,30 @@ export function useAgent(options: UseAgentOptions) {
     );
   }
 
-  /** Trim settled, idle background threads down to the resident cap —
-   *  least-recently-active first (a background turn you just used is never the
-   *  first to go), never the active one and never anything busy or parked on
-   *  registry order (which drag-reordering can shuffle). */
+  /** Trim surplus blank sessions and enforce the resident cap.
+   *  The registry holds at most one blank thread across all panes; asking again
+   *  relocates/reuses rather than stacking. If legacy state or a failed open
+   *  left multiple blanks resident, collapse down to one (keeping the active
+   *  or most recently touched blank). Then trim settled, idle background
+   *  threads down to MAX_RESIDENT_THREADS — least-recently-active first. */
   function pruneResident(): void {
+    // Collapse surplus blank sessions: at most one blank session may remain
+    // resident across the registry. Never evict the active blank, a session
+    // whose open is currently in-flight in the opening map, or anything busy.
+    const blanks = sessions.value.filter(
+      (s) => isThreadSessionBlank(s) && !s.busy.value,
+    );
+    if (blanks.length > 1) {
+      const kept =
+        blanks.find((s) => s.key === activeKey.value) ??
+        [...blanks].sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0];
+      for (const s of blanks) {
+        if (s !== kept && !untouchable(s)) {
+          void evict(s);
+        }
+      }
+    }
+
     const overflow = sessions.value.length - MAX_RESIDENT_THREADS;
     if (overflow <= 0) return;
     const evictable = sessions.value
@@ -1708,7 +1727,7 @@ export function useAgent(options: UseAgentOptions) {
   function startSweep(): void {
     if (registry.sweepTimer !== null) return;
     registry.sweepTimer = setInterval(() => {
-      if (sessions.value.length > MAX_RESIDENT_THREADS) pruneResident();
+      pruneResident();
       const cutoff = Date.now() - IDLE_HIBERNATE_MS;
       for (const s of sessions.value) {
         if (untouchable(s)) continue;
@@ -1923,13 +1942,23 @@ export function useAgent(options: UseAgentOptions) {
     }
   }
 
-  /** Begin a brand-new, empty thread and make it active. The previously-active
-   *  thread stays resident (it may still be running — the pill will surface it),
-   *  unless it was a never-used throwaway, which we prune. No-ops when the
-   *  active thread is already empty — don't stack blank slates. */
+  /** Begin a brand-new, empty thread and make it active. The registry holds at
+   *  most one blank thread; asking again relocates/reuses rather than stacking.
+   *  If any resident session is already a blank slate, it is activated (and
+   *  inherits settings from the previously-active non-blank session) without
+   *  spawning. Only when no blank exists anywhere is a fresh thread spawned. */
   async function newThread(): Promise<void> {
     const prev = active.value;
-    if (prev && isThreadSessionBlank(prev)) return;
+    const existing = sessions.value.find(isThreadSessionBlank);
+    if (existing) {
+      activeKey.value = existing.key;
+      existing.touch();
+      if (prev && prev !== existing && !isThreadSessionBlank(prev)) {
+        inheritSettings(prev, existing);
+      }
+      pruneResident();
+      return;
+    }
     const fresh = spawn({ rehydrate: false });
     // Carry the active thread's picked settings onto the new one (see
     // inheritSettings) so starting a conversation from Project Home keeps the
@@ -1951,9 +1980,30 @@ export function useAgent(options: UseAgentOptions) {
 
   /** Open a blank thread at a specific strip index (0 = left edge). Used by the
    *  seam action bar to insert left or right of a column boundary. Returns the
-   *  new column's stable key so a caller can bind to it directly rather than
-   *  diffing the session set to work out which one it just made. */
+   *  column's stable key so a caller can bind to it directly rather than
+   *  diffing the session set to work out which one it just made.
+   *
+   *  Enforces the single-blank-thread invariant: the registry holds at most one
+   *  blank thread; asking again relocates/reuses rather than stacking. If a blank
+   *  session already exists anywhere in the registry, it is relocated to the
+   *  requested index and activated rather than spawning a duplicate. */
   async function newThreadAt(index: number): Promise<string> {
+    const existing = sessions.value.find(isThreadSessionBlank);
+    if (existing) {
+      const list = sessions.value.filter((s) => s !== existing);
+      const insertAt = Math.min(Math.max(0, index), list.length);
+      list.splice(insertAt, 0, existing);
+      sessions.value = list;
+
+      const neighbor = list[insertAt - 1] ?? list[insertAt + 1];
+      if (neighbor) inheritSettings(neighbor, existing);
+
+      activeKey.value = existing.key;
+      existing.touch();
+      pruneResident();
+      return existing.key;
+    }
+
     const fresh = spawn({ rehydrate: false });
     const list = [...sessions.value];
     list.pop();
