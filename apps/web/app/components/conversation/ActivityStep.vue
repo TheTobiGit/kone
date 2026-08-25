@@ -4,6 +4,7 @@ import type { Component } from "vue";
 import { useIntersectionObserver } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
+  AiBrain01Icon,
   ArrowRight01Icon,
   ArrowUpRight01Icon,
   CommandLineIcon,
@@ -162,7 +163,13 @@ function toggle(): void {
       <span class="astep__icon">
         <!-- Thinking -->
         <template v-if="isThinking">
-          <TurnOrb v-if="streaming" state="thinking" :size="14" aria-label="Thinking" />
+          <TurnOrb
+            v-if="streaming"
+            state="thinking"
+            :icon="AiBrain01Icon"
+            :size="14"
+            aria-label="Thinking"
+          />
           <AiBrain01 v-else ref="iconApi" :size="14" :stroke-width="1.8" trigger="manual" />
         </template>
         <!-- Tool -->
@@ -170,6 +177,7 @@ function toggle(): void {
           <TurnOrb
             v-if="status === 'running'"
             :state="stateForToolFamily(meta.family)"
+            :icon="meta.icon"
             :size="14"
             :aria-label="`${meta.label} running`"
           />

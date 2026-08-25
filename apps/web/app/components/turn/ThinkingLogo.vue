@@ -1,27 +1,32 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useTheme } from "~/composables/useTheme";
 import {
   bakeLogo,
-  logoForHugeIcon,
-  logoForToolFamily,
+  drawThinkingLogo,
   type LogoPointSet,
   type LogoSource,
+  type LogoState,
 } from "~/utils/thinkingLogo";
-import { drawTurnOrb, type TurnOrbState } from "~/utils/thinkingOrb";
-import type { HugeIcon } from "~/utils/toolPresentation";
 
 const props = withDefaults(
   defineProps<{
-    state: TurnOrbState;
+    logo: LogoPointSet | LogoSource | string;
+    state?: LogoState;
     size?: number;
     active?: boolean;
+    tint?: string;
+    speed?: number;
+    tune?: Record<string, number | undefined>;
     ariaLabel?: string;
-    icon?: HugeIcon | null;
-    logo?: LogoPointSet | LogoSource | string;
-    classic?: boolean;
   }>(),
-  { size: 20, active: true, ariaLabel: "Active turn", classic: false },
+  {
+    state: "thinking",
+    size: 20,
+    active: true,
+    speed: 1,
+    ariaLabel: "Active tool step",
+  },
 );
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -36,41 +41,31 @@ const { scheme } = useTheme();
 const resolvedPoints = shallowRef<LogoPointSet | null>(null);
 
 async function resolvePoints(): Promise<void> {
-  if (props.classic) {
+  const l = props.logo;
+  if (!l) {
     resolvedPoints.value = null;
     return;
   }
-  if (props.logo) {
-    const l = props.logo;
-    if (typeof l === "object" && "version" in l && "p" in l) {
-      resolvedPoints.value = l as LogoPointSet;
-      return;
-    }
-    if (typeof l === "string") {
-      const isSvg = l.trim().startsWith("<");
-      const source: LogoSource = isSvg ? { svg: l } : { path: l, viewBox: 24 };
-      try {
-        resolvedPoints.value = await bakeLogo(source, { count: 80, shell: "dome" });
-      } catch {
-        resolvedPoints.value = null;
-      }
-      return;
-    }
+  if (typeof l === "object" && "version" in l && "p" in l) {
+    resolvedPoints.value = l as LogoPointSet;
+    return;
+  }
+  if (typeof l === "string") {
+    // SVG or path
+    const isSvg = l.trim().startsWith("<");
+    const source: LogoSource = isSvg ? { svg: l } : { path: l, viewBox: 24 };
     try {
-      resolvedPoints.value = await bakeLogo(l as LogoSource, { count: 80, shell: "dome" });
+      resolvedPoints.value = await bakeLogo(source, { count: 80, shell: "dome" });
     } catch {
       resolvedPoints.value = null;
     }
     return;
   }
-  if (props.icon) {
-    const found = logoForHugeIcon(props.icon);
-    if (found) {
-      resolvedPoints.value = found;
-      return;
-    }
+  try {
+    resolvedPoints.value = await bakeLogo(l as LogoSource, { count: 80, shell: "dome" });
+  } catch {
+    resolvedPoints.value = null;
   }
-  resolvedPoints.value = logoForToolFamily(props.state);
 }
 
 function ancestorScheme(): boolean | null {
@@ -91,7 +86,8 @@ function syncEnvironment(): void {
 
 function draw(time: number): void {
   const el = canvas.value;
-  if (!el || !ctx) return;
+  const points = resolvedPoints.value;
+  if (!el || !ctx || !points) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const size = props.size;
   const width = Math.round(size * dpr);
@@ -103,16 +99,18 @@ function draw(time: number): void {
   ctx.clearRect(0, 0, size, size);
 
   const frozen = reduced || !props.active;
-  drawTurnOrb(
+  drawThinkingLogo({
     ctx,
     size,
-    frozen ? 4.2 : time / 1000,
+    time: frozen ? 4.2 : time / 1000,
+    state: props.state,
+    points,
+    tint: props.tint,
     dark,
-    props.state,
-    frozen,
-    resolvedPoints.value,
-    props.classic,
-  );
+    reduced: frozen,
+    speed: props.speed,
+    tune: props.tune,
+  });
 }
 
 function stop(): void {
@@ -131,10 +129,8 @@ function sync(): void {
   if (props.active && visible && !document.hidden && !reduced) raf = requestAnimationFrame(loop);
 }
 
-watch(() => [props.state, props.icon, props.logo, props.classic], () => void resolvePoints(), {
-  immediate: true,
-});
-watch(() => [props.active, props.state, props.size, props.classic, resolvedPoints.value], sync);
+watch(() => props.logo, () => void resolvePoints(), { immediate: true });
+watch(() => [props.active, props.state, props.size, props.tint, resolvedPoints.value], sync);
 
 onMounted(() => {
   ctx = canvas.value?.getContext("2d") ?? null;
@@ -169,7 +165,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <span ref="host" class="turn-orb">
+  <span ref="host" class="thinking-logo">
     <canvas
       ref="canvas"
       :style="{ width: `${size}px`, height: `${size}px` }"
@@ -180,13 +176,13 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.turn-orb {
+.thinking-logo {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
 }
-.turn-orb canvas {
+.thinking-logo canvas {
   display: block;
   pointer-events: none;
 }
