@@ -19,6 +19,15 @@ mock.module("../sqlite.js", () => ({
 
 import type { RuntimeEvent } from "../types.js";
 import type { JsonValue } from "@kone/agent-core/lib-jsonValue.js";
+import type { ConversationStore } from "../ConversationStore.js";
+import type { createGateway as createGatewayType } from "./index.js";
+import type { initSpawnEngine as initSpawnEngineType } from "../threadSpawn.js";
+import type { GatewayRecord, GatewayValue } from "./schemas.js";
+import {
+  SPAWN_BATCH_JSON_SCHEMA,
+  IRC_SEND_JSON_SCHEMA,
+  IRC_INBOX_JSON_SCHEMA,
+} from "./schemas.js";
 
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
 function useUserDataDir(dir: string): string {
@@ -27,10 +36,10 @@ function useUserDataDir(dir: string): string {
 }
 useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-gateway-test-")));
 
-type ConversationStoreType = import("../ConversationStore.js").ConversationStore;
-let ConversationStoreCtor: typeof import("../ConversationStore.js").ConversationStore;
-let createGateway: typeof import("./index.js").createGateway;
-
+type ConversationStoreType = ConversationStore;
+let ConversationStoreCtor: typeof ConversationStore;
+let createGateway: typeof createGatewayType;
+let initSpawnEngine: typeof initSpawnEngineType;
 function freshStore(): ConversationStoreType {
   useUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-gateway-test-")));
   return new ConversationStoreCtor();
@@ -57,11 +66,65 @@ function makeGateway(store: ConversationStoreType) {
   return { gateway, events, turn };
 }
 
+type RpcToolItem = {
+  name: string;
+  description?: string;
+  inputSchema?: GatewayRecord;
+};
+
+type RpcStructuredContent = {
+  error?: { code: string; message?: string; details?: GatewayValue };
+  revision?: number;
+  writer?: { model?: string; provider?: string };
+  pad?: { id?: string; title?: string; body?: string; revision?: number };
+  batch?: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    threads: Array<{
+      index: number;
+      ok: boolean;
+      threadId?: string;
+      title?: string;
+      provider?: string;
+      model?: string;
+      agent?: string;
+      preset?: string;
+      kind?: string;
+      error?: string;
+    }>;
+  };
+  messages?: Array<{
+    id: string;
+    from: string;
+    to: string;
+    message: string;
+    replyTo?: string | null;
+    createdAt: number;
+  }>;
+  messageId?: string;
+  from?: string;
+  to?: string;
+  delivered?: boolean;
+  recipients?: string[];
+  replyTo?: string | null;
+  count?: number;
+  unreadRemaining?: number;
+};
+
+type RpcResultPayload = {
+  tools?: RpcToolItem[];
+  content?: Array<{ type: string; text: string }>;
+  isError?: boolean;
+  structuredContent?: RpcStructuredContent;
+};
+
 /** The JSON-RPC envelope's `result` member — the only part these tests read. */
-function rpcResult(res: { json: RpcEnvelope | RpcEnvelope[] | undefined }): any {
+function rpcResult(res: { json: RpcEnvelope | RpcEnvelope[] | undefined }): RpcResultPayload {
   // SAFETY: every MCP reply below is a JSON-RPC response whose payload sits
-  // under `result`; each expect pins the exact field it asserts on.
-  return (res.json as { result?: unknown }).result;
+  // under `result`; tests read typed result fields from RpcResultPayload.
+  const envelope = res.json as { result?: RpcResultPayload } | undefined;
+  return envelope?.result ?? {};
 }
 
 /** One JSON-RPC 2.0 response envelope as the gateway answers — `result` on a
@@ -89,10 +152,13 @@ async function mcpPost(url: string, token: string, body: JsonValue | string) {
 }
 
 beforeAll(async () => {
+  // ConversationStore, createGateway, and initSpawnEngine are loaded dynamically so the sqlite.js mock is hoisted first.
   const storeModule = await import("../ConversationStore.js");
   const gatewayModule = await import("./index.js");
+  const spawnModule = await import("../threadSpawn.js");
   ConversationStoreCtor = storeModule.ConversationStore;
   createGateway = gatewayModule.createGateway;
+  initSpawnEngine = spawnModule.initSpawnEngine;
 });
 
 describe("gateway integration (real store + HTTP)", () => {
@@ -263,7 +329,7 @@ describe("gateway integration (real store + HTTP)", () => {
 
     // No live turn yet → write denied, read still works (not_found).
     let res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-    const names = rpcResult(res).tools.map((t: any) => t.name);
+    const names = (rpcResult(res).tools ?? []).map((t) => t.name);
     expect(names).toEqual([
       "kone_scratchpad_read",
       "kone_scratchpad_write",
@@ -271,8 +337,11 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_spawn_thread",
       "kone_spawn_from_preset",
       "kone_delegate",
+      "kone_spawn_batch",
       "kone_wait_for_threads",
       "kone_read_thread",
+      "kone_irc_send",
+      "kone_irc_inbox",
     ]);
 
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
@@ -365,6 +434,442 @@ describe("gateway integration (real store + HTTP)", () => {
     turn({ type: "turn.aborted", threadId: "thread-abort", provider: "claudeAgent", at: 2, source: "claude.sdk.message", turnId: "turn-1", reason: "interrupted" });
     res = await mcpPost(conn.url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_write", arguments: { title: "Scratchpad", body: "after abort" } } });
     expect(rpcResult(res).structuredContent.error.code).toBe("capability_denied");
+
+    await gateway.shutdown();
+  });
+
+  test("security & authorization: active turn checks, turnless reads, and bearer token thread isolation across new tools", async () => {
+    const store = freshStore();
+    const { gateway, turn } = makeGateway(store);
+    await gateway.ready;
+    const url = gateway.mcpEndpointUrl();
+
+    const connAlice = gateway.connectionForThread("thread-alice", "claudeAgent", "sonnet");
+    const connBob = gateway.connectionForThread("thread-bob", "claudeAgent", "sonnet");
+    const connCharlie = gateway.connectionForThread("thread-charlie", "codex", "gpt-5");
+
+    store.ensureThread({
+      threadId: "thread-alice",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+    store.ensureThread({
+      threadId: "thread-bob",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+    store.ensureThread({
+      threadId: "thread-charlie",
+      projectPath: "/tmp/other-proj",
+      provider: "codex",
+      model: "gpt-5",
+    });
+
+    // 1. tools/list advertises all new tools with valid schemas
+    const listRes = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    });
+    const toolList = rpcResult(listRes).tools ?? [];
+    const toolNames = toolList.map((t) => t.name);
+    expect(toolNames).toContain("kone_spawn_batch");
+    expect(toolNames).toContain("kone_irc_send");
+    expect(toolNames).toContain("kone_irc_inbox");
+
+    const toolMap = new Map(toolList.map((t) => [t.name, t]));
+    expect(toolMap.get("kone_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
+    expect(toolMap.get("kone_irc_send")?.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
+    expect(toolMap.get("kone_irc_inbox")?.inputSchema).toEqual(IRC_INBOX_JSON_SCHEMA);
+
+    // 2. Active turn check: turnless writes are rejected with capability_denied
+    const turnlessSpawnBatch = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "kone_spawn_batch",
+        arguments: {
+          items: [
+            {
+              requestId: "req-1",
+              prompt: "Do something in background",
+              target: { provider: "codex" },
+            },
+          ],
+        },
+      },
+    });
+    expect(rpcResult(turnlessSpawnBatch).isError).toBe(true);
+    expect(rpcResult(turnlessSpawnBatch).structuredContent.error.code).toBe("capability_denied");
+
+    const turnlessIrcSend = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "kone_irc_send",
+        arguments: { to: "thread-bob", message: "Turnless message attempt" },
+      },
+    });
+    expect(rpcResult(turnlessIrcSend).isError).toBe(true);
+    expect(rpcResult(turnlessIrcSend).structuredContent.error.code).toBe("capability_denied");
+
+    // 3. Turnless read: kone_irc_inbox functions turnlessly as designed
+    const turnlessInbox = await mcpPost(url, connBob.bearerToken, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "kone_irc_inbox", arguments: {} },
+    });
+    expect(rpcResult(turnlessInbox).isError).toBeUndefined();
+    expect(rpcResult(turnlessInbox).structuredContent).toMatchObject({
+      count: 0,
+      unreadRemaining: 0,
+    });
+
+    // 4. Session token binding & thread write authority isolation
+    // Start Alice's turn
+    turn({
+      type: "turn.started",
+      threadId: "thread-alice",
+      provider: "claudeAgent",
+      at: 1,
+      source: "claude.sdk.message",
+      turnId: "turn-alice-1",
+    });
+
+    // Alice sends message to Bob
+    const aliceSend = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: {
+        name: "kone_irc_send",
+        arguments: { to: "thread-bob", message: "Hello Bob from Alice!" },
+      },
+    });
+    expect(rpcResult(aliceSend).isError).toBeUndefined();
+    expect(rpcResult(aliceSend).structuredContent).toMatchObject({
+      from: "thread-alice",
+      to: "thread-bob",
+      delivered: true,
+      recipients: ["thread-bob"],
+    });
+    const msgId = rpcResult(aliceSend).structuredContent.messageId;
+    expect(msgId).toMatch(/^msg_/);
+
+    // Bob has NO active turn -> Bob cannot write (authority is bound to Alice's token/turn only!)
+    const bobUnauthorizedSend = await mcpPost(url, connBob.bearerToken, {
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: {
+        name: "kone_irc_send",
+        arguments: { to: "thread-alice", message: "Unauthorized write from Bob" },
+      },
+    });
+    expect(rpcResult(bobUnauthorizedSend).isError).toBe(true);
+    expect(rpcResult(bobUnauthorizedSend).structuredContent.error.code).toBe("capability_denied");
+
+    // Bob reads his inbox (turnlessly, with peek: true)
+    const bobPeek = await mcpPost(url, connBob.bearerToken, {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "kone_irc_inbox", arguments: { peek: true } },
+    });
+    expect(rpcResult(bobPeek).isError).toBeUndefined();
+    expect(rpcResult(bobPeek).structuredContent.count).toBe(1);
+    expect(rpcResult(bobPeek).structuredContent.unreadRemaining).toBe(1);
+    expect(rpcResult(bobPeek).structuredContent.messages[0]).toMatchObject({
+      id: msgId,
+      from: "thread-alice",
+      to: "thread-bob",
+      message: "Hello Bob from Alice!",
+    });
+
+    // Alice checks her inbox -> empty (Thread inbox isolation: Alice cannot read Bob's inbox)
+    const aliceInbox = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: { name: "kone_irc_inbox", arguments: {} },
+    });
+    expect(rpcResult(aliceInbox).structuredContent.count).toBe(0);
+
+    // Alice's turn completes -> Alice's write authority is retired
+    turn({
+      type: "turn.completed",
+      threadId: "thread-alice",
+      provider: "claudeAgent",
+      at: 2,
+      source: "claude.sdk.message",
+      turnId: "turn-alice-1",
+    });
+
+    const alicePostTurnSend = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "kone_irc_send",
+        arguments: { to: "thread-bob", message: "Post turn write attempt" },
+      },
+    });
+    expect(rpcResult(alicePostTurnSend).isError).toBe(true);
+    expect(rpcResult(alicePostTurnSend).structuredContent.error.code).toBe("capability_denied");
+
+    // Bob drains his inbox
+    const bobDrain = await mcpPost(url, connBob.bearerToken, {
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/call",
+      params: { name: "kone_irc_inbox", arguments: {} },
+    });
+    expect(rpcResult(bobDrain).structuredContent.count).toBe(1);
+    expect(rpcResult(bobDrain).structuredContent.unreadRemaining).toBe(0);
+
+    // Bob's turn starts -> Bob can now send a reply
+    turn({
+      type: "turn.started",
+      threadId: "thread-bob",
+      provider: "claudeAgent",
+      at: 3,
+      source: "claude.sdk.message",
+      turnId: "turn-bob-1",
+    });
+
+    const bobReply = await mcpPost(url, connBob.bearerToken, {
+      jsonrpc: "2.0",
+      id: 11,
+      method: "tools/call",
+      params: {
+        name: "kone_irc_send",
+        arguments: { to: "thread-alice", message: "Hello Alice, reply received!", replyTo: msgId },
+      },
+    });
+    expect(rpcResult(bobReply).isError).toBeUndefined();
+    expect(rpcResult(bobReply).structuredContent).toMatchObject({
+      from: "thread-bob",
+      to: "thread-alice",
+      replyTo: msgId,
+      delivered: true,
+    });
+
+    // Alice reads Bob's reply turnlessly
+    const aliceReceivedReply = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 12,
+      method: "tools/call",
+      params: { name: "kone_irc_inbox", arguments: {} },
+    });
+    expect(rpcResult(aliceReceivedReply).structuredContent.count).toBe(1);
+    expect(rpcResult(aliceReceivedReply).structuredContent.messages[0]).toMatchObject({
+      from: "thread-bob",
+      to: "thread-alice",
+      replyTo: msgId,
+      message: "Hello Alice, reply received!",
+    });
+
+    // 5. Cross-project authorization: Charlie on /tmp/other-proj cannot message Bob on /tmp/proj
+    turn({
+      type: "turn.started",
+      threadId: "thread-charlie",
+      provider: "codex",
+      at: 4,
+      source: "codex.message",
+      turnId: "turn-charlie-1",
+    });
+
+    const charlieCrossProjectSend = await mcpPost(url, connCharlie.bearerToken, {
+      jsonrpc: "2.0",
+      id: 13,
+      method: "tools/call",
+      params: {
+        name: "kone_irc_send",
+        arguments: { to: "thread-bob", message: "Cross-project unauthorized ping" },
+      },
+    });
+    expect(rpcResult(charlieCrossProjectSend).isError).toBe(true);
+    expect(rpcResult(charlieCrossProjectSend).structuredContent.error.code).toBe("permission_denied");
+
+    // 6. Revocation isolation: Revoking Alice's thread drops Alice's token; Bob's token is untouched
+    gateway.revokeThread("thread-alice");
+    const aliceAfterRevoke = await mcpPost(url, connAlice.bearerToken, {
+      jsonrpc: "2.0",
+      id: 14,
+      method: "ping",
+    });
+    expect(aliceAfterRevoke.status).toBe(401);
+
+    const bobAfterAliceRevoke = await mcpPost(url, connBob.bearerToken, {
+      jsonrpc: "2.0",
+      id: 15,
+      method: "ping",
+    });
+    expect(bobAfterAliceRevoke.status).toBe(200);
+
+    await gateway.shutdown();
+  });
+
+  test("kone_spawn_batch end-to-end execution, active turn gating, and validation over HTTP gateway", async () => {
+    const store = freshStore();
+    const { gateway, turn } = makeGateway(store);
+    await gateway.ready;
+    const url = gateway.mcpEndpointUrl();
+
+    const conn = gateway.connectionForThread("thread-batch-caller", "claudeAgent", "sonnet");
+    store.ensureThread({
+      threadId: "thread-batch-caller",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+
+    initSpawnEngine({
+      store,
+      providers: {
+        cachedSurface: () => ({
+          statuses: [
+            { provider: "codex" as const, available: true, label: "Codex" },
+            { provider: "claudeAgent" as const, available: true, label: "Claude Agent" },
+          ],
+          models: {
+            codex: [{ id: "gpt-5", label: "GPT-5" }],
+            claudeAgent: [{ id: "sonnet", label: "Sonnet" }],
+          },
+        }),
+        listSessions: async () => [
+          {
+            threadId: "thread-batch-caller",
+            provider: "claudeAgent" as const,
+            cwd: "/tmp/proj",
+            status: "running" as const,
+            mode: "full-access" as const,
+            startedAt: 100,
+            updatedAt: 100,
+          },
+        ],
+        stopSession: async () => {},
+      },
+      dispatcher: {
+        startThread: async () => ({
+          threadId: "child-temp",
+          provider: "claudeAgent" as const,
+          cwd: "/tmp/proj",
+          status: "running" as const,
+          mode: "full-access" as const,
+          startedAt: 100,
+          updatedAt: 100,
+        }),
+        sendThreadTurn: async () => ({
+          turnId: "turn-child-1",
+        }),
+      },
+      emit: () => {},
+      onEvents: () => () => {},
+    });
+
+    // 1. Without active turn -> capability_denied
+    let res = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "kone_spawn_batch",
+        arguments: {
+          items: [
+            {
+              requestId: "req-batch-1",
+              prompt: "Build task 1",
+              target: { provider: "codex" },
+            },
+          ],
+        },
+      },
+    });
+    expect(rpcResult(res).isError).toBe(true);
+    expect(rpcResult(res).structuredContent?.error?.code).toBe("capability_denied");
+
+    // 2. Start active turn
+    turn({
+      type: "turn.started",
+      threadId: "thread-batch-caller",
+      provider: "claudeAgent",
+      at: 10,
+      source: "claude.sdk.message",
+      turnId: "turn-batch-1",
+    });
+
+    // 3. Invalid arguments -> invalid_input
+    const emptyItemsRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "kone_spawn_batch", arguments: { items: [] } },
+    });
+    expect(rpcResult(emptyItemsRes).isError).toBe(true);
+    expect(rpcResult(emptyItemsRes).structuredContent?.error?.code).toBe("invalid_input");
+
+    const missingPromptRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "kone_spawn_batch",
+        arguments: { items: [{ requestId: "req-1" }] },
+      },
+    });
+    expect(rpcResult(missingPromptRes).isError).toBe(true);
+    expect(rpcResult(missingPromptRes).structuredContent?.error?.code).toBe("invalid_input");
+
+    // 4. Valid batch execution over HTTP
+    res = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "kone_spawn_batch",
+        arguments: {
+          items: [
+            {
+              requestId: "req-gw-batch-1",
+              prompt: "Execute sub-task alpha",
+              title: "Alpha Worker",
+              target: { provider: "codex", model: "gpt-5" },
+            },
+            {
+              requestId: "req-gw-batch-2",
+              prompt: "Execute sub-task beta",
+              title: "Beta Worker",
+              target: { provider: "claudeAgent", model: "sonnet" },
+            },
+          ],
+        },
+      },
+    });
+    expect(rpcResult(res).isError).toBe(false);
+    expect(rpcResult(res).content?.[0]?.text).toContain("Spawned 2 threads");
+    const batchData = rpcResult(res).structuredContent?.batch;
+    expect(batchData?.total).toBe(2);
+    expect(batchData?.succeeded).toBe(2);
+    expect(batchData?.failed).toBe(0);
+    expect(batchData?.threads).toHaveLength(2);
+    expect(batchData?.threads[0]?.ok).toBe(true);
+    expect(batchData?.threads[0]?.title).toBe("Alpha Worker");
+    expect(batchData?.threads[1]?.ok).toBe(true);
+    expect(batchData?.threads[1]?.title).toBe("Beta Worker");
+
+    // Check that children threads persisted in real store
+    const child0Id = batchData?.threads[0]?.threadId;
+    const child1Id = batchData?.threads[1]?.threadId;
+    expect(child0Id).toBeDefined();
+    expect(child1Id).toBeDefined();
+    expect(store.threadMeta(child0Id!)).not.toBeNull();
+    expect(store.threadMeta(child1Id!)).not.toBeNull();
 
     await gateway.shutdown();
   });
