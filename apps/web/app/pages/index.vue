@@ -226,7 +226,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       :animate="{ x: settingsOpen ? settingsWidth : 0 }"
       :transition="stageSpring"
     >
-      <div class="h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
+      <div class="relative h-full min-h-screen overflow-hidden" :class="settingsOpen ? 'rounded-[26px]' : ''">
         <ProjectView
           v-if="project"
           ref="pageRef"
