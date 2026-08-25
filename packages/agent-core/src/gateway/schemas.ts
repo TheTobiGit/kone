@@ -193,6 +193,33 @@ export const DelegateInputSchema = z.object({
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
 });
+export const SpawnBatchItemSchema = z.object({
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn, item index). */
+  requestId: z.string().min(1).max(200),
+  /** The task prompt or opening brief. */
+  prompt: z.string().min(1),
+  /** Optional working title. */
+  title: z.string().min(1).optional(),
+  /** Direct target provider and model. */
+  target: z
+    .object({
+      provider: z.enum(PROVIDER_KINDS),
+      model: z.string().min(1).optional(),
+      effort: z.string().min(1).optional(),
+    })
+    .optional(),
+  /** Preset sub-agent name or id. */
+  preset: z.string().min(1).max(200).optional(),
+  /** Project teammate name or id. */
+  agent: z.string().min(1).max(200).optional(),
+  /** Clamped to caller mode. */
+  mode: z.enum(INTERACTION_MODES).optional(),
+});
+
+export const SpawnBatchInputSchema = z.object({
+  /** Batch of tasks to spawn concurrently (up to 16). */
+  items: z.array(SpawnBatchItemSchema).min(1).max(16),
+});
 
 export const WaitForThreadsInputSchema = z.object({
   threadIds: z.array(z.string().min(1)).min(1).max(12),
@@ -288,3 +315,99 @@ export const READ_THREAD_JSON_SCHEMA = {
   },
   required: ["threadId"],
 } satisfies GatewayRecord;
+export const SPAWN_BATCH_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          requestId: { type: "string" },
+          prompt: { type: "string" },
+          title: { type: "string" },
+          target: {
+            type: "object",
+            properties: {
+              provider: { type: "string", enum: [...PROVIDER_KINDS] },
+              model: { type: "string" },
+              effort: { type: "string" },
+            },
+            required: ["provider"],
+          },
+          preset: { type: "string" },
+          agent: { type: "string" },
+          mode: { type: "string", enum: [...INTERACTION_MODES] },
+        },
+        required: ["requestId", "prompt"],
+      },
+    },
+  },
+  required: ["items"],
+} satisfies GatewayRecord;
+
+// ── irc inter-agent communication tools ──────────────────────────────────────
+
+export const IrcSendInputSchema = z.object({
+  to: z.string().min(1, "Recipient is required"),
+  message: z.string().min(1, "Message cannot be empty"),
+  replyTo: z.string().min(1).optional(),
+});
+
+export const IrcSendMessageInputSchema = IrcSendInputSchema;
+export const IrcMessageInputSchema = IrcSendInputSchema;
+
+export const IrcInboxInputSchema = z.object({
+  peek: z.boolean().optional(),
+  limit: z.number().int().positive().optional(),
+});
+
+export const IRC_SEND_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    to: {
+      type: "string",
+      description: "Recipient thread ID, agent name, 'parent', or 'all' to broadcast.",
+    },
+    message: {
+      type: "string",
+      description: "Text content of the direct message to send.",
+    },
+    replyTo: {
+      type: "string",
+      description: "Optional message ID being replied to.",
+    },
+  },
+  required: ["to", "message"],
+} satisfies GatewayRecord;
+
+export const IRC_SEND_MESSAGE_JSON_SCHEMA = IRC_SEND_JSON_SCHEMA;
+export const IRC_MESSAGE_JSON_SCHEMA = IRC_SEND_JSON_SCHEMA;
+
+export const IRC_INBOX_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    peek: {
+      type: "boolean",
+      description: "If true, reads messages without consuming/clearing them from the inbox.",
+    },
+    limit: {
+      type: "integer",
+      description: "Maximum number of messages to retrieve.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export type IrcSendInput = z.infer<typeof IrcSendInputSchema>;
+export type IrcSendMessageInput = IrcSendInput;
+export type IrcMessageInput = IrcSendInput;
+export type IrcInboxInput = z.infer<typeof IrcInboxInputSchema>;
+
+export type IrcMessagePayload = {
+  id: string;
+  from: string;
+  to: string;
+  message: string;
+  replyTo?: string;
+  createdAt: number;
+};

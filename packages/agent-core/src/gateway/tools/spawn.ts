@@ -50,6 +50,8 @@ import {
   SPAWN_TARGETS_JSON_SCHEMA,
   SpawnTargetsInputSchema,
   SpawnThreadInputSchema,
+  SpawnBatchInputSchema,
+  SPAWN_BATCH_JSON_SCHEMA,
   WaitForThreadsInputSchema,
   WAIT_FOR_THREADS_JSON_SCHEMA,
 } from "../schemas.js";
@@ -436,6 +438,187 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       return gatewayToolErrorResult(mapSpawnError(error));
     }
   };
+  const spawnBatchHandler = async (
+    ctx: GatewayToolContext,
+    args: {
+      items: Array<{
+        requestId: string;
+        prompt: string;
+        title?: string;
+        target?: { provider: ProviderKind; model?: string; effort?: string };
+        preset?: string;
+        agent?: string;
+        mode?: InteractionMode;
+      }>;
+    },
+  ): Promise<GatewayToolResult> => {
+    if (!ctx.turnId) {
+      return gatewayToolErrorResult(
+        new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
+      );
+    }
+    const engine = requiredEngine();
+    const caller = callerOf(ctx);
+
+    let availability: ProviderAvailability[] | null = null;
+    const getAvailability = async (): Promise<ProviderAvailability[]> => {
+      if (availability) return availability;
+      const report = await engine.targets(caller);
+      availability = availabilityFromReport(report.providers);
+      return availability;
+    };
+
+    const spawnPromises = args.items.map(async (item, index) => {
+      try {
+        if (item.agent) {
+          const agent = findTeamAgent(input.store, caller.cwd, item.agent);
+          if (!agent) {
+            return {
+              index,
+              ok: false,
+              error: `No agent "${item.agent}" on this project's team.`,
+            };
+          }
+          const avail = await getAvailability();
+          const plan = resolveDelegation({
+            agent,
+            task: item.prompt,
+            availability: avail,
+            caller: { provider: caller.provider, model: caller.model },
+          });
+          if (!plan.ok) {
+            return { index, ok: false, error: plan.reason };
+          }
+          const result = await engine.spawn(caller, {
+            requestId: item.requestId,
+            prompt: plan.prompt,
+            title: item.title,
+            target: plan.target,
+            mode: item.mode,
+            delegateToAgentId: agent.agentId,
+            persona: plan.persona,
+          });
+          return {
+            index,
+            ok: true,
+            threadId: result.threadId,
+            title: result.title,
+            provider: result.provider,
+            model: result.model,
+            agent: plan.persona.name,
+            kind: "delegation" as const,
+          };
+        } else if (item.preset) {
+          const preset = findPreset(input.store, item.preset);
+          if (!preset) {
+            return {
+              index,
+              ok: false,
+              error: `No preset sub-agent "${item.preset}".`,
+            };
+          }
+          const avail = await getAvailability();
+          const plan = planPresetSpawn(preset, item.prompt, avail, {
+            provider: caller.provider,
+            model: caller.model,
+          });
+          if (!plan.ok) {
+            return { index, ok: false, error: plan.reason };
+          }
+          const result = await engine.spawn(caller, {
+            requestId: item.requestId,
+            prompt: plan.prompt,
+            title: item.title,
+            target: plan.target,
+            mode: item.mode,
+          });
+          return {
+            index,
+            ok: true,
+            threadId: result.threadId,
+            title: result.title,
+            provider: result.provider,
+            model: result.model,
+            preset: preset.name,
+            kind: "preset" as const,
+          };
+        } else if (item.target) {
+          const result = await engine.spawn(caller, {
+            requestId: item.requestId,
+            prompt: item.prompt,
+            title: item.title,
+            target: item.target,
+            mode: item.mode,
+          });
+          return {
+            index,
+            ok: true,
+            threadId: result.threadId,
+            title: result.title,
+            provider: result.provider,
+            model: result.model,
+            kind: "spawn" as const,
+          };
+        } else {
+          return {
+            index,
+            ok: false,
+            error: "Item must specify either target, preset, or agent.",
+          };
+        }
+      } catch (error) {
+        const mapped = mapSpawnError(error);
+        return { index, ok: false, error: mapped.message };
+      }
+    });
+
+    const results = await Promise.all(spawnPromises);
+    const succeeded = results.filter((r) => r.ok);
+    const failed = results.filter((r) => !r.ok);
+
+    const summaryParts: string[] = [];
+    if (succeeded.length > 0) {
+      summaryParts.push(
+        `Spawned ${succeeded.length} thread${succeeded.length === 1 ? "" : "s"}: ${succeeded
+          .map((s) => `"${s.title}" (${s.threadId})`)
+          .join(", ")}.`,
+      );
+    }
+    if (failed.length > 0) {
+      const errList = failed
+        .map((f) => `item ${f.index}: ${f.error?.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
+        .join("; ");
+      summaryParts.push(`${failed.length} spawn failed: ${errList}.`);
+    }
+
+    return {
+      content: [{ type: "text", text: summaryParts.join(" ") }],
+      isError: succeeded.length === 0 && failed.length > 0,
+      structuredContent: {
+        batch: {
+          total: args.items.length,
+          succeeded: succeeded.length,
+          failed: failed.length,
+          threads: results.map((r) => {
+            const entry: GatewayRecord = {
+              index: r.index,
+              ok: r.ok,
+            };
+            if (r.threadId !== undefined) entry.threadId = r.threadId;
+            if (r.title !== undefined) entry.title = r.title;
+            if (r.provider !== undefined) entry.provider = r.provider;
+            if (r.model !== undefined) entry.model = r.model;
+            if (r.agent !== undefined) entry.agent = r.agent;
+            if (r.preset !== undefined) entry.preset = r.preset;
+            if (r.kind !== undefined) entry.kind = r.kind;
+            if (r.error !== undefined) entry.error = r.error;
+            return entry;
+          }),
+        },
+      },
+    };
+  };
+
 
   const waitHandler = async (
     ctx: GatewayToolContext,
@@ -556,6 +739,16 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       permission: "allow",
       requiresActiveTurn: true,
       handler: delegateHandler,
+    },
+    {
+      name: "kone_spawn_batch",
+      description:
+        "Spawn multiple child threads concurrently in a single tool call. Each item in items can target a direct provider/model, a preset sub-agent, or a project teammate. Returns an array of spawned threads with threadIds ready for kone_wait_for_threads.",
+      inputSchema: SpawnBatchInputSchema,
+      jsonSchema: SPAWN_BATCH_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: true,
+      handler: spawnBatchHandler,
     },
     {
       name: "kone_wait_for_threads",

@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { initSpawnEngine as realInitSpawnEngine } from "../../threadSpawn.js";
 
 import type { AgentPersona, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
 import type { AgentRecord, SubagentPresetRecord } from "../../ConversationStore.js";
@@ -6,6 +7,7 @@ import type { GatewayToolContext, ToolEntry } from "../schemas.js";
 import {
   DELEGATE_JSON_SCHEMA,
   READ_THREAD_JSON_SCHEMA,
+  SPAWN_BATCH_JSON_SCHEMA,
   SPAWN_FROM_PRESET_JSON_SCHEMA,
   SPAWN_THREAD_JSON_SCHEMA,
   SPAWN_TARGETS_JSON_SCHEMA,
@@ -87,12 +89,17 @@ type FakeEngine = {
 };
 
 let currentEngine: FakeEngine | null = null;
+let initializedEngine: any = null;
 
 mock.module("../../threadSpawn.js", () => ({
   SpawnError: FakeSpawnError,
   SPAWN_WAIT_DEFAULT_MS: 10_000,
   SPAWN_WAIT_MAX_MS: 60_000,
-  getSpawnEngine: () => currentEngine,
+  initSpawnEngine: (deps: any) => {
+    initializedEngine = realInitSpawnEngine(deps);
+    return initializedEngine;
+  },
+  getSpawnEngine: () => currentEngine ?? initializedEngine,
 }));
 
 type SpawnToolStore = {
@@ -102,6 +109,10 @@ type SpawnToolStore = {
   listProjectAgents(projectPath: string): AgentRecord[];
 };
 let createSpawnTools: (input: { store: SpawnToolStore }) => ToolEntry[];
+
+afterAll(() => {
+  currentEngine = null;
+});
 
 beforeAll(async () => {
   ({ createSpawnTools } = await import("./spawn.js"));
@@ -202,6 +213,7 @@ describe("spawn gateway tools", () => {
       kone_spawn_thread: { permission: "allow", requiresActiveTurn: true },
       kone_spawn_from_preset: { permission: "allow", requiresActiveTurn: true },
       kone_delegate: { permission: "allow", requiresActiveTurn: true },
+      kone_spawn_batch: { permission: "allow", requiresActiveTurn: true },
       kone_wait_for_threads: { permission: "allow", requiresActiveTurn: false },
       kone_read_thread: { permission: "allow", requiresActiveTurn: false },
     });
@@ -215,6 +227,7 @@ describe("spawn gateway tools", () => {
       "kone_spawn_thread",
       "kone_spawn_from_preset",
       "kone_delegate",
+      "kone_spawn_batch",
       "kone_wait_for_threads",
       "kone_read_thread",
     ]);
@@ -222,6 +235,7 @@ describe("spawn gateway tools", () => {
     expect(byName["kone_spawn_thread"]).toEqual(SPAWN_THREAD_JSON_SCHEMA);
     expect(byName["kone_spawn_from_preset"]).toEqual(SPAWN_FROM_PRESET_JSON_SCHEMA);
     expect(byName["kone_delegate"]).toEqual(DELEGATE_JSON_SCHEMA);
+    expect(byName["kone_spawn_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
     expect(byName["kone_wait_for_threads"]).toEqual(WAIT_FOR_THREADS_JSON_SCHEMA);
     expect(byName["kone_read_thread"]).toEqual(READ_THREAD_JSON_SCHEMA);
   });
@@ -876,5 +890,414 @@ describe("kone_delegate", () => {
     expect(res.isError).toBeUndefined();
     expect(capturedRequest!.target).toEqual({ provider: "codex", model: "gpt-5" });
     expect(res.structuredContent).toMatchObject({ selection: "preferred" });
+  });
+});
+
+describe("kone_spawn_batch", () => {
+  test("refuses without a live turn", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call({ ...ctx, turnId: null }, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-1",
+          prompt: "Do task 1",
+          target: { provider: "codex", model: "gpt-5" },
+        },
+      ],
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "capability_denied" });
+  });
+
+  test("spawns multiple direct target items concurrently and returns results", async () => {
+    const capturedRequests: FakeSpawnRequest[] = [];
+    currentEngine = makeEngine({
+      spawn: async (caller, request) => {
+        capturedRequests.push(request);
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? `Task ${request.requestId}`,
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-1",
+          prompt: "Task 1 description.",
+          title: "Task 1",
+          target: { provider: "codex", model: "gpt-5" },
+          mode: "ask",
+        },
+        {
+          requestId: "op-2",
+          prompt: "Task 2 description.",
+          title: "Task 2",
+          target: { provider: "codex", model: "gpt-5" },
+          mode: "ask",
+        },
+      ],
+    });
+    expect(res.isError).toBe(false);
+    expect(capturedRequests).toHaveLength(2);
+    expect(capturedRequests[0]).toEqual({
+      requestId: "op-1",
+      prompt: "Task 1 description.",
+      title: "Task 1",
+      target: { provider: "codex", model: "gpt-5" },
+      mode: "ask",
+    });
+    expect(capturedRequests[1]).toEqual({
+      requestId: "op-2",
+      prompt: "Task 2 description.",
+      title: "Task 2",
+      target: { provider: "codex", model: "gpt-5" },
+      mode: "ask",
+    });
+    expect(res.content[0]?.text).toBe('Spawned 2 threads: "Task 1" (child-op-1), "Task 2" (child-op-2).');
+    expect(res.structuredContent).toEqual({
+      batch: {
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+        threads: [
+          {
+            index: 0,
+            ok: true,
+            threadId: "child-op-1",
+            title: "Task 1",
+            provider: "codex",
+            model: "gpt-5",
+            kind: "spawn",
+          },
+          {
+            index: 1,
+            ok: true,
+            threadId: "child-op-2",
+            title: "Task 2",
+            provider: "codex",
+            model: "gpt-5",
+            kind: "spawn",
+          },
+        ],
+      },
+    });
+  });
+
+  test("spawns batch items from presets with combined instructions and resolved models", async () => {
+    const capturedRequests: FakeSpawnRequest[] = [];
+    currentEngine = makeEngine({
+      targets: async () => targetsReport([{ provider: "claudeAgent", models: ["haiku", "opus"] }]),
+      spawn: async (caller, request) => {
+        capturedRequests.push(request);
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? "Preset Task",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const explorerPreset = makePreset({
+      presetId: "preset-explorer",
+      name: "Explorer",
+      instructions: "Read only. Report findings, change nothing.",
+      model: { provider: "claudeAgent", model: "haiku" },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [explorerPreset]) }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-preset-1",
+          prompt: "Map the auth flow.",
+          preset: "Explorer",
+          title: "Explore Auth",
+        },
+      ],
+    });
+    expect(res.isError).toBe(false);
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0]).toEqual({
+      requestId: "op-preset-1",
+      prompt: "Read only. Report findings, change nothing.\n\nYour task:\nMap the auth flow.",
+      title: "Explore Auth",
+      target: { provider: "claudeAgent", model: "haiku" },
+      mode: undefined,
+    });
+    expect(res.content[0]?.text).toBe('Spawned 1 thread: "Explore Auth" (child-op-preset-1).');
+    expect(res.structuredContent).toEqual({
+      batch: {
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+        threads: [
+          {
+            index: 0,
+            ok: true,
+            threadId: "child-op-preset-1",
+            title: "Explore Auth",
+            provider: "claudeAgent",
+            model: "haiku",
+            preset: "Explorer",
+            kind: "preset",
+          },
+        ],
+      },
+    });
+  });
+
+  test("spawns batch items delegating to teammates carrying persona and agent binding", async () => {
+    const capturedRequests: FakeSpawnRequest[] = [];
+    currentEngine = makeEngine({
+      targets: async () => targetsReport([{ provider: "codex", models: ["gpt-5"] }]),
+      spawn: async (caller, request) => {
+        capturedRequests.push(request);
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? "Delegation Task",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const backendAgent = makeAgent({
+      agentId: "agent-backend",
+      name: "Backend",
+      instructions: "You own the API layer.",
+      model: { provider: "codex", model: "gpt-5" },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore([], [], [backendAgent]) }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-delegate-1",
+          prompt: "Build the /users endpoint.",
+          agent: "Backend",
+          title: "Build /users",
+        },
+      ],
+    });
+    expect(res.isError).toBe(false);
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0]).toEqual({
+      requestId: "op-delegate-1",
+      prompt: "Build the /users endpoint.",
+      title: "Build /users",
+      target: { provider: "codex", model: "gpt-5" },
+      mode: undefined,
+      delegateToAgentId: "agent-backend",
+      persona: { name: "Backend", instructions: "You own the API layer." },
+    });
+    expect(res.content[0]?.text).toBe('Spawned 1 thread: "Build /users" (child-op-delegate-1).');
+    expect(res.structuredContent).toEqual({
+      batch: {
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+        threads: [
+          {
+            index: 0,
+            ok: true,
+            threadId: "child-op-delegate-1",
+            title: "Build /users",
+            provider: "codex",
+            model: "gpt-5",
+            agent: "Backend",
+            kind: "delegation",
+          },
+        ],
+      },
+    });
+  });
+
+  test("handles mixed batch with partial failures formatting summary and structuredContent", async () => {
+    currentEngine = makeEngine({
+      targets: async () => targetsReport([{ provider: "codex", models: ["gpt-5"] }]),
+      spawn: async (caller, request) => {
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? "Direct Task",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-1",
+          prompt: "Valid direct spawn task.",
+          title: "Valid Task",
+          target: { provider: "codex", model: "gpt-5" },
+        },
+        {
+          requestId: "op-2",
+          prompt: "Delegate to missing agent.",
+          agent: "Backend",
+        },
+      ],
+    });
+    expect(res.isError).toBe(false);
+    expect(res.content[0]?.text).toBe(
+      'Spawned 1 thread: "Valid Task" (child-op-1). 1 spawn failed: item 1: No agent "Backend" on this project\'s team.',
+    );
+    expect(res.structuredContent).toEqual({
+      batch: {
+        total: 2,
+        succeeded: 1,
+        failed: 1,
+        threads: [
+          {
+            index: 0,
+            ok: true,
+            threadId: "child-op-1",
+            title: "Valid Task",
+            provider: "codex",
+            model: "gpt-5",
+            kind: "spawn",
+          },
+          {
+            index: 1,
+            ok: false,
+            error: 'No agent "Backend" on this project\'s team.',
+          },
+        ],
+      },
+    });
+  });
+
+  test("marks batch as error when all items fail", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-1",
+          prompt: "Invalid preset item",
+          preset: "UnknownPreset",
+        },
+        {
+          requestId: "op-2",
+          prompt: "Invalid agent item",
+          agent: "UnknownAgent",
+        },
+        {
+          requestId: "op-3",
+          prompt: "No target item",
+        },
+      ],
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toBe(
+      '3 spawn failed: item 0: No preset sub-agent "UnknownPreset"; item 1: No agent "UnknownAgent" on this project\'s team; item 2: Item must specify either target, preset, or agent.',
+    );
+    expect(res.structuredContent).toEqual({
+      batch: {
+        total: 3,
+        succeeded: 0,
+        failed: 3,
+        threads: [
+          {
+            index: 0,
+            ok: false,
+            error: 'No preset sub-agent "UnknownPreset".',
+          },
+          {
+            index: 1,
+            ok: false,
+            error: 'No agent "UnknownAgent" on this project\'s team.',
+          },
+          {
+            index: 2,
+            ok: false,
+            error: "Item must specify either target, preset, or agent.",
+          },
+        ],
+      },
+    });
+  });
+
+  test("maps SpawnError thrown by engine onto item failure in batch", async () => {
+    currentEngine = makeEngine({
+      spawn: async (caller, request) => {
+        if (request.requestId === "op-fail") {
+          throw new FakeSpawnError("capability_denied", "Spawn depth limit reached (max 2).");
+        }
+        return {
+          requestId: request.requestId,
+          threadId: `child-${request.requestId}`,
+          parentThreadId: caller.threadId,
+          title: request.title ?? "Direct Task",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_spawn_batch", {
+      items: [
+        {
+          requestId: "op-ok",
+          prompt: "Task OK",
+          title: "Task OK",
+          target: { provider: "codex", model: "gpt-5" },
+        },
+        {
+          requestId: "op-fail",
+          prompt: "Task Fail",
+          target: { provider: "codex", model: "gpt-5" },
+        },
+      ],
+    });
+    expect(res.isError).toBe(false);
+    expect(res.content[0]?.text).toBe(
+      'Spawned 1 thread: "Task OK" (child-op-ok). 1 spawn failed: item 1: Spawn depth limit reached (max 2).',
+    );
+    expect(res.structuredContent).toEqual({
+      batch: {
+        total: 2,
+        succeeded: 1,
+        failed: 1,
+        threads: [
+          {
+            index: 0,
+            ok: true,
+            threadId: "child-op-ok",
+            title: "Task OK",
+            provider: "codex",
+            model: "gpt-5",
+            kind: "spawn",
+          },
+          {
+            index: 1,
+            ok: false,
+            error: "Spawn depth limit reached (max 2).",
+          },
+        ],
+      },
+    });
   });
 });

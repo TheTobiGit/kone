@@ -52,6 +52,32 @@ describe("GatewayCredentials", () => {
     expect(credentials.verifySessionToken(other)).not.toBeNull();
   });
 
+  describe("multi-thread session & token isolation", () => {
+    test("tokens for distinct threads are isolated", () => {
+      const credentials = new GatewayCredentials();
+      const tokenA = credentials.issueSessionToken("thread-A", "claudeAgent", "opus");
+      const tokenB = credentials.issueSessionToken("thread-B", "codex", "gpt-5");
+
+      expect(credentials.verifySessionToken(tokenA)).toEqual({
+        threadId: "thread-A",
+        provider: "claudeAgent",
+        model: "opus",
+      });
+      expect(credentials.verifySessionToken(tokenB)).toEqual({
+        threadId: "thread-B",
+        provider: "codex",
+        model: "gpt-5",
+      });
+
+      expect(credentials.tokensForThread("thread-A")).toEqual([tokenA]);
+      expect(credentials.tokensForThread("thread-B")).toEqual([tokenB]);
+
+      credentials.revokeThread("thread-A");
+      expect(credentials.verifySessionToken(tokenA)).toBeNull();
+      expect(credentials.verifySessionToken(tokenB)).not.toBeNull();
+    });
+  });
+
   describe("write authority / turn binding", () => {
     test("first bind sticks; same turn rebinds", () => {
       const credentials = new GatewayCredentials();
@@ -102,6 +128,67 @@ describe("GatewayCredentials", () => {
       const credentials = new GatewayCredentials();
       const token = credentials.issueSessionToken("t", "claudeAgent");
       expect(credentials.verifyWriteAuthority(token)).toBeNull();
+    });
+
+    test("write authority is strictly isolated between concurrent threads", () => {
+      const credentials = new GatewayCredentials();
+      const tokenA = credentials.issueSessionToken("thread-A", "claudeAgent");
+      const tokenB = credentials.issueSessionToken("thread-B", "codex");
+
+      // Bind distinct turns to each thread
+      expect(credentials.bindWriteAuthority(tokenA, "turn-A1")).toBe(true);
+      expect(credentials.bindWriteAuthority(tokenB, "turn-B1")).toBe(true);
+
+      expect(credentials.verifyWriteAuthority(tokenA)).toEqual({ turnId: "turn-A1" });
+      expect(credentials.verifyWriteAuthority(tokenB)).toEqual({ turnId: "turn-B1" });
+
+      // Retiring Thread A's turn does not affect Thread B's authority
+      credentials.retireSessionTurn(tokenA, "turn-A1");
+      expect(credentials.verifyWriteAuthority(tokenA)).toBeNull();
+      expect(credentials.verifyWriteAuthority(tokenB)).toEqual({ turnId: "turn-B1" });
+
+      // Thread A can rebind to a new turn while Thread B remains in its turn
+      expect(credentials.bindWriteAuthority(tokenA, "turn-A2")).toBe(true);
+      expect(credentials.verifyWriteAuthority(tokenA)).toEqual({ turnId: "turn-A2" });
+      expect(credentials.verifyWriteAuthority(tokenB)).toEqual({ turnId: "turn-B1" });
+    });
+  });
+
+  describe("stdio bootstrap token lifecycle", () => {
+    test("issues bootstrap token for live session and exchanges it once", () => {
+      const credentials = new GatewayCredentials();
+      const sessionToken = credentials.issueSessionToken("thread-1", "antigravity");
+
+      const bootstrap = credentials.issueStdioBootstrapToken(sessionToken);
+      expect(bootstrap).not.toBeNull();
+      expect(bootstrap).toMatch(/^kone_boot_/);
+
+      // First redemption succeeds
+      const redeemed = credentials.exchangeStdioBootstrapToken(bootstrap!);
+      expect(redeemed).toBe(sessionToken);
+
+      // Second redemption fails (single-use)
+      const secondTry = credentials.exchangeStdioBootstrapToken(bootstrap!);
+      expect(secondTry).toBeNull();
+    });
+
+    test("cannot issue bootstrap token for unknown or revoked session", () => {
+      const credentials = new GatewayCredentials();
+      expect(credentials.issueStdioBootstrapToken("non-existent")).toBeNull();
+
+      const sessionToken = credentials.issueSessionToken("thread-1", "antigravity");
+      credentials.revokeSessionToken(sessionToken);
+      expect(credentials.issueStdioBootstrapToken(sessionToken)).toBeNull();
+    });
+
+    test("revoking session token invalidates pending bootstrap token", () => {
+      const credentials = new GatewayCredentials();
+      const sessionToken = credentials.issueSessionToken("thread-1", "antigravity");
+      const bootstrap = credentials.issueStdioBootstrapToken(sessionToken);
+
+      credentials.revokeSessionToken(sessionToken);
+      const redeemed = credentials.exchangeStdioBootstrapToken(bootstrap!);
+      expect(redeemed).toBeNull();
     });
   });
 });
