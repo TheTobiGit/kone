@@ -16,6 +16,10 @@ import type { GitRemote } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId, sessionBrand, EFFORT_META } from "~/utils/modelCatalog";
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
+  DEFAULT_MODE_KEY,
+  DEFAULT_MODEL_KEY,
+  DEFAULT_PROVIDER_KEY,
+  DEFAULT_REASONING_KEY,
   MODEL_KEY,
   modeKey,
   PROVIDER_BRAND,
@@ -677,6 +681,157 @@ watch(
   void studio.wakeThreadPanes();
   },
 );
+// ── chat defaults ──────────────────────────────────────────────────────────
+// The provider/model/effort/approval a *fresh* thread opens on. Read from the
+// Chats-pane keys first, then the app's last-used keys. This is the one place
+// that resolves them because it's the one place with readiness + the per-
+// provider catalog in hand: the picker only ever offered a ready provider, but
+// readiness can lag a cold boot, so a stored default is still validated here
+// before it's applied. Returns whether the provider changed — a blank thread
+// then needs a re-spawn to land on the right CLI.
+function applyChatDefaults(): boolean {
+  if (!import.meta.client) return false;
+  const readyProviders = enabledReady.value;
+
+  const savedProvider =
+    localStorage.getItem(DEFAULT_PROVIDER_KEY) ?? localStorage.getItem(PROVIDER_KEY);
+  const isReady = (p: string | null): p is ProviderKind =>
+    Boolean(p) && readyProviders.some((s) => s.provider === p);
+  const chosen: ProviderKind | undefined = isReady(savedProvider)
+    ? savedProvider
+    : readyProviders.find((s) => s.provider === "codex")?.provider ??
+      readyProviders.find((s) => s.provider === "opencode")?.provider ??
+      readyProviders[0]?.provider;
+
+  const providerChanged = Boolean(chosen) && chosen !== agent.provider.value;
+  if (chosen) agent.setProvider(chosen);
+
+  // Model — validate against the (now current) provider's catalog. A stored id
+  // from another provider is dropped rather than ridden onto the wrong CLI.
+  const current = model.value;
+  const owned = (id: string | null | undefined) =>
+    Boolean(id) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === id));
+  const savedModel = localStorage.getItem(DEFAULT_MODEL_KEY) ?? localStorage.getItem(MODEL_KEY);
+  if (owned(current)) {
+    // Already valid for this provider — leave it.
+  } else if (owned(savedModel)) {
+    agent.setModel(savedModel!);
+  } else {
+    const first = modelOptions.value[0];
+    const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+    agent.setModel(eff ? eff.modelId : undefined);
+  }
+
+  const savedReasoning =
+    localStorage.getItem(DEFAULT_REASONING_KEY) ?? localStorage.getItem(REASONING_KEY);
+  if (savedReasoning && savedReasoning in EFFORT_META) {
+    const fam = familyForId(modelOptions.value, model.value);
+    // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the
+    // `in` guard above proves savedReasoning is an EffortTier.
+    const eff = effortForTier(fam, savedReasoning as EffortTier);
+    if (eff) agent.setReasoning(eff.tier);
+  }
+
+  // Per-project mode wins; before this project has one, the app-wide default.
+  const savedMode = localStorage.getItem(MODE_KEY) ?? localStorage.getItem(DEFAULT_MODE_KEY);
+  // SAFETY: the includes() below passes only for an exact InteractionMode member.
+  if (savedMode && (MODES as string[]).includes(savedMode)) {
+    agent.setMode(savedMode as InteractionMode);
+  }
+
+  return providerChanged;
+}
+
+/** Has the user pinned a default in the Chats pane? New threads only override
+ *  their inherited settings when one is set — otherwise inheritance stands. */
+function hasConfiguredDefault(): boolean {
+  if (!import.meta.client) return false;
+  return Boolean(
+    localStorage.getItem(DEFAULT_PROVIDER_KEY) || localStorage.getItem(DEFAULT_MODEL_KEY),
+  );
+}
+
+// The provider a configured default names, or null when none is set. Its
+// readiness is the gate the boot seed waits on: applyChatDefaults only ever
+// commits to a *ready* provider, so committing before this one's CLI reports in
+// would silently fall back to a faster one (codex) and open the thread on the
+// wrong model.
+function configuredDefaultProvider(): ProviderKind | null {
+  if (!import.meta.client) return null;
+  const p = localStorage.getItem(DEFAULT_PROVIDER_KEY);
+  return p && p in PROVIDER_VENDOR ? (p as ProviderKind) : null;
+}
+function defaultProviderReady(): boolean {
+  const want = configuredDefaultProvider();
+  return !want || enabledReady.value.some((s) => s.provider === want);
+}
+
+// Keys of blank threads already settled onto the configured default (or that had
+// none to settle). Once a key is in here a deliberate in-composer switch on that
+// blank sticks — the seeders never re-touch it.
+const settledThreadKeys = new Set<string>();
+
+/** Seed one blank thread's provider/model/effort/mode from the configured
+ *  default, once. Only seals the key when the agent actually lands on the
+ *  default's provider: while that provider's CLI is still coming up
+ *  applyChatDefaults falls back, so we leave the key unsealed and let a later
+ *  readiness tick finish the job. A no-op the moment the thread stops being
+ *  blank, so it can never overwrite a conversation that's begun. */
+function seedBlankThread(key: string): void {
+  if (settledThreadKeys.has(key)) return;
+  if (!hasConfiguredDefault() || !threadIsBlank.value) {
+    settledThreadKeys.add(key);
+    return;
+  }
+  const providerChanged = applyChatDefaults();
+  if (defaultProviderReady() && agent.provider.value === configuredDefaultProvider()) {
+    settledThreadKeys.add(key);
+  }
+  if (providerChanged) void agent.restart();
+}
+
+// A fresh thread inherits its neighbour's model (useAgent.inheritSettings), which
+// never consults the configured default — so a new conversation would open on
+// whatever ran last, not on what the user chose in the Chats pane. Seed each
+// blank thread the first time it becomes the composer's target; the enabledReady
+// dependency also re-fires this once the default's provider finishes coming up,
+// which is what rescues a cold boot where codex reports ready before claude.
+watch(
+  [() => blankThreadPane.value?.session?.key, enabledReady],
+  async () => {
+    const key = blankThreadPane.value?.session?.key;
+    if (!key || !studioReady.value || !composerVisible.value) return;
+    if (!threadIsBlank.value) return;
+    await syncComposerTarget();
+    seedBlankThread(key);
+  },
+);
+
+// Boot seeding runs whether or not the row is the visible surface — a cold boot
+// usually lands on the working-tree home, not the studio — so it acts on the
+// agent's own refs rather than through the composer-target sync the new-thread
+// watch uses. Like seedBlankThread it commits only once the default's provider
+// reports ready, and the enabledReady watch retries it on each readiness tick
+// until then: the fix for a cold boot where codex is ready before claude.
+let bootDefaultsSettled = false;
+function seedBootDefaults(): void {
+  if (bootDefaultsSettled || !studioReady.value) return;
+  // Nothing to force, or the boot thread already carries a real conversation
+  // (never clobber one that's begun): stop here for good.
+  if (!hasConfiguredDefault() || !threadIsBlank.value) {
+    bootDefaultsSettled = true;
+    return;
+  }
+  const providerChanged = applyChatDefaults();
+  if (defaultProviderReady() && agent.provider.value === configuredDefaultProvider()) {
+    const bootKey = blankThreadPane.value?.session?.key;
+    if (bootKey) settledThreadKeys.add(bootKey);
+    bootDefaultsSettled = true;
+  }
+  if (providerChanged) void agent.restart();
+}
+watch(enabledReady, () => seedBootDefaults());
+
 onMounted(async () => {
   // Consume a launcher resume request the instant the mount starts. Reading it
   // after the async provider/catalog work left it sitting in the global state
@@ -731,16 +886,6 @@ onMounted(async () => {
     }),
   );
 
-  // Pick the provider to run: the last one used here (if still ready), else the
-  // preferred order (Codex first for continuity), else whatever's ready.
-  const saved = import.meta.client ? localStorage.getItem(PROVIDER_KEY) : null;
-  const isReady = (p: string | null): p is ProviderKind =>
-    Boolean(p) && readyProviders.some((s) => s.provider === p);
-  const chosen: ProviderKind | undefined = isReady(saved)
-    ? saved
-    : readyProviders.find((s) => s.provider === "codex")?.provider
-      ?? readyProviders.find((s) => s.provider === "opencode")?.provider
-      ?? readyProviders[0]?.provider;
   // The scratchpad has to be hydrated before restore(), which eagerly attaches
   // the pad pane.
   await scratchpadReady;
@@ -770,67 +915,16 @@ onMounted(async () => {
   studioReady.value = true;
   await syncComposerTarget();
 
-  // Seed provider/model/mode onto the composer target *after* restore + sync.
-  // Doing this earlier wrote into the construction boot thread that restore often
-  // evicts, which left overview model picks as no-ops until a studio visit
-  // attached a real session.
-  if (!resume) {
-    // The composer target exists by now (attach → newThreadAt) but is deferred —
-    // no CLI has spawned, so setProvider here is the whole switch and the
-    // restart below degrades to a re-defer. It stays because the target isn't
-    // always blank: a restored studio can hand us a live session, and there
-    // setProvider only flips the ref while the running CLI keeps going, which is
-    // how a Cursor model id used to ride a Codex session into the wrong adapter.
-    const providerChanged = Boolean(chosen) && chosen !== agent.provider.value;
-    if (chosen) agent.setProvider(chosen);
-
-    // Validate unconditionally. This used to be gated behind `if (!model.value)`,
-    // which skipped the catalog check whenever a model was already set — so a
-    // model belonging to another provider (MODEL_KEY is global, not per-provider)
-    // survived onto the chosen provider and reached its CLI verbatim.
-    {
-      const current = model.value;
-      const owned = (id: string | null | undefined) =>
-        Boolean(id) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === id));
-      const savedModel = import.meta.client ? localStorage.getItem(MODEL_KEY) : null;
-      if (owned(current)) {
-        // Already valid for this provider — leave the user's pick alone.
-      } else if (owned(savedModel)) agent.setModel(savedModel!);
-      else {
-        const first = modelOptions.value[0];
-        const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-        // No catalog to pick from (the provider's model probe failed or hasn't
-        // landed) — clear rather than leave a foreign id in place. Keeping it was
-        // how a Cursor `composer-*` id rode a Codex session all the way to the
-        // CLI; undefined just means "provider default".
-        agent.setModel(eff ? eff.modelId : undefined);
-      }
-    }
-    if (import.meta.client) {
-      const savedReasoning = localStorage.getItem(REASONING_KEY);
-      if (savedReasoning && savedReasoning in EFFORT_META) {
-        const fam = familyForId(modelOptions.value, model.value);
-        // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the
-        // `savedReasoning in EFFORT_META` guard above proves it is an EffortTier.
-        const eff = effortForTier(fam, savedReasoning as EffortTier);
-        if (eff) agent.setReasoning(eff.tier);
-      }
-    }
-    if (import.meta.client) {
-      const savedMode = localStorage.getItem(MODE_KEY);
-      // SAFETY: MODES is declared as InteractionMode[]; the includes() above
-      // passes only when savedMode equals one of those exact members.
-      if (savedMode && (MODES as string[]).includes(savedMode)) {
-        // SAFETY: the includes() check in the condition above passed, and
-        // MODES is declared as InteractionMode[], so savedMode is one.
-        agent.setMode(savedMode as InteractionMode);
-      }
-    }
-    // Re-spawn on the provider we actually settled on, mirroring what the model
-    // picker does (applyModelEffort → restart when the provider changes). The
-    // thread is blank at this point, so nothing is lost.
-    if (providerChanged) await agent.restart();
-  }
+  // Seed provider/model/effort/mode onto the composer target *after* restore +
+  // sync. Doing this earlier wrote into the construction boot thread that restore
+  // often evicts, which left overview model picks as no-ops until a studio visit
+  // attached a real session. applyChatDefaults validates against the settled
+  // provider's catalog (a foreign model id is dropped, not ridden onto the wrong
+  // CLI) and reports whether the provider moved — a blank thread then re-spawns
+  // to land on the right one. The target isn't always blank (a restored studio
+  // can hand us a live session); there setProvider only flips the ref while the
+  // running CLI keeps going.
+  if (!resume) seedBootDefaults();
 });
 
 // Derive the effort tier for the current model id and ride it along on each
@@ -857,11 +951,6 @@ watch(
   },
   { immediate: true },
 );
-
-// Persist the permission mode per project.
-watch(mode, (m) => {
-  if (import.meta.client) localStorage.setItem(MODE_KEY, m);
-});
 
 // Persist the reasoning effort globally (app-wide last-used), like the model id.
 watch(reasoning, (tier) => {
@@ -946,13 +1035,24 @@ const {
   onComposerModelId,
   onComposerReasoning,
   onComposerContextWindow,
-  onComposerMode,
+  onComposerMode: commitComposerMode,
 } = useModelCommit({
   agent,
   catalogs,
   modelOptions,
   syncTarget: syncComposerTarget,
 });
+
+// A mode change from the composer is the one thing that establishes this
+// project's own permission mode. Persisting it here — rather than off a reactive
+// watch on `mode` — is what keeps MODE_KEY a record of the user's deliberate
+// choice: the reactive watch also fired for the construction-default and for
+// every cross-thread mode switch, writing a value the boot seed then read back
+// as if the project already had a mode, which shadowed the app-wide default.
+function onComposerMode(next: InteractionMode): void {
+  commitComposerMode(next);
+  if (import.meta.client) localStorage.setItem(MODE_KEY, next);
+}
 
 function onModelSelect(picked: ModelPick) {
   void applyModelEffort(picked);

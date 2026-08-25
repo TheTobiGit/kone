@@ -216,3 +216,124 @@ describe("useAgent durable turn queue", () => {
     expect(session.queuedTurns.value).toHaveLength(0);
   });
 });
+
+describe("useAgent single blank thread invariant", () => {
+  test("newThread twice in a row leaves exactly one blank session", async () => {
+    const { agent, session: initialBlank } = harness();
+    expect(agent.sessions.value).toHaveLength(1);
+
+    await agent.newThread();
+    await agent.newThread();
+
+    expect(agent.sessions.value).toHaveLength(1);
+    expect(agent.sessions.value[0]?.key).toBe(initialBlank.key);
+    expect(agent.activeKey.value).toBe(initialBlank.key);
+  });
+
+  test("newThread when active is non-blank creates exactly one blank and subsequent calls reuse it", async () => {
+    const { agent, session: s0 } = harness();
+    s0.blocks.value = [userBlock("b0", "first conversation")];
+
+    await agent.newThread();
+    expect(agent.sessions.value).toHaveLength(2);
+    const blank = agent.sessions.value[1]!;
+    expect(agent.activeKey.value).toBe(blank.key);
+
+    await agent.newThread();
+    expect(agent.sessions.value).toHaveLength(2);
+    expect(agent.sessions.value[1]?.key).toBe(blank.key);
+    expect(agent.activeKey.value).toBe(blank.key);
+  });
+
+  test("newThreadAt called while a blank exists at another position relocates it without spawning", async () => {
+    const { agent, session: s0 } = harness();
+    s0.blocks.value = [userBlock("b0", "thread 0")];
+
+    // Create a non-blank second thread
+    const s1Key = await agent.newThreadAt(1);
+    const s1 = agent.sessions.value.find((s) => s.key === s1Key)!;
+    s1.blocks.value = [userBlock("b1", "thread 1")];
+
+    // Spawn a blank thread at index 2 -> [s0, s1, blank]
+    const blankKey = await agent.newThreadAt(2);
+    expect(agent.sessions.value).toHaveLength(3);
+    expect(agent.sessions.value[2]?.key).toBe(blankKey);
+
+    // Call newThreadAt(0) -> relocates blank to index 0: [blank, s0, s1]
+    const relocatedKey = await agent.newThreadAt(0);
+    expect(relocatedKey).toBe(blankKey);
+    expect(agent.sessions.value).toHaveLength(3);
+    expect(agent.sessions.value[0]?.key).toBe(blankKey);
+    expect(agent.sessions.value[1]?.key).toBe(s0.key);
+    expect(agent.sessions.value[2]?.key).toBe(s1.key);
+    expect(agent.activeKey.value).toBe(blankKey);
+  });
+
+  test("a state seeded with two blank sessions collapses to one after newThread", async () => {
+    const { agent, session: b1 } = harness();
+    const { session: b2 } = harness();
+    agent.sessions.value = [b1, b2];
+    agent.activeKey.value = b1.key;
+    expect(agent.sessions.value).toHaveLength(2);
+
+    await agent.newThread();
+
+    expect(agent.sessions.value).toHaveLength(1);
+    expect(agent.sessions.value[0]?.key).toBe(b1.key);
+    expect(agent.activeKey.value).toBe(b1.key);
+  });
+
+  test("a state seeded with two blank sessions collapses to one after newThreadAt", async () => {
+    const { agent, session: s0 } = harness();
+    s0.blocks.value = [userBlock("b0", "non-blank")];
+    const { session: b1 } = harness();
+    const { session: b2 } = harness();
+    // Seed [s0, b1, b2]
+    agent.sessions.value = [s0, b1, b2];
+    agent.activeKey.value = s0.key;
+    expect(agent.sessions.value).toHaveLength(3);
+
+    // Calling newThreadAt(0) relocates b1 to index 0 and evicts b2
+    const key = await agent.newThreadAt(0);
+    expect(key).toBe(b1.key);
+    expect(agent.sessions.value).toHaveLength(2);
+    expect(agent.sessions.value[0]?.key).toBe(b1.key);
+    expect(agent.sessions.value[1]?.key).toBe(s0.key);
+    expect(agent.activeKey.value).toBe(b1.key);
+  });
+
+  test("non-blank sessions survive untouched across newThread and newThreadAt", async () => {
+    const { agent, session: s0 } = harness();
+    s0.blocks.value = [userBlock("b0", "important data")];
+    s0.setModel("custom-model");
+    s0.setMode("accept-edits");
+
+    await agent.newThread();
+    expect(agent.sessions.value).toHaveLength(2);
+    expect(s0.blocks.value).toHaveLength(1);
+    expect((s0.blocks.value[0] as UserBlock)?.text).toBe("important data");
+    expect(s0.model.value).toBe("custom-model");
+    expect(s0.mode.value).toBe("accept-edits");
+
+    await agent.newThreadAt(0);
+    expect(agent.sessions.value).toHaveLength(2);
+    expect(s0.blocks.value).toHaveLength(1);
+    expect((s0.blocks.value[0] as UserBlock)?.text).toBe("important data");
+  });
+
+  test("newThread inherits settings from previously-active non-blank session", async () => {
+    const { agent, session: s0 } = harness();
+    s0.blocks.value = [userBlock("b0", "first")];
+    s0.setProvider("codex");
+    s0.setModel("gpt-5-preview");
+    s0.setMode("accept-edits");
+    s0.setReasoning("high");
+
+    await agent.newThread();
+    const blank = agent.sessions.value.find((s) => s.key === agent.activeKey.value)!;
+    expect(blank.provider.value).toBe("codex");
+    expect(blank.model.value).toBe("gpt-5-preview");
+    expect(blank.mode.value).toBe("accept-edits");
+    expect(blank.reasoning.value).toBe("high");
+  });
+});

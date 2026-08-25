@@ -220,7 +220,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
          is open it slides straight right to uncover the panel — no scale, just a
          shift, the X account-drawer motion. -->
     <motion.div
-      class="stage relative z-10 h-full min-h-screen bg-ground"
+      class="stage relative z-10 h-full min-h-screen overflow-hidden bg-ground"
       :style="{ willChange: 'transform' }"
       :class="settingsOpen ? 'rounded-[26px]' : ''"
       :animate="{ x: settingsOpen ? settingsWidth : 0 }"

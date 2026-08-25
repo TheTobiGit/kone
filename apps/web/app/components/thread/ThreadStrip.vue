@@ -1430,6 +1430,7 @@ function isLinkedToNext(i: number): boolean {
   min-width: 0;
   flex: 1;
   height: 100%;
+  overflow: hidden;
   /* Entering overview dips the backdrop (see .strip.is-overview); ease it so the
      mode change settles rather than flashing. */
   transition: background-color 0.4s ease;
@@ -1533,6 +1534,7 @@ function isLinkedToNext(i: number): boolean {
   place-items: center;
   background: var(--ground);
   padding: 3.5rem 1rem 1rem;
+  overflow: hidden;
 }
 /* The ambient plasma — same floor glow as the projects-list empty state:
    anchored to the chooser's bottom edge, masked so it dissolves into the
