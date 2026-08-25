@@ -17,6 +17,7 @@ import { makeMcpTransport } from "./mcpTransport.js";
 import { createRegistry } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
+import { createIrcTools } from "./tools/irc.js";
 
 export type { GatewayConnection } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
@@ -65,6 +66,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const tools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
+    ...createIrcTools({ store: input.store }),
   ];
   const registry = createRegistry(tools);
   const transport = makeMcpTransport({
