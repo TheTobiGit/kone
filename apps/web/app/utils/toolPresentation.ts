@@ -90,6 +90,15 @@ const TOOL_TABLE: Record<string, ToolMetaInput> = {
   mcp: { icon: WorkflowSquare01Icon, label: "MCP tool", family: "agent" },
   // context & specialized
   deploy_web_app: { icon: Rocket01Icon, label: "Deploy", family: "run" },
+  multi_replace_file_content: { icon: FileEditIcon, label: "Edit", family: "write" },
+  manage_task: { icon: WorkflowSquare01Icon, label: "Task", family: "agent" },
+  schedule: { icon: WorkflowSquare01Icon, label: "Schedule", family: "agent" },
+  invoke_subagent: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
+  define_subagent: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
+  manage_subagents: { icon: WorkflowSquare01Icon, label: "Subagent", family: "agent" },
+  generate_image: { icon: Rocket01Icon, label: "Generate image", family: "run" },
+  ask_question: { icon: WorkflowSquare01Icon, label: "Question", family: "agent" },
+  send_message: { icon: WorkflowSquare01Icon, label: "Message", family: "agent" },
 };
 
 export function toolMeta(name: string | undefined): ToolMeta {
@@ -124,7 +133,17 @@ export function toolTargetRaw(t: RuntimeItem): string {
   const name = (t.name ?? "").trim();
   const raw = (t.text ?? "").trim();
   const prefix = `${name}:`;
-  return raw.startsWith(prefix) ? raw.slice(prefix.length).trim() : raw === name ? "" : raw;
+  if (raw.startsWith(prefix)) return raw.slice(prefix.length).trim();
+  const lowerRaw = raw.toLowerCase();
+  const lowerName = name.toLowerCase();
+  if (
+    lowerRaw === lowerName ||
+    lowerRaw === lowerName.replace(/_/g, " ") ||
+    lowerRaw.replace(/_/g, " ") === lowerName.replace(/_/g, " ")
+  ) {
+    return "";
+  }
+  return raw;
 }
 
 export function toolTarget(t: RuntimeItem, max = 64): string {
@@ -260,6 +279,7 @@ export function toolPhrase(t: RuntimeItem): ToolPhrase {
     case "apply_patch":
     case "str_replace":
     case "replace_file_content":
+    case "multi_replace_file_content":
     case "edit":
     case "multiedit":
     case "notebookedit":
@@ -323,6 +343,46 @@ export function toolPhrase(t: RuntimeItem): ToolPhrase {
       if (ing) return plain(`Running a sub-task — ${detail}`);
       if (fail) return plain(`Sub-task failed — ${detail}`);
       return plain(`Ran a sub-task — ${detail}`);
+    case "manage_task":
+      if (!detail) return plain(ing ? "Managing task" : fail ? "Task action failed" : "Managed task");
+      if (ing) return plain(`Managing task — ${detail}`);
+      if (fail) return plain(`Task action failed — ${detail}`);
+      return plain(`Task — ${detail}`);
+    case "schedule":
+      if (!detail) return plain(ing ? "Scheduling a task" : fail ? "Schedule failed" : "Scheduled a task");
+      if (ing) return plain(`Scheduling ${detail}`);
+      if (fail) return plain(`Schedule failed — ${detail}`);
+      return plain(`Scheduled ${detail}`);
+    case "invoke_subagent":
+      if (!detail) return plain(ing ? "Starting subagent" : fail ? "Subagent failed" : "Finished subagent");
+      if (ing) return plain(`Running subagent — ${detail}`);
+      if (fail) return plain(`Subagent failed — ${detail}`);
+      return plain(`Ran subagent — ${detail}`);
+    case "define_subagent":
+      if (!detail) return plain(ing ? "Defining subagent" : fail ? "Failed to define subagent" : "Defined subagent");
+      if (ing) return plain(`Defining subagent — ${detail}`);
+      if (fail) return plain(`Failed to define subagent — ${detail}`);
+      return plain(`Defined subagent — ${detail}`);
+    case "manage_subagents":
+      if (!detail) return plain(ing ? "Managing subagents" : fail ? "Failed to manage subagents" : "Managed subagents");
+      if (ing) return plain(`Managing subagents — ${detail}`);
+      if (fail) return plain(`Failed to manage subagents — ${detail}`);
+      return plain(`Subagents — ${detail}`);
+    case "generate_image":
+      if (!detail) return plain(ing ? "Generating image" : fail ? "Image generation failed" : "Generated image");
+      if (ing) return plain(`Generating image for ${detail}`);
+      if (fail) return plain(`Couldn't generate image for ${detail}`);
+      return plain(`Generated image for ${detail}`);
+    case "ask_question":
+      if (!detail) return plain(ing ? "Asking question" : fail ? "Question failed" : "Asked question");
+      if (ing) return plain(`Asking: ${detail}`);
+      if (fail) return plain(`Couldn't ask: ${detail}`);
+      return plain(`Asked: ${detail}`);
+    case "send_message":
+      if (!detail) return plain(ing ? "Sending message" : fail ? "Failed to send message" : "Sent message");
+      if (ing) return plain(`Sending message to ${detail}`);
+      if (fail) return plain(`Failed to send message to ${detail}`);
+      return plain(`Sent message to ${detail}`);
     case "mcp":
       if (!detail) return plain(ing ? "Running an MCP tool" : fail ? "MCP tool failed" : "Ran an MCP tool");
       if (ing) return plain(`Running an MCP tool — ${detail}`);
