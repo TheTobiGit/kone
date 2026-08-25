@@ -156,6 +156,8 @@ export type SessionStartInput = {
    *  a system channel fix theirs when the process spawns. Absent runs the
    *  session as a guest. */
   agent?: AgentPersona;
+  /** Candidate fallback models/providers to retry when 429/quota error occurs. */
+  fallbacks?: Array<{ provider: string; model?: string }>;
 };
 
 export type Session = {
@@ -264,6 +266,8 @@ export type SendTurnInput = {
    *  to a live `autoCompactWindow` Setting toggled without restarting the
    *  session. Absent means the model's default window. */
   contextWindow?: string;
+  /** Candidate fallback models/providers to retry when 429/quota error occurs. */
+  fallbacks?: Array<{ provider: string; model?: string }>;
 };
 
 export type TurnStartResult = {

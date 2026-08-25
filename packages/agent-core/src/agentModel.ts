@@ -62,3 +62,48 @@ export function resolveAgentModel(
 
   return runnable ? { outcome: "resolved", ref: chosen } : { outcome: "unavailable", tried: chosen };
 }
+
+export type ModelCandidate = {
+  provider: string;
+  model?: string;
+};
+
+export type FallbackResolution =
+  | { outcome: "resolved"; ref: { provider: string; model?: string } }
+  | { outcome: "unavailable"; tried: Array<{ provider: string; model?: string }> };
+
+/**
+ * Walk candidate providers/models in order (primary first, then fallbacks)
+ * until the first available candidate is found.
+ */
+export function resolveModelWithFallback(
+  primary: { provider: string; model?: string },
+  fallbacks: Array<{ provider: string; model?: string }>,
+  available: readonly ProviderAvailability[],
+): FallbackResolution {
+  const candidates = [primary, ...fallbacks];
+  for (const candidate of candidates) {
+    const provider = available.find((entry) => entry.provider === candidate.provider);
+    if (!provider || !provider.available) {
+      continue;
+    }
+
+    if (candidate.model) {
+      const isModelOffered = provider.models.includes(candidate.model);
+      const isModelExhausted = provider.exhausted?.includes(candidate.model);
+      if (isModelOffered && !isModelExhausted) {
+        return { outcome: "resolved", ref: candidate };
+      }
+    } else {
+      const hasRunnableModel =
+        provider.models.length === 0 ||
+        !provider.exhausted ||
+        provider.models.some((m) => !provider.exhausted?.includes(m));
+      if (hasRunnableModel) {
+        return { outcome: "resolved", ref: candidate };
+      }
+    }
+  }
+
+  return { outcome: "unavailable", tried: candidates };
+}

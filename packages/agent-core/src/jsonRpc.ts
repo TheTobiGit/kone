@@ -59,7 +59,6 @@ export class JsonRpcError extends Error {
  *  it is whatever the handler produced, on its way to `JSON.stringify` — so this
  *  transport primitive names no return type; its callers own the shape.
  */
-// eslint-disable-next-line anti-slop/no-unknown-returns
 export type JsonRpcRequestHandler = (params: JsonValue | null | undefined) => Promise<JsonValue>;
 
 /** A persistent JSON-RPC-over-stdio child process. */

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { isQuotaOrRateLimitError } from "./adapters/errors.js";
+import { resolveModelWithFallback, type ProviderAvailability } from "./agentModel.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
@@ -144,6 +146,10 @@ export class AgentService {
    *  for `turn.queued` positions when the store read fails. Drift from the
    *  store (crash recovery) self-corrects on the next successful read. */
   private readonly queuedByThread = new Map<string, number>();
+  /** threadId -> SessionStartInput, remembered so a fallback provider switch can start a session. */
+  private readonly sessionInputs = new Map<string, SessionStartInput>();
+  /** threadId -> configured fallback chain for the thread. */
+  private readonly threadFallbacks = new Map<string, Array<{ provider: string; model?: string }>>();
   private queueUnavailableWarned = false;
   /** The wedge sweep timer — lazily started on first session, cleared on stopAll. */
   private wedgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -461,6 +467,10 @@ export class AgentService {
   }
 
   async startSession(input: SessionStartInput): Promise<Session> {
+    this.sessionInputs.set(input.threadId, input);
+    if (input.fallbacks && input.fallbacks.length > 0) {
+      this.threadFallbacks.set(input.threadId, input.fallbacks);
+    }
     const model = this.validModelFor(input.provider, input.model);
     const effort = this.validEffortFor(input.provider, model, input.effort);
     // Mint the gateway credential first so the adapter can inject it into the
@@ -541,14 +551,95 @@ export class AgentService {
    *  second turn on the same session. The marker is released on settle: by
    *  then the adapter has emitted turn.started, so `activeTurns` carries the
    *  busy signal on. */
+  /** Snapshot of current provider and model availability across installed adapters. */
+  buildAvailabilitySnapshot(): ProviderAvailability[] {
+    const cached = this.cachedSurface();
+    const providers = new Set<ProviderKind>([
+      ...this.adapters.keys(),
+      ...cached.statuses.map((s) => s.provider),
+    ]);
+    const result: ProviderAvailability[] = [];
+    for (const provider of providers) {
+      const status = cached.statuses.find((s) => s.provider === provider);
+      const catalog = this.catalogs.get(provider) ?? cached.models[provider] ?? [];
+      result.push({
+        provider,
+        available: status ? status.available : this.adapters.has(provider),
+        models: catalog.map((m) => m.id),
+      });
+    }
+    return result;
+  }
+
   private async dispatchToAdapter(
     threadId: string,
     input: SendTurnInput,
   ): Promise<TurnStartResult> {
+    if (input.fallbacks && input.fallbacks.length > 0) {
+      this.threadFallbacks.set(threadId, input.fallbacks);
+    }
+    const currentProvider = this.routing.get(threadId);
     const adapter = this.adapterForThread(threadId);
     this.dispatchingTurns.add(threadId);
     try {
       return await adapter.sendTurn(input);
+    } catch (error) {
+      const fallbacks = input.fallbacks ?? this.threadFallbacks.get(threadId);
+      if (isQuotaOrRateLimitError(error) && fallbacks && fallbacks.length > 0) {
+        const availability = this.buildAvailabilitySnapshot();
+        for (let i = 0; i < fallbacks.length; i++) {
+          const candidate = fallbacks[i];
+          const remaining = fallbacks.slice(i + 1);
+          const resolution = resolveModelWithFallback(candidate, remaining, availability);
+          if (resolution.outcome !== "resolved") {
+            continue;
+          }
+          const target = resolution.ref;
+          // SAFETY: resolveModelWithFallback resolves target.provider from valid ProviderAvailability kinds.
+          const targetProvider = target.provider as ProviderKind;
+          const targetAdapter = this.adapters.get(targetProvider);
+          if (!targetAdapter) continue;
+
+          console.warn(
+            `[agent] 429/quota error on ${currentProvider ?? "unknown"}; falling back to ${targetProvider}${target.model ? `/${target.model}` : ""}`,
+          );
+
+          this.routing.set(threadId, targetProvider);
+          const nextModel = this.validModelFor(targetProvider, target.model);
+          const nextEffort = this.validEffortFor(targetProvider, nextModel, input.effort);
+          const nextInput: SendTurnInput = {
+            ...input,
+            model: nextModel,
+            effort: nextEffort,
+            fallbacks: remaining,
+          };
+
+          if ("hasSession" in targetAdapter && targetAdapter.hasSession instanceof Function) {
+            const has = await targetAdapter.hasSession(threadId);
+            if (!has) {
+              const priorSession = this.sessionInputs.get(threadId);
+              if (priorSession) {
+                await targetAdapter.startSession({
+                  ...priorSession,
+                  provider: targetProvider,
+                  model: nextModel,
+                  effort: nextEffort,
+                });
+              }
+            }
+          }
+
+          try {
+            return await targetAdapter.sendTurn(nextInput);
+          } catch (nextErr) {
+            if (isQuotaOrRateLimitError(nextErr)) {
+              continue;
+            }
+            throw nextErr;
+          }
+        }
+      }
+      throw error;
     } finally {
       this.dispatchingTurns.delete(threadId);
     }
@@ -567,6 +658,8 @@ export class AgentService {
     await this.cancelQueuedForStop(threadId, provider);
     await this.adapter(provider).stopSession(threadId);
     this.routing.delete(threadId);
+    this.sessionInputs.delete(threadId);
+    this.threadFallbacks.delete(threadId);
     // The adapter's stop already drained parked asks and sealed the live turn
     // (their events clear this state); this is the belt-and-braces pass for
     // any adapter whose drain doesn't emit per-ask resolution events.
