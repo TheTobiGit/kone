@@ -137,6 +137,7 @@ type PendingTool = {
   stepIndex: number;
   itemId: string;
   name: string;
+  args?: AntigravityJsonRecord;
 };
 
 /** One native subagent run this turn started, from the `invoke_subagent` call
@@ -188,7 +189,7 @@ type AntigravitySession = {
    *  the step it reported — an `invoke_subagent` run has to hang off its
    *  spawning item, and the result step that names the children arrives after
    *  the item has already closed. */
-  toolItemsByStep: Map<number, { itemId: string; name: string }>;
+  toolItemsByStep: Map<number, { itemId: string; name: string; args?: AntigravityJsonRecord }>;
   nextToolSequence: number;
   /** Briefs from `invoke_subagent` calls whose result step has not named the
    *  children yet. The result lists them in the order they were briefed, so
@@ -228,11 +229,13 @@ type AntigravityHookPayload = {
   /** Zero-based step index that binds a `pre-tool` to its `post-tool`. */
   stepIdx?: number;
   /** The tool invocation a `pre-tool` hook announces. */
-  toolCall?: { name?: string };
+  toolCall?: { name?: string; args?: AntigravityJsonRecord };
   /** Whether the tool failed, carried by `post-tool` hooks. */
   failed?: boolean;
   /** The tool's error text, carried by `post-tool` hooks. */
   error?: string;
+  toolOutput?: unknown;
+  result?: unknown;
   /** `false` only when the agent still has background work at `stop` — an
    *  older CLI that omits it is taken at its word: done is done. */
   fullyIdle?: boolean;
@@ -418,18 +421,149 @@ export function antigravityPromptCommandLineIssue(
   return `Antigravity prompts on Windows are limited to ${WINDOWS_PROMPT_MAX_CHARS.toLocaleString("en-US")} characters because the CLI accepts print-mode prompts as command-line arguments. Shorten the prompt or attach the content as files.`;
 }
 
-/** Canonical kone tool keyword for one antigravity tool name — the same
- *  vocabulary the thread UI's tool-family table understands. The hooks only
- *  carry the tool name (arguments are sanitized out), so the raw name doubles
- *  as the item's inline target text. */
-const TOOL_ITEM_NAMES: Record<string, string> = {
-  run_command: "run",
-  write_to_file: "edit_file",
-  replace_file_content: "edit_file",
-  multi_replace_file_content: "edit_file",
-  search_web: "web_search",
-};
+/** Extract human-readable target text and structured detail from tool arguments. */
+export function summarizeAntigravityTool(
+  name: string,
+  args?: AntigravityJsonRecord,
+): { text: string; detail?: string } {
+  if (!args || typeof args !== "object") {
+    return { text: "" };
+  }
 
+  const getString = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      const val = args[key];
+      if (typeof val === "string" && val.trim().length > 0) {
+        return val.trim();
+      }
+    }
+    return undefined;
+  };
+
+  let text = "";
+  const lowerName = name.trim().toLowerCase();
+
+  if (
+    lowerName === "run_command" ||
+    lowerName === "bash" ||
+    lowerName === "execute_command" ||
+    lowerName === "run" ||
+    lowerName === "command"
+  ) {
+    text = getString("CommandLine", "command", "cmd", "toolAction", "toolSummary") ?? "";
+  } else if (
+    lowerName === "view_file" ||
+    lowerName === "read_file" ||
+    lowerName === "read"
+  ) {
+    text = getString("AbsolutePath", "TargetFile", "path", "file", "toolAction") ?? "";
+  } else if (
+    lowerName === "write_to_file" ||
+    lowerName === "create_file" ||
+    lowerName === "write"
+  ) {
+    text = getString("TargetFile", "AbsolutePath", "path", "file", "toolAction") ?? "";
+  } else if (
+    lowerName === "replace_file_content" ||
+    lowerName === "edit_file" ||
+    lowerName === "edit" ||
+    lowerName === "str_replace" ||
+    lowerName === "apply_patch" ||
+    lowerName === "multi_replace_file_content"
+  ) {
+    text = getString("TargetFile", "AbsolutePath", "path", "file", "toolAction") ?? "";
+  } else if (lowerName === "list_dir" || lowerName === "ls" || lowerName === "list") {
+    text = getString("DirectoryPath", "SearchDirectory", "path", "dir", "toolAction") ?? "";
+  } else if (lowerName === "grep_search" || lowerName === "grep" || lowerName === "ripgrep") {
+    text = getString("Query", "query", "pattern", "SearchPath", "toolAction") ?? "";
+  } else if (lowerName === "find_by_name" || lowerName === "glob_file_search" || lowerName === "glob") {
+    text = getString("Pattern", "pattern", "SearchDirectory", "toolAction") ?? "";
+  } else if (lowerName === "search_web" || lowerName === "web_search" || lowerName === "websearch") {
+    text = getString("query", "Query", "toolAction") ?? "";
+  } else if (
+    lowerName === "read_url_content" ||
+    lowerName === "web_fetch" ||
+    lowerName === "view_web_document" ||
+    lowerName === "webfetch"
+  ) {
+    text = getString("Url", "url", "toolAction") ?? "";
+  } else if (lowerName === "manage_task") {
+    const action = getString("Action", "action");
+    const taskId = getString("TaskId", "taskId");
+    const toolAction = getString("toolAction", "toolSummary");
+    if (action && taskId) {
+      text = `${action} ${taskId}`;
+    } else if (toolAction) {
+      text = toolAction;
+    } else if (action) {
+      text = action;
+    } else if (taskId) {
+      text = taskId;
+    }
+  } else if (lowerName === "schedule") {
+    const prompt = getString("Prompt", "CronExpression", "toolAction");
+    const duration = typeof args.DurationSeconds === "number" ? `${args.DurationSeconds}s` : undefined;
+    text = prompt ?? duration ?? "";
+  } else if (lowerName === "invoke_subagent") {
+    const toolSummary = getString("toolSummary", "toolAction");
+    if (toolSummary) {
+      text = toolSummary;
+    } else if (Array.isArray(args.Subagents) && args.Subagents.length > 0) {
+      const roles = (args.Subagents as Array<{ Role?: unknown; TypeName?: unknown }>)
+        .map((s) => (typeof s.Role === "string" ? s.Role : typeof s.TypeName === "string" ? s.TypeName : ""))
+        .filter(Boolean);
+      text = roles.join(", ");
+    }
+  } else if (lowerName === "generate_image") {
+    text = getString("Prompt", "ImageName", "toolAction") ?? "";
+  } else if (lowerName === "ask_question") {
+    text = getString("toolAction", "toolSummary") ?? "";
+  } else if (lowerName === "send_message") {
+    text = getString("Recipient", "recipient", "toolAction") ?? "";
+  } else {
+    text =
+      getString(
+        "toolAction",
+        "toolSummary",
+        "CommandLine",
+        "command",
+        "cmd",
+        "TargetFile",
+        "AbsolutePath",
+        "DirectoryPath",
+        "SearchPath",
+        "path",
+        "file",
+        "Query",
+        "query",
+        "Pattern",
+        "pattern",
+        "Url",
+        "url",
+        "Prompt",
+        "prompt",
+        "Description",
+        "description",
+        "Action",
+        "action",
+      ) ?? "";
+  }
+
+  if (text.toLowerCase() === name.toLowerCase() || text.toLowerCase() === lowerName.replace(/_/g, " ")) {
+    text = "";
+  }
+
+  let detail: string | undefined;
+  try {
+    if (Object.keys(args).length > 0) {
+      detail = JSON.stringify(args, null, 2);
+    }
+  } catch {
+    detail = undefined;
+  }
+
+  return { text, detail };
+}
 
 /** The shell wrapper for one hook point. Inactive when
  *  KONE_ANTIGRAVITY_EVENTS is unset (a session outside kone): drain stdin and
@@ -456,10 +590,8 @@ export function buildKoneCaptureCommand(
   return `if [ -z "\${${HOOK_EVENTS_ENV}:-}" ]; then cat >/dev/null 2>&1 || :; printf '%s\\n' '${fallback}'; else ELECTRON_RUN_AS_NODE=1 ${invocation}; fi`;
 }
 
-/** The capture script itself — appends sanitized hook payloads to the event
- *  file and answers the hook with the decision. Tool-call arguments are
- *  stripped so secrets (command lines, file contents) never touch the event
- *  file. */
+/** The capture script itself — appends hook payloads to the event file and
+ *  answers the hook with the decision. */
 export function hookScriptSource(): string {
   return `const fs = require("node:fs");
 const event = process.argv[2] || "unknown";
@@ -489,9 +621,30 @@ process.stdin.on("end", () => {
         const name = input.toolCall && typeof input.toolCall.name === "string"
           ? input.toolCall.name.trim()
           : "";
-        if (name) sanitized.toolCall = { name };
+        if (name) {
+          sanitized.toolCall = {
+            name,
+            ...(input.toolCall.args && typeof input.toolCall.args === "object"
+              ? { args: input.toolCall.args }
+              : {}),
+          };
+        }
       } else {
+        const name = input.toolCall && typeof input.toolCall.name === "string"
+          ? input.toolCall.name.trim()
+          : "";
+        if (name) {
+          sanitized.toolCall = {
+            name,
+            ...(input.toolCall.args && typeof input.toolCall.args === "object"
+              ? { args: input.toolCall.args }
+              : {}),
+          };
+        }
         sanitized.failed = typeof input.error === "string" && input.error.trim().length > 0;
+        if (typeof input.error === "string" && input.error.trim()) sanitized.error = input.error;
+        if (input.toolOutput !== undefined) sanitized.toolOutput = input.toolOutput;
+        if (input.result !== undefined) sanitized.result = input.result;
       }
       capturedPayload = JSON.stringify(sanitized);
     } catch {
@@ -1449,7 +1602,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     run.snapshot.status = status;
     run.snapshot.endedAt = Date.now();
     for (const pending of run.pendingTools) {
-      this.emitToolItem(session, pending.itemId, pending.name, "failed", run);
+      this.emitToolItem(session, pending.itemId, pending.name, "failed", pending.args, run);
     }
     run.pendingTools = [];
     this.emitSubagent(session, run, "subagent.completed");
@@ -1613,18 +1766,19 @@ export class AntigravityAdapter implements ProviderAdapter {
       if (eventName === "pre-tool" && stepIndex !== undefined && session.activeTurnId) {
         const name = payload.toolCall?.name ? trim(payload.toolCall.name) : undefined;
         if (name) {
+          const args = payload.toolCall?.args;
           const owner = run ?? session;
           const scope = run ? `sub-${run.snapshot.toolUseId}-tool` : "tool";
           const itemId = `antigravity-${session.activeTurnId}-${scope}-${owner.nextToolSequence++}`;
-          owner.pendingTools.push({ stepIndex, itemId, name });
+          owner.pendingTools.push({ stepIndex, itemId, name, args });
           if (run) {
             run.snapshot.lastToolName = name;
             run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;
             this.emitSubagent(session, run, "subagent.updated");
           } else {
-            session.toolItemsByStep.set(stepIndex, { itemId, name });
+            session.toolItemsByStep.set(stepIndex, { itemId, name, args });
           }
-          this.emitToolItem(session, itemId, name, "in-progress", run);
+          this.emitToolItem(session, itemId, name, "in-progress", args, run);
         }
       } else if (eventName === "post-tool" && stepIndex !== undefined) {
         const owner = run ?? session;
@@ -1634,7 +1788,12 @@ export class AntigravityAdapter implements ProviderAdapter {
           const failed =
             payload.failed === true ||
             Boolean(payload.error && payload.error.trim().length > 0);
-          this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed", run);
+          const args = payload.toolCall?.args ?? pending.args;
+          const output =
+            payload.error?.trim() ||
+            (typeof payload.result === "string" ? payload.result : undefined) ||
+            (typeof payload.toolOutput === "string" ? payload.toolOutput : undefined);
+          this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed", args, run, output);
         }
       } else if (eventName === "stop") {
         // `fullyIdle` is the whole distinction: false means the agent has
@@ -1660,17 +1819,25 @@ export class AntigravityAdapter implements ProviderAdapter {
     itemId: string,
     name: string,
     status: "in-progress" | "completed" | "failed",
+    args?: AntigravityJsonRecord,
     run?: AntigravitySubagentRun,
+    output?: string,
   ): void {
     const turnId = session.activeTurnId;
     if (!turnId) return;
+    const summary = summarizeAntigravityTool(name, args);
     const item: RuntimeItem = {
       itemId,
       kind: "tool_call",
       status,
-      text: name,
-      name: TOOL_ITEM_NAMES[name] ?? "tool",
+      text: summary.text,
+      name,
     };
+    if (output) {
+      item.detail = output;
+    } else if (summary.detail) {
+      item.detail = summary.detail;
+    }
     const type = status === "in-progress" ? "item.started" : "item.completed";
     const event: Extract<RuntimeEvent, { type: "item.started" | "item.completed" }> = {
       ...this.base(session),

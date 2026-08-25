@@ -24,6 +24,7 @@ class DatabaseSyncShim {
     this.db.close();
   }
 }
+mock.module("node:sqlite", () => ({ DatabaseSync: DatabaseSyncShim }));
 mock.module("./sqlite.js", () => ({ DatabaseSync: DatabaseSyncShim }));
 
 import {
@@ -42,6 +43,7 @@ import {
   parseAntigravityModelLines,
   readCompleteAntigravityLines,
   resolveAntigravityCliModelLabel,
+  summarizeAntigravityTool,
 } from "./adapters/AntigravityAdapter.js";
 
 // The adapter's parsing helpers are exercised directly, with no CLI spawn:
@@ -301,7 +303,7 @@ describe("Antigravity capture plugin", () => {
     }
   });
 
-  test("runs the capture script for kone-managed sessions and sanitizes tool args", () => {
+  test("runs the capture script for kone-managed sessions and captures tool args", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "kone-antigravity-hook-test-"));
     const scriptPath = path.join(directory, "capture.cjs");
     const eventPath = path.join(directory, "events.ndjson");
@@ -314,7 +316,7 @@ describe("Antigravity capture plugin", () => {
           stepIdx: 12,
           conversationId: "conversation-1",
           transcriptPath: "/tmp/transcript.jsonl",
-          toolCall: { name: "run_command", args: { CommandLine: "echo super-secret-token" } },
+          toolCall: { name: "run_command", args: { CommandLine: "bun test" } },
         }),
         { KONE_ANTIGRAVITY_EVENTS: eventPath, KONE_ANTIGRAVITY_HOOK_DECISION: "allow" },
       );
@@ -323,12 +325,61 @@ describe("Antigravity capture plugin", () => {
       expect(result.stdout.trim()).toBe('{"decision":"allow"}');
       const captured = readFileSync(eventPath, "utf8");
       expect(captured).toBe(
-        'pre-tool\t{"conversationId":"conversation-1","transcriptPath":"/tmp/transcript.jsonl","stepIdx":12,"toolCall":{"name":"run_command"}}\n',
+        'pre-tool\t{"conversationId":"conversation-1","transcriptPath":"/tmp/transcript.jsonl","stepIdx":12,"toolCall":{"name":"run_command","args":{"CommandLine":"bun test"}}}\n',
       );
-      expect(captured).not.toContain("super-secret-token");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test("summarizeAntigravityTool extracts human-readable target text and details", () => {
+    expect(summarizeAntigravityTool("run_command", { CommandLine: "bun test" })).toEqual({
+      text: "bun test",
+      detail: '{\n  "CommandLine": "bun test"\n}',
+    });
+    expect(
+      summarizeAntigravityTool("view_file", { AbsolutePath: "/path/to/file.ts", toolAction: "Viewing file" }),
+    ).toEqual({
+      text: "/path/to/file.ts",
+      detail: '{\n  "AbsolutePath": "/path/to/file.ts",\n  "toolAction": "Viewing file"\n}',
+    });
+    expect(
+      summarizeAntigravityTool("write_to_file", { TargetFile: "/path/to/file.ts" }),
+    ).toEqual({
+      text: "/path/to/file.ts",
+      detail: '{\n  "TargetFile": "/path/to/file.ts"\n}',
+    });
+    expect(
+      summarizeAntigravityTool("replace_file_content", { TargetFile: "/path/to/file.ts" }),
+    ).toEqual({
+      text: "/path/to/file.ts",
+      detail: '{\n  "TargetFile": "/path/to/file.ts"\n}',
+    });
+    expect(
+      summarizeAntigravityTool("manage_task", { Action: "kill", TaskId: "task-19" }),
+    ).toEqual({
+      text: "kill task-19",
+      detail: '{\n  "Action": "kill",\n  "TaskId": "task-19"\n}',
+    });
+    expect(
+      summarizeAntigravityTool("grep_search", { Query: "antigravity" }),
+    ).toEqual({
+      text: "antigravity",
+      detail: '{\n  "Query": "antigravity"\n}',
+    });
+    expect(
+      summarizeAntigravityTool("find_by_name", { Pattern: "*.ts" }),
+    ).toEqual({
+      text: "*.ts",
+      detail: '{\n  "Pattern": "*.ts"\n}',
+    });
+    expect(summarizeAntigravityTool("run_command", {})).toEqual({ text: "" });
+    expect(summarizeAntigravityTool("run_command", undefined)).toEqual({ text: "" });
+    // When text matches tool name, it returns empty string
+    expect(summarizeAntigravityTool("run_command", { command: "run_command" })).toEqual({
+      text: "",
+      detail: '{\n  "command": "run_command"\n}',
+    });
   });
 
   test("answers pre-invocation allow for kone-managed sessions so subagent launches survive", () => {
@@ -597,7 +648,7 @@ describe("Antigravity native subagents", () => {
       });
       // The run hangs off the tool call that spawned it.
       const spawnItem = events.find(
-        (event) => event.type === "item.started" && event.item.text === "invoke_subagent",
+        (event) => event.type === "item.started" && event.item.name === "invoke_subagent",
       );
       expect(started?.type === "subagent.started" && started.subagent.parentItemId).toBe(
         spawnItem?.type === "item.started" ? spawnItem.item.itemId : undefined,
@@ -609,7 +660,7 @@ describe("Antigravity native subagents", () => {
           (event.type === "item.started" || event.type === "item.completed") &&
           event.subagentToolUseId === "child-1",
       );
-      expect(childItems.some((event) => "item" in event && event.item.text === "list_dir")).toBe(true);
+      expect(childItems.some((event) => "item" in event && event.item.name === "list_dir")).toBe(true);
       expect(
         childItems.some((event) => "item" in event && event.item.text === "Done. Every test passes."),
       ).toBe(true);
