@@ -61,7 +61,6 @@ function asRecord(value: ClaudeWirePayload): ClaudeJsonObject | undefined {
 
 // A tool result is opaque JSON text; this unwraps it one level. What it holds is
 // the caller's to narrow — there is no single domain type at this layer.
-// eslint-disable-next-line anti-slop/no-unknown-returns
 function parseToolResultValue(value: ClaudeWirePayload): ClaudeJsonValue | undefined {
   if (value && !(value instanceof Object) && !Number.isFinite(value) && value !== true) {
     try {

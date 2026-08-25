@@ -5,7 +5,7 @@
 // benign enough that only a warning is owed.
 
 /** What a provider failure actually means, once the raw message is classified. */
-export type ProviderErrorClass = "session-closed" | "auth" | "unknown";
+export type ProviderErrorClass = "session-closed" | "auth" | "quota" | "unknown";
 
 /** Classify a provider error message. `session-closed` = the session/thread is
  *  SessionNotFoundError + SessionClosedError); `auth` = a credential/login
@@ -39,7 +39,52 @@ export function classifyProviderError(message: string): ProviderErrorClass {
   ) {
     return "auth";
   }
+  if (isQuotaOrRateLimitError(normalized)) {
+    return "quota";
+  }
   return "unknown";
+}
+
+/** Does a provider failure indicate a 429 / rate limit / quota exhaustion? */
+export function isQuotaOrRateLimitError(cause: unknown): boolean {
+  if (cause instanceof Object && !Array.isArray(cause)) {
+    // SAFETY: cause is verified as a non-array Object record.
+    const obj = cause as { status?: unknown; statusCode?: unknown; code?: unknown; rateLimited?: unknown };
+    if (obj.status === 429 || obj.statusCode === 429 || obj.code === 429) {
+      return true;
+    }
+    if (
+      obj.code === "rate_limit_exceeded" ||
+      obj.code === "insufficient_quota" ||
+      obj.code === "RESOURCE_EXHAUSTED" ||
+      obj.code === "rate_limit"
+    ) {
+      return true;
+    }
+    if (obj.rateLimited === true) {
+      return true;
+    }
+  }
+
+  const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
+  return [
+    "429",
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "rate-limit",
+    "rate limited",
+    "too many requests",
+    "quota",
+    "resource exhausted",
+    "resource_exhausted",
+    "overloaded",
+    "credit limit",
+    "credits depleted",
+    "usage limit",
+    "usage-exhausted",
+    "usage exhausted",
+  ].some((snippet) => message.includes(snippet));
 }
 
 /** Can a Codex `thread/resume` failure be recovered by falling back to a fresh
