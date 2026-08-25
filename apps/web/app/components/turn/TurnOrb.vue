@@ -1,10 +1,27 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { useTheme } from "~/composables/useTheme";
+import {
+  bakeLogo,
+  logoForHugeIcon,
+  logoForToolFamily,
+  type LogoPointSet,
+  type LogoSource,
+} from "~/utils/thinkingLogo";
 import { drawTurnOrb, type TurnOrbState } from "~/utils/thinkingOrb";
+import type { HugeIcon } from "~/utils/toolPresentation";
 
 const props = withDefaults(
-  defineProps<{ state: TurnOrbState; size?: number; active?: boolean; ariaLabel?: string }>(),
-  { size: 20, active: true, ariaLabel: "Active turn" },
+  defineProps<{
+    state: TurnOrbState;
+    size?: number;
+    active?: boolean;
+    ariaLabel?: string;
+    icon?: HugeIcon | null;
+    logo?: LogoPointSet | LogoSource | string;
+    classic?: boolean;
+  }>(),
+  { size: 20, active: true, ariaLabel: "Active turn", classic: false },
 );
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -16,10 +33,46 @@ let reduced = false;
 let dark = true;
 
 const { scheme } = useTheme();
+const resolvedPoints = shallowRef<LogoPointSet | null>(null);
 
-// A nearer scheme wins: an orb sitting on a locally inverted surface tones to
-// that surface, not to the page. Nothing above it means the page itself, so the
-// active theme's scheme decides.
+async function resolvePoints(): Promise<void> {
+  if (props.classic) {
+    resolvedPoints.value = null;
+    return;
+  }
+  if (props.logo) {
+    const l = props.logo;
+    if (typeof l === "object" && "version" in l && "p" in l) {
+      resolvedPoints.value = l as LogoPointSet;
+      return;
+    }
+    if (typeof l === "string") {
+      const isSvg = l.trim().startsWith("<");
+      const source: LogoSource = isSvg ? { svg: l } : { path: l, viewBox: 24 };
+      try {
+        resolvedPoints.value = await bakeLogo(source, { count: 80, shell: "dome" });
+      } catch {
+        resolvedPoints.value = null;
+      }
+      return;
+    }
+    try {
+      resolvedPoints.value = await bakeLogo(l as LogoSource, { count: 80, shell: "dome" });
+    } catch {
+      resolvedPoints.value = null;
+    }
+    return;
+  }
+  if (props.icon) {
+    const found = logoForHugeIcon(props.icon);
+    if (found) {
+      resolvedPoints.value = found;
+      return;
+    }
+  }
+  resolvedPoints.value = logoForToolFamily(props.state);
+}
+
 function ancestorScheme(): boolean | null {
   let node: Element | null = host.value;
   while (node) {
@@ -31,12 +84,12 @@ function ancestorScheme(): boolean | null {
   return null;
 }
 
-function syncEnvironment() {
+function syncEnvironment(): void {
   dark = ancestorScheme() ?? scheme.value === "dark";
-  reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  reduced = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function draw(time: number) {
+function draw(time: number): void {
   const el = canvas.value;
   if (!el || !ctx) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -48,28 +101,40 @@ function draw(time: number) {
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, size, size);
-  // A settled orb (batch collapsed, pill idle, …) must not keep ticking: theme
-  // and class mutations elsewhere still call `sync()`, and feeding those a live
-  // timestamp made a "stopped" worker look like it was still running.
+
   const frozen = reduced || !props.active;
-  drawTurnOrb(ctx, size, frozen ? 0.6 : time / 1000, dark, props.state, frozen);
+  drawTurnOrb(
+    ctx,
+    size,
+    frozen ? 4.2 : time / 1000,
+    dark,
+    props.state,
+    frozen,
+    resolvedPoints.value,
+    props.classic,
+  );
 }
 
-function stop() {
+function stop(): void {
   if (raf) cancelAnimationFrame(raf);
   raf = 0;
 }
-function loop(time: number) {
+
+function loop(time: number): void {
   draw(time);
-  raf = requestAnimationFrame(loop);
+  if (props.active && visible && !reduced) raf = requestAnimationFrame(loop);
 }
-function sync() {
+
+function sync(): void {
   stop();
   draw(performance.now());
   if (props.active && visible && !document.hidden && !reduced) raf = requestAnimationFrame(loop);
 }
 
-watch(() => [props.active, props.state, props.size], sync);
+watch(() => [props.state, props.icon, props.logo, props.classic], () => void resolvePoints(), {
+  immediate: true,
+});
+watch(() => [props.active, props.state, props.size, props.classic, resolvedPoints.value], sync);
 
 onMounted(() => {
   ctx = canvas.value?.getContext("2d") ?? null;
@@ -80,11 +145,18 @@ onMounted(() => {
   });
   if (canvas.value) observer.observe(canvas.value);
   const onVisibility = sync;
-  const onTheme = () => { syncEnvironment(); sync(); };
+  const onTheme = () => {
+    syncEnvironment();
+    sync();
+  };
   document.addEventListener("visibilitychange", onVisibility);
   window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", onTheme);
   const mutations = new MutationObserver(onTheme);
-  mutations.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ["class", "data-theme", "data-scheme"] });
+  mutations.observe(document.documentElement, {
+    attributes: true,
+    subtree: true,
+    attributeFilter: ["class", "data-theme", "data-scheme"],
+  });
   sync();
   onBeforeUnmount(() => {
     stop();
@@ -98,11 +170,24 @@ onMounted(() => {
 
 <template>
   <span ref="host" class="turn-orb">
-    <canvas ref="canvas" :style="{ width: `${size}px`, height: `${size}px` }" role="img" :aria-label="ariaLabel" />
+    <canvas
+      ref="canvas"
+      :style="{ width: `${size}px`, height: `${size}px` }"
+      role="img"
+      :aria-label="ariaLabel"
+    />
   </span>
 </template>
 
 <style scoped>
-.turn-orb { display: inline-flex; align-items: center; justify-content: center; flex: none; }
-.turn-orb canvas { display: block; pointer-events: none; }
+.turn-orb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.turn-orb canvas {
+  display: block;
+  pointer-events: none;
+}
 </style>

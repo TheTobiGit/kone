@@ -8,6 +8,13 @@ import {
   type ToolOrbFamily,
   type TurnOrbState,
 } from "~/utils/toolOrbDraw";
+import {
+  drawThinkingLogo,
+  logoForToolFamily,
+  LOGO_STATE_TO_MODE,
+  type LogoPointSet,
+  type LogoState,
+} from "~/utils/thinkingLogo";
 
 export type { ToolOrbFamily, TurnOrbState };
 
@@ -22,13 +29,41 @@ export function drawTurnOrb(
   dark: boolean,
   state: TurnOrbState,
   reduced = false,
+  logoPoints?: LogoPointSet | null,
+  classic = false,
 ): void {
+  const hues = activeHues();
+  const hex = hues.orbStates[state] || hues.orbStates.neutral || "#5E6AD2";
+
+  if (!classic) {
+    const points = logoPoints ?? logoForToolFamily(state);
+    if (points) {
+      const logoState: LogoState =
+        state === "thinking"
+          ? "thinking"
+          : state === "working"
+            ? "working"
+            : (state in LOGO_STATE_TO_MODE ? (state as LogoState) : "thinking");
+      drawThinkingLogo({
+        ctx,
+        size,
+        time,
+        state: logoState,
+        points,
+        tint: hex,
+        dark,
+        reduced,
+      });
+      return;
+    }
+  }
+
   const drawContext: OrbDrawCtx = {
     ctx,
     size,
     time,
     waitSec: time,
-    hueDeg: hexToHueDeg(activeHues().orbStates[state]!),
+    hueDeg: hexToHueDeg(hex),
     theme: { isDark: dark, reduced },
   };
 
