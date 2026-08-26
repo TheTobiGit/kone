@@ -45,11 +45,12 @@ function freshStore(): ConversationStoreType {
   return new ConversationStoreCtor();
 }
 
-function makeGateway(store: ConversationStoreType) {
+function makeGateway(store: ConversationStoreType, approve: (() => Promise<boolean>) | undefined = async () => true) {
   const events: RuntimeEvent[] = [];
   let turnListener: ((event: RuntimeEvent) => void) | null = null;
   const gateway = createGateway({
     store,
+    approve,
     emit: (event) => {
       events.push(event);
     },

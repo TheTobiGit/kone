@@ -42,6 +42,23 @@ export function gatewayToolErrorResult(error: GatewayToolError): GatewayToolResu
   };
 }
 
+/** One pending approval for a `permission: "ask"` tool call. */
+export interface GatewayApprovalRequest {
+  threadId: string;
+  turnId: string | null;
+  toolName: string;
+  description: string;
+  /** The validated arguments, so the prompt shows exactly what would run. */
+  args: GatewayRecord;
+}
+
+/**
+ * Asks the user to approve one gateway tool call. Resolves true to let the call
+ * through. A registry built without one refuses every `"ask"` tool: the rung
+ * means "a human decides", so with no one to ask the only safe answer is no.
+ */
+export type GatewayApprove = (request: GatewayApprovalRequest) => Promise<boolean>;
+
 export interface GatewayRegistry {
   /** The tool definitions tools/list advertises (denied tools omitted). Each
    *  inputSchema is the tool's hand-written JSON Schema object. */
@@ -50,7 +67,10 @@ export interface GatewayRegistry {
   call(ctx: GatewayToolContext, name: string, args: GatewayValue | undefined): Promise<GatewayToolResult>;
 }
 
-export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry {
+export function createRegistry(
+  tools: ReadonlyArray<ToolEntry>,
+  options: { approve?: GatewayApprove } = {},
+): GatewayRegistry {
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const advertised = tools
     .filter((tool) => tool.permission !== "deny")
@@ -95,10 +115,35 @@ export function createRegistry(tools: ReadonlyArray<ToolEntry>): GatewayRegistry
         }),
       );
     }
+    // SAFETY: every tool's inputSchema is a zod object schema, so validated
+    // args are a JSON object by construction before the handler sees them.
+    const input = parsed.data as GatewayRecord;
+
+    if (tool.permission === "ask") {
+      if (!options.approve) {
+        return gatewayToolErrorResult(
+          new GatewayToolError(
+            "permission_denied",
+            `Tool "${name}" requires approval, and this session has no approval channel.`,
+          ),
+        );
+      }
+      const approved = await options.approve({
+        threadId: ctx.threadId,
+        turnId: ctx.turnId,
+        toolName: name,
+        description: tool.description,
+        args: input,
+      });
+      if (!approved) {
+        return gatewayToolErrorResult(
+          new GatewayToolError("permission_denied", `Tool "${name}" was not approved.`),
+        );
+      }
+    }
+
     try {
-      // SAFETY: every tool's inputSchema is a zod object schema, so validated
-      // args are a JSON object by construction before the handler sees them.
-      return await tool.handler(ctx, parsed.data as GatewayRecord);
+      return await tool.handler(ctx, input);
     } catch (cause) {
       if (cause instanceof GatewayToolError) {
         return gatewayToolErrorResult(cause);
