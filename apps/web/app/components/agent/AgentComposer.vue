@@ -26,6 +26,7 @@ import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
 import { botMark } from "~/utils/bot";
 import {
+  describeModelId,
   effortForTier,
   familyForId,
   hasEffortChoice,
@@ -266,13 +267,11 @@ const currentWindow = computed(() => {
   );
 });
 
+const desc = computed(() => describeModelId(props.modelId, catalog.value));
 const modelName = computed(
-  () => currentFamily.value?.label ?? props.modelId ?? "Default model",
+  () => currentFamily.value?.label ?? (props.modelId ? desc.value.name : "Default model"),
 );
-// The mark beside the model name is the model's own vendor — already resolved
-// on the family (a harness provider's family carries its true vendor, so an
-// opencode DeepSeek model shows DeepSeek here).
-const modelBrand = computed(() => currentFamily.value?.brand ?? "generic");
+const modelBrand = computed(() => currentFamily.value?.brand ?? desc.value.brand);
 
 // The model name opens the full picker (hosted by the parent); the composer
 // only displays the current family + brand. With nothing to switch to the slot

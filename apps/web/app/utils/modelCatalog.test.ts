@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ModelDescriptor } from "~/types/desktop";
-import { buildModelCatalog, parseModelTsvRows } from "./modelCatalog";
+import { buildModelCatalog, describeModelId, familyForId, parseModelTsvRows } from "./modelCatalog";
 
 /** One descriptor per raw slug, labelled the way OpenCode's `models --verbose`
  *  labels them (the `name` field), so we exercise the real catalog path. */
@@ -150,5 +150,32 @@ describe("buildModelCatalog — malformed descriptors never become garbage entri
     ] satisfies ModelDescriptor[];
     const catalog = buildModelCatalog(models);
     expect(catalog.map((o) => o.label)).toEqual(["Gemini 3.6 Flash", "Claude Sonnet 4.6"]);
+  });
+});
+describe("describeModelId and familyForId — robust model description and lookup", () => {
+  test("describes model with brand and prettified name when catalog is absent", () => {
+    expect(describeModelId("claude-sonnet-4-5")).toEqual({
+      brand: "claude",
+      name: "Claude Sonnet 4.5",
+    });
+    expect(describeModelId("gpt-5.6-terra")).toEqual({
+      brand: "gpt",
+      name: "GPT 5.6 Terra",
+    });
+  });
+
+  test("falls back gracefully when id is missing", () => {
+    expect(describeModelId(undefined)).toEqual({
+      brand: "generic",
+      name: "Default model",
+    });
+  });
+
+  test("resolves family and effort matching id from catalog", () => {
+    const catalog = buildModelCatalog([
+      { id: "claude-opus-5", label: "Claude Opus 5", reasoningEfforts: ["high", "max"] },
+    ]);
+    expect(familyForId(catalog, "claude-opus-5")?.label).toBe("Claude Opus 5");
+    expect(familyForId(catalog, undefined)?.label).toBe("Claude Opus 5");
   });
 });
