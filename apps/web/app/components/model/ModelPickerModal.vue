@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { CSSProperties } from "vue";
 import { useStorage } from "@vueuse/core";
 import { motion } from "motion-v";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
@@ -41,6 +42,11 @@ const props = defineProps<{
   /** The active context-window id (Claude's 200k/1m auto-compact window), when
    *  the model exposes a choice; undefined falls back to the model's default. */
   contextWindow?: string;
+  /** Confine the shell to the settings drawer instead of the whole screen: the
+   *  scrim dims only the drawer and the card lands in *its* bottom-right corner.
+   *  The same anchoring the theme browser and the agent creator use, for a
+   *  picker opened from a settings pane. */
+  paneAnchored?: boolean;
 }>();
 
 type ModelPick = {
@@ -574,13 +580,59 @@ function cancel() {
   close(() => emit("cancel"));
 }
 
+// ── host anchoring ───────────────────────────────────────────────────────────
+// Opened from a settings pane, the shell belongs to the drawer rather than the
+// screen: the host (and so the scrim and the bottom-right corner the card sits
+// in) is fixed to the drawer's rect. An unmeasured or missing drawer leaves the
+// host at the viewport, so the ordinary full-screen shell is the fallback.
+const hostStyle = ref<CSSProperties>({});
+let anchorEl: HTMLElement | null = null;
+let anchorRO: ResizeObserver | null = null;
+
+function anchorToDrawer() {
+  if (!props.paneAnchored) return;
+  const drawer = document.querySelector<HTMLElement>(".settings-scroll");
+  if (drawer !== anchorEl) {
+    anchorRO?.disconnect();
+    anchorEl = drawer;
+    if (drawer) {
+      anchorRO = new ResizeObserver(anchorToDrawer);
+      anchorRO.observe(drawer);
+    }
+  }
+  if (!drawer) return;
+  const rect = drawer.getBoundingClientRect();
+  hostStyle.value = {
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  };
+}
+
 // ── elastic height (mirrors FolderPickerModal) ────────────────────────────────
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
+
+/** How tall the card may grow: the padded host, so it never spills the drawer. */
+function maxCardHeight(): number {
+  const raw = String(hostStyle.value.height ?? "");
+  if (raw.endsWith("px")) {
+    const host = Number.parseFloat(raw);
+    if (Number.isFinite(host)) return Math.max(160, host - 48);
+  }
+  return Math.round(window.innerHeight * 0.72);
+}
+
 function syncHeight() {
   const el = contentEl.value;
-  if (el) cardHeight.value = el.offsetHeight;
+  if (el) cardHeight.value = Math.min(el.offsetHeight, maxCardHeight());
+}
+
+function onWindowResize() {
+  syncHeight();
+  anchorToDrawer();
 }
 // When the provider changes: close any open settings bar (it belongs to a row
 // that's no longer shown) and re-measure.
@@ -614,8 +666,9 @@ onMounted(() => {
   else if (recent.value.models.length) provider.value = recent.value;
   // Favourites hydrate from localStorage (see `favoritedKeys`); don't re-seed
   // here — doing so used to wipe the user's stars on every open.
-  window.addEventListener("resize", syncHeight);
+  window.addEventListener("resize", onWindowResize);
   void nextTick(() => {
+    anchorToDrawer();
     syncHeight();
     ro = new ResizeObserver(syncHeight);
     if (contentEl.value) ro.observe(contentEl.value);
@@ -623,8 +676,9 @@ onMounted(() => {
   });
 });
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", syncHeight);
+  window.removeEventListener("resize", onWindowResize);
   ro?.disconnect();
+  anchorRO?.disconnect();
   opener?.focus();
 });
 
@@ -632,25 +686,33 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-end justify-end overflow-hidden p-6" @keydown.esc.stop.prevent="cancel">
+  <!-- One shell for both placements: a host that's either the viewport or, when
+       pane-anchored, the settings drawer's rect. Everything inside — scrim,
+       bottom-right anchoring, elastic card — is the same either way. -->
+  <div
+    class="pointer-events-none fixed inset-0 z-50"
+    :style="hostStyle"
+    @keydown.esc.stop.prevent="cancel"
+  >
     <motion.div
-      class="mp-scrim absolute inset-0"
+      class="mp-scrim pointer-events-auto absolute inset-0"
       :initial="{ opacity: 0, backdropFilter: 'blur(0px)' }"
       :animate="{ opacity: shown ? 1 : 0, backdropFilter: shown ? 'blur(4px)' : 'blur(0px)' }"
       :transition="{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }"
       @click="cancel"
     />
 
-    <motion.div
-      class="mp-card relative z-20 w-full max-w-sm overflow-hidden"
-      :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
-      :initial="{ opacity: 0, y: 12, scale: 0.96 }"
-      :animate="{ opacity: shown ? 1 : 0, y: shown ? 0 : 12, scale: shown ? 1 : 0.96 }"
-      :transition="cardSpring"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Choose a model"
-    >
+    <div class="pointer-events-none absolute inset-0 flex items-end justify-end overflow-hidden p-6">
+      <motion.div
+        class="mp-card pointer-events-auto relative z-20 w-full max-w-sm overflow-hidden"
+        :style="{ height: cardHeight === null ? 'auto' : `${cardHeight}px` }"
+        :initial="{ opacity: 0, y: 12, scale: 0.96 }"
+        :animate="{ opacity: shown ? 1 : 0, y: shown ? 0 : 12, scale: shown ? 1 : 0.96 }"
+        :transition="cardSpring"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Choose a model"
+      >
       <div
         ref="contentEl"
         class="mp shrink-0"
@@ -875,8 +937,9 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
             </button>
           </div>
         </div>
-      </div>
-    </motion.div>
+        </div>
+      </motion.div>
+    </div>
   </div>
 </template>
 

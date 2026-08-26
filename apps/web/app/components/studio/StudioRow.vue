@@ -683,7 +683,7 @@ watch(
 );
 // ── chat defaults ──────────────────────────────────────────────────────────
 // The provider/model/effort/approval a *fresh* thread opens on. Read from the
-// Chats-pane keys first, then the app's last-used keys. This is the one place
+// Studio-pane keys first, then the app's last-used keys. This is the one place
 // that resolves them because it's the one place with readiness + the per-
 // provider catalog in hand: the picker only ever offered a ready provider, but
 // readiness can lag a cold boot, so a stored default is still validated here
@@ -742,7 +742,7 @@ function applyChatDefaults(): boolean {
   return providerChanged;
 }
 
-/** Has the user pinned a default in the Chats pane? New threads only override
+/** Has the user pinned a default in the Studio pane? New threads only override
  *  their inherited settings when one is set — otherwise inheritance stands. */
 function hasConfiguredDefault(): boolean {
   if (!import.meta.client) return false;
@@ -792,7 +792,7 @@ function seedBlankThread(key: string): void {
 
 // A fresh thread inherits its neighbour's model (useAgent.inheritSettings), which
 // never consults the configured default — so a new conversation would open on
-// whatever ran last, not on what the user chose in the Chats pane. Seed each
+// whatever ran last, not on what the user chose in the Studio pane. Seed each
 // blank thread the first time it becomes the composer's target; the enabledReady
 // dependency also re-fires this once the default's provider finishes coming up,
 // which is what rescues a cold boot where codex reports ready before claude.
