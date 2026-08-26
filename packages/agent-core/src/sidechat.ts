@@ -121,67 +121,101 @@ export function buildSidechatForkContext(
   const recent = imported.slice(cutIndex);
   const earlier = imported.slice(0, cutIndex);
 
-  const parts: string[] = [INTRO];
-  if (thread.title) parts.push(`Original conversation title: ${thread.title}`);
-  if (thread.branch) parts.push(`Git branch: ${thread.branch}`);
+  // One budget shared by the earlier-summary and recent-verbatim sections
+  // below — splitting it in two let the recent (most valuable) half grow past
+  // what was left, forcing a final truncate() to cut it instead of the
+  // earlier half. The recent section is reserved first (newest messages
+  // first, so a shortfall drops the oldest of the recent set rather than the
+  // newest), and the earlier summary only spends what recent didn't need.
+  const parts: string[] = [];
+  let used = 0;
+  const push = (line: string): void => {
+    parts.push(line);
+    used += line.length + 1;
+  };
+  push(INTRO);
+  if (thread.title) push(`Original conversation title: ${thread.title}`);
+  if (thread.branch) push(`Git branch: ${thread.branch}`);
+
+  const recentHeader = "Most recent imported messages:";
+  const recentLines: string[] = [];
+  let recentReserved = 0;
+  for (let i = recent.length - 1; i >= 0; i -= 1) {
+    const block = recent[i];
+    if (!block) continue;
+    const rendered = renderVerbatim(block);
+    if (rendered.length === 0) continue;
+    if (used + recentHeader.length + 1 + recentReserved + rendered.length > budget) break;
+    recentLines.unshift(rendered);
+    recentReserved += rendered.length + 1;
+  }
+  const recentBudget = budget - used - (recentLines.length > 0 ? recentHeader.length + 1 + recentReserved : 0);
 
   // Earlier messages: newest-first one-line summaries, oldest dropped if the
-  // budget runs out (the transcript must shrink, never blow the cap).
+  // remaining budget runs out (the transcript must shrink, never blow the
+  // cap, and the recent section above always wins the shared budget first).
   if (earlier.length > 0) {
     const branchSummary = buildSemanticBranchSummary(earlier, {
       title: thread.title,
-      branch: thread.branch,
+      branch: thread.branch ?? undefined,
       maxSummaryChars: budget,
     });
 
     const summaryLines: string[] = [];
-    let used = 0;
+    let summaryChars = 0;
     for (let i = earlier.length - 1; i >= 0; i -= 1) {
       const block = earlier[i];
       if (!block) continue;
       const line = renderSummary(block);
       if (line.length === 0) continue;
-      if (used + line.length > budget) break;
+      if (summaryChars + line.length > recentBudget) break;
       summaryLines.unshift(line);
-      used += line.length + 1;
+      summaryChars += line.length + 1;
     }
+    // What's left of the earlier section's share after the summary lines
+    // above — the operations lists below spend from this, never from what
+    // the recent section already reserved.
+    let earlierRemaining = recentBudget;
     if (summaryLines.length > 0) {
       const omitted = earlier.length - summaryLines.length;
-      parts.push(
-        `Earlier conversation summary (${omitted} older message${omitted === 1 ? "" : "s"} omitted to fit the context budget):`,
-      );
-      parts.push(...summaryLines);
+      const header = `Earlier conversation summary (${omitted} older message${omitted === 1 ? "" : "s"} omitted to fit the context budget):`;
+      push(header);
+      earlierRemaining -= header.length + 1;
+      for (const line of summaryLines) {
+        push(line);
+        earlierRemaining -= line.length + 1;
+      }
     }
 
+    const pushIfFits = (line: string): void => {
+      if (line.length + 1 > earlierRemaining) return;
+      push(line);
+      earlierRemaining -= line.length + 1;
+    };
     const { operations } = branchSummary;
     if (operations.filesModified.length > 0) {
-      parts.push("Files Modified / Created:");
+      pushIfFits("Files Modified / Created:");
       for (const file of operations.filesModified) {
-        parts.push(`- \`${file}\``);
+        pushIfFits(`- \`${file}\``);
       }
     }
     if (operations.filesRead.length > 0) {
-      parts.push("Files Read / Inspected:");
+      pushIfFits("Files Read / Inspected:");
       for (const file of operations.filesRead) {
-        parts.push(`- \`${file}\``);
+        pushIfFits(`- \`${file}\``);
       }
     }
     if (operations.commandsRun.length > 0) {
-      parts.push("Commands Executed:");
+      pushIfFits("Commands Executed:");
       for (const cmd of operations.commandsRun) {
-        parts.push(`- \`${cmd}\``);
+        pushIfFits(`- \`${cmd}\``);
       }
     }
   }
 
-  parts.push("Most recent imported messages:");
-  let used = 0;
-  for (const block of recent) {
-    const rendered = renderVerbatim(block);
-    if (rendered.length === 0) continue;
-    if (used + rendered.length > budget) break;
-    parts.push(rendered);
-    used += rendered.length + 1;
+  if (recentLines.length > 0) {
+    push(recentHeader);
+    for (const line of recentLines) push(line);
   }
   return truncate(parts.join("\n"), budget);
 }

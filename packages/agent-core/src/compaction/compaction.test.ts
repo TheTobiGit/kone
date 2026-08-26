@@ -152,6 +152,61 @@ describe("branchSummarization", () => {
   });
 });
 
+describe("compaction attachment handling", () => {
+  it("does not let a large attachment's byte size blow up the token estimate", () => {
+    const blocks: StoredBlock[] = [
+      { id: "u1", role: "user", text: "Task 1: Setup project structure and package.json", at: 1000 },
+      {
+        id: "a1",
+        role: "assistant",
+        turnId: "t1",
+        state: "completed",
+        at: 1100,
+        items: [{ itemId: "i1", kind: "assistant_text", status: "completed", text: "Structure created successfully." }],
+      },
+      { id: "u2", role: "user", text: "Task 2: Implement authentication endpoints in auth.ts", at: 2000 },
+      {
+        id: "a2",
+        role: "assistant",
+        turnId: "t2",
+        state: "completed",
+        at: 2100,
+        items: [{ itemId: "i2", kind: "assistant_text", status: "completed", text: "Auth endpoints are implemented." }],
+      },
+      {
+        id: "u3",
+        role: "user",
+        text: "Task 3: Add automated test suite for endpoints",
+        at: 3000,
+        attachments: [
+          { type: "image", id: "att-1", name: "screenshot.png", mimeType: "image/png", sizeBytes: 5 * 1024 * 1024 },
+        ],
+      },
+      {
+        id: "a3",
+        role: "assistant",
+        turnId: "t3",
+        state: "completed",
+        at: 3100,
+        items: [{ itemId: "i3", kind: "assistant_text", status: "completed", text: "Tests added and passing." }],
+      },
+    ];
+
+    // The attached block's estimated tokens should be a small offset above its
+    // text-only estimate, not millions of phantom tokens from the 5 MB payload.
+    const attachedBlock = blocks[4] as Extract<StoredBlock, { role: "user" }>;
+    const textOnlyTokens = Math.ceil(attachedBlock.text.length / 4);
+    const attachedTokens = estimateBlockTokens(attachedBlock);
+    expect(attachedTokens).toBeLessThan(textOnlyTokens + 100);
+
+    // With a modest keep budget the cut point must still snap to a recent user
+    // turn instead of being blown past the whole transcript by one attachment.
+    const result = findCutPoint(blocks, 15);
+    expect(result.cutIndex).toBeGreaterThan(0);
+    expect(blocks[result.cutIndex]?.role).toBe("user");
+  });
+});
+
 describe("compaction edge cases", () => {
   it("handles empty block lists without throwing", () => {
     const emptyEstimate = estimateContextTokens([]);
