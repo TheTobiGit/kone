@@ -411,3 +411,107 @@ export type IrcMessagePayload = {
   replyTo?: string;
   createdAt: number;
 };
+
+// ── process supervisor (launch) tools ──────────────────────────────────────
+
+export const LaunchInputSchema = z.object({
+  op: z.enum(["start", "stop", "restart", "logs", "send", "status", "list"]),
+  name: z.string().min(1).optional(),
+  command: z.string().min(1).optional(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  ready: z
+    .object({
+      port: z.number().int().positive().optional(),
+      log: z.string().optional(),
+      timeout: z.number().positive().optional(),
+    })
+    .optional(),
+  lines: z.number().int().positive().optional(),
+  cursor: z.number().int().nonnegative().optional(),
+  grep: z.string().optional(),
+  follow: z.boolean().optional(),
+  text: z.string().optional(),
+  enter: z.boolean().optional(),
+  signal: z.enum(["SIGTERM", "SIGKILL"]).optional(),
+  timeout: z.number().positive().optional(),
+});
+
+export const LAUNCH_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    op: {
+      type: "string",
+      enum: ["start", "stop", "restart", "logs", "send", "status", "list"],
+      description: "Supervisor action to perform.",
+    },
+    name: {
+      type: "string",
+      description: "Identifier for the supervised process.",
+    },
+    command: {
+      type: "string",
+      description: "Command or executable binary to run (for 'start').",
+    },
+    args: {
+      type: "array",
+      items: { type: "string" },
+      description: "Command-line arguments for the executable.",
+    },
+    cwd: {
+      type: "string",
+      description: "Working directory for the process.",
+    },
+    env: {
+      type: "object",
+      additionalProperties: { type: "string" },
+      description: "Environment variables for the process.",
+    },
+    ready: {
+      type: "object",
+      properties: {
+        port: { type: "integer", description: "TCP port that must accept connections for readiness." },
+        log: { type: "string", description: "Regex pattern in stdout/stderr indicating readiness." },
+        timeout: { type: "number", description: "Readiness timeout in seconds." },
+      },
+      description: "Readiness criteria to wait on before returning from start.",
+    },
+    lines: {
+      type: "integer",
+      description: "Number of log lines to return (default 100).",
+    },
+    cursor: {
+      type: "integer",
+      description: "Log line offset cursor for paginating logs.",
+    },
+    grep: {
+      type: "string",
+      description: "Regex pattern to filter logs.",
+    },
+    follow: {
+      type: "boolean",
+      description: "Whether to wait for new log lines after cursor.",
+    },
+    text: {
+      type: "string",
+      description: "Text to send to process stdin.",
+    },
+    enter: {
+      type: "boolean",
+      description: "Whether to append a newline to stdin text (default true).",
+    },
+    signal: {
+      type: "string",
+      enum: ["SIGTERM", "SIGKILL"],
+      description: "Signal to terminate the process tree (SIGTERM for graceful stop, SIGKILL for hard kill).",
+    },
+    timeout: {
+      type: "number",
+      description: "Timeout in seconds for operations that wait.",
+    },
+  },
+  required: ["op"],
+} satisfies GatewayRecord;
+
+export type LaunchInput = z.infer<typeof LaunchInputSchema>;

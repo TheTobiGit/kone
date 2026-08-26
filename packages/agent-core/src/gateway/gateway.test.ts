@@ -342,8 +342,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_read_thread",
       "kone_irc_send",
       "kone_irc_inbox",
+      "kone_launch",
     ]);
-
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
     expect(rpcResult(res).isError).toBe(true);
     expect(rpcResult(res).structuredContent.error.code).toBe("not_found");
@@ -872,5 +872,56 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(store.threadMeta(child1Id!)).not.toBeNull();
 
     await gateway.shutdown();
+  });
+
+  test("kone_launch execution and process cleanup on gateway shutdown", async () => {
+    const store = freshStore();
+    store.ensureThread({
+      threadId: "thread-launch-caller",
+      projectPath: process.cwd(),
+      provider: "claudeAgent",
+      createdAt: 1,
+    });
+    const { gateway, turn } = makeGateway(store);
+    await gateway.ready;
+    const url = gateway.mcpEndpointUrl();
+
+    const conn = gateway.connectionForThread("thread-launch-caller", "claudeAgent");
+
+    turn({
+      type: "turn.started",
+      threadId: "thread-launch-caller",
+      provider: "claudeAgent",
+      at: 10,
+      source: "claude.sdk.message",
+      turnId: "turn-launch-1",
+    });
+
+    const startRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "kone_launch",
+        arguments: {
+          op: "start",
+          name: "gw-proc",
+          command: "node",
+          args: ["-e", "console.log('GW READY'); setInterval(() => {}, 1000);"],
+          ready: { log: "GW READY", timeout: 5 },
+        },
+      },
+    });
+
+    expect(rpcResult(startRes).isError).toBeFalsy();
+    expect(rpcResult(startRes).content?.[0]?.text).toContain("Started process");
+    const pid = rpcResult(startRes).structuredContent?.pid as number;
+    expect(typeof pid).toBe("number");
+
+    // Shutdown gateway, which must stop the supervised process
+    await gateway.shutdown();
+
+    // Verify process is actually dead (kill with signal 0 throws ESRCH)
+    expect(() => process.kill(pid, 0)).toThrow();
   });
 });

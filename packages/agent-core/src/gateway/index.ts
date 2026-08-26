@@ -18,6 +18,7 @@ import { createRegistry } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
 import { createIrcTools } from "./tools/irc.js";
+import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 
 export type { GatewayConnection } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
@@ -62,11 +63,12 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const credentials = new GatewayCredentials();
   const inFlight = makeInFlightRequestRegistry();
   const turnState = new Map<string, TurnState>();
-
+  const launchSupervisor = new ProcessSupervisor();
   const tools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
     ...createIrcTools({ store: input.store }),
+    ...createLaunchTools({ supervisor: launchSupervisor }),
   ];
   const registry = createRegistry(tools);
   const transport = makeMcpTransport({
@@ -124,6 +126,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ready: server.ready,
     shutdown: async () => {
       detach();
+      await launchSupervisor.stopAll();
       await server.close();
     },
   };
