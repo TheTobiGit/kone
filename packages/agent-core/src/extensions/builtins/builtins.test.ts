@@ -34,7 +34,7 @@ import {
   type SubagentDispatchRecord,
   type SubagentDispatchResult,
   type SubagentDispatcherOptions,
-  type SubagentStatus,
+  type SubagentDispatchStatus,
 } from "../index.js";
 
 describe("Built-in Extensions - Barrel & Integration", () => {
@@ -105,8 +105,8 @@ describe("Built-in Extensions - Barrel & Integration", () => {
       args: { command: "rm -rf /" },
     });
 
-    expect(dangerousDispatch.errors.length).toBe(1);
-    const errorEntry = dangerousDispatch.errors[0]?.error;
+    expect(dangerousDispatch.vetoes.length).toBe(1);
+    const errorEntry = dangerousDispatch.vetoes[0]?.error;
     expect(errorEntry).toBeInstanceOf(SafetyGateError);
     if (errorEntry instanceof SafetyGateError) {
       expect(errorEntry.ruleId).toBe("rm-rf-root-or-home");

@@ -1,8 +1,8 @@
 /**
  * Safety Gate Built-in Extension for Agent-Core.
- * Automatically hooks into `tool_call` lifecycle events for command execution tools
- * (`bash`, `exec`, `terminal`, `sh`, `shell`, etc.) and scans commands against
- * dangerous, destructive, or catastrophic patterns, blocking them with a descriptive error.
+ * Hooks into pre-execution `tool_call` lifecycle events for command execution tools
+ * and scans their command arguments against dangerous, destructive, or catastrophic
+ * patterns. A match throws a `SafetyGateError`, which vetoes the tool call.
  */
 
 import type {
@@ -11,6 +11,7 @@ import type {
   ExtensionModule,
   ToolCallEvent,
 } from "../types.js";
+import { ExtensionVetoError } from "../veto.js";
 
 /**
  * Definition of a safety rule for detecting dangerous commands.
@@ -35,7 +36,7 @@ export interface SafetyCheckResult {
 /**
  * Error thrown when a command matches a dangerous pattern rule and is blocked.
  */
-export class SafetyGateError extends Error {
+export class SafetyGateError extends ExtensionVetoError {
   readonly ruleId: string;
   readonly ruleName: string;
   readonly command: string;
@@ -215,12 +216,18 @@ export function validateCommand(
 
 /**
  * Extracts candidate command strings from tool call arguments.
+ *
+ * Only command-bearing keys are inspected. Scanning every string argument means
+ * free-text fields are scanned too, so a `description` that merely mentions a
+ * destructive command would block an otherwise harmless call.
  */
 export function extractCommandsFromArgs(args: Record<string, unknown>): string[] {
   const extracted: string[] = [];
   const primaryKeys: Record<string, true> = {
     command: true,
     cmd: true,
+    // The payload of `command: "/bin/sh", args: ["-c", "..."]` lives here.
+    args: true,
     script: true,
     code: true,
     input: true,
@@ -231,22 +238,6 @@ export function extractCommandsFromArgs(args: Record<string, unknown>): string[]
 
   for (const key of Object.keys(primaryKeys)) {
     const val = args[key];
-    if (typeof val === "string" && val.trim().length > 0) {
-      extracted.push(val);
-    } else if (Array.isArray(val)) {
-      for (const item of val) {
-        if (typeof item === "string" && item.trim().length > 0) {
-          extracted.push(item);
-        }
-      }
-    }
-  }
-
-  // Also check other string/array args for dangerous shell commands
-  for (const [key, val] of Object.entries(args)) {
-    if (primaryKeys[key]) {
-      continue;
-    }
     if (typeof val === "string" && val.trim().length > 0) {
       extracted.push(val);
     } else if (Array.isArray(val)) {
@@ -269,13 +260,13 @@ export function isMonitoredTool(
   monitoredTools: ReadonlyArray<string>,
 ): boolean {
   const normalized = toolName.toLowerCase().trim();
+  // Match on whole name segments only. Loose substring containment would treat
+  // any tool whose name merely contains "sh", "cmd", "exec" or "process" —
+  // `publish`, `preprocess_data` — as a command runner.
+  const segments = new Set(normalized.split(/[^a-z0-9]+/).filter(Boolean));
   for (const item of monitoredTools) {
     const normItem = item.toLowerCase().trim();
-    if (
-      normalized === normItem ||
-      normalized.includes(normItem) ||
-      normItem.includes(normalized)
-    ) {
+    if (normalized === normItem || segments.has(normItem)) {
       return true;
     }
   }

@@ -179,8 +179,8 @@ describe("safetyGate - Extension Integration with ExtensionRegistry", () => {
       args: { command: "rm -rf /" },
     });
 
-    expect(dispatchResult.errors.length).toBe(1);
-    expect(dispatchResult.errors[0]?.error instanceof SafetyGateError).toBe(true);
+    expect(dispatchResult.vetoes.length).toBe(1);
+    expect(dispatchResult.vetoes[0]?.error instanceof SafetyGateError).toBe(true);
 
     const storage = api.storage;
     const blockedCount = storage.get<number>("blockedCommandsCount");
@@ -193,6 +193,53 @@ describe("safetyGate - Extension Integration with ExtensionRegistry", () => {
     }>("lastBlockedCommand");
     expect(lastBlocked?.command).toBe("rm -rf /");
     expect(lastBlocked?.ruleId).toBe("rm-rf-root-or-home");
+  });
+
+  it("prevents the tool from executing at all, not just logging the violation", async () => {
+    const registry = new ExtensionRegistry();
+    await registry.registerExtension("safetyGate", safetyGateExtension);
+
+    let ran = false;
+    registry.registerTool({
+      name: "bash",
+      description: "run a shell command",
+      parameters: { type: "object", properties: {} },
+      execute: async () => {
+        ran = true;
+        return "done";
+      },
+    });
+
+    await expect(registry.executeTool("bash", { command: "rm -rf /" })).rejects.toThrow(
+      SafetyGateError,
+    );
+    expect(ran).toBe(false);
+
+    // A safe command on the same tool still runs.
+    await expect(registry.executeTool("bash", { command: "echo hello" })).resolves.toBe("done");
+    expect(ran).toBe(true);
+  });
+
+  it("does not block on a destructive command quoted in a free-text argument", async () => {
+    const registry = new ExtensionRegistry();
+    await registry.registerExtension("safetyGate", safetyGateExtension);
+
+    let ran = false;
+    registry.registerTool({
+      name: "bash",
+      description: "run a shell command",
+      parameters: { type: "object", properties: {} },
+      execute: async () => {
+        ran = true;
+        return "done";
+      },
+    });
+
+    await registry.executeTool("bash", {
+      command: "ls",
+      description: "cleanup after the earlier git reset --hard",
+    });
+    expect(ran).toBe(true);
   });
 
   it("allows safe commands on tool_call dispatch without errors", async () => {
@@ -260,7 +307,7 @@ describe("safetyGate - Extension Integration with ExtensionRegistry", () => {
       args: { command: "format-c" },
     });
 
-    expect(dispatchResult.errors.length).toBe(1);
+    expect(dispatchResult.vetoes.length).toBe(1);
     expect(blockedCalls.length).toBe(1);
     expect(blockedCalls[0]?.ruleId).toBe("custom-forbidden");
   });

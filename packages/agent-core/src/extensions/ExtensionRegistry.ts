@@ -14,9 +14,9 @@ import type {
   ExtensionEventMap,
   ExtensionEventName,
   ExtensionLogger,
-  ExtensionModule,
   ExtensionStorage,
 } from "./types.js";
+import { ExtensionVetoError } from "./veto.js";
 
 export class InMemoryExtensionStorage implements ExtensionStorage {
   private readonly store = new Map<string, unknown>();
@@ -108,6 +108,8 @@ export class ExtensionRegistry {
     Set<EventSubscription<any>>
   >();
   private readonly extensions = new Map<string, RegisteredExtensionEntry>();
+  /** Durable storage for ids with no registered extension, keyed by extension id. */
+  private readonly unownedStorage = new Map<string, InMemoryExtensionStorage>();
   private subscriptionCounter = 0;
 
   /**
@@ -193,8 +195,9 @@ export class ExtensionRegistry {
       signal: options.signal,
     };
 
-    // Emit initial tool_call event
-    await this.dispatch(
+    // Emit the pre-execution tool_call event. Handlers may veto the call, in
+    // which case the tool must not run at all.
+    const preDispatch = await this.dispatch(
       "tool_call",
       {
         toolName: name,
@@ -205,6 +208,24 @@ export class ExtensionRegistry {
       },
       options,
     );
+
+    const veto = preDispatch.vetoes[0];
+    if (veto) {
+      await this.dispatch(
+        "tool_call",
+        {
+          toolName: name,
+          args,
+          toolCallId: options.toolCallId,
+          turnId: options.turnId,
+          threadId: options.threadId,
+          isError: true,
+          error: veto.error,
+        },
+        options,
+      );
+      throw veto.error;
+    }
 
     try {
       const result = await tool.execute(args, context);
@@ -277,7 +298,7 @@ export class ExtensionRegistry {
     set.add(subscription);
 
     return () => {
-      this.off(event, handler);
+      this.removeSubscription(event, subscription.id);
     };
   }
 
@@ -295,11 +316,7 @@ export class ExtensionRegistry {
 
     for (const sub of set) {
       if (sub.handler === handler) {
-        set.delete(sub);
-        if (set.size === 0) {
-          this.subscriptions.delete(event);
-        }
-        return true;
+        return this.removeSubscription(event, sub.id);
       }
     }
 
@@ -316,7 +333,7 @@ export class ExtensionRegistry {
     options: DispatchContextOptions = {},
   ): Promise<DispatchResult> {
     const set = this.subscriptions.get(event);
-    const result: DispatchResult = { errors: [] };
+    const result: DispatchResult = { errors: [], vetoes: [] };
 
     if (!set || set.size === 0) {
       return result;
@@ -342,10 +359,11 @@ export class ExtensionRegistry {
       try {
         await sub.handler(payload, context);
       } catch (err) {
-        result.errors.push({
-          extensionId: sub.extensionId,
-          error: err,
-        });
+        if (err instanceof ExtensionVetoError) {
+          result.vetoes.push({ extensionId: sub.extensionId, error: err });
+        } else {
+          result.errors.push({ extensionId: sub.extensionId, error: err });
+        }
       }
     }
 
@@ -499,14 +517,52 @@ export class ExtensionRegistry {
     this.tools.clear();
     this.subscriptions.clear();
     this.extensions.clear();
+    this.unownedStorage.clear();
   }
 
+  /**
+   * Remove a subscription by its own id.
+   *
+   * Matching on handler identity is not sufficient: two extensions may register
+   * the same function reference, and removing "the first one that matches" would
+   * tear down another extension's subscription while leaving the caller's live.
+   */
+  private removeSubscription(event: ExtensionEventName, id: string): boolean {
+    const set = this.subscriptions.get(event);
+    if (!set) {
+      return false;
+    }
+    for (const sub of set) {
+      if (sub.id === id) {
+        set.delete(sub);
+        if (set.size === 0) {
+          this.subscriptions.delete(event);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Resolve the storage for an extension id.
+   *
+   * Tools and handlers registered without an owning extension resolve to "core",
+   * which is never present in `extensions`. They still need storage that survives
+   * between calls, so unowned ids get a durable store of their own rather than a
+   * throwaway that discards every write.
+   */
   private getExtensionStorage(extensionId: string): ExtensionStorage {
     const entry = this.extensions.get(extensionId);
     if (entry) {
       return entry.storage;
     }
-    return new InMemoryExtensionStorage();
+    let unowned = this.unownedStorage.get(extensionId);
+    if (!unowned) {
+      unowned = new InMemoryExtensionStorage();
+      this.unownedStorage.set(extensionId, unowned);
+    }
+    return unowned;
   }
 
   private createBoundExtensionAPI(
