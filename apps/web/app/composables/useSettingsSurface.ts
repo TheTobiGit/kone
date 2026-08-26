@@ -18,7 +18,7 @@ export type SettingsPane =
   | "shortcuts"
   | "motion"
   | "appearance"
-  | "chats"
+  | "studio"
   | "providers"
   | "agentsUsage"
   | "providerLimits"
@@ -39,6 +39,11 @@ const PAGE_MAX = 1040;
  *  aside for a page that is still a list of rows. */
 const COMPACT_MAX = 640;
 
+/** Pages that are a short list of one-line settings rather than a board. They
+ *  take the compact measure, so the label and its value stay on speaking terms
+ *  instead of sitting at opposite ends of a 1040px line. */
+const COMPACT_PANES: SettingsPane[] = ["studio"];
+
 const pane = ref<SettingsPane>("root");
 /** When true, the open page uses COMPACT_MAX instead of PAGE_MAX. The agent
  *  detail sets this for as long as it is on screen; everything else leaves it. */
@@ -48,7 +53,7 @@ const isOpen = ref(false);
 
 /** Panes that are pages rather than lists. Everything else keeps the column. */
 const PAGE_PANES: SettingsPane[] = [
-  "chats",
+  "studio",
   "providers",
   "motion",
   "appearance",
@@ -72,9 +77,11 @@ export function useSettingsSurface() {
   const revealWidth = computed(() => {
     if (!isPage.value) return COLUMN_WIDTH;
 
-    // Most pages take the full measure. A compact page (one agent's details) is
-    // a facts table, so it stops earlier — the same formula, a tighter cap.
-    const cap = compact.value ? COMPACT_MAX : PAGE_MAX;
+    // Most pages take the full measure. A compact page (one agent's details, or
+    // a handful of settings rows) is a reading, so it stops earlier — the same
+    // formula, a tighter cap.
+    const tight = compact.value || COMPACT_PANES.includes(pane.value);
+    const cap = tight ? COMPACT_MAX : PAGE_MAX;
     return Math.round(Math.min(cap, Math.max(COLUMN_WIDTH, width.value - STAGE_REMAINDER)));
   });
 

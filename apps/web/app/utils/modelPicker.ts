@@ -14,7 +14,7 @@ export const PROVIDER_KEY = "kone:provider";
 export const MODEL_KEY = "kone:model";
 export const REASONING_KEY = "kone:reasoning";
 
-/** The user's *chosen* default — set only in the Chats settings pane, and never
+/** The user's *chosen* default — set only in the Studio settings pane, and never
  *  written by a live session (unlike the "last used" keys above, which every
  *  thread rewrites as it runs). When present these win the boot pick, so a
  *  configured default can't be clobbered by whatever thread ran last. */
@@ -29,7 +29,7 @@ export function modeKey(projectPath: string): string {
 }
 
 /** The app-wide fallback permission mode: what a project opens with the first
- *  time, before it has a per-project mode of its own. Set in the Chats settings
+ *  time, before it has a per-project mode of its own. Set in the Studio settings
  *  pane; read at boot only when `modeKey(path)` holds nothing yet. */
 export const DEFAULT_MODE_KEY = "kone:default-mode";
 

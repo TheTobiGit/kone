@@ -34,6 +34,7 @@ import type {
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 import { rememberSideChatSource } from "~/composables/sideChats";
+import { usePaneWidthPrefs } from "~/composables/usePaneWidthPrefs";
 import type { ThreadSession, useAgent } from "~/composables/useAgent";
 import type { TerminalSession, useTerminal } from "~/composables/useTerminal";
 import type { ScratchpadSession, useScratchpad } from "~/composables/useScratchpad";
@@ -188,6 +189,9 @@ function persistableThreadId(s: ThreadSession): string | null {
 
 export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   const { agent, terminal, scratchpad } = opts;
+  // What rung a pane of each kind opens at (a per-install preference, not board
+  // state — an existing pane's width stays on its entry).
+  const { defaultWidth } = usePaneWidthPrefs();
   const resolveProjectPath = () =>
     opts.projectPath instanceof Function ? opts.projectPath() : opts.projectPath;
   let warnedMismatch = false;
@@ -443,7 +447,12 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
       let insertAt = insertIndexFor({}, next);
       for (const item of toAdopt) {
         const id = mintPaneId();
-        next.splice(insertAt, 0, { id, kind: item.kind, anchor: item.anchor, width: 0 });
+        next.splice(insertAt, 0, {
+          id,
+          kind: item.kind,
+          anchor: item.anchor,
+          width: defaultWidth(item.kind),
+        });
         mapping[id] = item.key;
         insertAt += 1;
         changed = true;
@@ -634,7 +643,7 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
         if (o.threadId) rememberSideChatSource(o.threadId, o.sideChatSource);
       }
     }
-    const entry: PaneEntry = { id, kind, anchor, width: 0 };
+    const entry: PaneEntry = { id, kind, anchor, width: defaultWidth(kind) };
 
     // The dedup checks above all read pre-mutation state — two concurrent opens
     // in the same tick can both pass them (a double click on a recent row, a
