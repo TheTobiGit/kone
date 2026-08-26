@@ -14,7 +14,7 @@ import { GatewayCredentials, type GatewayConnection } from "./credentials.js";
 import { startGatewayHttpServer } from "./httpServer.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeMcpTransport } from "./mcpTransport.js";
-import { createRegistry } from "./registry.js";
+import { createRegistry, type GatewayApprove } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
 import { createIrcTools } from "./tools/irc.js";
@@ -23,6 +23,7 @@ import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 export type { GatewayConnection } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
 export { GatewayToolError } from "./schemas.js";
+export type { GatewayApprove, GatewayApprovalRequest } from "./registry.js";
 export { bridgeExtensionToolsToGateway, bridgeExtensionToolToGateway } from "./extensionBridge.js";
 
 export const GATEWAY_SERVER_VERSION = "0.1.0";
@@ -58,6 +59,9 @@ export interface GatewayInput {
   /** Subscribe to the AgentService runtime event stream — the gateway watches
    *  turn lifecycle here, adapter-agnostically. */
   onEvents: (listener: (event: RuntimeEvent) => void) => () => void;
+  /** Asks the user to approve a `permission: "ask"` tool call. Without one,
+   *  every such tool is refused rather than silently allowed. */
+  approve?: GatewayApprove;
 }
 
 export function createGateway(input: GatewayInput): GatewayHandle {
@@ -71,7 +75,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createIrcTools({ store: input.store }),
     ...createLaunchTools({ supervisor: launchSupervisor }),
   ];
-  const registry = createRegistry(tools);
+  const registry = createRegistry(tools, { approve: input.approve });
   const transport = makeMcpTransport({
     credentials,
     registry,

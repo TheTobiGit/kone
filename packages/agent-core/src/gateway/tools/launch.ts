@@ -32,6 +32,7 @@ export interface SupervisedProcessInfo {
 }
 
 export interface SupervisedProcessState {
+  scope: string;
   name: string;
   command: string;
   args: string[];
@@ -64,10 +65,23 @@ function parseSafeRegex(pattern: string, fieldName: string): RegExp {
 const MAX_SUPERVISED_PROCESSES = 32;
 
 export class ProcessSupervisor {
+  /**
+   * Supervised processes, keyed by (scope, name) rather than name alone.
+   *
+   * One supervisor is shared by every thread in the app, so a bare name would
+   * put every project in the same namespace: one project's "dev" would collide
+   * with another's, and any thread could read the logs of, write stdin to, or
+   * kill a process it never started. `scope` is the caller's project root.
+   */
   private readonly processes = new Map<string, SupervisedProcessState>();
   private readonly listeners = new Map<string, Set<(line: LogLine) => void>>();
 
+  private static key(scope: string, name: string): string {
+    return `${scope}\u0000${name}`;
+  }
+
   async start(options: {
+    scope: string;
     name: string;
     command: string;
     args?: string[];
@@ -75,7 +89,8 @@ export class ProcessSupervisor {
     env?: Record<string, string>;
     ready?: { port?: number; log?: string; timeout?: number };
   }): Promise<{ status: string; pid?: number; ready: boolean }> {
-    const existing = this.processes.get(options.name);
+    const key = ProcessSupervisor.key(options.scope, options.name);
+    const existing = this.processes.get(key);
     if (existing && existing.status === "running") {
       throw new GatewayToolError(
         "invalid_input",
@@ -95,6 +110,7 @@ export class ProcessSupervisor {
     }
 
     const state: SupervisedProcessState = {
+      scope: options.scope,
       name: options.name,
       command: options.command,
       args: options.args ?? [],
@@ -136,7 +152,7 @@ export class ProcessSupervisor {
         if (state.logs.length > 5000) {
           state.logs.splice(0, state.logs.length - 5000);
         }
-        const set = this.listeners.get(options.name);
+        const set = this.listeners.get(key);
         if (set) {
           for (const listener of set) {
             listener(line);
@@ -179,7 +195,7 @@ export class ProcessSupervisor {
       state.stoppedAt = Date.now();
     });
 
-    this.processes.set(options.name, state);
+    this.processes.set(key, state);
 
     // Catch early spawn failures (e.g. ENOENT)
     const { promise: spawnPromise, resolve: resolveSpawn, reject: rejectSpawn } = Promise.withResolvers<void>();
@@ -198,7 +214,7 @@ export class ProcessSupervisor {
     try {
       await spawnPromise;
     } catch (spawnErr) {
-      await this.stop(options.name, "SIGKILL", 1).catch(() => {});
+      await this.stop(options.scope, options.name, "SIGKILL", 1).catch(() => {});
       state.status = "failed";
       state.stoppedAt = Date.now();
       throw spawnErr;
@@ -220,7 +236,7 @@ export class ProcessSupervisor {
         child.removeListener("exit", onEarlyExit);
         child.removeListener("error", onEarlyError);
         if (logListener) {
-          this.removeListener(options.name, logListener);
+          this.removeListener(key, logListener);
           logListener = null;
         }
         if (activeSocket) {
@@ -319,7 +335,7 @@ export class ProcessSupervisor {
               checkBoth();
             }
           };
-          this.addListener(options.name, logListener);
+          this.addListener(key, logListener);
         }
       }
 
@@ -327,7 +343,7 @@ export class ProcessSupervisor {
         await readyPromise;
       } catch (err) {
         cleanup();
-        const stopped = await this.stop(options.name, "SIGKILL", 2).catch(() => false);
+        const stopped = await this.stop(options.scope, options.name, "SIGKILL", 2).catch(() => false);
         if (stopped) {
           state.status = "failed";
           state.stoppedAt = Date.now();
@@ -343,31 +359,32 @@ export class ProcessSupervisor {
     };
   }
 
-  private addListener(name: string, listener: (line: LogLine) => void): void {
-    let set = this.listeners.get(name);
+  private addListener(key: string, listener: (line: LogLine) => void): void {
+    let set = this.listeners.get(key);
     if (!set) {
       set = new Set();
-      this.listeners.set(name, set);
+      this.listeners.set(key, set);
     }
     set.add(listener);
   }
 
-  private removeListener(name: string, listener: (line: LogLine) => void): void {
-    const set = this.listeners.get(name);
+  private removeListener(key: string, listener: (line: LogLine) => void): void {
+    const set = this.listeners.get(key);
     if (set) {
       set.delete(listener);
       if (set.size === 0) {
-        this.listeners.delete(name);
+        this.listeners.delete(key);
       }
     }
   }
 
   async stop(
+    scope: string,
     name: string,
     signal: NodeJS.Signals = "SIGTERM",
     timeoutSeconds = 5,
   ): Promise<boolean> {
-    const state = this.processes.get(name);
+    const state = this.processes.get(ProcessSupervisor.key(scope, name));
     if (!state || !state.process || state.status !== "running") {
       return false;
     }
@@ -436,27 +453,31 @@ export class ProcessSupervisor {
     return promise;
   }
 
+  /** Shutdown path: stops every supervised process across all scopes. */
   async stopAll(timeoutSeconds = 3): Promise<void> {
-    const running: string[] = [];
-    for (const [name, state] of this.processes.entries()) {
+    const running: Array<{ scope: string; name: string }> = [];
+    for (const state of this.processes.values()) {
       if (state.status === "running") {
-        running.push(name);
+        running.push({ scope: state.scope, name: state.name });
       }
     }
-    await Promise.all(running.map((name) => this.stop(name, "SIGTERM", timeoutSeconds)));
+    await Promise.all(
+      running.map((r) => this.stop(r.scope, r.name, "SIGTERM", timeoutSeconds)),
+    );
   }
 
-  async restart(name: string, timeoutSeconds = 5): Promise<{ status: string; pid?: number; ready: boolean }> {
-    const state = this.processes.get(name);
+  async restart(scope: string, name: string, timeoutSeconds = 5): Promise<{ status: string; pid?: number; ready: boolean }> {
+    const state = this.processes.get(ProcessSupervisor.key(scope, name));
     if (!state) {
       throw new GatewayToolError("not_found", `No supervised process named "${name}".`);
     }
 
     if (state.status === "running") {
-      await this.stop(name, "SIGTERM", timeoutSeconds);
+      await this.stop(scope, name, "SIGTERM", timeoutSeconds);
     }
 
     return this.start({
+      scope: state.scope,
       name: state.name,
       command: state.command,
       args: state.args,
@@ -467,6 +488,7 @@ export class ProcessSupervisor {
   }
 
   async logs(options: {
+    scope: string;
     name: string;
     lines?: number;
     cursor?: number;
@@ -474,7 +496,8 @@ export class ProcessSupervisor {
     follow?: boolean;
     timeout?: number;
   }): Promise<{ logs: LogLine[]; nextCursor: number }> {
-    const state = this.processes.get(options.name);
+    const key = ProcessSupervisor.key(options.scope, options.name);
+    const state = this.processes.get(key);
     if (!state) {
       throw new GatewayToolError("not_found", `No supervised process named "${options.name}".`);
     }
@@ -496,7 +519,7 @@ export class ProcessSupervisor {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.removeListener(options.name, onLine);
+        this.removeListener(key, onLine);
       };
 
       const onLine = (line: LogLine) => {
@@ -514,7 +537,7 @@ export class ProcessSupervisor {
       };
 
       // 1. Attach listener FIRST so no concurrent line can be missed
-      this.addListener(options.name, onLine);
+      this.addListener(key, onLine);
 
       // 2. Replay existing lines at or above startCursor
       for (const line of state.logs) {
@@ -558,8 +581,8 @@ export class ProcessSupervisor {
     };
   }
 
-  send(name: string, text: string, enter = true): boolean {
-    const state = this.processes.get(name);
+  send(scope: string, name: string, text: string, enter = true): boolean {
+    const state = this.processes.get(ProcessSupervisor.key(scope, name));
     if (!state || !state.process || state.status !== "running") {
       throw new GatewayToolError("invalid_input", `Process "${name}" is not running.`);
     }
@@ -572,8 +595,9 @@ export class ProcessSupervisor {
     return state.process.stdin.write(payload);
   }
 
-  list(): SupervisedProcessInfo[] {
-    return Array.from(this.processes.values()).map((p) => ({
+  /** Only the processes started under `scope` — never another project's. */
+  list(scope: string): SupervisedProcessInfo[] {
+    return Array.from(this.processes.values()).filter((p) => p.scope === scope).map((p) => ({
       name: p.name,
       command: p.command,
       args: p.args,
@@ -586,8 +610,8 @@ export class ProcessSupervisor {
     }));
   }
 
-  get(name: string): SupervisedProcessInfo | undefined {
-    const p = this.processes.get(name);
+  get(scope: string, name: string): SupervisedProcessInfo | undefined {
+    const p = this.processes.get(ProcessSupervisor.key(scope, name));
     if (!p) return undefined;
     return {
       name: p.name,
@@ -614,7 +638,10 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
         "Supports operations: start, stop, restart, logs, send, status, list.",
       inputSchema: LaunchInputSchema,
       jsonSchema: LAUNCH_JSON_SCHEMA,
-      permission: "allow",
+      // This tool spawns whatever binary the caller names, so it is the one
+      // gateway tool a human has to clear. Every other tool here is thread
+      // bookkeeping.
+      permission: "ask",
       requiresActiveTurn: false,
       handler: async (ctx: GatewayToolContext, rawInput: GatewayRecord): Promise<GatewayToolResult> => {
         const parsed = LaunchInputSchema.safeParse(rawInput);
@@ -661,6 +688,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
               }
               const procName = data.name ?? `${data.command}-${randomUUID().slice(0, 8)}`;
               const result = await supervisor.start({
+                scope: projectRoot,
                 name: procName,
                 command: data.command,
                 args: data.args,
@@ -689,6 +717,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
                 throw new GatewayToolError("invalid_input", "'name' is required for op: 'stop'.");
               }
               const stopped = await supervisor.stop(
+                projectRoot,
                 data.name,
                 (data.signal as NodeJS.Signals) ?? "SIGTERM",
                 data.timeout ?? 5,
@@ -704,7 +733,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
               if (!data.name) {
                 throw new GatewayToolError("invalid_input", "'name' is required for op: 'restart'.");
               }
-              const result = await supervisor.restart(data.name, data.timeout ?? 5);
+              const result = await supervisor.restart(projectRoot, data.name, data.timeout ?? 5);
               return {
                 content: [
                   {
@@ -726,6 +755,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
                 throw new GatewayToolError("invalid_input", "'name' is required for op: 'logs'.");
               }
               const logResult = await supervisor.logs({
+                scope: projectRoot,
                 name: data.name,
                 lines: data.lines,
                 cursor: data.cursor,
@@ -758,7 +788,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
               if (data.text === undefined) {
                 throw new GatewayToolError("invalid_input", "'text' is required for op: 'send'.");
               }
-              supervisor.send(data.name, data.text, data.enter ?? true);
+              supervisor.send(projectRoot, data.name, data.text, data.enter ?? true);
               return mcpToolResultText(`Sent input to process "${data.name}".`);
             }
 
@@ -766,7 +796,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
               if (!data.name) {
                 throw new GatewayToolError("invalid_input", "'name' is required for op: 'status'.");
               }
-              const proc = supervisor.get(data.name);
+              const proc = supervisor.get(projectRoot, data.name);
               if (!proc) {
                 throw new GatewayToolError("not_found", `Process "${data.name}" not found.`);
               }
@@ -789,7 +819,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
             }
 
             case "list": {
-              const list = supervisor.list();
+              const list = supervisor.list(projectRoot);
               const text =
                 list.length === 0
                   ? "No supervised processes."
