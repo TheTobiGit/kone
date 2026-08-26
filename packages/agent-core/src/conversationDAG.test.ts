@@ -193,6 +193,109 @@ describe("Conversation Turn DAG Engine", () => {
     expect(path.map((n) => n.turnId)).toEqual(["turn-alpha", "turn-beta"]);
   });
 
+  test("coalesces consecutive assistant blocks sharing a turnId instead of self-parenting", () => {
+    const blocks: StoredBlock[] = [
+      { id: "ub-1", role: "user", text: "Hello", at: 1000 },
+      {
+        id: "ab-1",
+        role: "assistant",
+        turnId: "turn-shared",
+        items: [],
+        state: "completed",
+        at: 1050,
+      },
+      {
+        id: "ab-2",
+        role: "assistant",
+        turnId: "turn-shared",
+        items: [],
+        state: "completed",
+        at: 1100,
+      },
+    ];
+
+    const dag = buildTurnDAG(blocks);
+
+    // Only one node should exist for the shared turnId, and it must be a root.
+    expect(dag.nodes.size).toBe(1);
+    expect(dag.rootTurnIds).toEqual(["turn-shared"]);
+
+    const node = dag.nodes.get("turn-shared");
+    expect(node).toBeDefined();
+    expect(node?.parentTurnId).not.toBe(node?.turnId);
+    expect(node?.parentTurnId).toBeNull();
+    expect(node?.blockIds).toEqual(["ub-1", "ab-1", "ab-2"]);
+
+    // Reachable from rootTurnIds and correctly reported as a leaf.
+    expect(getTurnLeaves(dag).map((n) => n.turnId)).toEqual(["turn-shared"]);
+    expect(getTurnPath(dag, "turn-shared").map((n) => n.turnId)).toEqual(["turn-shared"]);
+  });
+
+  test("fork-import shaped sequence with a repeated turnId does not create a self-parented node", () => {
+    const blocks: StoredBlock[] = [
+      { id: "ub-1", role: "user", text: "Hello", at: 1000 },
+      {
+        id: "ab-1",
+        role: "assistant",
+        turnId: "turn-alpha",
+        items: [],
+        state: "completed",
+        at: 1050,
+      },
+      { id: "ub-2", role: "user", text: "How are you?", at: 2000 },
+      {
+        id: "ab-2",
+        role: "assistant",
+        turnId: "turn-beta",
+        items: [],
+        state: "completed",
+        at: 2050,
+        source: "fork-import",
+      },
+      // A second fork-imported block re-emitted under the same turnId as the
+      // previous turn, with no new user prompt in between.
+      {
+        id: "ab-3",
+        role: "assistant",
+        turnId: "turn-beta",
+        items: [],
+        state: "completed",
+        at: 2100,
+        source: "fork-import",
+      },
+    ];
+
+    const dag = buildTurnDAG(blocks);
+
+    expect(dag.nodes.size).toBe(2);
+    for (const node of dag.nodes.values()) {
+      expect(node.parentTurnId).not.toBe(node.turnId);
+    }
+
+    const betaNode = dag.nodes.get("turn-beta");
+    expect(betaNode).toBeDefined();
+    expect(betaNode?.parentTurnId).toBe("turn-alpha");
+    expect(betaNode?.blockIds).toEqual(["ub-2", "ab-2", "ab-3"]);
+    expect(betaNode?.branchTag).toBe("fork-import");
+
+    // Every node must be reachable by walking down from a root.
+    const reachable = new Set<string>();
+    const stack = [...dag.rootTurnIds];
+    while (stack.length > 0) {
+      const id = stack.pop();
+      if (!id || reachable.has(id)) continue;
+      reachable.add(id);
+      stack.push(...(dag.children.get(id) ?? []));
+    }
+    expect(reachable.size).toBe(dag.nodes.size);
+    for (const turnId of dag.nodes.keys()) {
+      expect(reachable.has(turnId)).toBe(true);
+    }
+
+    expect(getTurnLeaves(dag).map((n) => n.turnId)).toEqual(["turn-beta"]);
+    expect(getTurnPath(dag, "turn-beta").map((n) => n.turnId)).toEqual(["turn-alpha", "turn-beta"]);
+  });
+
   test("manages branch tags and finds turns by branch tag", () => {
     const turns: TurnDAGInput[] = [
       { turnId: "t0", parentTurnId: null, blockIds: ["b0"], timestamp: 10, branchTag: "main" },
