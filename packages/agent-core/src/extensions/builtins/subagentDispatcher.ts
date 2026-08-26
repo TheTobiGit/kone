@@ -22,7 +22,7 @@ export interface SubagentDispatchArgs {
   [key: string]: unknown;
 }
 
-export type SubagentStatus =
+export type SubagentDispatchStatus =
   | "dispatched"
   | "pending"
   | "completed"
@@ -33,7 +33,7 @@ export interface SubagentDispatchRecord {
   agentRole: string;
   task: string;
   context?: Record<string, unknown> | string;
-  status: SubagentStatus;
+  status: SubagentDispatchStatus;
   result?: unknown;
   error?: string;
   dispatchedAt: number;
@@ -48,7 +48,7 @@ export interface SubagentDispatchResult {
   agentRole: string;
   task: string;
   context?: Record<string, unknown> | string;
-  status: SubagentStatus;
+  status: SubagentDispatchStatus;
   result?: unknown;
   message: string;
   dispatchedAt: number;
