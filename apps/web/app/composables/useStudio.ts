@@ -424,6 +424,9 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
           if (!mapping[host.id]) {
             mapping[host.id] = s.key;
             changed = true;
+            // Re-attaching a dormant pane to the thread it already hosts is
+            // still a join landing — pin it the same as a fresh attach does.
+            agent.pinToPane(s.key);
           }
           // A live host (or one claimed earlier in this pass) means a duplicate
           // session for an id the row already hosts — never a second pane;
@@ -456,6 +459,10 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
         mapping[id] = item.key;
         insertAt += 1;
         changed = true;
+        // Only a thread session is tracked by the agent registry's sweep, so
+        // only a thread join is worth reporting up — a terminal/scratchpad
+        // key would just sit unused in a set the sweep never reads it from.
+        if (item.kind === "thread") agent.pinToPane(item.key);
       }
     }
 
@@ -467,6 +474,10 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
       // The session is gone. Un-claim it either way.
       delete mapping[entry.id];
       changed = true;
+      // The join this key held is gone too — drop the pin so a key whose
+      // session was closed elsewhere (forgetThread, a dispose) can't sit in
+      // the sweep's untouchable set forever.
+      if (entry.kind === "thread") agent.unpinFromPane(sk);
       // A blank thread has nothing to re-attach to → remove it. Everything else
       // survives dormant (its anchor was kept fresh by syncAnchors).
       if (entry.anchor.kind === "thread" && !entry.anchor.threadId) {
@@ -554,7 +565,12 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
             const { key, ready } = agent.openThreadHandle(threadId);
             // A rival attach may already have recorded for this pane; leave its
             // binding alone, but still see the open through.
-            if (!sessionKeyOf(id)) record(id, key);
+            if (!sessionKeyOf(id)) {
+              record(id, key);
+              // The join now exists — report it up so the sweep never reaps a
+              // session sitting in a visible column.
+              agent.pinToPane(key);
+            }
             await ready;
           } else {
             // A fresh blank thread. newThreadAt always spawns (no empty-guard)
@@ -563,6 +579,7 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
             const sk = await agent.newThreadAt(agent.sessions.value.length);
             if (sessionKeyOf(id)) return;
             record(id, sk);
+            agent.pinToPane(sk);
           }
         } catch (err) {
           // The thread wouldn't open (deleted underneath us, adapter error). Don't
@@ -699,6 +716,10 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     await mutate(async () => {
       entries.value = entries.value.filter((e) => e.id !== id);
       drop(id);
+      // The pane→session join ends here — unpin before the session itself is
+      // torn down, so a pane closed mid-sweep-tick can't leave a stale key
+      // behind in the untouchable set.
+      if (entry.kind === "thread" && sk) agent.unpinFromPane(sk);
       // Teardown. Closing the last pane leaves the row empty — nothing is
       // respawned to fill it, and an empty row is not a row: the studio shows
       // the chooser over it, which is the way back.
@@ -1043,6 +1064,14 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     const deferHeavy = opts?.deferHeavyAttach ?? false;
 
     await mutate(async () => {
+      // A restore wipes the whole mapping in one shot rather than closing each
+      // pane through close() — unpin whatever it held first, or a row restored
+      // a second time (or over live state) leaks the old bindings into the
+      // sweep's untouchable set for good.
+      for (const [paneId, sk] of Object.entries(sessionKeyById.value)) {
+        const prevEntry = entries.value.find((e) => e.id === paneId);
+        if (prevEntry?.kind === "thread") agent.unpinFromPane(sk);
+      }
       entries.value = sanitized;
       sessionKeyById.value = {};
       focusedId.value = sanitized.some((e) => e.id === row.focusedId)
