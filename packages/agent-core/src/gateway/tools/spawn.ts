@@ -27,12 +27,13 @@ import type {
   SpawnRequest,
   SpawnTargetsReport,
 } from "../../threadSpawn.js";
-import type { InteractionMode, SpawnTarget, StoredBlock, StoredThread } from "../../types.js";
+import type { InteractionMode, ProviderKind, SpawnTarget, StoredBlock, StoredThread } from "../../types.js";
 import type { AgentRecord, SubagentPresetRecord } from "../../ConversationStore.js";
-import { planPresetSpawn } from "../../presetSpawn.js";
+import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "../../presetSpawn.js";
 import { resolveDelegation } from "../../delegate.js";
 import type { ProviderAvailability } from "../../agentModel.js";
 import type {
+  GatewayRecord,
   GatewayToolContext,
   GatewayToolResult,
   GatewayValue,
@@ -119,7 +120,9 @@ function findPreset(store: SpawnToolStore, ref: string): SubagentPresetRecord | 
   const byId = store.getSubagentPreset(ref);
   if (byId) return byId;
   const wanted = ref.trim().toLowerCase();
-  return store.listSubagentPresets().find((p) => p.name.trim().toLowerCase() === wanted) ?? null;
+  const fromStore = store.listSubagentPresets().find((p) => p.name.trim().toLowerCase() === wanted);
+  if (fromStore) return fromStore;
+  return findBuiltinPreset(ref);
 }
 
 /** Find a delegation target in the caller's OWN project team: an exact agent id
@@ -151,7 +154,17 @@ function gist(text: string | null | undefined, max = 140): string | undefined {
  *  kept in the user's saved order — the same order `findPreset` resolves a name
  *  against, so the first of a duplicated name is the one named here too. */
 function presetTargets(store: SpawnToolStore): NonNullable<SpawnTargetsReport["presets"]> {
-  return store.listSubagentPresets().map((preset) => {
+  const storePresets = store.listSubagentPresets();
+  const seenNames = new Set(storePresets.map((p) => p.name.trim().toLowerCase()));
+  const all = [...storePresets];
+
+  for (const builtin of BUILTIN_SWARM_PRESETS) {
+    if (!seenNames.has(builtin.name.trim().toLowerCase())) {
+      all.push(builtin);
+    }
+  }
+
+  return all.map((preset) => {
     const entry: NonNullable<SpawnTargetsReport["presets"]>[number] = {
       name: preset.name,
     };

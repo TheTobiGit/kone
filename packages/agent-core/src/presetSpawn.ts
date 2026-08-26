@@ -83,3 +83,56 @@ export function planPresetSpawn(
     tried: [`${resolution.tried.provider}/${resolution.tried.model}`],
   };
 }
+
+// ── Built-in Swarm Presets ──────────────────────────────────────────────────
+
+export const BUILTIN_SWARM_PRESETS: readonly SubagentPresetRecord[] = [
+  {
+    presetId: "builtin-fast-scout",
+    name: "Fast Scout",
+    instructions:
+      "You are the Fast Scout subagent. Your focus is lightning-fast codebase exploration, repository mapping, symbol discovery, and targeted test execution. " +
+      "Do not make speculative code edits. Report findings directly with exact file paths, line numbers, and concrete code evidence to the orchestrator.",
+    model: null,
+    sortOrder: 0,
+    createdAt: 0,
+    updatedAt: 0,
+  },
+  {
+    presetId: "builtin-reviewer",
+    name: "Reviewer",
+    instructions:
+      "You are the Reviewer subagent. Your focus is reviewing changes for architectural soundness, invariant safety, performance regressions, and logic bugs. " +
+      "Inspect proposed implementations thoroughly, check error paths, verify edge cases, and deliver concise, actionable verdicts grounded in evidence.",
+    model: null,
+    sortOrder: 1,
+    createdAt: 0,
+    updatedAt: 0,
+  },
+  {
+    presetId: "builtin-refactorer",
+    name: "Refactorer",
+    instructions:
+      "You are the Refactorer subagent. Execute assigned code transformations, migrations, and surgical edits with precision. " +
+      "Preserve existing conventions, remove obsolete code and dead branches, verify correctness locally, and report your completed diff back to the coordinator.",
+    model: null,
+    sortOrder: 2,
+    createdAt: 0,
+    updatedAt: 0,
+  },
+];
+
+export function findBuiltinPreset(nameOrId: string): SubagentPresetRecord | null {
+  const query = nameOrId.trim().toLowerCase();
+  for (const p of BUILTIN_SWARM_PRESETS) {
+    if (
+      p.presetId.toLowerCase() === query ||
+      p.name.toLowerCase() === query ||
+      p.name.toLowerCase().replace(/\s+/g, "-") === query ||
+      p.presetId.toLowerCase().replace("builtin-", "") === query
+    ) {
+      return p;
+    }
+  }
+  return null;
+}

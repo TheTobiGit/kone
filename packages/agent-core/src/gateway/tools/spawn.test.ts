@@ -387,6 +387,9 @@ describe("spawn gateway tools", () => {
           model: { provider: "claudeAgent", model: "haiku" },
         },
         { name: "Code Reviewer", summary: "Look for regressions and edge cases." },
+        { name: "Fast Scout" },
+        { name: "Reviewer" },
+        { name: "Refactorer" },
       ],
     });
     // Teammates fold in too — but the nameless one is dropped, since delegation
