@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { buildSemanticBranchSummary, estimateBlockTokens, findCutPoint } from "./compaction/index.js";
 
 import { getConversationStore } from "./ConversationStore.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
@@ -109,8 +110,16 @@ export function buildSidechatForkContext(
   if (imported.length === 0) return null;
   const budget = Math.min(Math.max(0, maxChars), SIDECHAT_TRANSCRIPT_CHAR_BUDGET);
 
-  const recent = imported.slice(-RECENT_MESSAGE_COUNT);
-  const earlier = imported.slice(0, Math.max(0, imported.length - RECENT_MESSAGE_COUNT));
+  let cutIndex = 0;
+  if (imported.length > RECENT_MESSAGE_COUNT) {
+    const recentCandidate = imported.slice(-RECENT_MESSAGE_COUNT);
+    const keepTokens = recentCandidate.reduce((acc, b) => acc + estimateBlockTokens(b), 0);
+    const cutResult = findCutPoint(imported, keepTokens);
+    cutIndex = cutResult.cutIndex > 0 ? cutResult.cutIndex : Math.max(0, imported.length - RECENT_MESSAGE_COUNT);
+  }
+
+  const recent = imported.slice(cutIndex);
+  const earlier = imported.slice(0, cutIndex);
 
   const parts: string[] = [INTRO];
   if (thread.title) parts.push(`Original conversation title: ${thread.title}`);
@@ -118,26 +127,55 @@ export function buildSidechatForkContext(
 
   // Earlier messages: newest-first one-line summaries, oldest dropped if the
   // budget runs out (the transcript must shrink, never blow the cap).
-  const summaryLines: string[] = [];
-  let used = 0;
-  for (let i = earlier.length - 1; i >= 0; i -= 1) {
-    const block = earlier[i];
-    if (!block) continue;
-    const line = renderSummary(block);
-    if (line.length === 0) continue;
-    if (used + line.length > budget) break;
-    summaryLines.unshift(line);
-    used += line.length + 1;
-  }
-  if (summaryLines.length > 0) {
-    const omitted = earlier.length - summaryLines.length;
-    parts.push(
-      `Earlier conversation summary (${omitted} older message${omitted === 1 ? "" : "s"} omitted to fit the context budget):`,
-    );
-    parts.push(...summaryLines);
+  if (earlier.length > 0) {
+    const branchSummary = buildSemanticBranchSummary(earlier, {
+      title: thread.title,
+      branch: thread.branch,
+      maxSummaryChars: budget,
+    });
+
+    const summaryLines: string[] = [];
+    let used = 0;
+    for (let i = earlier.length - 1; i >= 0; i -= 1) {
+      const block = earlier[i];
+      if (!block) continue;
+      const line = renderSummary(block);
+      if (line.length === 0) continue;
+      if (used + line.length > budget) break;
+      summaryLines.unshift(line);
+      used += line.length + 1;
+    }
+    if (summaryLines.length > 0) {
+      const omitted = earlier.length - summaryLines.length;
+      parts.push(
+        `Earlier conversation summary (${omitted} older message${omitted === 1 ? "" : "s"} omitted to fit the context budget):`,
+      );
+      parts.push(...summaryLines);
+    }
+
+    const { operations } = branchSummary;
+    if (operations.filesModified.length > 0) {
+      parts.push("Files Modified / Created:");
+      for (const file of operations.filesModified) {
+        parts.push(`- \`${file}\``);
+      }
+    }
+    if (operations.filesRead.length > 0) {
+      parts.push("Files Read / Inspected:");
+      for (const file of operations.filesRead) {
+        parts.push(`- \`${file}\``);
+      }
+    }
+    if (operations.commandsRun.length > 0) {
+      parts.push("Commands Executed:");
+      for (const cmd of operations.commandsRun) {
+        parts.push(`- \`${cmd}\``);
+      }
+    }
   }
 
   parts.push("Most recent imported messages:");
+  let used = 0;
   for (const block of recent) {
     const rendered = renderVerbatim(block);
     if (rendered.length === 0) continue;
@@ -145,7 +183,6 @@ export function buildSidechatForkContext(
     parts.push(rendered);
     used += rendered.length + 1;
   }
-
   return truncate(parts.join("\n"), budget);
 }
 

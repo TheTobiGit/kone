@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { withFileMutationQueue } from "@kone/git-core";
 
 // Atomic single-file writes for the desktop main process's JSON state.
 //
@@ -101,33 +102,35 @@ export function writeFileAtomicSync(filePath: string, contents: string | Uint8Ar
 /** Async counterpart of {@link writeFileAtomicSync} for call sites that
  *  already await their persistence. */
 export async function writeFileAtomic(filePath: string, contents: string | Uint8Array): Promise<void> {
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = tempPathFor(filePath);
-  let handle: fs.promises.FileHandle | undefined;
-  try {
-    handle = await fs.promises.open(
-      tempPath,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
-    );
-    await handle.writeFile(contents);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await fs.promises.rename(tempPath, filePath);
-    fsyncDirectorySync(path.dirname(filePath));
-  } catch (err) {
-    if (handle !== undefined) {
-      try {
-        await handle.close();
-      } catch {
-        /* closing best-effort */
-      }
-    }
+  return withFileMutationQueue(filePath, async () => {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    const tempPath = tempPathFor(filePath);
+    let handle: fs.promises.FileHandle | undefined;
     try {
-      await fs.promises.unlink(tempPath);
-    } catch {
-      /* a leftover temp is orphan-eligible, never fatal */
+      handle = await fs.promises.open(
+        tempPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+      );
+      await handle.writeFile(contents);
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      await fs.promises.rename(tempPath, filePath);
+      fsyncDirectorySync(path.dirname(filePath));
+    } catch (err) {
+      if (handle !== undefined) {
+        try {
+          await handle.close();
+        } catch {
+          /* closing best-effort */
+        }
+      }
+      try {
+        await fs.promises.unlink(tempPath);
+      } catch {
+        /* a leftover temp is orphan-eligible, never fatal */
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 }
