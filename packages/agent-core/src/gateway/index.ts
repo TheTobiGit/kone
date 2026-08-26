@@ -23,6 +23,7 @@ import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 export type { GatewayConnection } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
 export { GatewayToolError } from "./schemas.js";
+export { bridgeExtensionToolsToGateway, bridgeExtensionToolToGateway } from "./extensionBridge.js";
 
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 

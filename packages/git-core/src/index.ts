@@ -34,3 +34,4 @@ export {
   listCheckpoints,
   dropCheckpoint,
 } from "./checkpoint.js";
+export { withFileMutationQueue } from "./fileMutationQueue.js";

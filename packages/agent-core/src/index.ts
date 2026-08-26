@@ -12,3 +12,7 @@
 export * from "./types.js";
 export { AgentService } from "./AgentService.js";
 export type { ProviderSurfaceSnapshot } from "./providerCache.js";
+export * from "./compaction/index.js";
+export * from "./extensions/index.js";
+export * from "./conversationDAG.js";
+export * from "./inventory/index.js";

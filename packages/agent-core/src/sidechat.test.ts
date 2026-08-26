@@ -123,6 +123,62 @@ describe("buildSidechatForkContext", () => {
     const context = buildSidechatForkContext(thread(blocks), 500);
     expect(context && context.length).toBeLessThanOrEqual(500);
   });
+  test("includes structured operations (files read/modified, commands run) in earlier conversation context", () => {
+    const blocks: StoredBlock[] = [
+      importedUser("Refactor database schema", 1),
+      {
+        id: "ia-2",
+        role: "assistant",
+        turnId: "it-2",
+        items: [
+          { itemId: "i1", kind: "tool_call", status: "completed", name: "read", text: "src/schema.prisma" },
+          { itemId: "i2", kind: "tool_call", status: "completed", name: "edit", text: "src/schema.prisma" },
+          { itemId: "i3", kind: "tool_call", status: "completed", name: "bash", text: "npx prisma migrate dev" },
+          { itemId: "i4", kind: "assistant_text", status: "completed", text: "Migration completed." },
+        ],
+        state: "completed",
+        at: 2,
+        endedAt: 2,
+        source: "fork-import",
+      },
+      importedUser("recent question 1", 3),
+      importedAssistant("recent answer 1", 4),
+      importedUser("recent question 2", 5),
+      importedAssistant("recent answer 2", 6),
+      importedUser("recent question 3", 7),
+      importedAssistant("recent answer 3", 8),
+    ];
+
+    const context = buildSidechatForkContext(thread(blocks, "Database Migration"));
+    expect(context).not.toBeNull();
+    expect(context).toContain("Files Modified / Created:");
+    expect(context).toContain("`src/schema.prisma`");
+    expect(context).toContain("Files Read / Inspected:");
+    expect(context).toContain("Commands Executed:");
+    expect(context).toContain("`npx prisma migrate dev`");
+    expect(context).toContain("Most recent imported messages:");
+    expect(context).toContain("User:\nrecent question 3");
+  });
+
+  test("snaps recent cut point to user turn boundary when partitioning blocks", () => {
+    const blocks: StoredBlock[] = [
+      importedUser("Initial task", 1),
+      importedAssistant("Initial answer", 2),
+      importedUser("Intermediate task", 3),
+      importedAssistant("Intermediate answer", 4),
+      importedUser("Recent task 1", 5),
+      importedAssistant("Recent answer 1", 6),
+      importedUser("Recent task 2", 7),
+      importedAssistant("Recent answer 2", 8),
+    ];
+
+    const context = buildSidechatForkContext(thread(blocks));
+    expect(context).not.toBeNull();
+    expect(context).toContain("Earlier conversation summary");
+    expect(context).toContain("- User: Initial task");
+    expect(context).toContain("Most recent imported messages:");
+    expect(context).toContain("User:\nRecent task 2");
+  });
 });
 
 describe("assembleSidechatPreamble", () => {
