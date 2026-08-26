@@ -446,3 +446,40 @@ describe("InMemoryExtensionStorage", () => {
     expect(storage.entries().length).toBe(0);
   });
 });
+
+describe("ExtensionRegistry - subscription and storage identity", () => {
+  it("unsubscribes only the caller's own subscription when a handler is shared", async () => {
+    const registry = new ExtensionRegistry();
+    const seen: string[] = [];
+    const shared = () => {
+      seen.push("hit");
+    };
+
+    const offA = registry.on("tool_call", shared, "extension-a");
+    registry.on("tool_call", shared, "extension-b");
+
+    offA();
+
+    await registry.dispatch("tool_call", { toolName: "noop", args: {} });
+    expect(seen.length).toBe(1);
+  });
+
+  it("keeps storage for tools that have no owning extension", async () => {
+    const registry = new ExtensionRegistry();
+    registry.registerTool({
+      name: "remember",
+      description: "writes then reads back",
+      parameters: { type: "object", properties: {} },
+      execute: async (args, context) => {
+        if (args.write !== undefined) {
+          context.storage.set("value", args.write);
+          return null;
+        }
+        return context.storage.get("value") ?? null;
+      },
+    });
+
+    await registry.executeTool("remember", { write: "kept" });
+    expect(await registry.executeTool("remember", {})).toBe("kept");
+  });
+});

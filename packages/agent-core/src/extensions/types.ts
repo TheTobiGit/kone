@@ -1,7 +1,8 @@
 /**
  * Types and interfaces for the dynamic extension engine.
- * Inspired by Pi's ExtensionAPI architecture.
  */
+
+import type { ExtensionVetoError } from "./veto.js";
 
 export interface ToolCallEvent {
   toolName: string;
@@ -127,5 +128,14 @@ export interface DispatchResult {
   errors: Array<{
     extensionId?: string;
     error: unknown;
+  }>;
+  /**
+   * Handlers that vetoed the pending operation by throwing an `ExtensionVetoError`.
+   * Kept apart from `errors` so callers can abort on a veto without treating every
+   * incidental handler failure as a blocking condition.
+   */
+  vetoes: Array<{
+    extensionId?: string;
+    error: ExtensionVetoError;
   }>;
 }
