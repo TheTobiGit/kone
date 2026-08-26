@@ -702,4 +702,32 @@ describe("createIrcTools gateway registration and execution", () => {
     // Global default mailbox is untouched
     expect(getIrcMailbox().getUnreadCount("agent-2")).toBe(0);
   });
+
+  test("Delivery notification handler fires synchronously on message delivery", async () => {
+    const customMailbox = new IrcMailbox();
+    const interrupted: Array<{ recipient: string; message: string }> = [];
+
+    const unsubscribe = customMailbox.onMessageDelivered((recipient, msg) => {
+      interrupted.push({ recipient, message: msg.message });
+    });
+
+    const registry = createRegistry(createIrcTools({ mailbox: customMailbox }));
+    const ctxA = makeCtx({ threadId: "agent-1", turnId: "turn-1" });
+
+    await registry.call(ctxA, "kone_irc_send", {
+      to: "agent-2",
+      message: "Abort current approach and switch to plan B",
+    });
+
+    expect(interrupted.length).toBe(1);
+    expect(interrupted[0].recipient).toBe("agent-2");
+    expect(interrupted[0].message).toBe("Abort current approach and switch to plan B");
+
+    unsubscribe();
+    await registry.call(ctxA, "kone_irc_send", {
+      to: "agent-2",
+      message: "Second message after unsubscribe",
+    });
+    expect(interrupted.length).toBe(1);
+  });
 });

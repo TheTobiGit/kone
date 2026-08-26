@@ -58,6 +58,7 @@ export class IrcMailbox {
   private inboxes = new Map<string, IrcMessageRecord[]>();
   private threads = new Map<string, ThreadRegistration>();
   private agentToThread = new Map<string, string>();
+  private deliveryListeners = new Set<(recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void>();
 
   private agentKey(projectPath: string, agentName: string): string {
     return `${projectPath}::${agentName.toLowerCase()}`;
@@ -74,6 +75,17 @@ export class IrcMailbox {
   /** Retrieve registered thread info. */
   getThread(threadId: string): ThreadRegistration | undefined {
     return this.threads.get(threadId);
+  }
+
+  /**
+   * Register a message delivery notification handler.
+   * Invoked synchronously with an immutable copy whenever a message is delivered to any thread inbox.
+   */
+  onMessageDelivered(listener: (recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void): () => void {
+    this.deliveryListeners.add(listener);
+    return () => {
+      this.deliveryListeners.delete(listener);
+    };
   }
 
   /**
@@ -311,8 +323,9 @@ export class IrcMailbox {
         queue = [];
         this.inboxes.set(recipientId, queue);
       }
+      const messageCopy = { ...record };
       // Push a distinct record copy for independent read tracking if needed
-      queue.push({ ...record });
+      queue.push(messageCopy);
 
       // Auto-register recipient if not present and no external store was given
       if (!this.threads.has(recipientId) && !store) {
@@ -320,6 +333,16 @@ export class IrcMailbox {
           threadId: recipientId,
           projectPath: sender.projectPath,
         });
+      }
+
+      // Notify delivery listeners with an immutable copy
+      const readOnlyCopy = Object.freeze({ ...messageCopy });
+      for (const listener of this.deliveryListeners) {
+        try {
+          listener(recipientId, readOnlyCopy);
+        } catch {
+          // Guard against listener failure
+        }
       }
     }
 
