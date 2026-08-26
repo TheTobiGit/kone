@@ -45,10 +45,20 @@ function harness(hooks?: UseStudioOptions["hooks"]) {
   const termSessions = shallowRef<Array<{ key: string; terminalId: string }>>([]);
   const padSessions = shallowRef<unknown[]>([]);
   const closedTerminalKeys: string[] = [];
+  // Mirrors the real registry's paneBoundKeys: a plain Set the studio reports
+  // into via pinToPane/unpinFromPane. Exposed on the harness so a test can
+  // assert the studio calls the right one at the right time.
+  const pinnedKeys = new Set<string>();
 
   const agent = {
     sessions: agentSessions,
     activeKey: ref<string | null>(null),
+    pinToPane: (key: string) => {
+      pinnedKeys.add(key);
+    },
+    unpinFromPane: (key: string) => {
+      pinnedKeys.delete(key);
+    },
     // Mirrors the real registry: the column exists (and its key is knowable) the
     // moment you ask for it, while the transcript load resolves separately. The
     // studio relies on exactly that split to bind a pane before its history lands.
@@ -153,7 +163,7 @@ function harness(hooks?: UseStudioOptions["hooks"]) {
     projectPath: "/p",
     hooks,
   } as unknown as UseStudioOptions);
-  return { studio, agent, agentSessions, termSessions, padSessions, closedTerminalKeys };
+  return { studio, agent, agentSessions, termSessions, padSessions, closedTerminalKeys, pinnedKeys };
 }
 
 async function settle() {
@@ -768,6 +778,111 @@ describe("useStudio — attach never conjures a second column", () => {
     expect(closedTerminalKeys).toEqual([closingKey]);
     expect(termSessions.value.length).toBe(1);
     expect(studio.focusedId.value).toBe("p1");
+  });
+});
+
+describe("useStudio — pane bindings pin/unpin the agent registry (paneBoundKeys)", () => {
+  // useStudio owns the PaneId → session-key join; useAgent's sweep spares
+  // eviction only for a key sitting in its paneBoundKeys set, which nothing
+  // reaches except pinToPane/unpinFromPane. These check useStudio calls the
+  // right one the moment a join lands or ends — pin whenever `record()` binds
+  // a pane to a thread session, unpin whenever that binding is torn down,
+  // whichever side tears it down. Whether a pinned key actually survives a
+  // real sweep tick is useAgent's own contract, covered there; this only
+  // checks useStudio holds up its half of it, using the harness's fake
+  // pinToPane/unpinFromPane as a stand-in for the real paneBoundKeys set.
+
+  test("attaching a fresh blank thread pane pins its session key", async () => {
+    const { studio, pinnedKeys } = harness();
+
+    const id = await studio.open("thread");
+    await settle();
+
+    const key = studio.panes.value.find((p) => p.id === id)?.session?.key;
+    expect(key).toBeTruthy();
+    expect(pinnedKeys.has(key!)).toBe(true);
+  });
+
+  test("opening a stored thread pins its session key", async () => {
+    const { studio, pinnedKeys } = harness();
+
+    const id = await studio.open("thread", { threadId: "stored-1" });
+    await settle();
+
+    const key = studio.panes.value.find((p) => p.id === id)?.session?.key;
+    expect(key).toBeTruthy();
+    expect(pinnedKeys.has(key!)).toBe(true);
+  });
+
+  test("closing a pane unpins its session key — no leak", async () => {
+    const { studio, pinnedKeys } = harness();
+
+    const id = await studio.open("thread");
+    await settle();
+    const key = studio.panes.value.find((p) => p.id === id)!.session!.key;
+    expect(pinnedKeys.has(key)).toBe(true);
+
+    await studio.close(id);
+    await settle();
+
+    expect(pinnedKeys.has(key)).toBe(false);
+  });
+
+  test("a session closed outside the row unpins once reconcile sees it gone", async () => {
+    const { studio, agentSessions, pinnedKeys } = harness();
+
+    const t = makeThread("t-ext");
+    agentSessions.value = [t];
+    await settle();
+    const key = studio.panes.value[0]!.session!.key;
+    expect(pinnedKeys.has(key)).toBe(true);
+
+    // A real conversation, so eviction goes dormant rather than dropping the
+    // entry (same setup as the "eviction goes dormant" suite above).
+    t.threadId.value = "thread-ext";
+    t.blocks.value = [{ role: "user" }];
+    await settle();
+
+    // The session vanishes without the studio ever calling close() — the
+    // useAgent-side equivalent of a forgetThread or an idle-sweep eviction.
+    agentSessions.value = [];
+    await settle();
+
+    expect(pinnedKeys.has(key)).toBe(false);
+    // The pane itself survives dormant — only its pin (and the mapping) go.
+    expect(studio.entries.value.length).toBe(1);
+    expect(studio.panes.value[0]!.session).toBeNull();
+  });
+
+  test("rebinding a dormant pane to a different session unpins the old key and pins the new one", async () => {
+    const { studio, agentSessions, pinnedKeys } = harness();
+
+    const t = makeThread("t-a");
+    agentSessions.value = [t];
+    await settle();
+    const oldKey = studio.panes.value[0]!.session!.key;
+    expect(pinnedKeys.has(oldKey)).toBe(true);
+
+    t.threadId.value = "thread-real";
+    t.blocks.value = [{ role: "user" }];
+    await settle();
+
+    // Evicted elsewhere: the pane goes dormant and the old key is unpinned —
+    // never left permanently unsweepable for a session that no longer exists.
+    agentSessions.value = [];
+    await settle();
+    expect(pinnedKeys.has(oldKey)).toBe(false);
+
+    // Reattaching the same conversation re-adopts the dormant pane in place
+    // with a fresh session (a new key) and pins that one instead.
+    const dormantId = studio.entries.value[0]!.id;
+    await studio.attach(dormantId);
+    await settle();
+
+    const newKey = studio.panes.value[0]!.session!.key;
+    expect(newKey).not.toBe(oldKey);
+    expect(pinnedKeys.has(oldKey)).toBe(false);
+    expect(pinnedKeys.has(newKey)).toBe(true);
   });
 });
 

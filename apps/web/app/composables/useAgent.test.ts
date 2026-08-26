@@ -302,6 +302,55 @@ describe("useAgent single blank thread invariant", () => {
     expect(agent.activeKey.value).toBe(b1.key);
   });
 
+  test("two blank sessions pinned to studio panes both survive the blank collapse", async () => {
+    const { agent, session: b1 } = harness();
+    const { session: b2 } = harness();
+    agent.sessions.value = [b1, b2];
+    agent.activeKey.value = b1.key;
+    agent.pinToPane(b1.key);
+    agent.pinToPane(b2.key);
+
+    await agent.newThread();
+
+    expect(agent.sessions.value).toHaveLength(2);
+    expect(agent.sessions.value.map((s) => s.key).sort()).toEqual([b1.key, b2.key].sort());
+  });
+
+  test("a pane-bound blank survives collapse while a genuinely orphaned blank is still pruned", async () => {
+    const { agent, session: b1 } = harness();
+    const { session: b2 } = harness();
+    const { session: b3 } = harness();
+    agent.sessions.value = [b1, b2, b3];
+    agent.activeKey.value = b1.key;
+    agent.pinToPane(b1.key);
+    agent.pinToPane(b2.key);
+    // b3 sits in no pane at all — nothing on screen references it.
+
+    await agent.newThread();
+
+    const keys = agent.sessions.value.map((s) => s.key);
+    expect(keys).toContain(b1.key);
+    expect(keys).toContain(b2.key);
+    expect(keys).not.toContain(b3.key);
+  });
+
+  test("unpinning a blank makes it prunable again by a later collapse", async () => {
+    const { agent, session: b1 } = harness();
+    const { session: b2 } = harness();
+    agent.sessions.value = [b1, b2];
+    agent.activeKey.value = b1.key;
+    agent.pinToPane(b2.key);
+
+    await agent.newThread();
+    expect(agent.sessions.value).toHaveLength(2);
+
+    agent.unpinFromPane(b2.key);
+    await agent.newThread();
+
+    expect(agent.sessions.value).toHaveLength(1);
+    expect(agent.sessions.value[0]?.key).toBe(b1.key);
+  });
+
   test("non-blank sessions survive untouched across newThread and newThreadAt", async () => {
     const { agent, session: s0 } = harness();
     s0.blocks.value = [userBlock("b0", "important data")];

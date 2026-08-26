@@ -1571,6 +1571,12 @@ type ProjectRegistry = {
   listenerAttached: boolean;
   unsubscribeListener: (() => void) | null;
   sweepTimer: ReturnType<typeof setInterval> | null;
+  // Session keys currently bound to a live studio pane, across every column in
+  // the strip (not just the focused one). The board is the one thing that
+  // knows this — it owns the PaneId → session-key join — so it reports in
+  // here via pinToPane/unpinFromPane. Plain Set, not a ref: nothing renders
+  // off it, the sweep just reads it on its own tick.
+  paneBoundKeys: Set<string>;
 };
 const registries = new Map<string, ProjectRegistry>();
 
@@ -1584,6 +1590,7 @@ function registryFor(projectPath: string): ProjectRegistry {
       listenerAttached: false,
       unsubscribeListener: null,
       sweepTimer: null,
+      paneBoundKeys: new Set(),
     };
     registries.set(projectPath, r);
   }
@@ -1649,7 +1656,22 @@ export function useAgent(options: UseAgentOptions) {
 
   async function evict(s: ThreadSession): Promise<void> {
     sessions.value = sessions.value.filter((x) => x !== s);
+    registry.paneBoundKeys.delete(s.key);
     await s.dispose();
+  }
+
+  /** The board calls this when a pane's PaneId → session-key join lands (a
+   *  pane attaches, or re-attaches after a restore), and its counterpart below
+   *  when that join is torn down (pane closed, or the session it hosted moved
+   *  to a different pane). Sweeping never touches a pinned key — see
+   *  untouchable() — so a session sitting in a visible column, blank or not,
+   *  survives every tick regardless of the resident cap or the blank-collapse
+   *  pass. */
+  function pinToPane(key: string): void {
+    registry.paneBoundKeys.add(key);
+  }
+  function unpinFromPane(key: string): void {
+    registry.paneBoundKeys.delete(key);
   }
 
   /** Copy the user's picked settings from one session onto another before it
@@ -1669,10 +1691,13 @@ export function useAgent(options: UseAgentOptions) {
 
   /** A session that must never be evicted or hibernated right now: it's the
    *  focused one, a turn is in flight, it's parked on an ask (approval or
-   *  user-input), its open is still loading, or it has live spawned children —
+   *  user-input), its open is still loading, it has live spawned children —
    *  evicting the parent tears down the provider session and revokes its
    *  gateway token mid-orchestration while its children keep running headless
-   *  against a parent that can no longer answer them. */
+   *  against a parent that can no longer answer them — or it's bound to a
+   *  studio pane the user can currently see. That last one covers every
+   *  non-focused column in the strip too, blank or not: the sweep must never
+   *  make a visible pane's session disappear out from under it. */
   function untouchable(s: ThreadSession): boolean {
     return (
       s.key === activeKey.value ||
@@ -1680,20 +1705,24 @@ export function useAgent(options: UseAgentOptions) {
       Boolean(s.pendingUserInput.value) ||
       s.pendingApprovals.value.length > 0 ||
       s.spawnedChildren.value.some((c) => !c.terminal) ||
-      [...opening.values()].some((e) => e.key === s.key)
+      [...opening.values()].some((e) => e.key === s.key) ||
+      registry.paneBoundKeys.has(s.key)
     );
   }
 
   /** Trim surplus blank sessions and enforce the resident cap.
-   *  The registry holds at most one blank thread across all panes; asking again
-   *  relocates/reuses rather than stacking. If legacy state or a failed open
-   *  left multiple blanks resident, collapse down to one (keeping the active
-   *  or most recently touched blank). Then trim settled, idle background
-   *  threads down to MAX_RESIDENT_THREADS — least-recently-active first. */
+   *  The registry holds at most one *unpinned* blank thread across all panes;
+   *  asking again relocates/reuses rather than stacking. If legacy state or a
+   *  failed open left multiple such blanks resident, collapse down to one
+   *  (keeping the active or most recently touched blank). A blank sitting in
+   *  a pane the user can see is untouchable regardless — collapsing to "one
+   *  blank" only ever thins out the ones nobody is looking at. Then trim
+   *  settled, idle background threads down to MAX_RESIDENT_THREADS —
+   *  least-recently-active first. */
   function pruneResident(): void {
-    // Collapse surplus blank sessions: at most one blank session may remain
-    // resident across the registry. Never evict the active blank, a session
-    // whose open is currently in-flight in the opening map, or anything busy.
+    // Collapse surplus blank sessions. Never evict the active blank, a
+    // pane-bound blank, a session whose open is in-flight, or anything busy —
+    // untouchable() covers all of that.
     const blanks = sessions.value.filter(
       (s) => isThreadSessionBlank(s) && !s.busy.value,
     );
@@ -2242,6 +2271,10 @@ export function useAgent(options: UseAgentOptions) {
     focusByOffset,
     moveThread,
     closeThread,
+    // Reported by the board when a pane's session-key join lands or unwinds,
+    // so the sweep never disposes a session sitting in a visible column.
+    pinToPane,
+    unpinFromPane,
     // actions
     start,
     restart,
