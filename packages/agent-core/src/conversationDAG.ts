@@ -70,6 +70,19 @@ export function buildTurnDAG(
         pendingUserBlockIds.push(block.id);
       } else if (block.role === "assistant") {
         const turnId = block.turnId || block.id;
+        const existing = turnId === prevTurnId ? normalizedNodes[normalizedNodes.length - 1] : undefined;
+        if (existing) {
+          // Same turnId as the immediately preceding turn means this block belongs
+          // to that same conversational turn (e.g. a turn split across multiple
+          // stored blocks), not a new one. Fold it into the existing node instead
+          // of appending a second node, which would end up parented to itself.
+          existing.blockIds.push(...pendingUserBlockIds, block.id);
+          pendingUserBlockIds = [];
+          if (block.source === "fork-import") {
+            existing.branchTag = "fork-import";
+          }
+          continue;
+        }
         const blockIds = [...pendingUserBlockIds, block.id];
         pendingUserBlockIds = [];
         normalizedNodes.push({
@@ -118,6 +131,12 @@ export function buildTurnDAG(
   }
 
   for (const node of normalizedNodes) {
+    // A turn can never be its own parent; treat a self-referential parentTurnId
+    // as unresolvable so the node surfaces as a root instead of an unreachable
+    // node parented to itself.
+    if (node.parentTurnId === node.turnId) {
+      node.parentTurnId = null;
+    }
     nodes.set(node.turnId, node);
     if (!children.has(node.turnId)) {
       children.set(node.turnId, []);
@@ -275,9 +294,10 @@ export function forkTurn(
   turnInput: Omit<TurnDAGInput, "parentTurnId">,
 ): TurnDAGNode {
   const parentNode = dag.nodes.get(parentTurnId);
+  const resolvedParentTurnId = parentTurnId === turnInput.turnId ? null : parentTurnId;
   const newNode: TurnDAGNode = {
     turnId: turnInput.turnId,
-    parentTurnId: parentNode ? parentTurnId : null,
+    parentTurnId: parentNode && resolvedParentTurnId ? resolvedParentTurnId : null,
     blockIds: turnInput.blockIds ? [...turnInput.blockIds] : [],
     timestamp: typeof turnInput.timestamp === "number" ? turnInput.timestamp : Date.now(),
     branchTag: turnInput.branchTag ?? null,
@@ -288,8 +308,8 @@ export function forkTurn(
     dag.children.set(newNode.turnId, []);
   }
 
-  if (parentNode) {
-    const siblings = dag.children.get(parentTurnId);
+  if (resolvedParentTurnId && parentNode) {
+    const siblings = dag.children.get(resolvedParentTurnId);
     if (siblings && !siblings.includes(newNode.turnId)) {
       siblings.push(newNode.turnId);
     }
