@@ -226,7 +226,7 @@ export const restoreCheckpointTool: CustomToolDefinition = {
       throw new Error('Required parameter "checkpointId" was not provided.');
     }
 
-    const hard = typeof args.hard === "boolean" ? args.hard : true;
+    const hard = args.hard === true;
     const targetDir =
       typeof context.projectPath === "string" && context.projectPath.trim() !== ""
         ? context.projectPath
