@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { planPresetSpawn } from "./presetSpawn.js";
-import type { ProviderAvailability } from "./agentModel.js";
+import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "./presetSpawn.js";
 import type { SubagentPresetRecord } from "./ConversationStore.js";
 
 function preset(overrides: Partial<SubagentPresetRecord> = {}): SubagentPresetRecord {
@@ -64,6 +63,34 @@ describe("planPresetSpawn", () => {
     if (!plan.ok) {
       expect(plan.reason).toContain("Explorer");
       expect(plan.tried).toEqual(["cursor/auto"]);
+    }
+  });
+
+  test("resolves built-in swarm presets (Fast Scout, Reviewer, Refactorer)", () => {
+    expect(BUILTIN_SWARM_PRESETS.length).toBeGreaterThanOrEqual(3);
+
+    const scout = findBuiltinPreset("Fast Scout");
+    expect(scout).not.toBeNull();
+    expect(scout?.name).toBe("Fast Scout");
+
+    const reviewer = findBuiltinPreset("builtin-reviewer");
+    expect(reviewer).not.toBeNull();
+    expect(reviewer?.name).toBe("Reviewer");
+
+    const refactorer = findBuiltinPreset("refactorer");
+    expect(refactorer).not.toBeNull();
+    expect(refactorer?.name).toBe("Refactorer");
+
+    if (scout) {
+      const plan = planPresetSpawn(scout, "Audit repo structure", available, {
+        provider: "claudeAgent",
+        model: "sonnet",
+      });
+      expect(plan.ok).toBe(true);
+      if (plan.ok) {
+        expect(plan.prompt).toContain("You are the Fast Scout subagent");
+        expect(plan.prompt).toContain("Audit repo structure");
+      }
     }
   });
 });

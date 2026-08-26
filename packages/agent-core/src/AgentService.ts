@@ -589,6 +589,7 @@ export class AgentService {
         const availability = this.buildAvailabilitySnapshot();
         for (let i = 0; i < fallbacks.length; i++) {
           const candidate = fallbacks[i];
+          if (!candidate) continue;
           const remaining = fallbacks.slice(i + 1);
           const resolution = resolveModelWithFallback(candidate, remaining, availability);
           if (resolution.outcome !== "resolved") {
