@@ -160,6 +160,32 @@ describe("buildSidechatForkContext", () => {
     expect(context).toContain("User:\nrecent question 3");
   });
 
+  test("shares one budget across the earlier and recent sections so the newest messages survive", () => {
+    // One long earlier exchange, then six short recent ones. Under a tight
+    // shared budget the earlier exchange must be the one sacrificed — never
+    // the recent verbatim messages, and never a mid-string cut of the last
+    // one from a final destructive truncate().
+    const blocks: StoredBlock[] = [
+      importedUser(`earlier context line `.repeat(40), 1),
+      importedAssistant(`earlier answer line `.repeat(40), 2),
+    ];
+    for (let i = 1; i <= 3; i++) {
+      blocks.push(importedUser(`recent question ${i}`, 10 + i * 2 - 1));
+      blocks.push(importedAssistant(`recent answer ${i}`, 10 + i * 2));
+    }
+
+    const context = buildSidechatForkContext(thread(blocks), 300);
+    expect(context).not.toBeNull();
+    for (let i = 1; i <= 3; i++) {
+      expect(context).toContain(`User:\nrecent question ${i}`);
+      expect(context).toContain(`Assistant:\nrecent answer ${i}`);
+    }
+    // The budget was too tight for the long earlier exchange to fit alongside
+    // the recent section that took priority.
+    expect(context).not.toContain("earlier context line");
+    expect(context && context.length).toBeLessThanOrEqual(300);
+  });
+
   test("snaps recent cut point to user turn boundary when partitioning blocks", () => {
     const blocks: StoredBlock[] = [
       importedUser("Initial task", 1),
