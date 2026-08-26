@@ -567,3 +567,26 @@ export type GitRunStackedActionResult = {
   prUrl?: string;
 };
 
+// ── Turn Checkpoint types ──────────────────────────────────────────────────
+
+export type GitCheckpoint = {
+  id: string;
+  name?: string;
+  message?: string;
+  threadId?: string;
+  turnId?: string;
+  commitHash: string;
+  createdAt: number;
+};
+
+export type CreateCheckpointOptions = {
+  name?: string;
+  message?: string;
+  threadId?: string;
+  turnId?: string;
+  includeUntracked?: boolean;
+};
+
+export type RestoreCheckpointOptions = {
+  hard?: boolean;
+};

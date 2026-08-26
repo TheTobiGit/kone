@@ -28,3 +28,9 @@ export {
   inspectSubprocessActivityAsync,
   killProcessTree,
 } from "./processTree.js";
+export {
+  createCheckpoint,
+  restoreCheckpoint,
+  listCheckpoints,
+  dropCheckpoint,
+} from "./checkpoint.js";
