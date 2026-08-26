@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -264,6 +265,44 @@ describe("gitCheckpoint - Lifecycle and Tools in Git Repository", () => {
       expect(restoreResult.success).toBe(true);
       expect(restoreResult.checkpointId).toBe(checkpointToRestore.id);
     }
+  });
+
+  it("does not remove untracked files unless hard restore is asked for", async () => {
+    const registry = new ExtensionRegistry();
+    await registry.registerExtension("gitCheckpoint", gitCheckpointExtension);
+
+    await writeFile(path.join(tempRepoDir, "version.txt"), "v1.0.0\n");
+    await registry.dispatch(
+      "turn_start",
+      {
+        turnId: "turn-300",
+        threadId: "thread-soft-restore",
+        prompt: "Update version",
+      },
+      { projectPath: tempRepoDir },
+    );
+
+    const listResult = (await registry.executeTool(
+      "git_list_checkpoints",
+      { threadId: "thread-soft-restore" },
+      { projectPath: tempRepoDir },
+    )) as { checkpoints: GitCheckpoint[]; count: number };
+
+    const checkpoint = listResult.checkpoints[0];
+    expect(checkpoint).toBeDefined();
+    if (!checkpoint) return;
+
+    // Work created after the checkpoint, which a hard restore would delete.
+    const newFile = path.join(tempRepoDir, "unsaved-work.txt");
+    await writeFile(newFile, "hours of work\n");
+
+    await registry.executeTool(
+      "git_restore_checkpoint",
+      { checkpointId: checkpoint.id },
+      { projectPath: tempRepoDir },
+    );
+
+    expect(existsSync(newFile)).toBe(true);
   });
 
   it("supports createGitCheckpointExtension with options", async () => {
