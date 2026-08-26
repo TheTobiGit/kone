@@ -1,6 +1,70 @@
 import { z } from "zod";
 import type { ExtensionRegistry } from "../extensions/ExtensionRegistry.js";
-import { GatewayToolError, type GatewayToolContext, type GatewayToolResult, type ToolEntry } from "./schemas.js";
+import { GatewayToolError, type GatewayRecord, type GatewayToolContext, type GatewayToolResult, type GatewayValue, type ToolEntry } from "./schemas.js";
+
+/**
+ * Coerce an arbitrary value into the JSON-safe shape the gateway transport accepts.
+ *
+ * Extension tools are user-supplied, so their schemas and results can contain
+ * things the transport cannot carry — functions, symbols, bigints, cycles.
+ * Casting would let those reach serialization and throw from somewhere far away,
+ * so they are dropped here instead. `seen` breaks reference cycles.
+ */
+function toGatewayValue(value: unknown, seen = new WeakSet<object>()): GatewayValue | undefined {
+  if (value === null) {
+    return null;
+  }
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return value;
+    case "number":
+      return Number.isFinite(value) ? value : undefined;
+    case "bigint":
+      return value.toString();
+    case "undefined":
+    case "function":
+    case "symbol":
+      return undefined;
+  }
+
+  const obj = value as object;
+  if (seen.has(obj)) {
+    return undefined;
+  }
+  seen.add(obj);
+
+  try {
+    if (Array.isArray(obj)) {
+      return obj.map((item) => toGatewayValue(item, seen) ?? null);
+    }
+    const record: GatewayRecord = {};
+    for (const [key, item] of Object.entries(obj)) {
+      const coerced = toGatewayValue(item, seen);
+      if (coerced !== undefined) {
+        record[key] = coerced;
+      }
+    }
+    return record;
+  } finally {
+    seen.delete(obj);
+  }
+}
+
+function toGatewayRecord(value: unknown): GatewayRecord | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const seen = new WeakSet<object>([value]);
+  const record: GatewayRecord = {};
+  for (const [key, item] of Object.entries(value)) {
+    const coerced = toGatewayValue(item, seen);
+    if (coerced !== undefined) {
+      record[key] = coerced;
+    }
+  }
+  return record;
+}
 
 /**
  * Converts a registered custom tool from ExtensionRegistry into a Gateway ToolEntry
@@ -15,7 +79,7 @@ export function bridgeExtensionToolToGateway(
     return undefined;
   }
 
-  const jsonSchema = (tool.parameters as Record<string, unknown>) ?? {
+  const jsonSchema = toGatewayRecord(tool.parameters) ?? {
     type: "object",
     properties: {},
   };
@@ -43,12 +107,11 @@ export function bridgeExtensionToolToGateway(
           return { content: [{ type: "text", text: result }] };
         }
 
-        const serialized = JSON.stringify(result, null, 2);
+        const structuredContent = toGatewayRecord(result);
+        const serialized = JSON.stringify(structuredContent ?? toGatewayValue(result) ?? null, null, 2);
         return {
           content: [{ type: "text", text: serialized }],
-          structuredContent: (result && typeof result === "object" && !Array.isArray(result))
-            ? (result as Record<string, unknown>)
-            : undefined,
+          structuredContent,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

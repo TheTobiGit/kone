@@ -1,7 +1,7 @@
 // FILE: onDemandDocs.ts
-// Purpose: generates concise on-demand documentation and guideline index prompts
-// inspired by Pi's anti-bloat prompt hygiene. Instead of preloading thousands of
-// tokens of full SKILL.md / AGENTS.md / CLAUDE.md files into the context window,
+// Purpose: generates concise on-demand documentation and guideline index prompts.
+// Instead of preloading thousands of tokens of full SKILL.md / AGENTS.md /
+// CLAUDE.md files into the context window,
 // it formats a compact index (<500 tokens) with summary descriptions and file paths,
 // instructing the model to use its `read` tool to load relevant files on-demand.
 // Exports: formatOnDemandSkillIndex, formatOnDemandRuleIndex, formatOnDemandDocIndex,
@@ -208,14 +208,16 @@ export function formatOnDemandRuleIndex(
   const lines: string[] = [];
 
   for (const rule of rules) {
+    // `InstructionFile` carries none of name/title/description, so each is read
+    // through an `in` guard and the chain falls through to kind, then basename.
     const name =
-      rule.name ||
-      rule.title ||
+      ("name" in rule ? rule.name : undefined) ||
+      ("title" in rule ? rule.title : undefined) ||
       ("kind" in rule && rule.kind ? rule.kind : undefined) ||
       path.basename(rule.path);
 
     const rawSummary =
-      rule.description ||
+      ("description" in rule ? rule.description : undefined) ||
       ("excerpt" in rule && rule.excerpt ? rule.excerpt : undefined) ||
       "Project rules, conventions, and instruction set.";
 
@@ -295,8 +297,17 @@ export function formatOnDemandInventoryIndex(
   inventory: Pick<AgentInventory, "skills" | "instructions">,
   options: OnDemandIndexOptions = {},
 ): string {
-  const skillIndex = formatOnDemandSkillIndex(inventory.skills, options);
-  const ruleIndex = formatOnDemandRuleIndex(inventory.instructions, options);
+  // The two sections are wrapped in distinct tags, so a single shared `xmlTag`
+  // would label both identically. Each section keeps its own tag here.
+  const { xmlTag: _sharedXmlTag, ...shared } = options;
+  const skillIndex = formatOnDemandSkillIndex(inventory.skills, {
+    ...shared,
+    xmlTag: DEFAULT_SKILL_XML_TAG,
+  });
+  const ruleIndex = formatOnDemandRuleIndex(inventory.instructions, {
+    ...shared,
+    xmlTag: DEFAULT_RULE_XML_TAG,
+  });
 
   const sections = [skillIndex, ruleIndex].filter((s) => s.length > 0);
   return sections.join("\n\n");
