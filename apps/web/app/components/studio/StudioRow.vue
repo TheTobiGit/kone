@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useDebounceFn, useEventListener, watchDebounced } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
+import { HugeiconsIcon } from "@hugeicons/vue";
 import { InformationSquareIcon } from "@hugeicons/core-free-icons";
 import type {
   AgentModelRef,
@@ -102,9 +103,15 @@ const providerSettings = useProviderSettings();
 // cwd is a getter so the session always boots in whatever project is active —
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
-// Provider is chosen in onMounted (below) from what's installed + last used;
-// "codex" is just the pre-mount default the ref carries until then.
-const agent = useAgent({ provider: "codex", cwd: () => props.project.path });
+const initialProvider: ProviderKind =
+  (import.meta.client
+    ? (localStorage.getItem(DEFAULT_PROVIDER_KEY) as ProviderKind | null) ??
+      (localStorage.getItem(PROVIDER_KEY) as ProviderKind | null)
+    : null) ?? "codex";
+const agent = useAgent({
+  provider: initialProvider in PROVIDER_VENDOR ? initialProvider : "codex",
+  cwd: () => props.project.path,
+});
 // A conversation the launcher asked us to resume on open (see onMounted).
 const pendingThread = usePendingThread();
 const {
@@ -525,10 +532,95 @@ function openSession(threadId: string): void {
   void revealThread(threadId);
 }
 
+// ── who answers ──────────────────────────────────────────────────────────────
+// Two different facts, deliberately kept apart. The app-wide *selection* is who
+// your next new thread will go to, and it is yours to change whenever you like.
+// A thread's *agent* is who is working it, and that is settled once, on its first
+// send, and never revised — one agent per thread, so the transcript above a turn
+// is always the work of whoever the thread names.
+//
+// Which is why picking only moves the selection: on a blank thread the selection
+// is what the composer shows, and there is nothing durable to write against yet.
+//
+// null all the way through means a guest: no agent named, so the thread keeps the
+// name and face rolled from its own id.
+const {
+  team: agents,
+  selected: pickedAgent,
+  pendingThreadAgent,
+  selectAgent,
+  settleThreadAgent,
+  isOnTeam,
+} = useAgentRoster();
+
+// When an outside surface (such as the agent detail page in settings) requests
+// a new conversation with a specific agent, bring the studio forward, spawn a
+// fresh blank thread if the focused one is non-blank or busy, and wake the
+// composer.
+watch(pendingThreadAgent, async (agentId) => {
+  if (!agentId) return;
+  pendingThreadAgent.value = null;
+  emit("summon");
+  if (!threadIsBlank.value || busy.value) {
+    await studio.open("thread");
+  }
+  await nextTick();
+  void composerRef.value?.wake();
+});
+
+// The composer answers as somebody on this project's team — that is what a team
+// is for. The selection is app-wide, so it can be carrying an agent who is a
+// teammate on another project and a stranger here; here that reads as a guest,
+// rather than quietly working a project it was never added to. On-team members
+// pass straight through, so nothing changes for the project they belong to.
+const pickedForProject = computed(() =>
+  pickedAgent.value && isOnTeam(pickedAgent.value.id) ? pickedAgent.value : undefined,
+);
+
+const focusedIsSideChat = computed(() => {
+  const currentId = focusedThread.value?.threadId.value;
+  return Boolean(focusedThread.value?.isSideChat?.value || (currentId && getSideChatSource(currentId)));
+});
+
+const composerAgentId = computed(() => {
+  const currentId = focusedThread.value?.threadId.value;
+  if (!currentId) return pickedForProject.value?.id ?? null;
+  if (focusedIsSideChat.value) {
+    return agentForThread(currentId)?.id ?? null;
+  }
+  return pickedForProject.value?.id ?? null;
+});
+
+function onAgentPick(id: string | null) {
+  selectAgent(id);
+}
+
+// The selected agent's pinned model gates what the pickers may offer. No model
+// is unrestricted — every provider and every model stays open. A pinned model
+// is a hard pin: only its provider is offered, and only that one model within
+// it, so the composer can only answer there.
+const capModel = computed<AgentModelRef | null>(() => pickedForProject.value?.capabilities.model ?? null);
+function providerAllowed(p: ProviderKind): boolean {
+  return capModel.value === null || capModel.value.provider === p;
+}
+function modelAllowed(provider: ProviderKind, key: string): boolean {
+  const pinned = capModel.value;
+  return pinned === null || (pinned.provider === provider && pinned.model === key);
+}
+
 // The catalog for each installed provider — its flat model list grouped into
 // families with real efforts. The composer + picker drive everything off these;
 // the raw id (which carries the effort) is what we send to the session.
 const catalogs = ref<Partial<Record<ProviderKind, ModelOption[]>>>({});
+
+// The active provider's catalog feeds the composer's own model name + effort
+// dial, narrowed to the models the selected agent may run. A disallowed current
+// model is moved off by the self-heal watcher above, which reads this list.
+const modelOptions = computed(() => {
+  const provider = agent.provider.value;
+  return (catalogs.value[provider] ?? []).filter((m) => modelAllowed(provider, m.key));
+});
+
 // Mount seeds these from the disk snapshot so the picker is usable immediately;
 // the live re-probe finishes a moment later and may correct a list (a CLI upgrade
 // that added or dropped a model). Rebuild rather than leave the stale one on
@@ -560,27 +652,8 @@ watch(
     const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
     agent.setModel(eff ? eff.modelId : undefined);
   },
+  { immediate: true },
 );
-// The selected agent's pinned model gates what the pickers may offer. No model
-// is unrestricted — every provider and every model stays open. A pinned model
-// is a hard pin: only its provider is offered, and only that one model within
-// it, so the composer can only answer there.
-const capModel = computed<AgentModelRef | null>(() => pickedForProject.value?.capabilities.model ?? null);
-function providerAllowed(p: ProviderKind): boolean {
-  return capModel.value === null || capModel.value.provider === p;
-}
-function modelAllowed(provider: ProviderKind, key: string): boolean {
-  const pinned = capModel.value;
-  return pinned === null || (pinned.provider === provider && pinned.model === key);
-}
-
-// The active provider's catalog feeds the composer's own model name + effort
-// dial, narrowed to the models the selected agent may run. A disallowed current
-// model is moved off by the self-heal watcher above, which reads this list.
-const modelOptions = computed(() => {
-  const provider = agent.provider.value;
-  return (catalogs.value[provider] ?? []).filter((m) => modelAllowed(provider, m.key));
-});
 
 const MODE_KEY = modeKey(props.project.path);
 const MODES: InteractionMode[] = ["ask", "accept-edits", "full-access"];
@@ -710,12 +783,17 @@ function applyChatDefaults(): boolean {
   // from another provider is dropped rather than ridden onto the wrong CLI.
   const current = model.value;
   const owned = (id: string | null | undefined) =>
-    Boolean(id) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === id));
-  const savedModel = localStorage.getItem(DEFAULT_MODEL_KEY) ?? localStorage.getItem(MODEL_KEY);
-  if (owned(current)) {
-    // Already valid for this provider — leave it.
-  } else if (owned(savedModel)) {
+    Boolean(id) &&
+    modelOptions.value.some(
+      (o) => o.key === id || o.efforts.some((e) => e.modelId === id),
+    );
+  const configuredModel = localStorage.getItem(DEFAULT_MODEL_KEY);
+  const lastUsedModel = localStorage.getItem(MODEL_KEY);
+  const savedModel = configuredModel ?? lastUsedModel;
+  if (owned(savedModel)) {
     agent.setModel(savedModel!);
+  } else if (owned(current)) {
+    // Already valid for this provider — leave it.
   } else {
     const first = modelOptions.value[0];
     const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
@@ -779,12 +857,13 @@ const settledThreadKeys = new Set<string>();
  *  blank, so it can never overwrite a conversation that's begun. */
 function seedBlankThread(key: string): void {
   if (settledThreadKeys.has(key)) return;
-  if (!hasConfiguredDefault() || !threadIsBlank.value) {
+  if (!threadIsBlank.value) {
     settledThreadKeys.add(key);
     return;
   }
   const providerChanged = applyChatDefaults();
-  if (defaultProviderReady() && agent.provider.value === configuredDefaultProvider()) {
+  const wantProvider = configuredDefaultProvider();
+  if (defaultProviderReady() && (!wantProvider || agent.provider.value === wantProvider)) {
     settledThreadKeys.add(key);
   }
   if (providerChanged) void agent.restart();
@@ -816,14 +895,14 @@ watch(
 let bootDefaultsSettled = false;
 function seedBootDefaults(): void {
   if (bootDefaultsSettled || !studioReady.value) return;
-  // Nothing to force, or the boot thread already carries a real conversation
-  // (never clobber one that's begun): stop here for good.
-  if (!hasConfiguredDefault() || !threadIsBlank.value) {
+  if (!activePaneIsThread.value && !blankThreadPane.value) return;
+  if (!threadIsBlank.value) {
     bootDefaultsSettled = true;
     return;
   }
   const providerChanged = applyChatDefaults();
-  if (defaultProviderReady() && agent.provider.value === configuredDefaultProvider()) {
+  const wantProvider = configuredDefaultProvider();
+  if (defaultProviderReady() && (!wantProvider || agent.provider.value === wantProvider)) {
     const bootKey = blankThreadPane.value?.session?.key;
     if (bootKey) settledThreadKeys.add(bootKey);
     bootDefaultsSettled = true;
@@ -1060,68 +1139,6 @@ function onModelSelect(picked: ModelPick) {
   cue("toggle");
 }
 
-// ── who answers ──────────────────────────────────────────────────────────────
-// Two different facts, deliberately kept apart. The app-wide *selection* is who
-// your next new thread will go to, and it is yours to change whenever you like.
-// A thread's *agent* is who is working it, and that is settled once, on its first
-// send, and never revised — one agent per thread, so the transcript above a turn
-// is always the work of whoever the thread names.
-//
-// Which is why picking only moves the selection: on a blank thread the selection
-// is what the composer shows, and there is nothing durable to write against yet.
-//
-// null all the way through means a guest: no agent named, so the thread keeps the
-// name and face rolled from its own id.
-const {
-  team: agents,
-  selected: pickedAgent,
-  pendingThreadAgent,
-  selectAgent,
-  settleThreadAgent,
-  isOnTeam,
-} = useAgentRoster();
-
-// When an outside surface (such as the agent detail page in settings) requests
-// a new conversation with a specific agent, bring the studio forward, spawn a
-// fresh blank thread if the focused one is non-blank or busy, and wake the
-// composer.
-watch(pendingThreadAgent, async (agentId) => {
-  if (!agentId) return;
-  pendingThreadAgent.value = null;
-  emit("summon");
-  if (!threadIsBlank.value || busy.value) {
-    await studio.open("thread");
-  }
-  await nextTick();
-  void composerRef.value?.wake();
-});
-
-// The composer answers as somebody on this project's team — that is what a team
-// is for. The selection is app-wide, so it can be carrying an agent who is a
-// teammate on another project and a stranger here; here that reads as a guest,
-// rather than quietly working a project it was never added to. On-team members
-// pass straight through, so nothing changes for the project they belong to.
-const pickedForProject = computed(() =>
-  pickedAgent.value && isOnTeam(pickedAgent.value.id) ? pickedAgent.value : undefined,
-);
-
-const focusedIsSideChat = computed(() => {
-  const currentId = focusedThread.value?.threadId.value;
-  return Boolean(focusedThread.value?.isSideChat?.value || (currentId && getSideChatSource(currentId)));
-});
-
-const composerAgentId = computed(() => {
-  const currentId = focusedThread.value?.threadId.value;
-  if (!currentId) return pickedForProject.value?.id ?? null;
-  if (focusedIsSideChat.value) {
-    return agentForThread(currentId)?.id ?? null;
-  }
-  return pickedForProject.value?.id ?? null;
-});
-
-function onAgentPick(id: string | null) {
-  selectAgent(id);
-}
 
 // Make a pin actually hold for the next send, not just narrow the picker. When
 // the selection moves to an agent whose allowlist rules out the provider or
