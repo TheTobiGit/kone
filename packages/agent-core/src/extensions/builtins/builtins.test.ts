@@ -7,11 +7,7 @@ import {
   createSafetyGateExtension,
   createScratchpadExtension,
   createSubagentDispatcherExtension,
-  DEFAULT_DANGEROUS_PATTERNS,
-  DEFAULT_MONITORED_TOOLS,
-  extractCommandsFromArgs,
   gitCheckpointExtension,
-  isMonitoredTool,
   listCheckpointsTool,
   registerDefaultExtensions,
   restoreCheckpointTool,
@@ -23,18 +19,13 @@ import {
   scratchpadWriteTool,
   subagentDispatcherExtension,
   validateCommand,
-  type DangerousPatternRule,
-  type GitCheckpointOptions,
   type SafetyCheckResult,
-  type SafetyGateOptions,
   type ScratchpadClearResult,
   type ScratchpadReadResult,
   type ScratchpadWriteResult,
   type SubagentDispatchArgs,
   type SubagentDispatchRecord,
   type SubagentDispatchResult,
-  type SubagentDispatcherOptions,
-  type SubagentDispatchStatus,
 } from "../index.js";
 
 describe("Built-in Extensions - Barrel & Integration", () => {
@@ -145,6 +136,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     await registerDefaultExtensions(registry);
 
     // 1. Write note
+    // SAFETY: scratchpad_write returns typed ScratchpadWriteResult
     const writeRes = (await registry.executeTool("scratchpad_write", {
       key: "task_plan",
       content: "Phase 1: Build extension barrel",
@@ -155,6 +147,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     expect(writeRes.bytesWritten).toBeGreaterThan(0);
 
     // 2. Append to note
+    // SAFETY: scratchpad_write returns typed ScratchpadWriteResult
     const appendRes = (await registry.executeTool("scratchpad_write", {
       key: "task_plan",
       content: "Phase 2: Write tests",
@@ -164,6 +157,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     expect(appendRes.success).toBe(true);
 
     // 3. Read note
+    // SAFETY: scratchpad_read returns typed ScratchpadReadResult
     const readRes = (await registry.executeTool("scratchpad_read", {
       key: "task_plan",
     })) as ScratchpadReadResult;
@@ -174,6 +168,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     );
 
     // 4. Clear specific note
+    // SAFETY: scratchpad_clear returns typed ScratchpadClearResult
     const clearRes = (await registry.executeTool("scratchpad_clear", {
       key: "task_plan",
     })) as ScratchpadClearResult;
@@ -181,6 +176,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     expect(clearRes.success).toBe(true);
     expect(clearRes.deleted).toBe(true);
 
+    // SAFETY: scratchpad_read after clear returns typed ScratchpadReadResult
     const readAfterClear = (await registry.executeTool("scratchpad_read", {
       key: "task_plan",
     })) as ScratchpadReadResult;
@@ -193,6 +189,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     const registry = new ExtensionRegistry();
     await registerDefaultExtensions(registry);
 
+    // SAFETY: delegate_subagent returns typed SubagentDispatchResult
     const dispatchRes = (await registry.executeTool(
       "delegate_subagent",
       {
@@ -219,6 +216,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
     const registry = new ExtensionRegistry();
     await registerDefaultExtensions(registry);
 
+    // SAFETY: git_list_checkpoints returns object with checkpoints array and count
     const result = (await registry.executeTool("git_list_checkpoints", {
       threadId: "test_thread",
     })) as {
@@ -272,6 +270,7 @@ describe("Built-in Extensions - Barrel & Integration", () => {
       task: string;
     }
 
+    // SAFETY: Reloaded custom dispatcher returns CustomDispatchEcho
     const reloadedResult = (await registry.executeTool("delegate_subagent", {
       agentRole: "security-auditor",
       task: "Verify safe shell execution regexes",

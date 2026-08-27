@@ -22,6 +22,7 @@ export class InMemoryExtensionStorage implements ExtensionStorage {
   private readonly store = new Map<string, unknown>();
 
   get<T = unknown>(key: string): T | undefined {
+    // SAFETY: Generic storage map retrieves value cast to requested return type T
     return this.store.get(key) as T | undefined;
   }
 

@@ -120,6 +120,7 @@ export function createDelegateSubagentTool(
         rawArgs.context !== null &&
         !Array.isArray(rawArgs.context)
       ) {
+        // SAFETY: Verified rawArgs.context is a non-null object and not an array
         subagentContext = rawArgs.context as Record<string, unknown>;
       } else if (typeof rawArgs.context === "string") {
         subagentContext = rawArgs.context;
@@ -135,6 +136,7 @@ export function createDelegateSubagentTool(
       const now = Date.now();
 
       // Check for custom dispatcher via options or context metadata
+      // SAFETY: Verified context.metadata.subagentDispatcher is a function before casting to handler
       const customDispatcher: SubagentDispatcherHandler | undefined =
         options?.dispatcher ??
         (typeof context.metadata?.subagentDispatcher === "function"

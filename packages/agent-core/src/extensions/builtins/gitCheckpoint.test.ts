@@ -10,10 +10,7 @@ import { ExtensionRegistry } from "../ExtensionRegistry.js";
 import {
   createGitCheckpointExtension,
   gitCheckpointExtension,
-  handleTurnStartCheckpoint,
-  listCheckpointsTool,
   resolveTargetDirectory,
-  restoreCheckpointTool,
 } from "./gitCheckpoint.js";
 
 const execFileAsync = promisify(execFile);
@@ -237,7 +234,7 @@ describe("gitCheckpoint - Lifecycle and Tools in Git Repository", () => {
       { projectPath: tempRepoDir },
     );
 
-    // List checkpoints via custom tool
+    // SAFETY: git_list_checkpoints tool execution returns checkpoints array and count
     const listResult = (await registry.executeTool(
       "git_list_checkpoints",
       { threadId: "thread-tool-test" },
@@ -255,7 +252,7 @@ describe("gitCheckpoint - Lifecycle and Tools in Git Repository", () => {
         "broken mutated content\n",
       );
 
-      // Restore via custom tool
+      // SAFETY: git_restore_checkpoint tool execution returns status object with success boolean
       const restoreResult = (await registry.executeTool(
         "git_restore_checkpoint",
         { checkpointId: checkpointToRestore.id, hard: true },
@@ -282,6 +279,7 @@ describe("gitCheckpoint - Lifecycle and Tools in Git Repository", () => {
       { projectPath: tempRepoDir },
     );
 
+    // SAFETY: git_list_checkpoints tool execution returns checkpoints array and count
     const listResult = (await registry.executeTool(
       "git_list_checkpoints",
       { threadId: "thread-soft-restore" },

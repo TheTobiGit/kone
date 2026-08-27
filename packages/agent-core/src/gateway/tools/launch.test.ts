@@ -339,6 +339,7 @@ describe("kone_launch approval gate", () => {
     await registry.call(makeCtx({ threadId: "thread-9" }), "kone_launch", startArgs);
 
     expect(seen.length).toBe(1);
+    // SAFETY: Approval callback pushes approval request object with known shape
     const req = seen[0] as { threadId: string; toolName: string; args: Record<string, unknown> };
     expect(req.threadId).toBe("thread-9");
     expect(req.toolName).toBe("kone_launch");

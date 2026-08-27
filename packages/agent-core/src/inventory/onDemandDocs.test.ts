@@ -6,7 +6,6 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  DEFAULT_MAX_SUMMARY_CHARS,
   DEFAULT_RULE_XML_TAG,
   DEFAULT_SKILL_XML_TAG,
   estimateTokenCount,
