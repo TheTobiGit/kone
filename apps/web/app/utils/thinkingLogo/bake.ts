@@ -725,6 +725,7 @@ export function serializeLogo(set: LogoPointSet): string {
 }
 
 export function deserializeLogo(json: string | Record<string, unknown>): LogoPointSet {
+  // SAFETY: Deserialized payload is verified by inspecting raw.version below before creating typed LogoPointSet
   const raw = (typeof json === "string" ? JSON.parse(json) : json) as {
     version: number;
     n: number;

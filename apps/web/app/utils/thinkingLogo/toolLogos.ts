@@ -4368,7 +4368,7 @@ export function getToolLogo(key: string): LogoPointSet {
   return parsed;
 }
 
-export const TOOL_FAMILY_LOGOS: Record<ToolOrbFamily, LogoPointSet> = {
+export const TOOL_FAMILY_LOGOS = {
   read: getToolLogo("read"),
   write: getToolLogo("write"),
   search: getToolLogo("search"),
@@ -4378,7 +4378,7 @@ export const TOOL_FAMILY_LOGOS: Record<ToolOrbFamily, LogoPointSet> = {
   web: getToolLogo("web"),
   agent: getToolLogo("agent"),
   neutral: getToolLogo("tools"),
-};
+} satisfies Record<ToolOrbFamily, LogoPointSet>;
 
 export const THINKING_LOGO = getToolLogo("thinking");
 export const WORKING_LOGO = getToolLogo("working");

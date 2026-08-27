@@ -4,15 +4,10 @@ import {
   bakeLogo,
   beatAt,
   deserializeLogo,
-  dotAssembly,
-  drawThinkingLogo,
-  edgeDistance,
   expoInOut,
   fibDir,
-  fillToCount,
   finalizeFrame,
   getSeatMap,
-  getToolLogo,
   logoForHugeIcon,
   logoForToolFamily,
   LOGO_PRESETS,
@@ -23,7 +18,6 @@ import {
   rasterizePathHeadless,
   recommendedCount,
   resolveLogo,
-  seatMap,
   serializeLogo,
   smootherE,
   THINKING_LOGO,
@@ -229,7 +223,7 @@ describe("turnOrb integration", () => {
   });
 
   it("executes drawTurnOrb without throwing", () => {
-    // Mock canvas 2D context
+    // SAFETY: Mock CanvasRenderingContext2D subset required for headless rendering unit tests
     const mockCtx = {
       setTransform: () => {},
       clearRect: () => {},

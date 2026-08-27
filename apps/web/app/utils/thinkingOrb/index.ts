@@ -38,6 +38,7 @@ export function drawTurnOrb(
   if (!classic) {
     const points = logoPoints ?? logoForToolFamily(state);
     if (points) {
+      // SAFETY: Checked membership in LOGO_STATE_TO_MODE guarantees valid LogoState
       const logoState: LogoState =
         state === "thinking"
           ? "thinking"
