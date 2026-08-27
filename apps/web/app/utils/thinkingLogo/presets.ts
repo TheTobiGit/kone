@@ -30,7 +30,7 @@ export type LogoState =
   | "web"
   | "neutral";
 
-export const LOGO_STATE_TO_MODE: Record<LogoState, LogoMode> = {
+export const LOGO_STATE_TO_MODE = {
   thinking: "assemble",
   searching: "scan",
   working: "work",
@@ -47,9 +47,9 @@ export const LOGO_STATE_TO_MODE: Record<LogoState, LogoMode> = {
   del: "assemble",
   web: "scan",
   neutral: "work",
-};
+} satisfies Record<LogoState, LogoMode>;
 
-export const LOGO_MODE_FRAMES: Record<LogoMode, ModeFrame> = {
+export const LOGO_MODE_FRAMES = {
   assemble: frameLogoAssemble,
   scan: frameLogoScan,
   work: frameLogoWork,
@@ -57,14 +57,14 @@ export const LOGO_MODE_FRAMES: Record<LogoMode, ModeFrame> = {
   wave: frameLogoWave,
   wait: frameLogoWait,
   crystal: frameLogoCrystal,
-};
+} satisfies Record<LogoMode, ModeFrame>;
 
 export interface LogoPreset {
   speed: number;
   opts: Record<string, number | undefined>;
 }
 
-export const LOGO_PRESETS: Record<LogoMode, LogoPreset> = {
+export const LOGO_PRESETS = {
   assemble: {
     speed: 1,
     opts: {
@@ -256,7 +256,7 @@ export const LOGO_PRESETS: Record<LogoMode, LogoPreset> = {
       rMin: 0.3,
     },
   },
-};
+} satisfies Record<LogoMode, LogoPreset>;
 
 const seatMapCache = new WeakMap<LogoPointSet, SeatMap>();
 

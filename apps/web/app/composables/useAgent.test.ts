@@ -360,6 +360,7 @@ describe("useAgent single blank thread invariant", () => {
     await agent.newThread();
     expect(agent.sessions.value).toHaveLength(2);
     expect(s0.blocks.value).toHaveLength(1);
+    // SAFETY: s0.blocks was seeded with userBlock above
     expect((s0.blocks.value[0] as UserBlock)?.text).toBe("important data");
     expect(s0.model.value).toBe("custom-model");
     expect(s0.mode.value).toBe("accept-edits");
@@ -367,6 +368,7 @@ describe("useAgent single blank thread invariant", () => {
     await agent.newThreadAt(0);
     expect(agent.sessions.value).toHaveLength(2);
     expect(s0.blocks.value).toHaveLength(1);
+    // SAFETY: s0.blocks was seeded with userBlock above
     expect((s0.blocks.value[0] as UserBlock)?.text).toBe("important data");
   });
 

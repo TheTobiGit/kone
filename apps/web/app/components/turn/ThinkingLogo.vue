@@ -47,6 +47,7 @@ async function resolvePoints(): Promise<void> {
     return;
   }
   if (typeof l === "object" && "version" in l && "p" in l) {
+    // SAFETY: Object structure matches serialized LogoPointSet schema
     resolvedPoints.value = l as LogoPointSet;
     return;
   }
@@ -62,6 +63,7 @@ async function resolvePoints(): Promise<void> {
     return;
   }
   try {
+    // SAFETY: Logo prop is narrowed by prior branches to an object conforming to LogoSource
     resolvedPoints.value = await bakeLogo(l as LogoSource, { count: 80, shell: "dome" });
   } catch {
     resolvedPoints.value = null;

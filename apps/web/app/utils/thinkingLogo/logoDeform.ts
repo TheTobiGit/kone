@@ -24,6 +24,7 @@ function makeCubeMoves(count: number, half: number): Move[] {
   const moves: Move[] = [];
   const band = (2 * half) / 3;
   for (let i = 0; i < count; i++) {
+    // SAFETY: Math.min(2, Math.floor(...)) constrains index to 0 | 1 | 2
     const axis = Math.min(2, Math.floor(hashD(i, 2.3) * 3)) as 0 | 1 | 2;
     const lo = -half + band * Math.min(2, Math.floor(hashD(i, 5.9) * 3));
     const dir = hashD(i, 7.7) < 0.5 ? 1 : -1;

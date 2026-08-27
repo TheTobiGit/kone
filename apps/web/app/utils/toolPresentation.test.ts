@@ -1,12 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { RuntimeItem } from "../types/desktop";
 import {
-  toolDetailFull,
   toolMeta,
   toolPhrase,
-  toolPhraseParts,
-  toolStatus,
-  toolTarget,
   toolTargetRaw,
 } from "./toolPresentation";
 
