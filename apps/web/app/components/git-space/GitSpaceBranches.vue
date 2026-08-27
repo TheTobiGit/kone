@@ -3,6 +3,7 @@ import { computed, nextTick, ref, type ComponentPublicInstance } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Add01Icon } from "@hugeicons/core-free-icons";
 import type { useGitSpace } from "~/composables/useGitSpace";
+import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
 
 // Every branch, local and remote, and what you can do to each.
 //

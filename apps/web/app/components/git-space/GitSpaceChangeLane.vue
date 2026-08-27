@@ -5,6 +5,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import type { ChangeItem } from "~/types/change";
 import { Magnet } from "~/components/ui/magnet";
+import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
 
 // One lane of the changes panel — a titled section ("Staged" / "Changed") over
 // a responsive grid of ChangeCards, capped at two rows with the overflow packed

@@ -7,6 +7,7 @@ import type { ChangeItem } from "~/types/change";
 import type { GitFileContent, GitFileDiff } from "~/types/desktop";
 import type { CodeLine } from "~/composables/useHighlighter";
 import type { DiffRow } from "~/composables/useDiff";
+import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
 
 // The overlay a change opens into — the file appears to enlarge out of its card
 // (the grow is driven by ProjectView's transition, anchored on --ox/--oy) and

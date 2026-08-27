@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon } from "@hugeicons/core-free-icons";
 import type { useGitSpace } from "~/composables/useGitSpace";
 import type { useProjectGit } from "~/composables/useProjectGit";
+import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
 
 // Work set aside.
 //

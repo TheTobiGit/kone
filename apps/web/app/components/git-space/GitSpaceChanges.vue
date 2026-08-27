@@ -3,6 +3,7 @@ import { computed } from "vue";
 import type { GitChange } from "~/types/desktop";
 import type { useGitSpace } from "~/composables/useGitSpace";
 import type { useProjectGit } from "~/composables/useProjectGit";
+import HoldToConfirm from "~/components/ui/HoldToConfirm.vue";
 
 // The working tree, as two lists.
 //
