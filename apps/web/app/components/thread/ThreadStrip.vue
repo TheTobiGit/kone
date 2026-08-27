@@ -993,26 +993,29 @@ function isLinkedToNext(i: number): boolean {
     <span class="sr-only" aria-live="polite">{{
       overview ? `Overview — ${panes.length} columns` : ""
     }}</span>
-    <nav v-if="panes.length > 1 && !chooser" class="index" aria-label="Columns">
-      <button
-        v-for="(c, i) in panes"
-        :key="c.id"
-        type="button"
-        class="index__dash"
-        :class="[
-          paneKindMeta(c.kind).dashClass,
-          {
-            'is-focused': c.id === focusedId,
-            'is-dormant': !c.session && c.id !== focusedId,
-            'is-live': c.kind === 'thread' && !!c.session && c.session.busy.value && c.id !== focusedId,
-            'is-pulse': c.id === props.pulseKey,
-            'is-sidechat': c.kind === 'thread' && !!c.session?.isSideChat.value,
-          },
-        ]"
-        :aria-label="`Column ${i + 1}: ${columnLabel(c)}`"
-        :aria-current="c.id === focusedId"
-        @click="onColumnClick(c.id)"
-      />
+    <nav v-if="!chooser && (panes.length > 1 || repo)" class="index" aria-label="Columns">
+      <div v-if="panes.length > 1" class="index__dashes">
+        <button
+          v-for="(c, i) in panes"
+          :key="c.id"
+          type="button"
+          class="index__dash"
+          :class="[
+            paneKindMeta(c.kind).dashClass,
+            {
+              'is-focused': c.id === focusedId,
+              'is-dormant': !c.session && c.id !== focusedId,
+              'is-live': c.kind === 'thread' && !!c.session && c.session.busy.value && c.id !== focusedId,
+              'is-pulse': c.id === props.pulseKey,
+              'is-sidechat': c.kind === 'thread' && !!c.session?.isSideChat.value,
+            },
+          ]"
+          :aria-label="`Column ${i + 1}: ${columnLabel(c)}`"
+          :aria-current="c.id === focusedId"
+          @click="onColumnClick(c.id)"
+        />
+      </div>
+      <span v-if="repo" class="index__project" :title="projectPath">{{ repo }}</span>
     </nav>
 
     <!-- Solo: leading pad centres the thread. Multi: tile from the left, trailing
@@ -1445,9 +1448,32 @@ function isLinkedToNext(i: number): boolean {
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 6px;
   pointer-events: none;
   transition: opacity 0.28s ease;
+}
+.index__dashes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.index__project {
+  position: absolute;
+  right: 2rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  user-select: none;
+  pointer-events: auto;
+  transition: color 0.18s ease;
 }
 .index__dash {
   pointer-events: auto;
