@@ -42,10 +42,6 @@ const emit = defineEmits<{
    *  or detail view show through it. */
   openFile: [path: string, rect: DOMRect | null];
   openBranch: [];
-  /** Leaving the plane on a different project's row than the one whose page is
-   *  underneath: the page follows. Only ever on exit — rows move freely while
-   *  the plane is open. */
-  exitTo: [project: Project];
 }>();
 
 const { cue } = useSound();
@@ -215,17 +211,76 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   }
 });
 
-// Arriving on the plane from a project page puts you on that project's row —
-// summoning is "show me my work here", not "show me wherever I last was". While
-// the plane stays open the camera is yours to move.
-watch(
-  () => props.open,
-  (open) => {
-    if (!open) return;
-    const active = props.activeProject?.path;
-    if (active && active !== focusedPath.value) focusRow(active);
-  },
-);
+// ── keyboard shortcuts for panes ──────────────────────────────────────────────
+function resolveTargetProjectPath(): string | null {
+  if (props.open) {
+    // In studio: currently showing project row
+    return focusedPath.value;
+  }
+  if (props.activeProject?.path) {
+    // In project detail/overview: the project's studio row
+    return props.activeProject.path;
+  }
+  // Anywhere else (e.g. launcher/home): last project row opened in the studio
+  return plane.focusedPath.value ?? landingProject.value?.path ?? null;
+}
+
+useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (matchesShortcut("new-thread", e)) {
+    const targetPath = resolveTargetProjectPath();
+    if (!targetPath) return;
+    e.preventDefault();
+    if (targetPath !== focusedPath.value) {
+      focusRow(targetPath);
+    }
+    rowRegistry.rowFor(targetPath)?.newThread();
+    return;
+  }
+
+  if (matchesShortcut("new-terminal", e)) {
+    const targetPath = resolveTargetProjectPath();
+    if (!targetPath) return;
+    e.preventDefault();
+    if (targetPath !== focusedPath.value) {
+      focusRow(targetPath);
+    }
+    rowRegistry.rowFor(targetPath)?.openTerminal();
+    return;
+  }
+
+  if (matchesShortcut("new-scratchpad", e)) {
+    const targetPath = resolveTargetProjectPath();
+    if (!targetPath) return;
+    e.preventDefault();
+    if (targetPath !== focusedPath.value) {
+      focusRow(targetPath);
+    }
+    rowRegistry.rowFor(targetPath)?.openScratchpad();
+    return;
+  }
+
+  if (matchesShortcut("send-selection-to-scratchpad", e)) {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() ?? "";
+    if (!text || text.length <= 2) return;
+    const targetPath = resolveTargetProjectPath();
+    if (!targetPath) return;
+    e.preventDefault();
+    rowRegistry.rowFor(targetPath)?.captureText?.(text);
+    return;
+  }
+
+  if (matchesShortcut("play-demo", e)) {
+    const targetPath = resolveTargetProjectPath();
+    if (!targetPath) return;
+    e.preventDefault();
+    if (targetPath !== focusedPath.value) {
+      focusRow(targetPath);
+    }
+    rowRegistry.rowFor(targetPath)?.playDemo?.();
+    return;
+  }
+});
 
 const refusal = ref(false);
 let refusalTimer: ReturnType<typeof setTimeout> | null = null;
@@ -248,18 +303,6 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 
 function close(): void {
   cue("collapse");
-  // The page follows the row you were last standing in — decided on exit only,
-  // so travelling the axis never yanks the page around underneath.
-  //
-  // Only when a project page was already showing, though. Summoned from the
-  // launcher there is no page to follow the plane, and opening whichever row the
-  // camera happened to rest on would mean you could never look at the plane and
-  // come back to where you were.
-  const active = props.activeProject;
-  const row = renderRows.value.find((r) => r.projectPath === focusedPath.value);
-  if (active && row && row.projectPath !== active.path) {
-    emit("exitTo", { path: row.projectPath, name: row.name });
-  }
   emit("close");
 }
 

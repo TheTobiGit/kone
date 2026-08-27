@@ -176,7 +176,7 @@ async function handleDirectChat() {
   if (isCurrentProjectTeam.value) {
     cue("press");
     selectAgent(agent.value.id);
-    pendingThreadAgent.value = agent.value.id;
+    pendingThreadAgent.value = { id: agent.value.id, projectPath: projectPath.value };
     emit("startThread", agent.value.id);
     closeDrawer();
     return;
@@ -194,7 +194,7 @@ async function chooseProjectAndChat(target: { path: string; name: string }) {
   menuOpen.value = false;
   cue("open");
   selectAgent(agent.value.id);
-  pendingThreadAgent.value = agent.value.id;
+  pendingThreadAgent.value = { id: agent.value.id, projectPath: target.path };
   openProject(target);
   emit("startThread", agent.value.id);
   closeDrawer();
