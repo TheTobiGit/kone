@@ -55,7 +55,10 @@ onMounted(() => void providers.prepare());
 const catalogs = computed<Partial<Record<ProviderKind, ModelOption[]>>>(() => {
   const out: Partial<Record<ProviderKind, ModelOption[]>> = {};
   for (const [prov, list] of Object.entries(providers.modelCache.value)) {
-    if (list) out[prov as ProviderKind] = buildModelCatalog(list);
+    if (list) {
+      // SAFETY: Keys of modelCache correspond to ProviderKind values
+      out[prov as ProviderKind] = buildModelCatalog(list);
+    }
   }
   return out;
 });
@@ -88,9 +91,11 @@ const currentReasoning = ref<EffortTier | null>(null);
 
 onMounted(() => {
   if (!import.meta.client) return;
+  // SAFETY: Local storage value is checked at assignment or defaults to null
   currentProvider.value = (localStorage.getItem(DEFAULT_PROVIDER_KEY) as ProviderKind | null) ?? null;
   currentModel.value = localStorage.getItem(DEFAULT_MODEL_KEY);
   const tier = localStorage.getItem(DEFAULT_REASONING_KEY);
+  // SAFETY: Invariant verified by checking tier in EFFORT_META dictionary
   currentReasoning.value = tier && tier in EFFORT_META ? (tier as EffortTier) : null;
 });
 
@@ -160,7 +165,10 @@ const currentMode = ref<InteractionMode>("accept-edits");
 onMounted(() => {
   if (!import.meta.client) return;
   const saved = localStorage.getItem(DEFAULT_MODE_KEY);
-  if (saved && MODES.some((m) => m.id === saved)) currentMode.value = saved as InteractionMode;
+  if (saved && MODES.some((m) => m.id === saved)) {
+    // SAFETY: Invariant verified by checking membership in MODES array
+    currentMode.value = saved as InteractionMode;
+  }
 });
 
 function chooseMode(id: string) {

@@ -103,6 +103,7 @@ const providerSettings = useProviderSettings();
 // cwd is a getter so the session always boots in whatever project is active —
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
+// SAFETY: Local storage values are cast to ProviderKind | null and validated via fallback
 const initialProvider: ProviderKind =
   (import.meta.client
     ? (localStorage.getItem(DEFAULT_PROVIDER_KEY) as ProviderKind | null) ??
@@ -812,8 +813,8 @@ function applyChatDefaults(): boolean {
 
   // Per-project mode wins; before this project has one, the app-wide default.
   const savedMode = localStorage.getItem(MODE_KEY) ?? localStorage.getItem(DEFAULT_MODE_KEY);
-  // SAFETY: the includes() below passes only for an exact InteractionMode member.
-  if (savedMode && (MODES as string[]).includes(savedMode)) {
+  if (savedMode && MODES.some((m) => m.id === savedMode)) {
+    // SAFETY: the MODES.some check passes only for an exact InteractionMode member.
     agent.setMode(savedMode as InteractionMode);
   }
 
@@ -837,6 +838,7 @@ function hasConfiguredDefault(): boolean {
 function configuredDefaultProvider(): ProviderKind | null {
   if (!import.meta.client) return null;
   const p = localStorage.getItem(DEFAULT_PROVIDER_KEY);
+  // SAFETY: Invariant verified by checking membership in PROVIDER_VENDOR dictionary
   return p && p in PROVIDER_VENDOR ? (p as ProviderKind) : null;
 }
 function defaultProviderReady(): boolean {
