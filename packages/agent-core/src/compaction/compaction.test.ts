@@ -194,6 +194,7 @@ describe("compaction attachment handling", () => {
 
     // The attached block's estimated tokens should be a small offset above its
     // text-only estimate, not millions of phantom tokens from the 5 MB payload.
+    // SAFETY: blocks[4] is defined above as a user block with role "user"
     const attachedBlock = blocks[4] as Extract<StoredBlock, { role: "user" }>;
     const textOnlyTokens = Math.ceil(attachedBlock.text.length / 4);
     const attachedTokens = estimateBlockTokens(attachedBlock);

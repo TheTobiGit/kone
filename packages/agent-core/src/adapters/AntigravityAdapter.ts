@@ -421,11 +421,16 @@ export function antigravityPromptCommandLineIssue(
   return `Antigravity prompts on Windows are limited to ${WINDOWS_PROMPT_MAX_CHARS.toLocaleString("en-US")} characters because the CLI accepts print-mode prompts as command-line arguments. Shorten the prompt or attach the content as files.`;
 }
 
+export interface AntigravityToolSummary {
+  text: string;
+  detail?: string;
+}
+
 /** Extract human-readable target text and structured detail from tool arguments. */
 export function summarizeAntigravityTool(
   name: string,
   args?: AntigravityJsonRecord,
-): { text: string; detail?: string } {
+): AntigravityToolSummary {
   if (!args || typeof args !== "object") {
     return { text: "" };
   }
@@ -509,6 +514,7 @@ export function summarizeAntigravityTool(
     if (toolSummary) {
       text = toolSummary;
     } else if (Array.isArray(args.Subagents) && args.Subagents.length > 0) {
+      // SAFETY: args.Subagents is confirmed to be an array and items are safe-guarded by property checks
       const roles = (args.Subagents as Array<{ Role?: unknown; TypeName?: unknown }>)
         .map((s) => (typeof s.Role === "string" ? s.Role : typeof s.TypeName === "string" ? s.TypeName : ""))
         .filter(Boolean);

@@ -716,6 +716,7 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
               if (!data.name) {
                 throw new GatewayToolError("invalid_input", "'name' is required for op: 'stop'.");
               }
+              // SAFETY: data.signal string value is cast to NodeJS.Signals or defaults to SIGTERM
               const stopped = await supervisor.stop(
                 projectRoot,
                 data.name,

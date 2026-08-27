@@ -28,6 +28,7 @@ function toGatewayValue(value: unknown, seen = new WeakSet<object>()): GatewayVa
       return undefined;
   }
 
+  // SAFETY: Non-primitive and non-null values are JavaScript objects
   const obj = value as object;
   if (seen.has(obj)) {
     return undefined;

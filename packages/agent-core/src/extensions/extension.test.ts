@@ -81,6 +81,7 @@ describe("ExtensionRegistry - Custom Tools", () => {
     }).toThrow("Tool definition must have a non-empty name string");
 
     expect(() => {
+      // SAFETY: Deliberately test runtime validation with invalid execute property type
       registry.registerTool({
         name: "test",
         description: "Invalid execute",

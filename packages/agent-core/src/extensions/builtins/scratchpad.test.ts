@@ -3,9 +3,6 @@ import { ExtensionRegistry } from "../ExtensionRegistry.js";
 import {
   createScratchpadExtension,
   scratchpadExtension,
-  scratchpadClearTool,
-  scratchpadReadTool,
-  scratchpadWriteTool,
 } from "./scratchpad.js";
 import {
   createSubagentDispatcherExtension,
@@ -23,6 +20,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(registry.hasTool("scratchpad_clear")).toBe(true);
 
     // 1. Write initial note under default key
+    // SAFETY: scratchpad_write returns success, key, and bytesWritten metadata
     const writeResult1 = (await registry.executeTool("scratchpad_write", {
       content: "First note content",
     })) as { success: boolean; key: string; bytesWritten: number };
@@ -32,6 +30,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(writeResult1.bytesWritten).toBe("First note content".length);
 
     // 2. Read default note
+    // SAFETY: scratchpad_read with key returns found, key, and content string
     const readResult1 = (await registry.executeTool("scratchpad_read", {
       key: "default",
     })) as { found: boolean; key: string; content: string };
@@ -41,6 +40,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(readResult1.content).toBe("First note content");
 
     // 3. Append to default note
+    // SAFETY: scratchpad_write append returns success and key
     const writeResult2 = (await registry.executeTool("scratchpad_write", {
       key: "default",
       content: "Second line of notes",
@@ -49,6 +49,7 @@ describe("Built-in Extension: Scratchpad", () => {
 
     expect(writeResult2.success).toBe(true);
 
+    // SAFETY: scratchpad_read returns found and content string
     const readResult2 = (await registry.executeTool("scratchpad_read", {
       key: "default",
     })) as { found: boolean; content: string };
@@ -62,6 +63,7 @@ describe("Built-in Extension: Scratchpad", () => {
     });
 
     // 5. Read all notes
+    // SAFETY: scratchpad_read with no key returns dictionary of all entries
     const readAll = (await registry.executeTool("scratchpad_read", {})) as {
       found: boolean;
       count: number;
@@ -76,6 +78,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(readAll.entries.plan).toBe("Step 1: Research, Step 2: Implement");
 
     // 6. Clear specific key
+    // SAFETY: scratchpad_clear with key returns deletion status
     const clearPlan = (await registry.executeTool("scratchpad_clear", {
       key: "plan",
     })) as { success: boolean; key: string; deleted: boolean };
@@ -83,6 +86,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(clearPlan.success).toBe(true);
     expect(clearPlan.deleted).toBe(true);
 
+    // SAFETY: scratchpad_read after clear returns found false and null content
     const readPlanAfterClear = (await registry.executeTool("scratchpad_read", {
       key: "plan",
     })) as { found: boolean; content: null };
@@ -91,6 +95,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(readPlanAfterClear.content).toBeNull();
 
     // 7. Clear all notes
+    // SAFETY: scratchpad_clear with key 'all' returns clearedAll boolean
     const clearAll = (await registry.executeTool("scratchpad_clear", {
       key: "all",
     })) as { success: boolean; clearedAll: boolean };
@@ -98,6 +103,7 @@ describe("Built-in Extension: Scratchpad", () => {
     expect(clearAll.success).toBe(true);
     expect(clearAll.clearedAll).toBe(true);
 
+    // SAFETY: scratchpad_read after clearing all returns empty result
     const readAllAfterClear = (await registry.executeTool(
       "scratchpad_read",
       {},
@@ -128,6 +134,7 @@ describe("Built-in Extension: Subagent Dispatcher", () => {
 
     expect(registry.hasTool("delegate_subagent")).toBe(true);
 
+    // SAFETY: delegate_subagent execution produces SubagentDispatchResult
     const result = (await registry.executeTool(
       "delegate_subagent",
       {
@@ -171,6 +178,7 @@ describe("Built-in Extension: Subagent Dispatcher", () => {
     });
     await registry.registerExtension("subagent_custom", ext);
 
+    // SAFETY: Custom dispatcher returns object matching expected return shape
     const result = (await registry.executeTool("delegate_subagent", {
       agentRole: "code_reviewer",
       task: "Review PR #42",

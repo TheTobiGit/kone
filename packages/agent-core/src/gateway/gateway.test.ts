@@ -916,6 +916,7 @@ describe("gateway integration (real store + HTTP)", () => {
 
     expect(rpcResult(startRes).isError).toBeFalsy();
     expect(rpcResult(startRes).content?.[0]?.text).toContain("Started process");
+    // SAFETY: Process launch response includes structuredContent with pid
     const pid = rpcResult(startRes).structuredContent?.pid as number;
     expect(typeof pid).toBe("number");
 

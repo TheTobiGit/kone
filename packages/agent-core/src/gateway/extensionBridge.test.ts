@@ -28,7 +28,9 @@ describe("extensionBridge", () => {
         },
       },
       execute: (args) => {
+        // SAFETY: Test arguments pass numbers for a and b
         const a = (args.a as number) ?? 0;
+        // SAFETY: Test arguments pass numbers for a and b
         const b = (args.b as number) ?? 0;
         return { sum: a + b };
       },
