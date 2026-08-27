@@ -164,13 +164,6 @@ function summonStudio() {
   studioOpen.value = true;
 }
 
-// Leaving the plane on another project's row: the page follows it out. Decided
-// on exit only, so travelling the axis never yanks the page around underneath.
-function onStudioExitTo(target: { path: string; name: string }) {
-  if (target.path === project.value?.path) return;
-  openProject({ path: target.path, name: target.name });
-}
-
 // A row asked for something the page owns. The plane has already stepped aside
 // by the time these arrive, so they land on the page that was underneath all
 // along — and are simply dropped when there is no project page to receive them.
@@ -261,7 +254,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           :active-project="project"
           @summon="summonStudio"
           @close="studioOpen = false"
-          @exit-to="onStudioExitTo"
           @open-file="onStudioOpenFile"
           @open-branch="onStudioOpenBranch"
         />

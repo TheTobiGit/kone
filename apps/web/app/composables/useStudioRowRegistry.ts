@@ -30,6 +30,8 @@ export interface StudioRowApi {
   newThread: () => void;
   openTerminal: () => void;
   openScratchpad: () => void;
+  playDemo?: () => void;
+  captureText?: (text: string) => void;
   /** Write the row's layout through, past any debounce. */
   flush: () => void;
   /** Stop a turn in flight cleanly before something tears the row down anyway. */

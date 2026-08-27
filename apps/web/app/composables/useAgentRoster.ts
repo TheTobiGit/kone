@@ -1,4 +1,4 @@
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
 import {
   addAgentToProject,
   agentById,
@@ -31,9 +31,14 @@ import { useProject } from "~/composables/useProject";
 // got.
 
 /** Signals the active board to open/focus a blank thread with this agent. */
-const pendingThreadAgent = ref<string | null>(null);
+export interface PendingThreadAgentRequest {
+  id: string;
+  projectPath?: string | null;
+}
+export type PendingThreadAgent = PendingThreadAgentRequest;
+const pendingThreadAgent = ref<PendingThreadAgent | null>(null);
 
-export function useAgentRoster() {
+export function useAgentRoster(customProjectPath?: MaybeRefOrGetter<string | null | undefined>) {
   const project = useProject();
 
   // The roster lives in the store now, so reading it means asking for it. On
@@ -52,9 +57,14 @@ export function useAgentRoster() {
   /** Who the next turn goes to, or undefined for a guest. */
   const selected = computed<Agent | undefined>(() => selectedAgent());
 
-  /** The active project's path, or null on the App Home. */
-  const projectPath = computed<string | null>(() => project.value?.path ?? null);
-  /** The active project's team — who can work within it. Empty off a project. */
+  /** The target project's path, or null on the App Home. */
+  const projectPath = computed<string | null>(() => {
+    if (customProjectPath !== undefined) {
+      return toValue(customProjectPath) ?? null;
+    }
+    return project.value?.path ?? null;
+  });
+  /** The target project's team — who can work within it. Empty off a project. */
   const team = computed<Agent[]>(() => projectTeam(projectPath.value));
   /** Every project team known to this machine — each a path with its members.
    *  The overview reads from this, not from the active project. */
@@ -95,7 +105,7 @@ export function useAgentRoster() {
       await addAgentToProject(path, id);
     }
     selectAgent(id);
-    pendingThreadAgent.value = id;
+    pendingThreadAgent.value = { id, projectPath: path };
   }
 
   return {

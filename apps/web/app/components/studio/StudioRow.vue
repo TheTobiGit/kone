@@ -552,22 +552,28 @@ const {
   selectAgent,
   settleThreadAgent,
   isOnTeam,
-} = useAgentRoster();
+} = useAgentRoster(() => props.project.path);
 
 // When an outside surface (such as the agent detail page in settings) requests
 // a new conversation with a specific agent, bring the studio forward, spawn a
 // fresh blank thread if the focused one is non-blank or busy, and wake the
 // composer.
-watch(pendingThreadAgent, async (agentId) => {
-  if (!agentId) return;
-  pendingThreadAgent.value = null;
-  emit("summon");
-  if (!threadIsBlank.value || busy.value) {
-    await studio.open("thread");
-  }
-  await nextTick();
-  void composerRef.value?.wake();
-});
+watch(
+  pendingThreadAgent,
+  async (req) => {
+    if (!req) return;
+    const targetPath = typeof req === "string" ? null : req.projectPath;
+    if (targetPath && targetPath !== props.project.path) return;
+    pendingThreadAgent.value = null;
+    emit("summon");
+    if (!threadIsBlank.value || busy.value) {
+      await studio.open("thread");
+    }
+    await nextTick();
+    void composerRef.value?.wake();
+  },
+  { immediate: true },
+);
 
 // The composer answers as somebody on this project's team — that is what a team
 // is for. The selection is app-wide, so it can be carrying an agent who is a
@@ -813,7 +819,7 @@ function applyChatDefaults(): boolean {
 
   // Per-project mode wins; before this project has one, the app-wide default.
   const savedMode = localStorage.getItem(MODE_KEY) ?? localStorage.getItem(DEFAULT_MODE_KEY);
-  if (savedMode && MODES.some((m) => m.id === savedMode)) {
+  if (savedMode && MODES.some((m) => m === savedMode)) {
     // SAFETY: the MODES.some check passes only for an exact InteractionMode member.
     agent.setMode(savedMode as InteractionMode);
   }
@@ -1053,56 +1059,7 @@ watch(
   },
 );
 
-// ── new columns from the keyboard ─────────────────────────────────────────────
-// Ctrl+N (mod+n) starts a fresh, empty thread — the keyboard way to begin a
-// conversation from the working-tree home now that the composer lives on the
-// studio. It flips to that surface so the user lands in the blank thread,
-// and prunes the idle previous thread when it never ran a live turn.
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!matchesShortcut("new-thread", e)) return;
-  e.preventDefault();
-  void studio.open("thread");
-  emit("summon");
-});
 
-// mod+shift+t opens a terminal column on the strip and focuses it, flipping to
-// the studio surface (where the strip lives) so the new shell is on screen.
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!matchesShortcut("new-terminal", e)) return;
-  e.preventDefault();
-  emit("summon");
-  void newTerminalPane();
-});
-
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!matchesShortcut("new-scratchpad", e)) return;
-  e.preventDefault();
-  emit("summon");
-  void newScratchpadPane();
-});
-
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!matchesShortcut("send-selection-to-scratchpad", e)) return;
-  e.preventDefault();
-  const sel = window.getSelection();
-  const text = sel?.toString().trim() ?? "";
-  if (!text || text.length <= 2) return;
-  const sourceKey = focusedId.value;
-  if (!sourceKey) return;
-  if (!panes.value.some((p) => p.id === sourceKey && p.kind === "thread")) return;
-  void studio.dispatch({ type: "capture-text", text, from: sourceKey });
-});
-
-// Play a scripted demo conversation so the whole thread UI (thinking, tools
-// with output, streaming text, a no-content thought, the settled footer) can be
-// reviewed on demand without driving a real agent turn. The binding lives in
-// the shortcuts registry so it can be rebound in settings.
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!matchesShortcut("play-demo", e)) return;
-  e.preventDefault();
-  emit("summon");
-  agent.demo();
-});
 
 // ── committing a model pick ──────────────────────────────────────────────────
 // One path for "which model runs the next turn", whether the answer came from
@@ -1395,6 +1352,25 @@ function onOpenThread(threadId: string) {
 // What the row offers the rest of the app. Exposed for a parent that holds a
 // ref, and published to the registry for everything that can't — the project
 // page's conversation list is under the plane now, not inside the row's parent.
+async function newThreadPane(): Promise<void> {
+  await studio.open("thread");
+  await nextTick();
+  void composerRef.value?.wake();
+  emit("summon");
+}
+
+function playDemo(): void {
+  emit("summon");
+  agent.demo();
+}
+
+function captureText(text: string): void {
+  const sourceKey = focusedId.value;
+  if (!sourceKey) return;
+  if (!panes.value.some((p) => p.id === sourceKey && p.kind === "thread")) return;
+  void studio.dispatch({ type: "capture-text", text, from: sourceKey });
+}
+
 const rowApi: StudioRowApi = {
   openSession,
   revealThread,
@@ -1402,9 +1378,11 @@ const rowApi: StudioRowApi = {
   removeSession,
   sessionBusy,
   openThread: onOpenThread,
-  newThread: () => void studio.open("thread"),
+  newThread: () => void newThreadPane(),
   openTerminal: newTerminalPane,
   openScratchpad: newScratchpadPane,
+  playDemo,
+  captureText,
   flush: flushStudio,
   /** Stop a turn in flight, cleanly, before something tears the row down anyway
    *  (a project switch remounts it). A no-op when nothing is running. */

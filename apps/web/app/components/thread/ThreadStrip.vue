@@ -1302,30 +1302,7 @@ function isLinkedToNext(i: number): boolean {
       </div>
     </div>
 
-    <!-- Ambient floor glow for the zoomed-out overview — the same plasma the
-         bare board and the projects-list empty state rise off, so the spread of
-         cards doesn't read as a bland empty grid. Sits behind the cards, never
-         takes pointer events; only mounted while zoomed out. -->
-    <AnimatePresence>
-      <motion.div
-        v-if="overview"
-        class="overview__plasma pointer-events-none"
-        :initial="{ opacity: 0 }"
-        :animate="{ opacity: 1 }"
-        :exit="{ opacity: 0, transition: { duration: 0.4 } }"
-        :transition="{ duration: 1.4, delay: 0.2, ease: 'easeOut' }"
-      >
-        <ClosingPlasma
-          class="size-full"
-          :interactive="false"
-          :speed="0.55"
-          :turbulence="0.85"
-          :grain="0.4"
-          :sparkle="0.35"
-          :opacity="plasmaOpacity"
-        />
-      </motion.div>
-    </AnimatePresence>
+
 
     <!-- Bare desktop — every window closed, zero panes. Offer the same pick the
          seam menu gives (thread / terminal / scratchpad), centered. The rail
@@ -2146,23 +2123,6 @@ function isLinkedToNext(i: number): boolean {
    entering overview settles rather than flashes. */
 .strip.is-overview {
   background: color-mix(in srgb, var(--ink) 3.5%, var(--ground));
-  /* Own stacking context so the floor plasma can sit at z-index:-1 — above this
-     dipped backdrop, below the cards — without escaping behind the strip. */
-  isolation: isolate;
-}
-/* Same floor glow as the chooser / projects-list empty state, anchored to the
-   overview's bottom edge and masked so it dissolves into the ground. Behind the
-   cards (see .strip.is-overview isolation), never intercepts pointer events. */
-.overview__plasma {
-  position: absolute;
-  inset-inline: 0;
-  bottom: 0;
-  z-index: -1;
-  height: 42vh;
-  max-height: 380px;
-  min-height: 220px;
-  mask-image: linear-gradient(to bottom, transparent, black 55%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black 55%);
 }
 /* A minimap on top of a map is noise — the cards *are* the index now. Faded, not cut:
    it sits right where the eye is during the zoom-out. */

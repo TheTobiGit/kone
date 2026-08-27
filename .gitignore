@@ -80,3 +80,5 @@ temp
 # pi agent local artifacts
 .pi/
 .sandbox/
+
+promo/
