@@ -124,14 +124,14 @@ export function makeProj(
  * Dot radii were tuned for a 300pt frame; sub-linear scaling keeps small
  * spinners legible. Lower pow = radii shrink less with size.
  */
-export function radiusScale(size: number, pow: number): number {
+export function radiusScale(size: number, pow = 0.36): number {
   return (size / 300) ** pow;
 }
 
 /**
  * Normalise, sort far-to-near (by z ascending), and enforce the dot floor.
  */
-export function finalizeFrame(dots: Dot[], lines: Line[], rMin = 0.3): OrbFrame {
+export function finalizeFrame(dots: Dot[], lines: Line[], rMin = 0.75): OrbFrame {
   for (let i = 0; i < dots.length; i++) {
     const d = dots[i];
     if (d && d.r < rMin) d.r = rMin;
@@ -149,9 +149,9 @@ export function paintFrame(
 ): void {
   for (const l of frame.lines) {
     const w = Math.min(1, Math.max(0, l.white));
-    const val = dark ? Math.round(255 * (1 - w)) : Math.round(255 * w);
+    const val = dark ? Math.round(110 + 145 * (1 - w)) : Math.round(25 + 130 * w);
     ctx.strokeStyle = `rgba(${val},${val},${val},${l.a ?? 1})`;
-    ctx.lineWidth = l.w;
+    ctx.lineWidth = Math.max(0.85, l.w);
     ctx.beginPath();
     ctx.moveTo(l.x1, l.y1);
     ctx.lineTo(l.x2, l.y2);
@@ -159,7 +159,7 @@ export function paintFrame(
   }
   for (const d of frame.dots) {
     const w = Math.min(1, Math.max(0, d.white));
-    const val = dark ? Math.round(255 * (1 - w)) : Math.round(255 * w);
+    const val = dark ? Math.round(110 + 145 * (1 - w)) : Math.round(25 + 130 * w);
     ctx.fillStyle = `rgba(${val},${val},${val},${d.a ?? 1})`;
     ctx.beginPath();
     ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);

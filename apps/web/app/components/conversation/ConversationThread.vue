@@ -475,6 +475,9 @@ function scroller(): HTMLElement | null {
 }
 
 const hasBlocks = computed(() => props.blocks.length > 0);
+const hasRunningExchange = computed(
+  () => props.busy || props.blocks.some((b) => b.role === "assistant" && b.state === "running"),
+);
 
 // Group the flat block list into exchanges: each user request opens a new group
 // and the assistant turn(s) that follow it belong to that group.
@@ -564,7 +567,14 @@ function requestOlder(): void {
 </script>
 
 <template>
-  <div ref="root" class="thread" :class="{ 'thread--empty': !hasBlocks }">
+  <div
+    ref="root"
+    class="thread"
+    :class="{
+      'thread--empty': !hasBlocks,
+      'thread--busy': hasRunningExchange,
+    }"
+  >
     <!-- Session-start failure (or a crashed process): a soft red card with the
          error, plus copy / retry / dismiss. Retry re-runs the session start;
          dismiss hides the card until the next session error arrives. -->
@@ -1057,6 +1067,25 @@ function requestOlder(): void {
   display: flex;
   flex-direction: column;
   gap: 34px;
+  transition:
+    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* When a turn is running, earlier exchanges dissolve softly into the background
+   to keep the eye focused on the live response, and smoothly restore when hovered
+   or once the answer settles. */
+.thread--busy .exchange:not(.exchange--running) {
+  opacity: 0.52;
+  filter: saturate(0.85);
+}
+.thread--busy .exchange:not(.exchange--running):hover,
+.thread--busy .exchange:not(.exchange--running):focus-within {
+  opacity: 0.96;
+  filter: saturate(1);
+}
+.exchange--running {
+  opacity: 1;
+  filter: none;
 }
 .turn {
   position: relative;
@@ -1142,7 +1171,18 @@ function requestOlder(): void {
   font-variant-numeric: tabular-nums;
   line-height: 1;
   color: var(--muted);
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, opacity 0.3s ease;
+  animation: speaker-meta-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes speaker-meta-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .speaker__head--toggle:hover .speaker__meta {
   color: var(--ink-soft);
@@ -1404,9 +1444,14 @@ function requestOlder(): void {
   user-select: none;
   opacity: 0;
   transform: translateY(-2px);
-  transition: opacity 0.45s ease, transform 0.3s ease;
+  transition:
+    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.turn--flash .foot,
+.turn--flash .foot {
+  opacity: 0.92;
+  transform: none;
+}
 .turn--kone.turn--settled:hover .foot,
 .foot:focus-within {
   opacity: 1;
