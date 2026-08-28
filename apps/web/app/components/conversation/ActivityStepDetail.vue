@@ -9,6 +9,7 @@ import {
   Search01Icon,
   Tick02Icon,
   ToolsIcon,
+} from "@hugeicons/core-free-icons";
 import CodeBlock from "~/components/markdown/CodeBlock.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
 import ToolDiffView from "~/components/conversation/ToolDiffView.vue";
