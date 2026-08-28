@@ -321,25 +321,19 @@ function sync(): void {
   const instant = firstSync || reduced();
   firstSync = false;
 
-  // Offset the inner box by what it just gained, so the rows already on screen
-  // don't lurch. Crucially this ACCUMULATES onto whatever offset is still
-  // unwinding from a previous row: a step landing mid-slide would otherwise have
-  // its transform yanked from its in-flight value straight to the new one, and
-  // that discontinuity is felt as the whole tree shaking. Read the live animated
-  // value first — once transitions are off, the computed value collapses to the
-  // end state.
-  if (instant) {
+  // In live ticker mode (>5 live steps), offset the inner box by what it just
+  // gained so older rows slide up smoothly without shaking. In settled/expanded
+  // mode, rows flow naturally top-to-bottom so expanding and collapsing individual
+  // tool details draws up and down in sync.
+  if (instant || !windowed.value) {
     inner.style.transition = "none";
     inner.style.transform = "translateY(0px)";
-    win.style.transition = "none";
+    win.style.transition = instant ? "none" : "";
   } else if (grew > 0) {
     const pending = new DOMMatrixReadOnly(getComputedStyle(inner).transform).m42;
     inner.style.transition = "none";
     inner.style.transform = `translateY(${pending + grew}px)`;
   }
-  // grew <= 0 deliberately leaves the transform alone: the box only ever loses
-  // height off the *top* (rows trimmed above the clip), which moves nothing, and
-  // touching it would cut short a slide that's still running.
 
   win.style.height = `${target}px`;
   win.style.paddingTop = target > 0 ? `${BLEED}px` : "0px";
@@ -347,9 +341,9 @@ function sync(): void {
 
   void win.offsetHeight; // flush the above as the transition's starting point
 
-  if (instant) {
+  if (instant || !windowed.value) {
     inner.style.transition = "";
-    win.style.transition = "";
+    if (instant) win.style.transition = "";
   } else if (grew > 0) {
     // Released together with the height, same duration and curve — that lockstep
     // is what holds the visible rows perfectly still.
@@ -554,7 +548,7 @@ function stepProps(e: ActivityEntry) {
     <div
       ref="winEl"
       class="window"
-      :class="{ 'window--masked': masked }"
+      :class="{ 'window--masked': masked, 'window--ticker': windowed }"
       @transitionend="onWinTransitionEnd"
     >
       <div ref="innerEl" class="window__inner">
@@ -694,21 +688,28 @@ function stepProps(e: ActivityEntry) {
   height: 0;
   overflow: hidden;
   transition:
-    height 380ms cubic-bezier(0.22, 0.61, 0.36, 1),
-    padding-top 380ms cubic-bezier(0.22, 0.61, 0.36, 1),
-    margin-top 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+    height 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    padding-top 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-/* Rows hang from the bottom edge and overflow upward, so a new row never pushes
-   its neighbours around — the edge simply reveals more of the stack. */
 .window__inner {
+  display: flex;
+  flex-direction: column;
+}
+/* Rows hang from the bottom edge in ticker mode so incoming live steps push older ones upward. */
+.window--ticker .window__inner {
   position: absolute;
   right: 0;
   bottom: 0;
   left: 0;
-  display: flex;
-  flex-direction: column;
-  transition: transform 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
+}
+/* Standard and expanded mode: natural top-to-bottom flow so expanding and collapsing
+   individual rows draws down and up cleanly without bottom-anchor inversion. */
+.window:not(.window--ticker) .window__inner {
+  position: relative;
+  width: 100%;
 }
 /* Only once the window is a ticker — otherwise this would fade the first row of
    a short batch for no reason. */
