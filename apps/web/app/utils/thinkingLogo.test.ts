@@ -16,6 +16,7 @@ import {
   morphEase,
   parseTint,
   rasterizePathHeadless,
+  radiusScale,
   recommendedCount,
   resolveLogo,
   serializeLogo,
@@ -60,14 +61,27 @@ describe("thinkingLogo math & core", () => {
     expect(Number.isFinite(z)).toBe(true);
   });
 
-  it("finalizes frame with depth sorting", () => {
+  it("computes radiusScale with sub-linear curve for small sizes", () => {
+    const scale14 = radiusScale(14);
+    const scale20 = radiusScale(20);
+    const scale64 = radiusScale(64);
+    const scale300 = radiusScale(300);
+
+    expect(scale14).toBeGreaterThan(0.3);
+    expect(scale20).toBeGreaterThan(scale14);
+    expect(scale64).toBeGreaterThan(scale20);
+    expect(scale300).toBeCloseTo(1, 4);
+  });
+
+  it("finalizes frame with depth sorting and rMin floor", () => {
     const dots = [
-      { x: 10, y: 10, z: 0.5, r: 1, white: 0.5 },
-      { x: 10, y: 10, z: -0.5, r: 1, white: 0.5 },
+      { x: 10, y: 10, z: 0.5, r: 0.1, white: 0.5 },
+      { x: 10, y: 10, z: -0.5, r: 1.2, white: 0.5 },
     ];
     const frame = finalizeFrame(dots, []);
     expect(frame.dots[0]!.z).toBe(-0.5);
     expect(frame.dots[1]!.z).toBe(0.5);
+    expect(frame.dots[1]!.r).toBeGreaterThanOrEqual(0.75);
   });
 });
 

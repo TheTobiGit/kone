@@ -116,7 +116,7 @@ onBeforeUnmount(() => {
   overflow: visible;
   z-index: 0;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.35s ease;
 }
 .exchange-connector.is-visible {
   opacity: 1;
@@ -128,7 +128,7 @@ onBeforeUnmount(() => {
   /* A whisper of shadow under the hairline so it reads as sitting on the
      surface rather than painted onto it — depth without weight. */
   filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.35));
-  transition: stroke 0.2s ease;
+  transition: stroke 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .exchange-connector.is-running .connector-path {
   stroke: color-mix(in oklab, var(--accent) 45%, var(--rail, color-mix(in srgb, var(--ink) 9%, transparent)));

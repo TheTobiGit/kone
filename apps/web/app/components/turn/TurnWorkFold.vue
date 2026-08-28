@@ -21,9 +21,10 @@ const props = defineProps<{
   historical?: boolean;
 }>();
 
-// Mount the body on first open and keep it, so the close animation has something
-// to collapse and a re-open doesn't re-run the batches' entrance.
-const everOpened = ref(props.open);
+// Mount the body on first open (or immediately for live turns so the initial close
+// animates rather than popping), so the close animation has something to collapse
+// and a re-open doesn't re-run the batches' entrance.
+const everOpened = ref(props.open || !props.historical);
 watch(
   () => props.open,
   (v) => {
@@ -71,20 +72,18 @@ watch(
 .fold__region {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: grid-template-rows 0.38s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .fold--open .fold__region {
   grid-template-rows: 1fr;
 }
 .fold__inner {
-  min-height: 0;
-  overflow: hidden;
-}
-.fold--open .fold__inner {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding-top: 4px;
+  min-height: 0;
+  overflow: hidden;
 }
 /* Narration inside the fold reads as recessed work notes, not the answer. */
 .fold__narration {

@@ -255,7 +255,7 @@ function rowDelay(index: number): number {
                         <TurnOrb
                           v-if="task.status !== 'pending'"
                           state="working"
-                          :size="12"
+                          :size="14"
                           aria-label="In progress"
                         />
                       </motion.span>

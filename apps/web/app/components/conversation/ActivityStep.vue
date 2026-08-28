@@ -167,7 +167,7 @@ function toggle(): void {
             v-if="streaming"
             state="thinking"
             :icon="AiBrain01Icon"
-            :size="14"
+            :size="16"
             aria-label="Thinking"
           />
           <AiBrain01 v-else ref="iconApi" :size="14" :stroke-width="1.8" trigger="manual" />
@@ -178,7 +178,7 @@ function toggle(): void {
             v-if="status === 'running'"
             :state="stateForToolFamily(meta.family)"
             :icon="meta.icon"
-            :size="14"
+            :size="16"
             :aria-label="`${meta.label} running`"
           />
           <component
