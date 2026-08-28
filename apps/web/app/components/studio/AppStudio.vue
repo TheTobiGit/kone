@@ -21,7 +21,7 @@
 
 import { computed, onMounted, ref, watch } from "vue";
 import { recordsStanding, resolveLandingProject, resolveRowFocus } from "~/utils/rowFocus";
-import { useEventListener } from "@vueuse/core";
+import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
 import type { Project } from "~/composables/useProject";
 
 const props = defineProps<{
@@ -51,6 +51,18 @@ const { byRecency } = useRecentProjects();
 const { matchesShortcut } = useShortcuts();
 const plane = useStudioPlane();
 const rowRegistry = useStudioRowRegistry();
+
+const reducedMotion = usePreferredReducedMotion();
+function reducedMotionOn(): boolean {
+  return reducedMotion.value === "reduce";
+}
+
+// ── 2D Studio Overview (Exposé) ───────────────────────────────────────────────
+// Pulls the camera back across both axes to show all active project workspace rows
+// stacked vertically, with each row displaying its horizontal strip of columns.
+const studioOverview = ref(false);
+const cameraEl = ref<HTMLElement | null>(null);
+let cameraAnim: Animation | null = null;
 
 // The plane reads the document. Each row loads its own row, but a row only
 // exists because the document said so — so with nothing rendered yet there was
@@ -145,6 +157,82 @@ const cameraIndex = computed(() => {
   return at < 0 ? 0 : at;
 });
 
+const displayRows = computed<RenderRow[]>(() => {
+  if (!studioOverview.value) return renderRows.value;
+  const withPanes = plane.rows.value.filter((r) => r.paneCount > 0);
+  if (withPanes.length > 0) {
+    return withPanes.map((r) => ({
+      projectPath: r.projectPath,
+      name: r.name,
+      transient: false,
+    }));
+  }
+  return renderRows.value;
+});
+
+const overviewIndex = computed(() => {
+  const at = displayRows.value.findIndex((r) => r.projectPath === focusedPath.value);
+  return at < 0 ? 0 : at;
+});
+
+const cameraTransform = computed(() => {
+  if (!studioOverview.value) {
+    return `translateY(${-cameraIndex.value * 100}%)`;
+  }
+  const count = displayRows.value.length;
+  if (count <= 1) {
+    return "translateY(0%)";
+  }
+  if (count === 2) {
+    return "translateY(0%)";
+  }
+  const i = overviewIndex.value;
+  return `translateY(calc(29vh - (${i} * (42vh + 24px))))`;
+});
+
+function enterStudioOverview(): void {
+  if (empty.value) return;
+  const el = cameraEl.value;
+  const fromTransform = cameraTransform.value;
+  studioOverview.value = true;
+  if (!el || reducedMotionOn()) return;
+  cameraAnim?.cancel();
+  cameraAnim = el.animate(
+    { transform: [fromTransform, cameraTransform.value] },
+    { duration: 420, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+  );
+}
+
+function exitStudioOverview(): void {
+  const el = cameraEl.value;
+  const fromTransform = cameraTransform.value;
+  studioOverview.value = false;
+  if (!el || reducedMotionOn()) return;
+  cameraAnim?.cancel();
+  cameraAnim = el.animate(
+    { transform: [fromTransform, cameraTransform.value] },
+    { duration: 420, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+  );
+}
+
+function toggleStudioOverview(): void {
+  if (empty.value) return;
+  cue("toggle");
+  if (studioOverview.value) {
+    exitStudioOverview();
+  } else {
+    enterStudioOverview();
+  }
+}
+
+function onSelectRowPane(projectPath: string, paneId: string): void {
+  if (projectPath !== focusedPath.value) {
+    focusRow(projectPath);
+  }
+  rowRegistry.rowFor(projectPath)?.focusPane?.(paneId);
+  exitStudioOverview();
+}
+
 function focusRow(projectPath: string): boolean {
   const row = renderRows.value.find((r) => r.projectPath === projectPath);
   if (!row) return false;
@@ -167,6 +255,57 @@ function stepRow(delta: number): boolean {
   return next ? focusRow(next.projectPath) : false;
 }
 
+function stepOverviewRow(delta: number): boolean {
+  const list = displayRows.value;
+  if (list.length <= 1) return false;
+  const from = list.findIndex((r) => r.projectPath === focusedPath.value);
+  if (from < 0) return false;
+  const to = Math.max(0, Math.min(list.length - 1, from + delta));
+  if (to === from) return false;
+  const next = list[to];
+  if (!next) return false;
+  focusRow(next.projectPath);
+  return true;
+}
+
+let wheelAccumulator = 0;
+let wheelCooldownUntil = 0;
+let wheelResetTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onStudioWheel(e: WheelEvent): void {
+  if (!studioOverview.value || displayRows.value.length <= 1) return;
+
+  const dy = e.deltaMode === 1 ? e.deltaY * 36 : e.deltaMode === 2 ? e.deltaY * 360 : e.deltaY;
+  const dx = e.deltaMode === 1 ? e.deltaX * 36 : e.deltaX;
+
+  // Only handle if predominantly vertical
+  if (Math.abs(dy) <= Math.abs(dx) || Math.abs(dy) < 3) return;
+
+  e.preventDefault();
+
+  const now = Date.now();
+  if (now < wheelCooldownUntil) return;
+
+  wheelAccumulator += dy;
+
+  if (wheelResetTimer) clearTimeout(wheelResetTimer);
+  wheelResetTimer = setTimeout(() => {
+    wheelAccumulator = 0;
+    wheelResetTimer = null;
+  }, 100);
+
+  const THRESHOLD = 24;
+  if (wheelAccumulator >= THRESHOLD) {
+    if (stepOverviewRow(1)) cue("select");
+    wheelAccumulator = 0;
+    wheelCooldownUntil = now + 90;
+  } else if (wheelAccumulator <= -THRESHOLD) {
+    if (stepOverviewRow(-1)) cue("select");
+    wheelAccumulator = 0;
+    wheelCooldownUntil = now + 90;
+  }
+}
+
 // ── the focused row's repository ─────────────────────────────────────────────
 // One watcher for the whole plane, following focus. A watcher per row would put
 // a git subprocess and an fs watch behind every project you have ever worked in,
@@ -181,9 +320,50 @@ const focusedProject = computed<Project>(() => {
 });
 const g = useProjectGit(focusedProject);
 
-// ── travel ───────────────────────────────────────────────────────────────────
+// ── travel & 2D overview navigation ──────────────────────────────────────────
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!props.open) return;
+
+  if (matchesShortcut("toggle-overview", e)) {
+    e.preventDefault();
+    toggleStudioOverview();
+    return;
+  }
+
+  if (studioOverview.value) {
+    if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      exitStudioOverview();
+      return;
+    }
+    if (e.key === "ArrowUp" || matchesShortcut("focus-row-up", e)) {
+      e.preventDefault();
+      if (stepOverviewRow(-1)) cue("select");
+      else cue("error");
+      return;
+    }
+    if (e.key === "ArrowDown" || matchesShortcut("focus-row-down", e)) {
+      e.preventDefault();
+      if (stepOverviewRow(1)) cue("select");
+      else cue("error");
+      return;
+    }
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      if (focusedPath.value) {
+        rowRegistry.rowFor(focusedPath.value)?.shiftPaneFocus?.(-1);
+      }
+      return;
+    }
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      if (focusedPath.value) {
+        rowRegistry.rowFor(focusedPath.value)?.shiftPaneFocus?.(1);
+      }
+      return;
+    }
+    return;
+  }
 
   if (matchesShortcut("focus-row-up", e)) {
     e.preventDefault();
@@ -298,6 +478,10 @@ function refuse(): void {
 // all means the plane itself is the frontmost thing.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!props.open || e.key !== "Escape" || e.defaultPrevented) return;
+  if (studioOverview.value) {
+    exitStudioOverview();
+    return;
+  }
   close();
 });
 
@@ -340,25 +524,52 @@ defineExpose({
        rides the settings-drawer slide for free. Hidden with `visibility` rather
        than `v-if`: every layout box below has to stay measurable while the plane
        is away, or a terminal's fit() and the strip's width maths read zero. -->
-  <div class="plane" :class="{ 'plane--hidden': !open || empty }" :inert="!open || empty">
-    <div class="plane__camera" :style="{ transform: `translateY(${-cameraIndex * 100}%)` }">
+  <div
+    class="plane"
+    :class="{
+      'plane--hidden': !open || empty,
+      'is-overview': studioOverview,
+      'is-multi-row': studioOverview && displayRows.length > 1,
+      'is-two-row': studioOverview && displayRows.length === 2,
+    }"
+    :inert="!open || empty"
+    @wheel="onStudioWheel"
+  >
+    <div
+      ref="cameraEl"
+      class="plane__camera"
+      :class="{ 'is-normal': !studioOverview }"
+      :style="{ transform: cameraTransform }"
+    >
       <!-- One slot per row. The slot is the fixed frame and the row scrolls
            inside it, so a row's own chrome can sit still while its columns
            travel past. -->
-      <div v-for="row in renderRows" :key="row.projectPath" class="plane__slot">
+      <div
+        v-for="row in displayRows"
+        :key="row.projectPath"
+        class="plane__slot"
+        :class="{ 'is-focused-row': row.projectPath === focusedPath }"
+        @click="studioOverview && row.projectPath !== focusedPath ? focusRow(row.projectPath) : undefined"
+      >
+        <div v-if="studioOverview" class="plane__row-header">
+          <span class="plane__row-name">{{ row.name }}</span>
+        </div>
+
         <StudioRow
           :project="{ path: row.projectPath, name: row.name }"
-          :visible="open && row.projectPath === focusedPath"
+          :visible="open && (studioOverview || row.projectPath === focusedPath)"
           :blocked="false"
           :branch="row.projectPath === focusedPath ? g.branch.value : null"
           :origin="row.projectPath === focusedPath ? g.origin.value : null"
+          :overview="studioOverview"
           @summon="onSummon(row.projectPath)"
           @open-branch="onOpenBranch"
           @open-file="onOpenFile"
+          @toggle-overview="toggleStudioOverview"
+          @select-pane="(paneId) => onSelectRowPane(row.projectPath, paneId)"
         />
       </div>
     </div>
-
 
     <Transition name="plane-refusal">
       <p v-if="refusal" class="plane__refusal" role="status">
@@ -376,7 +587,10 @@ defineExpose({
   z-index: 40;
   overflow: hidden;
   background: var(--ground);
-  transition: opacity 0.22s ease;
+  transition: opacity 0.22s ease, background-color 0.22s ease;
+}
+.plane.is-overview {
+  background: color-mix(in srgb, var(--ink) 3.5%, var(--ground));
 }
 .plane--hidden {
   visibility: hidden;
@@ -384,14 +598,13 @@ defineExpose({
   pointer-events: none;
 }
 
-/* The camera holds every row stacked vertically and moves in whole viewport
-   heights. Its own box is one row tall; each slot below is the full height of
-   it, so translating by -100% lands exactly on the next row. */
+/* The camera holds every row stacked vertically and moves in whole viewport heights. */
 .plane__camera {
   position: absolute;
   inset: 0;
+}
+.plane__camera.is-normal {
   transition: transform 0.34s cubic-bezier(0.22, 0.61, 0.36, 1);
-  will-change: transform;
 }
 
 .plane__slot {
@@ -407,6 +620,59 @@ defineExpose({
      re-anchors that chrome to its own row, which is exactly the viewport
      whenever that row is the one on camera. */
   transform: translate(0);
+}
+
+/* Multi-row layout in overview */
+.plane.is-overview.is-multi-row .plane__camera {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px 0;
+  height: max-content;
+  min-height: 100%;
+  box-sizing: border-box;
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.plane.is-overview.is-multi-row .plane__slot {
+  flex: 0 0 42vh;
+  height: 42vh;
+  min-height: 280px;
+  max-height: 460px;
+  box-sizing: border-box;
+}
+
+.plane.is-overview.is-two-row .plane__slot {
+  flex: 0 0 calc(47vh - 12px);
+  height: calc(47vh - 12px);
+  min-height: 280px;
+  max-height: 480px;
+}
+
+.plane__row-header {
+  position: absolute;
+  top: 8px;
+  left: 48px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.plane__row-name {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1;
+  color: var(--ink-soft);
+  transition: color 0.18s ease;
+}
+
+.is-focused-row .plane__row-name {
+  color: var(--ink);
 }
 
 /* Centred near the foot of the plane, where the eye already is after a failed

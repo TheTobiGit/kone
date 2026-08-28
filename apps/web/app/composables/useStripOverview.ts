@@ -6,33 +6,38 @@ import {
   type Ref,
 } from "vue";
 
-export const OVERVIEW_MIN_K = 0.34;
-export const OVERVIEW_MAX_K = 0.78;
-export const OVERVIEW_GUTTER = 56;
+export const OVERVIEW_MIN_K = 0.44;
+export const OVERVIEW_MAX_K = 0.58;
+export const OVERVIEW_GUTTER = 48;
 export const OVERVIEW_ANIM_MS = 420;
 export const OVERVIEW_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 export const OVERVIEW_LIFT_PX = 14;
 
 export function useStripOverview(deps: {
   rail: Ref<HTMLElement | null>;
-  railWidth: Ref<number>;
+  railWidth?: Ref<number>;
   reducedMotionOn: () => boolean;
 }) {
-  const { rail, railWidth, reducedMotionOn } = deps;
+  const { rail, reducedMotionOn } = deps;
 
   const overview = ref(false);
   const plane = ref<HTMLElement | null>(null);
   const naturalWidth = ref(0);
 
   const k = computed(() => {
-    if (!overview.value || !naturalWidth.value || !railWidth.value) return 1;
-    const fit = railWidth.value / naturalWidth.value;
-    return Math.max(OVERVIEW_MIN_K, Math.min(OVERVIEW_MAX_K, fit));
+    if (!overview.value) return 1;
+    const railH = rail.value?.clientHeight;
+    const naturalH = plane.value?.clientHeight || 720;
+    if (railH && naturalH) {
+      const fitHeight = (railH - 36) / naturalH;
+      return Math.max(OVERVIEW_MIN_K, Math.min(OVERVIEW_MAX_K, fitHeight));
+    }
+    return 0.52;
   });
 
   const centerShift = computed(() => {
-    if (!overview.value || !naturalWidth.value || !railWidth.value) return 0;
-    return Math.max(0, (railWidth.value - naturalWidth.value * k.value) / 2);
+    if (!overview.value) return 0;
+    return OVERVIEW_GUTTER;
   });
 
   function planeTransform(scale: number, shiftX: number): string {
@@ -42,7 +47,7 @@ export function useStripOverview(deps: {
 
   const scalerStyle = computed(() =>
     overview.value && naturalWidth.value
-      ? { width: `${naturalWidth.value * k.value}px`, height: "100%" }
+      ? { width: `${naturalWidth.value * k.value + OVERVIEW_GUTTER * 2}px`, height: "100%" }
       : { width: "max-content", height: "100%" },
   );
 

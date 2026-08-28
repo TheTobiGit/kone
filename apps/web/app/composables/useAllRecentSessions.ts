@@ -120,8 +120,15 @@ function mockSessions(): SessionSummary[] {
   ];
 }
 
-export function useAllRecentSessions() {
+export interface AllRecentSessionsOptions {
+  /** Read the archive instead of the live list. The two are disjoint views of
+   *  the same table, so an instance shows one or the other, never both. */
+  archived?: boolean;
+}
+
+export function useAllRecentSessions(options?: AllRecentSessionsOptions) {
   const { recents } = useRecentProjects();
+  const archived = options?.archived === true;
   const history = () =>
     import.meta.client ? window.koneDesktop?.agent?.history : undefined;
 
@@ -136,7 +143,7 @@ export function useAllRecentSessions() {
       const lists = await Promise.all(
         // SAFETY: api.list resolves StoredThreadMeta[]; the catch substitutes
         // an empty list of that same element type.
-        projects.map((p) => api.list(p.path).catch(() => [] as StoredThreadMeta[])),
+        projects.map((p) => api.list(p.path, { archived }).catch(() => [] as StoredThreadMeta[])),
       );
       return lists
         .flat()
@@ -149,7 +156,11 @@ export function useAllRecentSessions() {
           },
         }));
     },
-    mock: mockSessions,
+    // Browser dev has no archive to read, so a slice of the same stand-ins
+    // takes its place — enough for the archived view to be demoable, and
+    // disjoint from the live slice so switching between them actually changes
+    // what is on screen.
+    mock: () => (archived ? mockSessions().slice(-2) : mockSessions().slice(0, -2)),
     trigger: () => recents.value.map((p) => p.path).join("\n"),
   });
 }

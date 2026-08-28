@@ -601,6 +601,46 @@ describe("pins, selection and rename", () => {
   });
 });
 
+describe("listThreads archive views", () => {
+  test("the live list and the archive are disjoint views of the same table", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "live", projectPath: "/p", provider: "codex" });
+    store.ensureThread({ threadId: "put-away", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "live", text: "first", at: 100 });
+    store.recordUserBlock({ threadId: "put-away", text: "second", at: 200 });
+    store.setArchived("put-away", true);
+
+    expect(store.listThreads("/p").map((t) => t.threadId)).toEqual(["live"]);
+    expect(store.listThreads("/p", { archived: true }).map((t) => t.threadId)).toEqual(["put-away"]);
+    // The default and an explicit `false` are the same request.
+    expect(store.listThreads("/p", { archived: false }).map((t) => t.threadId)).toEqual(["live"]);
+  });
+
+  test("un-archiving moves a thread back across the two views", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "hello", at: 100 });
+
+    store.setArchived("a", true);
+    expect(store.listThreads("/p")).toEqual([]);
+    expect(store.listThreads("/p", { archived: true }).map((t) => t.threadId)).toEqual(["a"]);
+
+    store.setArchived("a", false);
+    expect(store.listThreads("/p").map((t) => t.threadId)).toEqual(["a"]);
+    expect(store.listThreads("/p", { archived: true })).toEqual([]);
+  });
+
+  test("the archive still requires a real user turn", () => {
+    const store = freshStore();
+    // Started but never spoken to. Archiving it must not smuggle it into a list
+    // the live view would have refused to show.
+    store.ensureThread({ threadId: "empty", projectPath: "/p", provider: "codex" });
+    store.setArchived("empty", true);
+
+    expect(store.listThreads("/p", { archived: true })).toEqual([]);
+  });
+});
+
 describe("latestThreadMeta", () => {
   test("picks the most recently active thread for a project, metadata only", () => {
     const store = freshStore();

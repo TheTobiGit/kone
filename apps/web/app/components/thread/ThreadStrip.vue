@@ -83,11 +83,15 @@ const props = defineProps<{
   /** The project's origin remote — handed to a thread's info panel, where it
    *  names the hosted repo the thread's work belongs to. */
   origin?: GitRemote | null;
+  /** Studio-wide 2D overview mode. When provided, controls this strip's overview state. */
+  overview?: boolean;
 }>();
 
 const emit = defineEmits<{
   /** Focus this column (a click, or the rail settling on it after a swipe). */
   focus: [key: string];
+  /** A column was picked/selected in overview mode — parent coordinates zoom. */
+  "select-column": [key: string];
   /** Step focus this many columns along the strip. */
   shift: [delta: number];
   /** Carry the focused column this many places along the strip. */
@@ -120,11 +124,10 @@ const emit = defineEmits<{
   /** The empty-board chooser picked a kind — start the board with that pane
    *  (or, for a thread, just reveal the waiting blank column). */
   choose: [kind: "thread" | "terminal" | "scratchpad"];
-  /** Overview (Exposé) turned on or off. ProjectView listens only to hide its
-   *  fixed composer while the plane is zoomed out — a single boolean seam, no
-   *  more: the mode itself lives here, this just tells the one overlay outside
-   *  the strip to get out of the way. */
+  /** Overview (Exposé) turned on or off. */
   "update:overview": [value: boolean];
+  /** Request studio-wide overview toggle. */
+  "toggle-overview": [];
 }>();
 
 const { cue } = useSound();
@@ -330,73 +333,73 @@ function scrollToColumn(
   else r.scrollTo({ left: target, behavior: how });
 }
 
-async function enterOverview(): Promise<void> {
+function computeOverviewNaturalWidth(): number {
+  let total = 0;
+  const count = props.panes.length;
+  if (count > 1) {
+    total += (count - 1) * 28;
+  }
+  for (const pane of props.panes) {
+    total += presetFor(pane.id).px;
+  }
+  return total;
+}
+
+function enterOverview(): void {
   const r = rail.value;
   const p = plane.value;
-  if (!r || !p || props.panes.length < 2) return;
-  // Zen's synthetic 100%-wide preset would poison the measure — an overview of one
-  // full-bleed column is meaningless, and sampling naturalWidth while the focused
-  // column is a full rail wide gives the wrong plane. Drop zen first, silently: we
-  // don't restore it on exit and never persist it. Let the column fall back to its
-  // real rung before we measure.
-  //
-  // Deliberately a *snap*, not a flagged flex-basis glide: is-width-anim would leave
-  // the focused column mid-transition from 100% → its rung at the exact nextTick we
-  // sample p.scrollWidth below, so naturalWidth would be measured against a still-
-  // full-bleed column, k would come out too small, and the scaler would strand at the
-  // wrong width for the rest of the session. The instant collapse is masked anyway by
-  // the zoom-out starting in the same frame, so the glide isn't worth corrupting the
-  // measure for. (Entering overview from a non-zen board has no width change at all.)
+  if (!r || !p) return;
+  if (props.overview === undefined && props.panes.length < 2) return;
+  // Zen's synthetic 100%-wide preset would poison the measure — drop zen first,
+  // silently: we don't restore it on exit and never persist it.
   zenIds.value.clear();
   markZoomBusy();
-  // Where the view sits *now*, before anything moves. Both numbers feed the FLIP: the
-  // scroll offset because it's about to be remapped under us, and the transform because
-  // a re-entry can start from a plane that's still mid-flight.
+
   const fromScroll = r.scrollLeft;
   const fromTransform = planeTransform(k.value, centerShift.value);
+
+  // Set the measured natural width synchronously so `k`, `centerShift` and `scalerStyle`
+  // are fully computed in the exact same render cycle overview becomes true.
+  naturalWidth.value = computeOverviewNaturalWidth();
   overview.value = true;
   emit("update:overview", true);
-  // First flush lays out the `is-overview` state — the 28px struts especially — but
-  // naturalWidth is still 0, so k falls back to 1 and no scale is applied yet. Sample
-  // the plane's scrollWidth *now*, with the gaps in place: measure it gapless and the
-  // cards overflow by 28×(n-1) once the struts arrive.
-  await nextTick();
-  naturalWidth.value = p.scrollWidth;
-  // Second flush applies the real k — scale + scaler width — and the browser paints
-  // straight from the resting layout to the scaled one, so the zoom transition runs
-  // without a full-size frame flashing in between.
-  await nextTick();
-  programmaticAt = Date.now(); // the remap below is ours; don't let onScroll read it as a swipe
-  r.scrollLeft = fromScroll * k.value; // same point in the plane, zoomed out
+
+  programmaticAt = Date.now();
+  r.scrollLeft = fromScroll * k.value;
   animateZoom(flipFrom(fromTransform, fromScroll, r.scrollLeft));
 }
 
-async function exitOverview(): Promise<void> {
+async function exitOverview(targetKey?: string): Promise<void> {
   const r = rail.value;
-  if (!r) return;
+  const p = plane.value;
+  if (!r || !p) return;
   markZoomBusy();
   const fromScroll = r.scrollLeft;
-  // Read the transform *before* clearing overview — both k and centerShift depend on it.
   const fromTransform = planeTransform(k.value, centerShift.value);
   const scale = k.value;
+
+  // Lock the current transform inline before clearing overview so there is no
+  // unscaled pop before the FLIP animation takes over.
+  p.style.transform = fromTransform;
+
   overview.value = false;
   emit("update:overview", false);
   programmaticAt = Date.now();
   await nextTick();
+
+  p.style.transform = "";
   r.scrollLeft = scale ? fromScroll / scale : fromScroll;
   programmaticAt = Date.now();
-  // Land the focused column cleanly — `auto`, no glide: the transform animation below
-  // is what carries the motion, and a competing smooth scroll makes the plane swim.
-  if (props.focusedId) scrollToColumn(props.focusedId, "auto");
-  // Read the scroll offset back rather than trusting the arithmetic: it's been clamped
-  // against the new scroll extent and then possibly overwritten by the reveal above, and
-  // the FLIP is only exact if it starts from where the rail *actually* is.
+  const focusKey = targetKey ?? props.focusedId;
+  if (focusKey) scrollToColumn(focusKey, "auto");
   animateZoom(flipFrom(fromTransform, fromScroll, r.scrollLeft));
 }
 
 function toggleOverview(): void {
-  // Overview of a single column is theatre — the guard is why the shortcut and the
-  // pinch both no-op on a one-pane board.
+  if (props.overview !== undefined) {
+    emit("toggle-overview");
+    return;
+  }
   if (props.panes.length < 2) return;
   // Ignore a toggle that lands mid-flight (see markZoomBusy) — reversing the zoom
   // halfway through is the shakiest thing this feature can do, and a pinch gesture
@@ -448,7 +451,7 @@ let pinchQuiet: ReturnType<typeof setTimeout> | null = null;
 function onWheel(e: WheelEvent): void {
   if (!e.ctrlKey) return;
   e.preventDefault(); // otherwise the browser zooms the whole page
-  if (props.panes.length < 2) return;
+  if (props.panes.length < 2 && props.overview === undefined) return;
   // A pinch keeps delivering deltas long after it crossed the threshold. Swallow them
   // while the zoom is in flight *and* keep the accumulator at zero, or the tail of the
   // same gesture banks up and fires a second toggle the moment the plane lands.
@@ -610,16 +613,25 @@ onMounted(() => {
   if (props.focusedId) void nextTick(() => scrollToColumn(props.focusedId, "auto"));
 });
 
+watch(
+  () => props.overview,
+  (val) => {
+    if (val === undefined) return;
+    if (val && !overview.value) enterOverview();
+    else if (!val && overview.value) void exitOverview();
+  },
+  { immediate: true },
+);
+
 function onColumnClick(key: string): void {
   // In overview a card is a button, not a document: clicking one always exits — even
-  // the already-focused card — flying the plane back in onto it. Focus it first (only
-  // if it changed) so exitOverview lands on the right column.
+  // the already-focused card — flying the plane back in onto it. Focus it first
+  // so exitOverview lands on the right column.
   if (overview.value) {
-    if (key !== props.focusedId) {
-      cue("select");
-      emit("focus", key);
-    }
-    void exitOverview();
+    cue("select");
+    emit("focus", key);
+    emit("select-column", key);
+    void exitOverview(key);
     return;
   }
   if (key === props.focusedId) return;
@@ -812,6 +824,13 @@ function isTyping(): boolean {
 }
 
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (overview.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      void exitOverview();
+    }
+    return;
+  }
   if (matchesShortcut("focus-thread-left", e)) {
     e.preventDefault();
     cue("press");
@@ -850,11 +869,6 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (matchesShortcut("maximize-thread", e)) {
     e.preventDefault();
     toggleZen();
-    return;
-  }
-  if (matchesShortcut("toggle-overview", e)) {
-    e.preventDefault();
-    toggleOverview();
     return;
   }
   // Escape precedence: overview wins. It sits above the zen branch so a single Esc
@@ -1751,49 +1765,21 @@ function isLinkedToNext(i: number): boolean {
   gap: 0;
   height: 100%;
   transform-origin: 0 50%;
-  transition:
-    gap 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    --inv-k 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-/* Struts. The strip is deliberately gapless — that borderlessness is the house
-   aesthetic — which is exactly why the overview needs gaps: they're what let the
-   cards read as separate objects. The plane's natural width grows by the gaps, so
-   naturalWidth is sampled *after* they're applied (see enterOverview). The gap stays in
-   plane px on purpose: it feeds naturalWidth, which feeds k — a counter-scaled gap would
-   be circular. The gutter that frames the plane is handled the same way, in railPads.
-
-   There is deliberately no `padding-block` here. An earlier version bought vertical room
-   for the captions that way, and it was the worst jolt in the feature: padding on the
-   plane shortens every column, so on the first frame of the zoom every pane inside every
-   column relaid out — conversations reflowed, terminals re-fit — while the plane was
-   still gliding. The scale already leaves (1 − k) of vertical slack to seat the captions
-   in, and OVERVIEW_LIFT_PX nudges the cards up off the centre line using the transform.
-   Column heights now never change between modes. */
 .rail.is-overview .rail__plane {
   gap: 28px;
 }
-/* Promote to a compositor layer only while the zoom is actually animating — leaving
-   will-change on would hold a layer per column, terminals included, all session.
-   Pointer events go quiet for the same window: the plane sweeps cards under a stationary
-   cursor, and each one that crosses it would fire its hover lift mid-flight. */
 .rail.is-zooming .rail__plane {
-  will-change: transform;
   pointer-events: none;
 }
 .rail__pad {
   flex: none;
 }
-/* Both pads glide. The end pad used to change instantly, which meant entering overview —
-   where it collapses from half a screen to the gutter — moved the whole scroll extent in
-   one step under a plane that was still easing. Matching the zoom's curve and duration
-   makes the two halves of the change one gesture. */
 .rail__pad--start {
   width: var(--rail-pad-start, 0px);
-  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .rail__pad--end {
   width: var(--rail-pad-end, 0px);
-  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .strip.is-resizing .rail__pad--start,
 .strip.is-resizing .rail__pad--end {
@@ -2131,98 +2117,109 @@ function isLinkedToNext(i: number): boolean {
   pointer-events: none;
 }
 
-/* Columns become cards — a soft radius over a ground fill, no border (kone doesn't
-   use them). The opacity/filter/transform overrides undo the resting unfocused dim so
-   the map shows every column evenly; the two shadow layers are deliberately near-
-   invisible, since kone never leans on elevation — soft float, not a drop shadow.
-
-   Every px of chrome here is counter-scaled by 1/k (--inv-k, published on the plane):
-   these values are authored in *plane* pixels, so left alone they'd render at ×k on
-   screen — the radius, the shadow softness, and especially the focus ring would all
-   shrink with k, gutting the "which card" signal at exactly the column counts where
-   it matters most. calc(<px> * var(--inv-k)) holds them at constant screen size. */
+/* Columns become cards — a clean radius over a ground fill with subtle hairline definition.
+   The opacity/filter/transform overrides undo the resting unfocused dim so the map shows
+   every column evenly with crisp clarity. */
 .rail.is-overview .col {
-  border-radius: calc(18px * var(--inv-k, 1));
+  border-radius: 12px;
   background: var(--ground);
-  /* The card must NOT clip its own overflow: the caption lives just below it (see
-     col__map-label) and `overflow: hidden` here would guillotine it. The live
-     content is clipped to the radius by the body instead (below). */
   opacity: 1;
   filter: none;
   transform: none;
+  padding-top: 0;
   cursor: pointer;
   box-shadow:
-    0 calc(1px * var(--inv-k, 1)) calc(2px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 4%, transparent),
-    0 calc(8px * var(--inv-k, 1)) calc(24px * var(--inv-k, 1)) calc(-14px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 14%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--ink) 9%, transparent),
+    0 2px 8px color-mix(in srgb, var(--ink) 4%, transparent);
   transition:
-    opacity 0.3s ease,
-    filter 0.3s ease,
+    background-color 0.18s ease,
     box-shadow 0.18s ease,
-    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 0.2s ease;
 }
-/* The focused card gets presence without a border: the third shadow layer is an
-   accent ring drawn as a spread shadow, so it costs no layout and animates for free.
-   Its 1.5px width is counter-scaled too — a ring that thins to 0.5px at k = 0.34 is
-   the exact signal we can least afford to lose in a crowded overview. */
+/* The focused card gets presence with a clean accent ring. */
 .rail.is-overview .col.is-focused {
   box-shadow:
-    0 calc(1px * var(--inv-k, 1)) calc(2px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 5%, transparent),
-    0 calc(10px * var(--inv-k, 1)) calc(30px * var(--inv-k, 1)) calc(-14px * var(--inv-k, 1)) color-mix(in srgb, var(--accent) 34%, transparent),
-    0 0 0 calc(1.5px * var(--inv-k, 1)) color-mix(in srgb, var(--accent) 42%, transparent);
+    0 0 0 1.5px var(--accent),
+    0 3px 12px color-mix(in srgb, var(--accent) 18%, transparent);
 }
-/* A side chat's overview card carries its provisional tint, so the map still
-   tells the temporary columns apart from real conversations at a glance. */
+/* A side chat's overview card carries its provisional tint. */
 .rail.is-overview .col.is-sidechat {
   background: color-mix(in srgb, var(--accent) 4.5%, var(--ground));
 }
-/* A subtle lift on hover. It's on the card, not the plane, so it doesn't fight the
-   plane's scale — but the lift distance is in plane px, so counter-scale it or a 4px
-   rise becomes an imperceptible 1.4px at k = 0.34. */
+/* Clean, stationary hover — illuminates the card's boundary and surface wash
+   without physical translateY shift or caption jumping. */
 .rail.is-overview .col:hover {
-  transform: translateY(calc(-4px * var(--inv-k, 1)));
+  background: color-mix(in srgb, var(--hover) 45%, var(--ground));
   box-shadow:
-    0 calc(2px * var(--inv-k, 1)) calc(4px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 5%, transparent),
-    0 calc(14px * var(--inv-k, 1)) calc(34px * var(--inv-k, 1)) calc(-14px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 18%, transparent);
+    0 0 0 1.5px color-mix(in srgb, var(--ink) 22%, transparent),
+    0 4px 16px color-mix(in srgb, var(--ink) 7%, transparent);
 }
 .rail.is-overview .col.is-focused:hover {
-  transform: translateY(calc(-4px * var(--inv-k, 1)));
+  background: color-mix(in srgb, var(--accent) 3.5%, var(--ground));
   box-shadow:
-    0 calc(2px * var(--inv-k, 1)) calc(4px * var(--inv-k, 1)) color-mix(in srgb, var(--ink) 6%, transparent),
-    0 calc(14px * var(--inv-k, 1)) calc(36px * var(--inv-k, 1)) calc(-14px * var(--inv-k, 1)) color-mix(in srgb, var(--accent) 38%, transparent),
-    0 0 0 calc(1.5px * var(--inv-k, 1)) color-mix(in srgb, var(--accent) 46%, transparent);
+    0 0 0 2px var(--accent),
+    0 4px 18px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.rail.is-overview .col.is-sidechat:hover {
+  background: color-mix(in srgb, var(--accent) 7.5%, var(--ground));
+  box-shadow:
+    0 0 0 1.5px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 4px 16px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-/* In overview the card is a button, not a document: silence everything inside it so
-   a click anywhere on it lands as "focus this column", never as a scroll or a tool
-   press. */
+/* In overview the card is a pure snapshot button: silence everything inside it so
+   a click anywhere on it lands as "focus this column", never as an inner scroll, text selection,
+   or tool interaction. */
+.rail.is-overview .col {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  touch-action: pan-x !important;
+}
 .rail.is-overview .col__body,
-.rail.is-overview .col__head {
-  pointer-events: none;
+.rail.is-overview .col__head,
+.rail.is-overview :deep(.thread),
+.rail.is-overview :deep(.terminal),
+.rail.is-overview :deep(.scratchpad),
+.rail.is-overview :deep(.xterm),
+.rail.is-overview :deep(.xterm-screen),
+.rail.is-overview :deep(.xterm-viewport) {
+  pointer-events: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+  touch-action: none !important;
+}
+.rail.is-overview .col__body *,
+.rail.is-overview .col__head *,
+.rail.is-overview :deep(.thread *),
+.rail.is-overview :deep(.terminal *),
+.rail.is-overview :deep(.scratchpad *) {
+  pointer-events: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+  touch-action: none !important;
 }
 .rail.is-overview .col__body {
-  /* Clips the live pane content to the card's lower radius (the header above is
-     centred text that never reaches a corner), standing in for the overflow the
-     card itself can't have without eating the caption. Counter-scaled by the same
-     1/k as the card's border-radius so the two stay equal at every k — mismatch them
-     and the clip and the card edge part company. */
-  overflow: hidden;
-  border-bottom-left-radius: calc(18px * var(--inv-k, 1));
-  border-bottom-right-radius: calc(18px * var(--inv-k, 1));
+  overflow: hidden !important;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 .rail.is-overview .col__tools,
 .rail.is-overview .col-joint {
-  opacity: 0;
-  pointer-events: none;
+  display: none !important;
 }
 
 /* The caption. Counter-scaled by 1/k (--inv-k, inherited from the plane) so it stays
-   crisp at ~12.5px on screen while its parent plane is scaled down to k. Its `bottom`
-   offset counter-scales too, or the gap below the card shrinks with k and the label
-   crowds the card it names. Colour (not weight — Geist is 400-only) carries focus. */
+   crisp at ~12.5px on screen while its parent plane is scaled down to k. */
 .col__map-label {
   position: absolute;
   left: 50%;
-  bottom: calc(-30px * var(--inv-k, 1));
+  bottom: -32px;
   transform: translateX(-50%) scale(var(--inv-k, 1));
   transform-origin: top center;
   display: inline-flex;
@@ -2233,12 +2230,8 @@ function isLinkedToNext(i: number): boolean {
   font-size: 12.5px;
   letter-spacing: -0.01em;
   color: var(--muted);
-  transition: color 0.3s ease;
-  /* It's `v-if`d in with the mode, so it has no from-state to transition from — it would
-     otherwise appear at full strength on frame 0, at the bottom of a card that's still
-     full size, i.e. somewhere off screen, and then fly up with the plane. Fading it in
-     over the back half of the zoom lands it once its card has nearly settled. */
-  animation: map-label-in 260ms cubic-bezier(0.22, 1, 0.36, 1) 170ms both;
+  transition: color 0.2s ease;
+  animation: map-label-in 200ms cubic-bezier(0.22, 1, 0.36, 1) 100ms both;
 }
 @keyframes map-label-in {
   from {
@@ -2251,6 +2244,7 @@ function isLinkedToNext(i: number): boolean {
 .col__map-logo {
   flex: none;
 }
+.rail.is-overview .col:hover .col__map-label,
 .col.is-focused .col__map-label {
   color: var(--ink);
 }

@@ -18,6 +18,7 @@ import { agentIdentity } from "~/utils/agentIdentity";
 import { Magnet } from "~/components/ui/magnet";
 import { sessionBrand } from "~/utils/modelCatalog";
 import { sessionCost } from "~/utils/sessionCost";
+import { timeAgo } from "~/utils/timeAgo";
 import { formatUsd } from "~/utils/usageFormat";
 import { prefetchThread } from "~/composables/useAgent";
 import type { SessionSummary } from "~/types/session";
@@ -238,21 +239,6 @@ function formatTokens(n: number): string {
     return `${v >= 100 ? Math.round(v).toString() : v.toFixed(1).replace(/\.0$/, "")}K`;
   }
   return String(n);
-}
-
-function timeAgo(ms: number): string {
-  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (s < 45) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  const w = Math.floor(d / 7);
-  if (w < 5) return `${w}w ago`;
-  const mo = Math.floor(d / 30);
-  return mo < 12 ? `${mo}mo ago` : `${Math.floor(d / 365)}y ago`;
 }
 
 // A row shows the diff lane only when a source attributed one; otherwise the

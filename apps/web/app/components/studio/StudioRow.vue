@@ -71,6 +71,8 @@ const props = defineProps<{
    *  read here: the working tree is watched once, by the surface that owns it. */
   branch: string | null;
   origin: GitRemote | null;
+  /** Studio-wide 2D overview mode. */
+  overview?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -78,12 +80,14 @@ const emit = defineEmits<{
    *  thread, a terminal, opening a pill's thread — asks for this rather than
    *  reaching for the surface it happens to be sharing the window with. */
   summon: [];
+  openBranch: [];
   /** Pick a branch. The row's composer offers it, but the picker belongs to the
    *  repository surface — the row has no business owning a checkout. */
-  openBranch: [];
-  /** Show a file's detail. It covers the whole stage, so the surface that owns the
-   *  stage opens it; the row only knows which file was clicked and from where. */
   openFile: [path: string, rect: DOMRect | null];
+  /** A pane was selected in overview mode — parent plane focuses and zooms in. */
+  selectPane: [paneId: string];
+  /** Request studio overview toggle. */
+  toggleOverview: [];
 }>();
 
 const { cue } = useSound();
@@ -152,11 +156,7 @@ const composerOpen = ref(false);
 // A pad pane briefly pulses its index dash after a thread → pad append.
 const pulseScratchpadKey = ref<string | null>(null);
 
-// The strip's overview (Exposé) mode, mirrored up as a single boolean so the fixed
-// composer can step aside — a composer floating over the zoomed-out plane reads as a
-// bug. This is the only thing outside the strip that needs to know; the mode itself
-// lives entirely inside ThreadStrip.
-const stripOverview = ref(false);
+const isOverview = computed(() => Boolean(props.overview));
 
 const studio = useStudio({
   agent,
@@ -562,7 +562,7 @@ watch(
   pendingThreadAgent,
   async (req) => {
     if (!req) return;
-    const targetPath = typeof req === "string" ? null : req.projectPath;
+    const targetPath = req.projectPath;
     if (targetPath && targetPath !== props.project.path) return;
     pendingThreadAgent.value = null;
     emit("summon");
@@ -1309,7 +1309,7 @@ function attentionOrb(key: string): "notify" | "exclaim" {
 // surface on screen. There the beacon lifts to float just above that dock;
 // elsewhere it takes the true bottom-centre.
 const centerDockActive = computed(
-  () => props.visible && activePaneIsThread.value && !stripOverview.value,
+  () => props.visible && activePaneIsThread.value && !props.overview,
 );
 
 // The focused thread's own ask answers in place — it raises its shell (the
@@ -1383,6 +1383,8 @@ const rowApi: StudioRowApi = {
   openScratchpad: newScratchpadPane,
   playDemo,
   captureText,
+  focusPane,
+  shiftPaneFocus,
   flush: flushStudio,
   /** Stop a turn in flight, cleanly, before something tears the row down anyway
    *  (a project switch remounts it). A no-op when nothing is running. */
@@ -1403,7 +1405,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
        Rendered above every surface (studio + overview both archive) until it
        auto-dismisses. -->
   <Transition name="archive-notice">
-    <div v-if="archiveNotice" class="archive-notice" role="status">
+    <div v-if="archiveNotice && !isOverview" class="archive-notice" role="status">
       <HugeiconsIcon :icon="InformationSquareIcon" :size="15" :stroke-width="2" aria-hidden="true" />
       <span>{{ archiveNotice }}</span>
     </div>
@@ -1419,9 +1421,9 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
          width measurements never see a zero-width box. -->
     <div
       class="surface-layer surface-layer--studio"
-      :class="{ 'surface-layer--hidden': !visible }"
-      :inert="!visible || blocked"
-      :aria-hidden="!visible ? 'true' : undefined"
+      :class="{ 'surface-layer--hidden': !visible && !overview }"
+      :inert="(!visible && !overview) || blocked"
+      :aria-hidden="(!visible && !overview) ? 'true' : undefined"
     >
       <ThreadStrip
         :panes="panes"
@@ -1429,12 +1431,13 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         :now="agentNow"
         :pulse-key="pulseScratchpadKey"
         :inert="blocked"
-        :visible="visible"
+        :visible="visible || overview"
         :chooser="showChooser"
         :repo="project.name"
         :project-path="project.path"
         :branch="branch ?? undefined"
         :origin="origin"
+        :overview="overview"
         @choose="onChoosePane"
         @focus="focusPane"
         @shift="shiftPaneFocus"
@@ -1449,11 +1452,12 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @to-scratchpad="captureToScratchpad"
         @scratchpad-flush="() => scratchpad.flush()"
         @width="setPaneWidth"
-        @update:overview="stripOverview = $event"
+        @toggle-overview="emit('toggleOverview')"
+        @select-column="(id) => emit('selectPane', id)"
       />
     </div>
     <ConversationSelectionActions
-      v-if="visible && !blocked && focusedThread"
+      v-if="visible && !blocked && focusedThread && !isOverview"
       :focused-pane-id="focusedId ?? ''"
       @dispatch="studio.dispatch"
     />
@@ -1474,7 +1478,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       @after-leave="composerOpen = false"
     >
       <div
-        v-if="!focusedPendingUserInput && !focusedPendingApproval && visible && activePaneIsThread && !showChooser && !stripOverview"
+        v-if="!focusedPendingUserInput && !focusedPendingApproval && visible && activePaneIsThread && !showChooser && !isOverview"
         class="composer-dock pointer-events-none fixed inset-x-0 bottom-8 flex justify-center"
         :class="{ 'composer-dock--open': composerOpen }"
         :inert="blocked"
@@ -1522,7 +1526,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
          call and the turn continues. This is the in-thread path — the away
          signal is the centre-bottom beacon, not this. -->
     <UiUserInputModal
-      v-if="focusedPendingUserInput"
+      v-if="focusedPendingUserInput && !isOverview"
       :request-id="focusedPendingUserInput.requestId"
       :questions="focusedPendingUserInput.questions"
       @answer="onAnswerUserInput"
@@ -1534,7 +1538,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
          it's already showing this same ask inline, is the answer spot instead —
          and then this modal stays down. -->
     <AgentApprovalModal
-      v-if="focusedPendingApproval && !shellSuppressesApproval"
+      v-if="focusedPendingApproval && !shellSuppressesApproval && !isOverview"
       :request-id="focusedPendingApproval.requestId"
       :approval="focusedPendingApproval.approval"
       :queue="focusedThread?.pendingApprovals.value"
@@ -1546,54 +1550,69 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
          bottom-LEFT corner (free on the studio — the folder only perches there on
          home) instead of crowding the right-hand stack. It steps aside while
          its shell is open — the shell is the zoom-in of this same dock. -->
-    <div
-      v-if="visible && !blocked && focusedThread && !activeShell && !stripOverview"
-      class="sub-dock-corner"
+    <Transition
+      enter-active-class="transition-opacity duration-150 ease-out"
+      enter-from-class="opacity-0"
+      leave-active-class="transition-opacity duration-150 ease-in"
+      leave-to-class="opacity-0"
     >
-      <AnimatePresence :initial="false" mode="wait">
-        <AgentSubagentDock
-          v-if="activeDelegates.rows.length"
-          :key="`agent-subagents-dock-${focusedKey}`"
-          :rows="activeDelegates.rows"
-          :streaming="activeDelegates.streaming"
-          @open="onOpenDelegate"
-          @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
-        />
-      </AnimatePresence>
-    </div>
+      <div
+        v-if="visible && !blocked && focusedThread && !activeShell && !isOverview"
+        class="sub-dock-corner"
+      >
+        <AnimatePresence :initial="false" mode="wait">
+          <AgentSubagentDock
+            v-if="activeDelegates.rows.length"
+            :key="`agent-subagents-dock-${focusedKey}`"
+            :rows="activeDelegates.rows"
+            :streaming="activeDelegates.streaming"
+            @open="onOpenDelegate"
+            @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
+          />
+        </AnimatePresence>
+      </div>
+    </Transition>
 
     <!-- Corner dock stack — the agent's live side-panels in the folder-picker
          shell, bottom-right while a turn runs. Changes (files touched this
          thread) rides above Tasks (the model's TodoWrite checklist); the column
          lifts clear of the away-from-thread pill when one is perched below. -->
-    <div v-if="visible && !blocked && focusedThread && !stripOverview" class="dock-stack">
-      <AnimatePresence :initial="false" mode="wait">
-        <GitSpaceChangedFilesList
-          v-if="activeChanges.files.length"
-          :key="`agent-changes-dock-${focusedKey}`"
-          :files="activeChanges.files"
-          :total-added="activeChanges.totalAdded"
-          :total-removed="activeChanges.totalRemoved"
-          :streaming="activeChanges.streaming"
-          :repo-path="project.path"
-          @open-file="(path: string, rect: DOMRect | null) => emit('openFile', path, rect)"
-        />
-      </AnimatePresence>
-      <AnimatePresence :initial="false" mode="wait">
-        <PlanTaskList
-          v-if="activePlan"
-          :key="`agent-plan-dock-${focusedKey}`"
-          :tasks="activePlan.tasks"
-          :streaming="activePlan.streaming"
-        />
-      </AnimatePresence>
-    </div>
+    <Transition
+      enter-active-class="transition-opacity duration-150 ease-out"
+      enter-from-class="opacity-0"
+      leave-active-class="transition-opacity duration-150 ease-in"
+      leave-to-class="opacity-0"
+    >
+      <div v-if="visible && !blocked && focusedThread && !isOverview" class="dock-stack">
+        <AnimatePresence :initial="false" mode="wait">
+          <GitSpaceChangedFilesList
+            v-if="activeChanges.files.length"
+            :key="`agent-changes-dock-${focusedKey}`"
+            :files="activeChanges.files"
+            :total-added="activeChanges.totalAdded"
+            :total-removed="activeChanges.totalRemoved"
+            :streaming="activeChanges.streaming"
+            :repo-path="project.path"
+            @open-file="(path: string, rect: DOMRect | null) => emit('openFile', path, rect)"
+          />
+        </AnimatePresence>
+        <AnimatePresence :initial="false" mode="wait">
+          <PlanTaskList
+            v-if="activePlan"
+            :key="`agent-plan-dock-${focusedKey}`"
+            :tasks="activePlan.tasks"
+            :streaming="activePlan.streaming"
+          />
+        </AnimatePresence>
+      </div>
+    </Transition>
 
     <!-- Needs-a-human beacon: a big bloub at the bottom-centre for every OTHER
          thread parked on you. It lifts above the composer/cue when a thread
          column is focused, and takes the true centre elsewhere. Hover or click
          blooms the parked threads; picking one jumps to it. -->
     <div
+      v-if="!isOverview"
       class="attn-beacon"
       :class="{ 'attn-beacon--lifted': centerDockActive }"
     >
@@ -1614,7 +1633,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
          streaming into it. -->
     <Transition name="sut">
       <SubagentShell
-        v-if="activeShell"
+        v-if="activeShell && !isOverview"
         :kind="activeShell.kind"
         :run="activeShellRun"
         :thread="activeShellThread"
@@ -1628,7 +1647,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
 
     <!-- The full providers → models → effort picker, in the folder-picker shell. -->
     <ModelPickerModal
-      v-if="modelPickerOpen"
+      v-if="modelPickerOpen && !isOverview"
       :providers="pickerProviders"
       :active-provider="agent.provider.value"
       :model-id="model"
@@ -1814,4 +1833,5 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
   opacity: 0;
   transform: translateY(10px) scale(0.985);
 }
+
 </style>

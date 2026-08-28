@@ -422,8 +422,11 @@ const api = {
         options?: { limit?: number; cursor?: string },
       ): Promise<StoredThreadPage | null> =>
         ipcRenderer.invoke("agent:history-thread-page", threadId, options),
-      list: (projectPath: string): Promise<StoredThreadMeta[]> =>
-        ipcRenderer.invoke("agent:history-list", projectPath),
+      list: (
+        projectPath: string,
+        options?: { archived?: boolean },
+      ): Promise<StoredThreadMeta[]> =>
+        ipcRenderer.invoke("agent:history-list", projectPath, options),
       // Hide a thread from the recent list (recoverable), or destroy it outright.
       archive: (threadId: string, archived: boolean): Promise<void> =>
         ipcRenderer.invoke("agent:history-archive", threadId, archived),
