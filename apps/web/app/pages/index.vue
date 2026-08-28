@@ -160,6 +160,9 @@ const pageRef = ref<{ openFile: (p: string, r: DOMRect | null) => void; openBran
 
 function summonStudio() {
   if (studioOpen.value) return;
+  // The inbox sits over the plane, so leaving it open would summon the studio
+  // behind an opaque layer.
+  inboxOpen.value = false;
   cue("expand");
   studioOpen.value = true;
 }
@@ -185,6 +188,32 @@ function onStudioHotkey(e: KeyboardEvent) {
 }
 onMounted(() => window.addEventListener("keydown", onStudioHotkey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onStudioHotkey));
+
+// ── the inbox ────────────────────────────────────────────────────────────────
+// The studio's opposite number: the same work, ordered by what it wants from you
+// rather than by where it lives. ⌘I summons it, and it deliberately never shares
+// the screen with the work surface — summoning it sends the plane away, and
+// leaving it returns you to the page underneath.
+const inboxOpen = ref(false);
+
+function summonInbox() {
+  if (inboxOpen.value) return;
+  studioOpen.value = false;
+  cue("expand");
+  inboxOpen.value = true;
+}
+
+const { matchesShortcut: matchesInboxHotkey } = useShortcuts();
+function onInboxHotkey(e: KeyboardEvent) {
+  if (!matchesInboxHotkey("open-inbox", e)) return;
+  // Not while a launcher modal owns the screen — the inbox would cover it.
+  if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
+  e.preventDefault();
+  if (inboxOpen.value) inboxOpen.value = false;
+  else summonInbox();
+}
+onMounted(() => window.addEventListener("keydown", onInboxHotkey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onInboxHotkey));
 
 // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the
 // same keystroke opens and closes it (Escape also closes, via the drawer). The
@@ -257,6 +286,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
           @open-file="onStudioOpenFile"
           @open-branch="onStudioOpenBranch"
         />
+
+        <!-- The inbox, over both the page and the plane. Mounted once alongside
+             them for the same reason: whatever it comes to hold is not any one
+             page's, and it has to survive a project switch. -->
+        <InboxAppInbox :open="inboxOpen" @close="inboxOpen = false" />
       </div>
 
       <!-- While open, tapping the shoved-aside stage closes the drawer (and

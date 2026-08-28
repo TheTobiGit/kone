@@ -63,6 +63,16 @@ const ACTIONS: ShortcutAction[] = [
     personalize: true,
   },
   {
+    id: "open-inbox",
+    label: "Open the inbox",
+    hint: "Bring the inbox over whatever you are looking at; press again to send it away.",
+    description: "Every agent that has said something or is waiting on you, in one list.",
+    group: "Inbox",
+    default: "mod+i",
+    rebindable: true,
+    personalize: true,
+  },
+  {
     id: "toggle-settings",
     label: "Open settings drawer",
     hint: "Open or close the personalization drawer.",

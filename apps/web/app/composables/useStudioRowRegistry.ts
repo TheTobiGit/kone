@@ -32,6 +32,8 @@ export interface StudioRowApi {
   openScratchpad: () => void;
   playDemo?: () => void;
   captureText?: (text: string) => void;
+  focusPane?: (paneId: string) => void;
+  shiftPaneFocus?: (delta: number) => void;
   /** Write the row's layout through, past any debounce. */
   flush: () => void;
   /** Stop a turn in flight cleanly before something tears the row down anyway. */

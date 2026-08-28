@@ -1530,9 +1530,10 @@ export type KoneAgentHistoryApi = {
     threadId: string,
     options?: { limit?: number; cursor?: string },
   ) => Promise<StoredThreadPage | null>;
-  /** Every stored thread for a project (metadata only), newest first. Excludes
-   *  archived threads. */
-  list: (projectPath: string) => Promise<StoredThreadMeta[]>;
+  /** Every stored thread for a project (metadata only), newest first. The live
+   *  threads by default; with `archived: true`, only the put-away ones. The two
+   *  are disjoint views, never a union. */
+  list: (projectPath: string, options?: { archived?: boolean }) => Promise<StoredThreadMeta[]>;
   /** Hide a thread from the recent list (recoverable), or restore it. */
   archive: (threadId: string, archived: boolean) => Promise<void>;
   /** Permanently delete a thread and its transcript. Irreversible. */

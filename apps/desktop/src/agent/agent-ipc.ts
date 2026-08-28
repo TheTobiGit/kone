@@ -349,8 +349,10 @@ export function registerAgentIpc(): void {
       return { ...page, blocks: projectStoredBlocksForIpc(page.blocks) };
     },
   );
-  ipcMain.handle("agent:history-list", (_event, projectPath: string) =>
-    store.listThreads(projectPath),
+  ipcMain.handle(
+    "agent:history-list",
+    (_event, projectPath: string, options?: { archived?: boolean }) =>
+      store.listThreads(projectPath, options),
   );
   // Lifetime, fully-local profile stats — aggregated in SQL across every
   // project's threads for the standalone profile board.

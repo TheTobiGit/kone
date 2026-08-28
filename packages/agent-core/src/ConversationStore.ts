@@ -1821,17 +1821,24 @@ export class ConversationStore {
   /** Every thread for a project (metadata only), newest first — the backing
    *  read for the "recent conversations" block. Only threads that have at
    *  least one user turn are returned (a started-but-empty session stays out
-   *  of the list). */
-  listThreads(projectPath: string): StoredThreadMeta[] {
+   *  of the list).
+   *
+   *  The two states are disjoint views of the same table, never a union: by
+   *  default the live threads, and with `archived: true` only the put-away
+   *  ones. A caller asking for archived threads is looking at the archive as a
+   *  place, so mixing the live ones back in would defeat the request. */
+  listThreads(projectPath: string, options?: { archived?: boolean }): StoredThreadMeta[] {
     const db = this.handle();
     if (!db) return [];
+    const archivedOnly = options?.archived === true;
     try {
       // SAFETY: `t.*` of threads is exactly ThreadRow — the columns this
       // schema creates.
       const rows = db
         .prepare(
           `SELECT t.* FROM threads t
-            WHERE t.project_path = ? AND t.archived IS NULL
+            WHERE t.project_path = ?
+              AND t.archived IS ${archivedOnly ? "NOT NULL" : "NULL"}
               AND EXISTS (
                 SELECT 1 FROM blocks b
                 WHERE b.thread_id = t.thread_id AND b.role = 'user'
