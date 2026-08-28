@@ -9,9 +9,9 @@ import {
   Search01Icon,
   Tick02Icon,
   ToolsIcon,
-} from "@hugeicons/core-free-icons";
 import CodeBlock from "~/components/markdown/CodeBlock.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
+import ToolDiffView from "~/components/conversation/ToolDiffView.vue";
 
 const props = defineProps<{
   detail: string;
@@ -42,7 +42,11 @@ const payload = computed<ParsedPayload>(() => {
   const raw = props.detail.trim();
   if (!raw) return { kind: "raw", content: "" };
 
-  if (raw.startsWith("diff --git") || (raw.startsWith("--- ") && raw.includes("+++ "))) {
+  if (
+    raw.startsWith("diff --git") ||
+    (raw.startsWith("--- ") && raw.includes("+++ ")) ||
+    (raw.includes("@@ -") && (raw.includes("\n+") || raw.includes("\n-")))
+  ) {
     return { kind: "diff", content: raw };
   }
 
@@ -241,20 +245,16 @@ async function onCopy(): Promise<void> {
             {{ payload.instruction }}
           </span>
         </div>
-        <div v-if="payload.target && payload.replacement" class="sdetail__diff-view">
-          <div class="sdetail__diff-pane sdetail__diff-pane--old">
-            <div class="sdetail__diff-sub">Before</div>
-            <CodeBlock :code="payload.target" :info="detectLang(payload.file)" />
-          </div>
-          <div class="sdetail__diff-pane sdetail__diff-pane--new">
-            <div class="sdetail__diff-sub">After</div>
-            <CodeBlock :code="payload.replacement" :info="detectLang(payload.file)" />
-          </div>
-        </div>
-        <CodeBlock
+        <ToolDiffView
+          v-if="payload.target && payload.replacement"
+          :file="payload.file"
+          :target-content="payload.target"
+          :replacement-content="payload.replacement"
+        />
+        <ToolDiffView
           v-else-if="payload.replacement || payload.code"
-          :code="payload.replacement ?? payload.code ?? ''"
-          :info="detectLang(payload.file)"
+          :file="payload.file"
+          :code-content="payload.replacement ?? payload.code"
         />
       </template>
 
@@ -292,7 +292,7 @@ async function onCopy(): Promise<void> {
 
       <!-- Diff -->
       <template v-else-if="payload.kind === 'diff'">
-        <CodeBlock :code="payload.content" info="diff" />
+        <ToolDiffView :raw-diff="payload.content" />
       </template>
 
       <!-- Raw text / fallback -->
