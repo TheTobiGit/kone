@@ -23,6 +23,8 @@ import {
 import FileChip from "~/components/git-space/FileChip.vue";
 import SiteChip from "~/components/site/SiteChip.vue";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
+import ActivityStepDetail from "~/components/conversation/ActivityStepDetail.vue";
+import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import AiBrain01 from "~/components/icons/animated/AiBrain01.vue";
 import CommandLine from "~/components/icons/animated/CommandLine.vue";
 import Delete02 from "~/components/icons/animated/Delete02.vue";
@@ -101,6 +103,7 @@ const subagentRun = computed(() =>
 );
 
 const open = ref(false);
+const everOpened = ref(false);
 
 const isThinking = computed(() => props.entry.type === "thinking");
 const tool = computed(() => (props.entry.type === "tool" ? props.entry.item : null));
@@ -143,6 +146,7 @@ const hue = computed(() => (isThinking.value ? thinkingOrbHue() : meta.value?.hu
 function toggle(): void {
   if (!clickable.value) return;
   open.value = !open.value;
+  if (open.value) everOpened.value = true;
   cue("toggle");
 }
 </script>
@@ -253,8 +257,17 @@ function toggle(): void {
 
     <div v-if="clickable" class="astep__body" :class="{ 'astep__body--open': open }">
       <div class="astep__body-inner">
-        <p v-if="hasThinkingBody" class="astep__think">{{ thinkingText }}</p>
-        <pre v-else-if="hasToolBody" class="astep__output">{{ tool!.detail }}</pre>
+        <template v-if="everOpened">
+          <div v-if="hasThinkingBody" class="astep__think-wrap">
+            <MarkdownMessage :source="thinkingText!" :historical="true" />
+          </div>
+          <ActivityStepDetail
+            v-else-if="hasToolBody"
+            :detail="tool!.detail!"
+            :tool-name="tool!.name"
+            :tool-text="tool!.text"
+          />
+        </template>
       </div>
     </div>
   </div>
@@ -389,7 +402,7 @@ function toggle(): void {
 .astep__body {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .astep__body--open {
   grid-template-rows: 1fr;
@@ -399,27 +412,21 @@ function toggle(): void {
   min-height: 0;
   padding-left: 24px;
 }
-.astep__think {
-  margin: 0 0 6px;
-  font-size: 14px;
+.astep__think-wrap {
+  margin: 2px 0 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  font-size: 13px;
   line-height: 1.6;
   color: var(--muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  text-wrap: pretty;
 }
-.astep__output {
+.astep__think-wrap :deep(p) {
   margin: 0 0 6px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: var(--hover);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--ink-soft);
-  white-space: pre-wrap;
-  overflow-x: auto;
-  max-width: 100%;
+}
+.astep__think-wrap :deep(p:last-child) {
+  margin-bottom: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .astep__chev,

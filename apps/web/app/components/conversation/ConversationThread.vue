@@ -564,6 +564,87 @@ function requestOlder(): void {
   cue("expand");
   emit("load-older");
 }
+
+// ── top-anchored turn staging & streaming follow ──────────────────────────────
+// When the user submits a new request in a thread with history, we stage that
+// new exchange right at the top of the viewport (where the first request of a
+// thread sits). This leaves the entire open canvas below for the incoming
+// response, thinking steps, and tool calls to stream down without page shifting.
+const userScrolledAway = ref(false);
+let scrollCleanup: (() => void) | null = null;
+
+function isNearBottom(sc: HTMLElement, threshold = 96): boolean {
+  return sc.scrollHeight - sc.clientHeight - sc.scrollTop <= threshold;
+}
+
+function scrollToLastExchangeTop(smooth = true): void {
+  if (!import.meta.client) return;
+  const sc = scroller();
+  if (!sc) return;
+  const lastEx = root.value?.querySelector(".exchange:last-child") as HTMLElement | null;
+  if (!lastEx) return;
+
+  const scRect = sc.getBoundingClientRect();
+  const exRect = lastEx.getBoundingClientRect();
+  // 14px aligns with the container top padding / mask fade
+  const targetTop = sc.scrollTop + (exRect.top - scRect.top) - 14;
+
+  sc.scrollTo({
+    top: Math.max(0, targetTop),
+    behavior: smooth ? "smooth" : "auto",
+  });
+}
+
+function followStreamingBottom(): void {
+  if (!import.meta.client || userScrolledAway.value) return;
+  const sc = scroller();
+  if (!sc) return;
+  if (isNearBottom(sc, 140)) {
+    sc.scrollTo({
+      top: sc.scrollHeight - sc.clientHeight,
+      behavior: "smooth",
+    });
+  }
+}
+
+onMounted(() => {
+  const sc = scroller();
+  if (!sc) return;
+  const handler = () => {
+    userScrolledAway.value = !isNearBottom(sc, 140);
+  };
+  sc.addEventListener("scroll", handler, { passive: true });
+  scrollCleanup = () => sc.removeEventListener("scroll", handler);
+});
+
+onBeforeUnmount(() => {
+  scrollCleanup?.();
+});
+
+watch(
+  () => lastUserBlock()?.id ?? null,
+  async (newId, oldId) => {
+    if (!newId || newId === oldId) return;
+    userScrolledAway.value = false;
+    if (oldId !== null || (props.blocks.length > 0 && !props.blocks[0]?.historical)) {
+      await nextTick();
+      scrollToLastExchangeTop(true);
+    }
+  },
+);
+
+watch(
+  () => {
+    const last = props.blocks[props.blocks.length - 1];
+    return last?.role === "assistant" && last.state === "running" ? last.items.length : 0;
+  },
+  async (len, oldLen) => {
+    if (len > oldLen) {
+      await nextTick();
+      followStreamingBottom();
+    }
+  },
+);
 </script>
 
 <template>
@@ -1086,6 +1167,11 @@ function requestOlder(): void {
 .exchange--running {
   opacity: 1;
   filter: none;
+}
+/* The trailing exchange has clearance so a newly-sent request stages cleanly
+   at the top of the viewport with ample open space beneath for streaming. */
+.exchange:last-child {
+  min-height: min(72vh, 620px);
 }
 .turn {
   position: relative;
