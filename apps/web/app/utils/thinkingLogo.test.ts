@@ -238,7 +238,7 @@ describe("turnOrb integration", () => {
 
   it("executes drawTurnOrb without throwing", () => {
     // SAFETY: Mock CanvasRenderingContext2D subset required for headless rendering unit tests
-    const mockCtx = {
+    const mockCtx: Partial<CanvasRenderingContext2D> = {
       setTransform: () => {},
       clearRect: () => {},
       beginPath: () => {},
@@ -250,15 +250,17 @@ describe("turnOrb integration", () => {
       fillStyle: "",
       strokeStyle: "",
       lineWidth: 1,
-    } as unknown as CanvasRenderingContext2D;
+    };
 
     expect(() => {
-      drawTurnOrb(mockCtx, 20, 1.5, true, "read");
-      drawTurnOrb(mockCtx, 20, 1.5, true, "thinking");
-      drawTurnOrb(mockCtx, 20, 1.5, true, "working");
-      drawTurnOrb(mockCtx, 20, 1.5, false, "search");
-      drawTurnOrb(mockCtx, 20, 1.5, true, "read", true); // reduced motion
-      drawTurnOrb(mockCtx, 20, 1.5, true, "read", false, null, true); // classic mode
+      // SAFETY: Headless test context implements the drawTurnOrb 2D canvas method subset
+      const ctx = mockCtx as CanvasRenderingContext2D;
+      drawTurnOrb(ctx, 20, 1.5, true, "read");
+      drawTurnOrb(ctx, 20, 1.5, true, "thinking");
+      drawTurnOrb(ctx, 20, 1.5, true, "working");
+      drawTurnOrb(ctx, 20, 1.5, false, "search");
+      drawTurnOrb(ctx, 20, 1.5, true, "read", true); // reduced motion
+      drawTurnOrb(ctx, 20, 1.5, true, "read", false, null, true); // classic mode
     }).not.toThrow();
   });
 });

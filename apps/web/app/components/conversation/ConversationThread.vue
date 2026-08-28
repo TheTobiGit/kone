@@ -581,6 +581,7 @@ function scrollToLastExchangeTop(smooth = true): void {
   if (!import.meta.client) return;
   const sc = scroller();
   if (!sc) return;
+  // SAFETY: querySelector returns the trailing .exchange element rendered by the template.
   const lastEx = root.value?.querySelector(".exchange:last-child") as HTMLElement | null;
   if (!lastEx) return;
 

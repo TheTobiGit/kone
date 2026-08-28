@@ -23,6 +23,40 @@ const props = defineProps<{
 const { cue } = useSound();
 const copied = ref(false);
 
+interface RawToolRecord {
+  CommandLine?: string;
+  command?: string;
+  cmd?: string;
+  Cwd?: string;
+  cwd?: string;
+  TargetFile?: string;
+  targetFile?: string;
+  file?: string;
+  path?: string;
+  ReplacementContent?: string;
+  replacementContent?: string;
+  TargetContent?: string;
+  targetContent?: string;
+  CodeContent?: string;
+  codeContent?: string;
+  content?: string;
+  Instruction?: string;
+  instruction?: string;
+  Description?: string;
+  description?: string;
+  AbsolutePath?: string;
+  absolutePath?: string;
+  StartLine?: number;
+  endLine?: number;
+  EndLine?: number;
+  Query?: string;
+  query?: string;
+  Pattern?: string;
+  pattern?: string;
+  SearchPath?: string;
+  SearchDirectory?: string;
+}
+
 type ParsedPayload =
   | { kind: "command"; command: string; cwd?: string }
   | {
@@ -52,65 +86,58 @@ const payload = computed<ParsedPayload>(() => {
   }
 
   try {
-    const obj = JSON.parse(raw);
-    if (typeof obj === "object" && obj !== null) {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed instanceof Object && !Array.isArray(parsed)) {
+      // SAFETY: Parsed JSON payload matching arbitrary tool argument schemas
+      const obj = parsed as RawToolRecord;
+
       // Command execution
-      const cmd = obj.CommandLine ?? obj.command ?? obj.cmd;
-      if (typeof cmd === "string" && cmd.trim()) {
+      const cmd = obj.CommandLine || obj.command || obj.cmd;
+      if (cmd && String(cmd).trim()) {
         return {
           kind: "command",
-          command: cmd.trim(),
-          cwd:
-            typeof obj.Cwd === "string"
-              ? obj.Cwd
-              : typeof obj.cwd === "string"
-                ? obj.cwd
-                : undefined,
+          command: String(cmd).trim(),
+          cwd: obj.Cwd || obj.cwd,
         };
       }
 
       // File edits / writes
-      const targetFile = obj.TargetFile ?? obj.targetFile ?? obj.file ?? obj.path;
-      const replacement = obj.ReplacementContent ?? obj.replacementContent;
-      const target = obj.TargetContent ?? obj.targetContent;
-      const code = obj.CodeContent ?? obj.codeContent ?? obj.content;
+      const targetFile = obj.TargetFile || obj.targetFile || obj.file || obj.path;
+      const replacement = obj.ReplacementContent || obj.replacementContent;
+      const target = obj.TargetContent || obj.targetContent;
+      const code = obj.CodeContent || obj.codeContent || obj.content;
       const instruction =
-        obj.Instruction ?? obj.instruction ?? obj.Description ?? obj.description;
-      if (typeof targetFile === "string" && (replacement || code || target)) {
+        obj.Instruction || obj.instruction || obj.Description || obj.description;
+      if (targetFile && (replacement || code || target)) {
         return {
           kind: "file_edit",
           file: targetFile,
-          replacement: typeof replacement === "string" ? replacement : undefined,
-          target: typeof target === "string" ? target : undefined,
-          code: typeof code === "string" ? code : undefined,
-          instruction: typeof instruction === "string" ? instruction : undefined,
+          replacement,
+          target,
+          code,
+          instruction,
         };
       }
 
       // File reads
-      const absPath = obj.AbsolutePath ?? obj.absolutePath;
-      if (typeof absPath === "string") {
+      const absPath = obj.AbsolutePath || obj.absolutePath;
+      if (absPath) {
         return {
           kind: "file_read",
           file: absPath,
-          startLine: typeof obj.StartLine === "number" ? obj.StartLine : undefined,
-          endLine: typeof obj.EndLine === "number" ? obj.EndLine : undefined,
+          startLine: obj.StartLine,
+          endLine: obj.EndLine || obj.endLine,
         };
       }
 
       // Search / grep
-      const query = obj.Query ?? obj.query ?? obj.Pattern ?? obj.pattern;
-      if (typeof query === "string") {
+      const query = obj.Query || obj.query || obj.Pattern || obj.pattern;
+      if (query) {
         return {
           kind: "search",
           query,
-          path:
-            typeof obj.SearchPath === "string"
-              ? obj.SearchPath
-              : typeof obj.SearchDirectory === "string"
-                ? obj.SearchDirectory
-                : undefined,
-          pattern: typeof obj.Pattern === "string" ? obj.Pattern : undefined,
+          path: obj.SearchPath || obj.SearchDirectory,
+          pattern: obj.Pattern || obj.pattern,
         };
       }
 
