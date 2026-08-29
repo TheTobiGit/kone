@@ -59,6 +59,7 @@ import {
 } from "./rosterRecord.js";
 
 import {
+  DONE_CLEARED,
   PAGE_DEFAULT_USER_BLOCKS,
   PAGE_RAW_FANOUT,
   assembleBlocks,
@@ -646,6 +647,36 @@ export class ConversationStore {
       );
     } catch (err) {
       console.error("[conversation-store] setPinned failed:", err);
+    }
+  }
+
+  /** Mark a thread done, or take the mark off. Done says you are finished with
+   *  the thread's claim on your attention — it does not stop the agent, close
+   *  the thread, or archive it, and the work is untouched either way.
+   *
+   *  Stamped rather than flagged, because the mark expires on its own: a thread
+   *  the agent has spoken in since carries a `done_at` older than its
+   *  `last_activity_at`, and reads compare the two instead of trusting the
+   *  stamp alone. So nothing has to clear this when a turn lands, and no crash
+   *  between a turn and a clear can leave a live thread silently marked done.
+   *
+   *  Un-marking writes epoch zero, not NULL. The two are different answers:
+   *  NULL is "you never said", which leaves a thread free to be counted done by
+   *  age once it has been quiet long enough, and zero is "you said you are not
+   *  finished", which outranks age for good. Writing NULL for both would make
+   *  the un-mark silently reverse itself on exactly the old threads someone is
+   *  most likely to press it on. Zero is safe as the marker because it is not a
+   *  time any thread was ever marked at. */
+  setDone(threadId: string, done: boolean): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      db.prepare(`UPDATE threads SET done_at = ? WHERE thread_id = ?`).run(
+        done ? Date.now() : DONE_CLEARED,
+        threadId,
+      );
+    } catch (err) {
+      console.error("[conversation-store] setDone failed:", err);
     }
   }
 

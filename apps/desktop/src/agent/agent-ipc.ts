@@ -487,6 +487,13 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:set-pinned", (_event, threadId: string, pinned: boolean) =>
     store.setPinned(threadId, pinned),
   );
+  // Done state lives in the DB alongside pins, so a thread you have finished
+  // with stays finished with across browser profiles. Distinct from archive:
+  // the thread stays in the live list, it just stops asking — and it starts
+  // asking again on its own the moment the agent speaks in it.
+  ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
+    store.setDone(threadId, done),
+  );
   // Persist the user's per-thread picker selection (model / effort /
   // serviceTier / contextWindow) so a reopened thread restores the picker
   // exactly where it was left.

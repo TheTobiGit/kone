@@ -436,6 +436,12 @@ const api = {
       // follows the thread across profiles.
       setPinned: (threadId: string, pinned: boolean): Promise<void> =>
         ipcRenderer.invoke("agent:set-pinned", threadId, pinned),
+      // Mark a thread done, or take the mark off. Done state lives in the DB
+      // beside pins for the same reason. It says you are finished with the
+      // thread's claim on you — not that the work ended, and not that the
+      // thread is put away.
+      setDone: (threadId: string, done: boolean): Promise<void> =>
+        ipcRenderer.invoke("agent:set-done", threadId, done),
       // Lifetime, fully-local usage stats aggregated across every project, for
       // the standalone profile board.
       profileStats: (): Promise<ProfileStats> =>

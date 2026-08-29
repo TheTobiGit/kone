@@ -1343,6 +1343,19 @@ export type StoredThreadMeta = {
    *  `updatedAt` which title/archive bookkeeping also bumps. Backfilled from
    *  updatedAt for pre-v18 rows. */
   lastActivityAt?: number;
+  /** Your standing answer on whether this thread still has a claim on you
+   *  (v29). Done is a fact about you, not about the work: it stops the thread
+   *  asking without stopping the agent, closing the thread, or archiving it.
+   *
+   *  Three values, three different answers. A timestamp is "I marked it then" —
+   *  and it expires by comparison with `lastActivityAt`, so a thread the agent
+   *  has spoken in since is asking again whatever the stamp says, and nothing
+   *  has to write here when a turn lands. Null is "I never said", which leaves
+   *  the thread free to be counted done once it has been quiet long enough.
+   *  Zero is "I said it is not done", which outranks age.
+   *
+   *  Never read it alone — go through isThreadDone, which holds all three. */
+  doneAt?: number | null;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -1541,6 +1554,12 @@ export type KoneAgentHistoryApi = {
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;
+  /** Mark a thread done (you are finished with its claim on you), or take the
+   *  mark off. Stored in the DB beside pins, so it follows the thread across
+   *  profiles. Not archive: the thread stays in the live list, and it starts
+   *  asking again by itself once the agent speaks in it — see
+   *  `StoredThreadMeta.doneAt`. */
+  setDone: (threadId: string, done: boolean) => Promise<void>;
   /** Lifetime, fully-local usage stats aggregated across every project, for the
    *  standalone profile board. */
   profileStats: () => Promise<ProfileStats>;
