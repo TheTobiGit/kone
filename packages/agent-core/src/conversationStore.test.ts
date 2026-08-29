@@ -251,13 +251,13 @@ const V17_THREADS = `
 `;
 
 describe("v18 migration", () => {
-  test("fresh DB opens at the current schema (v28) with the new columns, table and indexes", () => {
+  test("fresh DB opens at the current schema (v29) with the new columns, table and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
 
     const threads = columnNames(raw, "threads");
     for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
@@ -388,7 +388,7 @@ describe("v18 migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
     expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
     raw.close();
     // Persistence is live again on the completed schema.
@@ -638,6 +638,65 @@ describe("listThreads archive views", () => {
     store.setArchived("empty", true);
 
     expect(store.listThreads("/p", { archived: true })).toEqual([]);
+  });
+});
+
+describe("setDone", () => {
+  test("marking a thread done stamps it; un-marking clears the stamp", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "hello", at: 100 });
+
+    expect(store.threadMeta("a")?.doneAt).toBeNull();
+
+    const before = Date.now();
+    store.setDone("a", true);
+    const stamp = store.threadMeta("a")?.doneAt;
+    expect(stamp).not.toBeNull();
+    expect(stamp!).toBeGreaterThanOrEqual(before);
+
+    // Un-marking writes epoch zero, not NULL. "You never said" and "you said
+    // not done" are different answers, and only the first one may later be
+    // overruled by the thread going quiet for long enough.
+    store.setDone("a", false);
+    expect(store.threadMeta("a")?.doneAt).toBe(0);
+  });
+
+  test("done leaves the thread in the live list and out of the archive", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "hello", at: 100 });
+    store.setDone("a", true);
+
+    // Done is not archive. The thread stays exactly where it was; only the
+    // stamp on it changed, and it is the reader that decides what to do with
+    // one.
+    expect(store.listThreads("/p").map((t) => t.threadId)).toEqual(["a"]);
+    expect(store.listThreads("/p", { archived: true })).toEqual([]);
+  });
+
+  test("a turn after the mark leaves the thread asking again", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "hello", at: 100 });
+    store.setDone("a", true);
+
+    const marked = store.threadMeta("a")!;
+    expect(marked.doneAt!).toBeGreaterThanOrEqual(marked.lastActivityAt!);
+
+    store.recordUserBlock({ threadId: "a", text: "and another thing", at: Date.now() + 1000 });
+
+    // Nothing cleared the stamp — the thread simply stopped satisfying the
+    // predicate, which is the whole reason it is a timestamp and not a flag.
+    const spoken = store.threadMeta("a")!;
+    expect(spoken.doneAt).not.toBeNull();
+    expect(spoken.doneAt!).toBeLessThan(spoken.lastActivityAt!);
+  });
+
+  test("marking an unknown thread does nothing and does not throw", () => {
+    const store = freshStore();
+    expect(() => store.setDone("never-existed", true)).not.toThrow();
+    expect(store.threadMeta("never-existed")).toBeNull();
   });
 });
 
@@ -987,7 +1046,7 @@ describe("v19 keyset index migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -1008,7 +1067,7 @@ describe("v19 keyset index migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -1368,7 +1427,7 @@ describe("v20 queued turns migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
     // SAFETY: sqlite_master rows carry the object's name in `name`.
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
@@ -1404,14 +1463,14 @@ describe("v20 queued turns migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(28);
+    expect(version.user_version).toBe(29);
     // A re-open (a second process) runs the ladder again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     // SAFETY: Same PRAGMA row shape as every read above.
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version2.user_version).toBe(28);
+    expect(version2.user_version).toBe(29);
     raw.close();
   });
 

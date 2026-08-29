@@ -8,6 +8,13 @@ import type {
   SubagentRun,
 } from "./types.js";
 
+/** The value `done_at` carries when you explicitly un-marked a thread, as
+ *  opposed to never having marked it (NULL). Epoch zero is not a time any
+ *  thread was marked at, so it can stand for "you said this is not done"
+ *  without a second column — the distinction readers need in order to let age
+ *  settle an untouched thread while leaving a deliberate un-mark alone. */
+export const DONE_CLEARED = 0;
+
 /** One project's row of the studio — its panes, in left-to-right order, and
  *  which of them it was left focused on. `panes` stays `unknown[]` because the
  *  store holds no opinion about a pane's shape: the renderer owns the canonical
@@ -98,6 +105,7 @@ export type ThreadRow = {
   model_selection_json: string | null;
   resume_session_at: string | null;
   last_activity_at: number | null;
+  done_at: number | null;
 };
 
 export type BlockRow = {
@@ -342,6 +350,10 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
      *  updated_at for pre-v18 rows. */
     lastActivityAt: row.last_activity_at ?? row.updated_at,
     resumeSessionAt: row.resume_session_at ?? undefined,
+    /** When you marked the thread done (v29), or null. Compared against
+     *  `lastActivityAt` rather than read alone: a thread the agent has spoken
+     *  in since is asking again, whatever this says. */
+    doneAt: row.done_at ?? null,
   };
   if (selection) meta.selection = selection;
   if (forkContext) meta.forkContext = forkContext;

@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
  *  partially-applied migration — a crash between statements — re-runs
@@ -1125,8 +1125,27 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
     version = commitStep(db, 28);
   }
 
+  if (version < 29) {
+    // v29 — `done_at` records that you are finished with a thread's claim on
+    // your attention. A judgment about you, not about the work: it stops the
+    // thread asking without stopping the agent, closing the thread, or
+    // archiving it.
+    //
+    // A timestamp rather than a flag, and that is what makes it self-clearing.
+    // A thread the agent has spoken in since you marked it done is asking
+    // again, and `done_at < last_activity_at` says so on its own — nothing has
+    // to reach in and unset anything when a turn lands, so there is no side
+    // write to be stranded by a crash between the turn and the clear.
+    //
+    // NULL is "not done", which every existing row already is, so there is
+    // nothing to backfill.
+    beginStep(db);
+    addColumn(db, "threads", "done_at", "INTEGER");
+    version = commitStep(db, 29);
+  }
+
   // Future migrations append here:
-  // `if (version < 29) { beginStep(db); …; version = commitStep(db, 29); }`
+  // `if (version < 30) { beginStep(db); …; version = commitStep(db, 30); }`
 
   // Every rung stamps itself, so the ladder ending anywhere but the current
   // version means a rung is missing for it — a bumped SCHEMA_VERSION that
