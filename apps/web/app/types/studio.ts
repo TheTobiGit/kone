@@ -45,6 +45,8 @@ export interface PaneEntry {
   anchor: PaneAnchor;
   /** Index into ThreadStrip's LADDER_PX presets. */
   width: number;
+  /** Whether the pane is maximized to fill the strip rail. */
+  zen?: boolean;
 }
 
 /** Runtime view of a pane: the entry joined to its live session, if attached.

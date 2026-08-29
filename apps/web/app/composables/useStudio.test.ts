@@ -154,15 +154,16 @@ function harness(hooks?: UseStudioOptions["hooks"]) {
     append: async () => {},
   };
 
-  // SAFETY: these three fakes implement exactly the agent/terminal/scratchpad
-  // surface useStudio touches; the unchecked cast supplies the test-harness deps shape.
   const studio = useStudio({
-    agent,
-    terminal,
-    scratchpad,
+    // SAFETY: Fake agent implements the subset of methods exercised by useStudio tests
+    agent: agent as ReturnType<typeof useAgent>,
+    // SAFETY: Fake terminal implements the subset of methods exercised by useStudio tests
+    terminal: terminal as ReturnType<typeof useTerminal>,
+    // SAFETY: Fake scratchpad implements the subset of methods exercised by useStudio tests
+    scratchpad: scratchpad as ReturnType<typeof useScratchpad>,
     projectPath: "/p",
     hooks,
-  } as unknown as UseStudioOptions);
+  });
   return { studio, agent, agentSessions, termSessions, padSessions, closedTerminalKeys, pinnedKeys };
 }
 
@@ -1246,5 +1247,142 @@ describe("useStudio — side chat clustering and strip order", () => {
     // Move s1 left: swaps back
     studio.move(s1Id, -1);
     expect(studio.entries.value.map((e) => e.id)).toEqual([mainPaneId, s1Id, s2Id]);
+  });
+});
+
+describe("useStudio — pane width persistence", () => {
+  test("blank thread preserves custom width across restore and deferred attach", async () => {
+    const { studio, agentSessions } = harness();
+
+    // 1. Initial blank thread has custom width set to 2 (1120px)
+    await studio.restore(
+      {
+        projectPath: "/p",
+        panes: [
+          {
+            id: "blank-1",
+            kind: "thread" as const,
+            anchor: { kind: "thread" as const, threadId: null },
+            width: 2,
+          },
+        ],
+        focusedId: "blank-1",
+      },
+      undefined,
+      { deferHeavyAttach: true },
+    );
+    await settle();
+
+    expect(studio.entries.value).toHaveLength(1);
+    expect(studio.entries.value[0]!.id).toBe("blank-1");
+    expect(studio.entries.value[0]!.width).toBe(2);
+
+    // 2. Simulating background session creation and attach
+    const blankSession = makeThread("boot-key");
+    agentSessions.value = [blankSession];
+    await settle();
+
+    // Reconcile attaches blank session to the restored blank pane without resetting width
+    expect(studio.entries.value).toHaveLength(1);
+    expect(studio.entries.value[0]!.id).toBe("blank-1");
+    expect(studio.entries.value[0]!.width).toBe(2);
+    expect(studio.panes.value[0]!.session).toMatchObject({ key: "boot-key" });
+
+    // Serialized output retains custom width
+    const serialized = studio.serialize();
+    expect(serialized.panes[0]!.width).toBe(2);
+  });
+
+  test("terminal and scratchpad panes preserve custom width across restore and spawn", async () => {
+    const { studio, termSessions, padSessions } = harness();
+
+    await studio.restore({
+      projectPath: "/p",
+      panes: [
+        {
+          id: "term-1",
+          kind: "terminal" as const,
+          anchor: { kind: "terminal" as const, terminalId: null },
+          width: 3,
+        },
+        {
+          id: "pad-1",
+          kind: "scratchpad" as const,
+          anchor: { kind: "scratchpad" as const, scratchpadId: null },
+          width: 1,
+        },
+      ],
+      focusedId: "term-1",
+    });
+    await settle();
+
+    expect(studio.entries.value).toHaveLength(2);
+    expect(studio.entries.value[0]!.width).toBe(3);
+    expect(studio.entries.value[1]!.width).toBe(1);
+
+    // Simulating terminal spawn
+    termSessions.value = [{ key: "live-term-1", terminalId: "live-term-1" }];
+    await settle();
+
+    expect(studio.entries.value).toHaveLength(2);
+    expect(studio.entries.value[0]!.id).toBe("term-1");
+    expect(studio.entries.value[0]!.width).toBe(3);
+    expect(studio.panes.value[0]!.session).toMatchObject({ key: "live-term-1" });
+
+    // Simulating scratchpad open
+    padSessions.value = [{ key: "live-pad-1", scratchpadId: "live-pad-1" }];
+    await settle();
+
+    expect(studio.entries.value).toHaveLength(2);
+    expect(studio.entries.value[1]!.id).toBe("pad-1");
+    expect(studio.entries.value[1]!.width).toBe(1);
+    expect(studio.panes.value[1]!.session).toMatchObject({ key: "live-pad-1" });
+  });
+
+  test("setWidth updates saveSignature and serialize output", async () => {
+    const { studio } = harness();
+
+    const paneId = await studio.open("terminal");
+    await settle();
+    expect(studio.entries.value[0]!.width).toBe(0);
+
+    const sigBefore = studio.saveSignature.value;
+    studio.setWidth(paneId, 2);
+    await settle();
+
+    expect(studio.entries.value[0]!.width).toBe(2);
+    expect(studio.saveSignature.value).not.toBe(sigBefore);
+    expect(studio.serialize().panes[0]!.width).toBe(2);
+  });
+
+  test("setZen updates saveSignature and persists maximized state across restore", async () => {
+    const { studio } = harness();
+
+    const paneId = await studio.open("terminal");
+    await settle();
+    expect(studio.entries.value[0]!.zen).toBeUndefined();
+
+    const sigBefore = studio.saveSignature.value;
+    studio.setZen(paneId, true);
+    await settle();
+
+    expect(studio.entries.value[0]!.zen).toBe(true);
+    expect(studio.saveSignature.value).not.toBe(sigBefore);
+    expect(studio.serialize().panes[0]!.zen).toBe(true);
+
+    // Restore round-trip preserves zen flag
+    const serialized = studio.serialize();
+    const { studio: restoredStudio } = harness();
+    await restoredStudio.restore(serialized);
+    await settle();
+
+    expect(restoredStudio.entries.value[0]!.zen).toBe(true);
+    expect(restoredStudio.serialize().panes[0]!.zen).toBe(true);
+
+    // Toggle off removes zen
+    restoredStudio.setZen(restoredStudio.entries.value[0]!.id, false);
+    await settle();
+    expect(restoredStudio.entries.value[0]!.zen).toBeUndefined();
+    expect(restoredStudio.serialize().panes[0]!.zen).toBeUndefined();
   });
 });

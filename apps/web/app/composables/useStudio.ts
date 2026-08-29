@@ -104,6 +104,7 @@ export interface UseStudioReturn {
   focusByOffset: (delta: number) => void;
   move: (id: PaneId, delta: number) => void;
   setWidth: (id: PaneId, width: number) => void;
+  setZen: (id: PaneId, zen: boolean) => void;
   /** Bind a dormant pane to a live session on demand (the focus-attaches path).
    *  Idempotent and de-duped: concurrent calls for the same pane share one spawn. */
   attach: (id: PaneId) => Promise<void>;
@@ -398,8 +399,29 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
 
     const next = [...entries.value];
     const mapping = { ...sessionKeyById.value };
-    const claimed = new Set(Object.values(mapping));
     let changed = false;
+
+    // DORMANT / DROP — entries whose mapped session no longer exists. Run first
+    // so dead mappings are cleared before the adopt pass checks for unmapped hosts.
+    for (let i = next.length - 1; i >= 0; i--) {
+      const entry = next[i]!;
+      const sk = mapping[entry.id];
+      if (!sk || allLive.has(sk)) continue;
+      // The session is gone. Un-claim it either way.
+      delete mapping[entry.id];
+      changed = true;
+      // The join this key held is gone too — drop the pin so a key whose
+      // session was closed elsewhere (forgetThread, a dispose) can't sit in
+      // the sweep's untouchable set forever.
+      if (entry.kind === "thread") agent.unpinFromPane(sk);
+      // A blank thread has nothing to re-attach to → remove it. Everything else
+      // survives dormant (its anchor was kept fresh by syncAnchors).
+      if (entry.anchor.kind === "thread" && !entry.anchor.threadId) {
+        next.splice(i, 1);
+      }
+    }
+
+    const claimed = new Set(Object.values(mapping));
 
     // ADOPT — unclaimed live sessions land to the right of the focused column,
     // same rule as open(). Several may arrive in one reconcile pass (pill opens,
@@ -417,9 +439,8 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
         // already anchors this id — a dormant pane whose session was evicted,
         // or a restored pane for a thread opened outside the studio (launcher
         // resume, recent click, shell reveal) — re-attach it in place instead
-        // of minting a second column for the same thread. Blank threads (no
-        // persistable id) still mint, exactly as before.
-        const host = entries.value.find((e) => entryThreadId(e) === tid);
+        // of minting a second column for the same thread.
+        const host = next.find((e) => entryThreadId(e) === tid);
         if (host) {
           if (!mapping[host.id]) {
             mapping[host.id] = s.key;
@@ -433,6 +454,19 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
           // the stray session just stays unclaimed.
           continue;
         }
+      } else {
+        // A blank thread session (no persistable id). If there is already a dormant
+        // unmapped blank thread pane in the row (e.g. restored from persisted layout),
+        // re-attach to that entry so its position and width are preserved.
+        const host = next.find(
+          (e) => e.kind === "thread" && entryThreadId(e) === null && !mapping[e.id],
+        );
+        if (host) {
+          mapping[host.id] = s.key;
+          changed = true;
+          agent.pinToPane(s.key);
+          continue;
+        }
       }
       const isSide = Boolean(s.isSideChat?.value);
       const sideSrc = isSide ? s.sideChatSource?.value ?? null : null;
@@ -440,12 +474,26 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
       if (sideSrc) anchor.sideChatSource = sideSrc;
       queueAdopt("thread", s.key, anchor);
     }
-    for (const s of terminal.sessions.value)
-      if (!claimed.has(s.key))
-        queueAdopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
-    for (const s of scratchpad.sessions.value)
-      if (!claimed.has(s.key))
-        queueAdopt("scratchpad", s.key, { kind: "scratchpad", scratchpadId: s.scratchpadId });
+    for (const s of terminal.sessions.value) {
+      if (claimed.has(s.key)) continue;
+      const host = next.find((e) => e.kind === "terminal" && !mapping[e.id]);
+      if (host) {
+        mapping[host.id] = s.key;
+        changed = true;
+        continue;
+      }
+      queueAdopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
+    }
+    for (const s of scratchpad.sessions.value) {
+      if (claimed.has(s.key)) continue;
+      const host = next.find((e) => e.kind === "scratchpad" && !mapping[e.id]);
+      if (host) {
+        mapping[host.id] = s.key;
+        changed = true;
+        continue;
+      }
+      queueAdopt("scratchpad", s.key, { kind: "scratchpad", scratchpadId: s.scratchpadId });
+    }
     if (toAdopt.length) {
       let insertAt = insertIndexFor({}, next);
       for (const item of toAdopt) {
@@ -463,25 +511,6 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
         // only a thread join is worth reporting up — a terminal/scratchpad
         // key would just sit unused in a set the sweep never reads it from.
         if (item.kind === "thread") agent.pinToPane(item.key);
-      }
-    }
-
-    // DORMANT / DROP — entries whose mapped session no longer exists.
-    for (let i = next.length - 1; i >= 0; i--) {
-      const entry = next[i]!;
-      const sk = mapping[entry.id];
-      if (!sk || allLive.has(sk)) continue;
-      // The session is gone. Un-claim it either way.
-      delete mapping[entry.id];
-      changed = true;
-      // The join this key held is gone too — drop the pin so a key whose
-      // session was closed elsewhere (forgetThread, a dispose) can't sit in
-      // the sweep's untouchable set forever.
-      if (entry.kind === "thread") agent.unpinFromPane(sk);
-      // A blank thread has nothing to re-attach to → remove it. Everything else
-      // survives dormant (its anchor was kept fresh by syncAnchors).
-      if (entry.anchor.kind === "thread" && !entry.anchor.threadId) {
-        next.splice(i, 1);
       }
     }
 
@@ -822,6 +851,13 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     entries.value = list;
   }
 
+  function setZen(id: PaneId, zen: boolean): void {
+    const list = entries.value.map((e) =>
+      e.id === id ? { ...e, zen: zen ? true : undefined } : e,
+    );
+    entries.value = list;
+  }
+
   function focusThreadById(threadId: string): void {
     // Attached first — an open thread pane wins outright.
     const live = panes.value.find(
@@ -942,19 +978,25 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   function serialize(): StudioRow {
     return {
       projectPath: resolveProjectPath(),
-      panes: panes.value.map((p) => ({
-        id: p.id,
-        kind: p.kind,
-        anchor: liveAnchor(p),
-        width: p.entry.width,
-      })),
+      panes: panes.value.map((p) => {
+        const paneRecord: PaneEntry = {
+          id: p.id,
+          kind: p.kind,
+          anchor: liveAnchor(p),
+          width: p.entry.width,
+        };
+        if (p.entry.zen) {
+          paneRecord.zen = true;
+        }
+        return paneRecord;
+      }),
       focusedId: focusedId.value,
     };
   }
 
   const saveSignature = computed(() =>
     panes.value
-      .map((p) => `${p.kind}:${anchorId(liveAnchor(p))}:${p.entry.width}`)
+      .map((p) => `${p.kind}:${anchorId(liveAnchor(p))}:${p.entry.width}:${p.entry.zen ? "z" : ""}`)
       .join("|") + `#${focusedId.value ?? ""}`,
   );
 
@@ -1042,8 +1084,15 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
       const rawId = raw.id;
       const id = rawId && !seenIds.has(String(rawId)) ? String(rawId) : mintPaneId();
       seenIds.add(id);
-      const width = raw.width !== undefined && raw.width !== null && Number.isFinite(raw.width) ? Number(raw.width) : 0;
-      kept.push({ id, kind, anchor, width });
+      const width =
+        raw.width !== undefined && raw.width !== null && Number.isFinite(raw.width)
+          ? Number(raw.width)
+          : defaultWidth(kind);
+      const paneEntry: PaneEntry = { id, kind, anchor, width };
+      if (raw.zen) {
+        paneEntry.zen = true;
+      }
+      kept.push(paneEntry);
       if (kept.length >= MAX_RESTORED_PANES) break;
     }
     return kept;
@@ -1159,6 +1208,7 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     focusByOffset,
     move,
     setWidth,
+    setZen,
     attach,
     wakeThreadPanes,
     focusThreadById,
