@@ -14,6 +14,10 @@ import type { RecentProject } from "~/composables/useRecentProjects";
 
 const props = defineProps<{
   projects: RecentProject[];
+  /** Whether the way out to the launcher is on offer. On by default. Somewhere
+   *  the launcher is not a place you can go from, the head would be a door onto
+   *  nothing, so it becomes a plain count of what did not fit. */
+  browse?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -44,7 +48,7 @@ subscribe(() => shown.value.map((p) => p.path));
     :transition="{ type: 'spring', stiffness: 460, damping: 32, mass: 0.7 }"
   >
     <!-- Head: the way back to the launcher, tucked top-right with an arrow. -->
-    <div class="switcher__head">
+    <div v-if="browse !== false" class="switcher__head">
       <button type="button" role="menuitem" class="switcher__all" @click="emit('all')">
         <span>All projects</span>
         <span v-if="overflow" class="switcher__more">+{{ overflow }}</span>
@@ -56,6 +60,10 @@ subscribe(() => shown.value.map((p) => p.path));
         />
       </button>
     </div>
+
+    <!-- Without that way out, the folders on the shelf are all there is, so the
+         rest are at least accounted for rather than silently missing. -->
+    <p v-else-if="overflow" class="switcher__rest">+{{ overflow }} more</p>
 
     <!-- The other folders — a compact two-up shelf that staggers in. -->
     <div v-if="shown.length" class="switcher__grid">
@@ -92,7 +100,7 @@ subscribe(() => shown.value.map((p) => p.path));
       </motion.button>
     </div>
 
-    <!-- No other projects yet — All projects (top-right) is still the way out. -->
+    <!-- No other projects yet. -->
     <p v-else class="switcher__empty">No other projects open</p>
   </motion.div>
 </template>
@@ -176,6 +184,13 @@ subscribe(() => shown.value.map((p) => p.path));
 .switcher__all:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ink) 26%, transparent);
   outline-offset: 1px;
+}
+.switcher__rest {
+  margin: 0 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
 }
 .switcher__more {
   font-family: var(--font-mono);

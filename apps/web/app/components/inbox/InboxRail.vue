@@ -11,11 +11,14 @@
 // here narrows anything — it swaps which list is on screen.
 
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Archive02Icon, InboxIcon } from "@hugeicons/core-free-icons";
+import { Archive02Icon, CheckmarkCircle02Icon, InboxIcon } from "@hugeicons/core-free-icons";
 import type { InboxViewId } from "~/types/inbox";
 
+// Ordered by distance from your attention: what is still asking, what you have
+// answered for, and what you have put away for good.
 const VIEWS = [
   { id: "inbox", label: "Inbox", icon: InboxIcon },
+  { id: "done", label: "Done", icon: CheckmarkCircle02Icon },
   { id: "archived", label: "Archived", icon: Archive02Icon },
 ] as const satisfies ReadonlyArray<{ id: InboxViewId; label: string; icon: unknown }>;
 
