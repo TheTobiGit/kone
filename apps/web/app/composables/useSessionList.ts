@@ -100,6 +100,17 @@ export function useSessionList(source: SessionListSource) {
     pinnedIds.value = [...set];
   }
 
+  // Mark a thread done, or take the mark off. Unlike archive this never drops
+  // the row: done is a fact about your attention, and which list a done thread
+  // belongs in is the caller's question to answer, not this composable's.
+  function toggleDone(threadId: string): void {
+    const row = items.value.find((s) => s.threadId === threadId);
+    if (!row) return;
+    const next = !row.done;
+    row.done = next;
+    void api()?.setDone(threadId, next).catch(() => {});
+  }
+
   // Drop a row from the on-screen list immediately, so archive/delete feel
   // instant; the bridge call (when present) is fire-and-forget behind it.
   function dropLocally(threadId: string): void {
@@ -156,5 +167,15 @@ export function useSessionList(source: SessionListSource) {
     detach?.();
   });
 
-  return { pinned, recent, loading, hasAny, reload: () => load(), togglePin, archive, remove };
+  return {
+    pinned,
+    recent,
+    loading,
+    hasAny,
+    reload: () => load(),
+    togglePin,
+    toggleDone,
+    archive,
+    remove,
+  };
 }

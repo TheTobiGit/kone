@@ -41,6 +41,10 @@ export type SessionSummary = {
   updatedAt: number;
   /** Kept in front of the list under a PINNED header. */
   pinned?: boolean;
+  /** You are finished with this thread's claim on you. Derived from the stored
+   *  stamp and the thread's own activity, never read off the stamp alone — see
+   *  isThreadDone. */
+  done?: boolean;
   /** True when this thread is a side chat (forked from another conversation) —
    *  rows wear the temporary chip instead of reading as a main conversation. */
   sideChat?: boolean;
