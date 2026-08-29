@@ -595,7 +595,7 @@ export function rasterizePathHeadless(d: string, viewBox: number, res: number): 
 }
 
 export function rasterizePath(d: string, viewBox: number, res: number): AlphaMask {
-  if (typeof document === "undefined") {
+  if (!globalThis.document) {
     return rasterizePathHeadless(d, viewBox, res);
   }
   const el = document.createElement("canvas");
@@ -619,7 +619,7 @@ export function rasterizePath(d: string, viewBox: number, res: number): AlphaMas
 }
 
 export async function rasterizeSvg(svgText: string, res: number): Promise<AlphaMask> {
-  if (typeof document === "undefined") {
+  if (!globalThis.document) {
     const paths = Array.from(svgText.matchAll(/d="([^"]+)"/g)).map((m) => m[1]).join(" ");
     const vbMatch = svgText.match(/viewBox="[^"]*?\b(\d+)\s+(\d+)"/);
     const vb = vbMatch && vbMatch[1] && vbMatch[2] ? Math.max(Number(vbMatch[1]), Number(vbMatch[2])) : 24;
@@ -662,7 +662,7 @@ async function toMask(source: LogoSource, res: number): Promise<AlphaMask> {
   if ("mask" in source) return source.mask;
   if ("svg" in source) return rasterizeSvg(source.svg, res);
   if ("path" in source) return rasterizePath(source.path, source.viewBox ?? 24, res);
-  if (typeof document !== "undefined") {
+  if (globalThis.document) {
     const el = document.createElement("canvas");
     el.width = res;
     el.height = res;
@@ -724,16 +724,18 @@ export function serializeLogo(set: LogoPointSet): string {
   });
 }
 
-export function deserializeLogo(json: string | Record<string, unknown>): LogoPointSet {
+export interface SerializedLogoData {
+  version: number;
+  n: number;
+  style: LogoStyle;
+  shell: ShellMode;
+  p: number[];
+  e: number[];
+}
+
+export function deserializeLogo(json: string | SerializedLogoData): LogoPointSet {
   // SAFETY: Deserialized payload is verified by inspecting raw.version below before creating typed LogoPointSet
-  const raw = (typeof json === "string" ? JSON.parse(json) : json) as {
-    version: number;
-    n: number;
-    style: LogoStyle;
-    shell: ShellMode;
-    p: number[];
-    e: number[];
-  };
+  const raw = (json instanceof Object ? json : JSON.parse(String(json))) as SerializedLogoData;
   if (raw.version !== 1) throw new Error(`thinking-logos: unsupported version ${raw.version}`);
   return {
     version: 1,

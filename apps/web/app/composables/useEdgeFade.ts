@@ -17,6 +17,7 @@ export function useEdgeFade(scroll: Ref<HTMLElement | undefined>) {
   const fadeTop = ref(0);
   const fadeBot = ref(0);
   let ro: ResizeObserver | null = null;
+  let mo: MutationObserver | null = null;
 
   function measure(): void {
     const el = scroll.value;
@@ -41,12 +42,24 @@ export function useEdgeFade(scroll: Ref<HTMLElement | undefined>) {
   function attach(): void {
     ro?.disconnect();
     ro = null;
+    mo?.disconnect();
+    mo = null;
     const el = scroll.value;
     if (!el) return;
     ro = new ResizeObserver(() => measure());
     ro.observe(el);
-    const inner = el.firstElementChild;
+    let inner = el.firstElementChild;
     if (inner) ro.observe(inner);
+    mo = new MutationObserver(() => {
+      const nextInner = el.firstElementChild;
+      if (nextInner !== inner) {
+        if (inner) ro?.unobserve(inner);
+        inner = nextInner;
+        if (inner) ro?.observe(inner);
+      }
+      measure();
+    });
+    mo.observe(el, { childList: true });
     measure();
   }
 
@@ -56,7 +69,10 @@ export function useEdgeFade(scroll: Ref<HTMLElement | undefined>) {
   onBeforeUnmount(() => {
     ro?.disconnect();
     ro = null;
+    mo?.disconnect();
+    mo = null;
   });
 
   return { fadeTop, fadeBot, measure, maskStyle };
 }
+
