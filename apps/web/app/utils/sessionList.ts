@@ -19,6 +19,40 @@ export interface SessionProjectTag {
   projectName?: string;
 }
 
+/** A thread nobody has touched in this long has stopped being a thing you are
+ *  going to get back to. Two weeks is long enough to cover a holiday and short
+ *  enough that the inbox does not silt up. */
+export const STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** `doneAt` written by an explicit un-mark, as opposed to never having been set
+ *  at all. Epoch zero is not a time any thread was ever marked at, so it reads
+ *  as "you decided this is not done" without a second column — and it is what
+ *  keeps a deliberate un-mark from being immediately overruled by age. */
+export const DONE_CLEARED = 0;
+
+/**
+ * Whether you are currently finished with this thread.
+ *
+ * Three ways to be done with something, and the stamp only records one of them.
+ *
+ * You marked it, and the agent has not spoken since — the comparison is what
+ * expires that mark, which is why nothing writes to `doneAt` when a turn lands,
+ * and why a crash between a turn and a clear cannot strand a live thread as
+ * done. Or you never said anything and it simply went quiet long enough that
+ * not answering *was* the answer; that one needs no write at all, so an inbox
+ * left alone for a month settles itself instead of greeting you with a month of
+ * backlog. Or you said out loud that you are not finished, which outranks age —
+ * otherwise the un-mark button would silently do nothing on exactly the old
+ * threads someone is most likely to press it on.
+ */
+export function isThreadDone(meta: StoredThreadMeta, now = Date.now()): boolean {
+  const at = meta.doneAt;
+  const activeAt = meta.lastActivityAt ?? meta.updatedAt;
+  if (at === DONE_CLEARED) return false;
+  if (at === null || at === undefined) return now - activeAt > STALE_AFTER_MS;
+  return at >= activeAt;
+}
+
 /** Flatten one stored thread into the row shape the list renders. */
 export function summarizeSession(
   meta: StoredThreadMeta,
@@ -46,6 +80,7 @@ export function summarizeSession(
     projectName: project?.projectName,
     // A side chat is a fork — forkContext presence is the discriminator.
     sideChat: Boolean(meta.forkContext),
+    done: isThreadDone(meta),
   };
 }
 
