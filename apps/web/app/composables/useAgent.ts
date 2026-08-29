@@ -1201,22 +1201,56 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     return api.uploadAttachment({ threadId: threadId.value, name, mimeType, data });
   }
 
+  function base(_type: string) {
+    return {
+      threadId: threadId.value,
+      provider: provider.value,
+      at: Date.now(),
+      source: "codex.rpc.lifecycle" as const,
+    };
+  }
+
+  // ── browser dev mock ────────────────────────────────────────────────────────
+  const {
+    stopMock,
+    mockQueueFollowUp,
+    mockTurn,
+    demo,
+    getMockTurnId,
+    hasPendingApproval: mockHasPendingApproval,
+    respondApproval: mockRespondApproval,
+  } = createMockTurnRunner({
+    threadId,
+    provider,
+    sessionState,
+    reasoning,
+    blocks,
+    title,
+    tokenUsage,
+    queuedTurnsRaw,
+    reduce,
+    busy,
+  });
+
   /** Interrupt the running turn. */
   async function interrupt(): Promise<void> {
+    const tid = getMockTurnId();
+    if (tid) {
+      // Running a mock turn (browser dev or ⇧⌘D demo): halt its timers and mark aborted.
+      stopMock();
+      // SAFETY: the literal below spells out the whole aborted-event payload.
+      reduce({
+        ...base("turn.aborted"),
+        type: "turn.aborted",
+        turnId: tid,
+        reason: "interrupted",
+      } as RuntimeEvent);
+      sessionState.value = "ready";
+      return;
+    }
     const api = bridge();
     if (!api) {
-      // Browser dev: mark the running mock turn as stopped, then halt its timers.
-      const tid = getMockTurnId();
       stopMock();
-      if (tid) {
-        // SAFETY: the literal below spells out the whole aborted-event payload.
-        reduce({
-          ...base("turn.aborted"),
-          type: "turn.aborted",
-          turnId: tid,
-          reason: "interrupted",
-        } as RuntimeEvent);
-      }
       sessionState.value = "ready";
       return;
     }
@@ -1272,6 +1306,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  re-clear). */
   async function respondApproval(requestId: string, decision: ApprovalDecision): Promise<void> {
     pendingApprovals.value = pendingApprovals.value.filter((a) => a.requestId !== requestId);
+    if (mockHasPendingApproval(requestId)) {
+      mockRespondApproval(requestId, decision);
+      return;
+    }
     const api = bridge();
     if (!api) return;
     try {
@@ -1427,29 +1465,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     queuedTurnsRaw.value = [];
     pendingQueueAnchors.clear();
     await start();
-  }
-
-  // ── browser dev mock ────────────────────────────────────────────────────────
-  const { stopMock, mockQueueFollowUp, mockTurn, demo, getMockTurnId } = createMockTurnRunner({
-    threadId,
-    provider,
-    sessionState,
-    reasoning,
-    blocks,
-    title,
-    tokenUsage,
-    queuedTurnsRaw,
-    reduce,
-    busy,
-  });
-
-  function base(_type: string) {
-    return {
-      threadId: threadId.value,
-      provider: provider.value,
-      at: Date.now(),
-      source: "codex.rpc.lifecycle" as const,
-    };
   }
 
   return {
@@ -1950,7 +1965,7 @@ export function useAgent(options: UseAgentOptions) {
   const respondApproval = async (requestId: string, decision: ApprovalDecision) => {
     await active.value?.respondApproval(requestId, decision);
   };
-  const demo = () => active.value?.demo();
+  const demo = (opts?: { fast?: boolean }) => active.value?.demo(opts);
   const restart = async () => { await active.value?.restart(); };
   const setProvider = (next: ProviderKind) => active.value?.setProvider(next);
   const setModel = (id: string | undefined) => active.value?.setModel(id);

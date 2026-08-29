@@ -85,6 +85,13 @@ const props = defineProps<{
   loadingOlder?: boolean;
   /** The last load-older attempt failed — the affordance shows a retry. */
   olderError?: string | null;
+  /** Whether an empty thread is allowed to fill itself with the standing art.
+   *  On by default. The art is an invitation to type — it belongs where there
+   *  is a composer under it and the blankness is a beginning. Somewhere you can
+   *  only read, the same blankness means the transcript is still arriving or
+   *  there is nothing to read, and filling it with an invitation would be
+   *  offering a gesture that is not on the table. */
+  emptyArt?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -699,9 +706,9 @@ watch(
     </div>
 
     <!-- Background generative art in the empty state -->
-    <CodeGolfArt v-if="!hasBlocks" class="thread__art" />
+    <CodeGolfArt v-if="!hasBlocks && emptyArt !== false" class="thread__art" />
 
-    <div v-if="!hasBlocks" class="empty relative z-10 sr-only">
+    <div v-if="!hasBlocks && emptyArt !== false" class="empty relative z-10 sr-only">
       <p>Nothing here yet — say something to begin.</p>
     </div>
 

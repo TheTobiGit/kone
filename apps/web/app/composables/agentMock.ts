@@ -1,5 +1,7 @@
 import type { ComputedRef, Ref } from "vue";
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
   ProviderKind,
   RuntimeEvent,
   RuntimeItem,
@@ -44,12 +46,53 @@ export function createMockTurnRunner(deps: {
   let mockCancel: (() => void) | null = null;
   let mockTurnId: string | null = null;
 
+  type ApprovalResolver = {
+    resolve: (decision: ApprovalDecision) => void;
+    turnId: string;
+  };
+  const pendingApprovalsMap = new Map<string, ApprovalResolver>();
+
   function stopMock(): void {
     for (const t of mockTimers) clearTimeout(t);
     mockTimers = [];
+    for (const [requestId, resolver] of pendingApprovalsMap) {
+      reduce({ ...base(), type: "approval.resolved", requestId, decision: "reject-once" });
+      resolver.resolve("reject-once");
+    }
+    pendingApprovalsMap.clear();
     mockCancel?.();
     mockCancel = null;
     mockTurnId = null;
+  }
+
+  function hasPendingApproval(requestId: string): boolean {
+    return pendingApprovalsMap.has(requestId);
+  }
+
+  function respondApproval(requestId: string, decision: ApprovalDecision): boolean {
+    const entry = pendingApprovalsMap.get(requestId);
+    if (!entry) return false;
+    pendingApprovalsMap.delete(requestId);
+    reduce({ ...base(), type: "approval.resolved", requestId, decision });
+    entry.resolve(decision);
+    if (decision === "reject-and-stop") {
+      const turnToAbort = entry.turnId;
+      for (const [otherId, otherResolver] of pendingApprovalsMap) {
+        reduce({ ...base(), type: "approval.resolved", requestId: otherId, decision: "reject-once" });
+        otherResolver.resolve("reject-once");
+      }
+      pendingApprovalsMap.clear();
+      reduce({
+        ...base(),
+        type: "turn.aborted",
+        turnId: turnToAbort,
+        reason: "interrupted",
+        message: "Turn interrupted by user",
+      });
+      sessionState.value = "ready";
+      stopMock();
+    }
+    return true;
   }
 
   function base() {
@@ -84,7 +127,7 @@ export function createMockTurnRunner(deps: {
   // (the same order CodexAdapter's item/started · item/completed notifications
   // feed the desktop side), so the thread can render every ordering case —
   // tools-at-start, tool-after-text, thinking, final text — without the bridge.
-  function mockTurn(prompt: string, opts: { demo?: boolean } = {}): void {
+  function mockTurn(prompt: string, opts: { demo?: boolean; fast?: boolean } = {}): void {
     const turnId = uid();
     mockTurnId = turnId;
     let cancelled = false;
@@ -98,21 +141,23 @@ export function createMockTurnRunner(deps: {
       reduce({ ...base(), type, turnId, item: { ...item } });
     const wait = (ms: number) =>
       new Promise<void>((resolve) => {
+        const adjusted = opts.fast ? Math.min(ms, 8) : ms;
         const t = setTimeout(() => {
           mockTimers = mockTimers.filter((x) => x !== t);
           resolve();
-        }, ms);
+        }, adjusted);
         mockTimers.push(t);
       });
     // Stream a text-bearing item (a thought or the answer) word-by-word.
     const stream = async (kind: RuntimeItemKind, full: string, perWord = 42): Promise<void> => {
       const item: RuntimeItem = { itemId: uid(), kind, status: "in-progress", text: "" };
       emit(item, "item.started");
+      const wordDelay = opts.fast ? 2 : perWord;
       for (const w of full.split(" ")) {
         if (cancelled) return;
         item.text += (item.text ? " " : "") + w;
         emit(item, "item.updated");
-        await wait(perWord);
+        await wait(wordDelay);
       }
       item.status = "completed";
       emit(item, "item.completed");
@@ -249,6 +294,36 @@ export function createMockTurnRunner(deps: {
       emit(parent, "item.completed");
     };
 
+    // Request user approval before executing sensitive operations (file changes, shell commands, etc.).
+    const requestApproval = (
+      approval: ApprovalRequest,
+      subagentToolUseId?: string,
+    ): Promise<ApprovalDecision> => {
+      if (cancelled) return Promise.resolve("reject-once");
+      const requestId = uid();
+      return new Promise<ApprovalDecision>((resolve) => {
+        pendingApprovalsMap.set(requestId, {
+          resolve,
+          turnId,
+        });
+        reduce({
+          ...base(),
+          type: "approval.requested",
+          turnId,
+          requestId,
+          approval,
+          subagentToolUseId,
+        });
+      });
+    };
+
+    const requestApprovals = (
+      approvals: ApprovalRequest[],
+    ): Promise<ApprovalDecision[]> => {
+      if (cancelled) return Promise.resolve(approvals.map(() => "reject-once"));
+      return Promise.all(approvals.map((app) => requestApproval(app)));
+    };
+
     // A TodoWrite-style plan — one item that can be updated in place as tasks
     // move pending → in-progress → completed, then settles at the end.
     let planItem: RuntimeItem | null = null;
@@ -281,6 +356,11 @@ export function createMockTurnRunner(deps: {
     const demoPlan: PlanTask[] = [
       { id: uid(), content: "Tour every tool family in the thread", status: "pending" },
       { id: uid(), content: "Show task plans updating mid-turn", status: "pending" },
+      {
+        id: uid(),
+        content: "Request user approval for file changes and commands",
+        status: "pending",
+      },
       { id: uid(), content: "Stream the final markdown answer", status: "pending" },
       {
         id: uid(),
@@ -353,6 +433,8 @@ export function createMockTurnRunner(deps: {
         );
         if (cancelled) return;
       }
+      let editDecision: ApprovalDecision = "allow-once";
+      let cmdDecision: ApprovalDecision = "allow-once";
       // The demo tours every tool family the real providers can produce — list,
       // code-intel, run, web, sub-agent, delete — plus a failed call, so every
       // visual state is on screen to review, not just the read/write/search trio.
@@ -372,31 +454,67 @@ export function createMockTurnRunner(deps: {
         "Here's the shape of it: the composer emits a turn, and `useAgent` folds the provider's event stream into this timeline in arrival order.",
       );
       if (cancelled) return;
-      // …then a tool call AFTER that text (the interleaving case). The demo gives
-      // it an expandable diff body so the tool-output case is on screen too.
-      await tool(
-        "edit_file",
-        "ConversationThread.vue",
-        opts.demo
-          ? "@@ -472,3 +472,4 @@\n-    <p class=\"body body--stream\">{{ segText(seg) }}</p>\n+    <MarkdownMessage class=\"answer\" :source=\"segText(seg)\" />\n"
-          : undefined,
-      );
-      if (cancelled) return;
       if (opts.demo) {
+        await stream(
+          "reasoning_text",
+          "Before modifying the workspace or running test commands, I'll request user approval for the file change and command execution.",
+        );
+        if (cancelled) return;
+        const decisions = await requestApprovals([
+          {
+            kind: "file-change",
+            title: "ConversationThread.vue",
+            detail: "Update message rendering to mount words with stable keys",
+          },
+          {
+            kind: "command",
+            title: "bun test useAgent",
+            detail: "Run the test suite to verify regression coverage",
+          },
+        ]);
+        if (cancelled) return;
+        editDecision = decisions[0] ?? "allow-once";
+        cmdDecision = decisions[1] ?? "allow-once";
+        if (editDecision === "reject-and-stop" || cmdDecision === "reject-and-stop") {
+          reduce({
+            ...base(),
+            type: "turn.aborted",
+            turnId,
+            reason: "interrupted",
+            message: "Turn interrupted by user",
+          });
+          sessionState.value = "ready";
+          stopMock();
+          return;
+        }
         await setPlan(
           demoPlanAt({ 0: "completed", 1: "completed", 2: "completed", 3: "in-progress" }),
           360,
         );
         if (cancelled) return;
       }
-      if (opts.demo) {
+      // …then a tool call AFTER that text (the interleaving case). The demo gives
+      // it an expandable diff body so the tool-output case is on screen too.
+      if (!opts.demo || editDecision !== "reject-once") {
         await tool(
-          "write_to_file",
-          "MarkdownMessage.vue",
-          "+ // Each word gets its own stable key so it mounts as a genuinely new\n+ // element the instant it streams in.\n+ function renderWords(content: string, key: number): VNode { … }\n",
-          520,
+          "edit_file",
+          "ConversationThread.vue",
+          opts.demo
+            ? "@@ -472,3 +472,4 @@\n-    <p class=\"body body--stream\">{{ segText(seg) }}</p>\n+    <MarkdownMessage class=\"answer\" :source=\"segText(seg)\" />\n"
+            : undefined,
         );
         if (cancelled) return;
+      }
+      if (opts.demo) {
+        if (editDecision !== "reject-once") {
+          await tool(
+            "write_to_file",
+            "MarkdownMessage.vue",
+            "+ // Each word gets its own stable key so it mounts as a genuinely new\n+ // element the instant it streams in.\n+ function renderWords(content: string, key: number): VNode { … }\n",
+            520,
+          );
+          if (cancelled) return;
+        }
         // A second thought, mid-turn — the demo's first thinking segment is
         // interrupted by tool calls, so this shows a fresh one re-opening the
         // rail further down the same steps group.
@@ -405,13 +523,15 @@ export function createMockTurnRunner(deps: {
           "Before wiring it up, let me make sure the existing suite still passes and the lint config agrees.",
         );
         if (cancelled) return;
-        await tool(
-          "bash",
-          "bun test useAgent",
-          " 12 pass\n 0 fail\n 27 expect() calls\nRan 12 tests across 1 file. [412ms]",
-          900,
-        );
-        if (cancelled) return;
+        if (cmdDecision !== "reject-once") {
+          await tool(
+            "bash",
+            "bun test useAgent",
+            " 12 pass\n 0 fail\n 27 expect() calls\nRan 12 tests across 1 file. [412ms]",
+            900,
+          );
+          if (cancelled) return;
+        }
         await toolFail(
           "bash",
           "bun run lint",
@@ -538,7 +658,7 @@ export function createMockTurnRunner(deps: {
       await stream(
         "assistant_text",
         opts.demo
-          ? `Done — for "${prompt}", here's the full tour.\n\n### What ran\n\n- Every part above — thinking, tool calls, narration — renders in the true order it arrived\n- The agent's task plan docks bottom-right (folder-picker shell) while it works the list\n- Tool calls span every family: read, write, list, code intel, shell, web, sub-agent, and delete\n- One \`bash\` call above **failed on purpose** — the red state is real, not a screenshot\n\n| Family | Tool | Hue |\n| --- | --- | --- |\n| Read | \`read_file\` | blue |\n| Write | \`edit_file\` | violet |\n| Search | \`grep_search\` | amber |\n| Run | \`bash\` | green |\n\n\`\`\`ts\nfunction segKindOf(item: RuntimeItem): SegKind {\n  if (item.kind === "reasoning_text") return "thinking";\n  if (item.kind === "tool_call") return "tools";\n  if (item.kind === "plan_text") return "plan";\n  return "text";\n}\n\`\`\`\n\n> [!NOTE]\n> This whole reply is a mocked stream — no agent ran in the browser — but every event passed through the same [ConversationThread.vue](file:///apps/web/app/components/ConversationThread.vue) timeline the real providers feed. Press **⇧⌘D** any time to replay it.`
+          ? `Done — for "${prompt}", here's the full tour.\n\n### What ran\n\n- Every part above — thinking, tool calls, narration — renders in the true order it arrived\n- User approvals parked the turn and prompted for permission before sensitive actions\n- The agent's task plan docks bottom-right (folder-picker shell) while it works the list\n- Tool calls span every family: read, write, list, code intel, shell, web, sub-agent, and delete\n- One \`bash\` call above **failed on purpose** — the red state is real, not a screenshot\n\n| Family | Tool / Gate | Hue |\n| --- | --- | --- |\n| Read | \`read_file\` | blue |\n| Write | \`edit_file\` | violet |\n| Search | \`grep_search\` | amber |\n| Run | \`bash\` | green |\n| Approval | \`file-change\` / \`command\` | coral |\n\n\`\`\`ts\nfunction segKindOf(item: RuntimeItem): SegKind {\n  if (item.kind === "reasoning_text") return "thinking";\n  if (item.kind === "tool_call") return "tools";\n  if (item.kind === "plan_text") return "plan";\n  return "text";\n}\n\`\`\`\n\n> [!NOTE]\n> This whole reply is a mocked stream — no agent ran in the browser — but every event passed through the same [ConversationThread.vue](file:///apps/web/app/components/ConversationThread.vue) timeline the real providers feed. Press **⇧⌘D** any time to replay it.`
           : `Done — for "${prompt}", the parts now render in the true order they arrived: thinking, tool calls, and text interleaved, exactly like a real ${provider.value} session. This is a mocked reply (no agent ran in the browser), but every event flowed through the same stream.`,
       );
       if (cancelled) return;
@@ -571,12 +691,12 @@ export function createMockTurnRunner(deps: {
    *  no-content thought, and the final answer). Runs the in-browser mock directly
    *  so it works even in the desktop shell, for reviewing the conversation UI
    *  without a live agent. Bound to ⇧⌘D via the shortcuts registry. */
-  function demo(): void {
+  function demo(opts: { fast?: boolean } = {}): void {
     if (busy.value) return;
     const prompt = "Show me a full conversation";
     blocks.value = [...blocks.value, { id: uid(), role: "user", text: prompt, at: Date.now() }];
     if (!title.value) title.value = titleFromPrompt(prompt);
-    mockTurn(prompt, { demo: true });
+    mockTurn(prompt, { demo: true, ...opts });
   }
 
   return {
@@ -585,5 +705,7 @@ export function createMockTurnRunner(deps: {
     mockTurn,
     demo,
     getMockTurnId: () => mockTurnId,
+    hasPendingApproval,
+    respondApproval,
   };
 }

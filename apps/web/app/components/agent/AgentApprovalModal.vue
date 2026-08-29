@@ -30,7 +30,13 @@ const emit = defineEmits<{
 const index = ref(0);
 watch(
   () => props.queue?.length ?? 0,
-  () => (index.value = 0),
+  (newLen) => {
+    if (newLen === 0) {
+      index.value = 0;
+    } else if (index.value >= newLen) {
+      index.value = Math.max(0, newLen - 1);
+    }
+  },
 );
 const queueActive = computed(() => (props.queue?.length ?? 0) > 1);
 const active = computed(() => {
@@ -44,8 +50,31 @@ function jumpTo(n: number): void {
   index.value = Math.max(0, Math.min(n, q.length - 1));
 }
 
+function prev(): void {
+  const q = props.queue;
+  if (!q || q.length <= 1) return;
+  index.value = Math.max(0, index.value - 1);
+}
+
+function next(): void {
+  const q = props.queue;
+  if (!q || q.length <= 1) return;
+  index.value = Math.min(q.length - 1, index.value + 1);
+}
+
 function decide(decision: ApprovalDecision): void {
-  close(() => emit("decide", active.value.requestId, decision));
+  if (closing.value) return;
+  const reqId = active.value.requestId;
+  const remaining = props.queue?.length ?? 1;
+
+  if (decision === "reject-and-stop" || remaining <= 1) {
+    // Final ask in the queue or full turn abort: play exit animation and close.
+    close(() => emit("decide", reqId, decision));
+  } else {
+    // Multi-step queue: settle the current ask and smoothly transition to the next.
+    emit("decide", reqId, decision);
+    nextTick(() => syncHeight());
+  }
 }
 
 // it reads as one surface, but bottom-centre over the composer's spot ──────────
@@ -76,11 +105,18 @@ function onKeydown(e: KeyboardEvent) {
   } else if (e.key === "Escape") {
     e.preventDefault();
     decide("reject-once");
-  } else if (queueActive.value && /^[1-9]$/.test(e.key)) {
-    // Jump to the Nth queued ask — 1 is the head. The turn is parked on the
-    // queue, so digits are free (no text input lives in this modal).
-    e.preventDefault();
-    jumpTo(Number(e.key) - 1);
+  } else if (queueActive.value) {
+    if (e.key === "ArrowLeft" || e.key === "[") {
+      e.preventDefault();
+      prev();
+    } else if (e.key === "ArrowRight" || e.key === "]") {
+      e.preventDefault();
+      next();
+    } else if (/^[1-9]$/.test(e.key)) {
+      // Jump to the Nth queued ask — 1 is the head.
+      e.preventDefault();
+      jumpTo(Number(e.key) - 1);
+    }
   }
 }
 
@@ -143,14 +179,14 @@ const cardSpring = {
       aria-modal="true"
       aria-label="The agent wants to run something"
     >
-      <div ref="contentEl" class="approve-card">
-        <div v-if="queueActive" class="approve-pos">
-          <span class="approve-pos__count">{{ index + 1 }}/{{ props.queue!.length }}</span>
-          <span class="approve-pos__hint">1–9 to jump</span>
-        </div>
+      <div ref="contentEl" class="approve-card flex shrink-0 flex-col">
         <ApprovalPrompt
           :approval="active.approval"
+          :queue-index="index"
+          :queue-total="props.queue?.length ?? 0"
           @decide="decide"
+          @prev="prev"
+          @next="next"
         />
       </div>
     </motion.div>
@@ -177,23 +213,5 @@ const cardSpring = {
   display: flex;
   flex-direction: column;
   min-width: 0;
-}
-/* Queue position — a slim mono header over the ask: which of N is showing, and
-   the digit hint only when there's more than one to jump between. */
-.approve-pos {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 16px 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted);
-}
-.approve-pos__count {
-  font-variant-numeric: tabular-nums;
-}
-.approve-pos__hint {
-  opacity: 0.75;
 }
 </style>

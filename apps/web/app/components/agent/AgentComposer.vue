@@ -76,6 +76,12 @@ const props = defineProps<{
   /** The full model picker is open (hosted by the parent, outside our dock).
    *  While it is, a click in it — or on its scrim — must NOT collapse us. */
   picking?: boolean;
+  /** Stay open, always. For a surface whose only purpose is writing: there is
+   *  nothing else on it to look at, so there is nothing to collapse back to,
+   *  and a resting orb there would charge a click for a decision already made.
+   *  An open card covers the orb, so this suppresses it along with the
+   *  click-outside and Escape collapses. */
+  alwaysOpen?: boolean;
   /** Who you can hand the turn to. Guest is never in here — it is the absence of
    *  a choice, so the menu adds it itself and an empty roster still offers it. */
   agents?: Agent[];
@@ -525,6 +531,7 @@ async function wake() {
 // Fade away back to the resting orb with no movement. The draft (text + chips)
 // stays in state, so waking again restores exactly what was there.
 function close() {
+  if (props.alwaysOpen) return;
   if (!open.value) return;
   if (closeTimer) clearTimeout(closeTimer);
   closingH.value = surfaceH.value;
@@ -642,6 +649,7 @@ function queuedLabel(entry: QueuedTurnEntry): string {
 onMounted(() => {
   restoreDraft();
   sync();
+  if (props.alwaysOpen) void wake();
 });
 onUnmounted(() => {
   if (closeTimer) clearTimeout(closeTimer);
@@ -982,7 +990,7 @@ defineExpose({ wake, setDraft });
             <button
               type="button"
               class="seed"
-              :class="{ 'seed--armed': armed || busy, 'seed--busy': busy }"
+              :class="{ 'seed--armed': armed && !busy }"
               :aria-label="busy ? 'Stop' : 'Send'"
               :tabindex="open ? 0 : -1"
               @mousedown.prevent
@@ -1149,7 +1157,7 @@ defineExpose({ wake, setDraft });
 
 <style scoped>
 .dock {
-  /* Accent rings (drag, armed, busy) ride the same metal, not a hue. */
+  /* Accent rings (drag, armed) ride the same metal, not a hue. */
   --chrome-ring: 138 141 149;
 
   /* A column now: the card, with the context tray tucked in behind its floor. */
@@ -1279,7 +1287,7 @@ defineExpose({ wake, setDraft });
   box-shadow: rgb(var(--chrome-ring) / 0.30) 0 0 0 3px;
 }
 
-/* A brighter chrome ring in dark, so the drag/armed/busy glows keep their
+/* A brighter chrome ring in dark, so the drag/armed glows keep their
    weight off the near-black ground. Everything else follows the theme. */
 html.dark .dock {
   --chrome-ring: 168 171 179;
@@ -2047,11 +2055,6 @@ html.dark .dock {
 
 /* ── Stop glyph (seed while a turn runs) ──────────────────────────────────── */
 .seed__stop { width: 15px; height: 15px; }
-.seed--busy { animation: seed-pulse 1.8s ease-in-out infinite; }
-@keyframes seed-pulse {
-  0%, 100% { box-shadow: color-mix(in srgb, var(--accent-ink) 60%, transparent) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.10) 0 0 0 3px; }
-  50% { box-shadow: color-mix(in srgb, var(--accent-ink) 60%, transparent) 0 1px 2px inset, rgb(var(--chrome-ring) / 0.28) 0 0 0 6px; }
-}
 
 .fade-enter-active { transition: opacity 0.24s ease 0.08s; }
 .fade-leave-active { transition: opacity 0.14s ease; }
@@ -2061,7 +2064,6 @@ html.dark .dock {
   .surface, .panel, .face, .field, .seed { transition-duration: 0.01s; transition-delay: 0s; }
   .dock { animation: none; }
   .face { animation: none; }
-  .seed--busy { animation: none; }
   .bar, .tray { transition-duration: 0.01s; transition-delay: 0s; }
   .fade-enter-active, .fade-leave-active { transition-duration: 0.01s; }
   .menu-enter-active, .menu-leave-active { transition-duration: 0.01s; }
