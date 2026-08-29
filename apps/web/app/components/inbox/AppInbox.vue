@@ -15,10 +15,9 @@
 // The shell is a view rail standing on the ground, then two panes raised off
 // it — the list of threads, and the one you are reading — with a draggable
 // gutter between them. The window itself is the outer shelf, so there is no
-// frame around the panes to repeat an edge that is already there. The reading
-// pane is empty so far.
+// frame around the panes to repeat an edge that is already there.
 
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useElementSize, useEventListener, useStorage } from "@vueuse/core";
 import {
   CHROME_WIDTH,
@@ -30,6 +29,7 @@ import {
   RAIL_WIDTH,
 } from "~/utils/inboxLayout";
 import type { InboxViewId } from "~/types/inbox";
+import type { SessionSummary } from "~/types/session";
 
 const props = defineProps<{
   /** The inbox is summoned. Hidden with `visibility`, never unmounted. */
@@ -47,10 +47,65 @@ const { cue } = useSound();
 // about itself rather than state buried in a control.
 const view = ref<InboxViewId>("inbox");
 
+// Starting a conversation takes over the reading pane rather than opening
+// beside it: the inbox is one thing at a time, and a half-written message you
+// cannot see is a message you lose. Selecting a thread puts it away, so the
+// list stays the way out.
+//
+// It is also where the pane rests. With nothing picked there is nothing to
+// read, and a line saying so would be a wall between you and the one thing you
+// might want an empty inbox for — so the empty state IS the composer, and New
+// is for when you are reading something and want to start beside it rather
+// than a door you have to go through first.
+const composing = ref(false);
+const writing = computed(() => composing.value || selected.value === null);
+
+// The portal is never unmounted, only hidden, so a pane that claims a session
+// on mount would claim one at boot for a project nobody has opened. Latched
+// rather than tied to `open`: once you have been in, the surface stays put
+// across visits instead of throwing away a half-written message every time the
+// inbox is dismissed.
+const visited = ref(false);
+watch(
+  () => props.open,
+  (open) => {
+    if (open) visited.value = true;
+  },
+  { immediate: true },
+);
+
+function startNewThread(): void {
+  cue("select");
+  composing.value = true;
+}
+
+/** The composer's thread has started, so the composer's work is done. Showing
+ *  it the way a picked row is shown is the point: from here on it is a thread
+ *  like any other in the list, and there is nothing left that only the pane
+ *  that made it could offer. */
+function onThreadStarted(row: SessionSummary, sessionKey: string): void {
+  selected.value = row;
+  handedKey.value = sessionKey;
+  composing.value = false;
+}
+
+/** A thread picked out of the list: the composer's, if it was up, goes away, and
+ *  so does its session key — this thread is opened the ordinary way. */
+function onPickThread(): void {
+  composing.value = false;
+  handedKey.value = null;
+}
+
 // Which thread the reading pane is showing. Portal-level rather than per-view,
 // so switching between the inbox and the archive does not throw away what you
 // were reading.
-const selected = ref<string | null>(null);
+const selected = ref<SessionSummary | null>(null);
+
+// The live session behind a thread the composer just started, so the reading
+// pane attaches to that very session instead of looking one up by id. Only ever
+// set by the handover, and dropped as soon as you read something else — every
+// other thread is opened the ordinary way.
+const handedKey = ref<string | null>(null);
 
 // ── the gutter ───────────────────────────────────────────────────────────────
 // How wide the list is, in pixels, remembered across restarts. Stored raw and
@@ -161,7 +216,13 @@ function close(): void {
            the archive costs nothing until it is asked for and nothing again
            once it has been. -->
       <KeepAlive>
-        <InboxThreadList :key="view" v-model:selected="selected" :archived="view === 'archived'" />
+        <InboxThreadList
+          :key="view"
+          v-model:selected="selected"
+          :view="view"
+          @new-thread="startNewThread"
+          @update:selected="onPickThread"
+        />
       </KeepAlive>
     </section>
 
@@ -186,7 +247,12 @@ function close(): void {
     </div>
 
     <section class="inbox__pane inbox__pane--read" aria-label="Thread">
-      <slot name="read" />
+      <InboxNewThread v-if="visited && writing" @started="onThreadStarted" />
+      <InboxThreadReader
+        v-else-if="selected"
+        :row="selected"
+        :session-key="handedKey ?? undefined"
+      />
     </section>
   </div>
 </template>
