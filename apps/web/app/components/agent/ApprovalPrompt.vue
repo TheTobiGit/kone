@@ -2,6 +2,8 @@
 import { computed } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
   FileIcon,
   PenTool01Icon,
   SecurityIcon,
@@ -20,17 +22,23 @@ import type { ApprovalDecision, ApprovalRequest, ApprovalRequestKind } from "~/t
 const props = withDefaults(
   defineProps<{
     approval: ApprovalRequest;
+    queueIndex?: number;
+    queueTotal?: number;
     /** Max height of the scrollable ask body. The modal caps it so a long ask
      *  can't outgrow the card; an inline host passes "none" and lets its own
      *  scroll area own the height. */
     scrollMax?: string;
   }>(),
-  { scrollMax: "52vh" },
+  { scrollMax: "52vh", queueIndex: 0, queueTotal: 0 },
 );
 
 const emit = defineEmits<{
   decide: [decision: ApprovalDecision];
+  prev: [];
+  next: [];
 }>();
+
+const queueActive = computed(() => props.queueTotal > 1);
 
 // The kind chip: icon + short verb per approval kind.
 const KIND_META = {
@@ -56,6 +64,33 @@ const mono = computed(() => props.approval.kind !== "tool");
         <HugeiconsIcon :icon="kindMeta.icon" :size="14" :stroke-width="1.9" aria-hidden="true" />
         {{ kindMeta.label }}
       </span>
+
+      <!-- Queue position readout and step back/next controls -->
+      <div v-if="queueActive" class="approve-nav">
+        <span class="approve-nav__count">{{ queueIndex + 1 }}/{{ queueTotal }}</span>
+        <div class="approve-nav__buttons">
+          <button
+            type="button"
+            class="approve-nav__btn"
+            :disabled="queueIndex <= 0"
+            aria-label="Previous approval"
+            title="Previous approval"
+            @click="emit('prev')"
+          >
+            <HugeiconsIcon :icon="ArrowLeft01Icon" :size="12" :stroke-width="2.2" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="approve-nav__btn"
+            :disabled="queueIndex >= queueTotal - 1"
+            aria-label="Next approval"
+            title="Next approval"
+            @click="emit('next')"
+          >
+            <HugeiconsIcon :icon="ArrowRight01Icon" :size="12" :stroke-width="2.2" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
     </div>
 
     <div
@@ -71,16 +106,10 @@ const mono = computed(() => props.approval.kind !== "tool");
 
       <!-- The provider's stated reason, when it gave one. -->
       <p v-if="approval.detail" class="approve-detail">{{ approval.detail }}</p>
-
-      <p class="approve-hint">
-        The agent is waiting on this before it continues.
-      </p>
     </div>
 
-    <!-- Footer band (scoops up into the card walls) — the decision row:
-         the two negative rungs on the left, the two allow rungs on the
-         right. "Reject and stop" denies the call AND interrupts the turn
-         (Codex `cancel`, ACP `cancelled`, OpenCode reject + abort). -->
+    <!-- Footer band (scoops up into the card walls) — text actions matching
+         the shared picker/modal shells. -->
     <div class="picker-footer">
       <div class="approve-actions">
         <button
@@ -109,7 +138,7 @@ const mono = computed(() => props.approval.kind !== "tool");
         </button>
         <button
           type="button"
-          class="approve-allow"
+          class="picker-action text-ink font-semibold"
           @click="emit('decide', 'allow-once')"
         >
           Allow
@@ -176,11 +205,49 @@ const mono = computed(() => props.approval.kind !== "tool");
   color: var(--ink-soft);
 }
 
+/* Queue position and step back/next controls in the header band */
+.approve-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  color: var(--muted);
+}
+.approve-nav__count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.approve-nav__buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.approve-nav__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+.approve-nav__btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.approve-nav__btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
 /* The headline — a command line or path in a quiet mono slab; the tool name
-   stays in body type. No ring — a soft tonal fill like the code blocks, so it
-   reads as the thing being decided without a box around it. */
+   stays in body type. */
 .approve-title {
-  font-size: 15px;
+  font-size: 14.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.4;
@@ -189,23 +256,17 @@ const mono = computed(() => props.approval.kind !== "tool");
 }
 .approve-title--mono {
   font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
-  border-radius: 10px;
-  padding: 0.625rem 0.75rem;
-  background: var(--code-bg, var(--hover));
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
 }
 
 .approve-detail {
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.45;
   color: var(--ink-soft);
-}
-
-.approve-hint {
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--muted);
 }
 
 /* Footer band, welded to the card's lower edge with the arc scoops flowing UP
@@ -246,7 +307,7 @@ const mono = computed(() => props.approval.kind !== "tool");
 }
 
 /* Text-button actions — no fill, quiet hover fade — exactly the pickers'
-   treatment. Reject borrows the danger hue so the negative path reads first. */
+   treatment. */
 .picker-action {
   display: inline-flex;
   align-items: center;
@@ -270,6 +331,9 @@ const mono = computed(() => props.approval.kind !== "tool");
 .text-muted {
   color: var(--muted);
 }
+.text-ink {
+  color: var(--ink);
+}
 
 .approve-actions {
   display: flex;
@@ -277,29 +341,11 @@ const mono = computed(() => props.approval.kind !== "tool");
   gap: 1.25rem;
 }
 
-/* The one filled action — "Allow", the calm default, Enter'd from anywhere. */
-.approve-allow {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 0.375rem 0.9rem;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--ground);
-  background: var(--ink);
-  cursor: pointer;
-  transition: opacity 0.18s ease;
-}
-.approve-allow:hover {
-  opacity: 0.85;
-}
-
 /* Match the pickers' quiet scrollbar. */
 .approve-scroll {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.75rem;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 1rem 1rem 0.5rem;
