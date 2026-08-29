@@ -42,24 +42,25 @@ async function resolvePoints(): Promise<void> {
   }
   if (props.logo) {
     const l = props.logo;
-    if (typeof l === "object" && "version" in l && "p" in l) {
-      // SAFETY: Object structure matches serialized LogoPointSet schema (contains version and point coordinates)
-      resolvedPoints.value = l as LogoPointSet;
-      return;
-    }
-    if (typeof l === "string") {
-      const isSvg = l.trim().startsWith("<");
-      const source: LogoSource = isSvg ? { svg: l } : { path: l, viewBox: 24 };
+    if (l instanceof Object) {
+      if ("version" in l && "p" in l) {
+        // SAFETY: Object structure matches serialized LogoPointSet schema (contains version and point coordinates)
+        resolvedPoints.value = l as LogoPointSet;
+        return;
+      }
       try {
-        resolvedPoints.value = await bakeLogo(source, { count: 80, shell: "dome" });
+        // SAFETY: Logo prop is an object conforming to LogoSource
+        resolvedPoints.value = await bakeLogo(l as LogoSource, { count: 80, shell: "dome" });
       } catch {
         resolvedPoints.value = null;
       }
       return;
     }
+    const str = String(l);
+    const isSvg = str.trim().startsWith("<");
+    const source: LogoSource = isSvg ? { svg: str } : { path: str, viewBox: 24 };
     try {
-      // SAFETY: Logo prop is narrowed by prior branches to an object conforming to LogoSource
-      resolvedPoints.value = await bakeLogo(l as LogoSource, { count: 80, shell: "dome" });
+      resolvedPoints.value = await bakeLogo(source, { count: 80, shell: "dome" });
     } catch {
       resolvedPoints.value = null;
     }
@@ -88,7 +89,7 @@ function ancestorScheme(): boolean | null {
 
 function syncEnvironment(): void {
   dark = ancestorScheme() ?? scheme.value === "dark";
-  reduced = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  reduced = Boolean(globalThis.window?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
 }
 
 function draw(time: number): void {

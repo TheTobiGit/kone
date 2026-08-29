@@ -5,7 +5,7 @@
 // same ones: a storage key spelled differently in the two places is a setting
 // that silently stops surviving a relaunch.
 
-import type { ProviderKind } from "~/types/desktop";
+import type { InteractionMode, ProviderKind } from "~/types/desktop";
 import type { BrandKey } from "~/utils/modelCatalog";
 
 /** The provider + model + reasoning effort are remembered GLOBALLY — one
@@ -52,6 +52,54 @@ export const PROVIDER_VENDOR = {
   droid: "Factory",
   antigravity: "Google",
 } satisfies Record<ProviderKind, string>;
+
+/**
+ * Which provider a brand-new session opens on.
+ *
+ * The configured default wins, then whatever ran last, then Codex — and an
+ * unrecognised stored value falls through to the same floor, so a key left
+ * behind by a provider that no longer exists cannot strand a session on a
+ * provider nothing can start. Read at the moment a session is constructed
+ * rather than kept in a ref: it is a boot pick, and re-reading it later would
+ * quietly re-decide a choice the thread has already made.
+ */
+export function bootProvider(): ProviderKind {
+  if (!import.meta.client) return "codex";
+  const stored = localStorage.getItem(DEFAULT_PROVIDER_KEY) ?? localStorage.getItem(PROVIDER_KEY);
+  return stored !== null && stored in PROVIDER_VENDOR ? toProviderKind(stored) : "codex";
+}
+
+/** Every permission mode there is, so a stored string can be checked against
+ *  the set rather than trusted. */
+const MODES = ["ask", "accept-edits", "full-access"] as const;
+
+/**
+ * The mode a thread in this project should open on, or null when nothing has
+ * been decided anywhere and the session's own floor should stand.
+ *
+ * The project's own mode wins, then the app-wide default — the same order the
+ * per-project key implies, since a project that has been given a mode has said
+ * something more specific than the default ever did. Read once when a thread is
+ * being made, never afterwards: a running thread's mode is the one it is
+ * running under, and re-reading storage would change it out from under a turn.
+ */
+export function bootMode(projectPath: string): InteractionMode | null {
+  if (!import.meta.client) return null;
+  const stored =
+    localStorage.getItem(modeKey(projectPath)) ?? localStorage.getItem(DEFAULT_MODE_KEY);
+  if (stored === null || !MODES.some((m) => m === stored)) return null;
+  // SAFETY: the check above passes only for an exact member of MODES, which is
+  // exactly InteractionMode.
+  return stored as InteractionMode;
+}
+
+/** The `in PROVIDER_VENDOR` check above is the parse; this only carries the
+ *  result across, and every caller is that check. */
+function toProviderKind(checked: string): ProviderKind {
+  // SAFETY: reached only when `checked in PROVIDER_VENDOR`, and that object's
+  // keys are exactly ProviderKind.
+  return checked as ProviderKind;
+}
 
 export const PROVIDER_BRAND = {
   codex: "codex",
