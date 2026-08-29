@@ -19,6 +19,7 @@ import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/
 import {
   DEFAULT_MODE_KEY,
   DEFAULT_MODEL_KEY,
+  bootProvider,
   DEFAULT_PROVIDER_KEY,
   DEFAULT_REASONING_KEY,
   MODEL_KEY,
@@ -107,14 +108,8 @@ const providerSettings = useProviderSettings();
 // cwd is a getter so the session always boots in whatever project is active —
 // paired with a per-project key on <ProjectView> so switching projects gives a
 // fresh session rooted in the new directory.
-// SAFETY: Local storage values are cast to ProviderKind | null and validated via fallback
-const initialProvider: ProviderKind =
-  (import.meta.client
-    ? (localStorage.getItem(DEFAULT_PROVIDER_KEY) as ProviderKind | null) ??
-      (localStorage.getItem(PROVIDER_KEY) as ProviderKind | null)
-    : null) ?? "codex";
 const agent = useAgent({
-  provider: initialProvider in PROVIDER_VENDOR ? initialProvider : "codex",
+  provider: bootProvider(),
   cwd: () => props.project.path,
 });
 // A conversation the launcher asked us to resume on open (see onMounted).
@@ -223,6 +218,9 @@ watch(studio.saveSignature, () => {
 });
 function setPaneWidth(id: string, width: number): void {
   studio.setWidth(id, width);
+}
+function setPaneZen(id: string, zen: boolean): void {
+  studio.setZen(id, zen);
 }
 
 // The composer only docks under a focused thread pane ON the studio — never on
@@ -717,6 +715,15 @@ async function syncComposerTarget(): Promise<void> {
       agent.focusThread(focusedThread.value.key);
       return;
     }
+    const focusedEntry = panes.value.find((p) => p.id === focusedId.value);
+    if (focusedEntry?.kind === "thread") {
+      if (props.visible) {
+        await attach(focusedEntry.id);
+        const sk = focusedPane.value?.session?.key;
+        if (sk) agent.focusThread(sk);
+      }
+      return;
+    }
     if (!props.visible) return;
 
     let blank = blankThreadPane.value;
@@ -725,8 +732,11 @@ async function syncComposerTarget(): Promise<void> {
     // here so model picks aren't written to a boot session restore is about to
     // evict.
     if (!blank) {
-      await studio.open("thread", { focus: false });
-      blank = blankThreadPane.value;
+      const hasAnyThread = panes.value.some((p) => p.kind === "thread");
+      if (!hasAnyThread) {
+        await studio.open("thread", { focus: false });
+        blank = blankThreadPane.value;
+      }
     }
     if (!blank) return;
     if (!blank.session) await attach(blank.id);
@@ -1452,6 +1462,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @to-scratchpad="captureToScratchpad"
         @scratchpad-flush="() => scratchpad.flush()"
         @width="setPaneWidth"
+        @zen="setPaneZen"
         @toggle-overview="emit('toggleOverview')"
         @select-column="(id) => emit('selectPane', id)"
       />

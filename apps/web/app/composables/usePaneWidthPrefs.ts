@@ -31,7 +31,7 @@ const paneWidths = useStorage<Record<PaneKind, number>>(
   { listenToStorageChanges: true, mergeDefaults: true },
 );
 
-function clampRung(value: unknown): number {
+function clampRung(value: number | string | undefined | null): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return DEFAULT_PANE_WIDTH;
   return Math.min(LAST_RUNG, Math.max(0, Math.round(n)));

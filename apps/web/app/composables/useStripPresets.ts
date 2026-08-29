@@ -1,9 +1,8 @@
 import { nextTick, onBeforeUnmount, ref, type Ref } from "vue";
-import type { Pane, PaneId } from "~/types/studio";
+import type { Pane } from "~/types/studio";
 import { LADDER_PX } from "~/utils/stripScroll";
 import { useSound } from "./useSound";
 
-export const LAST_STEPPED = LADDER_PX.length - 2;
 export const DEFAULT_PRESET = 0; // 840px — default and narrowest rung
 
 export interface Preset {
@@ -28,6 +27,7 @@ export function useStripPresets(deps: {
   railWidth: Ref<number>;
   reducedMotionOn: () => boolean;
   onWidthEmit: (key: string, index: number) => void;
+  onZenEmit?: (key: string, zen: boolean) => void;
   onScrollToColumn: (key: string) => void;
 }) {
   const {
@@ -36,13 +36,13 @@ export function useStripPresets(deps: {
     railWidth,
     reducedMotionOn,
     onWidthEmit,
+    onZenEmit,
     onScrollToColumn,
   } = deps;
   const { cue } = useSound();
 
   const widthAnim = ref<Record<string, boolean>>({});
   const animTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const zenIds = ref<Set<PaneId>>(new Set());
 
   function isSideChatPane(id: string): boolean {
     const c = panes().find((p) => p.id === id);
@@ -65,7 +65,8 @@ export function useStripPresets(deps: {
   }
 
   function isZen(id: string): boolean {
-    return zenIds.value.has(id) && id === focusedId();
+    const pane = panes().find((p) => p.id === id);
+    return Boolean(pane?.entry.zen && id === focusedId());
   }
 
   function presetFor(key: string): Preset {
@@ -90,6 +91,8 @@ export function useStripPresets(deps: {
   function setPreset(key: string, index: number): void {
     if (isSideChatPane(key)) return;
     const next = clampPreset(index);
+    const pane = panes().find((p) => p.id === key);
+    if (pane?.entry.zen) onZenEmit?.(key, false);
     if (next === presetIndexFor(key)) return;
     onWidthEmit(key, next);
     if (reducedMotionOn()) return;
@@ -98,12 +101,7 @@ export function useStripPresets(deps: {
 
   function cycleWidth(key: string): void {
     cue("press");
-    const next =
-      presetIndexFor(key) >= LAST_STEPPED
-        ? 0
-        : presetIndexFor(key) + 1 === LAST_STEPPED
-          ? PRESETS.length - 1
-          : presetIndexFor(key) + 1;
+    const next = (presetIndexFor(key) + 1) % PRESETS.length;
     setPreset(key, next);
     void nextTick(() => onScrollToColumn(key));
   }
@@ -125,10 +123,9 @@ export function useStripPresets(deps: {
     if (!currentFocusedId || panes().length === 0 || isSideChatPane(currentFocusedId)) return;
     cue("toggle");
     const id = currentFocusedId;
-    const next = new Set(zenIds.value);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    zenIds.value = next;
+    const pane = panes().find((p) => p.id === id);
+    const next = !pane?.entry.zen;
+    onZenEmit?.(id, next);
     if (!reducedMotionOn()) flagWidthAnim(id);
     void nextTick(() => onScrollToColumn(id));
   }
@@ -141,7 +138,6 @@ export function useStripPresets(deps: {
   return {
     PRESETS,
     DEFAULT_PRESET,
-    zenIds,
     widthAnim,
     isSideChatPane,
     presetIndexFor,

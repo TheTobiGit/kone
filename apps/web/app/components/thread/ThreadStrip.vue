@@ -121,6 +121,8 @@ const emit = defineEmits<{
   "scratchpad-flush": [key: string];
   /** A column's width preset index changed — persist it onto the pane entry. */
   width: [key: string, index: number];
+  /** A column's maximized (zen) state changed — persist it onto the pane entry. */
+  zen: [key: string, zen: boolean];
   /** The empty-board chooser picked a kind — start the board with that pane
    *  (or, for a thread, just reveal the waiting blank column). */
   choose: [kind: "thread" | "terminal" | "scratchpad"];
@@ -151,7 +153,6 @@ const {
   PRESETS,
   DEFAULT_PRESET,
   widthAnim,
-  zenIds,
   isSideChatPane,
   presetIndexFor,
   clampPreset,
@@ -170,6 +171,7 @@ const {
   railWidth,
   reducedMotionOn,
   onWidthEmit: (id, index) => emit("width", id, index),
+  onZenEmit: (id, zen) => emit("zen", id, zen),
   onScrollToColumn: (id) => scrollToColumn(id),
 });
 
@@ -350,9 +352,6 @@ function enterOverview(): void {
   const p = plane.value;
   if (!r || !p) return;
   if (props.overview === undefined && props.panes.length < 2) return;
-  // Zen's synthetic 100%-wide preset would poison the measure — drop zen first,
-  // silently: we don't restore it on exit and never persist it.
-  zenIds.value.clear();
   markZoomBusy();
 
   const fromScroll = r.scrollLeft;
@@ -557,21 +556,14 @@ watch(
     // while the incoming one expands only if *it* is maximized. Flag both when their
     // rendered width changes so the glide doesn't snap.
     if (!reducedMotionOn()) {
-      if (prev && (zenIds.value.has(prev) || (key && zenIds.value.has(key)))) {
+      const prevZen = prev ? Boolean(props.panes.find((p) => p.id === prev)?.entry.zen) : false;
+      const keyZen = key ? Boolean(props.panes.find((p) => p.id === key)?.entry.zen) : false;
+      if (prevZen || keyZen) {
         if (prev && prev !== key) flagWidthAnim(prev);
         if (key) flagWidthAnim(key);
       }
     }
     if (key) void nextTick(() => scrollToColumn(key));
-  },
-);
-// Prune zen flags for panes that left — recycled ids must not inherit maximize.
-watch(
-  () => props.panes.map((p) => p.id).join("|"),
-  (ids) => {
-    const live = new Set(ids.split("|").filter(Boolean));
-    const next = new Set([...zenIds.value].filter((id) => live.has(id)));
-    if (next.size !== zenIds.value.size) zenIds.value = next;
   },
 );
 watch(
@@ -881,7 +873,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
   }
   // Esc leaves zen — but only swallow the event while zen is actually on, so the
   // rest of the time Escape still bubbles up to close a modal or the settings drawer.
-  if (e.key === "Escape" && props.focusedId && zenIds.value.has(props.focusedId)) {
+  if (e.key === "Escape" && props.focusedId && isZen(props.focusedId)) {
     e.preventDefault();
     toggleZen();
     return;
