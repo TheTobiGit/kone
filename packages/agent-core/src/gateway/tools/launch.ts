@@ -393,6 +393,23 @@ export class ProcessSupervisor {
     state.stoppedAt = Date.now();
   }
 
+  /**
+   * After a SIGKILL there is no stronger signal left to send, so the wait is a fixed
+   * grace for the OS to reap the process rather than another escalation step.
+   */
+  private static readonly SIGKILL_REAP_GRACE_MS = 2000;
+
+  /** Kills the whole process tree, falling back to the direct child when the tree walk fails. */
+  private static forceKill(state: SupervisedProcessState, pid: number): void {
+    try {
+      killProcessTree(pid, "SIGKILL");
+    } catch {
+      try {
+        state.process?.kill("SIGKILL");
+      } catch {}
+    }
+  }
+
   async stop(
     scope: string,
     name: string,
@@ -422,18 +439,17 @@ export class ProcessSupervisor {
     };
     state.process.once("exit", onExit);
 
-    if (signal === "SIGKILL") {
-      try {
-        killProcessTree(pid, "SIGKILL");
-      } catch {
-        try {
-          state.process.kill("SIGKILL");
-        } catch {}
-      }
-      hardCeilingTimer = setTimeout(() => {
+    // Gives up on the exit event and reports whether the process actually left the
+    // running state, so a process that outlives every signal still settles the call.
+    const settleAfter = (ms: number) =>
+      setTimeout(() => {
         state.process?.removeListener("exit", onExit);
         resolve(state.status !== "running");
-      }, Math.max(timeoutSeconds, 1) * 1000);
+      }, ms);
+
+    if (signal === "SIGKILL") {
+      ProcessSupervisor.forceKill(state, pid);
+      hardCeilingTimer = settleAfter(Math.max(timeoutSeconds, 1) * 1000);
     } else {
       try {
         state.process.kill(signal);
@@ -443,19 +459,10 @@ export class ProcessSupervisor {
       } catch {}
 
       escalationTimer = setTimeout(() => {
-        if (state.status === "running" && pid) {
-          try {
-            killProcessTree(pid, "SIGKILL");
-          } catch {
-            try {
-              state.process?.kill("SIGKILL");
-            } catch {}
-          }
+        if (state.status === "running") {
+          ProcessSupervisor.forceKill(state, pid);
         }
-        hardCeilingTimer = setTimeout(() => {
-          state.process?.removeListener("exit", onExit);
-          resolve(state.status !== "running");
-        }, 2000);
+        hardCeilingTimer = settleAfter(ProcessSupervisor.SIGKILL_REAP_GRACE_MS);
       }, timeoutSeconds * 1000);
     }
 
