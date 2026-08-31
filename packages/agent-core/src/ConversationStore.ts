@@ -6,6 +6,7 @@ import { isSpawnedRelationship } from "./types.js";
 import type {
   ChatAttachment,
   ForkContext,
+  InteractionMode,
   ProfileStats,
   ProviderKind,
   RelationshipToParent,
@@ -431,17 +432,34 @@ export class ConversationStore {
     if (!db) return;
     try {
       const now = Date.now();
+      // `last_visited_at` is stamped on the insert and left alone on the
+      // conflict. Unread is a comparison against when you last looked, so a row
+      // born with no visit is born unread — a thread you are creating, and
+      // therefore looking at, would carry a mark for whatever it says first
+      // until some surface got around to stamping it. Updating it on conflict
+      // would be the opposite mistake: ensureThread runs on every session start,
+      // and that is not a visit.
       db.prepare(
         `INSERT INTO threads (
-           thread_id, project_path, provider, model, created_at, updated_at, last_activity_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+           thread_id, project_path, provider, model, created_at, updated_at, last_activity_at,
+           last_visited_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(thread_id) DO UPDATE SET
            project_path = excluded.project_path,
            provider     = excluded.provider,
            model        = COALESCE(excluded.model, threads.model),
            updated_at   = excluded.updated_at,
            last_activity_at = excluded.last_activity_at`,
-      ).run(input.threadId, input.projectPath, input.provider, input.model ?? null, now, now, now);
+      ).run(
+        input.threadId,
+        input.projectPath,
+        input.provider,
+        input.model ?? null,
+        now,
+        now,
+        now,
+        now,
+      );
     } catch (err) {
       console.error("[conversation-store] ensureThread failed:", err);
     }
@@ -680,14 +698,46 @@ export class ConversationStore {
     }
   }
 
+  /** Record that the user has just had this thread in front of them.
+   *
+   *  Monotonic on purpose: a stamp only ever moves forward, so two surfaces
+   *  showing the same thread (a studio column and the inbox reader) cannot have
+   *  the slower one's write undo the faster one's, and a late-arriving write
+   *  from a pane that has since been closed cannot re-hide a reply that landed
+   *  after it. The one caller that needs to go backwards is marking a thread
+   *  unread again, which passes the earlier time deliberately — hence `force`.
+   */
+  setVisited(threadId: string, at: number, force = false): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      if (force) {
+        db.prepare(`UPDATE threads SET last_visited_at = ? WHERE thread_id = ?`).run(at, threadId);
+        return;
+      }
+      db.prepare(
+        `UPDATE threads SET last_visited_at = ?
+         WHERE thread_id = ? AND (last_visited_at IS NULL OR last_visited_at < ?)`,
+      ).run(at, threadId, at);
+    } catch (err) {
+      console.error("[conversation-store] setVisited failed:", err);
+    }
+  }
+
   /** Persist the user's per-thread picker selection so a reopened thread
    *  restores it exactly (agent:set-thread-selection; fix_registry contract).
    *  `model` lands on the existing threads.model column (the display model);
-   *  effort / serviceTier / contextWindow ride `model_selection_json` — the
+   *  effort / serviceTier / contextWindow / mode ride `model_selection_json` — the
    *  same axes SendTurnInput carries. Absent fields are left untouched. */
   setThreadSelection(
     threadId: string,
-    selection: { model?: string; effort?: string; serviceTier?: string; contextWindow?: string },
+    selection: {
+      model?: string;
+      effort?: string;
+      serviceTier?: string;
+      contextWindow?: string;
+      mode?: InteractionMode | string;
+    },
   ): void {
     const db = this.handle();
     if (!db) return;
@@ -699,13 +749,22 @@ export class ConversationStore {
       const row = db
         .prepare(`SELECT model_selection_json FROM threads WHERE thread_id = ?`)
         .get(threadId) as { model_selection_json: string | null } | undefined;
-      const knobs: { effort?: string; serviceTier?: string; contextWindow?: string } =
-        parseJsonObject<{ effort?: string; serviceTier?: string; contextWindow?: string }>(
-          row?.model_selection_json ?? null,
-        ) ?? {};
+      const knobs: {
+        effort?: string;
+        serviceTier?: string;
+        contextWindow?: string;
+        mode?: string;
+      } =
+        parseJsonObject<{
+          effort?: string;
+          serviceTier?: string;
+          contextWindow?: string;
+          mode?: string;
+        }>(row?.model_selection_json ?? null) ?? {};
       if (selection.effort !== undefined) knobs.effort = selection.effort;
       if (selection.serviceTier !== undefined) knobs.serviceTier = selection.serviceTier;
       if (selection.contextWindow !== undefined) knobs.contextWindow = selection.contextWindow;
+      if (selection.mode !== undefined) knobs.mode = selection.mode;
       const json = Object.keys(knobs).length ? JSON.stringify(knobs) : null;
       db.prepare(
         `UPDATE threads
@@ -1476,13 +1535,20 @@ export class ConversationStore {
   }
 
   /** Hide (or restore) a thread and its spawned subtree from the recent list
-   *  without destroying them. `archived` is a timestamp so a future "archived"
-   *  view can order by it. Refuses (and returns the reason) when a spawned
-   *  descendant is mid-turn. */
+   *  without destroying them. `archived` is a timestamp so the archived view
+   *  can order by when the put-away happened. Refuses (and returns the reason)
+   *  when a spawned descendant is mid-turn. On success returns every thread id
+   *  the stamp landed on, ancestor-first, so the caller can announce the
+   *  change per thread.
+   *
+   *  This is the pure data primitive: it touches ONLY the threads table. The
+   *  caller (AgentService.setThreadArchived) owns everything announcements
+   *  need — cancelling the subtree's queued turns, and the thread.archived /
+   *  turn.queued-cancelled events that make every surface agree. */
   setArchived(
     threadId: string,
     archived: boolean,
-  ): { ok: true } | { ok: false; reason: "missing" | "busy" | "error" } {
+  ): { ok: true; threadIds: string[] } | { ok: false; reason: "missing" | "busy" | "error" } {
     const db = this.handle();
     if (!db) return { ok: false, reason: "missing" };
     try {
@@ -1497,22 +1563,104 @@ export class ConversationStore {
         );
         return { ok: false, reason: "busy" };
       }
-      // Queued turns deliberately SURVIVE archive: kone's archive is a
-      // reversible hide/reveal toggle — it never stops a session and nothing
-      // gates sends on `archived`, so a restored thread's queue is still
-      // thread.archived STOPS the provider session; kone has no such stop.
-      // Queued rows are cancelled on deleteThread only (the durable-queue
-      // contract: a deleted thread's turns can never resurrect).
+      // Queued turns are deliberately NOT touched here — the service layer
+      // cancels them (and says so over the event stream) as part of the same
+      // archive request, so a hidden thread never carries a queue the user
+      // can no longer see. Cancelling at that layer rather than this one
+      // keeps the store free of event emission, where it has no listeners.
       const stamp = archived ? Date.now() : null;
       const placeholders = ids.map(() => "?").join(",");
       db.prepare(`UPDATE threads SET archived = ? WHERE thread_id IN (${placeholders})`).run(
         stamp,
         ...ids,
       );
-      return { ok: true };
+      return { ok: true, threadIds: ids };
     } catch (err) {
       console.error("[conversation-store] setArchived failed:", err);
       return { ok: false, reason: "error" };
+    }
+  }
+
+  /** Live threads the retention sweep may tidy. Roots only (a spawned child is
+   *  archived through its parent — archiving one alone would strand it with no
+   *  row to restore it from), never pinned (a pin is a keep-me), never already
+   *  archived, and never a subtree with active queued turns (putting those
+   *  away would silently cancel work the user asked for). Staleness is the
+   *  newest of the thread's own timestamps — a thread only counts as stale
+   *  when every signal it carries is past the cutoff — and the stalest come
+   *  first, so a backlog drains oldest-first.
+   *
+   *  `last_visited_at` is one of those signals, and it has to be: the sweep is
+   *  answering "has anyone touched this in a week", and reading a thread is
+   *  touching it. Activity alone only knows whether the AGENT has spoken, so a
+   *  reference thread somebody opens every few days — never replies in, never
+   *  pins — would be archived out from under them while they were still using
+   *  it. It is also the same clock unread is measured on, so the two agree
+   *  about what counts as attention. A subtree with anything live
+   *  (running assistant block, starting/running subagent) is excluded too —
+   *  the mark-done pass has no write-time guard to rely on, and skipping busy
+   *  work at query time spares the archive pass a refusal it would only hit
+   *  anyway (`setArchived` still re-checks at write time for the race between
+   *  this query and the write).
+   *
+   *  `undone: true` narrows this to threads not already done, for the
+   *  shorter-age mark-done pass: a thread whose done stamp is missing, or
+   *  older than its last activity (the mark self-clears when the agent
+   *  speaks), is a candidate — but `done_at = 0` (DONE_CLEARED) never is. Zero
+   *  is the user's "not finished" answer, which outranks age for good; the
+   *  sweep has no business overriding it. */
+  staleThreadIds(options: {
+    unusedMs: number;
+    limit: number;
+    undone?: boolean;
+  }): string[] {
+    const db = this.handle();
+    if (!db) return [];
+    const cutoff = Date.now() - Math.max(0, options.unusedMs);
+    try {
+      // SAFETY: the recursive SELECT projects exactly threads.thread_id.
+      const rows = db
+        .prepare(
+          `WITH RECURSIVE subtree(root_id, id) AS (
+             SELECT t.thread_id AS root_id, t.thread_id AS id FROM threads t
+             WHERE t.parent_thread_id IS NULL
+               AND t.archived IS NULL
+               AND t.is_pinned = 0
+               AND MAX(COALESCE(t.last_activity_at, t.updated_at, t.created_at), COALESCE(t.last_visited_at, 0)) < ?
+               ${options.undone ? `AND (t.done_at IS NULL OR (t.done_at > 0 AND t.done_at < COALESCE(t.last_activity_at, t.updated_at, t.created_at)))` : ""}
+             UNION ALL
+             SELECT s.root_id, c.thread_id FROM threads c JOIN subtree s ON c.parent_thread_id = s.id
+           )
+           SELECT t.thread_id, MAX(COALESCE(t.last_activity_at, t.updated_at, t.created_at), COALESCE(t.last_visited_at, 0)) AS activity
+           FROM threads t
+           WHERE t.thread_id IN (SELECT root_id FROM subtree)
+             AND t.parent_thread_id IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM queued_turns q
+               JOIN subtree s ON q.thread_id = s.id
+               WHERE s.root_id = t.thread_id
+                 AND q.state IN ('queued', 'promoting')
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM blocks b
+               JOIN subtree s ON b.thread_id = s.id
+               WHERE s.root_id = t.thread_id
+                 AND b.role = 'assistant' AND b.state = 'running'
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM subagents sa
+               JOIN subtree s ON sa.thread_id = s.id
+               WHERE s.root_id = t.thread_id
+                 AND sa.status IN ('starting', 'running')
+             )
+           ORDER BY activity ASC
+           LIMIT ?`,
+        )
+        .all(cutoff, options.limit) as Array<{ thread_id: string }>;
+      return rows.map((r) => r.thread_id);
+    } catch (err) {
+      console.error("[conversation-store] staleThreadIds failed:", err);
+      return [];
     }
   }
 
@@ -1863,11 +2011,12 @@ export class ConversationStore {
     if (!db) return [];
     const archivedOnly = options?.archived === true;
     try {
-      // SAFETY: `t.*` of threads is exactly ThreadRow — the columns this
-      // schema creates.
+      // SAFETY: `t.*` plus computed snippet matches ThreadRow.
       const rows = db
         .prepare(
-          `SELECT t.* FROM threads t
+          `SELECT t.*,
+            (SELECT text FROM items WHERE thread_id = t.thread_id AND kind IN ('assistant_text', 'text') AND text IS NOT NULL AND trim(text) != '' ORDER BY seq DESC LIMIT 1) AS snippet
+          FROM threads t
             WHERE t.project_path = ?
               AND t.archived IS ${archivedOnly ? "NOT NULL" : "NULL"}
               AND EXISTS (

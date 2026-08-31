@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
+import { SCHEMA_VERSION } from "./conversationMigrations.js";
 
 import { Database } from "bun:sqlite";
 
@@ -167,7 +168,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     const raw = new Database(dbPath());
     // SAFETY: PRAGMA user_version projects exactly one column, named user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     const idx = raw
       .prepare(
         `SELECT 1 FROM sqlite_master

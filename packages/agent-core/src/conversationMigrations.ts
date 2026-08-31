@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
  *  partially-applied migration — a crash between statements — re-runs
@@ -1144,8 +1144,32 @@ export function migrate(db: DatabaseSync, dbFile: string): void {
     version = commitStep(db, 29);
   }
 
+  if (version < 30) {
+    // v30 — `last_visited_at` records the last time you actually looked at a
+    // thread. Unread is the comparison `last_activity_at > last_visited_at`:
+    // the agent has spoken since you last had the thread in front of you.
+    //
+    // A stamp rather than an unread flag, for the same reason `done_at` is one.
+    // A flag has to be cleared by whoever shows the thread and set by whoever
+    // appends a turn, which is two writers racing over one bit and a crash
+    // between them leaving a thread permanently shouting or permanently quiet.
+    // A visit time has exactly one writer — the surface showing the thread —
+    // and every reader derives from it.
+    //
+    // Existing rows are backfilled to their last activity, i.e. read. Claiming
+    // otherwise would open the feature by declaring every thread in the
+    // database unread, and nothing in the database can say whether they were.
+    beginStep(db);
+    addColumn(db, "threads", "last_visited_at", "INTEGER");
+    db.exec(
+      `UPDATE threads SET last_visited_at = COALESCE(last_activity_at, updated_at)
+       WHERE last_visited_at IS NULL`,
+    );
+    version = commitStep(db, 30);
+  }
+
   // Future migrations append here:
-  // `if (version < 30) { beginStep(db); …; version = commitStep(db, 30); }`
+  // `if (version < 31) { beginStep(db); …; version = commitStep(db, 31); }`
 
   // Every rung stamps itself, so the ladder ending anywhere but the current
   // version means a rung is missing for it — a bumped SCHEMA_VERSION that

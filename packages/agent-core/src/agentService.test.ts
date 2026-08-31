@@ -767,3 +767,297 @@ describe("AgentService durable turn queue + steering", () => {
   });
 });
 
+describe("AgentService thread archive + retention", () => {
+  /** In-memory stand-in for the store's history slice — subtree stamps,
+   *  thread metadata, retention candidates. Mirrors the real contract:
+   *  ancestor-first thread ids on success, refusal shapes untouched, and the
+   *  done semantics of `done_at` (null = never, 0 = user's "not finished",
+   *  a stamp older than the last activity has self-cleared). */
+  class FakeHistoryStore {
+    /** threadId → parent id (null = root), the spawn pointers setArchived
+     *  walks. Held flat; one parent level covers everything these tests pin. */
+    private parents = new Map<string, string | null>();
+    private providers = new Map<string, string>();
+    /** threadId → the archived stamp (null = live) — what the tests assert on. */
+    archivedStamp = new Map<string, number | null>();
+    /** threadId → the done stamp, with the store's done_at semantics. */
+    doneStamps = new Map<string, number | null>();
+    /** Idle age per thread, what staleThreadIds's cutoffs read. */
+    private ages = new Map<string, number>();
+    /** When set to a thread id, the next archive write over that subtree
+     *  refuses busy (a descendant mid-turn, from the store's side). */
+    busyThread: string | null = null;
+
+    seed(
+      threadId: string,
+      provider: string,
+      parent: string | null = null,
+      idleMs = 0,
+    ): void {
+      this.parents.set(threadId, parent);
+      this.providers.set(threadId, provider);
+      this.archivedStamp.set(threadId, null);
+      this.doneStamps.set(threadId, null);
+      this.ages.set(threadId, idleMs);
+    }
+
+    /** Whether a thread currently reads as done: a stamp that is not the
+     *  cleared marker and has not been outgrown by activity. (With no activity
+     *  clock here, a stamped thread reads done until un-marked.) */
+    private readsDone(threadId: string): boolean {
+      const stamp = this.doneStamps.get(threadId) ?? null;
+      return stamp !== null && stamp !== 0;
+    }
+
+    private subtreeIds(threadId: string): string[] {
+      const out = [threadId];
+      for (const [id, parent] of this.parents) {
+        if (parent !== null && out.includes(parent) && !out.includes(id)) out.push(id);
+      }
+      return out;
+    }
+
+    setArchived(
+      threadId: string,
+      archived: boolean,
+    ): { ok: true; threadIds: string[] } | { ok: false; reason: "missing" | "busy" | "error" } {
+      if (!this.parents.has(threadId)) return { ok: false, reason: "missing" };
+      const ids = this.subtreeIds(threadId);
+      if (archived && this.busyThread !== null && ids.includes(this.busyThread)) {
+        return { ok: false, reason: "busy" };
+      }
+      const stamp = archived ? Date.now() : null;
+      for (const id of ids) this.archivedStamp.set(id, stamp);
+      return { ok: true, threadIds: ids };
+    }
+
+    setDone(threadId: string, done: boolean): void {
+      this.doneStamps.set(threadId, done ? Date.now() : 0);
+    }
+
+    threadMeta(threadId: string): { threadId: string; provider: string } | null {
+      const provider = this.providers.get(threadId);
+      if (provider === undefined) return null;
+      return { threadId, provider };
+    }
+
+    staleThreadIds(options: { unusedMs: number; limit: number; undone?: boolean }): string[] {
+      return [...this.parents.entries()]
+        .filter(([, parent]) => parent === null)
+        .filter(([id]) => (this.archivedStamp.get(id) ?? null) === null)
+        .filter(([id]) => (this.ages.get(id) ?? 0) >= options.unusedMs)
+        // Mirrors the store's SQL: a done thread is not a done-pass candidate,
+        // and neither is done_at = 0 — the user's "not finished" outranks age.
+        .filter(([id]) => !options.undone || !(this.readsDone(id) || this.doneStamps.get(id) === 0))
+        .sort((a, b) => (this.ages.get(a[0]) ?? 0) - (this.ages.get(b[0]) ?? 0))
+        .map(([id]) => id)
+        .slice(0, options.limit);
+    }
+
+    reset(): void {
+      this.parents.clear();
+      this.providers.clear();
+      this.archivedStamp.clear();
+      this.doneStamps.clear();
+      this.ages.clear();
+      this.busyThread = null;
+    }
+  }
+
+  const history = new FakeHistoryStore();
+  const events: import("./types.js").RuntimeEvent[] = [];
+  // Constructed in beforeAll — AgentServiceCtor is assigned there (the dynamic
+  // import lands after the sqlite shim), so module-evaluation-time construction
+  // would see undefined.
+  let archiveService: AgentServiceType;
+
+  beforeAll(() => {
+    // Retention's constructor timer is disabled — these tests drive the sweep
+    // directly, so the timing knobs never matter.
+    archiveService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      // SAFETY: fakeStore implements the queued-turn slice this service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: fakeStore as unknown as QueuedTurnStore,
+      // SAFETY: the fake implements exactly the three history methods the
+      // archive/retention paths read.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      historyStore: history as unknown as import("./AgentService.js").AgentServiceOptions["historyStore"],
+      // SAFETY: one fake adapter is a whole enough provider roster here — no
+      // archive test sends a turn.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: (emit) => [new FakeAdapter(emit, "codex") as unknown as ProviderAdapter],
+    });
+    archiveService.onEvent((e) => events.push(e));
+  });
+
+  /** A durable queued row on a thread, without walking the live-turn path. */
+  async function seedQueuedTurn(threadId: string, queueId: string): Promise<void> {
+    await fakeStore.enqueueQueuedTurn({
+      queueId,
+      threadId,
+      userBlockId: `ub-${queueId}`,
+      dispatchMode: "queue",
+      state: "queued",
+      input: "follow-up",
+      attachmentsJson: null,
+      model: null,
+      mode: null,
+      effort: null,
+      serviceTier: null,
+      contextWindow: null,
+      attemptCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      promotedAt: null,
+    });
+  }
+
+  beforeEach(() => {
+    fakeStore.reset();
+    history.reset();
+    events.length = 0;
+  });
+
+  /** The archive events, narrowed without assertions — the predicate pins the
+   *  union member and the compiler does the rest. */
+  function archivedEvents(): Array<Extract<import("./types.js").RuntimeEvent, { type: "thread.archived" }>> {
+    return events.filter(
+      (e): e is Extract<import("./types.js").RuntimeEvent, { type: "thread.archived" }> =>
+        e.type === "thread.archived",
+    );
+  }
+
+  test("archiving a subtree cancels its queued turns and announces every thread", async () => {
+    history.seed("root-1", "codex");
+    history.seed("child-1", "codex", "root-1");
+    await seedQueuedTurn("child-1", "q-arch-1");
+    await seedQueuedTurn("root-1", "q-arch-2");
+
+    const result = await archiveService.setThreadArchived("root-1", true);
+
+    expect(result).toEqual({ ok: true, threadIds: ["root-1", "child-1"] });
+    // A hidden thread must not carry a queue the user can no longer see.
+    expect(fakeStore.rows).toHaveLength(0);
+    // One thread.archived per stamped thread — the root AND the child carried
+    // along with it.
+    expect(archivedEvents().map((e) => e.threadId)).toEqual(["root-1", "child-1"]);
+    // One queued-cancelled per row, reason "archive" — the variant the
+    // renderer already folds.
+    const cancelled = events.filter(
+      (e): e is Extract<import("./types.js").RuntimeEvent, { type: "turn.queued-cancelled" }> =>
+        e.type === "turn.queued-cancelled",
+    );
+    expect(
+      cancelled
+        .map((e) => ({ queueId: e.queueId, reason: e.reason }))
+        .sort((a, b) => a.queueId.localeCompare(b.queueId)),
+    ).toEqual([
+      { queueId: "q-arch-1", reason: "archive" },
+      { queueId: "q-arch-2", reason: "archive" },
+    ]);
+  });
+
+  test("unarchiving announces the subtree and touches no queue rows", async () => {
+    history.seed("root-1", "codex");
+    await archiveService.setThreadArchived("root-1", true);
+    events.length = 0;
+    await seedQueuedTurn("root-1", "q-unarch-1");
+
+    const result = await archiveService.setThreadArchived("root-1", false);
+
+    expect(result).toEqual({ ok: true, threadIds: ["root-1"] });
+    expect(events.map((e) => e.type)).toEqual(["thread.unarchived"]);
+    expect(events[0]).toMatchObject({ threadId: "root-1" });
+    expect(fakeStore.rows).toHaveLength(1);
+  });
+
+  test("a busy refusal writes and announces nothing", async () => {
+    history.seed("root-1", "codex");
+    history.seed("child-1", "codex", "root-1");
+    history.busyThread = "child-1";
+    await seedQueuedTurn("root-1", "q-busy-1");
+
+    const result = await archiveService.setThreadArchived("root-1", true);
+
+    expect(result).toEqual({ ok: false, reason: "busy" });
+    expect(events).toHaveLength(0);
+    // The queue survives: the caller rolls its optimistic drop back.
+    expect(fakeStore.rows).toHaveLength(1);
+  });
+
+  test("the retention sweep archives its candidates through the same path", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    history.seed("stale-1", "codex", null, 8 * DAY);
+    history.seed("stale-2", "claudeAgent", null, 8 * DAY);
+    history.seed("busy-1", "codex", null, 8 * DAY);
+    history.busyThread = "busy-1";
+
+    await archiveService.sweepStaleThreads();
+
+    expect(history.archivedStamp.get("stale-1")).not.toBeNull();
+    expect(history.archivedStamp.get("stale-2")).not.toBeNull();
+    // A candidate that turned busy between the query and its write is
+    // skipped, not forced — the next sweep picks it up.
+    expect(history.archivedStamp.get("busy-1")).toBeNull();
+    expect(archivedEvents().map((e) => e.threadId)).toEqual(["stale-1", "stale-2"]);
+  });
+
+  test("the sweep marks three-day-idle threads done before anything is archived", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    history.seed("cooling-1", "codex", null, 4 * DAY); // past done, short of archive
+    history.seed("cold-1", "codex", null, 8 * DAY); // past both: done, then archived
+    history.seed("kept-1", "codex", null, 4 * DAY); // the user said "not finished"
+    history.seed("recent-1", "codex", null, 0); // not stale to any pass
+    history.setDone("kept-1", false); // done_at = 0 (DONE_CLEARED)
+
+    await archiveService.sweepStaleThreads();
+
+    // Quiet for days → done: the thread stops asking but stays in the live
+    // list, and nothing about it was hidden.
+    expect(history.doneStamps.get("cooling-1")).not.toBeNull();
+    expect(history.doneStamps.get("cooling-1")).not.toBe(0);
+    expect(history.archivedStamp.get("cooling-1")).toBeNull();
+    // A week-old thread rides the whole funnel: marked done by the first
+    // pass, then put away by the second.
+    expect(history.doneStamps.get("cold-1")).not.toBeNull();
+    expect(history.archivedStamp.get("cold-1")).not.toBeNull();
+    // The user's explicit "not finished" outranks age — no pass touches it.
+    expect(history.doneStamps.get("kept-1")).toBe(0);
+    expect(history.archivedStamp.get("kept-1")).toBeNull();
+    // Recent activity is stale to neither pass.
+    expect(history.doneStamps.get("recent-1")).toBeNull();
+    expect(history.archivedStamp.get("recent-1")).toBeNull();
+  });
+
+  test("retentionDoneMs: 0 keeps the archive pass and drops the done pass", async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const historyNoDone = new FakeHistoryStore();
+    historyNoDone.seed("idle-1", "codex", null, 4 * DAY); // done-range, not archive-range
+    const noDoneService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      retentionDoneMs: 0,
+      // SAFETY: fakeStore implements the queued-turn slice this service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: fakeStore as unknown as QueuedTurnStore,
+      // SAFETY: the fake implements exactly the history methods the paths read.
+      historyStore:
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        historyNoDone as unknown as import("./AgentService.js").AgentServiceOptions["historyStore"],
+      // SAFETY: one fake adapter is a whole enough provider roster here.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: (emit) => [new FakeAdapter(emit, "codex") as unknown as ProviderAdapter],
+    });
+    const noDoneEvents: import("./types.js").RuntimeEvent[] = [];
+    noDoneService.onEvent((e) => noDoneEvents.push(e));
+
+    await noDoneService.sweepStaleThreads();
+
+    // A thread in the done range is untouched: only the mark-done pass reads
+    // the shorter cutoff, and it is disabled.
+    expect(historyNoDone.doneStamps.get("idle-1")).toBeNull();
+    expect(historyNoDone.archivedStamp.get("idle-1")).toBeNull();
+    expect(noDoneEvents).toHaveLength(0);
+  });
+});
+

@@ -49,6 +49,16 @@ export interface StartThreadTurnOptions {
    *  same parentTurnId as startThread's; accepting it here too keeps the
    *  dispatcher self-describing for callers that only send a turn. */
   parentTurnId?: string;
+  /** This prompt is machinery, not a person: journal no user block and never
+   *  name the thread after it.
+   *
+   *  The transcript's user blocks are the record of what was actually said, and
+   *  a turn the app started on its own — waking a thread whose background
+   *  subagents came back late (subagentWake.ts) — was not said by anyone. The
+   *  agent still receives the prompt; it just leaves no quotation marks around
+   *  the app's own voice. Same discipline as the replay preamble below, which
+   *  rides the dispatched prompt and stays out of the journaled block. */
+  silent?: boolean;
 }
 
 export interface ThreadDispatcher {
@@ -73,6 +83,49 @@ export interface ThreadDispatcher {
   onTurnCompleted(threadId: string): void;
   /** Drop per-thread bookkeeping when a thread is deleted. */
   forgetThread(threadId: string): void;
+}
+
+/**
+ * What one turn's text is on each of the two axes that actually vary: whether
+ * the transcript keeps it, and what the provider is sent.
+ *
+ * They are independent, and kone has been quietly relying on both for a while
+ * without naming either. A silent turn — the app waking a thread whose
+ * background subagents came back late — is dispatched but journaled nowhere,
+ * because nobody said it. A replayed transcript (resumeContext.ts) is the
+ * mirror image: dispatched in front of the user's words but journaled nowhere
+ * either, because the user did not say it. The transcript's user blocks are the
+ * record of what was actually said, and the app's own voice does not belong in
+ * quotation marks.
+ *
+ * Four other paths prepend app-authored text to a turn the same way — the
+ * sidechat bootstrap, the `<attached_files>` block, IRC delivery and the
+ * subagent wake — each with its own hand-rolled concat at its own call site.
+ * This is the shape they should collapse onto.
+ */
+export interface TurnDelivery {
+  /** The user's own words, for the transcript — or null when nobody said it. */
+  journal: string | null;
+  /** What the provider is actually sent. */
+  dispatch: string;
+}
+
+/**
+ * Split one outgoing turn across the two axes above. Pure, so the rule that the
+ * preamble never reaches the journal is a thing a test can hold, rather than a
+ * comment sitting next to a string concatenation.
+ */
+export function composeTurnDelivery(input: {
+  message: string;
+  /** App-authored context that rides in front of the message. Never journaled. */
+  preamble?: string | null;
+  /** The app started this turn, not a person: journal nothing. */
+  silent?: boolean;
+}): TurnDelivery {
+  return {
+    journal: input.silent ? null : input.message,
+    dispatch: input.preamble ? `${input.preamble}\n\n${input.message}` : input.message,
+  };
 }
 
 /** The dispatcher created at IPC registration, or null before boot. Gateway
@@ -132,6 +185,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       provider: input.provider,
       model: input.model,
     });
+    if (input.mode !== undefined || input.effort !== undefined) {
+      this.store.setThreadSelection(input.threadId, {
+        model: input.model,
+        effort: input.effort,
+        mode: input.mode,
+      });
+    }
     const session = await this.service.startSession(input);
     // The provider conversation exists the moment startSession resolves.
     // Capture its id NOW — durably — rather than waiting for the session.started
@@ -188,14 +248,36 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
     if (options?.parentTurnId) this.spawnParentTurnIds.set(input.threadId, options.parentTurnId);
-    const preamble = this.replayPreamble(input.threadId);
+    const delivery = composeTurnDelivery({
+      message: input.input,
+      preamble: this.replayPreamble(input.threadId),
+      silent: options?.silent,
+    });
     // Persist the user prompt (with any attachment metadata) before dispatching,
     // so it precedes the turn in arrival order (turn.started lands after this).
-    const userTurnCount = this.store.recordUserBlock({
-      threadId: input.threadId,
-      text: input.input,
-      attachments: input.attachments,
-    });
+    const userTurnCount =
+      delivery.journal === null
+        ? 0
+        : this.store.recordUserBlock({
+            threadId: input.threadId,
+            text: delivery.journal,
+            attachments: input.attachments,
+          });
+    if (
+      input.mode !== undefined ||
+      input.model !== undefined ||
+      input.effort !== undefined ||
+      input.serviceTier !== undefined ||
+      input.contextWindow !== undefined
+    ) {
+      this.store.setThreadSelection(input.threadId, {
+        model: input.model,
+        effort: input.effort,
+        serviceTier: input.serviceTier,
+        contextWindow: input.contextWindow,
+        mode: input.mode,
+      });
+    }
     // First user turn → name the thread (fallback now, generated rename async).
     if (userTurnCount === 1) {
       const provider = this.store.threadMeta(input.threadId)?.provider;
@@ -212,9 +294,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         );
       }
     }
-    // Only the dispatched prompt carries the replay — the block journaled above
-    // keeps the user's own words, so the transcript never shows the machinery.
-    const dispatched = preamble ? { ...input, input: `${preamble}\n\n${input.input}` } : input;
+    const dispatched =
+      delivery.dispatch === input.input ? input : { ...input, input: delivery.dispatch };
     return destination === "steer"
       ? this.service.steerTurn(dispatched)
       : this.service.sendTurn(dispatched);
