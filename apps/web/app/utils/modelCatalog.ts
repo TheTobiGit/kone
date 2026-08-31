@@ -387,7 +387,6 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
       contextWindows?: ModelDescriptor["contextWindows"];
     }
   >();
-  const order: string[] = [];
 
   for (const m of models) {
     // A malformed descriptor — blank id, or a non-string sneaking over IPC —
@@ -408,7 +407,6 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
         serviceTiers: m.serviceTiers,
         contextWindows: m.contextWindows,
       });
-      order.push(core);
     }
     const bucket = byCore.get(core)!.efforts;
     if (tier !== "base") {
@@ -429,7 +427,9 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
     }
   }
 
-  return order.map((core) => {
+  // A Map yields its entries in first-insertion order, which is the order the
+  // descriptors arrived in — the catalog keeps the provider's own ranking.
+  return [...byCore].map(([core, entry]) => {
     const {
       label,
       efforts: bucketEfforts,
@@ -437,8 +437,8 @@ export function buildModelCatalog(models: ModelDescriptor[]): ModelOption[] {
       defaultServiceTier,
       serviceTiers,
       contextWindows,
-    } = byCore.get(core)!;
-    const efforts = bucketEfforts.sort((a, b) => EFFORT_ORDER.indexOf(a.tier) - EFFORT_ORDER.indexOf(b.tier));
+    } = entry;
+    const efforts = bucketEfforts.toSorted((a, b) => EFFORT_ORDER.indexOf(a.tier) - EFFORT_ORDER.indexOf(b.tier));
     // Prefer the provider's own default, else medium, else the middle rung.
     const providerDefaultIdx = defaultReasoningEffort
       ? efforts.findIndex((e) => e.tier === defaultReasoningEffort)
