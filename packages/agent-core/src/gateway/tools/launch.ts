@@ -190,7 +190,7 @@ export class ProcessSupervisor {
       if (stderrBuf.length > 0) appendLines("stderr", stderrBuf);
       stdoutBuf = "";
       stderrBuf = "";
-      state.status = code === 0 || signal !== null ? "stopped" : "failed";
+      state.status = ProcessSupervisor.exitStatus(code, signal);
       state.exitCode = code;
       state.stoppedAt = Date.now();
     });
@@ -378,6 +378,21 @@ export class ProcessSupervisor {
     }
   }
 
+  /** Exit code 0, or death by a signal, is a deliberate stop; any other code means the process failed on its own. */
+  private static exitStatus(
+    exitCode: number | null,
+    signalCode: NodeJS.Signals | null,
+  ): "stopped" | "failed" {
+    return exitCode === 0 || signalCode !== null ? "stopped" : "failed";
+  }
+
+  /** Gives a process observed to have exited its terminal status, leaving one that already settled alone. */
+  private static markExited(state: SupervisedProcessState): void {
+    if (state.status !== "running") return;
+    state.status = ProcessSupervisor.exitStatus(state.exitCode, state.process?.signalCode ?? null);
+    state.stoppedAt = Date.now();
+  }
+
   async stop(
     scope: string,
     name: string,
@@ -391,10 +406,7 @@ export class ProcessSupervisor {
 
     const pid = state.pid;
     if (!pid || state.process.exitCode !== null || state.process.signalCode !== null || state.status !== "running") {
-      if (state.status === "running") {
-        state.status = state.exitCode === 0 || state.process?.signalCode !== null ? "stopped" : "failed";
-        state.stoppedAt = Date.now();
-      }
+      ProcessSupervisor.markExited(state);
       return true;
     }
 
@@ -405,10 +417,7 @@ export class ProcessSupervisor {
     const onExit = () => {
       if (escalationTimer) clearTimeout(escalationTimer);
       if (hardCeilingTimer) clearTimeout(hardCeilingTimer);
-      if (state.status === "running") {
-        state.status = state.exitCode === 0 || state.process?.signalCode !== null ? "stopped" : "failed";
-        state.stoppedAt = Date.now();
-      }
+      ProcessSupervisor.markExited(state);
       resolve(true);
     };
     state.process.once("exit", onExit);
