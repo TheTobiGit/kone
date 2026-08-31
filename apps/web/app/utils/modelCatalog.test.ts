@@ -133,6 +133,26 @@ describe("parseModelTsvRows — defensive provider model-table parsing", () => {
   });
 });
 
+describe("buildModelCatalog — families keep the order the provider sent", () => {
+  test("emits one family per core id, in first-appearance order", () => {
+    const models = [
+      { id: "zeta-1", label: "Zeta" },
+      { id: "alpha-1", label: "Alpha" },
+      { id: "mid-1", label: "Mid" },
+    ] satisfies ModelDescriptor[];
+    expect(buildModelCatalog(models).map((o) => o.key)).toEqual(["zeta-1", "alpha-1", "mid-1"]);
+  });
+
+  test("a family holds the slot where it first appeared, not where it last did", () => {
+    const models = [
+      { id: "zeta-1", label: "Zeta" },
+      { id: "alpha-1", label: "Alpha" },
+      { id: "zeta-1", label: "Zeta again" },
+    ] satisfies ModelDescriptor[];
+    expect(buildModelCatalog(models).map((o) => o.key)).toEqual(["zeta-1", "alpha-1"]);
+  });
+});
+
 describe("buildModelCatalog — malformed descriptors never become garbage entries", () => {
   test("skips descriptors with a blank or non-string id", () => {
     const models = [
