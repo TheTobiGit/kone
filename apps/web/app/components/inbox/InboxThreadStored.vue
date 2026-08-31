@@ -13,8 +13,10 @@
 // of blocks. The host keys this pane on the thread, so the read happens once,
 // at setup, and a new thread is a new pane.
 
-import { computed, onMounted, ref } from "vue";
+import { nextTick, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
+import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
+import { useEdgeFade } from "~/composables/useEdgeFade";
 import { markHistorical } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
 import type { ThreadBlock } from "~/composables/agentTypes";
@@ -89,24 +91,35 @@ async function loadOlder(): Promise<void> {
   }
 }
 
-const subtitle = computed(() =>
-  [props.row.projectName, props.row.branch].filter(Boolean).join(" · "),
-);
+// No visible scrollbar — the thread content smokes its top/bottom edges over whatever
+// content runs past the cutoff, easing in over the first ~28px of scroll.
+const scroller = ref<HTMLElement>();
+const { measure, maskStyle } = useEdgeFade(scroller);
+
+watch(blocks, () => void nextTick(measure));
 </script>
 
 <template>
   <div class="rd">
-    <header class="rd__head">
-      <h2 class="rd__title">{{ row.title }}</h2>
-      <p v-if="subtitle" class="rd__sub">{{ subtitle }}</p>
-    </header>
+    <InboxThreadHeader
+      :title="row.title"
+      :seed="row.threadId"
+      :provider="row.provider"
+      :brand="row.brand"
+    />
 
-    <div class="rd__body">
+    <div
+      ref="scroller"
+      class="rd__body"
+      :style="maskStyle"
+      @scroll.passive="measure"
+    >
       <ConversationThread
         :blocks="blocks"
         :now="now"
         :thread-id="row.threadId"
         :agent-seed="row.threadId"
+        mode="reply"
         :loading="loading"
         :load-failed="loadFailed"
         :has-older="cursor !== null"
@@ -127,31 +140,6 @@ const subtitle = computed(() =>
   min-height: 0;
 }
 
-.rd__head {
-  flex: none;
-  padding: 14px 18px 10px;
-}
-.rd__title {
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--ink-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rd__sub {
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 14px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* The scroll host. The transcript renders as a plain column and finds its
    scroller by walking up from itself, so this element has to be the one that
    overflows — not an ancestor, and not the transcript. */
@@ -160,6 +148,11 @@ const subtitle = computed(() =>
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 18px 24px;
+  padding: 20px 18px 24px;
+  scrollbar-width: none;
+}
+.rd__body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 </style>

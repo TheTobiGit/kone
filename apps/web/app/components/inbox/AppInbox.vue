@@ -41,6 +41,8 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+// Where a thread started here goes on the plane. See useStudioIntake.
+const intake = useStudioIntake();
 
 // Which list is on screen. Owned here rather than by the rail so the panes and
 // the rail read the same value, and so a view is one thing the portal knows
@@ -59,6 +61,14 @@ const view = ref<InboxViewId>("inbox");
 // than a door you have to go through first.
 const composing = ref(false);
 const writing = computed(() => composing.value || selected.value === null);
+
+/** Somebody is actually looking at the selected thread. The three ways that
+ *  stops being true are all silent — the portal is dismissed, the composer takes
+ *  the pane, or nothing is picked — and none of them clear `selected`, which is
+ *  deliberate: coming back should put you where you were. So the fact that a
+ *  selection exists says nothing about whether it is on screen, and the lists
+ *  need to be told, because marking a thread read is a claim that it was read. */
+const reading = computed(() => props.open && !writing.value);
 
 // The portal is never unmounted, only hidden, so a pane that claims a session
 // on mount would claim one at boot for a project nobody has opened. Latched
@@ -87,6 +97,13 @@ function onThreadStarted(row: SessionSummary, sessionKey: string): void {
   selected.value = row;
   handedKey.value = sessionKey;
   composing.value = false;
+  // The two portals hold the same work under different questions, and this is
+  // the one moment a thread exists in only one of them. The inbox is where you
+  // started it; the studio is where the project's work lives, so the thread gets
+  // a column on that project's row too. It lands unfocused and does not summon
+  // the plane — you are reading the thread here, and being moved would be the
+  // portal deciding for you where you meant to be.
+  if (row.projectPath) void intake.adoptThread(row.projectPath, row.threadId);
 }
 
 /** A thread picked out of the list: the composer's, if it was up, goes away, and
@@ -220,6 +237,7 @@ function close(): void {
           :key="view"
           v-model:selected="selected"
           :view="view"
+          :reading="reading"
           @new-thread="startNewThread"
           @update:selected="onPickThread"
         />

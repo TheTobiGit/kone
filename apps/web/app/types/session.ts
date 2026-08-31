@@ -45,6 +45,14 @@ export type SessionSummary = {
    *  stamp and the thread's own activity, never read off the stamp alone — see
    *  isThreadDone. */
   done?: boolean;
+  /** The agent has spoken in this thread since you last had it in front of
+   *  you. Derived from the two stamps below, never stored as a flag — see
+   *  isThreadUnread. */
+  unread?: boolean;
+  /** When you last had this thread in front of you, when it is known. Carried
+   *  on the row so a surface can mark a thread read locally (and know whether
+   *  it needs to) without re-reading the record it came from. */
+  lastVisitedAt?: number;
   /** True when this thread is a side chat (forked from another conversation) —
    *  rows wear the temporary chip instead of reading as a main conversation. */
   sideChat?: boolean;
@@ -53,4 +61,6 @@ export type SessionSummary = {
    *  since the project is implied. Drives the project chip on the row. */
   projectPath?: string;
   projectName?: string;
+  /** Short text excerpt or preview of the latest turn/prompt. */
+  snippet?: string;
 };

@@ -22,7 +22,16 @@ import {
   type ModelOption,
   type PickerProvider,
 } from "~/utils/modelCatalog";
-import { modeKey, PROVIDER_BRAND, PROVIDER_VENDOR } from "~/utils/modelPicker";
+import {
+  bootModel,
+  bootProvider,
+  bootReasoning,
+  modeKey,
+  PROVIDER_BRAND,
+  PROVIDER_VENDOR,
+  setLastUsedModel,
+} from "~/utils/modelPicker";
+import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
 import type { ModelPick } from "~/composables/useModelCommit";
 import type { ThreadDraft } from "~/composables/useThreadDraft";
 import type { AgentModelRef, InteractionMode, ProviderKind } from "~/types/desktop";
@@ -107,6 +116,30 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   const provider = computed(
     () => session.value?.provider.value ?? draft?.provider.value ?? agent.provider.value,
   );
+
+  // Whether a turn can go to this pane's provider right now, and if not, the
+  // sentence to show. Derived from `provider` rather than from the session, so
+  // the pane that is still making a thread — which has a draft and no session to
+  // ask — is gated on the same terms as one that already has a voice.
+  const sendAvailability = computed(() =>
+    resolveProviderSendAvailability({ provider: provider.value, statuses: providers.statuses.value }),
+  );
+  const sendBlockedReason = computed(() =>
+    sendAvailability.value.usable ? null : sendAvailability.value.reason,
+  );
+  const sendBlockedStatus = computed(() => sendAvailability.value.status);
+  const recheckingProviders = ref(false);
+  /** Re-probe on the banner's own action. Held so the button can read as busy —
+   *  `providers.refresh()` dedupes itself, but nothing about that is visible. */
+  async function recheckProviders(): Promise<void> {
+    if (recheckingProviders.value) return;
+    recheckingProviders.value = true;
+    try {
+      await providers.refresh();
+    } finally {
+      recheckingProviders.value = false;
+    }
+  }
 
   const modelOptions = computed(() =>
     (catalogs.value[provider.value] ?? []).filter((m) => modelAllowed(provider.value, m.key)),
@@ -233,6 +266,22 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     }
   }
 
+  // When the selected agent changes before a session is claimed, update the draft:
+  // a pinned agent immediately sets its required provider and model. Switching
+  // back to an unpinned agent restores the general last-used / default selection.
+  watch(pickedForProject, (nextAgent, prevAgent) => {
+    if (!draft || session.value) return;
+    const pinned = nextAgent?.capabilities?.model ?? null;
+    if (pinned) {
+      draft.provider.value = pinned.provider;
+      draft.model.value = pinned.model;
+    } else if (prevAgent?.capabilities?.model) {
+      draft.provider.value = bootProvider();
+      draft.model.value = bootModel();
+      draft.reasoning.value = bootReasoning();
+    }
+  });
+
   // ── committing a pick ────────────────────────────────────────────────────
   // Each of these answers the same question first: is there a session yet? With
   // one, the pick goes through the shared commit path, which points the registry
@@ -245,6 +294,9 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   function onModelId(id: string): void {
     if (draft && !session.value) {
       draft.model.value = id;
+      if (!capModel.value) {
+        setLastUsedModel({ provider: draft.provider.value, modelId: id, tier: draft.reasoning.value });
+      }
       return;
     }
     commit.onComposerModelId(id);
@@ -253,6 +305,9 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   function onReasoning(tier: EffortTier): void {
     if (draft && !session.value) {
       draft.reasoning.value = tier;
+      if (!capModel.value) {
+        setLastUsedModel({ provider: draft.provider.value, modelId: draft.model.value, tier });
+      }
       return;
     }
     commit.onComposerReasoning(tier);
@@ -286,6 +341,13 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
       draft.serviceTier.value = picked.fastMode ? fam?.fastTier?.id : undefined;
       draft.contextWindow.value =
         picked.contextWindow ?? fam?.contextWindows?.find((w) => w.isDefault)?.id;
+      if (!capModel.value) {
+        setLastUsedModel({
+          provider: picked.provider,
+          modelId: picked.modelId,
+          tier: picked.tier,
+        });
+      }
       return;
     }
     await commit.applyModelEffort(picked);
@@ -324,6 +386,13 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
   return {
     branch,
     refreshBranch,
+    // The send gate, shared by every inbox surface so none of them can offer a
+    // send another one would refuse. `sendBlockedReason` drives both the banner
+    // and the composer's own refusal.
+    sendBlockedReason,
+    sendBlockedStatus,
+    recheckingProviders,
+    recheckProviders,
     applyDraft,
     provider,
     pickerProviders,

@@ -26,9 +26,8 @@
 // here, still streaming its first turn.
 
 import { computed, onBeforeUnmount, ref } from "vue";
-import { AnimatePresence } from "motion-v";
-import { onClickOutside, useEventListener } from "@vueuse/core";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
+import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import type { ChatAttachment } from "~/types/desktop";
@@ -54,14 +53,14 @@ const emit = defineEmits<{
 // Constructing the registry handle spawns nothing of its own; it is the handle
 // to a place, and this pane does not take anything from it until you send.
 //
-// `rehydrate: false` because of what the first handle to a project does: it
-// spawns the boot session, and a boot session's first start reloads the
-// project's most recent stored conversation into itself. That is right for a
-// board opening a project — you left mid-conversation, you come back to it —
-// and wrong here twice over. This pane exists to make a NEW thread, and the
-// blank session it takes is that same boot session, so without this the first
-// send resumes an old conversation and puts the message you just wrote at the
-// end of it.
+// `rehydrate: false` says that a session spawned through THIS handle never
+// reloads the project's last conversation into itself. That habit belongs to a
+// board resuming a project — you left mid-conversation, you come back to it —
+// and this pane exists to make a new thread. It only governs what this handle
+// spawns, though, which is why the send claims a session of its own rather than
+// whichever blank the registry has lying around: a blank spawned by a studio
+// row still owes its maker that reload, and firing it under a first send is
+// what appended a brand-new message to the end of an old conversation.
 const agent = useAgent({ provider: bootProvider(), cwd: props.projectPath, rehydrate: false });
 
 // Everything you settle before the thread exists, held here rather than in a
@@ -80,24 +79,22 @@ onBeforeUnmount(() => {
   if (key.value && !handedOver.value) agent.unpinFromPane(key.value);
 });
 
-/** Take a session and put the draft in it — the moment the thread begins. */
-async function claim(): Promise<ThreadSession | null> {
-  await agent.newThread();
-  const claimed = agent.activeKey.value;
+/** Take a session and put the draft in it — the moment the thread begins.
+ *
+ *  A session of its own, never the registry's spare blank. The registry is
+ *  shared with whatever else has this project open, and its blank is usually
+ *  something else's: the boot session a studio row spawned, still owing its
+ *  maker a reload of the project's last conversation, or an empty column
+ *  sitting on the plane. Taking one of those is how a thread started here ended
+ *  up as the newest turn of a conversation the user never opened. */
+function claim(): ThreadSession | null {
+  const claimed = agent.newDetachedThread();
   key.value = claimed;
   // The idle sweep evicts sessions it believes nobody is looking at, and a pane
-  // holding one is exactly the case it must not evict.
-  if (claimed) agent.pinToPane(claimed);
-  const s = session.value;
-  // Arm it. A registry spawns a boot session the first time a project is asked
-  // for, and that session is inert: never started, and never told that its
-  // start is merely deferred. `newThread` hands it back as the blank thread it
-  // is, and a send into a thread in that state dispatches a turn the backend
-  // has no session for. Idempotent — a session that already has a process keeps
-  // it, so this only ever arms the one that needs arming.
-  s?.deferStart();
-  await composer.applyDraft();
-  return s;
+  // holding one is exactly the case it must not evict. Same tick as the claim,
+  // so there is no window where this one is a blank anyone else may take.
+  agent.pinToPane(claimed);
+  return session.value;
 }
 
 // ── where it runs ────────────────────────────────────────────────────────────
@@ -107,32 +104,18 @@ async function claim(): Promise<ThreadSession | null> {
 // the question is gone, and so is the choice.
 
 const { cue } = useSound();
-const { recents } = useRecentProjects();
-const others = computed(() => recents.value.filter((p) => p.path !== props.projectPath));
+const projectPickerOpen = ref(false);
 
-const switcherOpen = ref(false);
-const askBox = ref<HTMLElement | null>(null);
-onClickOutside(askBox, () => (switcherOpen.value = false));
-
-function toggleSwitcher(): void {
-  cue(switcherOpen.value ? "collapse" : "select");
-  switcherOpen.value = !switcherOpen.value;
+function openProjectPicker(): void {
+  cue("select");
+  projectPickerOpen.value = true;
 }
 
 function onPickProject(p: RecentProject): void {
-  switcherOpen.value = false;
+  projectPickerOpen.value = false;
   if (p.path === props.projectPath) return;
-  cue("open");
   emit("pick-project", p);
 }
-
-// Escape belongs to the switcher while it is up. Marked handled so the portal,
-// which reads the same key as its own way out, leaves this one alone.
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!switcherOpen.value || e.key !== "Escape") return;
-  switcherOpen.value = false;
-  e.preventDefault();
-});
 
 const composer = useInboxComposer({
   agent,
@@ -149,14 +132,21 @@ const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const error = computed(() => session.value?.error.value ?? null);
 
 // ── the handover ─────────────────────────────────────────────────────────────
-// The thread exists once the turn has been accepted, and not one moment before.
+// The thread exists the moment the message is in it, which is one tick after
+// you press send and long before anything has answered.
 //
-// A session carries a thread id from birth — it is minted in the renderer, not
-// by the provider — so an id is no evidence at all that anything has started.
-// Handing over on it raced the send: the reading pane could mount, adopt the
-// session and re-point the registry at it while the send was still being
-// assembled. So the handover waits for the send's own acknowledgement, which is
-// the first fact that means a thread.
+// So the pane leaves then. Waiting on the send to settle meant waiting on a
+// cold CLI to spawn, hand-shake and think — seconds of a line reading "Starting
+// a thread…" over a pane with nothing in it, when there was already a
+// transcript to show. `send` pushes the user block in its synchronous prologue
+// and only then does the slow part, so the reader can take over with the
+// message on screen and watch the rest arrive, which is what every other
+// surface in the app does with a turn in flight.
+//
+// The one thing that has to be settled first is the thread's id, because the
+// row carries it. It is minted in the renderer at birth and this session is the
+// pane's own — nothing left to rehydrate a stored id over it — so by the time
+// there is a block there is nothing left to wait for.
 //
 // It carries the session key as well as the row. The reader could find the same
 // session by thread id, but "could find" is doing too much work for something
@@ -176,9 +166,26 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // leave you looking at the message you wrote, not at a thread that exists
     // with nothing in it.
     const uploaded = await upload(files);
-    const s = session.value ?? (await claim());
+    // A session already here means an earlier send failed and this is another
+    // try at it. Its settings are the session's own by then — the composer has
+    // been writing picks straight into it — so the draft is not put back over
+    // them a second time.
+    const existing = session.value;
+    const s = existing ?? claim();
     if (!s) return;
-    await s.send(text, uploaded);
+    // The draft goes in before the turn does — provider first, since setting it
+    // clears the model. Nothing was written to this session until now.
+    if (!existing) await composer.applyDraft();
+    // Not awaited: see the handover note above.
+    const sent = s.send(text, uploaded);
+    // The send gate can still refuse on a status that went stale under the
+    // composer, and a refusal writes no block. Then nothing was started and
+    // there is nothing to hand over — stay here, with the session's error on
+    // the line above the composer.
+    if (s.blocks.value.length === 0) {
+      await sent;
+      return;
+    }
     const id = s.threadId.value;
     const claimed = key.value;
     if (!id || !claimed) return;
@@ -230,15 +237,15 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
          reassurance worth giving here, since this pane picked that project for
          you and nothing else on screen admits which one it landed on. -->
     <div class="new__ask">
-      <div ref="askBox" class="new__askbox">
+      <div class="new__askbox">
         <h2 v-if="!sending" class="new__askline">
           What should we do in
           <button
             type="button"
             class="new__askproj"
-            aria-haspopup="menu"
-            :aria-expanded="switcherOpen"
-            @click="toggleSwitcher"
+            aria-haspopup="dialog"
+            :aria-expanded="projectPickerOpen"
+            @click="openProjectPicker"
           >{{ projectName }}</button>?
         </h2>
 
@@ -249,23 +256,25 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
           {{ error ? error : `Starting a thread in ${projectName}…` }}
         </p>
 
-        <!-- The popover hangs off the name it belongs to. A plain wrapper does
-             the positioning, because the panel animates its own transform and
-             the two would fight over the property. -->
-        <div class="new__pop">
-          <AnimatePresence>
-            <ProjectSwitcher
-              v-if="switcherOpen"
-              :projects="others"
-              :browse="false"
-              @switch="onPickProject"
-            />
-          </AnimatePresence>
+        <!-- The project picker hangs directly off the question button -->
+        <div v-if="projectPickerOpen" class="new__pop">
+          <ProjectPickerModal
+            :current-path="projectPath"
+            @select="onPickProject"
+            @cancel="projectPickerOpen = false"
+          />
         </div>
       </div>
     </div>
 
     <div class="new__dock">
+      <ProviderHealthBanner
+        class="new__banner"
+        :status="composer.sendBlockedStatus.value"
+        :reason="composer.sendBlockedReason.value"
+        :checking="composer.recheckingProviders.value"
+        @recheck="composer.recheckProviders"
+      />
       <AgentComposer
         always-open
         :project-path="projectPath"
@@ -286,6 +295,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :mode="composer.mode.value"
         :fast-mode="composer.fastMode.value"
         :context-window="composer.contextWindow.value"
+        :blocked-reason="composer.sendBlockedReason.value"
         @send="onSend"
         @steer="onSteer"
         @remove-queued="session?.cancelQueuedTurn($event)"
@@ -366,7 +376,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   top: calc(100% + 12px);
   left: 50%;
   transform: translateX(-50%);
-  z-index: 3;
+  z-index: 30;
   display: flex;
   justify-content: center;
 }
@@ -402,10 +412,18 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   inset-inline: 0;
   bottom: 18px;
   display: flex;
-  justify-content: center;
+  /* A column so the health banner stacks ABOVE the card rather than beside it;
+     the card still centres itself, which is all `justify-content` was for. */
+  flex-direction: column;
+  align-items: center;
   pointer-events: none;
 }
 .new__dock > * {
   pointer-events: auto;
+}
+/* Matches the composer card's own width so the two read as one dock. */
+.new__banner {
+  width: min(100% - 32px, 680px);
+  margin-bottom: 8px;
 }
 </style>

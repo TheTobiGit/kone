@@ -47,7 +47,8 @@ import {
 import { SESSION_BRAND } from "~/types/session";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
-import type { ThreadSession } from "~/composables/useAgent";
+import { latestAssistant, type ThreadSession } from "~/composables/useAgent";
+import { markThreadVisited } from "~/utils/sessionList";
 import { useStripOverview } from "~/composables/useStripOverview";
 import { useStripPresets } from "~/composables/useStripPresets";
 import type { GitRemote } from "~/types/desktop";
@@ -989,6 +990,44 @@ function isLinkedToNext(i: number): boolean {
 
   return nextSource === currentId || (Boolean(currentSource) && currentSource === nextSource);
 }
+
+// Reading a thread here is reading it, the same as reading it in the inbox: a
+// thread on screen in a column is not one you have to be told about later. So a
+// visible column stamps its thread visited whenever a turn of it settles under
+// the user's eyes, and the inbox's unread mark answers to that write rather than
+// to which surface made it.
+//
+// Every visible column, not only the focused one — a strip is several threads
+// side by side, and they are all in front of you. The stamp is keyed by the turn
+// it acknowledges, so a settle costs one write however many columns saw it, and
+// a re-render costs none.
+watch(
+  () =>
+    props.panes
+      .filter((p) => p.kind === "thread" && p.session)
+      .map((p) => {
+        // SAFETY: the filter above keeps only thread panes, whose session is a
+        // ThreadSession.
+        const session = p.session as ThreadSession;
+        const block = latestAssistant(session.timelineBlocks.value);
+        return `${session.threadId.value}:${block?.turnId ?? ""}:${block?.state ?? ""}`;
+      })
+      .join("|"),
+  () => {
+    if (props.visible === false) return;
+    for (const pane of props.panes) {
+      if (pane.kind !== "thread" || !pane.session) continue;
+      const threadId = pane.session.threadId.value;
+      if (!threadId) continue;
+      const block = latestAssistant(pane.session.timelineBlocks.value);
+      // A running turn has not said anything yet — the visit that matters is the
+      // one that sees how it ended.
+      if (!block || block.state === "running") continue;
+      markThreadVisited(threadId, block.turnId);
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>

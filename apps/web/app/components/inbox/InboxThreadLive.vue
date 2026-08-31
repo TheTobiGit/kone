@@ -14,9 +14,12 @@
 // stops — the CLI comes up on the first thing you actually say, so opening a
 // thread to read it stays as cheap as it was before there was a composer.
 
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
+import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
+import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
+import { useEdgeFade } from "~/composables/useEdgeFade";
 import type { ChatAttachment } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 
@@ -70,6 +73,13 @@ const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const starting = computed(() => session.value?.sessionState.value === "starting");
 const threadTitle = computed(() => session.value?.title.value || props.row.title);
 
+// No visible scrollbar — the thread content smokes its top/bottom edges over whatever
+// content runs past the cutoff, easing in over the first ~28px of scroll.
+const scroller = ref<HTMLElement>();
+const { measure, maskStyle } = useEdgeFade(scroller);
+
+watch(blocks, () => void nextTick(measure));
+
 async function onSend(text: string, files?: File[]): Promise<void> {
   const s = session.value;
   if (!s) return;
@@ -99,19 +109,26 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
 
 <template>
   <div class="live">
-    <header class="live__head">
-      <h2 class="live__title">{{ threadTitle }}</h2>
-      <p class="live__sub">
-        {{ [row.projectName, row.branch].filter(Boolean).join(" · ") }}
-      </p>
-    </header>
+    <InboxThreadHeader
+      :title="threadTitle"
+      :seed="session?.threadId.value ?? row.threadId"
+      :provider="session?.provider.value || agent.provider.value || row.provider"
+      :brand="row.brand"
+      :token-usage="session?.tokenUsage.value ?? undefined"
+    />
 
-    <div class="live__body">
+    <div
+      ref="scroller"
+      class="live__body"
+      :style="maskStyle"
+      @scroll.passive="measure"
+    >
       <ConversationThread
         :blocks="blocks"
         :now="agent.now.value"
         :thread-id="row.threadId"
         :agent-seed="session?.threadId.value ?? row.threadId"
+        mode="reply"
         :session-error="session?.error.value"
         :load-failed="session?.transcriptLoadFailed.value"
         :loading="starting"
@@ -135,6 +152,13 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
          scrolls behind it, so the thread does not resize every time the card
          opens or a queued chip appears. -->
     <div class="live__dock">
+      <ProviderHealthBanner
+        class="live__banner"
+        :status="composer.sendBlockedStatus.value"
+        :reason="composer.sendBlockedReason.value"
+        :checking="composer.recheckingProviders.value"
+        @recheck="composer.recheckProviders"
+      />
       <AgentComposer
         :project-path="projectPath"
         :project-name="row.projectName"
@@ -154,6 +178,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :mode="composer.mode.value"
         :fast-mode="composer.fastMode.value"
         :context-window="composer.contextWindow.value"
+        :blocked-reason="composer.sendBlockedReason.value"
         @send="onSend"
         @steer="onSteer"
         @remove-queued="session?.cancelQueuedTurn($event)"
@@ -195,31 +220,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   min-height: 0;
 }
 
-.live__head {
-  flex: none;
-  padding: 14px 18px 10px;
-}
-.live__title {
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--ink-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.live__sub {
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 14px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* The scroll host. The transcript renders as a plain column and finds its
    scroller by walking up from itself, so this element has to be the one that
    overflows. The floor clears the composer's resting height — the last thing
@@ -229,7 +229,12 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 18px 132px;
+  padding: 20px 18px 132px;
+  scrollbar-width: none;
+}
+.live__body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .live__dock {
@@ -237,12 +242,20 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   inset-inline: 0;
   bottom: 18px;
   display: flex;
-  justify-content: center;
+  /* A column so the health banner stacks ABOVE the card rather than beside it;
+     the card still centres itself, which is all `justify-content` was for. */
+  flex-direction: column;
+  align-items: center;
   /* The dock is only a rail for centring; the card inside it takes its own
      clicks, and everything either side of it belongs to the transcript. */
   pointer-events: none;
 }
 .live__dock > * {
   pointer-events: auto;
+}
+/* Matches the composer card's own width so the two read as one dock. */
+.live__banner {
+  width: min(100% - 32px, 680px);
+  margin-bottom: 8px;
 }
 </style>

@@ -387,4 +387,30 @@ describe("useAgent single blank thread invariant", () => {
     expect(blank.mode.value).toBe("accept-edits");
     expect(blank.reasoning.value).toBe("high");
   });
+
+  test("session initializes mode from DEFAULT_MODE_KEY when configured", () => {
+    const store = new Map<string, string>();
+    const mockStorage: Storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => {
+        store.clear();
+      },
+      key: (i: number) => Array.from(store.keys())[i] ?? null,
+      get length() {
+        return store.size;
+      },
+    };
+    globalThis.localStorage = mockStorage;
+    localStorage.setItem("kone:default-mode", "full-access");
+    const cwd = `/tmp/kone-default-mode-test-${seq++}`;
+    const agent = useAgent({ provider: "codex", cwd, rehydrate: false });
+    const session = agent.sessions.value[0]!;
+    expect(session.mode.value).toBe("full-access");
+  });
 });
