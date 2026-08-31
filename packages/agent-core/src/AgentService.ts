@@ -1097,11 +1097,11 @@ export class AgentService {
   private ensureIdleReaper(): void {
     if (this.idleTimer) return;
     const timer = setInterval(() => {
-      try {
-        void this.sweepIdleSessions();
-      } catch (err) {
+      // The sweep is async, so a failure arrives as a rejection — a try/catch
+      // around the call would let it escape as an unhandled rejection instead.
+      void this.sweepIdleSessions().catch((err) => {
         console.warn("[agent] idle session reaper sweep failed:", err);
-      }
+      });
     }, this.options.idleSweepMs ?? IDLE_SWEEP_MS);
     // Never hold the process open on the reaper's account — clean quit is
     // handled by the before-quit teardown, which clears this timer via stopAll.
@@ -1328,18 +1328,14 @@ export class AgentService {
     if (this.options.retentionSweepMs === 0 || this.retentionStartTimer) return;
     this.retentionStartTimer = setTimeout(() => {
       this.retentionStartTimer = null;
-      try {
-        void this.sweepStaleThreads();
-      } catch (err) {
+      void this.sweepStaleThreads().catch((err) => {
         console.warn("[agent] retention sweep failed:", err);
-      }
+      });
       if (this.retentionTimer) return;
       const timer = setInterval(() => {
-        try {
-          void this.sweepStaleThreads();
-        } catch (err) {
+        void this.sweepStaleThreads().catch((err) => {
           console.warn("[agent] retention sweep failed:", err);
-        }
+        });
       }, this.options.retentionSweepMs ?? RETENTION_SWEEP_MS);
       // Never hold the process open on the sweep's account — clean quit is
       // handled by the before-quit teardown, which clears this timer via stopAll.
