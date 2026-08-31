@@ -9,8 +9,8 @@
 // chats, theme, panes) are pure registry entries on the same server.
 
 import type { ConversationStore } from "../ConversationStore.js";
-import type { EmitEvent, ProviderKind, RuntimeEvent } from "../types.js";
-import { GatewayCredentials, type GatewayConnection } from "./credentials.js";
+import type { EmitEvent, GatewayConnection, ProviderKind, RuntimeEvent } from "../types.js";
+import { GatewayCredentials } from "./credentials.js";
 import { startGatewayHttpServer } from "./httpServer.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeMcpTransport } from "./mcpTransport.js";
@@ -20,11 +20,10 @@ import { createSpawnTools } from "./tools/spawn.js";
 import { createIrcTools } from "./tools/irc.js";
 import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 
-export type { GatewayConnection } from "./credentials.js";
+export type { GatewaySessionCredential } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
 export { GatewayToolError } from "./schemas.js";
 export type { GatewayApprove, GatewayApprovalRequest } from "./registry.js";
-export { bridgeExtensionToolsToGateway, bridgeExtensionToolToGateway } from "./extensionBridge.js";
 
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 
@@ -62,6 +61,10 @@ export interface GatewayInput {
   /** Asks the user to approve a `permission: "ask"` tool call. Without one,
    *  every such tool is refused rather than silently allowed. */
   approve?: GatewayApprove;
+  /** Whether a thread has a live provider session — what the IRC roster reads
+   *  to tell a sender whether a message interrupts a peer or waits for it.
+   *  Absent, every peer reads as away, which is the safe way to be wrong. */
+  isThreadLive?: (threadId: string) => boolean;
 }
 
 export function createGateway(input: GatewayInput): GatewayHandle {
@@ -72,7 +75,11 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const tools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
-    ...createIrcTools({ store: input.store }),
+    ...createIrcTools(
+      input.isThreadLive
+        ? { store: input.store, isThreadLive: input.isThreadLive }
+        : { store: input.store },
+    ),
     ...createLaunchTools({ supervisor: launchSupervisor }),
   ];
   const registry = createRegistry(tools, { approve: input.approve });
@@ -87,7 +94,9 @@ export function createGateway(input: GatewayInput): GatewayHandle {
       "kone gateway: tools that read and write the project scratchpad, and that " +
       "open, follow and read kone threads. Scratchpad writes are attributed to " +
       "the calling agent and guarded by a revision shared with the web editor; " +
-      "spawned threads are first-class conversations the user can see.",
+      "spawned threads are first-class conversations the user can see; agents " +
+      "working the same project can message each other, and a message reaches " +
+      "its recipient's turn rather than sitting in a mailbox.",
   });
   const server = startGatewayHttpServer({ credentials, transport });
 
@@ -118,8 +127,14 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   void server.ready;
 
   return {
-    connectionForThread: (threadId, provider, model) =>
-      credentials.connectionForThread(threadId, provider, model),
+    // The grant is minted in one place: the credential half from
+    // GatewayCredentials, the tool half from the registry that will actually
+    // serve the calls. An adapter can then describe the session's tools without
+    // knowing a registry exists.
+    connectionForThread: (threadId, provider, model) => ({
+      ...credentials.connectionForThread(threadId, provider, model),
+      tools: registry.listToolPrompts(),
+    }),
     issueBootstrapToken: (sessionToken) => credentials.issueStdioBootstrapToken(sessionToken),
     revokeThread: (threadId) => {
       // Revoke in-flight work before dropping the token so an active
