@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { useMarkdown } from "./useMarkdown";
 
 // A real broken delimiter row — fewer cells than the header — which markdown-it
+// refuses to parse as a table until the repair pass fixes it.
 const BROKEN_TABLE = [
   "| | Normal mode (regular tasks/chats) | Studio |",
   "|---|---|",

@@ -1012,6 +1012,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
 
     // The CLI ships no auth subcommand; a non-empty `agy models` list is the
+    // only signal that the user is signed in.
     const modelsResult = await probeResult(
       this.binary,
       ["models"],

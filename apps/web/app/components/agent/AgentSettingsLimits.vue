@@ -133,6 +133,7 @@ function quietStatus(kind: CardState["kind"]): string {
 // ── formatting ───────────────────────────────────────────────────────────────
 // Compact to three significant figures with a unit suffix, so a column of
 // numbers lines up at a glance (`1.94M`, `804K`) instead of forcing the eye to
+// count digits.
 function formatTokens(value: number | null): string {
   if (value === null) return "No data";
   const abs = Math.abs(value);

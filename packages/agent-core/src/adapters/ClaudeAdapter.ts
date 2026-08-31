@@ -878,7 +878,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   async stopAll(): Promise<void> {
     for (const session of this.sessions.values()) {
       session.disposed = true;
-      // Termination first, then synchronous bookkeeping — same contract as
+      // Termination first, then synchronous bookkeeping — same contract as stopSession.
       session.prompt.close();
       session.abort.abort();
       this.cancelWake(session);
