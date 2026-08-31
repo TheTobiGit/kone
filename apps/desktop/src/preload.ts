@@ -31,6 +31,7 @@ import type {
   ChatAttachment,
   CreateSideChatInput,
   CreateSideChatResult,
+  InteractionMode,
   ModelDescriptor,
   ProfileStats,
   ProviderSurfaceSnapshot,
@@ -47,6 +48,7 @@ import type {
   SpawnedThread,
   StoredThread,
   StoredThreadMeta,
+  ThreadArchiveResult,
   TurnStartResult,
   UploadAttachmentInput,
   UserInputAnswers,
@@ -342,6 +344,14 @@ const api = {
     warm: (): Promise<void> => ipcRenderer.invoke("agent:warm"),
     // Probe which agent CLIs are installed + logged in on this machine.
     discover: (): Promise<ProviderStatus[]> => ipcRenderer.invoke("agent:discover"),
+    // Provider health that changed on its own — a background re-probe, a CLI the
+    // user just signed into. Push-only and machine-wide, so unlike onEvent there
+    // is no subscribe round-trip: the main process sends to every window.
+    onProvidersChanged: (cb: (statuses: ProviderStatus[]) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, statuses: ProviderStatus[]) => cb(statuses);
+      ipcRenderer.on("agent:providers-changed", listener);
+      return () => ipcRenderer.removeListener("agent:providers-changed", listener);
+    },
     models: (provider: ProviderKind): Promise<ModelDescriptor[]> =>
       ipcRenderer.invoke("agent:models", provider),
     // Per-provider install settings (custom CLI binary path, …). Read once on
@@ -428,7 +438,10 @@ const api = {
       ): Promise<StoredThreadMeta[]> =>
         ipcRenderer.invoke("agent:history-list", projectPath, options),
       // Hide a thread from the recent list (recoverable), or destroy it outright.
-      archive: (threadId: string, archived: boolean): Promise<void> =>
+      // Hides (or restores) a thread and its spawned subtree. Returns the
+      // store's outcome — a busy refusal (a spawned descendant mid-turn) comes
+      // back so the surface that asked can keep its row instead of guessing.
+      archive: (threadId: string, archived: boolean): Promise<ThreadArchiveResult> =>
         ipcRenderer.invoke("agent:history-archive", threadId, archived),
       remove: (threadId: string): Promise<void> =>
         ipcRenderer.invoke("agent:history-delete", threadId),
@@ -442,6 +455,11 @@ const api = {
       // thread is put away.
       setDone: (threadId: string, done: boolean): Promise<void> =>
         ipcRenderer.invoke("agent:set-done", threadId, done),
+      // Record that the user has just had this thread in front of them —
+      // what makes a reply "seen". Stored in the DB beside pins and done, so
+      // it survives a restart and follows the thread across profiles.
+      setVisited: (threadId: string, at: number, force?: boolean): Promise<void> =>
+        ipcRenderer.invoke("agent:set-visited", threadId, at, force),
       // Lifetime, fully-local usage stats aggregated across every project, for
       // the standalone profile board.
       profileStats: (): Promise<ProfileStats> =>
@@ -502,10 +520,16 @@ const api = {
         ipcRenderer.invoke("agent:skill-install", url, destRoot),
     },
     // Persist the user's per-thread picker selection (model/effort/serviceTier/
-    // contextWindow) so a reopened thread restores the picker exactly.
+    // contextWindow/mode) so a reopened thread restores the picker exactly.
     setThreadSelection: (
       threadId: string,
-      selection: { model?: string; effort?: string; serviceTier?: string; contextWindow?: string },
+      selection: {
+        model?: string;
+        effort?: string;
+        serviceTier?: string;
+        contextWindow?: string;
+        mode?: InteractionMode;
+      },
     ): Promise<void> => ipcRenderer.invoke("agent:set-thread-selection", threadId, selection),
     // User-initiated rename. Resolves true when the title changed. Does not
     // touch recency ordering; the title.updated event follows on the stream.

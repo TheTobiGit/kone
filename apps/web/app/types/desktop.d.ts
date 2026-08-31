@@ -1177,6 +1177,13 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "session.exited"; code: number | null })
   | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (AgentBaseEvent & { type: "thread.title.updated"; title: string })
+  // A thread (and its spawned subtree) was stamped archived — hidden from
+  // every live list, recoverable from the archive. One event per affected
+  // thread: the root and each spawned descendant put away with it.
+  | (AgentBaseEvent & { type: "thread.archived"; archivedAt: number })
+  // An archived thread was restored. One event per affected thread, mirroring
+  // the archive event's per-subtree-thread fan-out.
+  | (AgentBaseEvent & { type: "thread.unarchived" })
   // The provider rerouted the request to a different model mid-session. Update
   // the session's model label; `reason` is the provider's own wording.
   | (AgentBaseEvent & {
@@ -1280,6 +1287,15 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "subagent.started"; turnId: string; subagent: SubagentRunSnapshot })
   | (AgentBaseEvent & { type: "subagent.updated"; turnId: string; subagent: SubagentRunSnapshot })
   | (AgentBaseEvent & { type: "subagent.completed"; turnId: string; subagent: SubagentRunSnapshot })
+  // Background runs settled after the turn that spawned them had already ended.
+  // The main process answers this by driving one more turn on the thread, so
+  // nothing here has to: the renderer sees that turn through the ordinary turn
+  // events. Mirrored because the union is contract, not because anything folds it.
+  | (AgentBaseEvent & {
+      type: "subagent.background-settled";
+      turnId: string;
+      subagents: SubagentRunSnapshot[];
+    })
   | (AgentBaseEvent & {
       type: "user-input.requested";
       requestId: string;
@@ -1332,6 +1348,7 @@ export type StoredThreadMeta = {
      *  Named distinctly from the token-meter `contextWindow` number below —
      *  that one is a last-reported usage snapshot, this is a user choice. */
     contextWindow?: string;
+    mode?: InteractionMode;
   };
   /** The last assistant message uuid of the conversation (Claude only), for
    *  reliable resume — see SessionStartInput.resumeSessionAt. */
@@ -1356,6 +1373,17 @@ export type StoredThreadMeta = {
    *
    *  Never read it alone — go through isThreadDone, which holds all three. */
   doneAt?: number | null;
+  /** When you last had this thread in front of you (v30), or null for a thread
+   *  written before the column existed / never opened since.
+   *
+   *  Unread is the comparison with `lastActivityAt`, not a flag: the agent has
+   *  spoken since you last looked. A stamp has one writer — the surface showing
+   *  the thread — where a flag would need one writer to set it on every turn and
+   *  another to clear it on every open, with a crash between the two leaving a
+   *  thread permanently shouting or permanently quiet.
+   *
+   *  Never read it alone — go through isThreadUnread. */
+  lastVisitedAt?: number | null;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -1372,6 +1400,8 @@ export type StoredThreadMeta = {
    *  spawn design). `relationshipToParent === "side_chat"` is the
    *  discriminator. */
   lineage?: ThreadLineage;
+  /** Short text excerpt or preview of the latest turn/prompt. */
+  snippet?: string;
 };
 
 // ── thread lineage & fork context (side chats) ───────────────────────────────
@@ -1530,6 +1560,14 @@ export type StoredThreadPage = {
   hasMore: boolean;
 };
 
+/** Outcome of an archive/restore request over the history bridge. Success
+ *  carries every thread id the stamp landed on — the requested thread plus its
+ *  spawned subtree, ancestor-first. `busy` means a spawned descendant was
+ *  mid-turn; nothing was written. */
+export type ThreadArchiveResult =
+  | { ok: true; threadIds: string[] }
+  | { ok: false; reason: "missing" | "busy" | "error" };
+
 export type KoneAgentHistoryApi = {
   /** The project's most recently active thread, metadata only (no transcript) —
    *  or null. Resolve the transcript separately via `threadPage`/`thread`. */
@@ -1547,8 +1585,11 @@ export type KoneAgentHistoryApi = {
    *  threads by default; with `archived: true`, only the put-away ones. The two
    *  are disjoint views, never a union. */
   list: (projectPath: string, options?: { archived?: boolean }) => Promise<StoredThreadMeta[]>;
-  /** Hide a thread from the recent list (recoverable), or restore it. */
-  archive: (threadId: string, archived: boolean) => Promise<void>;
+  /** Hide a thread from the recent list (recoverable), or restore it. The
+   *  result comes back so the asking surface can undo its optimistic row drop
+   *  on a busy refusal (a spawned descendant mid-turn) instead of watching the
+   *  row vanish and reappear. */
+  archive: (threadId: string, archived: boolean) => Promise<ThreadArchiveResult>;
   /** Permanently delete a thread and its transcript. Irreversible. */
   remove: (threadId: string) => Promise<void>;
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
@@ -1560,6 +1601,11 @@ export type KoneAgentHistoryApi = {
    *  asking again by itself once the agent speaks in it — see
    *  `StoredThreadMeta.doneAt`. */
   setDone: (threadId: string, done: boolean) => Promise<void>;
+  /** Record that the user has just had this thread in front of them — what
+   *  makes a reply seen. The stamp only moves forward unless `force` is set,
+   *  which is how a thread is deliberately marked unread again. See
+   *  `StoredThreadMeta.lastVisitedAt`. */
+  setVisited: (threadId: string, at: number, force?: boolean) => Promise<void>;
   /** Lifetime, fully-local usage stats aggregated across every project, for the
    *  standalone profile board. */
   profileStats: () => Promise<ProfileStats>;
@@ -2070,6 +2116,7 @@ export type ThreadSelectionUpdate = {
   serviceTier?: string;
   /** The chosen context-window id (ModelDescriptor.contextWindows[].id). */
   contextWindow?: string;
+  mode?: InteractionMode;
 };
 
 /** The main process's disk-backed snapshot of the last known provider surface.
@@ -2090,6 +2137,10 @@ export type KoneAgentApi = {
   warm: () => Promise<void>;
   /** Probe which agent CLIs are installed + logged in on this machine. */
   discover: () => Promise<ProviderStatus[]>;
+  /** Provider health that changed on its own — a background re-probe, or a CLI
+   *  the user signed into while the app was open. Fires only when a round
+   *  actually differs. Returns an unsubscribe fn. */
+  onProvidersChanged: (cb: (statuses: ProviderStatus[]) => void) => () => void;
   models: (provider: ProviderKind) => Promise<ModelDescriptor[]>;
   /** The user's persisted per-provider install settings (custom binary path, …). */
   getSettings: () => Promise<ProviderSettingsMap>;
