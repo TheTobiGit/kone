@@ -15,8 +15,8 @@ const KILL_FORCE_WAIT_MS = 2_000;
 
 const KILL_POLL_MS = 50;
 
-// Cap on probe stdout accumulation; beyond this we keep draining but stop
-// appending, so a chatty CLI can't balloon memory over a long probe window.
+// Per-stream cap on probe output accumulation; beyond this we keep draining but
+// stop appending, so a chatty CLI can't balloon memory over a long probe window.
 const PROBE_OUTPUT_CAP_BYTES = 1024 * 1024;
 
 /** A running agent invocation and the plumbing to observe/stop it. */
@@ -178,22 +178,48 @@ export async function killTree(pid: number | undefined): Promise<void> {
   await waitWhileAlive(pid, KILL_FORCE_WAIT_MS);
 }
 
-/** Run a short command to completion and return stdout. Returns null only when
- *  the binary is genuinely unavailable (ENOENT) — callers read that as "not
- *  installed". A non-zero exit that still printed output yields that output
- *  (some agent CLIs exit non-zero yet produce their real result).
+/** How a probe ended. The distinction is load-bearing for provider health: a
+ *  CLI that is absent wants "install it", one that timed out wants "try again",
+ *  and one that exited non-zero wants its own stderr shown back. Collapsing all
+ *  three into "no output" is what made a slow CLI read as uninstalled. */
+export type ProbeOutcome =
+  /** Ran to completion, exit code 0. */
+  | "ok"
+  /** Ran to completion, exit code non-zero. `stdout`/`stderr` still hold output. */
+  | "nonzero"
+  /** Still running when the timeout fired; the process group was torn down. */
+  | "timeout"
+  /** Could not be started — ENOENT, i.e. nothing to run at that path. */
+  | "missing"
+  /** Could not be started for some other reason (permissions, and friends). */
+  | "failure";
+
+export type ProbeResult = {
+  outcome: ProbeOutcome;
+  stdout: string;
+  stderr: string;
+  /** Exit code when the child ran to completion; null when it never did. */
+  code: number | null;
+  /** The spawn error behind a "missing" / "failure" outcome. */
+  error?: Error;
+};
+
+/** Run a short command to completion and report how it ended, with both streams
+ *  captured. This is the probe primitive; `probe()` below is the text-only
+ *  wrapper most callers still want.
  *
  *  Critically, stdin is closed: some agent CLIs block forever on an open stdin
  *  pipe when not attached to a TTY, so a probe that leaves stdin open just
  *  hangs until the timeout. For quick, bounded probes (`--version` and the
- *  like) — never for turns. Output is capped at 1 MiB and a timed-out probe
- *  tears down the child's whole process group, escalating SIGTERM to SIGKILL. */
-export function probe(
+ *  like) — never for turns. Each stream is capped at 1 MiB and a timed-out
+ *  probe tears down the child's whole process group, escalating SIGTERM to
+ *  SIGKILL. */
+export function probeResult(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeoutMs = 30_000,
-): Promise<string | null> {
+): Promise<ProbeResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       env,
@@ -202,31 +228,66 @@ export function probe(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
+    let stderr = "";
     let settled = false;
-    const finish = (value: string | null) => {
+    const finish = (result: ProbeResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(value);
+      resolve(result);
     };
     const timer = setTimeout(() => {
       // A timed-out probe resolves immediately with whatever it captured;
       // nothing here waits on the teardown, so let it run in the background.
       void killTree(child.pid);
-      finish(stdout.length > 0 ? stdout : null);
+      finish({ outcome: "timeout", stdout, stderr, code: null });
     }, timeoutMs);
 
+    // Keep draining both streams but stop appending past the cap: a chatty
+    // stream with no consumer fills its pipe buffer and blocks the child
+    // (backpressure), which deadlocks the probe, while an unbounded append
+    // would balloon memory over a long probe window.
     child.stdout.on("data", (buf: Buffer) => {
-      // Keep draining the stream but stop appending past the cap so a
-      // misbehaving CLI can't balloon memory over a long probe window.
       if (stdout.length >= PROBE_OUTPUT_CAP_BYTES) return;
       stdout += buf.toString();
     });
-    // Drain stderr too: a chatty stream with no consumer would fill its pipe
-    // buffer and block the child (backpressure) — that deadlocks the probe.
-    child.stderr.resume();
-    // ENOENT and friends — the binary isn't runnable.
-    child.on("error", () => finish(null));
-    child.on("close", () => finish(stdout));
+    child.stderr.on("data", (buf: Buffer) => {
+      if (stderr.length >= PROBE_OUTPUT_CAP_BYTES) return;
+      stderr += buf.toString();
+    });
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      finish({
+        outcome: error.code === "ENOENT" ? "missing" : "failure",
+        stdout,
+        stderr,
+        code: null,
+        error,
+      });
+    });
+    child.on("close", (code) => {
+      finish({ outcome: code === 0 ? "ok" : "nonzero", stdout, stderr, code });
+    });
+  });
+}
+
+/** Run a short command to completion and return stdout. Returns null only when
+ *  the binary is genuinely unavailable (ENOENT) — callers read that as "not
+ *  installed". A non-zero exit that still printed output yields that output
+ *  (some agent CLIs exit non-zero yet produce their real result).
+ *
+ *  Prefer `probeResult` where the *reason* a probe failed changes what the user
+ *  should be told; this wrapper cannot tell a missing binary from a wedged one. */
+export function probe(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 30_000,
+): Promise<string | null> {
+  return probeResult(command, args, env, timeoutMs).then((result) => {
+    if (result.outcome === "missing" || result.outcome === "failure") return null;
+    // A timeout that captured nothing is indistinguishable from a dead binary
+    // through this signature — the reason `probeResult` exists.
+    if (result.outcome === "timeout") return result.stdout.length > 0 ? result.stdout : null;
+    return result.stdout;
   });
 }

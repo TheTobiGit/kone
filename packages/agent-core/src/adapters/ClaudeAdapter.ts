@@ -20,10 +20,12 @@ import {
   resolveClaudeExecutable,
   summarizeClaudeAccount,
 } from "../claudeHome.js";
+import { describeScreenedCall, screenToolCall } from "../commandSafety.js";
 import { claudeSystemPromptAppend } from "../gateway/appContext.js";
 import { claudeMcpServers } from "../gateway/injection.js";
 import { buildAgentEnv } from "../processEnv.js";
-import { probe } from "../spawn.js";
+import { versionProbeFailure, versionProbeUsable } from "../providerHealth.js";
+import { probeResult, type ProbeResult } from "../spawn.js";
 import type {
   AdapterCapabilities,
   ApprovalDecision,
@@ -125,6 +127,7 @@ import {
   FAST_SERVICE_TIER,
   INTERRUPT_TIMEOUT_MS,
   STOP_TASK_TIMEOUT_MS,
+  WAKE_DEBOUNCE_MS,
   contextWindowTokens,
   mapClaudeModels,
   mergeClaudeModels,
@@ -181,6 +184,10 @@ export class ClaudeAdapter implements ProviderAdapter {
    *  account (for discover) and the model list (for listModels). Only successes
    *  are cached; a failed probe is retried next call (auth may have changed). */
   private initCache: Promise<{ account?: AccountInfo; models: ModelInfo[] } | null> | null = null;
+  /** Why the last init probe threw, when it did. A probe that could not be run
+   *  produced no verdict about sign-in, and discover needs to say that rather
+   *  than guess "logged out". Cleared by a probe that completes. */
+  private initFailure: string | undefined;
 
   constructor(emit: EmitEvent) {
     this.emit = emit;
@@ -189,19 +196,49 @@ export class ClaudeAdapter implements ProviderAdapter {
   // ── discovery ─────────────────────────────────────────────────────────────
 
   async discover(): Promise<ProviderStatus> {
-    const [init, version] = await Promise.all([this.probeInit(), this.probeVersion()]);
+    const [init, probe] = await Promise.all([this.probeInit(), this.probeVersion()]);
+    const version = probe.version;
 
     if (!init) {
-      // The SDK ships its own CLI, so "installed" isn't the failure mode here —
-      // an un-initializable session almost always means no login.
+      // The handshake threw. On its own that says nothing about *why*, so the
+      // `--version` probe is the tiebreak — and it has to be, because "no
+      // verdict" is only honest while the binary might still be there.
+      //
+      // A probe that could not find `claude` at all, or ran it and watched it
+      // fail, IS a verdict: uninstalled is a state the user can act on, and
+      // marking it transient would fold it away under whatever ready row the
+      // last round left behind — leaving a removed CLI listed as ready, with
+      // its stale model catalog, for as long as the app stays open.
+      if (!versionProbeUsable(probe.result, version)) {
+        return {
+          provider: this.provider,
+          label: "Claude",
+          version,
+          ...versionProbeFailure({
+            label: "Claude Code",
+            installHint:
+              "Claude Code not found. Install it from https://claude.com/claude-code, then sign in.",
+            result: probe.result,
+          }),
+        };
+      }
+      // The binary runs, so this is a spawn or transport failure of the
+      // handshake alone — a genuinely logged-out CLI still completes it and
+      // reports an unauthenticated account, handled below. Not a sign-in
+      // verdict, and not told as one: an error row, marked transient so a user
+      // who was signed in a moment ago keeps their known-good row instead of
+      // being sent to a login that would not fix anything.
       return {
         provider: this.provider,
         label: "Claude",
         available: true,
-        authStatus: "unauthenticated",
-        readiness: "needs-login",
+        authStatus: "unknown",
+        readiness: "error",
         version,
-        message: "Run `claude login` to sign in to Claude Code.",
+        message: this.initFailure
+          ? `Claude Code could not be started. ${this.initFailure}`
+          : "Claude Code could not be started — try again in a moment.",
+        transient: true,
       };
     }
 
@@ -235,11 +272,20 @@ export class ClaudeAdapter implements ProviderAdapter {
     return mergeClaudeModels(CURATED_CLAUDE_MODELS, discovered);
   }
 
-  /** Best-effort installed-CLI version, for the status row only. */
-  private async probeVersion(): Promise<string | undefined> {
+  /** The installed CLI's version, and the raw probe behind it.
+   *
+   *  The outcome is carried out with the string because the two answer different
+   *  questions: the version is for the status row, and the outcome is the only
+   *  evidence discovery has about whether the binary exists at all. Dropping it
+   *  here is what left a missing `claude` indistinguishable from a slow one. */
+  private async probeVersion(): Promise<{ version?: string; result: ProbeResult }> {
     const env = await buildAgentEnv();
-    const output = await probe("claude", ["--version"], env, 5_000);
-    return output ? parseClaudeCliVersion(output) : undefined;
+    const result = await probeResult("claude", ["--version"], env, 5_000);
+    const version =
+      result.outcome === "ok"
+        ? parseClaudeCliVersion(`${result.stdout}\n${result.stderr}`)
+        : undefined;
+    return { version, result };
   }
 
   private probeInit(): Promise<{ account?: AccountInfo; models: ModelInfo[] } | null> {
@@ -279,11 +325,13 @@ export class ClaudeAdapter implements ProviderAdapter {
         options: probeOptions,
       });
       const init = await q.initializationResult();
+      this.initFailure = undefined;
       return { account: init.account, models: init.models };
     } catch (error) {
-      // A failed probe is reported to the user as the generic "Needs sign-in",
-      // which is indistinguishable from a real logged-out state. Log the actual
-      // reason so a spawn/auth failure in a packaged build is diagnosable.
+      // Keep the reason for the status row, and log it too so a spawn failure in
+      // a packaged build is diagnosable from the console alone.
+      const reason = (error instanceof Error ? error.message : String(error)).trim();
+      this.initFailure = reason.split("\n")[0] || undefined;
       console.error("[kone] Claude discovery probe failed:", error);
       return null;
     } finally {
@@ -362,7 +410,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         // session got. Absent for a guest thread, which appends nothing.
         append: [
           CLAUDE_SUBAGENT_SYSTEM_PROMPT_APPEND,
-          claudeSystemPromptAppend(input.gatewayConnection !== undefined, input.agent),
+          claudeSystemPromptAppend({ gateway: input.gatewayConnection, agent: input.agent }),
         ]
           .filter(Boolean)
           .join("\n"),
@@ -422,6 +470,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       settledSubagents: new Map(),
       pendingSubagentSteers: new Map(),
       pendingSubagentStops: new Set(),
+      pendingWake: [],
       consumer: Promise.resolve(),
       disposed: false,
       interrupting: false,
@@ -716,10 +765,15 @@ export class ClaudeAdapter implements ProviderAdapter {
     const turnId = randomUUID();
     session.activeTurnId = turnId;
     session.main = newScope();
-    session.subagentRuns.clear();
-    session.settledSubagents.clear();
-    session.pendingSubagentSteers.clear();
-    session.pendingSubagentStops.clear();
+    // A wake armed behind the last turn is moot now: the agent is answering
+    // this turn with the settled runs already on its transcript, so firing
+    // would only talk over it. Dropped rather than deferred — the results were
+    // never lost, only unread, and this turn is somebody reading them.
+    this.cancelWake(session);
+    // Background runs survive the turn boundary — they are still running, and
+    // the notification that settles them is still coming. Everything else is
+    // per-turn bookkeeping and goes.
+    this.forgetSettledSubagents(session);
     session.trackedTasks.clear();
     session.taskPlanStarted = false;
     this.emit({ ...this.base(session), type: "turn.started", turnId });
@@ -805,6 +859,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     // is synchronous bookkeeping that must never block on the provider.
     session.prompt.close();
     session.abort.abort();
+    this.cancelWake(session);
     this.settleLiveSubagents(session, "stopped");
     this.drainUserInputs(session);
     this.drainApprovals(session);
@@ -826,6 +881,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // Termination first, then synchronous bookkeeping — same contract as
       session.prompt.close();
       session.abort.abort();
+      this.cancelWake(session);
       this.settleLiveSubagents(session, "stopped");
       this.drainUserInputs(session);
       this.drainApprovals(session);
@@ -1362,12 +1418,15 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     const turnId = session.activeTurnId;
     if (turnId) this.completeTaskPlan(session, turnId);
-    // Any run still open when the parent turn ends lost its notification (or the
-    // turn was interrupted out from under it) — settle it now, while activeTurnId
-    // is still set, so nothing renders as forever-running.
+    // A FOREGROUND run still open when the parent turn ends lost its
+    // notification (or the turn was interrupted out from under it) — settle it
+    // now, while activeTurnId is still set, so nothing renders as
+    // forever-running. A backgrounded one is a different animal and is left
+    // alone: see settleLiveSubagents.
     this.settleLiveSubagents(
       session,
       message.subtype === "success" && !message.is_error ? "completed" : "stopped",
+      { keepBackground: true },
     );
     session.activeTurnId = undefined;
     if (!turnId) {
@@ -1444,6 +1503,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       snapshot: { toolUseId, status: "starting", startedAt: Date.now() },
       scope: newScope(toolUseId),
       announced: false,
+      // Stamped now, while the spawning turn is still the active one. See
+      // ClaudeSubagentRun.turnId — a backgrounded run outlives this turn, and
+      // asking the session later which turn it belongs to gets the wrong answer.
+      turnId: session.activeTurnId ?? "",
     };
     session.subagentRuns.set(toolUseId, run);
     if (buffer) this.applySpawnInput(run, buffer);
@@ -1604,13 +1667,90 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.pendingSubagentSteers.delete(toolUseId);
     session.pendingSubagentStops.delete(toolUseId);
     this.emitSubagent(session, run, "subagent.completed");
+    // A run that outlived its turn came back to an agent that had stopped
+    // listening. Its report is on the transcript now, but nobody has read it —
+    // that takes another turn, which is not this layer's to start.
+    if (run.turnId && run.turnId !== session.activeTurnId) this.armWake(session, run);
   }
 
-  /** Settle every still-live run — the parent turn ended (or the session is
-   *  going away), so nothing should be left rendering as forever-running. */
-  private settleLiveSubagents(session: ClaudeSession, status: SubagentStatus): void {
+  /** Collect a late-settling background run into the next wake, and (re)arm it.
+   *
+   *  Debounced rather than fired per run: subagents launched in one message
+   *  finish within moments of each other, and the point of waking is to hand
+   *  the agent the whole batch at once. Every arrival pushes the timer out, so
+   *  a straggler joins the same wake instead of causing a second one. */
+  private armWake(session: ClaudeSession, run: ClaudeSubagentRun): void {
+    // A session being torn down settles every live run on its way out; there is
+    // nothing left to wake, and an armed timer would only hold the process open.
+    if (session.disposed) return;
+    session.pendingWake.push({ turnId: run.turnId, snapshot: { ...run.snapshot } });
+    if (session.wakeTimer) clearTimeout(session.wakeTimer);
+    session.wakeTimer = setTimeout(() => this.fireWake(session), WAKE_DEBOUNCE_MS);
+  }
+
+  /** Ask for one more turn on this thread, carrying everything that settled
+   *  behind the last one. Dropped when a turn is already running: the agent is
+   *  awake, and the runs are on its transcript where it can see them — waking
+   *  again would only talk over whatever it is doing now. */
+  /** Drop an armed wake and everything queued for it. */
+  private cancelWake(session: ClaudeSession): void {
+    if (session.wakeTimer) clearTimeout(session.wakeTimer);
+    session.wakeTimer = undefined;
+    session.pendingWake.length = 0;
+  }
+
+  private fireWake(session: ClaudeSession): void {
+    session.wakeTimer = undefined;
+    const batch = session.pendingWake.splice(0);
+    const first = batch[0];
+    if (!first || session.disposed || session.activeTurnId) return;
+    this.emit({
+      ...this.base(session),
+      type: "subagent.background-settled",
+      // The turn that spawned them. A batch can in principle straddle two, but
+      // the runs are found through their tool calls, and naming the oldest turn
+      // is what puts a consumer at the start of the work rather than the end.
+      turnId: first.turnId,
+      subagents: batch.map((entry) => entry.snapshot),
+    });
+  }
+
+  /** Settle every still-live run — the session is going away, or the turn ended
+   *  and nothing should be left rendering as forever-running.
+   *
+   *  `keepBackground` is the turn-end case. A run the SDK backgrounded is meant
+   *  to outlive its turn: the tool call returned "running in the background" and
+   *  the real outcome arrives later as a `task_notification`. Settling those
+   *  here stamped a status the run had not earned — three explorers reading
+   *  "Ran a sub-task" having run nothing — and, worse, dropped the run from the
+   *  map, so the notification that finally carried their findings had nowhere to
+   *  land. Only a foreground run still open at the boundary genuinely lost its
+   *  notification. */
+  private settleLiveSubagents(
+    session: ClaudeSession,
+    status: SubagentStatus,
+    options?: { keepBackground?: boolean },
+  ): void {
     for (const run of session.subagentRuns.values()) {
+      if (options?.keepBackground && run.snapshot.background) continue;
       this.settleSubagent(session, run, status);
+    }
+  }
+
+  /** Clear a turn's subagent bookkeeping, keeping only what is still live.
+   *
+   *  Live background runs stay: their `task_notification` has not arrived yet,
+   *  and a run wiped from the map is a run whose findings land nowhere. Their
+   *  queued steers and stops stay with them, for the same reason. The settled
+   *  map is emptied — a run in it is one whose events are all in the past. */
+  private forgetSettledSubagents(session: ClaudeSession): void {
+    const live = new Set(session.subagentRuns.keys());
+    session.settledSubagents.clear();
+    for (const toolUseId of session.pendingSubagentSteers.keys()) {
+      if (!live.has(toolUseId)) session.pendingSubagentSteers.delete(toolUseId);
+    }
+    for (const toolUseId of session.pendingSubagentStops) {
+      if (!live.has(toolUseId)) session.pendingSubagentStops.delete(toolUseId);
     }
   }
 
@@ -1619,7 +1759,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     run: ClaudeSubagentRun,
     type?: "subagent.completed",
   ): void {
-    const turnId = session.activeTurnId;
+    // The run's own turn, not the session's current one: a background run
+    // settles long after its turn ended, and its report belongs under the tool
+    // call that asked for it. Reading `activeTurnId` here is what dropped every
+    // late notification on the floor.
+    const turnId = run.turnId || session.activeTurnId;
     if (!turnId) return;
     // A spawn that names no model runs on the parent's model (the SDK's built-in
     // agents inherit it), so report that rather than leaving the run modelless —
@@ -1635,11 +1779,17 @@ export class ClaudeAdapter implements ProviderAdapter {
     });
   }
 
-  /** Audit trail for full-access sessions. `bypassPermissions` never consults
-   *  canUseTool, so without this a full-access turn leaves no record of what
-   *  it executed. PreToolUse fires for every tool call regardless of mode;
-   *  outside full-access this is a cheap no-op, which also keeps the log honest
-   *  when the mode is stepped down mid-session. */
+  /** Audit trail and last-resort screen for full-access sessions.
+   *  `bypassPermissions` never consults canUseTool, so without this a
+   *  full-access turn leaves no record of what it executed and nothing stands
+   *  between it and a command that takes the machine with it. PreToolUse fires
+   *  for every tool call regardless of mode; outside full-access this is a
+   *  cheap no-op, which also keeps the log honest when the mode is stepped
+   *  down mid-session.
+   *
+   *  Only `critical` rules refuse. The screen exists for the rung with nobody
+   *  to ask, and a rung that second-guesses ordinary destructive work would
+   *  make full-access useless for the work it was chosen for. */
   private async fullAccessAuditHook(
     session: ClaudeSession,
     hookInput: HookInput,
@@ -1653,7 +1803,25 @@ export class ClaudeAdapter implements ProviderAdapter {
     const rawInput = asRecord(hookInput.tool_input as ClaudeWirePayload);
     const summary = summarizeToolInput(toolName, JSON.stringify(rawInput ?? {})).text || toolName;
     console.warn(`[kone] full-access ${session.threadId}: ${toolName} ${summary}`);
-    return {};
+
+    const screened = screenToolCall({ toolName, args: rawInput ?? undefined });
+    if (!screened.rule || !screened.command) return {};
+    const detail = describeScreenedCall({ rule: screened.rule, command: screened.command });
+    if (screened.rule.severity !== "critical") {
+      console.warn(`[kone] full-access ${session.threadId}: destructive — ${detail}`);
+      return {};
+    }
+    console.error(`[kone] full-access ${session.threadId}: REFUSED — ${detail}`);
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          `kone refused this command: ${detail} ` +
+          "This is irreversible beyond the working tree, so kone blocks it even in full-access. " +
+          "If the user genuinely wants it, ask them to run it themselves.",
+      },
+    };
   }
 
   /** PreToolUse hook — the only channel that reaches a RUNNING subagent. When

@@ -219,8 +219,14 @@ describe("OpenCode permission rules per mode", () => {
     const askEdit = last("edit", "ask");
     expect(askEdit?.action).toBe("ask");
     const fullRules = permissionRules("full-access");
-    expect(fullRules).toHaveLength(1);
     expect(fullRules[0]).toEqual({ permission: "*", pattern: "*", action: "allow" });
+    // bash is routed back to kone as an ask and answered instantly, so the
+    // command screen sees it. Last rule wins, so it has to follow the catch-all.
+    expect(last("bash", "full-access")).toEqual({
+      permission: "bash",
+      pattern: "*",
+      action: "ask",
+    });
   });
 
   test("accept-edits is closed by default outside the named families", () => {
@@ -402,6 +408,139 @@ describe("OpenCode steerTurn", () => {
     expect(ofType(events, "turn.steered")).toHaveLength(0);
     const sessions = await adapter.listSessions();
     expect(sessions[0]?.activeTurnId).toBe(result.turnId);
+  });
+});
+
+// ── OpenCode subagents across the turn boundary ─────────────────────────────
+// Driven through the adapter's own SSE pump, because the bug being guarded is
+// an ORDERING one inside the turn-end path: a run settled after `activeTurnId`
+// was cleared emitted nothing at all, so the row spun forever in a turn that had
+// already finished. Only the real sequence can catch that.
+describe("OpenCode subagents at the turn boundary", () => {
+  const THREAD = "subagent-thread";
+  const originalFetch = globalThis.fetch;
+  let adapterModule: OpenCodeAdapterModule;
+  let pushRaw: ((event: RecordLike) => void) | null = null;
+  let closeStream: (() => void) | null = null;
+
+  beforeAll(async () => {
+    adapterModule = await loadOpenCodeAdapterWithStubbedServer();
+  });
+
+  beforeEach(() => {
+    pushRaw = null;
+    closeStream = null;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const route = String(input).replace(/^https?:\/\/[^/]+/, "");
+      const method = init?.method ?? "GET";
+      if (method === "GET" && route === "/event") {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder();
+              pushRaw = (event) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+              closeStream = () => controller.close();
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (method === "POST" && route === "/session") {
+        return new Response(JSON.stringify({ data: { id: "ses_1" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (route.startsWith("/session/ses_1/")) {
+        return new Response(JSON.stringify({ data: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: `unhandled ${method} ${route}` }), { status: 404 });
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  /** A session with one live `task` run, pushed through the real pump. */
+  async function liveRun(
+    events: RuntimeEvent[],
+    options: { background?: boolean } = {},
+  ): Promise<{ adapter: InstanceType<OpenCodeAdapterModule["OpenCodeAdapter"]>; turnId: string }> {
+    const adapter = new adapterModule.OpenCodeAdapter((event) => events.push(event));
+    await adapter.startSession({
+      threadId: THREAD,
+      provider: "opencode",
+      cwd: "/tmp/kone-test-project",
+      model: "opencode-go/deepseek-v4-flash",
+    });
+    const turn = await adapter.sendTurn({ threadId: THREAD, provider: "opencode", input: "go" });
+
+    const wired = Date.now() + 1_000;
+    while (!pushRaw && Date.now() < wired) await new Promise((resolve) => setTimeout(resolve, 2));
+    if (!pushRaw) throw new Error("event stream never opened");
+
+    const state: RecordLike = {
+      status: "running",
+      title: "Dig into the bug",
+      input: { subagent_type: "general", description: "Dig into the bug" },
+      metadata: { sessionId: "ses_child" },
+    };
+    if (options.background === true) state.metadata = { sessionId: "ses_child", background: true };
+    pushRaw({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_1",
+        part: { id: "part-task", type: "tool", tool: "task", callID: "call-task", state },
+      },
+    });
+    await waitFor(events, (e) => e.type === "subagent.started");
+    return { adapter, turnId: turn.turnId };
+  }
+
+  /** Wait for the async pump to produce a matching event. */
+  async function waitFor(events: RuntimeEvent[], match: (e: RuntimeEvent) => boolean): Promise<void> {
+    const deadline = Date.now() + 2_000;
+    while (!events.some(match)) {
+      if (Date.now() > deadline) throw new Error("expected event never arrived");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  test("a run still live when the turn ends is announced, not silently dropped", async () => {
+    const events: RuntimeEvent[] = [];
+    const { turnId } = await liveRun(events);
+
+    pushRaw!({ type: "session.idle", properties: { sessionID: "ses_1" } });
+    await waitFor(events, (e) => e.type === "subagent.completed");
+    closeStream?.();
+
+    const done = ofType(events, "subagent.completed");
+    expect(done).toHaveLength(1);
+    // Filed under the turn that spawned it. Reading the session's turn here —
+    // which by then is cleared — emitted nothing and left the row running.
+    expect(done[0]?.turnId).toBe(turnId);
+    // And the turn still settles.
+    expect(ofType(events, "turn.completed")).toHaveLength(1);
+  });
+
+  test("a background run is settled too — nothing could settle it later", async () => {
+    const events: RuntimeEvent[] = [];
+    await liveRun(events, { background: true });
+
+    pushRaw!({ type: "session.idle", properties: { sessionID: "ses_1" } });
+    await waitFor(events, (e) => e.type === "turn.completed");
+    closeStream?.();
+
+    // Deliberate, and the opposite of what the Claude adapter does with a
+    // backgrounded run — see settleLiveSubagents. A backgrounded child here
+    // reports by having the server open a new turn on the parent, not by
+    // reporting further against this one, so a run spared here would have no
+    // path left to settle on and would spin forever.
+    expect(ofType(events, "subagent.completed")).toHaveLength(1);
   });
 });
 

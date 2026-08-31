@@ -3,11 +3,20 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
-import { probe } from "../spawn.js";
+import { probeResult } from "../spawn.js";
+import { versionProbeUsable } from "../providerHealth.js";
+import { probeDetail } from "../providerHealth.js";
 import { buildOpenCodeEnv, classifyOpenCodeSpawnFailure, isOpenCodeVersionSupported, MINIMUM_OPENCODE_VERSION, OPENCODE_BINARY, parseOpenCodeVersion } from "../opencodeHome.js";
 import { startOpenCodeServer, type OpenCodeServer } from "../opencodeServer.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { buildOpenCodeMcpServer } from "../gateway/injection.js";
+import {
+  checkCommandSafety,
+  describeScreenedCall,
+  extractCommandsFromArgs,
+  type DangerousPatternRule,
+} from "../commandSafety.js";
+import type { JsonValue } from "../lib-jsonValue.js";
 import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
@@ -38,6 +47,14 @@ type OpenCodeSubagentRun = {
   announced: boolean;
   settled: boolean;
   childToolPartIds: Set<string>;
+  /** The turn that spawned this run, stamped once at birth.
+   *
+   *  Not read off `session.activeTurnId` at emit time. A backgrounded run
+   *  outlives its turn, and the terminal event is emitted at the exact moment
+   *  the turn is being torn down — so reading the session there gets either an
+   *  empty field or some later turn, and the run's own report is misfiled or
+   *  dropped. */
+  turnId: string;
 };
 type OpenCodeSession = {
   threadId: string; cwd: string; model?: string; variant?: string; contextWindow?: number; mode: InteractionMode; baseUrl: string;
@@ -336,7 +353,20 @@ export function buildOpenCodeTokenUsageKey(input: {
 }
 
 export function permissionRules(mode: InteractionMode): RecordLike[] {
-  if (mode === "full-access") return [{ permission: "*", pattern: "*", action: "allow" }];
+  // Full access allows everything — except that `bash` is routed back here as an
+  // ask, and answered instantly. The rung's contract is "never prompts", not
+  // "never looks": a server-side blanket allow means the command never crosses
+  // this process, and the handful of commands that end the machine rather than
+  // the worktree are then unrefusable on the one rung with nobody to ask. The
+  // ask is auto-approved in `permissionAsked` after the screen, so nothing
+  // surfaces and nothing waits on a human. OpenCode resolves against the LAST
+  // matching rule, so this has to come after the catch-all.
+  if (mode === "full-access") {
+    return [
+      { permission: "*", pattern: "*", action: "allow" },
+      { permission: "bash", pattern: "*", action: "ask" },
+    ];
+  }
   if (mode === "accept-edits") {
     // Closed by default: a deny base, then explicit allows for read operations
     // and edit/write, with the mutating/network/out-of-tree families asked.
@@ -391,6 +421,48 @@ function openCodeApprovalRequest(permission: OpenCodeJsonValue | null | undefine
         : "permission";
   return { kind, title: text };
 }
+function asJson(value: OpenCodeJsonValue | null | undefined): JsonValue | undefined {
+  // SAFETY: the two JSON unions differ only in that opencode's admits
+  // `undefined` members. The screen parses this with zod and treats an
+  // undefined field exactly as it treats an absent one, so the widening cannot
+  // change what it reads.
+  return value as JsonValue | undefined;
+}
+
+/** Whether a full-access permission ask carries a command that must be refused
+ *  rather than waved through.
+ *
+ *  The ask's shape is opencode's, not ours, and it moves — the command has been
+ *  seen on the permission string itself, in `metadata`, and in the pattern the
+ *  rule matched. So this reads every command-bearing key it can find rather than
+ *  one blessed path: a screen that only works on the spelling it was written
+ *  against is a screen that quietly stops working. Nothing found means nothing
+ *  matched, which is the same answer as a safe command — this is a screen, not a
+ *  sandbox, and it fails open by construction. */
+function criticalCommandInPermission(
+  ask: RecordLike,
+  threadId: string,
+): { rule: DangerousPatternRule; command: string } | undefined {
+  const permission = ask.permission;
+  const candidates = [
+    ...extractCommandsFromArgs(asJson(permission)),
+    ...extractCommandsFromArgs(asJson(record(permission)?.metadata)),
+    ...extractCommandsFromArgs(asJson(ask.metadata)),
+  ];
+  for (const command of candidates) {
+    const result = checkCommandSafety(command);
+    if (!result.matchedRule) continue;
+    const detail = describeScreenedCall({ rule: result.matchedRule, command });
+    if (result.matchedRule.severity !== "critical") {
+      console.warn(`[kone] full-access ${threadId}: destructive — ${detail}`);
+      continue;
+    }
+    console.error(`[kone] full-access ${threadId}: REFUSED — ${detail}`);
+    return { rule: result.matchedRule, command };
+  }
+  return undefined;
+}
+
 function toOpenCodeReply(decision: ApprovalDecision): "once" | "always" | "reject" {
   switch (decision) {
     case "allow-once":
@@ -498,6 +570,17 @@ export function buildOpenCodeSubagentSnapshot(input: {
   return snapshot;
 }
 
+/** A failed model-inventory probe, carrying whether the probe reached a verdict
+ *  at all. A timeout or a spawn failure did not, and a row built on one must not
+ *  replace what the last conclusive round found. */
+class OpenCodeModelProbeError extends Error {
+  readonly inconclusive: boolean;
+  constructor(inconclusive: boolean, message: string) {
+    super(message);
+    this.inconclusive = inconclusive;
+  }
+}
+
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
   readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true };
@@ -516,12 +599,37 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   async discover(): Promise<ProviderStatus> {
-    const env = await buildOpenCodeEnv(); const output = await probe(this.binary, ["--version"], env, 5_000);
-    if (output === null) return classifyOpenCodeSpawnFailure(new Error("ENOENT"));
-    const version = parseOpenCodeVersion(output);
+    const env = await buildOpenCodeEnv(); const result = await probeResult(this.binary, ["--version"], env, 5_000);
+    // A version probe that never came back says nothing about the install — the
+    // classifier below reads spawn failures, not silence.
+    if (result.outcome === "timeout") return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", message: "OpenCode did not respond in time — try again in a moment.", transient: true };
+    // Hand the classifier the real failure: its quarantine / code-signature
+    // branches can only fire on the CLI's own words.
+    const version = parseOpenCodeVersion(`${result.stdout}\n${result.stderr}`);
+    if (!versionProbeUsable(result, version)) return classifyOpenCodeSpawnFailure(result.error ?? new Error(probeDetail(result) ?? "OpenCode could not be started."));
     if (!isOpenCodeVersionSupported(version)) return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", version, message: `OpenCode v${version ?? "unknown"} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.` };
     try { const models = await this.listModels(); return { provider: "opencode", label: "OpenCode", available: true, authStatus: models.length ? "authenticated" : "unknown", readiness: models.length ? "ready" : "needs-login", version, message: models.length ? undefined : "OpenCode is available, but no connected providers were reported. Run `opencode providers login`." }; }
-    catch { return { provider: "opencode", label: "OpenCode", available: true, authStatus: "unknown", readiness: "error", version, message: "OpenCode model inventory could not be read." }; }
+    // An inventory that never came back is not a verdict about sign-in either:
+    // keep whatever the last conclusive round said rather than writing an error
+    // row over it. See stabilizeProviderStatuses.
+    catch (error) {
+      const inconclusive = error instanceof OpenCodeModelProbeError && error.inconclusive;
+      const status: ProviderStatus = {
+        provider: "opencode",
+        label: "OpenCode",
+        available: true,
+        authStatus: "unknown",
+        readiness: "error",
+        version,
+        message: inconclusive
+          ? "OpenCode did not report its model list in time — try again in a moment."
+          : "OpenCode model inventory could not be read.",
+      };
+      if (inconclusive) {
+        status.transient = true;
+      }
+      return status;
+    }
   }
 
   async listModels(): Promise<ModelDescriptor[]> {
@@ -530,8 +638,19 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
   private async fetchModels(): Promise<ModelDescriptor[]> {
     const env = await buildOpenCodeEnv();
-    for (let attempt = 0; attempt < 2; attempt += 1) { const output = await probe(this.binary, ["models", "--verbose"], env, 30_000); if (output !== null) { const models = parseOpenCodeModels(output); if (models.length || attempt === 1) { for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens); return models; } } if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000)); }
-    throw new Error("OpenCode model inventory failed.");
+    let inconclusive = false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await probeResult(this.binary, ["models", "--verbose"], env, 30_000);
+      // A listing that never ran to completion tells us nothing; one that ran
+      // and printed nothing is an answer (no connected providers).
+      inconclusive = result.outcome === "timeout" || result.outcome === "failure";
+      if (result.outcome === "ok" || result.outcome === "nonzero") {
+        const models = parseOpenCodeModels(result.stdout);
+        if (models.length || attempt === 1) { for (const model of models) if (model.contextWindowTokens !== undefined) this.modelContextWindows.set(model.id, model.contextWindowTokens); return models; }
+      }
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    throw new OpenCodeModelProbeError(inconclusive, "OpenCode model inventory failed.");
   }
 
   async startSession(input: SessionStartInput): Promise<Session> {
@@ -625,7 +744,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const prompt = koneHostContextForFirstRun({
       prompt: composed,
       runOrdinal: session.runOrdinal + 1,
-      gatewayControlAvailable: session.gatewayConnection !== undefined,
+      gateway: session.gatewayConnection,
       agent: session.agent,
     });
     session.runOrdinal += 1;
@@ -718,8 +837,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // renderer's modals clear — a crashed provider leaves no reply coming.
     this.drain(session);
     const turnId = session.activeTurnId;
-    session.activeTurnId = undefined;
+    // Settled before the turn loses its id, or the terminal event is emitted
+    // against nothing (see complete). The server is gone, so background runs go
+    // with it — nothing is left to report for them.
     this.settleLiveSubagents(session, "failed");
+    session.activeTurnId = undefined;
     if (turnId) {
       const aborted: Extract<RuntimeEvent, { type: "turn.aborted" }> = { ...base(session, "opencode.sse.lifecycle"), type: "turn.aborted", turnId, reason: "failed" };
       if (message) aborted.message = message;
@@ -854,7 +976,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       childSessionId,
       variant: session.variant,
     });
-    const run: OpenCodeSubagentRun = { snapshot, announced: false, settled: false, childToolPartIds: new Set() };
+    const run: OpenCodeSubagentRun = { snapshot, announced: false, settled: false, childToolPartIds: new Set(), turnId: session.activeTurnId ?? "" };
     session.subagentRuns.set(toolUseId, run);
     if (status === "completed" || status === "failed") this.settleSubagent(session, run, status, state);
     else this.emitSubagent(session, run, "subagent.started");
@@ -918,7 +1040,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   private emitSubagent(session: OpenCodeSession, run: OpenCodeSubagentRun, type: "subagent.started" | "subagent.updated" | "subagent.completed"): void {
-    const turnId = session.activeTurnId;
+    // The run's own turn, not the session's current one. A run settled at the
+    // turn boundary — which is every run still live when a turn ends — would
+    // otherwise emit nothing at all, and its row would spin forever.
+    const turnId = run.turnId || session.activeTurnId;
     if (!turnId || run.settled && type !== "subagent.completed") return;
     if (!run.snapshot.model && session.model) run.snapshot.model = session.model;
     run.announced = true;
@@ -949,7 +1074,27 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (run.snapshot.taskId) session.subagentChildSessions.delete(run.snapshot.taskId);
   }
 
-  /** Settle anything still live — the turn ended or the session is going away. */
+  /** Settle anything still live — the turn ended or the session is going away.
+   *
+   *  Everything, background runs included — deliberately, and the opposite of
+   *  what the Claude adapter does.
+   *
+   *  Claude spares a backgrounded run here because its notifications keep
+   *  arriving on the same session afterwards, so settling early would stamp a
+   *  status the run had not earned. opencode does not work that way. A
+   *  backgrounded child reports by having the server open a NEW turn on the
+   *  parent session with a synthetic prompt carrying the result — nothing
+   *  further arrives against the turn that launched it. So a run spared at this
+   *  boundary has no path left to settle on and would dangle running forever,
+   *  which is the worse of the two wrongs.
+   *
+   *  That server-initiated turn is its own gap: `sendTurn` is the only place
+   *  this adapter opens a turn, so a prompt the server starts by itself arrives
+   *  with no `activeTurnId` and `handlePart` drops the whole thing. Adopting
+   *  those turns — not sparing runs here — is what backgrounded subagents would
+   *  need. It is unreachable today: the tool refuses `background` unless the CLI
+   *  is run with the experimental flag that enables it, and kone does not set
+   *  it. */
   private settleLiveSubagents(session: OpenCodeSession, status: SubagentStatus): void {
     for (const run of session.subagentRuns.values()) this.settleSubagent(session, run, status, {});
   }
@@ -959,15 +1104,20 @@ export class OpenCodeAdapter implements ProviderAdapter {
   private complete(session: OpenCodeSession): void {
     const turnId = session.activeTurnId;
     if (!turnId) return;
-    // Cleared first so a late stray idle can't close the same turn twice.
-    session.activeTurnId = undefined;
     const interrupting = session.interrupting;
-    session.interrupting = false;
+    // Runs are closed out BEFORE the turn loses its id. They used to be settled
+    // after, and emitSubagent reads the session's turn — so every run still
+    // live at the boundary was stamped in memory and announced to nobody, and
+    // its row spun forever in a turn that had already finished.
     this.settleLiveSubagents(session, interrupting ? "stopped" : "completed");
+    // Cleared after the settle, but still before the terminal turn event, so a
+    // late stray idle can't close the same turn twice.
+    session.activeTurnId = undefined;
+    session.interrupting = false;
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }
-  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission ?? null); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask that still fires (a tool outside the allow-all ruleset, e.g. an MCP tool the rules don't name) is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission ?? null); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval }; if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId; this.emit(approvalRequested); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
+  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission ?? null); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". The one exception is a command that is irreversible past the working tree, which this gate is now the last place to stop (see permissionRules). */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); const refusal = criticalCommandInPermission(p, session.threadId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: refusal ? "reject" : "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission ?? null); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval }; if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId; this.emit(approvalRequested); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
   /** Settle one parked permission approval (idempotent — a no-op once drained). */
   private resolveApproval(session: OpenCodeSession, requestId: string, decision: ApprovalDecision): void { const pending = session.pendingApprovals.get(requestId); if (!pending) return; session.pendingApprovals.delete(requestId); pending.resolve(decision); }
   private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((entry, i) => { const q = record(entry) ?? {}; return { id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((optionEntry) => { const o = record(optionEntry) ?? {}; const option: UserInputQuestionOption = { label: String(o.label ?? "") }; if (o.description) option.description = String(o.description); return option; }) : [], multiSelect: q.multiple === true }; }); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }

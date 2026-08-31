@@ -26,7 +26,9 @@ mock.module("./sqlite.js", () => ({
 }));
 setUserDataDir(testUserDataDir);
 
+import type { ProbeResult } from "./spawn.js";
 import type { RuntimeEvent } from "./types.js";
+import { WAKE_DEBOUNCE_MS } from "./adapters/claudeAdapterTypes.js";
 
 /** The events of exactly one type.
  *  SAFETY: the predicate compares e.type to the requested literal, so each
@@ -103,6 +105,22 @@ const stubQuery = mock((input: { prompt?: AsyncIterable<SDKUserMessage> }) => {
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({ query: stubQuery }));
 
+// The `claude --version` probe, under the test's control. Discovery reads its
+// outcome to tell a CLI that is missing from one that is merely slow, so leaving
+// it to spawn the real binary would make those tests say whatever the developer
+// happens to have installed.
+const actualSpawn = await import("./spawn.js");
+let versionProbeResult: ProbeResult = {
+  outcome: "ok",
+  stdout: "1.2.3 (Claude Code)",
+  stderr: "",
+  code: 0,
+};
+mock.module("./spawn.js", () => ({
+  ...actualSpawn,
+  probeResult: async () => versionProbeResult,
+}));
+
 // Must be a dynamic import: a static import is hoisted above the mock.module
 // calls, which defeats both stubs (see claudeGatewayInjection.test.ts).
 const { ClaudeAdapter } = await import("./adapters/ClaudeAdapter.js");
@@ -117,6 +135,7 @@ function setup() {
   state.interrupt = mock(async () => {});
   state.initializationResult = mock(async () => ({}));
   state.promptIterable = null;
+  versionProbeResult = { outcome: "ok", stdout: "1.2.3 (Claude Code)", stderr: "", code: 0 };
   return { adapter, events };
 }
 
@@ -211,6 +230,190 @@ describe("Claude result handler", () => {
 
     const completed = events.filter((e) => e.type === "turn.completed" && e.turnId === turnId);
     expect(completed).toHaveLength(1);
+  });
+});
+
+describe("Claude background subagents", () => {
+  /** Background a live run the way the SDK does: a task_updated patch. */
+  async function background(): Promise<void> {
+    state.feed!.push({
+      type: "system",
+      subtype: "task_updated",
+      task_id: "task-1",
+      patch: { is_backgrounded: true },
+    });
+    await flush();
+  }
+
+  /** End the parent turn. */
+  async function endTurn(): Promise<void> {
+    state.feed!.push({ type: "result", subtype: "success", num_turns: 1, is_error: false });
+    await flush();
+  }
+
+  test("a backgrounded run is NOT settled when the parent turn ends", async () => {
+    const { adapter, events } = setup();
+    await liveTurnWithSubagent(adapter);
+    await background();
+
+    await endTurn();
+
+    // The run is still running: settling it here would stamp a status it has
+    // not earned, and the notification carrying its findings is still coming.
+    expect(events.filter((e) => e.type === "subagent.completed")).toHaveLength(0);
+  });
+
+  test("a foreground run still open at the turn end IS settled", async () => {
+    const { adapter, events } = setup();
+    await liveTurnWithSubagent(adapter);
+
+    await endTurn();
+
+    const done = ofType(events.filter((e) => e.type === "subagent.completed"), "subagent.completed");
+    expect(done).toHaveLength(1);
+    expect(done[0].subagent.status).toBe("completed");
+  });
+
+  test("its notification still lands after the turn ended, under the turn that spawned it", async () => {
+    const { adapter, events } = setup();
+    const { turnId } = await liveTurnWithSubagent(adapter);
+    await background();
+    await endTurn();
+
+    state.feed!.push({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      status: "completed",
+      summary: "found three call sites",
+      output_file: "/tmp/out.txt",
+    });
+    await flush();
+
+    const done = ofType(events.filter((e) => e.type === "subagent.completed"), "subagent.completed");
+    expect(done).toHaveLength(1);
+    expect(done[0].subagent.summary).toBe("found three call sites");
+    // The turn that asked for it, not the (absent) active one — this is what
+    // files the report under the tool call the user can actually find.
+    expect(done[0].turnId).toBe(turnId);
+  });
+
+  test("settling after the turn ended asks for a wake, batched across siblings", async () => {
+    const { adapter, events } = setup();
+    const { turnId } = await liveTurnWithSubagent(adapter);
+    // A second run in the same turn, backgrounded alongside the first.
+    state.feed!.push({
+      type: "system",
+      subtype: "task_started",
+      task_id: "task-2",
+      tool_use_id: "tool-2",
+    });
+    await flush();
+    for (const task_id of ["task-1", "task-2"]) {
+      state.feed!.push({ type: "system", subtype: "task_updated", task_id, patch: { is_backgrounded: true } });
+    }
+    await flush();
+    await endTurn();
+
+    for (const [task_id, tool_use_id] of [["task-1", "tool-1"], ["task-2", "tool-2"]]) {
+      state.feed!.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id,
+        tool_use_id,
+        status: "completed",
+        summary: `${task_id} done`,
+        output_file: "/tmp/out.txt",
+      });
+    }
+    await flush();
+
+    // Debounced — nothing yet.
+    expect(events.filter((e) => e.type === "subagent.background-settled")).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, WAKE_DEBOUNCE_MS + 50));
+
+    const woken = ofType(
+      events.filter((e) => e.type === "subagent.background-settled"),
+      "subagent.background-settled",
+    );
+    // One wake for both, not one each.
+    expect(woken).toHaveLength(1);
+    expect(woken[0].turnId).toBe(turnId);
+    expect(woken[0].subagents.map((s) => s.summary)).toEqual(["task-1 done", "task-2 done"]);
+  });
+
+  test("no wake when the run settles inside its own turn", async () => {
+    const { adapter, events } = setup();
+    await liveTurnWithSubagent(adapter);
+
+    state.feed!.push({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      status: "completed",
+      summary: "done",
+      output_file: "/tmp/out.txt",
+    });
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, WAKE_DEBOUNCE_MS + 50));
+
+    // The agent is still in the turn that asked — it reads the result itself.
+    expect(events.filter((e) => e.type === "subagent.background-settled")).toHaveLength(0);
+  });
+
+  test("a new turn cancels an armed wake", async () => {
+    const { adapter, events } = setup();
+    await liveTurnWithSubagent(adapter);
+    await background();
+    await endTurn();
+    state.feed!.push({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      status: "completed",
+      summary: "done",
+      output_file: "/tmp/out.txt",
+    });
+    await flush();
+
+    // The user typed before the debounce elapsed. The results are on the
+    // transcript this turn reads, so waking on top of it would only interrupt.
+    await adapter.sendTurn({ threadId: THREAD, provider: "claudeAgent", input: "and?" });
+    await new Promise((resolve) => setTimeout(resolve, WAKE_DEBOUNCE_MS + 50));
+
+    expect(events.filter((e) => e.type === "subagent.background-settled")).toHaveLength(0);
+  });
+
+  test("a live background run survives the next turn's bookkeeping reset", async () => {
+    const { adapter, events } = setup();
+    await liveTurnWithSubagent(adapter);
+    await background();
+    await endTurn();
+
+    const { turnId: second } = await adapter.sendTurn({
+      threadId: THREAD,
+      provider: "claudeAgent",
+      input: "meanwhile",
+    });
+    state.feed!.push({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      status: "completed",
+      summary: "still landed",
+      output_file: "/tmp/out.txt",
+    });
+    await flush();
+
+    const done = ofType(events.filter((e) => e.type === "subagent.completed"), "subagent.completed");
+    expect(done).toHaveLength(1);
+    expect(done[0].subagent.summary).toBe("still landed");
+    // Still filed under the turn that spawned it, not the one running now.
+    expect(done[0].turnId).not.toBe(second);
   });
 });
 
@@ -442,5 +645,79 @@ describe("Claude startSession resume fallback", () => {
 
     expect(session.resumedFrom).toBeUndefined();
     expect(state.initializationResult).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Claude discovery", () => {
+  test("a handshake that throws is an error row, marked transient, not a sign-in verdict", async () => {
+    const { adapter } = setup();
+    state.initializationResult = mock(async () => {
+      throw new Error("spawn ENOENT\nstack line that should not reach the row");
+    });
+
+    const status = await adapter.discover();
+
+    // The distinction the fold depends on: no verdict was reached, so the row
+    // must not send the user to a login that would not fix anything.
+    expect(status.readiness).toBe("error");
+    expect(status.authStatus).toBe("unknown");
+    expect(status.transient).toBe(true);
+    expect(status.message).toContain("spawn ENOENT");
+    expect(status.message).not.toContain("stack line");
+  });
+
+  test("a handshake that throws with no CLI to run is not-installed, and lands", async () => {
+    const { adapter } = setup();
+    versionProbeResult = {
+      outcome: "missing",
+      stdout: "",
+      stderr: "",
+      code: null,
+      error: new Error("spawn claude ENOENT"),
+    };
+    state.initializationResult = mock(async () => {
+      throw new Error("spawn ENOENT");
+    });
+
+    const status = await adapter.discover();
+
+    // The version probe IS the verdict here. Marked transient, this row would
+    // be folded away under whatever ready row the last round left — leaving an
+    // uninstalled CLI listed as ready, with its stale model catalog, for as
+    // long as the app stays open.
+    expect(status.readiness).toBe("not-installed");
+    expect(status.available).toBe(false);
+    expect(status.transient).toBeUndefined();
+    expect(status.message).toContain("Install it");
+  });
+
+  test("a handshake that throws on a CLI that ran is still transient", async () => {
+    const { adapter } = setup();
+    versionProbeResult = {
+      outcome: "timeout",
+      stdout: "",
+      stderr: "",
+      code: null,
+    };
+    state.initializationResult = mock(async () => {
+      throw new Error("connection refused");
+    });
+
+    const status = await adapter.discover();
+
+    expect(status.readiness).toBe("error");
+    expect(status.transient).toBe(true);
+  });
+
+  test("a completed handshake with no account is a real logged-out verdict", async () => {
+    const { adapter } = setup();
+    state.initializationResult = mock(async () => ({ models: [] }));
+
+    const status = await adapter.discover();
+
+    // A verdict, so it must land — a transient marker here would let the fold
+    // keep serving a stale ready row to someone who has signed out.
+    expect(status.readiness).toBe("needs-login");
+    expect(status.transient).toBeUndefined();
   });
 });
