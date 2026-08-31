@@ -540,15 +540,80 @@ describe("createIrcTools gateway registration and execution", () => {
     resetIrcMailbox();
   });
 
+  test("the bus refuses a pair that has traded past the cap", () => {
+    const mailbox = new IrcMailbox();
+    const a = { threadId: "a", projectPath: "/p" };
+    const b = { threadId: "b", projectPath: "/p" };
+
+    // Sixteen between the two of them and nobody else is not a conversation
+    // any more, it is a loop that bills for both sides.
+    for (let i = 0; i < 8; i++) {
+      mailbox.sendMessage(a, { to: "b", message: `a${i}` });
+      mailbox.sendMessage(b, { to: "a", message: `b${i}` });
+    }
+
+    expect(() => mailbox.sendMessage(a, { to: "b", message: "again" })).toThrow(
+      /traded 16 messages/,
+    );
+  });
+
+  test("a third party resets the pair, so a working fleet never trips it", () => {
+    const mailbox = new IrcMailbox();
+    const a = { threadId: "a", projectPath: "/p" };
+    const b = { threadId: "b", projectPath: "/p" };
+
+    for (let i = 0; i < 8; i++) {
+      mailbox.sendMessage(a, { to: "b", message: `a${i}` });
+      mailbox.sendMessage(b, { to: "a", message: `b${i}` });
+    }
+    mailbox.sendMessage(a, { to: "c", message: "bringing you in" });
+
+    expect(() => mailbox.sendMessage(a, { to: "b", message: "again" })).not.toThrow();
+  });
+
+  test("an inbox nobody drains keeps the newest, not the first fifty", () => {
+    const mailbox = new IrcMailbox();
+    for (let i = 0; i < 60; i++) {
+      mailbox.sendMessage({ threadId: `s${i}`, projectPath: "/p" }, { to: "b", message: `m${i}` });
+    }
+
+    expect(mailbox.getUnreadCount("b")).toBe(50);
+    const { messages } = mailbox.getInbox("b", { peek: true });
+    expect(messages[messages.length - 1]!.message).toBe("m59");
+  });
+
+  test("the roster names peers and their unread counts", () => {
+    const mailbox = new IrcMailbox();
+    mailbox.registerThread({ threadId: "b", projectPath: "/p", agentName: "Explorer" });
+    mailbox.sendMessage({ threadId: "a", projectPath: "/p" }, { to: "b", message: "hi" });
+
+    const peers = mailbox.listPeers({ threadId: "a", projectPath: "/p" });
+    const explorer = peers.find((p) => p.id === "b");
+    expect(explorer?.agentName).toBe("Explorer");
+    expect(explorer?.unread).toBe(1);
+    // Never itself — an agent cannot message itself, so listing it is noise.
+    expect(peers.some((p) => p.id === "a")).toBe(false);
+  });
+
   test("Tools export proper schemas, names, and permissions", () => {
     const tools = createIrcTools();
-    expect(tools).toHaveLength(2);
+    expect(tools.map((t) => t.name)).toEqual([
+      "kone_irc_send",
+      "kone_irc_list",
+      "kone_irc_inbox",
+    ]);
 
-    const [msgTool, inboxTool] = tools;
+    const [msgTool, listTool, inboxTool] = tools;
     expect(msgTool!.name).toBe("kone_irc_send");
     expect(msgTool!.permission).toBe("allow");
     expect(msgTool!.requiresActiveTurn).toBe(true);
     expect(msgTool!.jsonSchema).toBe(IRC_SEND_JSON_SCHEMA);
+
+    // Reading the roster is not speaking, so it does not need a turn — an agent
+    // has to be able to see who exists before it decides to interrupt anyone.
+    expect(listTool!.name).toBe("kone_irc_list");
+    expect(listTool!.permission).toBe("allow");
+    expect(listTool!.requiresActiveTurn).toBe(false);
 
     expect(inboxTool!.name).toBe("kone_irc_inbox");
     expect(inboxTool!.permission).toBe("allow");

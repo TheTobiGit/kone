@@ -42,6 +42,11 @@ export type ProviderStatus = {
   authLabel?: string;
   /** Human message — a hint to fix a not-ready provider (e.g. run `codex login`). */
   message?: string;
+  /** Set by an adapter when this row came from a probe that never reached a
+   *  verdict (a timed-out CLI, not an answer). Internal to the discovery fold in
+   *  providerHealth.ts, which consumes it and strips it — nothing downstream of
+   *  AgentService.discover() ever sees it. */
+  transient?: true;
 };
 
 /** A model the provider can run, from its own `list models` surface. */
@@ -432,6 +437,7 @@ export type StoredThreadMeta = {
      *  Named distinctly from the token-meter `contextWindow` number below —
      *  that one is a last-reported usage snapshot, this is a user choice. */
     contextWindow?: string;
+    mode?: InteractionMode;
   };
   /** The last assistant message uuid of the conversation (Claude only), for
    *  reliable resume — see SessionStartInput.resumeSessionAt. Persisted live
@@ -457,6 +463,17 @@ export type StoredThreadMeta = {
    *
    *  Never read it alone — go through isThreadDone, which holds all three. */
   doneAt?: number | null;
+  /** When you last had this thread in front of you (v30), or null for a thread
+   *  written before the column existed / never opened since.
+   *
+   *  Unread is the comparison with `lastActivityAt`, not a flag: the agent has
+   *  spoken since you last looked. A stamp has one writer — the surface showing
+   *  the thread — where a flag would need one writer to set it on every turn and
+   *  another to clear it on every open, with a crash between the two leaving a
+   *  thread permanently shouting or permanently quiet.
+   *
+   *  Never read it alone — go through isThreadUnread. */
+  lastVisitedAt?: number | null;
   /** Last context-window snapshot the thread reported, so a reopened thread can
    *  restore its meter fill immediately instead of showing empty until the next
    *  turn. Overwritten (not accumulated) at each token-usage event. */
@@ -474,6 +491,8 @@ export type StoredThreadMeta = {
    *  the spawn design). `relationshipToParent === "side_chat"` is the
    *  discriminator. */
   lineage?: ThreadLineage;
+  /** Short text excerpt or preview of the latest turn/prompt. */
+  snippet?: string;
 };
 
 /** One reconstructed block — the persisted form of a renderer timeline block. */
@@ -960,12 +979,32 @@ export type ScratchpadWriter = {
   provider: ProviderKind;
 };
 
+/** What the host-context block is allowed to say about one gateway tool. Minted
+ *  from the tool's own definition, so a tool that ships without one is never
+ *  announced and a tool that is denied is never described. */
+export type GatewayToolPrompt = {
+  name: string;
+  /** One line: what it is for. The tool's `description` carries the rest, and
+   *  MCP already delivers that to the same model. */
+  snippet: string;
+  /** Standing rules the tool imposes beyond its own description. */
+  guidelines: readonly string[];
+  /** `permission: "ask"` — worth saying, because an agent that does not know a
+   *  call stops for a human will plan around a wait it never expected. */
+  needsApproval: boolean;
+};
+
 /** Loopback MCP gateway connection for one provider session
  *  (apps/desktop/src/agent/gateway). Filled main-side at startSession — the
  *  renderer never sends it. */
 export type GatewayConnection = {
   url: string;
   bearerToken: string;
+  /** The tools this session's grant actually serves. Carried on the connection
+   *  rather than looked up per adapter because the connection IS the grant:
+   *  what it can do and what the agent is told it can do have to travel
+   *  together or they drift apart. */
+  tools: readonly GatewayToolPrompt[];
 };
 
 /** Tags the transport an event came from — for debugging + provider-specific
@@ -1032,6 +1071,15 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "session.exited"; code: number | null })
   | (BaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (BaseEvent & { type: "thread.title.updated"; title: string })
+  // A thread (and its spawned subtree) was stamped archived in the store —
+  // hidden from every live list, recoverable. `archivedAt` is the stamp the
+  // store wrote, so consumers agree with the row on when the put-away
+  // happened. One event per affected thread: the root and each spawned
+  // descendant archived with it.
+  | (BaseEvent & { type: "thread.archived"; archivedAt: number })
+  // An archived thread was restored. One event per affected thread, mirroring
+  // the archive event's per-subtree-thread fan-out.
+  | (BaseEvent & { type: "thread.unarchived" })
   // The provider rerouted the request to a different model mid-session (Codex
   // `model/rerouted`, Claude safeguard refusals falling back to another model).
   // Consumers update the session's model label; `reason` is the provider's own
@@ -1095,8 +1143,8 @@ export type RuntimeEvent =
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
-  // deleted/archived (the delete path emits those reasons). Consumers renumber
-  // the remaining chips.
+  // deleted/archived (the delete and archive paths emit those reasons).
+  // Consumers renumber the remaining chips.
   | (BaseEvent & {
       type: "turn.queued-cancelled";
       queueId: string;
@@ -1138,6 +1186,19 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "subagent.started"; turnId: string; subagent: SubagentRunSnapshot })
   | (BaseEvent & { type: "subagent.updated"; turnId: string; subagent: SubagentRunSnapshot })
   | (BaseEvent & { type: "subagent.completed"; turnId: string; subagent: SubagentRunSnapshot })
+  // Background runs settled after the turn that spawned them had already ended,
+  // so the agent that asked for them was no longer listening. A request, not a
+  // report: the service answers it by driving one more turn on the thread (see
+  // AgentService.wakeForSettledSubagents) so the results are actually read
+  // rather than sitting in a transcript nobody returns to. Renderers may ignore
+  // it — the turn it causes arrives through the ordinary turn events.
+  | (BaseEvent & {
+      type: "subagent.background-settled";
+      /** The turn that spawned them, which has already ended. */
+      turnId: string;
+      /** Every run in the batch, in the order they settled. */
+      subagents: SubagentRunSnapshot[];
+    })
   // The agent is asking the user one or more questions mid-turn and the turn is
   // parked until they answer (respondToUserInput). `turnId` is the turn that
   // raised it, when known.
@@ -1170,6 +1231,15 @@ export type RuntimeEvent =
 /** The sink an adapter pushes every event into. AgentService owns it and fans
  *  events out to the renderer over IPC. */
 export type EmitEvent = (event: RuntimeEvent) => void;
+
+/** Outcome of an archive/unarchive request. Success carries every thread id
+ *  the stamp landed on — the requested thread plus its spawned subtree, in
+ *  ancestor-first order — so the caller can announce the change per thread.
+ *  `busy` means a spawned descendant is mid-turn; the store refused and
+ *  nothing was written. */
+export type ThreadArchiveResult =
+  | { ok: true; threadIds: string[] }
+  | { ok: false; reason: "missing" | "busy" | "error" };
 
 // ── Adapter interface ────────────────────────────────────────────────────────
 

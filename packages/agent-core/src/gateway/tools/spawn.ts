@@ -721,6 +721,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: SPAWN_TARGETS_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      promptSnippet:
+        "List the providers, models, preset sub-agents and teammates you can actually hand work to right now.",
       handler: targetsHandler,
     },
     {
@@ -731,6 +733,13 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: SPAWN_THREAD_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      promptSnippet:
+        "Open a new kone thread on any installed provider and set an agent working in it — a second conversation the user watches in the sidebar, not a nested subagent inside your turn.",
+      promptGuidelines: [
+        "Reach for a spawn when a piece of work is self-contained and large enough that doing it inline would crowd out your context, or when several independent pieces can run at once.",
+        "A child's mode can never exceed yours, and asking for a wider one refuses the spawn rather than quietly downgrading it. Nobody sits in a child's thread: a child that stops for permission stays stopped until the user notices. If the work needs more than your own thread is allowed, ask the user to raise your mode instead of spawning a child that cannot finish.",
+        "Spawned work is the user's work too — they see these threads run. Give every child a brief you would be willing to have read back to you, and keep the number of children proportionate to the task.",
+      ],
       handler: spawnHandler,
     },
     {
@@ -741,6 +750,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: SPAWN_FROM_PRESET_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      promptSnippet:
+        "Open a thread from a preset sub-agent the user has saved, running under its own standing instructions.",
       handler: spawnFromPresetHandler,
     },
     {
@@ -751,6 +762,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: DELEGATE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      promptSnippet:
+        "Hand work to a named teammate on this project, who does it as itself under its own instructions and model.",
       handler: delegateHandler,
     },
     {
@@ -761,6 +774,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: SPAWN_BATCH_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      promptSnippet:
+        "Spawn several children at once in a single call.",
       handler: spawnBatchHandler,
     },
     {
@@ -771,6 +786,11 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: WAIT_FOR_THREADS_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      promptSnippet:
+        "Collect your children's outcomes, and surface any that have parked on a question.",
+      promptGuidelines: [
+        "Pin a wait to the exact turn you spawned by passing the child's first turn id as turnIds, so a newer turn in the child cannot swap which outcome you collect.",
+      ],
       handler: waitHandler,
     },
     {
@@ -781,6 +801,8 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       jsonSchema: READ_THREAD_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      promptSnippet:
+        "Open a child's full transcript when its summary is not enough.",
       handler: readHandler,
     },
   ];

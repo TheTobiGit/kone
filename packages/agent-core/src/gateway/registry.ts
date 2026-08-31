@@ -16,6 +16,7 @@ import type {
   ToolEntry,
 } from "./schemas.js";
 import { GatewayToolError } from "./schemas.js";
+import type { GatewayToolPrompt } from "../types.js";
 
 export type { GatewayToolContext, GatewayToolResult, ToolEntry } from "./schemas.js";
 
@@ -63,6 +64,10 @@ export interface GatewayRegistry {
   /** The tool definitions tools/list advertises (denied tools omitted). Each
    *  inputSchema is the tool's hand-written JSON Schema object. */
   listTools(): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
+  /** What the host-context block says about the tools this gateway actually
+   *  serves — the same `deny` filter tools/list applies, so the prose and the
+   *  advertised surface cannot disagree. */
+  listToolPrompts(): ReadonlyArray<GatewayToolPrompt>;
   /** Dispatch one tools/call through the full dispatch order. Never throws. */
   call(ctx: GatewayToolContext, name: string, args: GatewayValue | undefined): Promise<GatewayToolResult>;
 }
@@ -72,13 +77,27 @@ export function createRegistry(
   options: { approve?: GatewayApprove } = {},
 ): GatewayRegistry {
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
-  const advertised = tools
-    .filter((tool) => tool.permission !== "deny")
-    .map((tool) => ({
+  const servable = tools.filter((tool) => tool.permission !== "deny");
+  const advertised = servable.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.jsonSchema,
+  }));
+  // A tool with no snippet is served but never announced in the host context.
+  // Silence is the safe default: a tool the block forgets still works when the
+  // agent finds it in tools/list, whereas a tool the block promises and the
+  // gateway does not serve is a lie the agent acts on.
+  const prompts: GatewayToolPrompt[] = [];
+  for (const tool of servable) {
+    const snippet = tool.promptSnippet;
+    if (!snippet) continue;
+    prompts.push({
       name: tool.name,
-      description: tool.description,
-      inputSchema: tool.jsonSchema,
-    }));
+      snippet,
+      guidelines: tool.promptGuidelines ?? [],
+      needsApproval: tool.permission === "ask",
+    });
+  }
 
   async function call(
     ctx: GatewayToolContext,
@@ -160,7 +179,7 @@ export function createRegistry(
     }
   }
 
-  return { listTools: () => advertised, call };
+  return { listTools: () => advertised, listToolPrompts: () => prompts, call };
 }
 
 export function isGatewayErrorCode(value: string): value is GatewayErrorCode {

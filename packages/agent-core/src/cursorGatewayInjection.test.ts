@@ -111,7 +111,26 @@ mock.module(fileURLToPath(new URL("./jsonRpc.ts", import.meta.url)), () => ({
 
 const { CursorAdapter } = await import("./adapters/CursorAdapter.js");
 
-const CONNECTION = { url: "http://127.0.0.1:41231/mcp", bearerToken: "kone_gw_token-1" };
+const CONNECTION = {
+  url: "http://127.0.0.1:41231/mcp",
+  bearerToken: "kone_gw_token-1",
+  // A grant carries the tools it serves; the host-context block is built from
+  // these, so a fixture without them describes a gateway that serves nothing.
+  tools: [
+    {
+      name: "kone_scratchpad_read",
+      snippet: "Read the project scratchpad.",
+      guidelines: [],
+      needsApproval: false,
+    },
+    {
+      name: "kone_scratchpad_write",
+      snippet: "Write that board.",
+      guidelines: ["Read before overwriting."],
+      needsApproval: false,
+    },
+  ],
+};
 
 function start(overrides: Partial<SessionStartInput>) {
   sessionRpc = null;

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { ProcessSupervisor, createLaunchTools } from "./launch.js";
 import { createRegistry } from "../registry.js";
-import type { GatewayToolContext } from "../schemas.js";
+import type { GatewayRecord, GatewayToolContext } from "../schemas.js";
 import { GatewayToolError } from "../schemas.js";
 
 /** Supervised processes are namespaced per project root; tests share one. */
@@ -31,7 +31,7 @@ describe("ProcessSupervisor", () => {
   });
 
   afterEach(async () => {
-    await supervisor.stopAll(1);
+    await supervisor.stopAll();
   });
 
   it("starts a process, collects logs, and stops it cleanly", async () => {
@@ -41,14 +41,14 @@ describe("ProcessSupervisor", () => {
       command: "node",
       args: [
         "-e",
-        "console.log('Worker started'); process.stdout.write('second-line\\n'); setInterval(() => {}, 1000);",
+        "console.log('Worker started'); setTimeout(() => console.log('second-line'), 50); setInterval(() => {}, 1000);",
       ],
       ready: { log: "second-line", timeout: 5 },
     });
 
     expect(result.status).toBe("running");
     expect(result.ready).toBe(true);
-    expect(typeof result.pid).toBe("number");
+    expect(Number.isFinite(result.pid)).toBe(true);
 
     const logResult = await supervisor.logs({
       scope: SCOPE,
@@ -340,7 +340,7 @@ describe("kone_launch approval gate", () => {
 
     expect(seen.length).toBe(1);
     // SAFETY: Approval callback pushes approval request object with known shape
-    const req = seen[0] as { threadId: string; toolName: string; args: Record<string, unknown> };
+    const req = seen[0] as { threadId: string; toolName: string; args: GatewayRecord };
     expect(req.threadId).toBe("thread-9");
     expect(req.toolName).toBe("kone_launch");
     expect(req.args.command).toBe("node");

@@ -12,10 +12,30 @@ import type {
 import {
   GatewayToolError,
   IrcInboxInputSchema,
+  IrcListInputSchema,
   IrcSendInputSchema,
   IRC_INBOX_JSON_SCHEMA,
+  IRC_LIST_JSON_SCHEMA,
   IRC_SEND_JSON_SCHEMA,
 } from "../schemas.js";
+
+/** How many messages one inbox holds before the oldest is dropped.
+ *
+ *  A mailbox nobody drains is a leak, and a thread that has been away long
+ *  enough to bank fifty messages is not going to be helped by the first one.
+ *  The newest are the ones still worth acting on. */
+const MAX_INBOX_MESSAGES = 50;
+
+/** How many messages one pair may trade with nobody else involved before the
+ *  bus refuses the next.
+ *
+ *  Two agents answering only each other never converge — each message looks
+ *  like traffic deserving a reply, and the loop is self-feeding and paid for by
+ *  the turn. The cap is deliberately generous: a real back-and-forth that needs
+ *  more rounds than this is a decision one of them should be escalating, not a
+ *  conversation. Any message involving a third party resets it, so a working
+ *  fleet never trips it. */
+const MAX_PAIR_EXCHANGES = 16;
 
 /** In-memory representation of a queued inter-agent message. */
 export interface IrcMessageRecord {
@@ -27,6 +47,26 @@ export interface IrcMessageRecord {
   createdAt: number;
   read: boolean;
   projectPath?: string;
+}
+
+/** Who is asking for a roster, and the scope they may see. */
+export interface IrcPeerScope {
+  threadId: string;
+  projectPath: string;
+  rootThreadId?: string;
+}
+
+/** One addressable peer, as the roster reports it. */
+export interface IrcPeer {
+  id: string;
+  agentName?: string;
+  /** The peer's OWN unread count, not the caller's: a peer with a pile of
+   *  unread messages is one that has not been reading, which is worth knowing
+   *  before adding to it. */
+  unread: number;
+  /** Whether the mailbox has seen this thread — a peer that has never sent or
+   *  received is known only from the store. */
+  registered: boolean;
 }
 
 export interface ThreadRegistration {
@@ -48,6 +88,11 @@ export interface IrcToolStore {
 export interface IrcToolInput {
   store?: IrcToolStore;
   mailbox?: IrcMailbox;
+  /** Whether a peer has a live session right now. A message to a live peer
+   *  interrupts it and costs it a turn; one to a peer that is away costs
+   *  nothing until it returns. The roster says which, because that difference
+   *  is the whole economics of sending. */
+  isThreadLive?: (threadId: string) => boolean;
 }
 
 /**
@@ -59,6 +104,10 @@ export class IrcMailbox {
   private threads = new Map<string, ThreadRegistration>();
   private agentToThread = new Map<string, string>();
   private deliveryListeners = new Set<(recipientThreadId: string, message: Readonly<IrcMessageRecord>) => void>();
+  /** Consecutive messages traded between a pair with nobody else involved —
+   *  the ping-pong counter MAX_PAIR_EXCHANGES cuts off. Keyed by unordered
+   *  pair; an exchange involving anyone else resets it (see recordExchange). */
+  private pairExchanges = new Map<string, number>();
 
   private agentKey(projectPath: string, agentName: string): string {
     return `${projectPath}::${agentName.toLowerCase()}`;
@@ -301,6 +350,7 @@ export class IrcMailbox {
     }
 
     const recipients = this.resolveRecipients(sender, input.to, store);
+    this.guardPingPong(sender.threadId, recipients);
     const messageId = `msg_${randomUUID()}`;
     const createdAt = Date.now();
 
@@ -326,6 +376,9 @@ export class IrcMailbox {
       const messageCopy = { ...record };
       // Push a distinct record copy for independent read tracking if needed
       queue.push(messageCopy);
+      // Oldest first: a backlog this deep means nobody has been reading, and the
+      // newest messages are the ones still worth acting on.
+      if (queue.length > MAX_INBOX_MESSAGES) queue.splice(0, queue.length - MAX_INBOX_MESSAGES);
 
       // Auto-register recipient if not present and no external store was given
       if (!this.threads.has(recipientId) && !store) {
@@ -352,6 +405,76 @@ export class IrcMailbox {
       recipients,
       message: record,
     };
+  }
+
+  /**
+   * Refuse a message that would extend a two-agent ping-pong past the cap, and
+   * otherwise record the exchange.
+   *
+   * The refusal is thrown at the SENDER, in its own turn, where it can still do
+   * something about it — the alternative is delivering the message and hoping
+   * the recipient breaks the loop, which is the same hope that made the loop.
+   * Anything involving a third party resets the pair, so this only ever catches
+   * a genuinely closed conversation.
+   */
+  private guardPingPong(from: string, recipients: string[]): void {
+    // A broadcast is by definition not a two-agent loop, and counting it would
+    // punish the one message shape that involves everybody.
+    if (recipients.length !== 1) {
+      this.pairExchanges.clear();
+      return;
+    }
+    const to = recipients[0]!;
+    const key = this.pairKey(from, to);
+    const count = this.pairExchanges.get(key) ?? 0;
+    if (count >= MAX_PAIR_EXCHANGES) {
+      throw new GatewayToolError(
+        "permission_denied",
+        `You and "${to}" have traded ${MAX_PAIR_EXCHANGES} messages with nobody else involved. Decide with what you have, or tell your spawner the exact decision you are stuck on.`,
+      );
+    }
+    // Any other pair either agent belongs to is no longer a closed loop. Split
+    // rather than substring-match: one thread id can contain another.
+    for (const other of this.pairExchanges.keys()) {
+      if (other === key) continue;
+      const [a, b] = other.split("\u0000");
+      if (a === from || b === from || a === to || b === to) this.pairExchanges.delete(other);
+    }
+    this.pairExchanges.set(key, count + 1);
+  }
+
+  /** Unordered pair key — a loop is a loop whichever way the last message went. */
+  private pairKey(a: string, b: string): string {
+    return a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+  }
+
+  /**
+   * The peers this thread may address, with the state a sender needs to decide
+   * whether a message is worth it.
+   *
+   * Addressing is the half agents get wrong on their own: without a roster they
+   * invent plausible names, the send fails, and the failure reads as "messaging
+   * is broken" rather than "that agent does not exist".
+   */
+  listPeers(sender: IrcPeerScope, store?: IrcToolStore): IrcPeer[] {
+    const ids = new Set<string>();
+    for (const [id, reg] of this.threads.entries()) {
+      if (id === sender.threadId) continue;
+      const sameProject = reg.projectPath === sender.projectPath;
+      const sameLineage = Boolean(sender.rootThreadId) && reg.rootThreadId === sender.rootThreadId;
+      if (sameProject || sameLineage) ids.add(id);
+    }
+    if (store?.listThreads) {
+      for (const meta of store.listThreads(sender.projectPath)) {
+        if (meta.threadId !== sender.threadId) ids.add(meta.threadId);
+      }
+    }
+    return Array.from(ids).map((id) => {
+      const reg = this.threads.get(id);
+      const peer: IrcPeer = { id, unread: this.getUnreadCount(id), registered: reg !== undefined };
+      if (reg?.agentName) peer.agentName = reg.agentName;
+      return peer;
+    });
   }
 
   /**
@@ -418,6 +541,7 @@ export class IrcMailbox {
       this.inboxes.clear();
       this.threads.clear();
       this.agentToThread.clear();
+      this.pairExchanges.clear();
     }
   }
 }
@@ -439,8 +563,53 @@ export function resetIrcMailbox(): void {
   defaultMailbox = null;
 }
 
+// ── what the agent is told ───────────────────────────────────────────────────
+// These descriptions are the only place an agent learns the economics, and the
+// economics are the whole design. A message is not a notification: it interrupts
+// a running peer or wakes an idle one, and either way somebody pays for a turn
+// they did not plan. An agent that does not know that treats messaging like
+// chat, and two agents treating it like chat is a loop that bills.
+//
+// So each one leads with the cost, then with the test — does this change what
+// somebody DOES — then with the list of things never worth sending. The refusals
+// are spelled out because the failure mode is not one bad message, it is the
+// reflex to acknowledge, which manufactures the next message from the other side.
+
+const IRC_SEND_DESCRIPTION = [
+  "Send a short text message to another agent working on this project.",
+  "",
+  "A message is not free. It interrupts a peer that is running, or wakes one that is idle, and costs it a whole turn to read. `to: \"all\"` charges that to every peer at once. Call `kone_irc_list` first to see who exists and whether they are running; address peers by their exact id and never invent one.",
+  "",
+  "`to` also takes `parent` (the thread that spawned you), `main` (the root of your tree), or `all`. Set `replyTo` when you are answering, so the sender can correlate it. Lead with the answer; never quote the question back. Plain prose only — no JSON status objects, no pasted file contents, reference files by path instead.",
+  "",
+  "Send when the message changes what somebody DOES:",
+  "- You are about to edit a file another agent may be holding, or you need one they hold. Say so before editing, not after.",
+  "- You hit a decision that is not yours, or a state that contradicts your brief. Name the decision to whoever spawned you.",
+  "- You found something that makes a peer's current work wrong, so they can stop rather than finish it.",
+  "- A peer asked you something they cannot proceed without.",
+  "",
+  "Never send:",
+  "- A bare acknowledgement. \"Got it\", \"will do\", \"thanks\", \"noted\" cost the reader a turn and tell them nothing, and each one looks like traffic that deserves a reply — which is what a two-agent loop is made of. Silence is the acknowledgement.",
+  "- A progress report, a plan, or an announcement that you are starting. Whoever spawned you reads your result when you finish.",
+  "- Anything a tool would answer for you: a grep, a build, a file read, or what a peer is currently doing.",
+  "- The next line of a back-and-forth. Two agents that only answer each other never converge. The bus refuses the message once a pair has traded 16 with nobody else involved — long before that, decide with what you have or escalate the exact decision.",
+].join("\n");
+
+const IRC_LIST_DESCRIPTION = [
+  "List the agents you can message on this project: their ids, whether each is running right now, and how many messages each has unread.",
+  "",
+  "Read it before sending. A peer that is running will be interrupted; one that is away will not see you until it returns; one with a pile of unread messages is not reading, and adding to the pile will not change that.",
+].join("\n");
+
+const IRC_INBOX_DESCRIPTION = [
+  "Read messages other agents sent you.",
+  "",
+  "You do not need to poll this. A message delivered while you are running is folded into your turn, and one that arrives while you are idle wakes you with it. This is for catching up deliberately — what came in while you could not be reached, or a second look at something already delivered.",
+].join("\n");
+
 /**
- * Creates the two IRC gateway tools: `kone_irc_send` and `kone_irc_inbox`.
+ * Creates the IRC gateway tools: `kone_irc_send`, `kone_irc_list` and
+ * `kone_irc_inbox`.
  */
 export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
   const mailbox = input.mailbox ?? getIrcMailbox();
@@ -539,25 +708,75 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     };
   };
 
+  const listHandler = async (ctx: GatewayToolContext): Promise<GatewayToolResult> => {
+    let rootThreadId: string | undefined;
+    if (input.store?.threadLineage) {
+      rootThreadId = input.store.threadLineage(ctx.threadId)?.rootThreadId;
+    }
+    const sender: IrcPeerScope = { threadId: ctx.threadId, projectPath: ctx.cwd };
+    if (rootThreadId) sender.rootThreadId = rootThreadId;
+    const peers = input.store
+      ? mailbox.listPeers(sender, input.store)
+      : mailbox.listPeers(sender);
+    const rows = peers.map((peer) => ({
+      ...peer,
+      live: input.isThreadLive?.(peer.id) ?? false,
+    }));
+
+    const text =
+      rows.length === 0
+        ? "No peers — you are the only agent in this project right now."
+        : rows
+            .map(
+              (p) =>
+                `${p.agentName ? `${p.agentName} ` : ""}\`${p.id}\` — ${
+                  p.live ? "running (a message interrupts it)" : "away (a message waits)"
+                }, ${p.unread} unread`,
+            )
+            .join("\n");
+
+    return {
+      content: [{ type: "text", text }],
+      structuredContent: { peers: rows, count: rows.length },
+    };
+  };
+
   return [
     {
       name: "kone_irc_send",
-      description:
-        "Send a direct peer-to-peer message to another agent or parent in the same project/thread tree.",
+      description: IRC_SEND_DESCRIPTION,
       inputSchema: IrcSendInputSchema,
       jsonSchema: IRC_SEND_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      promptSnippet:
+        "Reach another agent working this project while it is still running — the channel waiting is not: waiting collects outcomes at the end, messaging changes what somebody does in the middle.",
+      promptGuidelines: [
+        "Use a message to claim a file before you edit it, to name a decision that is not yours, or to stop a peer whose work you have just made pointless.",
+        "A message costs the agent that receives it a full turn, so send only what changes what somebody does. Never send an acknowledgement, a progress report, or a plan: silence is the acknowledgement, and two agents answering only each other is a loop that bills the user for both sides.",
+      ],
       handler: sendHandler,
     },
     {
+      name: "kone_irc_list",
+      description: IRC_LIST_DESCRIPTION,
+      inputSchema: IrcListInputSchema,
+      jsonSchema: IRC_LIST_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "See who else exists on this project and who is running.",
+      handler: listHandler,
+    },
+    {
       name: "kone_irc_inbox",
-      description:
-        "Check and read incoming peer messages from other agents in the thread mailbox.",
+      description: IRC_INBOX_DESCRIPTION,
       inputSchema: IrcInboxInputSchema,
       jsonSchema: IRC_INBOX_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      promptSnippet:
+        "Catch up on messages that arrived while you were away — you never need to poll it, because a message delivered to you arrives in your turn on its own.",
       handler: inboxHandler,
     },
   ];

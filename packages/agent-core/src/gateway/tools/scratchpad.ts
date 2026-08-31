@@ -252,6 +252,8 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
       jsonSchema: SCRATCHPAD_READ_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: false,
+      promptSnippet:
+        "Read the project scratchpad — the notes board the user sees live on kone's project page, and your durable memory across sessions.",
       handler: readHandler,
     },
     {
@@ -262,6 +264,11 @@ export function createScratchpadTools(input: ScratchpadToolInput): ToolEntry[] {
       jsonSchema: SCRATCHPAD_WRITE_JSON_SCHEMA,
       permission: "allow",
       requiresActiveTurn: true,
+      promptSnippet:
+        "Write that board; it re-renders on the user's page as you write.",
+      promptGuidelines: [
+        "The scratchpad is the one place your work and the user's own edits meet: read before overwriting, prefer append for additions, and treat a revision conflict as the user's word.",
+      ],
       handler: writeHandler,
     },
   ];

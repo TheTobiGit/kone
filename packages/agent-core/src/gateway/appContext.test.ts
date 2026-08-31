@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   buildCodexTurnCollaborationMode,
+  buildKoneContext,
   claudeSystemPromptAppend,
   codexDeveloperInstructions,
   CODEX_ENVELOPE_DEFAULT_MODEL,
@@ -14,63 +15,116 @@ import {
   renderAgentIdentity,
   renderKoneHostContext,
 } from "./appContext.js";
+import type { GatewayToolPrompt } from "../types.js";
+
+const TOOLS: GatewayToolPrompt[] = [
+  {
+    name: "kone_scratchpad_read",
+    snippet: "Read the project scratchpad.",
+    guidelines: [],
+    needsApproval: false,
+  },
+  {
+    name: "kone_scratchpad_write",
+    snippet: "Write that board.",
+    guidelines: ["Read before overwriting."],
+    needsApproval: false,
+  },
+  {
+    name: "kone_launch",
+    snippet: "Run background processes.",
+    guidelines: [],
+    needsApproval: true,
+  },
+];
+
+/** A gateway grant carrying `tools`. */
+const grant = (tools: GatewayToolPrompt[] = TOOLS) => ({ tools });
 
 describe("kone host context (app-context injection)", () => {
   test("carries a versioned marker so a block in a transcript can be dated", () => {
     expect(KONE_HOST_CONTEXT_MARKER).toBe(`[kone host context ${KONE_HOST_CONTEXT_VERSION}]`);
-    expect(renderKoneHostContext(true)).toContain(KONE_HOST_CONTEXT_MARKER);
+    expect(renderKoneHostContext(TOOLS)).toContain(KONE_HOST_CONTEXT_MARKER);
   });
 
-  test("with the gateway: identity + both tools + when-to-use, MCP-prefix note", () => {
-    const block = renderKoneHostContext(true);
+  test("announces exactly the tools it was handed, one line each", () => {
+    const block = renderKoneHostContext(TOOLS);
     expect(block).toContain("You are running inside kone");
-    expect(block).toContain("kone_scratchpad_read");
-    expect(block).toContain("kone_scratchpad_write");
     expect(block).toContain("mcp__kone__kone_scratchpad_read");
     expect(block).toContain("part of your job");
-    expect(block).toContain("user sees live on kone's project page");
-    expect(block).toContain("persists across sessions");
+    for (const tool of TOOLS) {
+      expect(block).toContain(`\`${tool.name}\`: ${tool.snippet}`);
+    }
   });
 
-  test("without the gateway: identity only, no tool promises", () => {
-    const block = renderKoneHostContext(false);
-    expect(block).toContain("You are running inside kone");
-    expect(block).toContain("no kone_* tools are installed");
-    expect(block).not.toContain("kone_scratchpad_read");
+  // The invariant the whole registry-derived design exists for: a tool the
+  // session did not get can never be described to it.
+  test("never names a tool it was not handed", () => {
+    const block = renderKoneHostContext([TOOLS[0]!]);
+    expect(block).toContain("kone_scratchpad_read");
     expect(block).not.toContain("kone_scratchpad_write");
+    expect(block).not.toContain("kone_launch");
+  });
+
+  test("says when a tool will stop for the user, so a plan can allow for the wait", () => {
+    const block = renderKoneHostContext(TOOLS);
+    expect(block).toContain("`kone_launch`: Run background processes. (stops for the user's approval)");
+    expect(block).not.toContain("`kone_scratchpad_read`: Read the project scratchpad. (stops");
+  });
+
+  test("carries each tool's standing rules once, however many tools ask for them", () => {
+    const shared = "Read before overwriting.";
+    const block = renderKoneHostContext([
+      { name: "a", snippet: "A.", guidelines: [shared], needsApproval: false },
+      { name: "b", snippet: "B.", guidelines: [shared], needsApproval: false },
+    ]);
+    expect(block.split(shared)).toHaveLength(2);
+  });
+
+  test("a gateway that serves nothing announceable claims nothing", () => {
+    expect(renderKoneHostContext([])).toBe("");
+    expect(buildKoneContext({ gateway: grant([]) }).hostContext).toBe("");
+  });
+
+  test("no gateway means no host block at all", () => {
+    expect(buildKoneContext({}).hostContext).toBe("");
   });
 
   test("claude channel: block when connected, empty append when not", () => {
-    expect(claudeSystemPromptAppend(true)).toBe(renderKoneHostContext(true));
-    expect(claudeSystemPromptAppend(false)).toBe("");
+    expect(claudeSystemPromptAppend({ gateway: grant() })).toBe(renderKoneHostContext(TOOLS));
+    expect(claudeSystemPromptAppend({})).toBe("");
   });
 
   test("codex channel: full developer_instructions with a Default collaboration-mode block", () => {
-    const block = codexDeveloperInstructions(true);
+    const block = codexDeveloperInstructions({ gateway: grant() });
     expect(block).toBeDefined();
     expect(block!.startsWith("<collaboration_mode># Collaboration Mode: Default")).toBe(true);
     expect(block).toContain("</collaboration_mode>");
-    // The app context rides after the mode tags, outside them — like both
+    // The app context rides after the mode tags, outside them.
     // Take the LAST closing tag: the block's prose quotes the tags literally.
     const appContext = block!.split("</collaboration_mode>").pop() ?? "";
     expect(appContext).toContain(KONE_HOST_CONTEXT_MARKER);
     expect(appContext).toContain("kone_scratchpad_read");
-    expect(codexDeveloperInstructions(false)).toBeUndefined();
+    expect(codexDeveloperInstructions({})).toBeUndefined();
   });
 
   test("codex turn envelope: gated on the gateway, carries model/effort, envelopes default when unknown", () => {
     expect(
-      buildCodexTurnCollaborationMode({ model: "gpt-5.6-terra", effort: "high", gatewayControlAvailable: false }),
+      buildCodexTurnCollaborationMode({ model: "gpt-5.6-terra", effort: "high" }),
     ).toBeUndefined();
 
     expect(
-      buildCodexTurnCollaborationMode({ model: "gpt-5.6-terra", effort: "high", gatewayControlAvailable: true }),
+      buildCodexTurnCollaborationMode({
+        model: "gpt-5.6-terra",
+        effort: "high",
+        gateway: grant(),
+      }),
     ).toEqual({
       mode: "default",
       settings: {
         model: "gpt-5.6-terra",
         reasoning_effort: "high",
-        developer_instructions: codexDeveloperInstructions(true),
+        developer_instructions: codexDeveloperInstructions({ gateway: grant() })!,
       },
     });
 
@@ -78,23 +132,23 @@ describe("kone host context (app-context injection)", () => {
     // get the envelope fallback slug (the top-level turn `model` kone sends
     // whenever one is known stays authoritative).
     expect(
-      buildCodexTurnCollaborationMode({ gatewayControlAvailable: true }).settings,
+      buildCodexTurnCollaborationMode({ gateway: grant() })!.settings,
     ).toMatchObject({ model: CODEX_ENVELOPE_DEFAULT_MODEL, reasoning_effort: "medium" });
   });
 
   test("phase-B first-prompt channel wraps so the block can't be mistaken for user text", () => {
-    const wrapped = prependKoneHostContext("do the thing");
+    const wrapped = prependKoneHostContext("do the thing", { gateway: grant() });
     expect(wrapped).toContain("<kone_host_context>");
     expect(wrapped).toContain(KONE_HOST_CONTEXT_MARKER);
     expect(wrapped).toContain("</kone_host_context>\n\n<user_request>\ndo the thing\n</user_request>");
   });
 
   test("phase-B first-prompt helper fires once per session, on runOrdinal 1 only", () => {
-    expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1, gatewayControlAvailable: true })).toBe(
-      prependKoneHostContext("p"),
+    expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1, gateway: grant() })).toBe(
+      prependKoneHostContext("p", { gateway: grant() }),
     );
-    expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 2, gatewayControlAvailable: true })).toBe("p");
-    expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1, gatewayControlAvailable: false })).toBe("p");
+    expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 2, gateway: grant() })).toBe("p");
+    expect(koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1 })).toBe("p");
   });
 });
 
@@ -175,26 +229,26 @@ describe("kone agent identity", () => {
   });
 
   test("claude channel: an agent's name doesn't depend on having a gateway", () => {
-    const both = claudeSystemPromptAppend(true, MAYA);
+    const both = claudeSystemPromptAppend({ gateway: grant(), agent: MAYA });
     expect(both).toContain(KONE_HOST_CONTEXT_MARKER);
     expect(both).toContain(KONE_AGENT_IDENTITY_MARKER);
 
-    const identityOnly = claudeSystemPromptAppend(false, MAYA);
+    const identityOnly = claudeSystemPromptAppend({ agent: MAYA });
     expect(identityOnly).toBe(renderAgentIdentity(MAYA));
     expect(identityOnly).not.toContain(KONE_HOST_CONTEXT_MARKER);
 
-    expect(claudeSystemPromptAppend(false, undefined)).toBe("");
+    expect(claudeSystemPromptAppend({})).toBe("");
   });
 
   test("codex channel: a named agent alone is reason enough for the envelope", () => {
-    const block = codexDeveloperInstructions(false, MAYA);
+    const block = codexDeveloperInstructions({ agent: MAYA });
     expect(block).toBeDefined();
     expect(block).not.toContain(KONE_HOST_CONTEXT_MARKER);
     const afterMode = block!.split("</collaboration_mode>").pop() ?? "";
     expect(afterMode).toContain(KONE_AGENT_IDENTITY_MARKER);
 
     expect(
-      buildCodexTurnCollaborationMode({ gatewayControlAvailable: false, agent: MAYA })?.settings
+      buildCodexTurnCollaborationMode({ agent: MAYA })?.settings
         .developer_instructions,
     ).toBe(block);
   });
@@ -203,7 +257,7 @@ describe("kone agent identity", () => {
     const wrapped = koneHostContextForFirstRun({
       prompt: "do the thing",
       runOrdinal: 1,
-      gatewayControlAvailable: true,
+      gateway: grant(),
       agent: MAYA,
     });
     expect(wrapped.indexOf("<kone_host_context>")).toBeLessThan(
@@ -216,7 +270,6 @@ describe("kone agent identity", () => {
     const wrapped = koneHostContextForFirstRun({
       prompt: "p",
       runOrdinal: 1,
-      gatewayControlAvailable: false,
       agent: MAYA,
     });
     expect(wrapped).toContain("<kone_agent_identity>");
@@ -228,13 +281,13 @@ describe("kone agent identity", () => {
   // still leave the agent a `<user_request>` wrapper to see through.
   test("first-prompt channel: nothing to say leaves the prompt exactly as it was", () => {
     expect(
-      koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1, gatewayControlAvailable: false }),
+      koneHostContextForFirstRun({ prompt: "p", runOrdinal: 1 }),
     ).toBe("p");
     expect(
       koneHostContextForFirstRun({
         prompt: "p",
         runOrdinal: 2,
-        gatewayControlAvailable: true,
+        gateway: grant(),
         agent: MAYA,
       }),
     ).toBe("p");

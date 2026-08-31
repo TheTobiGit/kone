@@ -1,52 +1,91 @@
 // App-context injection for provider sessions (docs/mcp-gateway-design.md §4).
 //
-// The agents kone drives can't discover kone from inside their own CLI, so
-// each adapter delivers a versioned "kone host context" block telling the
-// agent what it is, the gateway tools it has (kone_scratchpad_read/write),
-// CodexDeveloperInstructions.ts):
+// The agents kone drives can't discover kone from inside their own CLI, so each
+// adapter delivers a versioned "kone host context" block telling the agent what
+// it is running inside and what the app gateway lets it do. Everything here is
+// built from ONE options struct (`KoneContextOptions`) by ONE pair of block
+// renderers, and the per-provider functions below only choose a channel. That
+// is the whole discipline of this file: a block is written once and worded
+// once, so three delivery mechanisms cannot drift into three dialects.
 //
-// - System channel — providers WITH a system/developer-instruction surface:
-//   Claude gets the block through the SDK preset's `append` (verified against
-//   sdk.d.ts: `{ type: 'preset', preset: 'claude_code', append: '...' }` is
-//   "Use default prompt with appended instructions" — the stock preset is
-//   exactly this). Codex gets it through turn/start
-//   `collaborationMode.settings.developer_instructions` — the app-server
-//   (codexAppServerManager buildCodexCollaborationMode) use; shape verified
+// Channels:
+//
+// - System channel — providers with a system/developer-instruction surface.
+//   Claude takes it through the SDK preset's `append` (sdk.d.ts: `{ type:
+//   'preset', preset: 'claude_code', append: '...' }` is "Use default prompt
+//   with appended instructions"). Codex takes it through turn/start
+//   `collaborationMode.settings.developer_instructions`; the shape is checked
 //   against codex-rs's generated schema (V2TurnStartParams__Settings).
-// - First-prompt channel — providers WITHOUT such a surface (Phase B ACP
-//   adapters): the block is wrapped in <kone_host_context>…</kone_host_context>
-//   and prepended to the first user prompt (prependKoneHostContext), so it
-//   prependT3OrchestrationInstructions, firing on runOrdinal === 1).
+// - First-prompt channel — providers with no such surface (the ACP adapters,
+//   OpenCode, Antigravity). The blocks are wrapped in their own tags and ride
+//   in front of the first user prompt, once per session (runOrdinal === 1).
 //
-// Everything is gated on the session actually having a gateway connection:
-// never promise tools the agent doesn't have.
+// The tool half of the block is not written here. Each gateway tool carries its
+// own one-line `promptSnippet` and any `promptGuidelines` it imposes, and the
+// registry hands the session's servable set to the connection at mint time. So
+// the prose can only ever name tools this session actually got — the invariant
+// that a hand-written paragraph could restate but never enforce.
 
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
-import type { AgentPersona } from "../types.js";
+import type { AgentPersona, GatewayConnection, GatewayToolPrompt } from "../types.js";
 
-/** Versioned marker so a host-context block in a transcript can be dated —
+/**
+ * Everything the blocks are built from. One struct, threaded to every channel,
+ * so adding a fact to the host context is one field and one renderer rather
+ * than an edit in each adapter.
  */
-export const KONE_HOST_CONTEXT_VERSION = "2026-08-08.2";
+export interface KoneContextOptions {
+  /** The session's gateway grant. Absent means no `kone_*` tools were installed,
+   *  and no host-context block is delivered at all. */
+  gateway?: Pick<GatewayConnection, "tools">;
+  /** Whose name is on the thread. Absent for a guest, which is told nothing. */
+  agent?: AgentPersona;
+}
+
+/** Versioned marker so a host-context block in a transcript can be dated. */
+export const KONE_HOST_CONTEXT_VERSION = "2026-08-31.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
-export function renderKoneHostContext(gatewayControlAvailable: boolean): string {
-  if (!gatewayControlAvailable) {
-    return [
-      KONE_HOST_CONTEXT_MARKER,
-      "You are running inside kone, a desktop app for AI-assisted development.",
-      "kone's app gateway is unavailable in this session, so no kone_* tools are installed. Do not claim you can read or write kone's project scratchpad, or that you can spawn kone threads, wait on them, or read a spawned thread's transcript.",
-    ].join("\n");
+/** What every gateway session is told regardless of which tools it got. */
+const HOST_CONTEXT_PREAMBLE = [
+  "You are running inside kone, a desktop app for AI-assisted development. kone hosts this agent session and renders your work on the user's project board.",
+  "The `kone` MCP server is kone's app gateway: your native connection to the app the user is looking at. App tools are part of your job — when one fits, use it instead of inventing file-based workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
+];
+
+/**
+ * The host-context block for a session holding `tools`.
+ *
+ * The tool index is one line each. Each tool's full account already reaches the
+ * same model through MCP tools/list, so spending the system channel on a second
+ * copy of it would buy nothing and cost the tokens twice — what goes here is
+ * only what tools/list cannot say: that the tool exists before the agent goes
+ * looking, and the standing rules that sit *between* tools.
+ *
+ * Returns "" for a session that got no announceable tools, which keeps a
+ * gateway that served nothing from claiming otherwise.
+ */
+export function renderKoneHostContext(tools: readonly GatewayToolPrompt[]): string {
+  if (!tools?.length) return "";
+  const index = tools.map((tool) => {
+    const approval = tool.needsApproval ? " (stops for the user's approval)" : "";
+    return `- \`${tool.name}\`: ${tool.snippet}${approval}`;
+  });
+  const guidelines: string[] = [];
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    for (const guideline of tool.guidelines) {
+      if (seen.has(guideline)) continue;
+      seen.add(guideline);
+      guidelines.push(guideline);
+    }
   }
   return [
     KONE_HOST_CONTEXT_MARKER,
-    "You are running inside kone, a desktop app for AI-assisted development. kone hosts this agent session and renders your work on the user's project board.",
-    "The `kone` MCP server is kone's app gateway: your native connection to the app the user is looking at. App tools are part of your job — when one fits, use it instead of inventing file-based workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
-    "`kone_scratchpad_read` reads this project's scratchpad: a notes board the user sees live on kone's project page, and your durable shared memory for the project — it persists across sessions. Read it when the user references their notes, or to ground yourself in prior decisions before acting.",
-    "`kone_scratchpad_write` updates that board, and it re-renders on the user's page as you write. Use it to record plans, decisions, and durable notes the user will keep reading after this conversation; append: true merges new notes safely, and writes are attributed to this agent.",
-    "The scratchpad is the one place agent work and the user's own edits meet: read before overwriting, prefer append for additions, and treat revision conflicts (the web editor saved) as the user's word.",
-    "`kone_spawn_thread` opens a new kone thread on any installed provider and sets an agent working in it — a second conversation the user watches in the sidebar, not a nested subagent inside your turn. Reach for it when a piece of work is self-contained and large enough that doing it inline would crowd out your context, or when several independent pieces can run at once. The child wakes with no memory of this conversation, so its prompt must stand entirely on its own. Its mode — what it may do without stopping to ask — can never exceed yours, and requesting a wider one refuses the spawn rather than quietly downgrading it; leave mode unset to inherit yours, and match it to what the child must do unattended, because nobody sits in its thread: a child that stops for permission stays stopped until the user notices. If the work needs more than your own thread is allowed, ask the user to raise your mode first — do not spawn a child that cannot finish.",
-    "`kone_spawn_targets` tells you which providers and models are actually installed and how many more children you may open; `kone_wait_for_threads` collects your children's outcomes and surfaces any that have parked on a question — pin the wait to the exact turn you spawned by passing the child's first turn id (returned by `kone_spawn_thread`) as `turnIds`, so a newer turn in the child can't swap which outcome you collect; `kone_read_thread` opens a child's full transcript when its summary is not enough.",
-    "Spawned work is the user's work too — they see these threads run. Give every child a brief you would be willing to have read back to you, and keep the number of children proportionate to the task.",
+    ...HOST_CONTEXT_PREAMBLE,
+    "",
+    "Tools kone gives you in this session:",
+    ...index,
+    ...(guidelines.length ? ["", ...guidelines] : []),
   ].join("\n");
 }
 
@@ -138,21 +177,37 @@ export function renderAgentIdentity(agent: AgentPersona | undefined): string {
   return lines.join("\n");
 }
 
+/** The two blocks a session gets, each already empty when it does not apply. */
+export interface KoneContextBlocks {
+  /** What the app is and which tools it granted. */
+  hostContext: string;
+  /** Whose name the thread carries. */
+  identity: string;
+}
+
+/**
+ * Build both blocks from one struct.
+ *
+ * They stay separate all the way to the channel because they are gated on
+ * different things: whose name a thread carries has nothing to do with which
+ * tools the session got, so an agent that came up without a gateway still knows
+ * who it is, and a guest holding the full toolset is still told nothing about a
+ * name it does not have.
+ */
+export function buildKoneContext(options: KoneContextOptions): KoneContextBlocks {
+  return {
+    hostContext: options.gateway ? renderKoneHostContext(options.gateway.tools) : "",
+    identity: renderAgentIdentity(options.agent),
+  };
+}
+
 /** Claude system channel: the blocks layered onto the stock claude_code preset
  *  via the SDK's preset `append` (sdk.d.ts: "Use default prompt with appended
  *  instructions"). Empty when there is nothing to say — no gateway and no named
- *  agent — and the adapter then appends nothing, keeping the preset pristine.
- *
- *  The two blocks are independently optional on purpose: an agent's name is not
- *  a gateway capability, so a session that came up without a gateway connection
- *  still knows who it is. */
-export function claudeSystemPromptAppend(
-  gatewayControlAvailable: boolean,
-  agent?: AgentPersona,
-): string {
-  return [gatewayControlAvailable ? renderKoneHostContext(true) : "", renderAgentIdentity(agent)]
-    .filter(Boolean)
-    .join("\n");
+ *  agent — and the adapter then appends nothing, keeping the preset pristine. */
+export function claudeSystemPromptAppend(options: KoneContextOptions): string {
+  const { hostContext, identity } = buildKoneContext(options);
+  return [hostContext, identity].filter(Boolean).join("\n");
 }
 
 /** Codex envelope default when kone hasn't selected a model. The app-server
@@ -175,15 +230,12 @@ export interface CodexTurnCollaborationMode extends JsonObject {
 /** The turn/start `collaborationMode` envelope carrying the app context.
  *  kone has no plan/build interaction-mode axis (the CodexAdapter comment on
  *  that axis), so the block always opens a Default collaboration mode, exactly
- *  like the default-mode developer instructions. Undefined when
- *  the session has no gateway connection. */
-export function buildCodexTurnCollaborationMode(input: {
-  model?: string;
-  effort?: string;
-  gatewayControlAvailable: boolean;
-  agent?: AgentPersona;
-}): CodexTurnCollaborationMode | undefined {
-  const developerInstructions = codexDeveloperInstructions(input.gatewayControlAvailable, input.agent);
+ *  like the default-mode developer instructions. Undefined when there is
+ *  nothing to deliver. */
+export function buildCodexTurnCollaborationMode(
+  input: KoneContextOptions & { model?: string; effort?: string },
+): CodexTurnCollaborationMode | undefined {
+  const developerInstructions = codexDeveloperInstructions(input);
   if (developerInstructions === undefined) return undefined;
   return {
     mode: "default",
@@ -198,18 +250,18 @@ export function buildCodexTurnCollaborationMode(input: {
 /** Codex system channel: the full `developer_instructions` string delivered
  *  through turn/start collaborationMode. The leading `<collaboration_mode>`
  *  block pins codex's collaboration-mode state to Default (kone never uses
- *  Plan); the app context rides after it, outside the tags, as in both
- *  references. */
-export function codexDeveloperInstructions(
-  gatewayControlAvailable: boolean,
-  agent?: AgentPersona,
-): string | undefined {
-  const identity = renderAgentIdentity(agent);
+ *  Plan); the app context rides after it, outside the tags.
+ *
+ *  This channel is re-sent on EVERY turn, unlike Claude's one-time system
+ *  append — which is the reason the tool index above is one line per tool
+ *  rather than a paragraph. */
+export function codexDeveloperInstructions(options: KoneContextOptions): string | undefined {
+  const { hostContext, identity } = buildKoneContext(options);
   // Nothing to deliver, so no envelope at all. The collaboration-mode preamble
   // is not reason enough on its own: it only restates the mode kone always runs
   // in, and sending it alone would put a mode declaration on every turn of a
   // session that has nothing else to be told.
-  if (!gatewayControlAvailable && !identity) return undefined;
+  if (!hostContext && !identity) return undefined;
   const collaborationMode = [
     "<collaboration_mode># Collaboration Mode: Default",
     "",
@@ -224,53 +276,30 @@ export function codexDeveloperInstructions(
     "In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.",
     "</collaboration_mode>",
   ].join("\n");
-  return [collaborationMode, gatewayControlAvailable ? renderKoneHostContext(true) : "", identity]
-    .filter(Boolean)
-    .join("\n\n");
+  return [collaborationMode, hostContext, identity].filter(Boolean).join("\n\n");
 }
 
-/** Phase B first-prompt channel: the blocks wrapped so they can't be mistaken
- *  for user text and prepended to the first user prompt — for providers
- *  prependT3OrchestrationInstructions. Each block carries its own tag, so an
- *  agent's identity is a thing the model can tell apart from the app it is
- *  running in rather than one long preamble. */
-export function prependKoneHostContext(prompt: string, agent?: AgentPersona): string {
-  return wrapFirstPrompt({ prompt, gatewayControlAvailable: true, agent });
-}
-
-/** The wrapped first prompt, with whichever blocks this session actually has.
- *  Nothing to say leaves the prompt alone — an empty preamble would still cost
- *  the agent a `<user_request>` wrapper to see through. */
-function wrapFirstPrompt(input: {
-  prompt: string;
-  gatewayControlAvailable: boolean;
-  agent?: AgentPersona;
-}): string {
-  const identity = renderAgentIdentity(input.agent);
+/** The first-prompt channel's wrapped prompt, with whichever blocks this session
+ *  actually has. Each block carries its own tag, so an agent's identity is a
+ *  thing the model can tell apart from the app it is running in rather than one
+ *  long preamble. Nothing to say leaves the prompt alone — an empty preamble
+ *  would still cost the agent a `<user_request>` wrapper to see through. */
+export function prependKoneHostContext(prompt: string, options: KoneContextOptions): string {
+  const { hostContext, identity } = buildKoneContext(options);
   const preamble = [
-    input.gatewayControlAvailable
-      ? `<kone_host_context>${renderKoneHostContext(true).trim()}</kone_host_context>`
-      : "",
+    hostContext ? `<kone_host_context>${hostContext.trim()}</kone_host_context>` : "",
     identity ? `<kone_agent_identity>${identity}</kone_agent_identity>` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
-  if (!preamble) return input.prompt;
-  return `${preamble}\n\n<user_request>\n${input.prompt}\n</user_request>`;
+  if (!preamble) return prompt;
+  return `${preamble}\n\n<user_request>\n${prompt}\n</user_request>`;
 }
 
-/** Phase B helper: fire the first-prompt channel once per session, on the
- */
-export function koneHostContextForFirstRun(input: {
-  prompt: string;
-  runOrdinal: number;
-  gatewayControlAvailable: boolean;
-  agent?: AgentPersona;
-}): string {
+/** First-prompt channel: fire it once per session, on the session's first run. */
+export function koneHostContextForFirstRun(
+  input: KoneContextOptions & { prompt: string; runOrdinal: number },
+): string {
   if (input.runOrdinal !== 1) return input.prompt;
-  return wrapFirstPrompt({
-    prompt: input.prompt,
-    gatewayControlAvailable: input.gatewayControlAvailable,
-    agent: input.agent,
-  });
+  return prependKoneHostContext(input.prompt, input);
 }
