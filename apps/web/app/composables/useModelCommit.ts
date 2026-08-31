@@ -16,7 +16,7 @@ import type { ComputedRef, Ref } from "vue";
 import type { InteractionMode, ProviderKind } from "~/types/desktop";
 import type { EffortTier, ModelOption } from "~/utils/modelCatalog";
 import { familyForId } from "~/utils/modelCatalog";
-import { PROVIDER_KEY, RESTART_ON_MODEL_CHANGE } from "~/utils/modelPicker";
+import { RESTART_ON_MODEL_CHANGE, setLastUsedModel } from "~/utils/modelPicker";
 import type { useAgent } from "~/composables/useAgent";
 
 export type ModelPick = {
@@ -60,6 +60,7 @@ export function useModelCommit(o: UseModelCommitOptions) {
         effort: agent.reasoning.value,
         serviceTier: agent.serviceTier.value,
         contextWindow: agent.contextWindow.value,
+        mode: agent.mode.value,
       })
       .catch(() => {
         // best-effort persistence — a failed write never disturbs the picker.
@@ -86,10 +87,13 @@ export function useModelCommit(o: UseModelCommitOptions) {
       );
     }
 
-    // Persist the (global) provider whenever it changes — model + reasoning ride
-    // along via their own watchers.
-    if (import.meta.client && providerChanged) {
-      localStorage.setItem(PROVIDER_KEY, picked.provider);
+    // Persist the choice globally so subsequent sessions open with whatever ran last.
+    if (import.meta.client) {
+      setLastUsedModel({
+        provider: picked.provider,
+        modelId: picked.modelId,
+        tier: picked.tier,
+      });
     }
 
     const needsRestart =
@@ -119,12 +123,26 @@ export function useModelCommit(o: UseModelCommitOptions) {
   function onComposerModelId(id: string): void {
     void syncTarget().then(() => {
       agent.setModel(id);
+      if (import.meta.client) {
+        setLastUsedModel({
+          provider: agent.provider.value,
+          modelId: id,
+          tier: agent.reasoning.value,
+        });
+      }
       persistThreadSelection();
     });
   }
   function onComposerReasoning(tier: EffortTier): void {
     void syncTarget().then(() => {
       agent.setReasoning(tier);
+      if (import.meta.client) {
+        setLastUsedModel({
+          provider: agent.provider.value,
+          modelId: agent.model.value,
+          tier,
+        });
+      }
       persistThreadSelection();
     });
   }
@@ -132,7 +150,10 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => agent.setContextWindow(id));
   }
   function onComposerMode(next: InteractionMode): void {
-    void syncTarget().then(() => agent.setMode(next));
+    void syncTarget().then(() => {
+      agent.setMode(next);
+      persistThreadSelection();
+    });
   }
 
   return {
