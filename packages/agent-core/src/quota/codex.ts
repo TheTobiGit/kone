@@ -328,7 +328,18 @@ async function refresh(auth: AuthDoc, deps: CodexDeps, signal?: AbortSignal): Pr
     body: JSON.stringify({ client_id: CLIENT_ID, grant_type: "refresh_token", refresh_token: refreshToken, scope: "openid profile email" }),
   });
   if (!response.ok) return null;
-  const next: TokenResponse = JSON.parse(await response.text());
+  // `ok` vouches for the status, not the body: a 200 carrying an interstitial
+  // or a truncated payload throws here. Returning null instead lets the caller
+  // keep the token it has — the proactive path only refreshes on an age
+  // heuristic, so the existing one is usually still good — and lets the 401
+  // path report that the login could not be refreshed, rather than blaming the
+  // usage endpoint it never reached.
+  let next: TokenResponse;
+  try {
+    next = JSON.parse(await response.text());
+  } catch {
+    return null;
+  }
   if (!next.access_token) return null;
   const latest = await readAuth(deps);
   if (!latest || latest.auth_mode !== "chatgpt") return null;
