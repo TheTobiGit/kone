@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
+import { SCHEMA_VERSION } from "./conversationMigrations.js";
 
 import { Database } from "bun:sqlite";
 
@@ -251,13 +252,13 @@ const V17_THREADS = `
 `;
 
 describe("v18 migration", () => {
-  test("fresh DB opens at the current schema (v29) with the new columns, table and indexes", () => {
+  test("fresh DB opens at the current schema with the new columns, table and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
 
     const threads = columnNames(raw, "threads");
     for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
@@ -388,7 +389,7 @@ describe("v18 migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
     raw.close();
     // Persistence is live again on the completed schema.
@@ -561,11 +562,17 @@ describe("pins, selection and rename", () => {
       effort: "max",
       serviceTier: "fast",
       contextWindow: "200k",
+      mode: "full-access",
     });
     const meta = store.threadMeta("t-1");
     expect(meta?.isPinned).toBe(true);
     expect(meta?.model).toBe("gpt-5.6-sol");
-    expect(meta?.selection).toEqual({ effort: "max", serviceTier: "fast", contextWindow: "200k" });
+    expect(meta?.selection).toEqual({
+      effort: "max",
+      serviceTier: "fast",
+      contextWindow: "200k",
+      mode: "full-access",
+    });
 
     // Absent fields are left untouched; unpin clears.
     store.setThreadSelection("t-1", { effort: "high" });
@@ -573,6 +580,7 @@ describe("pins, selection and rename", () => {
       effort: "high",
       serviceTier: "fast",
       contextWindow: "200k",
+      mode: "full-access",
     });
     store.setPinned("t-1", false);
     expect(store.threadMeta("t-1")?.isPinned).toBe(false);
@@ -639,6 +647,38 @@ describe("listThreads archive views", () => {
 
     expect(store.listThreads("/p", { archived: true })).toEqual([]);
   });
+
+  test("listThreads returns the latest snippet from the agent response", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-snip", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "t-snip", text: "What is the capital of France?", at: 100 });
+
+    // Initial user block only -> no agent response yet
+    let threads = store.listThreads("/p");
+    expect(threads[0]?.snippet).toBeUndefined();
+
+    // Assistant response arrives -> latest assistant text becomes the snippet
+    store.applyEvent({
+      type: "turn.started",
+      threadId: "t-snip",
+      turnId: "turn-1",
+      at: 200,
+    });
+    store.applyEvent({
+      type: "item.completed",
+      threadId: "t-snip",
+      turnId: "turn-1",
+      at: 210,
+      item: {
+        itemId: "item-1",
+        kind: "assistant_text",
+        status: "completed",
+        text: "The capital of France is Paris.\nIt is known for its art and culture.",
+      },
+    });
+    threads = store.listThreads("/p");
+    expect(threads[0]?.snippet).toBe("The capital of France is Paris.");
+  });
 });
 
 describe("setDone", () => {
@@ -700,6 +740,79 @@ describe("setDone", () => {
   });
 });
 
+describe("setVisited", () => {
+  // Creating a thread stamps a visit of its own — you are looking at what you
+  // just made — so these count forward from that rather than from arbitrary
+  // small numbers, which the forward-only rule would now refuse.
+  test("a thread is born visited, so it does not read as unread before anyone opens it", () => {
+    const store = freshStore();
+    const before = Date.now();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+
+    const born = store.threadMeta("a")!;
+    expect(born.lastVisitedAt!).toBeGreaterThanOrEqual(before);
+    expect(born.lastVisitedAt!).toBeGreaterThanOrEqual(born.lastActivityAt!);
+  });
+
+  test("a visit stamps the thread; a later visit moves the stamp forward", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    const born = store.threadMeta("a")!.lastVisitedAt!;
+    store.recordUserBlock({ threadId: "a", text: "hello", at: born + 100 });
+
+    store.setVisited("a", born + 500);
+    expect(store.threadMeta("a")?.lastVisitedAt).toBe(born + 500);
+
+    store.setVisited("a", born + 900);
+    expect(store.threadMeta("a")?.lastVisitedAt).toBe(born + 900);
+  });
+
+  test("an older visit is ignored — two surfaces showing one thread cannot undo each other", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    const born = store.threadMeta("a")!.lastVisitedAt!;
+    store.recordUserBlock({ threadId: "a", text: "hello", at: born + 100 });
+
+    store.setVisited("a", born + 900);
+    store.setVisited("a", born + 500);
+    expect(store.threadMeta("a")?.lastVisitedAt).toBe(born + 900);
+  });
+
+  test("force writes backwards — the only way to say unread again", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    const born = store.threadMeta("a")!.lastVisitedAt!;
+    store.recordUserBlock({ threadId: "a", text: "hello", at: born + 100 });
+
+    store.setVisited("a", born + 900);
+    store.setVisited("a", born + 500, true);
+    expect(store.threadMeta("a")?.lastVisitedAt).toBe(born + 500);
+  });
+
+  test("a turn after the visit is what makes a thread unread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "a", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "a", text: "hello", at: 100 });
+    store.setVisited("a", Date.now());
+
+    const seen = store.threadMeta("a")!;
+    expect(seen.lastVisitedAt!).toBeGreaterThanOrEqual(seen.lastActivityAt!);
+
+    store.recordUserBlock({ threadId: "a", text: "and another thing", at: Date.now() + 1000 });
+
+    // Nothing wrote to the visit stamp — the thread simply stopped satisfying
+    // the predicate, which is why unread is a comparison and not a flag.
+    const spoken = store.threadMeta("a")!;
+    expect(spoken.lastVisitedAt!).toBeLessThan(spoken.lastActivityAt!);
+  });
+
+  test("visiting an unknown thread does nothing and does not throw", () => {
+    const store = freshStore();
+    expect(() => store.setVisited("never-existed", 500)).not.toThrow();
+    expect(store.threadMeta("never-existed")).toBeNull();
+  });
+});
+
 describe("latestThreadMeta", () => {
   test("picks the most recently active thread for a project, metadata only", () => {
     const store = freshStore();
@@ -728,6 +841,93 @@ describe("latestThreadMeta", () => {
     store.setArchived("b", true);
 
     expect(store.latestThreadMeta("/p")?.threadId).toBe("a");
+  });
+});
+
+describe("staleThreadIds (retention candidates)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  test("selects stale, live, unpinned roots; done threads only when not undone-only", () => {
+    const store = freshStore();
+    const old = () => Date.now() - 4 * DAY;
+    // Block writes stamp the transcript, not the thread's recency columns — the
+    // retention cutoffs read last_activity_at and last_visited_at, so both are
+    // written directly. Both, because a thread is only stale when every signal
+    // it carries is past the cutoff, and creating one stamps a visit.
+    function backdate(threadId: string, at: number): void {
+      const raw = rawDb();
+      raw
+        .prepare(`UPDATE threads SET last_activity_at = ?, last_visited_at = ? WHERE thread_id = ?`)
+        .run(at, at, threadId);
+      raw.close();
+    }
+    // Old and never marked → the done pass's prime candidate.
+    store.ensureThread({ threadId: "old", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old", text: "hi", at: old() });
+    backdate("old", old());
+    // Recent activity → stale to no pass.
+    store.ensureThread({ threadId: "fresh", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "fresh", text: "hi", at: Date.now() });
+    // Old but already done (the stamp outdates nothing — done_at > activity).
+    store.ensureThread({ threadId: "old-done", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old-done", text: "hi", at: old() });
+    backdate("old-done", old());
+    store.setDone("old-done", true);
+    // Old with done_at = 0: the user said "not finished", which outranks age.
+    store.ensureThread({ threadId: "old-kept", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old-kept", text: "hi", at: old() });
+    backdate("old-kept", old());
+    store.setDone("old-kept", false);
+    // Old and pinned — a pin is a keep-me.
+    store.ensureThread({ threadId: "old-pinned", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old-pinned", text: "hi", at: old() });
+    backdate("old-pinned", old());
+    store.setPinned("old-pinned", true);
+    // Old with queued work — the sweep must not cancel what the user asked for.
+    store.ensureThread({ threadId: "old-queued", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old-queued", text: "hi", at: old() });
+    backdate("old-queued", old());
+    store.enqueueQueuedTurn({
+      queueId: "q-stale",
+      threadId: "old-queued",
+      userBlockId: "ub-stale",
+      input: "later",
+      at: Date.now(),
+    });
+    // Old with a spawned child mid-turn — the sweep tidies nothing live.
+    store.ensureThread({ threadId: "old-busy", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old-busy", text: "hi", at: old() });
+    backdate("old-busy", old());
+    store.writeSpawnedThread({
+      threadId: "old-busy-child",
+      projectPath: "/p",
+      provider: "codex",
+      createdAt: 10,
+      title: "Child",
+      lineage: spawnedLineage("old-busy", "old-busy"),
+    });
+    store.applyEvent(turnStarted("old-busy-child", "turn-stale", 10));
+
+    // Old work, but someone reads it every few days: a reference thread nobody
+    // replies in and nobody pins. Activity alone would archive it out from
+    // under them — the visit is the human half of "has anyone touched this".
+    store.ensureThread({ threadId: "old-read", projectPath: "/p", provider: "codex" });
+    store.recordUserBlock({ threadId: "old-read", text: "hi", at: old() });
+    backdate("old-read", old());
+    store.setVisited("old-read", Date.now(), true);
+
+    // The done pass sees exactly the old, undone, quiet, still thread.
+    expect(store.staleThreadIds({ unusedMs: 3 * DAY, limit: 25, undone: true })).toEqual([
+      "old",
+    ]);
+    // The archive pass also takes threads already marked done — done is not a
+    // terminal state, seven days of silence after it still puts a thread away.
+    // Pinned, queued, and busy threads are excluded from both passes.
+    expect(
+      store
+        .staleThreadIds({ unusedMs: 3 * DAY, limit: 25 })
+        .sort((a, b) => a.localeCompare(b)),
+    ).toEqual(["old", "old-done", "old-kept"]);
   });
 });
 
@@ -839,9 +1039,17 @@ describe("delete/archive subtree cascade with busy guard", () => {
       lineage: spawnedLineage("parent-1", "parent-1"),
     });
     store.applyEvent(turnStarted("child-1", "turn-1", 10));
-    expect(store.setArchived("parent-1", true)).toEqual({ ok: false, reason: "busy" });
+    expect(store.setArchived("parent-1", true)).toEqual({
+      ok: false,
+      reason: "busy",
+    });
     store.applyEvent(turnCompleted("child-1", "turn-1", 20));
-    expect(store.setArchived("parent-1", true)).toEqual({ ok: true });
+    // Success names every thread the stamp landed on, ancestor-first — the
+    // caller announces the change per thread from this list.
+    expect(store.setArchived("parent-1", true)).toEqual({
+      ok: true,
+      threadIds: ["parent-1", "child-1"],
+    });
     const raw = rawDb();
     // SAFETY: the SELECT projects exactly the archived column.
     const archived = (id: string) =>
@@ -851,7 +1059,10 @@ describe("delete/archive subtree cascade with busy guard", () => {
     expect(archived("parent-1")).not.toBeNull();
     expect(archived("child-1")).not.toBeNull(); // subtree archived with the parent
     // Restore un-archives the subtree too.
-    expect(store.setArchived("parent-1", false)).toEqual({ ok: true });
+    expect(store.setArchived("parent-1", false)).toEqual({
+      ok: true,
+      threadIds: ["parent-1", "child-1"],
+    });
     expect(archived("parent-1")).toBeNull();
     expect(archived("child-1")).toBeNull();
     raw.close();
@@ -1046,7 +1257,7 @@ describe("v19 keyset index migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -1067,7 +1278,7 @@ describe("v19 keyset index migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     const idx = raw
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
@@ -1427,7 +1638,7 @@ describe("v20 queued turns migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     // SAFETY: sqlite_master rows carry the object's name in `name`.
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
@@ -1463,14 +1674,14 @@ describe("v20 queued turns migration", () => {
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     // A re-open (a second process) runs the ladder again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     // SAFETY: Same PRAGMA row shape as every read above.
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version2.user_version).toBe(29);
+    expect(version2.user_version).toBe(SCHEMA_VERSION);
     raw.close();
   });
 
@@ -1762,13 +1973,16 @@ describe("durable turn queue", () => {
     raw.close();
   });
 
-  test("setArchived leaves queued turns intact (archive is a reversible hide, not a stop)", () => {
+  test("setArchived touches only the threads table — queue rows are the caller's business", () => {
+    // The store primitive stays pure data: cancelling the subtree's queued
+    // turns (and announcing it) is AgentService.setThreadArchived's job, so
+    // the store has no event stream to emit from. This pins that split.
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     enq(store, "q-1", "t-1", "ub-1", "one", 1);
-    expect(store.setArchived("t-1", true)).toEqual({ ok: true });
+    expect(store.setArchived("t-1", true)).toEqual({ ok: true, threadIds: ["t-1"] });
     expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-1"]);
-    expect(store.setArchived("t-1", false)).toEqual({ ok: true });
+    expect(store.setArchived("t-1", false)).toEqual({ ok: true, threadIds: ["t-1"] });
     expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-1"]);
   });
 });

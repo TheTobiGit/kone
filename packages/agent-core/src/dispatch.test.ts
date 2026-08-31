@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
+import { composeTurnDelivery } from "./dispatch.js";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
   EmitEvent,
@@ -194,6 +195,32 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(row?.userBlockId).toBe(steerBlock?.id);
   });
 
+  test("a silent turn reaches the agent but leaves no user block", async () => {
+    const { store, dispatcher } = await harness();
+    await dispatcher.sendThreadTurn({ threadId: THREAD, input: "first message" });
+
+    await dispatcher.sendThreadTurn(
+      { threadId: THREAD, input: "your background subagents finished" },
+      { silent: true },
+    );
+
+    // The agent got it...
+    expect(FakeAdapter.sent).toEqual(["first message", "your background subagents finished"]);
+    // ...but nobody said it, so the transcript does not claim anyone did.
+    expect(userTexts(store)).toEqual(["first message"]);
+  });
+
+  test("a silent first turn does not name the thread after itself", async () => {
+    const { store, dispatcher } = await harness();
+
+    await dispatcher.sendThreadTurn(
+      { threadId: THREAD, input: "your background subagents finished" },
+      { silent: true },
+    );
+
+    expect(store.getTitle(THREAD) ?? "").not.toContain("background subagents");
+  });
+
   test("a steer with no live turn is a plain send, and still journaled", async () => {
     const { store, dispatcher } = await harness();
 
@@ -203,5 +230,37 @@ describe("thread dispatcher: a steer is the user speaking", () => {
     expect(userTexts(store)).toEqual(["start here"]);
     // First user turn on the thread — it names it, exactly like a send would.
     expect(store.getTitle(THREAD)).toBeTruthy();
+  });
+});
+
+describe("composeTurnDelivery", () => {
+  test("an ordinary turn is journaled and dispatched as itself", () => {
+    expect(composeTurnDelivery({ message: "fix the bug" })).toEqual({
+      journal: "fix the bug",
+      dispatch: "fix the bug",
+    });
+  });
+
+  test("a preamble reaches the provider and never the transcript", () => {
+    const delivery = composeTurnDelivery({ message: "continue", preamble: "<recovered>…</recovered>" });
+    expect(delivery.journal).toBe("continue");
+    expect(delivery.dispatch).toBe("<recovered>…</recovered>\n\ncontinue");
+  });
+
+  test("a silent turn is dispatched but journaled nowhere — nobody said it", () => {
+    const delivery = composeTurnDelivery({ message: "your subagents finished", silent: true });
+    expect(delivery.journal).toBeNull();
+    expect(delivery.dispatch).toBe("your subagents finished");
+  });
+
+  test("the two axes are independent: a silent turn can still carry a preamble", () => {
+    const delivery = composeTurnDelivery({ message: "go on", preamble: "history", silent: true });
+    expect(delivery.journal).toBeNull();
+    expect(delivery.dispatch).toBe("history\n\ngo on");
+  });
+
+  test("an empty preamble changes nothing", () => {
+    expect(composeTurnDelivery({ message: "hi", preamble: "" }).dispatch).toBe("hi");
+    expect(composeTurnDelivery({ message: "hi", preamble: null }).dispatch).toBe("hi");
   });
 });

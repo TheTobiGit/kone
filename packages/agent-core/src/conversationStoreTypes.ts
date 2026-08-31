@@ -1,6 +1,7 @@
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
 import type {
   ChatAttachment,
+  InteractionMode,
   ProviderKind,
   RuntimeItem,
   StoredBlock,
@@ -106,6 +107,8 @@ export type ThreadRow = {
   resume_session_at: string | null;
   last_activity_at: number | null;
   done_at: number | null;
+  last_visited_at: number | null;
+  snippet?: string | null;
 };
 
 export type BlockRow = {
@@ -320,10 +323,24 @@ export type TurnSpan = {
   lastError?: string;
 };
 
+export function cleanSnippet(text: string | null | undefined): string | undefined {
+  if (!text) return undefined;
+  const firstLine =
+    text
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "";
+  const cleaned = firstLine.replace(/^[#*`\-\s]+/, "").trim();
+  return cleaned.slice(0, 160) || undefined;
+}
+
 export function rowToMeta(row: ThreadRow): StoredThreadMeta {
-  const selection = parseJsonObject<{ effort?: string; serviceTier?: string; contextWindow?: string }>(
-    row.model_selection_json,
-  );
+  const selection = parseJsonObject<{
+    effort?: string;
+    serviceTier?: string;
+    contextWindow?: string;
+    mode?: InteractionMode;
+  }>(row.model_selection_json);
   const forkContext = parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json);
   const lineage = parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json);
   const meta: StoredThreadMeta = {
@@ -354,10 +371,18 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
      *  `lastActivityAt` rather than read alone: a thread the agent has spoken
      *  in since is asking again, whatever this says. */
     doneAt: row.done_at ?? null,
+    /** When you last had this thread in front of you (v30), or null for a row
+     *  written before the column existed. Compared against `lastActivityAt`:
+     *  the agent having spoken since is what makes a thread unread. */
+    lastVisitedAt: row.last_visited_at ?? null,
   };
   if (selection) meta.selection = selection;
   if (forkContext) meta.forkContext = forkContext;
   if (lineage) meta.lineage = lineage;
+  if (row.snippet) {
+    const s = cleanSnippet(row.snippet);
+    if (s) meta.snippet = s;
+  }
   return meta;
 }
 

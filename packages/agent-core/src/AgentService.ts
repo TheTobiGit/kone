@@ -7,7 +7,10 @@ import { CodexAdapter } from "./adapters/CodexAdapter.js";
 import { CursorAdapter } from "./adapters/CursorAdapter.js";
 import { DroidAdapter } from "./adapters/DroidAdapter.js";
 import { OpenCodeAdapter } from "./adapters/OpenCodeAdapter.js";
-import { getConversationStore } from "./ConversationStore.js";
+import {
+  getConversationStore,
+  type ConversationStore,
+} from "./ConversationStore.js";
 import { buildAgentEnv } from "./processEnv.js";
 import {
   cacheModels,
@@ -15,9 +18,15 @@ import {
   readProviderCache,
   type ProviderSurfaceSnapshot,
 } from "./providerCache.js";
+import { providerStatusesEqual, stabilizeProviderStatuses } from "./providerHealth.js";
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
 import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
 import { sidechatBootstrapForTurn } from "./sidechat.js";
+import { subagentWakePrompt } from "./subagentWake.js";
+// Resolved at call time, not imported as a value binding: the dispatcher is
+// built after the service (it takes one), so at module load there is nothing to
+// bind to. Same lazy-lookup contract the gateway tools use.
+import { getThreadDispatcher } from "./dispatch.js";
 import type { GatewayHandle } from "./gateway/index.js";
 import type {
   ApprovalDecision,
@@ -37,6 +46,7 @@ import type {
   Session,
   SendTurnInput,
   SessionStartInput,
+  ThreadArchiveResult,
   TurnStartResult,
   UserInputAnswers,
 } from "./types.js";
@@ -68,6 +78,34 @@ const IDLE_SWEEP_MS = 5 * 60_000;
  *  resources. Subsequent turns rehydrate/resume on demand. */
 const IDLE_THRESHOLD_MS = 30 * 60_000;
 
+/** The thread-retention sweep puts away conversations nobody has touched in a
+ *  week — an archive stamp, reversible from the archived view, never a delete.
+ *  A shorter pass runs ahead of it: three days of silence marks a thread done,
+ *  which stops it asking without hiding it anywhere. Module constants so the
+ *  tuning lives with the mechanism it tunes. */
+const RETENTION_UNUSED_MS = 7 * 24 * 60 * 60 * 1000;
+const RETENTION_DONE_MS = 3 * 24 * 60 * 60 * 1000;
+/** First sweep runs a few minutes after boot rather than instantly — the app
+ *  is busy opening projects and rehydrating sessions then, and an archive
+ *  stamp landing in the middle of that is pure noise. */
+const RETENTION_INITIAL_DELAY_MS = 5 * 60_000;
+const RETENTION_SWEEP_MS = 24 * 60 * 60 * 1000;
+
+/** How many wakes in a row a thread may be given for its own background
+ *  subagents settling.
+ *
+ *  A wake is a turn; a turn can spawn more background subagents; those settle
+ *  and wake it again. Nothing in that loop needs a human, which is what makes it
+ *  worth bounding — it is the same shape whether the agent is converging on
+ *  something or circling. The count resets the moment a turn arrives that this
+ *  did not cause, so the ceiling only ever applies to an unbroken chain. */
+const SUBAGENT_WAKE_MAX = 5;
+/** Stale threads are archived in small batches with a breath between them, so
+ *  a first-run backlog (hundreds of rows) costs a few seconds of idle work
+ *  instead of one long blocking loop. */
+const RETENTION_BATCH_SIZE = 25;
+const RETENTION_BATCH_PAUSE_MS = 50;
+
 /** A parked provider ask (tool approval / user-input question) that a renderer
  *  reload would otherwise lose: approvals and user-input questions are live
  *  round-trips and are deliberately never journaled, so a re-subscribing
@@ -89,9 +127,23 @@ export type AgentServiceOptions = {
   wedgeItemSilenceMs?: number;
   idleSweepMs?: number;
   idleThresholdMs?: number;
+  /** Thread-retention tuning (see RETENTION_* above). `retentionSweepMs: 0`
+   *  disables the sweep entirely — tests and embedders that never want the
+   *  archive touched from the background. `retentionDoneMs: 0` disables just
+   *  the mark-done pass, keeping the archive pass. */
+  retentionSweepMs?: number;
+  retentionUnusedMs?: number;
+  retentionDoneMs?: number;
+  retentionInitialDelayMs?: number;
   /** The conversation store's queue surface, injected by tests. Defaults to
    *  the app-wide store (getConversationStore) when absent. */
   store?: QueuedTurnStore;
+  /** The conversation store's history slice the archive/retention paths need,
+   *  injected by tests. Defaults to the app-wide store when absent. */
+  historyStore?: Pick<
+    ConversationStore,
+    "setArchived" | "setDone" | "threadMeta" | "staleThreadIds"
+  >;
   /** Adapters to register instead of the five real ones, handed the service's
    *  emit closure exactly like the real construction path. Injected by tests
    *  so no CLI is ever spawned. */
@@ -120,6 +172,13 @@ export class AgentService {
    *  revokes it — agents reach kone tools over loopback. */
   private gateway: GatewayHandle | null = null;
   private warming: Promise<void> | null = null;
+  /** The discovery round in flight, so concurrent callers share one set of CLI
+   *  spawns instead of racing their own. */
+  private discovering: Promise<ProviderStatus[]> | null = null;
+  /** Told whenever the provider surface actually changes — the desktop layer
+   *  forwards this to every renderer, so a status corrected in the background
+   *  reaches the UI without anyone asking for it. */
+  private readonly providerListeners = new Set<(statuses: ProviderStatus[]) => void>();
   /** Parked asks per thread (requestId → ask). Approvals/user-inputs are live
    *  round-trips and are never journaled, so this map is the only record a
    *  re-subscribing renderer can be replayed from (reload recovery), and the
@@ -129,6 +188,12 @@ export class AgentService {
   private readonly lastActivity = new Map<string, number>();
   /** Turns currently live per thread (turnId) — the wedge watchdog's scope. */
   private readonly activeTurns = new Map<string, string>();
+  /** Consecutive subagent wakes per thread — see SUBAGENT_WAKE_MAX. */
+  private readonly subagentWakes = new Map<string, number>();
+  /** Threads whose next `turn.started` is a wake this service asked for. Held
+   *  so the counter can tell its own chain apart from a turn that came from
+   *  anywhere else, which is the thing that resets it. */
+  private readonly pendingSubagentWakes = new Set<string>();
   /** Threads whose sendTurn is in flight at an adapter but whose turn.started
    *  hasn't landed yet. `activeTurns` alone can't close that window — adapters
    *  emit turn.started from INSIDE sendTurn, after their own awaits — so
@@ -155,6 +220,12 @@ export class AgentService {
   private wedgeTimer: ReturnType<typeof setInterval> | null = null;
   /** The idle session sweep timer — lazily started on first session, cleared on stopAll. */
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  /** The thread-retention sweep timer — started at construction (retention is
+   *  about stored rows, not live sessions, so waiting for a first session
+   *  would leave a quiet app un-swept forever), cleared on stopAll. The first
+   *  sweep runs off a one-shot delay, the rest on the daily interval. */
+  private retentionTimer: ReturnType<typeof setInterval> | null = null;
+  private retentionStartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: AgentServiceOptions = {}) {
     const emit: EmitEvent = (event) => this.dispatch(event);
@@ -192,6 +263,7 @@ export class AgentService {
         this.catalogs.set(provider as ProviderKind, models);
       }
     }
+    this.ensureRetentionSweep();
   }
 
   private register(adapter: ProviderAdapter): void {
@@ -240,6 +312,18 @@ export class AgentService {
     return () => this.listeners.delete(listener);
   }
 
+  /** The conversation store's history slice (archive stamps, thread metadata,
+   *  retention candidates) — the injected test double when present, else the
+   *  app-wide singleton. */
+  private get historyStore(): AgentServiceOptions["historyStore"] | null {
+    if (this.options.historyStore) return this.options.historyStore;
+    // getConversationStore lazily opens the real store; when the queue slice
+    // was injected for tests but no history store was, archive paths have no
+    // real store to touch and must degrade to a no-op rather than open one.
+    if (this.options.store) return null;
+    return getConversationStore();
+  }
+
   /** Wire the MCP gateway in (boot): session lifecycle starts minting and
    *  revoking gateway credentials, and the gateway watches the turn stream
    *  for its authority boundary. */
@@ -258,11 +342,51 @@ export class AgentService {
     return readProviderCache();
   }
 
-  /** Probe every provider on the user's machine — what's installed + logged in. */
+  /** Probe every provider on the user's machine — what's installed + logged in.
+   *
+   *  Folded over the previous round before it is published or persisted: a probe
+   *  that timed out reports no verdict, and letting one slow CLI overwrite a
+   *  known-good row would put that wrong answer on disk, where the next cold
+   *  launch hydrates it as fact. */
   async discover(): Promise<ProviderStatus[]> {
-    const statuses = await Promise.all([...this.adapters.values()].map((a) => a.discover()));
+    // Single-flight: discovery spawns a CLI per provider, and two surfaces
+    // asking at once (the picker opening while warmup is still running) would
+    // otherwise pay for that twice and race each other to the disk snapshot.
+    this.discovering ??= (async () => {
+      try {
+        const probed = await Promise.all([...this.adapters.values()].map((a) => a.discover()));
+        const statuses = stabilizeProviderStatuses(readProviderCache().statuses, probed);
+        this.publishStatuses(statuses);
+        return statuses;
+      } finally {
+        this.discovering = null;
+      }
+    })();
+    return this.discovering;
+  }
+
+  /** Subscribe to provider-surface changes. Returns an unsubscribe fn. */
+  onProvidersChanged(listener: (statuses: ProviderStatus[]) => void): () => void {
+    this.providerListeners.add(listener);
+    return () => this.providerListeners.delete(listener);
+  }
+
+  /** Persist a discovery round and announce it — but only when something the
+   *  user could see actually moved. Every probe writes a `checkedAt`-free row,
+   *  so an unchanged surface compares equal and stays silent rather than waking
+   *  every renderer on a timer. */
+  private publishStatuses(statuses: ProviderStatus[]): void {
+    const changed = !providerStatusesEqual(readProviderCache().statuses, statuses);
     cacheStatuses(statuses);
-    return statuses;
+    if (!changed) return;
+    for (const listener of this.providerListeners) {
+      try {
+        listener(statuses);
+      } catch (error) {
+        // One bad subscriber must not strand the others or the probe round.
+        console.error("[agent] provider status listener failed:", error);
+      }
+    }
   }
 
   async listModels(provider: ProviderKind): Promise<ModelDescriptor[]> {
@@ -546,6 +670,19 @@ export class AgentService {
     return this.activeTurns.has(threadId) || this.dispatchingTurns.has(threadId);
   }
 
+  /** Whether this thread has a live provider session — the only threads a wake
+   *  or a steer can reach. A thread with none is not broken, just away: whatever
+   *  was addressed to it keeps until it comes back. */
+  hasLiveSession(threadId: string): boolean {
+    return this.routing.has(threadId);
+  }
+
+  /** The public read of `isBusy`, for callers deciding whether to steer a
+   *  running turn or start one. */
+  isThreadBusy(threadId: string): boolean {
+    return this.isBusy(threadId);
+  }
+
   /** Hand one turn to the thread's adapter, holding the in-flight marker for
    *  the duration so a concurrent send queues behind it instead of starting a
    *  second turn on the same session. The marker is released on settle: by
@@ -708,6 +845,11 @@ export class AgentService {
         break;
       case "turn.started":
         this.activeTurns.set(threadId, event.turnId);
+        // A turn nobody here asked for — the user typing, a peer's message, a
+        // queued follow-up — means the thread is being driven from outside the
+        // wake chain, so the chain is over and its budget goes back.
+        if (this.pendingSubagentWakes.delete(threadId)) break;
+        this.subagentWakes.delete(threadId);
         break;
       case "item.started": {
         let items = this.openItems.get(threadId);
@@ -740,9 +882,68 @@ export class AgentService {
         this.activeTurns.delete(threadId);
         this.dropAllParked(threadId);
         break;
+      case "subagent.background-settled":
+        this.wakeForSettledSubagents(event);
+        break;
       default:
         break;
     }
+  }
+
+  /** Drive one more turn on a thread whose background subagents came back after
+   *  it had stopped listening.
+   *
+   *  The agent that spawned them ended its turn believing it would be told —
+   *  and nothing was going to tell it. The findings are on the transcript, but a
+   *  transcript nobody reads is the same as no findings, which is why this is a
+   *  turn and not a notification: reading takes a turn.
+   *
+   *  Silent, so the prompt is never journaled as something the user said. The
+   *  transcript shows the agent picking its own work back up, which is what
+   *  actually happened.
+   *
+   *  Fire-and-forget, and skipped when a turn is already running: the agent is
+   *  awake and looking at the same transcript, so a wake on top of it would only
+   *  interrupt. */
+  private wakeForSettledSubagents(
+    event: Extract<RuntimeEvent, { type: "subagent.background-settled" }>,
+  ): void {
+    const { threadId } = event;
+    if (this.isBusy(threadId)) return;
+    // A wake is a turn, and a turn can spawn more background subagents, which
+    // settle, which wake it again. That is a legitimate shape of work — and also
+    // exactly the shape of a thread that has stopped making progress and is
+    // spending money in a circle. The counter is what tells them apart: it only
+    // ever grows on a wake that was itself woken, and any turn the user drives
+    // resets it (see turnStarted). Past the cap the findings are still on the
+    // transcript for the next thing that reads the thread.
+    const woken = this.subagentWakes.get(threadId) ?? 0;
+    if (woken >= SUBAGENT_WAKE_MAX) {
+      console.warn(
+        `[agent] subagent wake for ${threadId} suppressed after ${woken} consecutive wakes`,
+      );
+      return;
+    }
+    this.subagentWakes.set(threadId, woken + 1);
+    this.pendingSubagentWakes.add(threadId);
+    const dispatcher = getThreadDispatcher();
+    if (!dispatcher) return;
+    void (async () => {
+      try {
+        await dispatcher.sendThreadTurn(
+          { threadId, input: subagentWakePrompt(event.subagents) },
+          { silent: true },
+        );
+      } catch (err) {
+        // The thread may have been closed, or its session reaped, between the
+        // subagents settling and this landing. Nothing is lost that a later turn
+        // cannot re-read from the transcript.
+        // No turn started, so nothing will consume the mark or the budget.
+        this.pendingSubagentWakes.delete(threadId);
+        this.subagentWakes.delete(threadId);
+        console.warn(`[agent] subagent wake failed for ${threadId}:`, err);
+      }
+    })();
   }
 
   private setParked(
@@ -776,6 +977,8 @@ export class AgentService {
   private forgetThreadState(threadId: string): void {
     this.parkedByThread.delete(threadId);
     this.activeTurns.delete(threadId);
+    this.subagentWakes.delete(threadId);
+    this.pendingSubagentWakes.delete(threadId);
     this.dispatchingTurns.delete(threadId);
     this.openItems.delete(threadId);
     this.lastActivity.delete(threadId);
@@ -999,6 +1202,151 @@ export class AgentService {
     const store = this.queueStore;
     if (!store) return [];
     return store.listQueuedTurns(threadId);
+  }
+
+  /** Archive (or restore) a thread and its spawned subtree — the one path the
+   *  renderer's archive request and the retention sweep both walk. The store
+   *  writes the stamp; this method owns the announcement side: cancelling the
+   *  subtree's queued turns (a hidden thread must not carry a queue the user
+   *  can no longer see or reach) and emitting one thread.archived /
+   *  thread.unarchived event per affected thread so every surface — the
+   *  archive request's own list, the inbox, the home recents — reconciles.
+   *  A refused request writes and emits nothing. */
+  async setThreadArchived(threadId: string, archived: boolean): Promise<ThreadArchiveResult> {
+    const history = this.historyStore;
+    if (!history) return { ok: false, reason: "error" };
+    const result = history.setArchived(threadId, archived);
+    if (!result.ok) return result;
+    for (const id of result.threadIds) {
+      const meta = history.threadMeta(id);
+      const provider = meta?.provider ?? this.routing.get(id);
+      if (!provider) continue;
+      const at = Date.now();
+      if (archived) {
+        const queue = this.queueStore;
+        if (queue) {
+          try {
+            const queueIds = await queue.cancelQueuedTurnsForThread(id);
+            if (queueIds.length) this.dropQueuedCount(id, queueIds.length);
+            for (const queueId of queueIds) {
+              this.dispatch({
+                type: "turn.queued-cancelled",
+                threadId: id,
+                provider,
+                queueId,
+                reason: "archive",
+                at,
+                source: "kone.store",
+              });
+            }
+          } catch (err) {
+            console.error(`[agent] archive queue cancel for ${id} failed:`, err);
+          }
+        }
+        this.dispatch({
+          type: "thread.archived",
+          threadId: id,
+          provider,
+          at,
+          source: "kone.store",
+          archivedAt: at,
+        });
+      } else {
+        this.dispatch({
+          type: "thread.unarchived",
+          threadId: id,
+          provider,
+          at,
+          source: "kone.store",
+        });
+      }
+    }
+    return result;
+  }
+
+  /** The thread-retention sweep, in two passes over the same timer:
+   *
+   *  1. Mark done — a thread quiet for three days stops asking. Done is an
+   *     attention mark, not a hiding: the thread stays in the live list and
+   *     the mark self-clears the moment the agent speaks in it. Never applied
+   *     to threads already done, and never to `done_at = 0` (the user's
+   *     explicit "not finished", which outranks age for good).
+   *  2. Archive — a thread quiet for a week is put away entirely (the same
+   *     week-old thread already reads as done by then, so the funnel is
+   *     done-at-three-days, archived-at-seven).
+   *
+   *  Candidates come from staleThreadIds (stale, unpinned, roots with nothing
+   *  queued); a candidate that turned busy between the query and its write is
+   *  simply skipped by the write's refusal, and the next sweep picks it up.
+   *  Public for tests. */
+  async sweepStaleThreads(): Promise<void> {
+    const history = this.historyStore;
+    if (!history) return;
+    const doneMs = this.options.retentionDoneMs ?? RETENTION_DONE_MS;
+    if (doneMs > 0) {
+      const doneCandidates = history.staleThreadIds({
+        unusedMs: doneMs,
+        limit: RETENTION_BATCH_SIZE,
+        undone: true,
+      });
+      let done = 0;
+      for (const threadId of doneCandidates) {
+        history.setDone(threadId, true);
+        done++;
+        if (RETENTION_BATCH_PAUSE_MS > 0) {
+          await new Promise((resolve) => setTimeout(resolve, RETENTION_BATCH_PAUSE_MS));
+        }
+      }
+      if (done > 0) {
+        console.info(`[agent] retention: marked ${done} idle thread(s) done`);
+      }
+    }
+    const unusedMs = this.options.retentionUnusedMs ?? RETENTION_UNUSED_MS;
+    const candidates = history.staleThreadIds({ unusedMs, limit: RETENTION_BATCH_SIZE });
+    let archived = 0;
+    for (const threadId of candidates) {
+      // The query reads timestamps; this reads the process table. A thread with
+      // a session attached is one somebody has open in a column right now — the
+      // stamps can still be a week old (an idle pane nobody has typed in) and
+      // archiving it would close that column out from under them.
+      if (this.hasLiveSession(threadId)) continue;
+      const result = await this.setThreadArchived(threadId, true);
+      if (result.ok) archived++;
+      if (RETENTION_BATCH_PAUSE_MS > 0) {
+        await new Promise((resolve) => setTimeout(resolve, RETENTION_BATCH_PAUSE_MS));
+      }
+    }
+    if (archived > 0) {
+      console.info(`[agent] retention: archived ${archived} idle thread(s)`);
+    }
+  }
+
+  /** Retention is about stored rows, not live sessions, so its timer starts at
+   *  construction — a quiet app that never opens a session still sweeps. The
+   *  first pass waits out the boot window; the rest run daily. */
+  private ensureRetentionSweep(): void {
+    if (this.options.retentionSweepMs === 0 || this.retentionStartTimer) return;
+    this.retentionStartTimer = setTimeout(() => {
+      this.retentionStartTimer = null;
+      try {
+        void this.sweepStaleThreads();
+      } catch (err) {
+        console.warn("[agent] retention sweep failed:", err);
+      }
+      if (this.retentionTimer) return;
+      const timer = setInterval(() => {
+        try {
+          void this.sweepStaleThreads();
+        } catch (err) {
+          console.warn("[agent] retention sweep failed:", err);
+        }
+      }, this.options.retentionSweepMs ?? RETENTION_SWEEP_MS);
+      // Never hold the process open on the sweep's account — clean quit is
+      // handled by the before-quit teardown, which clears this timer via stopAll.
+      timer.unref?.();
+      this.retentionTimer = timer;
+    }, this.options.retentionInitialDelayMs ?? RETENTION_INITIAL_DELAY_MS);
+    this.retentionStartTimer.unref?.();
   }
 
   /** The busy-path enqueue shared by sendTurn and steerTurn: persist a durable
@@ -1267,6 +1615,14 @@ export class AgentService {
     if (this.idleTimer) {
       clearInterval(this.idleTimer);
       this.idleTimer = null;
+    }
+    if (this.retentionStartTimer) {
+      clearTimeout(this.retentionStartTimer);
+      this.retentionStartTimer = null;
+    }
+    if (this.retentionTimer) {
+      clearInterval(this.retentionTimer);
+      this.retentionTimer = null;
     }
     await Promise.all([...this.adapters.values()].map((a) => a.stopAll()));
     this.routing.clear();

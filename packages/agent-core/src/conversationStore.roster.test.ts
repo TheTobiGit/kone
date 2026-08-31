@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
+import { SCHEMA_VERSION } from "./conversationMigrations.js";
 
 import { Database } from "bun:sqlite";
 
@@ -904,13 +905,13 @@ describe("who is up next", () => {
 });
 
 describe("the schema", () => {
-  test("a fresh database reports v29 and carries the roster's tables", () => {
+  test("a fresh database reports the current schema and carries the roster's tables", () => {
     seeded();
     const db = rawDb();
     // SAFETY: `PRAGMA user_version` always answers one row with one integer
     // under that name.
     const version = db.prepare(`PRAGMA user_version`).get() as { user_version: number };
-    expect(version.user_version).toBe(29);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     // SAFETY: the projection names one column of a SQLite catalogue table, and
     // `sqlite_master.name` is TEXT.
     const named = db

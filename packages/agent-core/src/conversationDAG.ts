@@ -123,7 +123,7 @@ export function buildTurnDAG(
           turnId: item.turnId,
           parentTurnId: item.parentTurnId ?? null,
           blockIds: item.blockIds ? [...item.blockIds] : [],
-          timestamp: typeof item.timestamp === "number" ? item.timestamp : Date.now(),
+          timestamp: item.timestamp !== undefined && Number.isFinite(item.timestamp) ? item.timestamp : Date.now(),
           branchTag: item.branchTag ?? null,
         });
       }
@@ -299,7 +299,7 @@ export function forkTurn(
     turnId: turnInput.turnId,
     parentTurnId: parentNode && resolvedParentTurnId ? resolvedParentTurnId : null,
     blockIds: turnInput.blockIds ? [...turnInput.blockIds] : [],
-    timestamp: typeof turnInput.timestamp === "number" ? turnInput.timestamp : Date.now(),
+    timestamp: turnInput.timestamp !== undefined && Number.isFinite(turnInput.timestamp) ? turnInput.timestamp : Date.now(),
     branchTag: turnInput.branchTag ?? null,
   };
 

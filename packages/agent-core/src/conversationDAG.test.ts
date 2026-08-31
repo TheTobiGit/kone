@@ -21,9 +21,9 @@ import type { StoredBlock } from "./types.js";
 
 describe("Conversation Turn DAG Engine", () => {
   test("exports buildTurnDAG, getTurnPath, and getTurnChildren from index.ts", () => {
-    expect(typeof indexBuildTurnDAG).toBe("function");
-    expect(typeof indexGetTurnPath).toBe("function");
-    expect(typeof indexGetTurnChildren).toBe("function");
+    expect(indexBuildTurnDAG instanceof Function).toBe(true);
+    expect(indexGetTurnPath instanceof Function).toBe(true);
+    expect(indexGetTurnChildren instanceof Function).toBe(true);
   });
 
   test("builds an empty TurnDAG when given an empty list", () => {
