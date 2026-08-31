@@ -283,6 +283,6 @@ describe("TerminalManager", () => {
   test("restarting a missing session throws", async () => {
     const fake = fakePty();
     const { mgr } = makeManager(fake);
-    expect(mgr.restart({ terminalId: "nope" })).rejects.toThrow();
+    await expect(mgr.restart({ terminalId: "nope" })).rejects.toThrow();
   });
 });
