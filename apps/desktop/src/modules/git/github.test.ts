@@ -210,7 +210,7 @@ describe("prs (record parsing)", () => {
 
   test("throws GitError on non-array responses", async () => {
     installFakeGh(`{ message: "Not Found" }`);
-    expect(prs(process.cwd())).rejects.toThrow("The GitHub CLI returned unexpected pull request data.");
+    await expect(prs(process.cwd())).rejects.toThrow("The GitHub CLI returned unexpected pull request data.");
   });
 });
 
