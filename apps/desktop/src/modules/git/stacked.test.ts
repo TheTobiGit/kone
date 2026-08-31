@@ -1,6 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
@@ -8,12 +7,10 @@ mock.module("electron", () => ({ shell: { openExternal: () => {} } }));
 const { git } = await import("@kone/git-core/core.js");
 const { runStackedAction } = await import("./stacked.js");
 import type { GitActionProgressEvent } from "@kone/git-core/types.js";
+import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 async function makeRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-stacked-test-"));
-  await git(dir, ["init", "-b", "main"]);
-  await git(dir, ["config", "user.email", "test@kone.app"]);
-  await git(dir, ["config", "user.name", "Kone Test"]);
+  const dir = await initTestRepo("kone-stacked-test-");
   await writeFile(path.join(dir, "init.txt"), "hello\n", "utf8");
   await git(dir, ["add", "-A"]);
   await git(dir, ["commit", "-m", "initial commit"]);

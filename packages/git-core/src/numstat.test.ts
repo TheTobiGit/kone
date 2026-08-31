@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "./core.js";
 import { numstat, parseNumstat } from "./numstat.js";
+import { initTestRepo } from "./testRepo.js";
 
 // Paths that break a naive parser. Plain spaces are the easy case — git leaves
 // those alone even without -z — so each of the others carries a byte that git
@@ -18,11 +18,8 @@ const AWKWARD = {
 } as const;
 
 async function makeRepo(files: Record<string, string>): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-git-numstat-"));
+  const dir = await initTestRepo("kone-git-numstat-");
   const g = (args: string[]) => git(dir, args);
-  await g(["init", "-b", "main"]);
-  await g(["config", "user.email", "test@kone.app"]);
-  await g(["config", "user.name", "Kone Test"]);
   // Quoting on is git's default; set it explicitly so the test still proves
   // something on a machine whose global config turned it off.
   await g(["config", "core.quotePath", "true"]);

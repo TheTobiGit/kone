@@ -1,17 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "./core.js";
 import { status } from "./status.js";
+import { initTestRepo } from "./testRepo.js";
 
 async function makeRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-git-status-"));
+  const dir = await initTestRepo("kone-git-status-");
   const g = (args: string[]) => git(dir, args);
-  await g(["init", "-b", "main"]);
-  await g(["config", "user.email", "test@kone.app"]);
-  await g(["config", "user.name", "Kone Test"]);
   // Quoting on is git's default; set it explicitly so this still proves
   // something on a machine whose global config turned it off.
   await g(["config", "core.quotePath", "true"]);

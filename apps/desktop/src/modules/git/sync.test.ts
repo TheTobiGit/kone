@@ -6,12 +6,10 @@ import path from "node:path";
 import { git, GitError } from "@kone/git-core/core.js";
 import { classifyNetworkError, fetch, isAuthFailure, rewordNetworkError } from "./sync.js";
 import { remoteExists } from "./state.js";
+import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 async function makeRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-git-sync-"));
-  await git(dir, ["init", "-b", "main"]);
-  await git(dir, ["config", "user.email", "test@kone.app"]);
-  await git(dir, ["config", "user.name", "Kone Test"]);
+  const dir = await initTestRepo("kone-git-sync-");
   await writeFile(path.join(dir, "a.txt"), "one\n", "utf8");
   await git(dir, ["add", "-A"]);
   await git(dir, ["commit", "-m", "one"]);

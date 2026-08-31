@@ -1,18 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
 import { files, resetFileIndexForTests } from "./files.js";
 import { watchStatus } from "./watch.js";
+import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 async function makeRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-git-watch-"));
+  const dir = await initTestRepo("kone-git-watch-");
   const g = (args: string[]) => git(dir, args);
-  await g(["init", "-b", "main"]);
-  await g(["config", "user.email", "test@kone.app"]);
-  await g(["config", "user.name", "Kone Test"]);
   await writeFile(path.join(dir, "alpha.ts"), "a\n");
   await g(["add", "-A"]);
   await g(["commit", "-m", "init"]);

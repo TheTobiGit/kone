@@ -1,16 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
 import { stashes, stashDrop, stashPush } from "./stash.js";
+import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 async function makeRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-git-stash-"));
-  await git(dir, ["init", "-b", "main"]);
-  await git(dir, ["config", "user.email", "test@kone.app"]);
-  await git(dir, ["config", "user.name", "Kone Test"]);
+  const dir = await initTestRepo("kone-git-stash-");
   await writeFile(path.join(dir, "a.txt"), "one\n", "utf8");
   await writeFile(path.join(dir, "b.txt"), "two\n", "utf8");
   await git(dir, ["add", "-A"]);

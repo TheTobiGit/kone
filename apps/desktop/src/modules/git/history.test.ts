@@ -5,13 +5,11 @@ import path from "node:path";
 
 import { git } from "@kone/git-core/core.js";
 import { branches, commitDetail } from "./history.js";
+import { initTestRepo } from "@kone/git-core/testRepo.js";
 
 async function makeRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "kone-git-history-"));
+  const dir = await initTestRepo("kone-git-history-");
   const g = (args: string[]) => git(dir, args);
-  await g(["init", "-b", "main"]);
-  await g(["config", "user.email", "test@kone.app"]);
-  await g(["config", "user.name", "Kone Test"]);
   await writeFile(path.join(dir, "a.txt"), "one\n");
   await g(["add", "-A"]);
   await g(["commit", "-m", "one"]);
