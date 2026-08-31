@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ipcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
@@ -10,6 +10,8 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
+import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
@@ -81,6 +83,10 @@ let service: AgentService | null = null;
 /** The gateway instance (lazily created with the service). */
 let gateway: GatewayHandle | null = null;
 
+/** Teardown for the IRC delivery subscription — dropped at quit so no armed
+ *  delivery timer holds the process open. */
+let stopIrcDelivery: (() => void) | null = null;
+
 /** The single AgentService instance (lazily created). */
 export function getAgentService(): AgentService {
   if (!service) service = new AgentService();
@@ -122,8 +128,27 @@ export function registerAgentIpc(): void {
     store,
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
+    isThreadLive: (threadId) => svc.hasLiveSession(threadId),
   });
   svc.attachGateway(gateway);
+
+  // Agent-to-agent messages reach their recipient's turn rather than sitting in
+  // a mailbox nobody drains: a running thread is steered, an idle one is woken.
+  // Without this the IRC tools are a dead drop — every inbox read comes back
+  // empty and an agent that reached for one concludes messaging is broken.
+  stopIrcDelivery = startIrcDelivery({
+    mailbox: getIrcMailbox(),
+    dispatcher,
+    isLive: (threadId) => svc.hasLiveSession(threadId),
+    isBusy: (threadId) => svc.isThreadBusy(threadId),
+    // Mail that arrived while a thread was away has nothing scheduled to read
+    // it: the sender's delivery already fired and found no live session. Coming
+    // back is the moment to flush it.
+    onThreadLive: (listener) =>
+      svc.onEvent((event) => {
+        if (event.type === "session.started") listener(event.threadId);
+      }),
+  });
 
   // The spawn engine (docs/thread-spawning-design.md) drives agent-spawned
   // child threads headlessly through the same dispatcher as the renderer. Its
@@ -179,7 +204,12 @@ export function registerAgentIpc(): void {
       event.type !== "approval.requested" &&
       event.type !== "approval.resolved" &&
       event.type !== "thread.spawned" &&
-      event.type !== "thread.spawn-updated";
+      event.type !== "thread.spawn-updated" &&
+      // Archive stamps are meta like title updates: setThreadArchived wrote
+      // the column directly, so journaling the announcement would record
+      // derived state in the transcript journal.
+      event.type !== "thread.archived" &&
+      event.type !== "thread.unarchived";
     broadcast(event, journal);
     // When a turn settles, snapshot the repo state it left behind (branch +
     // working-tree diffstat) onto the thread, so the Project Home "recent
@@ -187,6 +217,19 @@ export function registerAgentIpc(): void {
     // — a git failure never disturbs the live stream.
     if (event.type === "turn.completed") {
       dispatcher.onTurnCompleted(event.threadId);
+    }
+  });
+
+  // A provider surface that changed under the renderer's feet — a CLI the user
+  // signed into, a slow probe that finally answered — is pushed rather than
+  // waited for. AgentService only fires when a round actually differs, so an
+  // idle machine stays quiet. Sent to every window: provider health is machine
+  // state, not thread state, so it isn't on the `agent:event` stream and has no
+  // subscriber set to respect.
+  svc.onProvidersChanged((statuses) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("agent:providers-changed", statuses);
     }
   });
 
@@ -436,14 +479,15 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:skill-install", (_event, url: string, destRoot: string) =>
     installSkillFromGit(url, destRoot),
   );
-  ipcMain.handle("agent:history-archive", (_event, threadId: string, archived: boolean) => {
-    const result = store.setArchived(threadId, archived);
-    if (!result.ok) {
-      console.warn(
-        `[ipc] archive ${archived ? "refused" : "failed"} for ${threadId}: ${result.reason}`,
-      );
-    }
-  });
+  // Archive/restore runs through the service, not the bare store: the service
+  // cancels the subtree's queued turns (a hidden thread must not keep a queue
+  // nobody can see) and emits thread.archived / thread.unarchived so every
+  // surface — this window's lists, other windows' — reconciles. The result is
+  // returned so the asking surface can undo its optimistic row drop on a busy
+  // refusal instead of watching the row flicker away and come back.
+  ipcMain.handle("agent:history-archive", (_event, threadId: string, archived: boolean) =>
+    svc.setThreadArchived(threadId, archived),
+  );
   ipcMain.handle("agent:history-delete", async (_event, threadId: string) => {
     // Pre-flight busy guard BEFORE touching files: a spawned child mid-turn
     // must not be destroyed under its parent, and refusing must leave every
@@ -494,6 +538,15 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
     store.setDone(threadId, done),
   );
+  // Read state lives in the DB beside pins and done, so a reply you have
+  // already seen stays seen across profiles and restarts. A visit time, not an
+  // unread flag: the surface showing the thread is the only writer, and every
+  // reader derives unread by comparing it with the thread's last activity.
+  ipcMain.handle(
+    "agent:set-visited",
+    (_event, threadId: string, at: number, force?: boolean) =>
+      store.setVisited(threadId, at, force ?? false),
+  );
   // Persist the user's per-thread picker selection (model / effort /
   // serviceTier / contextWindow) so a reopened thread restores the picker
   // exactly where it was left.
@@ -535,6 +588,10 @@ export function registerAgentIpc(): void {
 
 /** Stop every agent subprocess. Call from app quit so nothing is orphaned. */
 export async function shutdownAgents(): Promise<void> {
+  if (stopIrcDelivery) {
+    stopIrcDelivery();
+    stopIrcDelivery = null;
+  }
   if (gateway) {
     await gateway.shutdown().catch(() => {});
     gateway = null;
