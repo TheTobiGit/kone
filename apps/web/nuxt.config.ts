@@ -89,6 +89,28 @@ export default defineNuxtConfig({
       isDesktop,
     },
   },
+  hooks: {
+    // Development-only routes never reach a build. `/modal-lab` opens real
+    // pickers wired to real flows — switching a branch, repainting the theme,
+    // cloning a repo — so a shipped bundle must not carry a route to it.
+    // `/icon-lab` is the same kind of thing: a contact sheet of every animated
+    // icon, reachable by anyone who types the path, linked from nowhere in the
+    // product. Dropped from the router here rather than guarded inside each
+    // page, because a guard still ships the page and everything it imports —
+    // and `/icon-lab` eagerly globs the whole animated-icon set, so it pulls
+    // every one of them into the bundle whether or not anyone opens it.
+    //
+    // A list rather than a check per page: the next lab is added here, in the
+    // one place that already knows what a lab is.
+    "pages:extend"(pages) {
+      if (process.env.NODE_ENV === "development") return;
+      const labs = new Set(["/modal-lab", "/icon-lab"]);
+      for (let i = pages.length - 1; i >= 0; i -= 1) {
+        const page = pages[i];
+        if (page && labs.has(page.path)) pages.splice(i, 1);
+      }
+    },
+  },
   nitro: isDesktop
     ? {
         preset: "static",

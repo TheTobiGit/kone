@@ -113,6 +113,12 @@ const props = defineProps<{
    *  Only meaningful when the current model exposes more than one window;
    *  undefined falls back to that model's default window. */
   contextWindow?: string;
+  /** Why the turn cannot go anywhere right now — the provider's CLI is missing,
+   *  signed out, or wedged — or null when it can. Set, and Enter stops being a
+   *  send: the draft is KEPT, because the refusal is about the machine, not
+   *  about what was written. The sentence itself belongs on the host's banner,
+   *  not in here; this only gates. */
+  blockedReason?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -597,6 +603,12 @@ useEventListener(window, "keydown", onGlobalKey);
 function dispatchDraft() {
   if (!armed.value) {
     void wake();
+    return;
+  }
+  // Nothing to send it to. Return before clearEditor() below — a send refused
+  // for a reason the user hasn't fixed yet must not also cost them their draft.
+  if (props.blockedReason) {
+    cue("error");
     return;
   }
   const draft = text.value.trim();

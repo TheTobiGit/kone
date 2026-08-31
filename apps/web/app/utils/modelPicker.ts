@@ -5,19 +5,24 @@
 // same ones: a storage key spelled differently in the two places is a setting
 // that silently stops surviving a relaunch.
 
-import type { InteractionMode, ProviderKind } from "~/types/desktop";
-import type { BrandKey } from "~/utils/modelCatalog";
+import type { AgentModelRef, InteractionMode, ProviderKind } from "~/types/desktop";
+import {
+  EFFORT_META,
+  familyForId,
+  type BrandKey,
+  type EffortTier,
+  type ModelOption,
+} from "~/utils/modelCatalog";
 
 /** The provider + model + reasoning effort are remembered GLOBALLY — one
- *  app-wide "last used" choice that every project opens with, not per-project. */
+ *  app-wide "last used" choice that subsequent sessions open with. */
 export const PROVIDER_KEY = "kone:provider";
 export const MODEL_KEY = "kone:model";
 export const REASONING_KEY = "kone:reasoning";
 
-/** The user's *chosen* default — set only in the Studio settings pane, and never
- *  written by a live session (unlike the "last used" keys above, which every
- *  thread rewrites as it runs). When present these win the boot pick, so a
- *  configured default can't be clobbered by whatever thread ran last. */
+/** The user's *chosen* default — set in the Studio settings pane. When set,
+ *  it provides the initial baseline, and setting it seeds the active last-used
+ *  keys so the next session immediately starts on the user's explicit choice. */
 export const DEFAULT_PROVIDER_KEY = "kone:default-provider";
 export const DEFAULT_MODEL_KEY = "kone:default-model";
 export const DEFAULT_REASONING_KEY = "kone:default-reasoning";
@@ -53,25 +58,272 @@ export const PROVIDER_VENDOR = {
   antigravity: "Google",
 } satisfies Record<ProviderKind, string>;
 
+function getStorage(): Storage | null {
+  if (import.meta.client && globalThis.localStorage) return globalThis.localStorage;
+  if ("localStorage" in globalThis && globalThis.localStorage) return globalThis.localStorage;
+  return null;
+}
+
 /**
  * Which provider a brand-new session opens on.
  *
- * The configured default wins, then whatever ran last, then Codex — and an
- * unrecognised stored value falls through to the same floor, so a key left
- * behind by a provider that no longer exists cannot strand a session on a
- * provider nothing can start. Read at the moment a session is constructed
- * rather than kept in a ref: it is a boot pick, and re-reading it later would
- * quietly re-decide a choice the thread has already made.
+ * The last used provider wins (so subsequent sessions stay on whatever ran last),
+ * falling back to the user's configured default in settings, then Codex.
  */
 export function bootProvider(): ProviderKind {
-  if (!import.meta.client) return "codex";
-  const stored = localStorage.getItem(DEFAULT_PROVIDER_KEY) ?? localStorage.getItem(PROVIDER_KEY);
+  const storage = getStorage();
+  if (!storage) return "codex";
+  const stored = storage.getItem(PROVIDER_KEY) ?? storage.getItem(DEFAULT_PROVIDER_KEY);
   return stored !== null && stored in PROVIDER_VENDOR ? toProviderKind(stored) : "codex";
+}
+
+/**
+ * Which model a brand-new session opens on.
+ *
+ * Reads the last used model first (so subsequent sessions stay on whatever ran last),
+ * falling back to the configured default in settings.
+ */
+export function bootModel(): string | undefined {
+  const storage = getStorage();
+  if (!storage) return undefined;
+  return (
+    storage.getItem(MODEL_KEY) ??
+    storage.getItem(DEFAULT_MODEL_KEY) ??
+    undefined
+  );
+}
+
+/**
+ * Which reasoning effort tier a brand-new session opens on.
+ *
+ * Reads the last used reasoning effort first, falling back to the configured default.
+ */
+export function bootReasoning(): EffortTier | undefined {
+  const storage = getStorage();
+  if (!storage) return undefined;
+  const stored =
+    storage.getItem(REASONING_KEY) ?? storage.getItem(DEFAULT_REASONING_KEY);
+  if (stored === null || !(stored in EFFORT_META)) return undefined;
+  // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the `in`
+  // check above proves this is one of its keys.
+  return stored as EffortTier;
+}
+
+/**
+ * Record the user's active/last-used model selection so subsequent sessions
+ * default to it.
+ */
+export function setLastUsedModel(pick: {
+  provider: ProviderKind;
+  modelId?: string;
+  tier?: EffortTier;
+}): void {
+  const storage = getStorage();
+  if (!storage) return;
+  storage.setItem(PROVIDER_KEY, pick.provider);
+  if (pick.modelId !== undefined) {
+    storage.setItem(MODEL_KEY, pick.modelId);
+  }
+  if (pick.tier !== undefined) {
+    storage.setItem(REASONING_KEY, pick.tier);
+  }
+}
+
+/**
+ * Persist the user's chosen default from Settings, and prime the last-used keys
+ * so subsequent sessions immediately start with this newly configured default.
+ */
+export function setDefaultModel(pick: {
+  provider: ProviderKind;
+  modelId: string;
+  tier?: EffortTier;
+}): void {
+  const storage = getStorage();
+  if (!storage) return;
+  storage.setItem(DEFAULT_PROVIDER_KEY, pick.provider);
+  storage.setItem(DEFAULT_MODEL_KEY, pick.modelId);
+  if (pick.tier !== undefined) {
+    storage.setItem(DEFAULT_REASONING_KEY, pick.tier);
+  }
+  setLastUsedModel(pick);
+}
+
+export interface SessionModelSelectionRef {
+  provider: ProviderKind;
+  model?: string;
+  reasoning?: EffortTier;
+  serviceTier?: string;
+  contextWindow?: string;
+}
+
+export interface SessionModelResolveInput {
+  /** Pinned model from an agent definition / preset, if any */
+  agentPinned?: AgentModelRef | null;
+  /** Persisted selection on an existing restored thread, if any */
+  threadPersisted?: SessionModelSelectionRef | null;
+  /** Last used selection from session history / storage */
+  lastUsed?: SessionModelSelectionRef | null;
+  /** User configured default from settings */
+  userDefault?: SessionModelSelectionRef | null;
+  /** Ready/enabled providers & model catalogs to validate against */
+  availableCatalogs?: Partial<Record<ProviderKind, ModelOption[]>>;
+  availableProviders?: readonly ProviderKind[];
+}
+
+export interface ResolvedSessionModel {
+  provider: ProviderKind;
+  model: string | undefined;
+  reasoning: EffortTier | undefined;
+  serviceTier: string | undefined;
+  contextWindow: string | undefined;
+  source:
+    | "thread_persisted"
+    | "agent_pinned"
+    | "last_used"
+    | "user_default"
+    | "catalog_fallback";
+}
+
+/**
+ * Resolves which provider, model, and reasoning effort a session should run on,
+ * following the strict precedence hierarchy:
+ * 1. Thread-persisted selection (when reopening/resuming an existing thread)
+ * 2. Agent-pinned model preset (when running with a specialized agent)
+ * 3. Last used model (sticky selection across subsequent sessions)
+ * 4. User default setting (explicitly chosen baseline from Settings)
+ * 5. Catalog fallback (first ready provider + default model)
+ */
+export function resolveSessionModelSelection(
+  input: SessionModelResolveInput,
+): ResolvedSessionModel {
+  const {
+    agentPinned,
+    threadPersisted,
+    lastUsed,
+    userDefault,
+    availableCatalogs,
+    availableProviders,
+  } = input;
+
+  function isProviderReady(p: ProviderKind): boolean {
+    return !availableProviders || availableProviders.includes(p);
+  }
+
+  function isModelValid(p: ProviderKind, m?: string): boolean {
+    if (!m) return true;
+    const cat = availableCatalogs?.[p];
+    if (!cat || cat.length === 0) return true;
+    return cat.some((o) => o.key === m || o.efforts.some((e) => e.modelId === m));
+  }
+
+  function resolveDefaultsFor(p: ProviderKind, m?: string, tier?: EffortTier) {
+    const cat = availableCatalogs?.[p];
+    if (!cat || cat.length === 0) {
+      return { model: m, reasoning: tier, serviceTier: undefined, contextWindow: undefined };
+    }
+    const fam = familyForId(cat, m);
+    const validModel = fam
+      ? (fam.efforts.some((e) => e.modelId === m)
+          ? m
+          : (fam.efforts[fam.defaultEffortIndex] ?? fam.efforts[0])?.modelId)
+      : (cat[0]?.efforts[cat[0].defaultEffortIndex] ?? cat[0]?.efforts[0])?.modelId;
+    const resolvedFam = familyForId(cat, validModel);
+    const validTier =
+      tier && resolvedFam?.efforts.some((e) => e.tier === tier)
+        ? tier
+        : (resolvedFam?.efforts[resolvedFam.defaultEffortIndex] ?? resolvedFam?.efforts[0])?.tier;
+    return {
+      model: validModel,
+      reasoning: validTier,
+      serviceTier: undefined,
+      contextWindow: resolvedFam?.contextWindows?.find((w) => w.isDefault)?.id,
+    };
+  }
+
+  // 1. Thread persisted selection (existing conversation resuming)
+  if (
+    threadPersisted &&
+    isProviderReady(threadPersisted.provider) &&
+    isModelValid(threadPersisted.provider, threadPersisted.model)
+  ) {
+    return {
+      provider: threadPersisted.provider,
+      model: threadPersisted.model,
+      reasoning: threadPersisted.reasoning,
+      serviceTier: threadPersisted.serviceTier,
+      contextWindow: threadPersisted.contextWindow,
+      source: "thread_persisted",
+    };
+  }
+
+  // 2. Agent pinned model (agent preset capability)
+  if (
+    agentPinned &&
+    isProviderReady(agentPinned.provider) &&
+    isModelValid(agentPinned.provider, agentPinned.model)
+  ) {
+    const resolved = resolveDefaultsFor(agentPinned.provider, agentPinned.model);
+    return {
+      provider: agentPinned.provider,
+      model: resolved.model,
+      reasoning: resolved.reasoning,
+      serviceTier: undefined,
+      contextWindow: resolved.contextWindow,
+      source: "agent_pinned",
+    };
+  }
+
+  // 3. Last used model (sticky default across subsequent sessions)
+  if (
+    lastUsed &&
+    isProviderReady(lastUsed.provider) &&
+    isModelValid(lastUsed.provider, lastUsed.model)
+  ) {
+    const resolved = resolveDefaultsFor(lastUsed.provider, lastUsed.model, lastUsed.reasoning);
+    return {
+      provider: lastUsed.provider,
+      model: resolved.model,
+      reasoning: resolved.reasoning,
+      serviceTier: lastUsed.serviceTier,
+      contextWindow: lastUsed.contextWindow ?? resolved.contextWindow,
+      source: "last_used",
+    };
+  }
+
+  // 4. User default setting (configured baseline from Settings)
+  if (
+    userDefault &&
+    isProviderReady(userDefault.provider) &&
+    isModelValid(userDefault.provider, userDefault.model)
+  ) {
+    const resolved = resolveDefaultsFor(userDefault.provider, userDefault.model, userDefault.reasoning);
+    return {
+      provider: userDefault.provider,
+      model: resolved.model,
+      reasoning: resolved.reasoning,
+      serviceTier: userDefault.serviceTier,
+      contextWindow: userDefault.contextWindow ?? resolved.contextWindow,
+      source: "user_default",
+    };
+  }
+
+  // 5. Catalog fallback (first healthy provider & default model)
+  const fallbackProvider: ProviderKind =
+    availableProviders && availableProviders.length > 0 ? availableProviders[0]! : "codex";
+  const fallbackResolved = resolveDefaultsFor(fallbackProvider);
+  return {
+    provider: fallbackProvider,
+    model: fallbackResolved.model,
+    reasoning: fallbackResolved.reasoning,
+    serviceTier: undefined,
+    contextWindow: fallbackResolved.contextWindow,
+    source: "catalog_fallback",
+  };
 }
 
 /** Every permission mode there is, so a stored string can be checked against
  *  the set rather than trusted. */
-const MODES = ["ask", "accept-edits", "full-access"] as const;
+export const MODES = ["ask", "accept-edits", "full-access"] as const;
 
 /**
  * The mode a thread in this project should open on, or null when nothing has
@@ -84,9 +336,10 @@ const MODES = ["ask", "accept-edits", "full-access"] as const;
  * running under, and re-reading storage would change it out from under a turn.
  */
 export function bootMode(projectPath: string): InteractionMode | null {
-  if (!import.meta.client) return null;
+  const storage = getStorage();
+  if (!storage) return null;
   const stored =
-    localStorage.getItem(modeKey(projectPath)) ?? localStorage.getItem(DEFAULT_MODE_KEY);
+    storage.getItem(modeKey(projectPath)) ?? storage.getItem(DEFAULT_MODE_KEY);
   if (stored === null || !MODES.some((m) => m === stored)) return null;
   // SAFETY: the check above passes only for an exact member of MODES, which is
   // exactly InteractionMode.

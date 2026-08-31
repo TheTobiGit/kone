@@ -1,5 +1,6 @@
 import { computed, ref } from "vue";
 import type { ModelDescriptor, ProviderKind, ProviderStatus } from "~/types/desktop";
+import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
 import { peelIpcError } from "~/utils/ipcError";
 
 // Which agent CLIs the user has installed + logged into on this machine. This is
@@ -305,12 +306,55 @@ const MOCK_MODELS = {
   ],
 } satisfies Record<ProviderKind, ModelDescriptor[]>;
 
+const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+
+/** Don't re-probe more often than this on a focus/visibility change — coming
+ *  back to the app is a good moment to re-check, but alt-tabbing is not a
+ *  reason to spawn a CLI per provider. */
+const MIN_FOCUS_REFRESH_MS = 30_000;
+let lastRefreshAt = 0;
+let watching = false;
+
+/** Attach the app-lifetime listeners that keep `statuses` honest without anyone
+ *  asking. Installed once — the state above is module-scope, so one subscription
+ *  serves every surface, and it lives as long as the renderer does (there is no
+ *  point at which kone stops caring what its providers are doing). `refreshNow`
+ *  is the composable's own `refresh`, which dedupes itself; every instance
+ *  closes over the same module state, so whichever one gets here first is as
+ *  good as any other. */
+function watch(refreshNow: () => Promise<void>): void {
+  if (watching || !import.meta.client) return;
+  watching = true;
+  // The cheap path: the main process announces a discovery round only when it
+  // actually differs, so a status corrected in the background lands here with
+  // no polling — a CLI signed into in another window stops reading as
+  // signed-out without a reload.
+  bridge()?.onProvidersChanged((next) => {
+    statuses.value = next;
+    probed = true;
+    confirmed.value = true;
+  });
+  // Returning to the app is when a stale row is both most likely and most
+  // visible: the user usually left to go run `codex login`.
+  const recheck = () => {
+    if (document.visibilityState !== "visible") return;
+    if (Date.now() - lastRefreshAt < MIN_FOCUS_REFRESH_MS) return;
+    void refreshNow().catch(() => {});
+  };
+  window.addEventListener("focus", recheck);
+  document.addEventListener("visibilitychange", recheck);
+}
+
 export function useAgentProviders() {
   const ready = computed(() => statuses.value.filter((s) => s.readiness === "ready"));
   const byProvider = (provider: ProviderKind) =>
     computed(() => statuses.value.find((s) => s.provider === provider) ?? null);
 
-  const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+  /** Whether a turn can go to this provider right now, and if not, the sentence
+   *  to show. Reactive, so a pushed correction un-blocks the composer on its own
+   *  — the user runs `codex login` in a terminal and comes back to a live one. */
+  const sendAvailability = (provider: ProviderKind) =>
+    computed(() => resolveProviderSendAvailability({ provider, statuses: statuses.value }));
 
   /** Probe the machine. Cached after the first successful run unless `force`. */
   async function discover(force = false): Promise<ProviderStatus[]> {
@@ -402,6 +446,9 @@ export function useAgentProviders() {
    *  catalog, overwriting whatever the snapshot said. Deduped. */
   async function refresh(): Promise<void> {
     if (refreshing) return refreshing;
+    // Stamped on entry, not on completion: the focus throttle is there to space
+    // out CLI spawns, and a probe that takes ten seconds has already spent them.
+    lastRefreshAt = Date.now();
     refreshing = (async () => {
       const api = bridge();
       if (!api?.warm || !api?.surface) {
@@ -438,6 +485,7 @@ export function useAgentProviders() {
   async function prepare(): Promise<void> {
     if (preparing) return preparing;
     preparing = (async () => {
+      watch(refresh);
       await hydrate();
       if (statuses.value.length) void refresh().catch(() => {});
       else await refresh();
@@ -460,6 +508,7 @@ export function useAgentProviders() {
     loadError,
     confirmed,
     byProvider,
+    sendAvailability,
     discover,
     models,
     hydrate,

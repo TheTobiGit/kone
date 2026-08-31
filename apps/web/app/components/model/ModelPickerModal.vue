@@ -947,8 +947,13 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
 .mp-scrim {
   background: color-mix(in srgb, var(--ground) 62%, transparent);
 }
+/* The tray and the panel it holds are the two ends of the app's surface
+   ladder: --band is the recessed strip, --panel the lifted sheet. Mixing the
+   tint by hand instead pinned this card to one appearance — a theme moves every
+   token on the ladder together, and a literal color-mix is not on it, so the
+   picker drifted away from the other modals wherever a theme pulled --panel. */
 .mp-card {
-  background: color-mix(in srgb, var(--ink) 7%, var(--panel));
+  background: var(--band);
   border-radius: 22px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
   transition: height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
@@ -1029,8 +1034,8 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   min-height: 0;
   overflow: hidden;
   border-radius: 18px;
-  background: var(--ground);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .mp-scroll {
   display: flex;
@@ -1056,8 +1061,8 @@ const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as
   margin: 10px 10px 0;
   padding: 7px 10px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
+  background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--line);
   color: var(--muted);
 }
 .mp-search__icon {
