@@ -22,6 +22,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { useSound } from "~/composables/useSound";
 import { useTheme } from "~/composables/useTheme";
+import { useModalExit } from "~/composables/useModalExit";
 import {
   buildTheme,
   extractThemeSpec,
@@ -60,8 +61,7 @@ const {
 } = useTheme();
 
 // ── Animation & Anchoring ───────────────────────────────────────────────────
-const shown = ref(false);
-const closing = ref(false);
+const { shown, closing, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardRef = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
@@ -312,13 +312,11 @@ watch(
   { immediate: true },
 );
 
-// ── Lifecycle & Close ───────────────────────────────────────────────────────
+// ── Lifecycle & Close ───────────────────────────────────────────────
 function closeWithTransition(done: () => void) {
   if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
   cancelPreview();
-  window.setTimeout(done, 240);
+  close(done);
 }
 
 function cancel() {

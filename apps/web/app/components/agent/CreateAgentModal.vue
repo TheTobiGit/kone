@@ -25,6 +25,7 @@ import {
 } from "~/utils/agents";
 import { botSummary, type AgentBot } from "~/utils/bot";
 import type { AgentModelRef } from "~/types/desktop";
+import { useModalExit } from "~/composables/useModalExit";
 
 // Making or editing an agent, in the shared modal shell — scrim, elastic card,
 // scooped header/footer bands. Concerns stacked as collapsible rows: who the
@@ -204,21 +205,11 @@ const summaries = computed<Record<Section, string>>(() => {
 });
 
 // ── card entrance / exit ────────────────────────────────────────────────────
-const shown = ref(false);
-const closing = ref(false);
+const { shown, closing, close: fadeOut } = useModalExit();
 const cardSpring = { type: "spring", stiffness: 300, damping: 22, mass: 0.9 } as const;
 
 // A row unfurls on the same tween the other modals' folds use.
 const collapseMorph = { duration: 0.26, ease: [0.22, 1, 0.36, 1] } as const;
-
-// Play the card's exit, then hand control back to the caller. The delay matches
-// the 0.24s exit transition so it finishes leaving before the parent unmounts.
-function fadeOut(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
-}
 
 function close() {
   if (closing.value || isSubmitting.value) return;

@@ -10,6 +10,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import FileIcon from "~/components/file/FileIcon.vue";
 import type { ChangeItem } from "~/types/change";
+import { useModalExit } from "~/composables/useModalExit";
 import type {
   GitActionProgressEvent,
   GitCommit,
@@ -214,8 +215,7 @@ function parseFilePath(fullPath: string) {
 }
 
 // ── Modal Shell State ────────────────────────────────────────────────────────
-const shown = ref(false);
-const closing = ref(false);
+const { shown, closing, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
@@ -230,13 +230,6 @@ watch(step, () => {
     syncHeight();
   });
 });
-
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
-}
 
 function onCancel() {
   if (isSubmitting.value) return;

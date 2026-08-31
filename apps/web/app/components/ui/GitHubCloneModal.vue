@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { GithubIcon, Folder01Icon } from "@hugeicons/core-free-icons";
+import { useModalExit } from "~/composables/useModalExit";
 
 // "Clone from GitHub" modal — the elastic card + scrim shell (bottom-right,
 // height springs as its content reflows). Paste a repo reference, choose where
@@ -54,7 +55,7 @@ watch(phase, (next, prev) => {
 const view = ref<"form" | "dest">("form");
 
 // Drives the modal's open/close fade + scale.
-const shown = ref(false);
+const { shown, closing, close } = useModalExit();
 
 const urlInput = ref<HTMLInputElement | null>(null);
 const browser = ref<{ focusPath: () => void } | null>(null);
@@ -69,18 +70,6 @@ let ro: ResizeObserver | null = null;
 function syncHeight() {
   const el = contentEl.value;
   if (el) cardHeight.value = el.offsetHeight;
-}
-
-// Guards Enter-then-Escape landing in the same exit window from firing twice.
-const closing = ref(false);
-
-// Fade + scale the card out, then hand control back to the parent (which
-// unmounts us). The delay matches the 0.24s exit transition.
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
 }
 
 function cancel() {

@@ -8,6 +8,7 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { AiBrain01Icon, StarIcon, Settings02Icon, FlashIcon, Search01Icon, Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
 import { EFFORT_META, type BrandKey, type EffortTier, type PickerProvider } from "~/utils/modelCatalog";
 import type { ProviderKind } from "~/types/desktop";
+import { useModalExit } from "~/composables/useModalExit";
 
 // The model picker — a persistent left rail of providers next to a masked model
 // list, wearing the same shell as our folder/location picker: a scrim + an
@@ -568,14 +569,7 @@ function hasSettings(m: MModel): boolean {
 }
 
 // ── confirm / cancel with the card's exit ─────────────────────────────────────
-const shown = ref(false);
-const closing = ref(false);
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
-}
+const { shown, closing, close } = useModalExit();
 function cancel() {
   close(() => emit("cancel"));
 }
