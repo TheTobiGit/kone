@@ -14,11 +14,13 @@ import {
 import { JsonRpcClient } from "../jsonRpc.js";
 import type { JsonObject, JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { formatPlanTasks, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
+import { refuseCriticalCommand } from "./acpSafety.js";
 import { isResumeRefusalError } from "./errors.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { acpAgentSupportsHttp, acpMcpServers } from "../gateway/injection.js";
 import type { CursorImageBlock } from "../promptAttachments.js";
-import { probe } from "../spawn.js";
+import { probe, probeResult } from "../spawn.js";
+import { versionProbeFailure, versionProbeUsable } from "../providerHealth.js";
 import type {
   AdapterCapabilities,
   AgentPersona,
@@ -795,21 +797,35 @@ export class CursorAdapter implements ProviderAdapter {
 
   async discover(): Promise<ProviderStatus> {
     const env = await buildCursorProbeEnv();
-    const versionOutput = await probe(this.binary, ["--version"], env, 5_000);
-    if (versionOutput === null) {
+    const versionResult = await probeResult(this.binary, ["--version"], env, 5_000);
+    const version = parseCursorVersion(`${versionResult.stdout}\n${versionResult.stderr}`);
+    if (!versionProbeUsable(versionResult, version)) {
       return {
         provider: this.provider,
         label: "Cursor",
-        available: false,
-        authStatus: "unknown",
-        readiness: "not-installed",
-        message: "Cursor CLI not found. Install it and run `cursor-agent login`.",
+        ...versionProbeFailure({
+          label: "Cursor CLI",
+          installHint: "Cursor CLI not found. Install it and run `cursor-agent login`.",
+          result: versionResult,
+        }),
       };
     }
 
-    const version = parseCursorVersion(versionOutput);
-    const statusOutput = await probe(this.binary, ["status"], env, 10_000);
-    const auth = parseCursorAuth(statusOutput ?? "");
+    const statusResult = await probeResult(this.binary, ["status"], env, 10_000);
+    if (statusResult.outcome === "timeout" || statusResult.outcome === "failure") {
+      // No status came back, so "not signed in" would be a verdict we never got.
+      return {
+        provider: this.provider,
+        label: "Cursor",
+        available: true,
+        authStatus: "unknown",
+        readiness: "error",
+        version,
+        message: "Cursor did not report its sign-in status in time — try again in a moment.",
+        transient: true,
+      };
+    }
+    const auth = parseCursorAuth(statusResult.stdout);
     if (!auth.authenticated) {
       return {
         provider: this.provider,
@@ -1036,7 +1052,7 @@ export class CursorAdapter implements ProviderAdapter {
     promptText = koneHostContextForFirstRun({
       prompt: promptText,
       runOrdinal: session.runOrdinal + 1,
-      gatewayControlAvailable: session.gatewayConnection !== undefined,
+      gateway: session.gatewayConnection,
       agent: session.agent,
     });
     session.runOrdinal += 1;
@@ -1278,6 +1294,14 @@ export class CursorAdapter implements ProviderAdapter {
     // exposing only the protocol's persistent allow option must stay
     // operational, and a full-access session must never deadlock on a gate.
     if (session.mode === "full-access") {
+      // …except for the handful of commands that end the machine rather than
+      // the working tree. This gate is the only one a full-access session
+      // passes through, so it is the only place left to refuse them.
+      const refusal = refuseCriticalCommand(
+        readString(asRecord(asRecord(params)?.toolCall), "command"),
+        session.threadId,
+      );
+      if (refusal) return refusal;
       const optionId =
         selectPermissionOption(options, "allow-always") ??
         selectPermissionOption(options, "allow-once");

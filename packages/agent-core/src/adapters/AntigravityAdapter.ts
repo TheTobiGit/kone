@@ -22,7 +22,13 @@ import {
 } from "../antigravitySubagents.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { STDIO_PROXY_PATH } from "../gateway/injection.js";
-import { killTree, probe } from "../spawn.js";
+import { killTree, probeResult } from "../spawn.js";
+import { versionProbeFailure, versionProbeUsable } from "../providerHealth.js";
+import {
+  COMMAND_KEYS,
+  DEFAULT_DANGEROUS_PATTERNS,
+  DEFAULT_MONITORED_TOOLS,
+} from "../commandSafety.js";
 import {
   readAntigravityConversationUsage,
   resolveAntigravityContextWindow,
@@ -234,8 +240,8 @@ type AntigravityHookPayload = {
   failed?: boolean;
   /** The tool's error text, carried by `post-tool` hooks. */
   error?: string;
-  toolOutput?: unknown;
-  result?: unknown;
+  toolOutput?: string;
+  result?: string;
   /** `false` only when the agent still has background work at `stop` — an
    *  older CLI that omits it is taken at its word: done is done. */
   fullyIdle?: boolean;
@@ -431,15 +437,15 @@ export function summarizeAntigravityTool(
   name: string,
   args?: AntigravityJsonRecord,
 ): AntigravityToolSummary {
-  if (!args || typeof args !== "object") {
+  if (!args || !(args instanceof Object)) {
     return { text: "" };
   }
 
   const getString = (...keys: string[]): string | undefined => {
     for (const key of keys) {
       const val = args[key];
-      if (typeof val === "string" && val.trim().length > 0) {
-        return val.trim();
+      if (val && !(val instanceof Object) && val !== true && String(val).trim().length > 0) {
+        return String(val).trim();
       }
     }
     return undefined;
@@ -507,17 +513,18 @@ export function summarizeAntigravityTool(
     }
   } else if (lowerName === "schedule") {
     const prompt = getString("Prompt", "CronExpression", "toolAction");
-    const duration = typeof args.DurationSeconds === "number" ? `${args.DurationSeconds}s` : undefined;
+    const duration =
+      args.DurationSeconds !== undefined && Number.isFinite(args.DurationSeconds)
+        ? `${args.DurationSeconds}s`
+        : undefined;
     text = prompt ?? duration ?? "";
   } else if (lowerName === "invoke_subagent") {
     const toolSummary = getString("toolSummary", "toolAction");
     if (toolSummary) {
       text = toolSummary;
-    } else if (Array.isArray(args.Subagents) && args.Subagents.length > 0) {
-      // SAFETY: args.Subagents is confirmed to be an array and items are safe-guarded by property checks
-      const roles = (args.Subagents as Array<{ Role?: unknown; TypeName?: unknown }>)
-        .map((s) => (typeof s.Role === "string" ? s.Role : typeof s.TypeName === "string" ? s.TypeName : ""))
-        .filter(Boolean);
+    } else {
+      const specs = parseInvokeSubagentSpecs(args);
+      const roles = specs.map((s) => s.role || s.typeName || "").filter(Boolean);
       text = roles.join(", ");
     }
   } else if (lowerName === "generate_image") {
@@ -596,10 +603,58 @@ export function buildKoneCaptureCommand(
   return `if [ -z "\${${HOOK_EVENTS_ENV}:-}" ]; then cat >/dev/null 2>&1 || :; printf '%s\\n' '${fallback}'; else ELECTRON_RUN_AS_NODE=1 ${invocation}; fi`;
 }
 
+/** The critical rules, flattened into something a standalone script can rebuild
+ *  a RegExp from. The hook runs in its own node process with no access to this
+ *  package, so the screen has to travel to it as data rather than as an import —
+ *  and it travels from the one list, so the rules cannot drift apart. */
+function criticalRuleTable(): string {
+  return JSON.stringify(
+    DEFAULT_DANGEROUS_PATTERNS.filter((rule) => rule.severity === "critical").map((rule) => ({
+      id: rule.id,
+      name: rule.name,
+      source: rule.pattern.source,
+      flags: rule.pattern.flags,
+    })),
+  );
+}
+
 /** The capture script itself — appends hook payloads to the event file and
  *  answers the hook with the decision. */
 export function hookScriptSource(): string {
   return `const fs = require("node:fs");
+// Command screening, inlined.
+//
+// A kone-managed full-access session answers every PreToolUse with "allow" —
+// that is the rung's contract, and a child with no terminal must never wait on
+// a person. This hook is therefore the only thing standing between the model
+// and the handful of commands that take the machine rather than the worktree,
+// and it is the only rung where nobody can be asked. Same rules the other
+// adapters screen with; a screen, not a sandbox.
+const KONE_CRITICAL = ${criticalRuleTable()}.map((r) => ({ id: r.id, name: r.name, re: new RegExp(r.source, r.flags) }));
+const KONE_SHELL_TOOLS = ${JSON.stringify([...DEFAULT_MONITORED_TOOLS])};
+const KONE_COMMAND_KEYS = ${JSON.stringify([...COMMAND_KEYS])};
+function koneCriticalCommand(toolCall) {
+  const name = toolCall && typeof toolCall.name === "string" ? toolCall.name.trim().toLowerCase() : "";
+  if (!name) return null;
+  // Whole name segments only, so "publish" is not read as a shell.
+  const segments = new Set(name.split(/[^a-z0-9]+/).filter(Boolean));
+  if (!KONE_SHELL_TOOLS.some((t) => name === t || segments.has(t))) return null;
+  const args = toolCall.args && typeof toolCall.args === "object" ? toolCall.args : {};
+  const candidates = [];
+  for (const key of KONE_COMMAND_KEYS) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+    else if (Array.isArray(value)) {
+      for (const item of value) if (typeof item === "string" && item.trim()) candidates.push(item.trim());
+    }
+  }
+  for (const command of candidates) {
+    for (const rule of KONE_CRITICAL) {
+      if (rule.re.test(command)) return { rule, command };
+    }
+  }
+  return null;
+}
 const event = process.argv[2] || "unknown";
 let payload = "";
 process.stdin.setEncoding("utf8");
@@ -659,8 +714,18 @@ process.stdin.on("end", () => {
   }
   fs.appendFileSync(target, event + "\\t" + capturedPayload + "\\n");
   if (event === "pre-tool") {
-    const decision = process.env.${HOOK_DECISION_ENV} === "allow" ? "allow" : "ask";
-    process.stdout.write(JSON.stringify({ decision }) + "\\n");
+    let decision = process.env.${HOOK_DECISION_ENV} === "allow" ? "allow" : "ask";
+    let reason = "";
+    if (decision === "allow") {
+      let hit = null;
+      try { hit = koneCriticalCommand(JSON.parse(capturedPayload).toolCall); } catch { hit = null; }
+      if (hit) {
+        decision = "deny";
+        reason = hit.rule.name + " (" + hit.rule.id + ") — refused by kone. Command: " + hit.command;
+        process.stderr.write("[kone] full-access: REFUSED — " + reason + "\\n");
+      }
+    }
+    process.stdout.write(JSON.stringify(reason ? { decision, reason } : { decision }) + "\\n");
   } else if (event === "pre-invocation") {
     // PreInvocation vetoes the model call that follows; kone-managed sessions
     // spawn native subagents deliberately, so the launch it gates must never
@@ -919,19 +984,21 @@ export class AntigravityAdapter implements ProviderAdapter {
       env.HOME = this.homeDir;
       env.USERPROFILE = this.homeDir;
     }
-    const versionOutput = await probe(this.binary, ["--version"], env, 5_000);
-    if (versionOutput === null) {
+    const versionResult = await probeResult(this.binary, ["--version"], env, 5_000);
+    const version = parseAntigravityVersion(`${versionResult.stdout}\n${versionResult.stderr}`);
+    if (!versionProbeUsable(versionResult, version)) {
       return {
         provider: this.provider,
         label: "Antigravity",
-        available: false,
-        authStatus: "unknown",
-        readiness: "not-installed",
-        message: "Antigravity CLI (`agy`) not found. Install it from https://antigravity.google, then sign in.",
+        ...versionProbeFailure({
+          label: "Antigravity CLI (`agy`)",
+          installHint:
+            "Antigravity CLI (`agy`) not found. Install it from https://antigravity.google, then sign in.",
+          result: versionResult,
+        }),
       };
     }
 
-    const version = parseAntigravityVersion(versionOutput);
     if (version !== undefined && !this.versionAtLeast(version, MIN_ANTIGRAVITY_CLI_VERSION)) {
       return {
         provider: this.provider,
@@ -945,8 +1012,27 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
 
     // The CLI ships no auth subcommand; a non-empty `agy models` list is the
-    const models = await probe(this.binary, ["models"], env, MODEL_DISCOVERY_TIMEOUT_MS);
-    if (models === null || models.trim().length === 0) {
+    const modelsResult = await probeResult(
+      this.binary,
+      ["models"],
+      env,
+      MODEL_DISCOVERY_TIMEOUT_MS,
+    );
+    if (modelsResult.outcome === "timeout" || modelsResult.outcome === "failure") {
+      // The list never came back, so "no models" is not an answer about sign-in.
+      return {
+        provider: this.provider,
+        label: "Antigravity",
+        available: true,
+        authStatus: "unknown",
+        readiness: "error",
+        version,
+        message: "Antigravity did not report its model list in time — try again in a moment.",
+        transient: true,
+      };
+    }
+    const models = modelsResult.stdout;
+    if (models.trim().length === 0) {
       return {
         provider: this.provider,
         label: "Antigravity",
@@ -1105,7 +1191,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     promptText = koneHostContextForFirstRun({
       prompt: promptText,
       runOrdinal: 1,
-      gatewayControlAvailable: session.gatewayConnection !== undefined,
+      gateway: session.gatewayConnection,
       agent: session.agent,
     });
 
@@ -1797,8 +1883,8 @@ export class AntigravityAdapter implements ProviderAdapter {
           const args = payload.toolCall?.args ?? pending.args;
           const output =
             payload.error?.trim() ||
-            (typeof payload.result === "string" ? payload.result : undefined) ||
-            (typeof payload.toolOutput === "string" ? payload.toolOutput : undefined);
+            payload.result?.trim() ||
+            payload.toolOutput?.trim();
           this.emitToolItem(session, pending.itemId, pending.name, failed ? "failed" : "completed", args, run, output);
         }
       } else if (eventName === "stop") {

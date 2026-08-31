@@ -6,7 +6,8 @@ import { CODEX_GATEWAY_TOKEN_ENV, prepareCodexHomeOverlay } from "../codexOverla
 import { JsonRpcClient } from "../jsonRpc.js";
 import type { JsonObject, JsonValue } from "@kone/agent-core/lib-jsonValue.js";
 import { buildAgentEnv } from "../processEnv.js";
-import { probe } from "../spawn.js";
+import { probeResult } from "../spawn.js";
+import { versionProbeFailure, versionProbeUsable } from "../providerHealth.js";
 import type {
   AdapterCapabilities,
   AgentPersona,
@@ -392,6 +393,12 @@ export function mapModeToThreadOverrides(
     case "ask":
       return { approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" };
     case "full-access":
+      // No gate at all on this rung, and that is the CLI's design rather than a
+      // gap kone can close: `never` means Codex decides locally and never sends
+      // an approval request, so nothing about a command crosses into this
+      // process before it runs. The other adapters screen commands at the
+      // auto-approve gate they still see; there is no equivalent point here.
+      // Anything stronger has to come from the sandbox, not from us.
       return { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" };
     case "accept-edits":
     default:
@@ -696,19 +703,21 @@ export class CodexAdapter implements ProviderAdapter {
 
   async discover(): Promise<ProviderStatus> {
     const env = await buildAgentEnv();
-    const output = await probe(this.binary, ["--version"], env, 5_000);
-    if (output === null) {
+    const result = await probeResult(this.binary, ["--version"], env, 5_000);
+    // Some CLIs print their version on stderr; read both rather than picking one.
+    const version = parseCodexCliVersion(`${result.stdout}\n${result.stderr}`) ?? undefined;
+    if (!versionProbeUsable(result, version)) {
       return {
         provider: this.provider,
         label: "Codex",
-        available: false,
-        authStatus: "unknown",
-        readiness: "not-installed",
-        message: "Codex CLI not found. Install it and run `codex login`.",
+        ...versionProbeFailure({
+          label: "Codex CLI",
+          installHint: "Codex CLI not found. Install it and run `codex login`.",
+          result,
+        }),
       };
     }
 
-    const version = parseCodexCliVersion(output) ?? undefined;
     if (!isCodexCliVersionSupported(version ?? null)) {
       return {
         provider: this.provider,
@@ -946,7 +955,7 @@ export class CodexAdapter implements ProviderAdapter {
     const collaborationMode = buildCodexTurnCollaborationMode({
       model: session.model,
       effort: input.effort,
-      gatewayControlAvailable: session.gatewayConnection !== undefined,
+      gateway: session.gatewayConnection,
       agent: session.agent,
     });
     const turnStartInput: CodexTurnStartParams = {

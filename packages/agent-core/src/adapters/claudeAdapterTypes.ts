@@ -27,6 +27,12 @@ export const EFFORT_LEVELS = new Set<EffortLevel>(["low", "medium", "high", "xhi
 export const STOP_TASK_TIMEOUT_MS = 3_000;
 export const INTERRUPT_TIMEOUT_MS = 5_000;
 
+/** How long a late-settling background run waits for its siblings before the
+ *  thread is woken. Long enough that agents launched in one message — which
+ *  finish within moments of each other — are handed over as one batch, short
+ *  enough that a lone straggler is not left sitting unread. */
+export const WAKE_DEBOUNCE_MS = 1_500;
+
 export const FAST_SERVICE_TIER = { id: "fast", label: "Fast" };
 
 export const CLAUDE_CONTEXT_WINDOWS = [
@@ -107,6 +113,15 @@ export type ClaudeSubagentRun = {
   scope: ClaudeScope;
   /** True once `subagent.started` has been emitted for this run. */
   announced: boolean;
+  /** The turn that spawned this run, stamped once at birth.
+   *
+   *  Not read off `session.activeTurnId` at emit time, which is where this used
+   *  to come from: a backgrounded run outlives the turn that started it, and by
+   *  the time it settles that field is either empty or already pointing at some
+   *  later turn. Either way the run's events would be misfiled or dropped, and
+   *  the child's own report — the whole reason it was spawned — never reaches
+   *  the transcript. */
+  turnId: string;
 };
 
 export type ClaudeSession = {
@@ -136,6 +151,15 @@ export type ClaudeSession = {
   /** Stop requests that arrived before `task_started` mapped a run's tool-use
    *  id to an SDK task id; fired the moment that mapping lands. */
   pendingSubagentStops: Set<string>;
+  /** Background runs that settled after their own turn had already ended, held
+   *  until the batch is quiet enough to wake the thread on (see WAKE_DEBOUNCE_MS).
+   *  Siblings launched in one message finish within moments of each other, and
+   *  one wake carrying all of them is the honest report — three wakes racing each
+   *  other would each interrupt the last. */
+  pendingWake: Array<{ turnId: string; snapshot: SubagentRunSnapshot }>;
+  /** The armed wake, cancelled if a real turn starts first — the results reach
+   *  that turn on their own, so waking on top of it would talk over the user. */
+  wakeTimer?: ReturnType<typeof setTimeout>;
   consumer: Promise<void>;
   /** True once we're tearing this session down on purpose (stopSession). */
   disposed: boolean;

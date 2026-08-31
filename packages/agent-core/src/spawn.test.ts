@@ -25,7 +25,7 @@ async function loadRealSpawnModule(): Promise<typeof import("./spawn.js")> {
   return (await import(pathToFileURL(copy).href)) as typeof import("./spawn.js");
 }
 
-const { probe, killTree } = await loadRealSpawnModule();
+const { probe, probeResult, killTree } = await loadRealSpawnModule();
 
 describe("probe", () => {
   test("resolves with the accumulated stdout for a quick command", async () => {
@@ -67,6 +67,67 @@ describe("probe", () => {
     // of a tight byte bound.
     expect(result!.length).toBeGreaterThanOrEqual(1024 * 1024);
     expect(result!.length).toBeLessThan(1536 * 1024);
+  });
+});
+
+describe("probeResult", () => {
+  test("reports ok with both streams captured", async () => {
+    const result = await probeResult(
+      process.execPath,
+      ["-e", "process.stdout.write('out'); process.stderr.write('err')"],
+      {},
+      5_000,
+    );
+    expect(result.outcome).toBe("ok");
+    expect(result.stdout).toBe("out");
+    expect(result.stderr).toBe("err");
+    expect(result.code).toBe(0);
+  });
+
+  test("distinguishes a non-zero exit from a clean one, keeping its stderr", async () => {
+    const result = await probeResult(
+      process.execPath,
+      ["-e", "process.stderr.write('boom'); process.exit(3)"],
+      {},
+      5_000,
+    );
+    expect(result.outcome).toBe("nonzero");
+    expect(result.stderr).toBe("boom");
+    expect(result.code).toBe(3);
+  });
+
+  test("reports a missing binary as \"missing\", not as a failed run", async () => {
+    const result = await probeResult("__kone_no_such_binary__", [], {}, 5_000);
+    expect(result.outcome).toBe("missing");
+    expect(result.code).toBeNull();
+  });
+
+  test("reports a wedged child as \"timeout\" rather than as missing", async () => {
+    const result = await probeResult(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {},
+      300,
+    );
+    // The whole point of the tagged outcome: this must not look like an
+    // uninstalled CLI, which is what a bare null could not express.
+    expect(result.outcome).toBe("timeout");
+  });
+
+  test("caps each stream independently at ~1 MiB", async () => {
+    const result = await probeResult(
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write('x'.repeat(1536 * 1024)); process.stderr.write('y'.repeat(1536 * 1024))",
+      ],
+      {},
+      15_000,
+    );
+    for (const stream of [result.stdout, result.stderr]) {
+      expect(stream.length).toBeGreaterThanOrEqual(1024 * 1024);
+      expect(stream.length).toBeLessThan(1536 * 1024);
+    }
   });
 });
 

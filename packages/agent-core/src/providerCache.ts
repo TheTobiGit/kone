@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import { writeFileAtomicSync } from "@kone/agent-core/lib-atomicWrite.js";
 
-import type { ModelDescriptor, ProviderKind, ProviderStatus } from "./types.js";
+import type {
+  AuthStatus,
+  ModelDescriptor,
+  ProviderKind,
+  ProviderReadiness,
+  ProviderStatus,
+} from "./types.js";
 import { userDataPath } from "./userDataDir.js";
 
 // A disk-backed snapshot of the last known provider surface: which CLIs were
@@ -45,12 +51,41 @@ const ModelDescriptorWire = z.object({
   isDefault: z.boolean().optional(),
 }).passthrough();
 
+// Spelling these unions out a second time in wire form is what let them drift:
+// the enum below once listed a `readiness` set that shared only two members with
+// the real one, so every row for a provider awaiting login failed validation —
+// and since one bad element rejects the whole array, a single logged-out CLI
+// discarded the entire snapshot on every launch. Each map is keyed by its union
+// and `satisfies` its own value type, so adding or renaming a member breaks this
+// file at compile time instead of silently emptying the cache.
+const PROVIDERS = {
+  codex: "codex",
+  claudeAgent: "claudeAgent",
+  opencode: "opencode",
+  cursor: "cursor",
+  droid: "droid",
+  antigravity: "antigravity",
+} as const satisfies Record<ProviderKind, ProviderKind>;
+
+const AUTH_STATUSES = {
+  authenticated: "authenticated",
+  unauthenticated: "unauthenticated",
+  unknown: "unknown",
+} as const satisfies Record<AuthStatus, AuthStatus>;
+
+const READINESS = {
+  ready: "ready",
+  "needs-login": "needs-login",
+  "not-installed": "not-installed",
+  error: "error",
+} as const satisfies Record<ProviderReadiness, ProviderReadiness>;
+
 const ProviderStatusWire = z.object({
-  provider: z.string(),
+  provider: z.enum(PROVIDERS),
   label: z.string(),
   available: z.boolean(),
-  authStatus: z.enum(["logged-in", "logged-out", "unknown"]),
-  readiness: z.enum(["ready", "needs-auth", "not-installed", "error", "unsupported"]),
+  authStatus: z.enum(AUTH_STATUSES),
+  readiness: z.enum(READINESS),
   message: z.string().optional(),
 }).passthrough();
 
