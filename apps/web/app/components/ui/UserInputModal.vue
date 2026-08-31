@@ -4,6 +4,7 @@ import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import type { UserInputAnswers, UserInputQuestion } from "~/types/desktop";
+import { useModalExit } from "~/composables/useModalExit";
 
 // The agent's mid-turn question, in the same scrim + elastic card shell the
 // folder/model/branch pickers wear — but anchored bottom-centre where the agent
@@ -107,8 +108,7 @@ function cancel(): void {
 }
 
 // surface, but bottom-centre over the composer's spot ───────────────────────────
-const shown = ref(false);
-const closing = ref(false);
+const { shown, closing, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
@@ -116,14 +116,6 @@ let ro: ResizeObserver | null = null;
 function syncHeight() {
   const el = contentEl.value;
   if (el) cardHeight.value = el.offsetHeight;
-}
-
-// Fade + scale out, then hand back to the caller — the 240ms matches the exit.
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
 }
 
 // Cmd/Ctrl+Enter submits from anywhere (including a focused text field).

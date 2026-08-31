@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from "vue";
 import { motion } from "motion-v";
+import { useModalExit } from "~/composables/useModalExit";
 
 // Standalone "open a project" overlay: the scrim + elastic card shell around a
 // `FolderBrowser`. The card's height springs as the listing grows and shrinks;
@@ -20,7 +21,7 @@ const emit = defineEmits<{
 }>();
 
 // Drives the modal's open/close fade + scale.
-const shown = ref(false);
+const { shown, closing, close } = useModalExit();
 
 // ── elastic height ────────────────────────────────────────────────────────────
 // A ResizeObserver on the browser wrapper feeds its measured height into an
@@ -32,19 +33,6 @@ let ro: ResizeObserver | null = null;
 function syncHeight() {
   const el = contentEl.value;
   if (el) cardHeight.value = el.offsetHeight;
-}
-
-// Guards Enter (schedules `select`) then Escape landing within the same exit
-// window from firing a second close — only the first close wins.
-const closing = ref(false);
-
-// Fade + scale the modal out, then hand control back to the caller. The delay
-// matches the 0.24s exit transition so it finishes leaving before unmount.
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
 }
 
 // The browser reports intent; the shell plays the card's exit, then re-emits.

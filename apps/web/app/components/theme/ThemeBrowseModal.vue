@@ -5,6 +5,7 @@ import { motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { CheckmarkCircle01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { registerImportedThemes, themes as libraryThemes } from "~/theme/library";
+import { useModalExit } from "~/composables/useModalExit";
 import {
   importOpenVsxThemeExtension,
   popularThemes,
@@ -169,8 +170,7 @@ function sourceHost(url: string | null): string {
 // picker modals: `shown` drives the tween, `close` plays the exit first and
 // only then hands back to the caller.
 
-const shown = ref(false);
-const closing = ref(false);
+const { shown, closing, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const scrollEl = ref<HTMLElement | null>(null);
 const cardRef = ref<HTMLElement | null>(null);
@@ -228,14 +228,6 @@ function syncHeight() {
   const list = scroll ? Math.max(scroll.scrollHeight, scroll.clientHeight) : body.offsetHeight;
   const natural = scroll ? chrome + list : body.offsetHeight;
   cardHeight.value = Math.min(natural, maxCardHeight());
-}
-
-// Guards Enter-then-Escape landing in the same exit window from firing twice.
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
 }
 
 function cancel() {

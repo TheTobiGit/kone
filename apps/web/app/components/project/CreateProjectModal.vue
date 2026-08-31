@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { FolderAddIcon, Folder01Icon } from "@hugeicons/core-free-icons";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
+import { useModalExit } from "~/composables/useModalExit";
 
 // "Create a new project" modal — the sibling of GitHubCloneModal, sharing its
 // elastic card + scrim shell, its header/footer bands, and its in-place morph.
@@ -54,7 +55,7 @@ watch(phase, (next, prev) => {
 const view = ref<"form" | "dest" | "more">("form");
 
 // Drives the modal's open/close fade + scale.
-const shown = ref(false);
+const { shown, closing, close } = useModalExit();
 
 const nameInput = ref<HTMLInputElement | null>(null);
 const browser = ref<{ focusPath: () => void } | null>(null);
@@ -92,16 +93,6 @@ let ro: ResizeObserver | null = null;
 function syncHeight() {
   const el = contentEl.value;
   if (el) cardHeight.value = el.offsetHeight;
-}
-
-// Guards Enter-then-Escape landing in the same exit window from firing twice.
-const closing = ref(false);
-
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
 }
 
 function cancel() {

@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { motion } from "motion-v";
 import { Magnet } from "~/components/ui/magnet";
 import type { GitBranch } from "~/types/desktop";
+import { useModalExit } from "~/composables/useModalExit";
 
 // "Switch branch" overlay — the same scrim + elastic card shell the folder and
 // model pickers use (bottom-left anchored, a hairline ring, a springy height
@@ -72,8 +73,7 @@ async function choose(b: GitBranch) {
 }
 
 // read as one surface ─────────────────────────────────────────────────────────
-const shown = ref(false);
-const closing = ref(false);
+const { shown, closing, close } = useModalExit();
 const contentEl = ref<HTMLElement | null>(null);
 const cardHeight = ref<number | null>(null);
 let ro: ResizeObserver | null = null;
@@ -83,13 +83,6 @@ function syncHeight() {
   if (el) cardHeight.value = el.offsetHeight;
 }
 
-// Fade + scale out, then hand back to the caller — the 240ms matches the exit.
-function close(done: () => void) {
-  if (closing.value) return;
-  closing.value = true;
-  shown.value = false;
-  window.setTimeout(done, 240);
-}
 function onCancel() {
   // Locked while a checkout is in flight — dismissing here (scrim, Cancel or
   // Escape) would drop the scrim and hand the app back mid-switch.
