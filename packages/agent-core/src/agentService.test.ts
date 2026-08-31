@@ -1030,6 +1030,33 @@ describe("AgentService thread archive + retention", () => {
     expect(history.archivedStamp.get("recent-1")).toBeNull();
   });
 
+  test("a failing history store surfaces as a rejection, not a swallowed error", async () => {
+    // The sweep has no internal error handling around its store reads, so a
+    // store that throws rejects the returned promise. The timers that drive it
+    // therefore have to attach a .catch — a try/catch around the call sees
+    // nothing, and the rejection would take the process down instead.
+    class ExplodingHistoryStore extends FakeHistoryStore {
+      override staleThreadIds(): string[] {
+        throw new Error("history store unavailable");
+      }
+    }
+    const explodingService = new AgentServiceCtor({
+      retentionSweepMs: 0,
+      // SAFETY: fakeStore implements the queued-turn slice this service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: fakeStore as unknown as QueuedTurnStore,
+      // SAFETY: the fake implements exactly the history methods the paths read.
+      historyStore:
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        new ExplodingHistoryStore() as unknown as import("./AgentService.js").AgentServiceOptions["historyStore"],
+      // SAFETY: one fake adapter is a whole enough provider roster here.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      adapters: (emit) => [new FakeAdapter(emit, "codex") as unknown as ProviderAdapter],
+    });
+
+    await expect(explodingService.sweepStaleThreads()).rejects.toThrow("history store unavailable");
+  });
+
   test("retentionDoneMs: 0 keeps the archive pass and drops the done pass", async () => {
     const DAY = 24 * 60 * 60 * 1000;
     const historyNoDone = new FakeHistoryStore();
