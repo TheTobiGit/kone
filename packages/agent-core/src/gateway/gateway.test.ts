@@ -342,6 +342,7 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_wait_for_threads",
       "kone_read_thread",
       "kone_irc_send",
+      "kone_irc_list",
       "kone_irc_inbox",
       "kone_launch",
     ]);
@@ -918,7 +919,7 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(rpcResult(startRes).content?.[0]?.text).toContain("Started process");
     // SAFETY: Process launch response includes structuredContent with pid
     const pid = rpcResult(startRes).structuredContent?.pid as number;
-    expect(typeof pid).toBe("number");
+    expect(Number.isFinite(pid)).toBe(true);
 
     // Shutdown gateway, which must stop the supervised process
     await gateway.shutdown();

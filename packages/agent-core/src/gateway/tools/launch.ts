@@ -643,6 +643,8 @@ export function createLaunchTools(input?: { supervisor?: ProcessSupervisor }): T
       // bookkeeping.
       permission: "ask",
       requiresActiveTurn: false,
+      promptSnippet:
+        "Start, stop, inspect and talk to long-running background processes — dev servers, watchers, builds.",
       handler: async (ctx: GatewayToolContext, rawInput: GatewayRecord): Promise<GatewayToolResult> => {
         const parsed = LaunchInputSchema.safeParse(rawInput);
         if (!parsed.success) {

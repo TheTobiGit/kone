@@ -84,6 +84,23 @@ export interface ToolEntry {
   permission: GatewayPermission;
   /** Write tools are only callable while the caller's bound turn is live. */
   requiresActiveTurn: boolean;
+  /**
+   * One line naming what this tool is for, in the host-context block the agent
+   * reads before its first turn. A tool without one is not announced there —
+   * which is how a tool the session did not get can never be promised to it.
+   *
+   * Deliberately short: `description` above is the full account, and MCP
+   * delivers it through tools/list to the same model. Repeating it here would
+   * buy nothing and cost the tokens twice.
+   */
+  promptSnippet?: string;
+  /**
+   * Standing rules this tool imposes that its own description cannot carry —
+   * how it sits against the others, what the agent owes the user for using it.
+   * Only ship a rule here when it would still need saying with the tool's
+   * description already in front of the model.
+   */
+  promptGuidelines?: readonly string[];
   handler(ctx: GatewayToolContext, input: GatewayRecord): Promise<GatewayToolResult>;
 }
 
@@ -384,6 +401,13 @@ export const IRC_SEND_JSON_SCHEMA = {
 export const IRC_SEND_MESSAGE_JSON_SCHEMA = IRC_SEND_JSON_SCHEMA;
 export const IRC_MESSAGE_JSON_SCHEMA = IRC_SEND_JSON_SCHEMA;
 
+export const IrcListInputSchema = z.object({});
+
+export const IRC_LIST_JSON_SCHEMA = {
+  type: "object",
+  properties: {},
+} satisfies GatewayRecord;
+
 export const IRC_INBOX_JSON_SCHEMA = {
   type: "object",
   properties: {
@@ -402,6 +426,7 @@ export type IrcSendInput = z.infer<typeof IrcSendInputSchema>;
 export type IrcSendMessageInput = IrcSendInput;
 export type IrcMessageInput = IrcSendInput;
 export type IrcInboxInput = z.infer<typeof IrcInboxInputSchema>;
+export type IrcListInput = z.infer<typeof IrcListInputSchema>;
 
 export type IrcMessagePayload = {
   id: string;

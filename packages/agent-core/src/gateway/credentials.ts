@@ -15,7 +15,9 @@ import { randomUUID } from "node:crypto";
 
 import type { ProviderKind } from "../types.js";
 
-export interface GatewayConnection {
+/** The endpoint + token half of a session's grant. The tool half is added by
+ *  createGateway, which is the only layer that knows the registry. */
+export interface GatewaySessionCredential {
   /** Loopback streamable-HTTP MCP endpoint, e.g. `http://127.0.0.1:41231/mcp`. */
   url: string;
   /** Bearer token bound to one provider session. */
@@ -85,7 +87,7 @@ export class GatewayCredentials {
     threadId: string,
     provider: ProviderKind,
     model?: string,
-  ): GatewayConnection {
+  ): GatewaySessionCredential {
     return {
       url: this.mcpEndpointUrl(),
       bearerToken: this.issueSessionToken(threadId, provider, model),

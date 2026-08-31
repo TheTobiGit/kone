@@ -62,7 +62,26 @@ import type { EmitEvent, SessionStartInput } from "./types.js";
 // node:sqlite chain would load first). Same constraint gateway.test.ts notes.
 const { ClaudeAdapter } = await import("./adapters/ClaudeAdapter.js");
 
-const CONNECTION = { url: "http://127.0.0.1:12345/mcp", bearerToken: "token-abc" };
+const CONNECTION = {
+  url: "http://127.0.0.1:12345/mcp",
+  bearerToken: "token-abc",
+  // A grant carries the tools it serves; the host-context block is built from
+  // these, so a fixture without them describes a gateway that serves nothing.
+  tools: [
+    {
+      name: "kone_scratchpad_read",
+      snippet: "Read the project scratchpad.",
+      guidelines: [],
+      needsApproval: false,
+    },
+    {
+      name: "kone_scratchpad_write",
+      snippet: "Write that board.",
+      guidelines: ["Read before overwriting."],
+      needsApproval: false,
+    },
+  ],
+};
 
 function start(overrides: Partial<SessionStartInput>): Promise<ReturnType<ClaudeAdapter["startSession"]>> {
   // SAFETY: a zero-arg arrow accepts every EmitEvent call signature, and the
