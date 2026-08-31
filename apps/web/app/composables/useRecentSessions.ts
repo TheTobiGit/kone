@@ -30,6 +30,7 @@ function mockSessions(): SessionSummary[] {
       costUsd: 15.36,
       updatedAt: now - 7 * DAY,
       pinned: true,
+      snippet: "Added WebSocket transport layer and validated IPC payloads.",
     },
     {
       threadId: "mock-2",
@@ -43,6 +44,7 @@ function mockSessions(): SessionSummary[] {
       costUsd: 6.65,
       updatedAt: now - 7 * DAY,
       pinned: true,
+      snippet: "Normalized spacing scale and color tokens across themes.",
     },
     {
       threadId: "mock-3",
@@ -55,6 +57,7 @@ function mockSessions(): SessionSummary[] {
       tokens: 1_240_000,
       costUsd: 5.95,
       updatedAt: now - 2 * DAY,
+      snippet: "Ensured prototype-free serialization before storing state snapshots.",
     },
     {
       threadId: "mock-4",
@@ -67,6 +70,7 @@ function mockSessions(): SessionSummary[] {
       tokens: 2_100_000,
       costUsd: 10.08,
       updatedAt: now - 2 * DAY,
+      snippet: "Softened high-contrast borders and elevated panel depth.",
     },
     {
       threadId: "mock-5",
@@ -79,6 +83,7 @@ function mockSessions(): SessionSummary[] {
       tokens: 480_000,
       costUsd: 1.68,
       updatedAt: now - 3 * DAY,
+      snippet: "Smoothed state transitions for turn orbs and unified edge masking.",
     },
     {
       threadId: "mock-6",
@@ -91,6 +96,7 @@ function mockSessions(): SessionSummary[] {
       tokens: 740_000,
       costUsd: 2.59,
       updatedAt: now - 0.6 * DAY,
+      snippet: "Mapped reasoning effort and temperature overrides to CLI flags.",
     },
   ];
 }

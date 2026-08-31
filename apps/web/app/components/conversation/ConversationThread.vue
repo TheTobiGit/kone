@@ -18,10 +18,13 @@ import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
 import AgentActivity from "~/components/agent/AgentActivity.vue";
 import TurnWorkFold from "~/components/turn/TurnWorkFold.vue";
+import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
+import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
+import type { TranscriptMode } from "~/utils/transcriptMode";
 import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
 // The live conversation — where the agent's turns become a timeline.
@@ -85,6 +88,11 @@ const props = defineProps<{
   loadingOlder?: boolean;
   /** The last load-older attempt failed — the affordance shows a retry. */
   olderError?: string | null;
+  /** How much of a running turn this reading shows — the working transcript
+   *  (every part, as it arrives) or the quiet reply (one status line while the
+   *  agent works, then the answer). Defaults to the transcript; a surface that
+   *  wants the quiet read has to ask for it. See utils/transcriptMode. */
+  mode?: TranscriptMode;
   /** Whether an empty thread is allowed to fill itself with the standing art.
    *  On by default. The art is an invitation to type — it belongs where there
    *  is a composer under it and the blankness is a beginning. Somewhere you can
@@ -205,6 +213,13 @@ const viewByBlock = computed(() => {
   for (const id of viewCache.keys()) if (!out.has(id)) viewCache.delete(id);
   return out;
 });
+
+// The quiet read: the agent's work never renders while the turn is running —
+// one status line stands in for all of it, and the reply replaces the line when
+// the turn settles. Everything the turn did is still reachable afterwards through
+// the same work fold a transcript reading uses; this only decides what happens
+// without being asked.
+const quiet = computed(() => props.mode === "reply");
 
 const EMPTY_VIEW: BlockView = { groups: [], live: null, foldedGroups: [], replyGroups: [] };
 function viewOf(block: AssistantBlock): BlockView {
@@ -515,6 +530,29 @@ const exchanges = computed(() =>
   earlierCount.value > 0 ? allExchanges.value.slice(earlierCount.value) : allExchanges.value,
 );
 
+/** Show a centered date divider on the first visible exchange, and whenever
+ *  consecutive exchanges cross midnight into a new calendar day. */
+function shouldShowDayDivider(index: number): boolean {
+  const current = exchanges.value[index];
+  if (!current || current.blocks.length === 0) return false;
+  const currentAt = current.blocks[0]?.at;
+  if (!currentAt) return false;
+
+  if (index === 0) return true;
+
+  const prev = exchanges.value[index - 1];
+  const prevAt = prev?.blocks[0]?.at;
+  if (!prevAt) return false;
+
+  return dayKey(currentAt) !== dayKey(prevAt);
+}
+
+function dayDividerLabel(ex: { key: string; blocks: ThreadBlock[] }): string {
+  const at = ex.blocks[0]?.at;
+  if (!at) return "Today";
+  return formatDayDivider(at, props.now);
+}
+
 // Re-collapse when the column is pointed at a different conversation — the
 // component is reused across threads, and inheriting "expanded" would hand the
 // next long transcript the very cost this avoids.
@@ -751,15 +789,19 @@ watch(
       <span>{{ earlierCount }} earlier {{ earlierCount === 1 ? "exchange" : "exchanges" }}</span>
     </button>
 
-    <div
-      v-for="ex in exchanges"
-      :key="ex.key"
-      class="exchange"
-      :class="{
-        'exchange--running': ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running'),
-        'exchange--paired': ex.blocks.length > 1,
-      }"
-    >
+    <template v-for="(ex, index) in exchanges" :key="ex.key">
+      <!-- Centered date divider at top of thread and between different calendar days -->
+      <div v-if="shouldShowDayDivider(index)" class="thread-date">
+        <span class="thread-date__text">{{ dayDividerLabel(ex) }}</span>
+      </div>
+
+      <div
+        class="exchange"
+        :class="{
+          'exchange--running': ex.blocks.some((b) => b.role === 'assistant' && b.state === 'running'),
+          'exchange--paired': ex.blocks.length > 1,
+        }"
+      >
       <!-- Thin elbow line: out of the request bubble's left edge, across to the avatar column, down to the reply -->
       <ExchangeConnector
         v-if="ex.blocks.length > 1 && ex.blocks.some((b) => b.role === 'user') && ex.blocks.some((b) => b.role === 'assistant')"
@@ -919,11 +961,21 @@ watch(
             </div>
           </div>
 
+          <!-- RUNNING, quiet read — the work stays out of sight and the turn
+               says one sentence about itself ("Reading useAgent.ts", "Thinking"),
+               until it settles and its reply takes the line's place. -->
+          <TurnStatusLine
+            v-if="block.state === 'running' && quiet"
+            :key="`${block.id}:status`"
+            :block="block"
+            :now="now"
+          />
+
           <!-- RUNNING — the live read: settled batches inline, in arrival order,
                plus the one live tail orb below. Steps and text interleave exactly
                as they land so tools-after-text read correctly while the turn is
                in flight. -->
-          <template v-if="block.state === 'running'">
+          <template v-else-if="block.state === 'running'">
             <template
               v-for="grp in viewOf(block).groups"
               :key="grp.kind === 'text' ? grp.seg.key : grp.key"
@@ -1034,6 +1086,7 @@ watch(
       </template>
     </motion.div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -1047,6 +1100,24 @@ watch(
   width: 100%;
   max-width: 720px;
   margin: 0 auto;
+}
+
+.thread-date {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 6px 0 2px;
+  user-select: none;
+  pointer-events: none;
+}
+.thread-date__text {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 16px;
 }
 .thread--empty {
   position: relative;

@@ -5,6 +5,7 @@ import type { SessionSummary } from "~/types/session";
 import {
   byRecency,
   liftLegacyPins,
+  markThreadVisited,
   SESSION_PIN_KEY,
   summarizeSession,
   type SessionProjectTag,
@@ -111,6 +112,38 @@ export function useSessionList(source: SessionListSource) {
     void api()?.setDone(threadId, next).catch(() => {});
   }
 
+  // Record that the user has just had this thread in front of them, which is
+  // what makes a reply seen. Applied to the row first so the mark clears under
+  // the eye that just read it, and written behind that — a row is re-summarized
+  // from the DB on the next load, so the two agree without waiting on each
+  // other.
+  //
+  // The stamp only moves forward (the store enforces it too): two surfaces can
+  // be showing the same thread, and the slower one's write must not undo the
+  // faster one's.
+  function markVisited(threadId: string, at = Date.now()): void {
+    const row = items.value.find((s) => s.threadId === threadId);
+    if (row) {
+      if ((row.lastVisitedAt ?? 0) >= at) return;
+      row.lastVisitedAt = at;
+      row.unread = row.updatedAt > at;
+    }
+    markThreadVisited(threadId, undefined, at);
+  }
+
+  /** Put the mark back on a thread you have already seen — the visit is moved
+   *  to just before its last activity, which is the only way to say "unread"
+   *  in a model where unread is a comparison. Forced, because this is the one
+   *  write that deliberately goes backwards. */
+  function markUnread(threadId: string): void {
+    const row = items.value.find((s) => s.threadId === threadId);
+    if (!row) return;
+    const at = row.updatedAt - 1;
+    row.lastVisitedAt = at;
+    row.unread = true;
+    void api()?.setVisited(threadId, at, true).catch(() => {});
+  }
+
   // Drop a row from the on-screen list immediately, so archive/delete feel
   // instant; the bridge call (when present) is fire-and-forget behind it.
   function dropLocally(threadId: string): void {
@@ -120,9 +153,43 @@ export function useSessionList(source: SessionListSource) {
     }
   }
 
-  function archive(threadId: string): void {
+  // Put a thread away, or take it back out. The row drops from the on-screen
+  // list immediately, so the stamp feels instant — but the store can refuse the
+  // write (a spawned descendant mid-turn), so the drop is held open until the
+  // bridge answers: a refusal puts the row back exactly where it was, instead of
+  // the row flickering away and quietly reappearing on the next reload.
+  //
+  // Both directions are the same movement seen from opposite lists. The live
+  // list and the archive are disjoint queries over one column, so archiving
+  // drops a row from here and restoring drops a row from there — neither view
+  // ever has to know which of the two it is.
+  //
+  // Resolves to whether the store took it. Callers that do something
+  // irreversible behind an archive — the studio forgetting the live session and
+  // closing its column — have to wait for that answer, or a refusal leaves them
+  // torn down around a thread that is still there.
+  async function archive(threadId: string, archived = true): Promise<boolean> {
+    const index = items.value.findIndex((s) => s.threadId === threadId);
+    const row = index >= 0 ? items.value[index] : undefined;
+    const wasPinned = pinnedIds.value.includes(threadId);
     dropLocally(threadId);
-    void api()?.archive(threadId, true).catch(() => {});
+    const bridge = api();
+    if (!bridge) return true; // browser-dev mock: no store behind the list, the drop is the whole story
+    const result = await bridge.archive(threadId, archived).catch(() => null);
+    if (result?.ok) return true;
+    if (row) {
+      const at = Math.min(index, items.value.length);
+      items.value.splice(at, 0, row);
+      if (wasPinned) pinnedIds.value = [...pinnedIds.value, threadId];
+    }
+    return false;
+  }
+
+  /** Take a thread back out of the archive. Named rather than left as
+   *  `archive(id, false)` at every call site: restoring is a gesture in its own
+   *  right, and a boolean argument at the point of use reads as a typo. */
+  function restore(threadId: string): Promise<boolean> {
+    return archive(threadId, false);
   }
 
   function remove(threadId: string): void {
@@ -139,7 +206,14 @@ export function useSessionList(source: SessionListSource) {
     if (
       event.type !== "turn.completed" &&
       event.type !== "thread.token-usage.updated" &&
-      event.type !== "thread.title.updated"
+      event.type !== "thread.title.updated" &&
+      // Archive/restore changed which set this list reads from — the live
+      // list and the archive are disjoint queries, so a stamp anywhere moves
+      // the row across. Reconcile by refetch rather than by patching rows:
+      // the stamp may have landed on a subtree, and this list may not even
+      // be the surface that asked for it.
+      event.type !== "thread.archived" &&
+      event.type !== "thread.unarchived"
     ) {
       return;
     }
@@ -175,7 +249,10 @@ export function useSessionList(source: SessionListSource) {
     reload: () => load(),
     togglePin,
     toggleDone,
+    markVisited,
+    markUnread,
     archive,
+    restore,
     remove,
   };
 }

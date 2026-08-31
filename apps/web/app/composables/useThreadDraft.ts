@@ -17,26 +17,22 @@
 import { ref, toValue, type MaybeRefOrGetter } from "vue";
 import {
   bootMode,
+  bootModel,
   bootProvider,
-  DEFAULT_MODEL_KEY,
-  DEFAULT_REASONING_KEY,
-  MODEL_KEY,
-  REASONING_KEY,
+  bootReasoning,
 } from "~/utils/modelPicker";
-import { EFFORT_META, type EffortTier } from "~/utils/modelCatalog";
+import type { EffortTier } from "~/utils/modelCatalog";
 import type { InteractionMode, ProviderKind } from "~/types/desktop";
 
 export function useThreadDraft(projectPath: MaybeRefOrGetter<string>) {
   const path = toValue(projectPath);
 
   // Seeded from the same keys the studio's boot restore reads, in the same
-  // order — a configured default beats the last thing that ran, everywhere.
-  // Read once, at construction: these are a starting point, and re-reading them
-  // later would overwrite a choice made on this surface with one made on
-  // another.
+  // order — last used model choice wins for subsequent sessions, falling back to
+  // the user's configured default in Settings.
   const provider = ref<ProviderKind>(bootProvider());
-  const model = ref<string | undefined>(storedModel());
-  const reasoning = ref<EffortTier | undefined>(storedReasoning());
+  const model = ref<string | undefined>(bootModel());
+  const reasoning = ref<EffortTier | undefined>(bootReasoning());
   const mode = ref<InteractionMode>(bootMode(path) ?? "accept-edits");
 
   /** The model's "fast" tier when fast mode is on, mirroring what a session
@@ -44,25 +40,6 @@ export function useThreadDraft(projectPath: MaybeRefOrGetter<string>) {
    *  applied and a boolean would need the catalog to be resolved back. */
   const serviceTier = ref<string | undefined>(undefined);
   const contextWindow = ref<string | undefined>(undefined);
-
-  function storedModel(): string | undefined {
-    if (!import.meta.client) return undefined;
-    return (
-      localStorage.getItem(DEFAULT_MODEL_KEY) ?? localStorage.getItem(MODEL_KEY) ?? undefined
-    );
-  }
-
-  /** An unrecognised tier is dropped rather than carried: it would reach the
-   *  provider as an effort it has never heard of. */
-  function storedReasoning(): EffortTier | undefined {
-    if (!import.meta.client) return undefined;
-    const stored =
-      localStorage.getItem(DEFAULT_REASONING_KEY) ?? localStorage.getItem(REASONING_KEY);
-    if (stored === null || !(stored in EFFORT_META)) return undefined;
-    // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the `in`
-    // check above proves this is one of its keys.
-    return stored as EffortTier;
-  }
 
   return { provider, model, reasoning, serviceTier, contextWindow, mode };
 }

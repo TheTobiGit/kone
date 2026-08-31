@@ -17,24 +17,39 @@ import { computed, nextTick, onActivated, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Add01Icon,
+  ArchiveRestoreIcon,
   CheckmarkCircle02Icon,
   Folder01Icon,
   GitBranchIcon,
+  InboxUnreadIcon,
   PinIcon,
 } from "@hugeicons/core-free-icons";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
+import TurnOrb from "~/components/turn/TurnOrb.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { sessionBrand } from "~/utils/modelCatalog";
-import { byRecency } from "~/utils/sessionList";
+import { byRecency, threadToStampVisited } from "~/utils/sessionList";
 import { timeAgo } from "~/utils/timeAgo";
+import { stateForToolFamily, type TurnOrbState } from "~/utils/thinkingOrb";
+import { describeTurnActivity } from "~/utils/turnActivity";
+import { liveTurns } from "~/composables/useAgent";
 import type { InboxViewId } from "~/types/inbox";
 import type { SessionSummary } from "~/types/session";
 
 const { cue } = useSound();
 
-const props = defineProps<{ view: InboxViewId }>();
+const props = defineProps<{
+  view: InboxViewId;
+  /** The reading pane is showing this list's selected thread right now.
+   *
+   *  Not derivable here: the portal is never unmounted — it hides with
+   *  `visibility` and `inert`, and KeepAlive holds every view's list — so a
+   *  selection made before you left is still a selection an hour later. Only the
+   *  portal knows whether anyone is actually looking at it. */
+  reading: boolean;
+}>();
 
 const HEADINGS = {
   inbox: "Inbox",
@@ -106,6 +121,30 @@ const QUIET = {
 
 const quiet = computed(() => (source.loading.value ? "Gathering threads…" : QUIET[props.view]));
 
+// Which rows are cooking, and what their orb is doing.
+//
+// The rows themselves are read off disk and know nothing about processes;
+// `liveTurns` is every turn running anywhere in the app, keyed by thread id, so
+// a thread mid-turn in a studio column reads as mid-turn here too — this list
+// never opens a session of its own to find that out. Built as one map rather
+// than resolved per row, so a render walks the running turns once instead of
+// once per row, and a row with nothing running costs a miss.
+const orbs = computed(() => {
+  const out = new Map<string, { state: TurnOrbState; label: string }>();
+  for (const [threadId, block] of liveTurns.value) {
+    const activity = describeTurnActivity(block);
+    if (!activity || activity.orb === "done") continue;
+    const state: TurnOrbState =
+      activity.orb === "thinking"
+        ? "thinking"
+        : activity.orb === "working"
+          ? "working"
+          : stateForToolFamily(activity.family);
+    out.set(threadId, { state, label: activity.label });
+  }
+  return out;
+});
+
 // No visible scrollbar — the thread list smokes its top/bottom edges over whatever
 // content runs past the cutoff, easing in over the first ~28px of scroll.
 const scroller = ref<HTMLElement>();
@@ -131,6 +170,32 @@ function select(row: SessionSummary): void {
   selected.value = row;
 }
 
+// Reading a thread is what marks it read — and it keeps marking it, for as long
+// as it is the one on screen. The reload behind a landed turn re-summarizes
+// every row from the record, so a reply that arrives while you are looking at
+// the thread would otherwise come back unread a beat after you read it. Watching
+// the rows rather than only the selection is what closes that: whatever puts a
+// mark on the open thread takes it straight back off.
+//
+// `reading` is what keeps that from running in the dark. A selection outlives
+// the visit that made it — the portal only hides, the list stays alive behind
+// it, and a composer takes the reading pane without clearing what was picked —
+// so without this gate a reply landing while you are somewhere else entirely is
+// marked read by a list nobody can see, and the mark it should have raised is
+// gone for good.
+watch(
+  [selected, threads, () => props.reading],
+  () => {
+    const open = threadToStampVisited({
+      reading: props.reading,
+      selectedThreadId: selected.value?.threadId,
+      rows: threads.value,
+    });
+    if (open) source.markVisited(open);
+  },
+  { immediate: true },
+);
+
 function togglePin(row: SessionSummary): void {
   cue("press");
   source.togglePin(row.threadId);
@@ -139,6 +204,29 @@ function togglePin(row: SessionSummary): void {
 function toggleDone(row: SessionSummary): void {
   cue("press");
   source.toggleDone(row.threadId);
+}
+
+/** Put the mark back on a thread you have read.
+ *
+ *  Read state is a comparison against when you last looked, so the only way to
+ *  say "unread" is to move that visit back behind the thread's last activity —
+ *  which also means a thread being shown right now would be re-stamped read the
+ *  instant it were marked, so the selection is dropped first. Saying you are not
+ *  finished with something and continuing to stare at it are not the same
+ *  gesture. */
+function markUnread(row: SessionSummary): void {
+  cue("press");
+  if (selected.value?.threadId === row.threadId) selected.value = null;
+  source.markUnread(row.threadId);
+}
+
+/** Take a thread back out of the archive. The row leaves this list because the
+ *  archive and the live list are disjoint queries — it has not been deleted,
+ *  it has gone back to where it came from. */
+function restore(row: SessionSummary): void {
+  cue("press");
+  if (selected.value?.threadId === row.threadId) selected.value = null;
+  void source.restore(row.threadId);
 }
 </script>
 
@@ -174,17 +262,15 @@ function toggleDone(row: SessionSummary): void {
             'tl__row--pinned': s.pinned && ranks,
             'tl__row--resumes': i === pinnedCount && i > 0,
             'tl__row--on': s.threadId === selected?.threadId,
+            'tl__row--unread': s.unread,
           }"
           :style="{ '--i': i }"
         >
-          <!-- Opening the thread is the row's own gesture, so it is one real
-               button rather than a clickable <li>: the actions beside it are
-               buttons too, and a button inside a button is a control a keyboard
-               can see but never reach. -->
           <button
             type="button"
             class="tl__open"
             :aria-current="s.threadId === selected?.threadId ? 'true' : undefined"
+            :aria-describedby="s.unread ? `unread-${s.threadId}` : undefined"
             @click="select(s)"
           >
             <span class="tl__lead">
@@ -195,6 +281,22 @@ function toggleDone(row: SessionSummary): void {
             </span>
 
             <span class="tl__main">
+              <span class="tl__header">
+                <span class="tl__agent">{{ agentIdentity(s.threadId).name }}</span>
+                <span v-if="s.projectName" class="tl__chip tl__chip--subtle" :title="s.projectPath">
+                  {{ s.projectName }}
+                </span>
+                <span v-if="s.branch" class="tl__chip tl__chip--branch" :title="s.branch">
+                  <HugeiconsIcon
+                    :icon="GitBranchIcon"
+                    :size="10"
+                    :stroke-width="2"
+                    aria-hidden="true"
+                  />
+                  {{ s.branch }}
+                </span>
+              </span>
+
               <span class="tl__title">
                 <HugeiconsIcon
                   v-if="s.pinned && ranks"
@@ -206,27 +308,13 @@ function toggleDone(row: SessionSummary): void {
                 />
                 <span class="tl__name">{{ s.title }}</span>
               </span>
-              <span class="tl__meta">
-                <span class="tl__agent">{{ agentIdentity(s.threadId).name }}</span>
 
-                <span v-if="s.projectName" class="tl__chip" :title="s.projectPath">
-                  <HugeiconsIcon
-                    :icon="Folder01Icon"
-                    :size="11"
-                    :stroke-width="1.7"
-                    aria-hidden="true"
-                  />
-                  {{ s.projectName }}
+              <span v-if="orbs.has(s.threadId) || s.snippet" class="tl__sub">
+                <span v-if="orbs.has(s.threadId)" class="tl__active-label">
+                  {{ orbs.get(s.threadId)?.label ?? "Working…" }}
                 </span>
-
-                <span v-if="s.branch" class="tl__chip" :title="s.branch">
-                  <HugeiconsIcon
-                    :icon="GitBranchIcon"
-                    :size="11"
-                    :stroke-width="2"
-                    aria-hidden="true"
-                  />
-                  {{ s.branch }}
+                <span v-else-if="s.snippet" class="tl__snippet" :title="s.snippet">
+                  {{ s.snippet }}
                 </span>
               </span>
             </span>
@@ -237,8 +325,56 @@ function toggleDone(row: SessionSummary): void {
                only one of those is wanted at a time. Swapping in place keeps the
                row from reflowing under the cursor that just arrived. -->
           <div class="tl__tail">
-            <span class="tl__when">{{ timeAgo(s.updatedAt) }}</span>
-            <div class="tl__acts">
+            <span class="tl__stamp">
+              <!-- The thread has spoken since you last looked. A dot rather than
+                   a count: there is one thing to catch up on either way, and the
+                   number of turns you missed is not the thing you are deciding
+                   on. It rides beside the stamp instead of leading the row,
+                   because the row already opens on a face — a mark there would
+                   be read as being about the agent rather than about the thread.
+                   -->
+              <span
+                v-if="s.unread"
+                :id="`unread-${s.threadId}`"
+                class="tl__dot"
+                role="img"
+                aria-label="Unread"
+              />
+
+              <!-- A running thread says so where its stamp would be. "Last touched
+                   4m ago" is a fact about a thread that has stopped; while one is
+                   mid-turn the orb is the truer answer to the same question, and
+                   it is the same orb the thread itself is carrying. -->
+              <TurnOrb
+                v-if="orbs.has(s.threadId)"
+                class="tl__orb"
+                :state="orbs.get(s.threadId)?.state ?? 'working'"
+                :size="18"
+                :aria-label="`${s.title}: ${orbs.get(s.threadId)?.label ?? 'Working'}`"
+              />
+              <span v-else class="tl__when">{{ timeAgo(s.updatedAt) }}</span>
+            </span>
+            <!-- The archive offers one thing, and it is the way out. Pinning
+                 and marking done are claims about a queue this row has left, so
+                 repeating them here would be offering to sort a list of things
+                 you have already put away. -->
+            <div v-if="view === 'archived'" class="tl__acts">
+              <button
+                type="button"
+                class="tl__act"
+                :aria-label="`Restore ${s.title}`"
+                title="Restore"
+                @click="restore(s)"
+              >
+                <HugeiconsIcon
+                  :icon="ArchiveRestoreIcon"
+                  :size="14"
+                  :stroke-width="1.9"
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+            <div v-else class="tl__acts">
               <button
                 v-if="ranks"
                 type="button"
@@ -250,6 +386,24 @@ function toggleDone(row: SessionSummary): void {
                 @click="togglePin(s)"
               >
                 <HugeiconsIcon :icon="PinIcon" :size="14" :stroke-width="1.9" aria-hidden="true" />
+              </button>
+              <!-- Only on a thread you have read: the mark is what this puts
+                   back, and offering to put back one that is already there is a
+                   control that does nothing. -->
+              <button
+                v-if="!s.unread"
+                type="button"
+                class="tl__act"
+                :aria-label="`Mark ${s.title} unread`"
+                title="Mark unread"
+                @click="markUnread(s)"
+              >
+                <HugeiconsIcon
+                  :icon="InboxUnreadIcon"
+                  :size="14"
+                  :stroke-width="1.9"
+                  aria-hidden="true"
+                />
               </button>
               <button
                 type="button"
@@ -314,12 +468,13 @@ function toggleDone(row: SessionSummary): void {
   background: transparent;
   cursor: pointer;
   transition:
-    color 0.16s ease,
-    background-color 0.16s ease;
+    color 140ms ease,
+    background-color 200ms cubic-bezier(0.33, 1, 0.68, 1);
 }
 .tl__new:hover {
   color: var(--accent);
   background: var(--accent-wash);
+  transition-duration: 90ms;
 }
 
 .tl__scroll {
@@ -346,8 +501,8 @@ function toggleDone(row: SessionSummary): void {
 
 .tl__row {
   display: flex;
-  align-items: center;
-  padding: 9px 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
   border-radius: 12px;
   /* Capped so a long list's last rows are not still arriving after the eye has
      already reached them. */
@@ -358,8 +513,8 @@ function toggleDone(row: SessionSummary): void {
 .tl__open {
   flex: 1;
   display: flex;
-  align-items: center;
-  gap: 11px;
+  align-items: flex-start;
+  gap: 10px;
   min-width: 0;
   text-align: left;
   background: transparent;
@@ -372,8 +527,33 @@ function toggleDone(row: SessionSummary): void {
 .tl__lead {
   position: relative;
   flex: none;
+  margin-top: 2px;
   line-height: 0;
 }
+
+.tl__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5px;
+}
+
+.tl__header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tl__agent {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
 /* The vendor mark rides the corner of the face rather than taking a column of
    its own — which thread it is and what runs it are one glance, not two. */
 .tl__badge {
@@ -387,15 +567,6 @@ function toggleDone(row: SessionSummary): void {
   background: var(--panel);
 }
 
-.tl__main {
-  flex: 1;
-  min-width: 0;
-}
-.tl__title,
-.tl__main {
-  display: block;
-}
-
 .tl__title {
   display: flex;
   align-items: center;
@@ -404,11 +575,11 @@ function toggleDone(row: SessionSummary): void {
 }
 .tl__name {
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  line-height: 19px;
-  color: var(--ink-soft);
+  line-height: 18px;
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -422,16 +593,41 @@ function toggleDone(row: SessionSummary): void {
   color: var(--accent);
 }
 
-.tl__row--pinned .tl__name {
-  color: var(--ink);
+.tl__sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 15px;
 }
 
+.tl__snippet {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl__active-label {
+  color: var(--accent);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Quick to light, slow to leave. Arriving under the cursor should feel like
+   the row was already there; leaving is not something the eye is following, so
+   it can take its time and the list settles instead of flickering as the cursor
+   crosses it. */
 .tl__row {
-  transition: background-color 0.14s ease;
+  transition: background-color 240ms cubic-bezier(0.33, 1, 0.68, 1);
 }
 .tl__row:hover,
 .tl__row:focus-within {
   background: var(--hover);
+  transition-duration: 110ms;
 }
 .tl__row--on,
 .tl__row--on:hover {
@@ -439,6 +635,13 @@ function toggleDone(row: SessionSummary): void {
 }
 .tl__row--on .tl__name {
   color: var(--ink);
+}
+/* An unread row leans forward: full ink and a heavier stroke. The dot says
+   which rows are unread; this is what makes the list *look* like it has unread
+   rows in it before you have read a single one of them. */
+.tl__row--unread .tl__name {
+  color: var(--ink);
+  font-weight: 700;
 }
 
 /* Where the pinned run ends. A rule, not a header — the list stays one
@@ -461,16 +664,13 @@ function toggleDone(row: SessionSummary): void {
 .tl__meta {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
   min-width: 0;
   font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 14px;
   color: var(--muted);
   white-space: nowrap;
-}
-.tl__agent {
-  flex: none;
 }
 .tl__chip {
   display: inline-flex;
@@ -482,6 +682,24 @@ function toggleDone(row: SessionSummary): void {
 }
 .tl__chip svg {
   flex: none;
+}
+
+.tl__chip--subtle {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--faint);
+  background: var(--line-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.tl__chip--branch {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--line-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
 }
 
 /* One slot, two occupants. The stamp is laid out and the actions are stacked
@@ -497,13 +715,38 @@ function toggleDone(row: SessionSummary): void {
   min-height: 22px;
 }
 
+/* What the row is telling you, as one group: the unread mark, and either the
+   turn's orb or the stamp. The group is what hands the slot over to the actions
+   on hover, rather than each part fading on its own clock — whichever is leaving
+   clears first and the other follows a beat later. Fading both together leaves a
+   moment where the slot is two half-lit things at once, which is the part that
+   reads as a flicker. */
+.tl__stamp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition:
+    opacity 150ms ease,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: 90ms;
+}
+
 .tl__when {
   font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 14px;
   color: var(--faint);
   font-variant-numeric: tabular-nums;
-  transition: opacity 0.14s ease;
+}
+
+/* The unread mark. Small and solid — it has to survive being the only coloured
+   thing in a list of greys without becoming the thing you read first. */
+.tl__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 .tl__acts {
@@ -513,17 +756,24 @@ function toggleDone(row: SessionSummary): void {
   align-items: center;
   gap: 2px;
   opacity: 0;
+  transform: translateX(5px);
   pointer-events: none;
-  transition: opacity 0.14s ease;
+  transition:
+    opacity 150ms ease,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .tl__row:hover .tl__acts,
 .tl__row:focus-within .tl__acts {
   opacity: 1;
+  transform: none;
   pointer-events: auto;
+  transition-delay: 90ms;
 }
-.tl__row:hover .tl__when,
-.tl__row:focus-within .tl__when {
+.tl__row:hover .tl__stamp,
+.tl__row:focus-within .tl__stamp {
   opacity: 0;
+  transform: translateX(-5px);
+  transition-delay: 0ms;
 }
 .tl__act {
   display: grid;
@@ -535,13 +785,13 @@ function toggleDone(row: SessionSummary): void {
   background: transparent;
   cursor: pointer;
   transition:
-    color 0.14s ease,
-    background-color 0.14s ease,
-    opacity 0.14s ease;
+    color 140ms ease,
+    background-color 200ms cubic-bezier(0.33, 1, 0.68, 1);
 }
 .tl__act:hover {
   color: var(--ink-soft);
   background: var(--selected);
+  transition-duration: 90ms;
 }
 .tl__act--on,
 .tl__act--on:hover {
@@ -568,6 +818,17 @@ function toggleDone(row: SessionSummary): void {
 @media (prefers-reduced-motion: reduce) {
   .tl__row {
     animation: none;
+  }
+  /* The hand-over stays — it is what tells you the slot changed hands — but it
+     loses the travel and the wait, so it is a plain swap rather than movement. */
+  .tl__stamp,
+  .tl__acts,
+  .tl__row:hover .tl__stamp,
+  .tl__row:focus-within .tl__stamp,
+  .tl__row:hover .tl__acts,
+  .tl__row:focus-within .tl__acts {
+    transform: none;
+    transition-delay: 0ms;
   }
 }
 </style>

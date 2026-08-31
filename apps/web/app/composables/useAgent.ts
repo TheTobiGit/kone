@@ -22,9 +22,11 @@ import type {
   TokenUsage,
   UserInputAnswers,
 } from "~/types/desktop";
+import { useAgentProviders } from "~/composables/useAgentProviders";
 import { agentPersonaForThread, carryThreadAgent } from "~/utils/agents";
 import { peelIpcError } from "~/utils/ipcError";
 import { EFFORT_META } from "~/utils/modelCatalog";
+import { bootMode, MODES } from "~/utils/modelPicker";
 import { activePlanTask } from "~/utils/planTasks";
 
 import {
@@ -208,8 +210,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // Because the two are separate CLIs with no shared conversation, a switch is a
   // fresh session — restart() below tears the old one down and starts anew.
   const provider = ref<ProviderKind>(options.provider);
+  // Module-scope singleton: every thread shares one probe result, so this is a
+  // read of shared state, not a per-thread subscription.
+  const providers = useAgentProviders();
   const model = ref(options.model);
-  const mode = ref<InteractionMode>(options.mode ?? "accept-edits");
+  const mode = ref<InteractionMode>(
+    options.mode ?? bootMode(ctx.resolveCwd() ?? "") ?? "accept-edits",
+  );
   const reasoning = ref<ReasoningTier>(options.reasoning ?? "medium");
   const serviceTier = ref<string | undefined>(options.serviceTier);
   const contextWindow = ref<string | undefined>(options.contextWindow);
@@ -594,6 +601,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       effort?: string;
       serviceTier?: string;
       contextWindow?: string;
+      mode?: string;
     };
     /** Present on a side chat — marks this session as one (forkContext
      *  presence is the discriminator, never a title prefix). */
@@ -619,6 +627,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
     if (stored.selection?.serviceTier !== undefined) serviceTier.value = stored.selection.serviceTier;
     if (stored.selection?.contextWindow !== undefined) contextWindow.value = stored.selection.contextWindow;
+    const storedMode = stored.selection?.mode;
+    if (storedMode && MODES.some((m) => m === storedMode)) {
+      // SAFETY: the membership test above guards the cast.
+      mode.value = storedMode as InteractionMode;
+    } else {
+      const booted = bootMode(ctx.resolveCwd() ?? "");
+      if (booted) {
+        mode.value = booted;
+      }
+    }
     pendingResumeId = stored.conversationId;
     pendingResumeProvider = provider.value;
     pendingResumeSessionAt = stored.resumeSessionAt;
@@ -823,6 +841,24 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const deferred = ref(false);
   let starting: Promise<void> | null = null;
 
+  /** Latch the pending rehydrate closed without starting anything.
+   *
+   *  A blank session is fungible — the registry hands the same one back to
+   *  whoever asks for a new thread next — but its deferred rehydrate is not. It
+   *  belongs to the surface that spawned the session, and firing it under a
+   *  caller that asked for a NEW thread adopts the project's latest stored
+   *  conversation instead: the id changes to that thread's, the transcript
+   *  overwrites the user block send() just pushed, and the turn appends to a
+   *  conversation nobody chose. The thread the user wrote in then only shows up
+   *  on the next read of the store, at the end of somebody else's.
+   *
+   *  Cheap and idempotent, so the reuse paths can call it unconditionally
+   *  rather than asking first whether this particular blank happens to owe a
+   *  rehydrate to whoever made it. */
+  function disownRehydrate(): void {
+    rehydratedOnce = true;
+  }
+
   /** Mark this session as startable-on-demand instead of starting it now. */
   function deferStart(): void {
     if (session.value) return; // already live — nothing to defer
@@ -846,6 +882,31 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       starting = null;
     });
     return starting;
+  }
+
+  /** Whether this thread's provider can take a turn, and the sentence to show
+   *  when it can't. Reactive — a pushed status correction un-blocks the composer
+   *  without the user touching anything. */
+  const sendBlockedReason = computed(() => {
+    const availability = providers.sendAvailability(provider.value).value;
+    return availability.usable ? null : availability.reason;
+  });
+
+  /** Re-probe once before refusing an already-blocked send, then answer. The
+   *  usual reason a row says "signed out" is that it is stale — the user went and
+   *  fixed it — so a refusal is worth one round-trip. A blocked send surfaces the
+   *  reason on the thread rather than throwing: the composer still holds the
+   *  draft, so there is nothing to recover, only something to explain.
+   *
+   *  Only ever called on the blocked path. The unblocked send must not await
+   *  anything before pushing the user block — the queued-chip anchoring reads
+   *  that block in the same tick as the call. */
+  async function recheckBeforeRefusing(): Promise<boolean> {
+    await providers.refresh().catch(() => {});
+    const reason = sendBlockedReason.value;
+    if (!reason) return true;
+    error.value = reason;
+    return false;
   }
 
   /** Start this thread's session. The manager owns the event listener, so this
@@ -1025,6 +1086,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const trimmed = text.trim();
     const files = attachments ?? [];
     if (!trimmed && files.length === 0) return;
+    // Last line of defense. The composer already refuses a blocked send while
+    // keeping the draft (`blockedReason`), so reaching here means the surface
+    // acted on a status that has since gone stale. The check is synchronous
+    // unless it is about to refuse: everything below assumes the user block
+    // lands in this tick.
+    if (sendBlockedReason.value && !(await recheckBeforeRefusing())) return;
     touch();
     const blockId = uid();
     const block: UserBlock = {
@@ -1485,6 +1552,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     everRan,
     error,
     warning,
+    // Why a send would be refused right now, or null. The composer binds it to
+    // keep the draft instead of dispatching into a provider that can't run it.
+    sendBlockedReason,
     tokenUsage,
     // The stored-transcript read came back empty-handed — what the thread's
     // "didn't load" banner is allowed to key off.
@@ -1522,6 +1592,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // actions
     start,
     deferStart,
+    disownRehydrate,
     ensureStarted,
     openStored,
     loadOlder,
@@ -1595,6 +1666,13 @@ type ProjectRegistry = {
 };
 const registries = new Map<string, ProjectRegistry>();
 
+/** Bumped whenever the *set* of registries changes. The Map itself is plain —
+ *  the sessions inside it are refs, so a computed that walks it tracks their
+ *  contents, but not a project appearing or going away. Anything reading across
+ *  every project (see liveTurns) touches this so a newly-opened project's
+ *  threads are not invisible until something else happens to invalidate. */
+const registryVersion = ref(0);
+
 function registryFor(projectPath: string): ProjectRegistry {
   let r = registries.get(projectPath);
   if (!r) {
@@ -1608,9 +1686,32 @@ function registryFor(projectPath: string): ProjectRegistry {
       paneBoundKeys: new Set(),
     };
     registries.set(projectPath, r);
+    registryVersion.value++;
   }
   return r;
 }
+
+/** Every turn running anywhere in the app right now, keyed by thread id.
+ *
+ *  A surface that owns a session knows its own thread's state from that session.
+ *  The inbox list owns none: its rows are read off disk, and a stored row cannot
+ *  know that the same thread is mid-turn in a studio column two surfaces away.
+ *  The registries do know — they are module-scope and outlive any one view — so
+ *  this is the join between "a row on disk" and "a turn in flight", and it is
+ *  read-only by design: nothing here starts, adopts, or keeps a session alive. */
+export const liveTurns = computed<Map<string, AssistantBlock>>(() => {
+  void registryVersion.value;
+  const out = new Map<string, AssistantBlock>();
+  for (const r of registries.values()) {
+    for (const s of r.sessions.value) {
+      const threadId = s.threadId.value;
+      if (!threadId) continue;
+      const block = latestAssistant(s.timelineBlocks.value);
+      if (block?.state === "running") out.set(threadId, block);
+    }
+  }
+  return out;
+});
 
 /** Explicit teardown for a project's agent registry: clears the background
  *  sweep timer, detaches the IPC event listener, disposes all sessions, and
@@ -1635,6 +1736,7 @@ export async function disposeProjectRegistry(projectPath: string): Promise<void>
   r.sessions.value = [];
   await Promise.all(toDispose.map((s) => s.dispose()));
   registries.delete(projectPath);
+  registryVersion.value++;
 }
 
 export function useAgent(options: UseAgentOptions) {
@@ -1898,6 +2000,7 @@ export function useAgent(options: UseAgentOptions) {
   const queuedTurns = computed<QueuedTurnEntry[]>(() => active.value?.queuedTurns.value ?? []);
   const error = computed(() => active.value?.error.value ?? null);
   const warning = computed(() => active.value?.warning.value ?? null);
+  const sendBlockedReason = computed(() => active.value?.sendBlockedReason.value ?? null);
   const tokenUsage = computed(() => active.value?.tokenUsage.value ?? null);
   const pendingUserInput = computed(() => active.value?.pendingUserInput.value ?? null);
   const pendingApproval = computed(() => active.value?.pendingApproval.value ?? null);
@@ -1995,6 +2098,10 @@ export function useAgent(options: UseAgentOptions) {
     const prev = active.value;
     const existing = sessions.value.find(isThreadSessionBlank);
     if (existing) {
+      // The blank being reused may be the registry's boot session, which owes
+      // its maker a rehydrate. Nobody asking for a new thread wants that (see
+      // disownRehydrate) — the reuse is what makes this thread new.
+      existing.disownRehydrate();
       activeKey.value = existing.key;
       existing.touch();
       if (prev && prev !== existing && !isThreadSessionBlank(prev)) {
@@ -2022,6 +2129,28 @@ export function useAgent(options: UseAgentOptions) {
     pruneResident();
   }
 
+  /** A brand-new thread that is nobody else's: always a fresh session, never
+   *  the registry's spare blank.
+   *
+   *  `newThread` reuses a blank when it finds one, and on the board that is
+   *  right — a blank column IS where a new thread goes, so reusing it is what
+   *  keeps ⌘N from stacking empty columns. A surface off the board has no such
+   *  column, and the blank it would be handed belongs to a pane it cannot see:
+   *  the thread it starts would appear in the studio's empty column instead of
+   *  where it was written. Returns the key, because a caller that means "this
+   *  exact session" should not have to find it again.
+   *
+   *  Synchronous on purpose. The session exists and is usable the moment it is
+   *  made — its provider process comes up on the first send (see deferStart) —
+   *  so a caller can pin it against the sweep in the same tick, with no window
+   *  in which the blank it just asked for is a blank anyone else may take. */
+  function newDetachedThread(): string {
+    const fresh = spawn({ rehydrate: false });
+    fresh.deferStart();
+    activeKey.value = fresh.key;
+    return fresh.key;
+  }
+
   /** Open a blank thread at a specific strip index (0 = left edge). Used by the
    *  seam action bar to insert left or right of a column boundary. Returns the
    *  column's stable key so a caller can bind to it directly rather than
@@ -2034,6 +2163,9 @@ export function useAgent(options: UseAgentOptions) {
   async function newThreadAt(index: number): Promise<string> {
     const existing = sessions.value.find(isThreadSessionBlank);
     if (existing) {
+      // As in newThread: a reused blank must not still be carrying somebody
+      // else's rehydrate.
+      existing.disownRehydrate();
       const list = sessions.value.filter((s) => s !== existing);
       const insertAt = Math.min(Math.max(0, index), list.length);
       list.splice(insertAt, 0, existing);
@@ -2263,6 +2395,7 @@ export function useAgent(options: UseAgentOptions) {
     queuedTurns,
     error,
     warning,
+    sendBlockedReason,
     tokenUsage,
     pendingUserInput,
     pendingApproval,
@@ -2294,6 +2427,7 @@ export function useAgent(options: UseAgentOptions) {
     start,
     restart,
     newThread,
+    newDetachedThread,
     newThreadAt,
     openThread,
     openThreadHandle,

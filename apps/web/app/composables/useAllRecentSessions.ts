@@ -43,9 +43,13 @@ function mockSessions(): SessionSummary[] {
       tokens: 3_200_000,
       costUsd: 15.36,
       updatedAt: now - 0.2 * DAY,
+      // Two of the stand-in rows carry the unread mark so the list's read /
+      // unread split is visible without a database behind it.
+      unread: true,
       pinned: true,
       projectPath: "/Users/you/Developer/kone",
       projectName: "kone",
+      snippet: "Added WebSocket transport layer and validated IPC payloads.",
     },
     {
       threadId: "all-mock-2",
@@ -60,6 +64,7 @@ function mockSessions(): SessionSummary[] {
       updatedAt: now - 0.9 * DAY,
       projectPath: "/Users/you/Developer/nova",
       projectName: "nova",
+      snippet: "Corrected regex match for token totals in stream response envelopes.",
     },
     {
       threadId: "all-mock-3",
@@ -74,6 +79,7 @@ function mockSessions(): SessionSummary[] {
       updatedAt: now - 2 * DAY,
       projectPath: "/Users/you/Developer/kone",
       projectName: "kone",
+      snippet: "Ensured prototype-free serialization before storing state snapshots.",
     },
     {
       threadId: "all-mock-4",
@@ -88,6 +94,7 @@ function mockSessions(): SessionSummary[] {
       updatedAt: now - 3 * DAY,
       projectPath: "/Users/you/Developer/atlas",
       projectName: "atlas",
+      snippet: "Synced capability flags and max output token schemas with latest provider specs.",
     },
     {
       threadId: "all-mock-5",
@@ -102,6 +109,7 @@ function mockSessions(): SessionSummary[] {
       updatedAt: now - 5 * DAY,
       projectPath: "/Users/you/Developer/paper",
       projectName: "paper",
+      snippet: "Smoothed state transitions for turn orbs and unified edge masking.",
     },
     {
       threadId: "all-mock-6",
@@ -114,8 +122,10 @@ function mockSessions(): SessionSummary[] {
       tokens: 740_000,
       costUsd: 2.59,
       updatedAt: now - 0.6 * DAY,
+      unread: true,
       projectPath: "/Users/you/Developer/kone",
       projectName: "kone",
+      snippet: "Mapped reasoning effort and temperature overrides to CLI flags.",
     },
   ];
 }
