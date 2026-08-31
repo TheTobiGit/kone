@@ -27,6 +27,11 @@ export interface StudioRowApi {
   /** Whether a thread is mid-turn — the gate the two above answer to. */
   sessionBusy: (threadId: string) => boolean;
   openThread: (threadId: string) => void;
+  /** Take a thread that was started somewhere else in the app and put it on this
+   *  row as a pane. Unfocused, and it does not bring the plane forward — the
+   *  column is waiting when you next travel here. Deduped: a thread the row
+   *  already hosts stays where it is. */
+  adoptThread: (threadId: string) => void;
   newThread: () => void;
   openTerminal: () => void;
   openScratchpad: () => void;
@@ -45,8 +50,14 @@ export interface StudioRowApi {
  *  on screen as well as stamp the store, and the row can no longer be handed
  *  that function as a prop — the list is under the plane, not above the row. */
 export interface ProjectHistoryList {
-  /** Drop the thread from the on-screen list AND stamp it archived in the store. */
-  archive: (threadId: string) => void;
+  /** Drop the thread from the on-screen list AND stamp it archived in the store.
+   *
+   *  Resolves to whether the store took it. The store refuses an archive whose
+   *  subtree is still working, and the caller is about to forget the live
+   *  session and close the column behind this — so the answer has to come back,
+   *  or a refusal tears the row's half down around a thread that never went
+   *  anywhere. */
+  archive: (threadId: string) => Promise<boolean>;
   remove: (threadId: string) => void;
 }
 
@@ -60,7 +71,14 @@ function stampOnly(): ProjectHistoryList {
   const api = () =>
     import.meta.client ? window.koneDesktop?.agent?.history : undefined;
   return {
-    archive: (threadId) => void api()?.archive(threadId, true).catch(() => {}),
+    // No bridge means browser dev, where there is no store to refuse: the caller
+    // may proceed.
+    archive: async (threadId) => {
+      const bridge = api();
+      if (!bridge) return true;
+      const result = await bridge.archive(threadId, true).catch(() => null);
+      return result?.ok === true;
+    },
     remove: (threadId) => void api()?.remove(threadId).catch(() => {}),
   };
 }

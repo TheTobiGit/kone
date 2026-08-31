@@ -17,9 +17,12 @@ import type { GitRemote } from "~/types/desktop";
 import { buildModelCatalog, effortForTier, familyForId, sessionBrand, EFFORT_META } from "~/utils/modelCatalog";
 import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
+  bootMode,
+  bootModel,
+  bootProvider,
+  bootReasoning,
   DEFAULT_MODE_KEY,
   DEFAULT_MODEL_KEY,
-  bootProvider,
   DEFAULT_PROVIDER_KEY,
   DEFAULT_REASONING_KEY,
   MODEL_KEY,
@@ -28,6 +31,7 @@ import {
   PROVIDER_KEY,
   PROVIDER_VENDOR,
   REASONING_KEY,
+  setLastUsedModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
 import { SESSION_BRAND } from "~/types/session";
@@ -111,6 +115,7 @@ const providerSettings = useProviderSettings();
 const agent = useAgent({
   provider: bootProvider(),
   cwd: () => props.project.path,
+  mode: bootMode(props.project.path) ?? undefined,
 });
 // A conversation the launcher asked us to resume on open (see onMounted).
 const pendingThread = usePendingThread();
@@ -243,6 +248,23 @@ const activePaneIsThread = computed(() => focusedThread.value !== null);
  *  for good — which branch it works on, which agent works it — are still open.
  *  The first block is the point of no return for both. */
 const threadIsBlank = computed(() => (focusedThread.value?.blocks.value.length ?? 0) === 0);
+// Why the focused thread's provider can't take a turn, or null. Drives both the
+// banner and the composer's refusal, so the two can never disagree.
+const sendBlockedReason = computed(() => focusedThread.value?.sendBlockedReason.value ?? null);
+const sendBlockedStatus = computed(() => {
+  const provider = focusedThread.value?.provider.value;
+  return provider ? (providers.byProvider(provider).value ?? null) : null;
+});
+const recheckingProviders = ref(false);
+async function recheckProviders(): Promise<void> {
+  if (recheckingProviders.value) return;
+  recheckingProviders.value = true;
+  try {
+    await providers.refresh();
+  } finally {
+    recheckingProviders.value = false;
+  }
+}
 
 // ── empty-row chooser ────────────────────────────────────────────────────────
 // A row's panes are its windows: closing the last one empties the row (zero
@@ -291,14 +313,18 @@ function closePane(id: string): void {
 // Archiving a thread from its column header stamps the history row (and forgets
 // the in-memory registry thread, same as the recent-list archive), then closes
 // the now-empty column so it doesn't linger on the studio pointing at a hidden row.
-function archivePane(threadId: string, id: string): void {
+async function archivePane(threadId: string, id: string): Promise<void> {
   if (sessionBusy(threadId)) {
     flashArchiveNotice(
       "This thread is still working — let it finish (or stop it) before archiving.",
     );
     return;
   }
-  archiveSession(threadId);
+  // Only once the store has taken it. archiveSession already closes the pane
+  // hosting the thread, so this second close is for the column the header was
+  // clicked in when the two are not the same pane — and on a refusal neither
+  // happens, which is what leaves the column standing to be explained.
+  if (!(await archiveSession(threadId))) return;
   void studio.close(id);
 }
 // The per-host-thread side-chat creator (the thread column's "add panel"
@@ -477,16 +503,32 @@ function closePaneHosting(threadId: string): void {
   if (pane) void studio.close(pane.id);
 }
 
-function archiveSession(threadId: string): void {
+/** Archive a thread and take its column with it — but only once the store has
+ *  said yes.
+ *
+ *  `sessionBusy` is this row's own view, and it only sees what this row hosts. A
+ *  spawned descendant working under a thread whose parent looks idle is invisible
+ *  from here, and the store refuses that archive at write time. Forgetting the
+ *  session and closing the pane ahead of the answer would spend the refusal on
+ *  the column anyway: a thread still very much alive, with nothing left on
+ *  screen pointing at it. */
+async function archiveSession(threadId: string): Promise<boolean> {
   if (sessionBusy(threadId)) {
     flashArchiveNotice(
       "This thread is still working — let it finish (or stop it) before archiving.",
     );
-    return;
+    return false;
   }
-  rowRegistry.historyFor(registryPath).archive(threadId);
+  const archived = await rowRegistry.historyFor(registryPath).archive(threadId);
+  if (!archived) {
+    flashArchiveNotice(
+      "This thread is still working — let it finish (or stop it) before archiving.",
+    );
+    return false;
+  }
   void agent.forgetThread(threadId);
   closePaneHosting(threadId);
+  return true;
 }
 function removeSession(threadId: string): void {
   if (sessionBusy(threadId)) {
@@ -529,6 +571,24 @@ async function revealThread(threadId: string): Promise<void> {
 // thread id. Best-effort on desktop; a no-op in browser dev (no live session).
 function openSession(threadId: string): void {
   void revealThread(threadId);
+}
+
+// A thread started outside the studio — the inbox — that belongs to this
+// project. It joins the row at the right edge, unfocused and with no summon:
+// what was asked for is a thread, not a trip to the plane, so the column is
+// simply waiting the next time you travel here. Deliberately not revealThread,
+// which exists to take you to a pane.
+//
+// It waits for the mount to settle first. restore() replaces the row's entries
+// wholesale, and the save debounce ignores anything before it lands — a pane
+// opened into that window would be wiped by the restore and never written down.
+async function adoptThreadPane(threadId: string): Promise<void> {
+  await whenStudioReady();
+  await studio.open("thread", {
+    threadId,
+    focus: false,
+    at: studio.entries.value.length,
+  });
 }
 
 // ── who answers ──────────────────────────────────────────────────────────────
@@ -804,9 +864,7 @@ function applyChatDefaults(): boolean {
     modelOptions.value.some(
       (o) => o.key === id || o.efforts.some((e) => e.modelId === id),
     );
-  const configuredModel = localStorage.getItem(DEFAULT_MODEL_KEY);
-  const lastUsedModel = localStorage.getItem(MODEL_KEY);
-  const savedModel = configuredModel ?? lastUsedModel;
+  const savedModel = bootModel();
   if (owned(savedModel)) {
     agent.setModel(savedModel!);
   } else if (owned(current)) {
@@ -817,13 +875,10 @@ function applyChatDefaults(): boolean {
     agent.setModel(eff ? eff.modelId : undefined);
   }
 
-  const savedReasoning =
-    localStorage.getItem(DEFAULT_REASONING_KEY) ?? localStorage.getItem(REASONING_KEY);
+  const savedReasoning = bootReasoning();
   if (savedReasoning && savedReasoning in EFFORT_META) {
     const fam = familyForId(modelOptions.value, model.value);
-    // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the
-    // `in` guard above proves savedReasoning is an EffortTier.
-    const eff = effortForTier(fam, savedReasoning as EffortTier);
+    const eff = effortForTier(fam, savedReasoning);
     if (eff) agent.setReasoning(eff.tier);
   }
 
@@ -1044,14 +1099,26 @@ watch(
         ? keep?.id ?? windows.find((w) => w.isDefault)?.id ?? windows[0]!.id
         : undefined,
     );
-    if (import.meta.client && id) localStorage.setItem(MODEL_KEY, id);
+    if (import.meta.client && id && !capModel.value) {
+      setLastUsedModel({
+        provider: agent.provider.value,
+        modelId: id,
+        tier: reasoning.value,
+      });
+    }
   },
   { immediate: true },
 );
 
 // Persist the reasoning effort globally (app-wide last-used), like the model id.
 watch(reasoning, (tier) => {
-  if (import.meta.client) localStorage.setItem(REASONING_KEY, tier);
+  if (import.meta.client && !capModel.value) {
+    setLastUsedModel({
+      provider: agent.provider.value,
+      modelId: model.value,
+      tier,
+    });
+  }
 });
 
 // The full providers→models→effort picker (opened from the composer's model
@@ -1116,11 +1183,24 @@ function onModelSelect(picked: ModelPick) {
 // the user reopening the picker. Only a blank thread is touched: a settled
 // thread keeps the agent it was sent to, so the selection has no say over it,
 // and this never tears down a running turn.
-watch(pickedForProject, async () => {
+watch(pickedForProject, async (nextAgent, prevAgent) => {
   if (!studioReady.value || busy.value || !threadIsBlank.value) return;
   await syncComposerTarget();
   let providerChanged = false;
-  if (!providerAllowed(agent.provider.value)) {
+  const pinned = capModel.value;
+  if (pinned) {
+    if (agent.provider.value !== pinned.provider) {
+      agent.setProvider(pinned.provider);
+      providerChanged = true;
+    }
+  } else if (prevAgent?.capabilities?.model) {
+    // Switched from a pinned agent back to an unpinned agent on a blank thread — restore general last-used
+    const bootP = bootProvider();
+    if (agent.provider.value !== bootP) {
+      agent.setProvider(bootP);
+      providerChanged = true;
+    }
+  } else if (!providerAllowed(agent.provider.value)) {
     const next = enabledReady.value.find((s) => providerAllowed(s.provider));
     if (next && next.provider !== agent.provider.value) {
       agent.setProvider(next.provider);
@@ -1132,9 +1212,15 @@ watch(pickedForProject, async () => {
   const current = agent.model.value;
   const owned = Boolean(current) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === current));
   if (!owned) {
-    const first = modelOptions.value[0];
-    const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
-    agent.setModel(eff ? eff.modelId : undefined);
+    const desired = pinned?.model ?? bootModel();
+    const desiredOwned = Boolean(desired) && modelOptions.value.some((o) => o.efforts.some((e) => e.modelId === desired));
+    if (desiredOwned) {
+      agent.setModel(desired!);
+    } else {
+      const first = modelOptions.value[0];
+      const eff = first?.efforts[first.defaultEffortIndex] ?? first?.efforts[0];
+      agent.setModel(eff ? eff.modelId : undefined);
+    }
   }
   if (providerChanged) await agent.restart();
   persistThreadSelection();
@@ -1388,6 +1474,7 @@ const rowApi: StudioRowApi = {
   removeSession,
   sessionBusy,
   openThread: onOpenThread,
+  adoptThread: (threadId) => void adoptThreadPane(threadId),
   newThread: () => void newThreadPane(),
   openTerminal: newTerminalPane,
   openScratchpad: newScratchpadPane,
@@ -1490,10 +1577,17 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
     >
       <div
         v-if="!focusedPendingUserInput && !focusedPendingApproval && visible && activePaneIsThread && !showChooser && !isOverview"
-        class="composer-dock pointer-events-none fixed inset-x-0 bottom-8 flex justify-center"
+        class="composer-dock pointer-events-none fixed inset-x-0 bottom-8 flex flex-col items-center"
         :class="{ 'composer-dock--open': composerOpen }"
         :inert="blocked"
       >
+        <ProviderHealthBanner
+          class="pointer-events-auto mb-2 w-[min(100%-32px,680px)]"
+          :status="sendBlockedStatus"
+          :reason="sendBlockedReason"
+          :checking="recheckingProviders"
+          @recheck="recheckProviders"
+        />
         <AgentComposer
           ref="composerRef"
           :project-path="project.path"
@@ -1515,6 +1609,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :mode="mode"
           :fast-mode="fastActive"
           :context-window="contextWindow"
+          :blocked-reason="sendBlockedReason"
           @send="onSend"
           @steer="onSteer"
           @remove-queued="onRemoveQueued"

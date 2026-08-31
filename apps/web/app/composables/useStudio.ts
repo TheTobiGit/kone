@@ -42,9 +42,28 @@ import type { ScratchpadSession, useScratchpad } from "~/composables/useScratchp
 // The registry of live provider sessions, not one of them — and deliberately not
 // called `Agent`: that name belongs to the person a thread was handed to, and a
 // local alias would quietly shadow it for the whole file.
-type SessionRegistry = ReturnType<typeof useAgent>;
-type Terminal = ReturnType<typeof useTerminal>;
-type Scratchpad = ReturnType<typeof useScratchpad>;
+//
+// Picked down to what the studio actually touches rather than taken whole. The
+// studio arranges columns; it has no business reaching into a session's
+// transcript, its approvals or its model, and naming the members it does use
+// says so in the type instead of in a comment. It also makes the dependency
+// substitutable — a test stands in the seven functions below rather than
+// asserting its way past fifty it will never call.
+type SessionRegistry = Pick<
+  ReturnType<typeof useAgent>,
+  | "sessions"
+  | "pinToPane"
+  | "unpinFromPane"
+  | "newThreadAt"
+  | "openThreadHandle"
+  | "closeThread"
+  | "focusThread"
+>;
+type Terminal = Pick<ReturnType<typeof useTerminal>, "sessions" | "spawn" | "close">;
+type Scratchpad = Pick<
+  ReturnType<typeof useScratchpad>,
+  "sessions" | "open" | "close" | "append"
+>;
 
 export interface UseStudioOptions {
   agent: SessionRegistry;
