@@ -52,7 +52,7 @@ function harness(hooks?: UseStudioOptions["hooks"]) {
 
   const agent = {
     sessions: agentSessions,
-    activeKey: ref<string | null>(null),
+    activeKey: ref(""),
     pinToPane: (key: string) => {
       pinnedKeys.add(key);
     },
@@ -155,12 +155,20 @@ function harness(hooks?: UseStudioOptions["hooks"]) {
   };
 
   const studio = useStudio({
-    // SAFETY: Fake agent implements the subset of methods exercised by useStudio tests
-    agent: agent as ReturnType<typeof useAgent>,
-    // SAFETY: Fake terminal implements the subset of methods exercised by useStudio tests
-    terminal: terminal as ReturnType<typeof useTerminal>,
-    // SAFETY: Fake scratchpad implements the subset of methods exercised by useStudio tests
-    scratchpad: scratchpad as ReturnType<typeof useScratchpad>,
+    // SAFETY: useStudio now names the members it uses (UseStudioOptions picks
+    // them) and these fakes implement every one, so the only gap left is the
+    // session ELEMENT type — the studio keys sessions by `key` and hands the
+    // rest through to its callers untouched. Asserted to the picked type rather
+    // than to `any`: the day useStudio reaches for a member the fakes lack, the
+    // assertion still fails. `unknown` in the middle only for the element gap.
+    // eslint-disable-next-line anti-slop/no-chained-type-assertions
+    agent: agent as unknown as UseStudioOptions["agent"],
+    // SAFETY: as above — every picked member is implemented; only the session
+    // element type is stood in.
+    terminal: terminal as UseStudioOptions["terminal"],
+    // SAFETY: as above — every picked member is implemented; only the session
+    // element type is stood in.
+    scratchpad: scratchpad as UseStudioOptions["scratchpad"],
     projectPath: "/p",
     hooks,
   });

@@ -22,6 +22,7 @@ import {
   DEFAULT_REASONING_KEY,
   PROVIDER_BRAND,
   PROVIDER_VENDOR,
+  setDefaultModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
 import SettingsInlineChoice from "~/components/settings/SettingsInlineChoice.vue";
@@ -130,11 +131,11 @@ function persistDefault(picked: ModelPick) {
   currentProvider.value = picked.provider;
   currentModel.value = picked.modelId;
   currentReasoning.value = picked.tier;
-  if (import.meta.client) {
-    localStorage.setItem(DEFAULT_PROVIDER_KEY, picked.provider);
-    localStorage.setItem(DEFAULT_MODEL_KEY, picked.modelId);
-    localStorage.setItem(DEFAULT_REASONING_KEY, picked.tier);
-  }
+  setDefaultModel({
+    provider: picked.provider,
+    modelId: picked.modelId,
+    tier: picked.tier,
+  });
 }
 
 // `select` commits and dismisses; `apply` is an in-place tweak (effort/fast) the

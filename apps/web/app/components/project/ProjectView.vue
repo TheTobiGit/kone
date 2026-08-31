@@ -601,15 +601,13 @@ function onDiscardFile(path: string) {
               @switch="switcherOpen = !switcherOpen"
               @profile="emit('profile')"
             />
-            <AnimatePresence>
-              <ProjectSwitcher
-                v-if="switcherOpen"
-                class="greet-switcher"
-                :projects="otherProjects"
-                @switch="switchTo"
-                @all="toLauncher"
+            <div v-if="switcherOpen" class="greet-pop">
+              <ProjectPickerModal
+                :current-path="project.path"
+                @select="switchTo"
+                @cancel="switcherOpen = false"
               />
-            </AnimatePresence>
+            </div>
           </div>
 
           <!-- Inline folder companion for compact / laptop screens: settles in alongside
@@ -1324,5 +1322,12 @@ function onDiscardFile(path: string) {
   .archive-notice-leave-active {
     transition: none;
   }
+}
+
+.greet-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
 }
 </style>
