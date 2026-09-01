@@ -2,25 +2,30 @@
 import ModelPinPicker from "~/components/model/ModelPinPicker.vue";
 import type { AgentModelRef } from "~/types/desktop";
 
-// The editable half of §1.2 capabilities: the one model an agent runs on. No
-// model means no preference — the thread picks per turn, which is the shipped
-// default — and picking one pins the agent there. The provider is implied by
-// the model, so there is no separate provider axis and no fallback list: an
-// agent runs on one model or on none. The provider→model drill-down itself
-// lives in ModelPinPicker, shared with the preset editor.
+// The editable half of capabilities: the model an agent runs on, and the
+// ordered fallbacks behind it. No model means inherit — the thread (or the
+// caller, when this agent is spawned) picks. Picking one pins the agent there;
+// further picks append as fallbacks for a 429 or spent quota.
 
 const props = defineProps<{
   model: AgentModelRef | null;
+  fallbacks?: AgentModelRef[] | null;
 }>();
 const emit = defineEmits<{
   "update:model": [AgentModelRef | null];
+  "update:fallbacks": [AgentModelRef[]];
 }>();
 </script>
 
 <template>
   <div class="cap">
     <section class="cap__block">
-      <ModelPinPicker :model="props.model" @update:model="emit('update:model', $event)" />
+      <ModelPinPicker
+        :model="props.model"
+        :fallbacks="props.fallbacks ?? []"
+        @update:model="emit('update:model', $event)"
+        @update:fallbacks="emit('update:fallbacks', $event)"
+      />
     </section>
   </div>
 </template>

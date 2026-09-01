@@ -267,8 +267,10 @@ const PROVIDER_BRAND = {
 const model = computed(() => agent.value?.capabilities.model ?? null);
 const modelLabel = computed(() => {
   const m = model.value;
-  if (!m) return "No preference";
-  return m.label || m.model;
+  if (!m) return "Inherits the thread";
+  const head = m.label || m.model;
+  const tail = (agent.value?.capabilities.modelFallbacks ?? []).map((f) => f.label || f.model);
+  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
 });
 const skills = computed(() => agent.value?.capabilities.skills ?? []);
 // ── the tabs ──────────────────────────────────────────────────────────────
@@ -515,7 +517,7 @@ watch(
                   <span>{{ modelLabel }}</span>
                   <span class="det__aside">{{ PROVIDER_LABEL[model.provider] }}</span>
                 </template>
-                <span v-else class="det__none">No preference — the thread picks per turn</span>
+                <span v-else class="det__none">Inherits the thread's model</span>
               </dd>
             </div>
 

@@ -187,6 +187,7 @@ function insertLocal(input: SubagentPresetCreateInput): SubagentPresetRecord | n
     name,
     instructions: clamp(input.instructions, PROSE_MAX),
     model: clampModel(input.model),
+    modelFallbacks: input.model ? (input.modelFallbacks ?? []) : null,
     sortOrder: nextSortOrder(),
     createdAt: now,
     updatedAt: now,
@@ -208,6 +209,8 @@ function patchLocal(presetId: string, patch: SubagentPresetPatch): SubagentPrese
   }
   if (patch.instructions !== undefined) next.instructions = clamp(patch.instructions, PROSE_MAX);
   if (patch.model !== undefined) next.model = clampModel(patch.model);
+  if (patch.modelFallbacks !== undefined) next.modelFallbacks = patch.modelFallbacks ?? [];
+  if (next.model === null) next.modelFallbacks = null;
   applyRow(next);
   return next;
 }

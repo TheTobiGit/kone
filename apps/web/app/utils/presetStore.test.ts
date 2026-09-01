@@ -38,6 +38,13 @@ describe("preset sub-agents store", () => {
   test("a created preset keeps the one model it names", async () => {
     const row = await insertPreset({ name: "Pinned", model: gpt });
     expect(row!.model).toEqual(gpt);
+    expect(row!.modelFallbacks).toEqual([]);
+  });
+
+  test("a created preset keeps the fallback chain it names", async () => {
+    const row = await insertPreset({ name: "Chained", model: gpt, modelFallbacks: [haiku] });
+    expect(row!.model).toEqual(gpt);
+    expect(row!.modelFallbacks).toEqual([haiku]);
   });
 
   test("no model is null, not undefined", async () => {
@@ -75,9 +82,10 @@ describe("preset sub-agents store", () => {
   });
 
   test("the model can be cleared to none", async () => {
-    const row = await insertPreset({ name: "Explorer", model: haiku });
+    const row = await insertPreset({ name: "Explorer", model: haiku, modelFallbacks: [gpt] });
     const edited = await patchPreset(row!.presetId, { model: null });
     expect(edited!.model).toBeNull();
+    expect(edited!.modelFallbacks).toBeNull();
   });
 
   test("clearing instructions with null stores null", async () => {

@@ -15,8 +15,8 @@ import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
 
 // §3.4's preset sub-agents surface: the reusable definitions an agent cuts a
 // spawn from. A list of presets, each opening into a light editor — name, the
-// standing instructions the child wakes up to, and the one model it runs on. No
-// face, no role: a preset is lighter than an agent on purpose, just
+// standing instructions the child wakes up to, and the model chain it runs on.
+// No face, no role: a preset is lighter than an agent on purpose, just
 // enough to name a repeatable job and say how it should run.
 
 const props = defineProps<{ open: boolean }>();
@@ -35,10 +35,16 @@ const current = computed<SubagentPresetRecord | undefined>(() =>
 
 // A blank draft the create form binds to. Kept apart from the stored rows so
 // typing a new preset never touches one until it's actually created.
-const draft = reactive<{ name: string; instructions: string; model: AgentModelRef | null }>({
+const draft = reactive<{
+  name: string;
+  instructions: string;
+  model: AgentModelRef | null;
+  modelFallbacks: AgentModelRef[];
+}>({
   name: "",
   instructions: "",
   model: null,
+  modelFallbacks: [],
 });
 
 // Closing the drawer returns to the list, so reopening it doesn't drop you back
@@ -66,6 +72,7 @@ function startCreate() {
   draft.name = "";
   draft.instructions = "";
   draft.model = null;
+  draft.modelFallbacks = [];
   isCreating.value = true;
   cue("open");
 }
@@ -77,6 +84,7 @@ async function submitDraft() {
     name,
     instructions: draft.instructions.trim() || null,
     model: draft.model,
+    modelFallbacks: draft.model ? draft.modelFallbacks : null,
   });
   if (row) {
     isCreating.value = false;
@@ -98,9 +106,38 @@ function setInstructions(value: string) {
   const preset = current.value;
   if (preset) void updatePreset(preset.presetId, { instructions: value.trim() || null });
 }
+
+// The picker emits the primary and the tail as two events in the same tick.
+// One write, after both land, is what keeps a promote or an append from
+// racing a wipe of the chain against the write that puts it back.
+type ChainPatch = { model?: AgentModelRef | null; fallbacks?: AgentModelRef[] };
+let pendingChain: ChainPatch | null = null;
+let chainFlushQueued = false;
+
+function queueChain(patch: ChainPatch) {
+  pendingChain = { ...pendingChain, ...patch };
+  if (chainFlushQueued) return;
+  chainFlushQueued = true;
+  queueMicrotask(() => {
+    const preset = current.value;
+    const next = pendingChain;
+    pendingChain = null;
+    chainFlushQueued = false;
+    if (!preset || !next) return;
+    const model = next.model !== undefined ? next.model : preset.model;
+    const fallbacks = next.fallbacks !== undefined ? next.fallbacks : (preset.modelFallbacks ?? []);
+    void updatePreset(preset.presetId, {
+      model,
+      modelFallbacks: model ? fallbacks : null,
+    });
+  });
+}
+
 function setModel(next: AgentModelRef | null) {
-  const preset = current.value;
-  if (preset) void updatePreset(preset.presetId, { model: next });
+  queueChain({ model: next });
+}
+function setFallbacks(next: AgentModelRef[]) {
+  queueChain({ fallbacks: next });
 }
 
 async function handleDelete() {
@@ -115,8 +152,10 @@ async function handleDelete() {
 
 /** A one-line read of a preset's model for the card. */
 function modelSummary(preset: SubagentPresetRecord): string {
-  if (!preset.model) return "Any model";
-  return preset.model.label ?? preset.model.model;
+  if (!preset.model) return "Inherits the caller";
+  const head = preset.model.label ?? preset.model.model;
+  const tail = (preset.modelFallbacks ?? []).map((f) => f.label ?? f.model);
+  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
 }
 
 /** A short snippet of the instructions for the card body. */
@@ -199,12 +238,16 @@ function snippetFor(preset: SubagentPresetRecord): string {
         <PresetModelList
           v-if="isCreating"
           :model="draft.model"
+          :fallbacks="draft.modelFallbacks"
           @update:model="(m) => (draft.model = m)"
+          @update:fallbacks="(f) => (draft.modelFallbacks = f)"
         />
         <PresetModelList
           v-else-if="current"
           :model="current.model"
+          :fallbacks="current.modelFallbacks ?? []"
           @update:model="setModel"
+          @update:fallbacks="setFallbacks"
         />
       </section>
 

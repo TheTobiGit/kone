@@ -144,7 +144,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   // parallel tool calls), and each must be answerable or its parked request
   // hangs the turn. The modal shows the head.
   const pendingApprovals = ref<PendingApproval[]>([]);
-  /** The child threads THIS thread spawned via kone_spawn_thread — what the
+  /** The child threads THIS thread spawned via kone_spawn_worker — what the
    *  corner Subagents dock reads. Live-only state: the spawn events are
    *  deliberately not journaled (reduce isn't a replay), so a session that
    *  adopts a stored identity re-seeds it by an explicit query instead (see

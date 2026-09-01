@@ -3,18 +3,24 @@ import { computed } from "vue";
 import ModelPinPicker from "~/components/model/ModelPinPicker.vue";
 import type { AgentModelRef } from "~/types/desktop";
 
-// §3.5's model preference for a preset sub-agent: the one model a spawn from the
-// preset runs on. No fallback ladder and no provider axis — a preset either
-// names one model or names none. Null is a real answer: no preference, run where
-// the caller runs. The provider→model drill-down lives in ModelPinPicker, shared
-// with the agent-capabilities editor.
+// Model preference for a preset sub-agent: inherit (null) or an assigned chain.
+// Null is a real answer: no preference, run where the caller runs.
 
-const props = defineProps<{ model: AgentModelRef | null }>();
-const emit = defineEmits<{ "update:model": [AgentModelRef | null] }>();
+const props = defineProps<{
+  model: AgentModelRef | null;
+  fallbacks?: AgentModelRef[] | null;
+}>();
+const emit = defineEmits<{
+  "update:model": [AgentModelRef | null];
+  "update:fallbacks": [AgentModelRef[]];
+}>();
 
-const state = computed(() =>
-  props.model ? `Pinned to ${props.model.label ?? props.model.model}` : "No preference",
-);
+const state = computed(() => {
+  if (!props.model) return "Inherits the caller";
+  const tail = (props.fallbacks ?? []).map((f) => f.label ?? f.model);
+  const head = props.model.label ?? props.model.model;
+  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : `Pinned to ${head}`;
+});
 </script>
 
 <template>
@@ -24,10 +30,16 @@ const state = computed(() =>
       <span class="pml__state">{{ state }}</span>
     </div>
     <p class="pml__hint">
-      The one model a spawn from this preset runs on. Leave it off to run wherever the caller runs.
+      The model a spawn from this preset runs on, then each fallback in order if
+      that one is rate-limited or spent. Leave it off to run wherever the caller runs.
     </p>
 
-    <ModelPinPicker :model="props.model" @update:model="emit('update:model', $event)" />
+    <ModelPinPicker
+      :model="props.model"
+      :fallbacks="props.fallbacks ?? []"
+      @update:model="emit('update:model', $event)"
+      @update:fallbacks="emit('update:fallbacks', $event)"
+    />
   </div>
 </template>
 

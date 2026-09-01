@@ -1,4 +1,5 @@
 import { computed, onMounted } from "vue";
+import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
 import {
   hydratePresets,
   insertPreset,
@@ -18,36 +19,18 @@ import type { SubagentPresetCreateInput } from "~/types/desktop";
  * The example presets a fresh install opens on, so the surface teaches what a
  * preset is by showing four rather than an empty page.
  *
+ * Seeded from the one shared list the spawn gateway folds the same definitions
+ * in from, so the presets the user sees here are exactly the ones the AI can
+ * invoke. They seed as real, editable rows — dropping the shipped id so each
+ * mints its own — rather than the read-only fallbacks the gateway carries.
+ *
  * Each ships with no model — a null model means "run where the caller runs", so
  * an example always plans and never refuses on a model nobody has installed.
  * Naming a model is left to whoever adapts the example.
  */
-const SEED_PRESETS: readonly SubagentPresetCreateInput[] = [
-  {
-    name: "Explorer",
-    instructions:
-      "Read-only. Map the code and report what you find — the files that matter, the call sites, how the data flows. Do not edit anything; the answer is the deliverable.",
-    model: null,
-  },
-  {
-    name: "Code Reviewer",
-    instructions:
-      "Review the change for correctness bugs and risky edge cases. Report findings ranked most-serious first, each with the concrete input that triggers it. Do not change the code.",
-    model: null,
-  },
-  {
-    name: "PR Handler",
-    instructions:
-      "Open, update, and describe pull requests. Say what the change does, why it was made, and how it was verified — no more than that fits on one screen.",
-    model: null,
-  },
-  {
-    name: "Git Handler",
-    instructions:
-      "Handle git operations — branches, commits, history. Never force-push a shared branch or discard work you didn't just create; when unsure, stop and report rather than rewrite.",
-    model: null,
-  },
-];
+const SEED_PRESETS: readonly SubagentPresetCreateInput[] = BUILTIN_SUBAGENT_PRESETS.map(
+  (preset) => ({ name: preset.name, instructions: preset.instructions, model: null }),
+);
 
 export function useSubagentPresets() {
   // The presets live in the store, so reading them means asking. On mount, not

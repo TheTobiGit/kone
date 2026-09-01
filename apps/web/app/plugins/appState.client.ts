@@ -21,6 +21,7 @@ import type { KoneAgentRosterEntry, KoneStripSettings } from "~/types/desktop";
  *  drawn SVG and the roster order stop here — a model has no use for either. */
 function rosterEntry(agent: Agent, activeId: string | null): KoneAgentRosterEntry {
   const model = agent.capabilities.model;
+  const fallbacks = model ? agent.capabilities.modelFallbacks : [];
   const entry: KoneAgentRosterEntry = {
     id: agent.id,
     name: agent.name,
@@ -32,6 +33,11 @@ function rosterEntry(agent: Agent, activeId: string | null): KoneAgentRosterEntr
         ? { provider: model.provider, model: model.model, label: model.label }
         : { provider: model.provider, model: model.model }
       : null,
+    modelFallbacks: fallbacks.map((ref) =>
+      ref.label !== undefined
+        ? { provider: ref.provider, model: ref.model, label: ref.label }
+        : { provider: ref.provider, model: ref.model },
+    ),
     skills: agent.capabilities.skills.map((skill) => skill.name),
     builtIn: isShippedAgent(agent.id),
     active: agent.id === activeId,

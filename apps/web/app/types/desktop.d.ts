@@ -1199,7 +1199,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (kone_spawn_thread), and every subsequent
+  // An agent spawned a child thread (kone_spawn_worker), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value — apply by replacing,
@@ -1259,6 +1259,8 @@ export type RuntimeEvent =
         instructions?: string;
         face?: { body: string; ink: string };
         model?: { provider: string; model: string; label?: string };
+        /** Ordered fallbacks behind `model`. Ignored when no primary is set. */
+        modelFallbacks?: { provider: string; model: string; label?: string }[];
       };
       /** Fields to hand back: to the shipped preset on a built-in, unset on a
        *  user-made agent. Named rather than sent as null, because a null across
@@ -1268,7 +1270,7 @@ export type RuntimeEvent =
       projectPath?: string;
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `kone_spawn_from_preset` cuts a spawn from. Unlike the
+  // standing definitions `kone_spawn_worker_preset` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (AgentBaseEvent & {
@@ -2534,6 +2536,10 @@ export type AgentRecord = {
   /** The one model the agent runs on; null inherits the preset's, a ref is the
    *  model it uses, and no model named means the thread picks per turn. */
   model: AgentModelRef | null;
+  /** Models tried in order when `model` can't run. Only meaningful alongside a
+   *  `model`; a null primary ignores the list. Null next to a null `model` is
+   *  inherit; `[]` is a pinned model with no second choice. */
+  modelFallbacks: AgentModelRef[] | null;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -2553,6 +2559,7 @@ export type AgentCreateInput = {
   bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
 };
 
 /** An edit. A key left out is left alone; an explicit null clears the field —
@@ -2567,6 +2574,7 @@ export type AgentPatch = {
   bot?: AgentBotRef | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
 };
 
 /** A fork of an existing agent. `inherited` carries the shipped preset's values
@@ -2586,6 +2594,7 @@ export type AgentDuplicateInput = {
     bot?: AgentBotRef | null;
     skills?: AgentSkillRef[] | null;
     model?: AgentModelRef | null;
+    modelFallbacks?: AgentModelRef[] | null;
   };
 };
 
@@ -2704,6 +2713,8 @@ export type SubagentPresetRecord = {
   instructions: string | null;
   /** The model a spawn from this preset runs on, or null for no preference. */
   model: AgentModelRef | null;
+  /** Models tried in order when `model` can't run. Same rules as an agent's. */
+  modelFallbacks: AgentModelRef[] | null;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -2714,6 +2725,7 @@ export type SubagentPresetCreateInput = {
   name: string;
   instructions?: string | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
 };
 
 /** An edit to a preset. A key left out is left alone; the name is the one field
@@ -2722,6 +2734,7 @@ export type SubagentPresetPatch = {
   name?: string;
   instructions?: string | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
 };
 
 export type PresetUpdateInput = {
@@ -2768,6 +2781,8 @@ export type KoneAgentRosterEntry = {
   instructions: string;
   face: { body: string; ink: string };
   model: { provider: string; model: string; label?: string } | null;
+  /** Ordered fallbacks behind `model`. Empty when the agent inherits or has no second choice. */
+  modelFallbacks: { provider: string; model: string; label?: string }[];
   skills: string[];
   /** True for an agent kone ships — the ones whose cleared fields fall back to
    *  a shipped preset rather than being unset. */

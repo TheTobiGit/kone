@@ -138,6 +138,7 @@ const instructions = ref("");
 const avatar = ref<AgentAvatar | null>(null);
 const bot = ref<AgentBot | null>(null);
 const model = ref<AgentModelRef | null>(null);
+const modelFallbacks = ref<AgentModelRef[]>([]);
 // The project teams this agent should join once made — a set of project paths,
 // picked from the projects this machine knows. None is a working answer: a
 // project's team is set by hand, so joining nothing on day one is ordinary.
@@ -172,6 +173,7 @@ function seedFrom(agent: Agent) {
   avatar.value = agent.avatar;
   bot.value = agent.bot;
   model.value = agent.capabilities.model;
+  modelFallbacks.value = [...agent.capabilities.modelFallbacks];
   teamPaths.value = new Set(agentTeamPaths(agent.id));
 }
 
@@ -199,7 +201,12 @@ const summaries = computed<Record<Section, string>>(() => {
     picture: avatar.value ? PICTURE_LABELS[avatar.value.source] : "Drawn face",
     bot: bot.value ? botSummary(bot.value) : "None",
     instructions: words ? `${words} ${words === 1 ? "word" : "words"}` : "None",
-    capabilities: model.value?.label ?? model.value?.model ?? "Any model",
+    capabilities: (() => {
+      if (!model.value) return "Inherits the caller";
+      const head = model.value.label ?? model.value.model;
+      const tail = modelFallbacks.value.map((f) => f.label ?? f.model);
+      return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
+    })(),
     teams: joined ? `${joined} ${joined === 1 ? "team" : "teams"}` : "None",
   };
 });
@@ -236,6 +243,7 @@ async function handleCreate() {
       // Only send a model the maker actually pinned — an untouched picker is
       // "no preference", which the draft says by leaving the field off.
       model: model.value ?? undefined,
+      modelFallbacks: model.value ? modelFallbacks.value : undefined,
     });
     if (!created) {
       errorMsg.value = "Could not create the agent — check the fields and try again.";
@@ -274,6 +282,7 @@ async function handleSave() {
       avatar: avatar.value,
       bot: bot.value,
       model: model.value,
+      modelFallbacks: model.value ? modelFallbacks.value : [],
     });
     if (!saved) {
       errorMsg.value = "Could not save the agent — check the fields and try again.";
@@ -564,7 +573,10 @@ onBeforeUnmount(() => {
 
                 <!-- Model -->
                 <div v-else-if="s.id === 'capabilities'" class="ca-pane">
-                  <AgentCapabilitiesEditor v-model:model="model" />
+                  <AgentCapabilitiesEditor
+                    v-model:model="model"
+                    v-model:fallbacks="modelFallbacks"
+                  />
                 </div>
 
                 <!-- Teams: which projects this agent joins the team of, if any.

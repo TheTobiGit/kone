@@ -10,7 +10,7 @@
 // affordance, and the transcript panel all speak with one voice.
 //
 // Since the spawn design, the dock also lists a SECOND kind of delegate — real
-// child threads the agent opened via kone_spawn_thread — so this file carries
+// child threads the agent opened via kone_spawn_worker — so this file carries
 // deriveDelegates, the unified model behind the same dock: nested runs and
 // spawned threads project into one normalized DelegateRow list, in handoff
 // order. One view model over both kinds, the same single-projection ruling as

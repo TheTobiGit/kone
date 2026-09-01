@@ -61,6 +61,18 @@ function readModelRef(
   return ref;
 }
 
+function readModelChain(
+  values: readonly { provider: string; model: string; label?: string }[] | undefined,
+): AgentModelRef[] {
+  if (!values) return [];
+  const out: AgentModelRef[] = [];
+  for (const value of values) {
+    const ref = readModelRef(value);
+    if (ref) out.push(ref);
+  }
+  return out;
+}
+
 /** A face off the wire, or null if either colour is missing. Both halves move
  *  together: repainting the marble and leaving the old ink on it is how a face
  *  goes unreadable. */
@@ -218,7 +230,11 @@ async function applyAgentMutation(
     const face = readFace(event.fields?.face);
     if (face) draft.face = face;
     const model = readModelRef(event.fields?.model);
-    if (model) draft.model = model;
+    if (model) {
+      draft.model = model;
+      const fallbacks = readModelChain(event.fields?.modelFallbacks);
+      if (fallbacks.length > 0) draft.modelFallbacks = fallbacks;
+    }
 
     const created = await createAgent(draft);
     if (created && event.projectPath) await addAgentToProject(event.projectPath, created.id);
@@ -235,6 +251,9 @@ async function applyAgentMutation(
   if (face) edit.face = face;
   const model = readModelRef(event.fields?.model);
   if (model) edit.model = model;
+  if (event.fields?.modelFallbacks !== undefined) {
+    edit.modelFallbacks = readModelChain(event.fields.modelFallbacks);
+  }
   // A clear is spelled as a name on a list rather than a null across the wire,
   // because a null there cannot be told from a client filling in the blanks.
   // Here, at the end, it becomes the null the edit means.
