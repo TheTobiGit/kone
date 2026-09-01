@@ -43,7 +43,7 @@ export interface KoneContextOptions {
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-08-31.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-09-01.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
 /** What every gateway session is told regardless of which tools it got. */

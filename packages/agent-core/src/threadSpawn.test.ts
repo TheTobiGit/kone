@@ -100,6 +100,15 @@ class FakeStore implements SpawnEngineStore {
     return true;
   }
 
+  retargetSpawnedThread(threadId: string, provider: ProviderKind, model?: string): void {
+    const meta = this.metas.get(threadId);
+    if (!meta) return;
+    const next: StoredThreadMeta = { ...meta, provider };
+    if (model !== undefined) next.model = model;
+    else delete next.model;
+    this.metas.set(threadId, next);
+  }
+
   threadLineage(threadId: string): ThreadLineage | null {
     return this.lineages.get(threadId) ?? null;
   }
@@ -189,6 +198,19 @@ class FakeStore implements SpawnEngineStore {
   }): void {
     this.markedDispatched.push(`${input.threadId}/${input.turnId}/${input.requestId}`);
   }
+
+  /** The agent a delegated thread runs as, read back for a follow-up that
+   *  restarts its session. */
+  getThreadAgent(threadId: string): { agentId: string } | null {
+    const agentId = this.bound.get(threadId);
+    return agentId ? { agentId } : null;
+  }
+
+  readonly agents = new Map<string, { name: string; instructions: string | null }>();
+
+  getAgent(agentId: string): { name: string; instructions: string | null } | null {
+    return this.agents.get(agentId) ?? null;
+  }
 }
 
 class FakeProviders implements SpawnEngineProviders {
@@ -197,9 +219,16 @@ class FakeProviders implements SpawnEngineProviders {
   sessions: Session[] = [];
   /** Thread ids whose provider session the engine released (F6). */
   stopped: string[] = [];
+  /** Thread ids with a live session, for untracked children the engine has no
+   *  memory of (a follow-up consults this before waking one). */
+  readonly liveSessions = new Set<string>();
 
   cachedSurface() {
     return { statuses: this.statuses, models: this.models };
+  }
+
+  hasLiveSession(threadId: string): boolean {
+    return this.liveSessions.has(threadId);
   }
 
   async listSessions(): Promise<Session[]> {
@@ -208,6 +237,7 @@ class FakeProviders implements SpawnEngineProviders {
 
   async stopSession(threadId: string): Promise<void> {
     this.stopped.push(threadId);
+    this.liveSessions.delete(threadId);
   }
 }
 
@@ -219,15 +249,19 @@ class FakeDispatcher implements ThreadDispatcher {
   sent: Array<{ input: SendTurnInput; options?: StartThreadTurnOptions }> = [];
   failStart = false;
   failSend = false;
+  /** Errors thrown from startThread, in order, until the list is empty. */
+  startErrors: Error[] = [];
   /** When set, invoked with the child id right before sendThreadTurn rejects —
    *  simulates the live stream having already delivered a session + running
    *  turn before the provider refuses the turn (the partial-dispatch shape). */
   emitBeforeFailSend?: (threadId: string) => void = undefined;
 
   async startThread(input: SessionStartInput, options?: StartThreadOptions): Promise<Session> {
-    if (this.failStart) throw new Error("provider CLI crashed on boot");
     this.started.push(input);
     this.startedParentTurns.push(options?.parentTurnId);
+    const queued = this.startErrors.shift();
+    if (queued) throw queued;
+    if (this.failStart) throw new Error("provider CLI crashed on boot");
     const session: Session = {
       threadId: input.threadId,
       provider: input.provider,
@@ -477,6 +511,59 @@ describe("spawn engine", () => {
       status: "dispatched",
     });
     expect(result.adjustments).toBeUndefined();
+  });
+
+  test("a 429 on the primary walks the fallback chain and reports failedOverFrom", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+    providers.statuses.push({
+      provider: "claudeAgent",
+      label: "Claude",
+      available: true,
+      authStatus: "authenticated",
+      readiness: "ready",
+    });
+    providers.models.claudeAgent = [{ id: "opus", label: "Opus" }];
+    dispatcher.startErrors = [new Error("429 rate limit: quota exhausted")];
+
+    const result = await engine.spawn(CALLER, {
+      ...REQUEST,
+      fallbacks: [{ provider: "claudeAgent", model: "opus" }],
+    });
+
+    expect(dispatcher.started).toHaveLength(2);
+    expect(dispatcher.started[0]?.provider).toBe("opencode");
+    expect(dispatcher.started[0]?.model).toBe("deepseek-v4");
+    expect(dispatcher.started[1]?.provider).toBe("claudeAgent");
+    expect(dispatcher.started[1]?.model).toBe("opus");
+    expect(result.provider).toBe("claudeAgent");
+    expect(result.model).toBe("opus");
+    expect(result.failedOverFrom).toEqual({
+      provider: "opencode",
+      model: "deepseek-v4",
+      reason: "429 rate limit: quota exhausted",
+    });
+    expect(store.metas.get(result.threadId)?.provider).toBe("claudeAgent");
+    expect(store.metas.get(result.threadId)?.model).toBe("opus");
+  });
+
+  test("a crash on start does not walk the fallback chain", async () => {
+    const { engine, store, providers, dispatcher } = makeEngine();
+    setupParent(store, providers);
+    dispatcher.failStart = true;
+
+    let error: unknown;
+    try {
+      await engine.spawn(CALLER, {
+        ...REQUEST,
+        fallbacks: [{ provider: "claudeAgent", model: "opus" }],
+      });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(error).toBeInstanceOf(SpawnError);
+    expect(spawnErrorOf(error).code).toBe("provider_unavailable");
+    expect(dispatcher.started).toHaveLength(1);
   });
 
   test("a delegation stamps delegation lineage, binds the agent, and carries its persona into the session", async () => {
@@ -1173,6 +1260,190 @@ describe("spawn engine", () => {
 
     expect(result.effort).toBeUndefined();
     expect(dispatcher.started[0].effort).toBeUndefined();
+  });
+});
+
+describe("continueThread", () => {
+  /** Spawn one child through the engine and run its first turn to completion,
+   *  so the harness holds a child whose projection has settled and whose
+   *  provider session the engine has released. The session.exited event models
+   *  the real release flow: the engine stops the session without awaiting it,
+   *  and the flag clears when the adapter reports the exit. */
+  async function settledChild(h: EngineHarness): Promise<string> {
+    const spawned = await h.engine.spawn(CALLER, REQUEST);
+    const child = spawned.threadId;
+    const firstTurn = spawned.firstTurnId ?? "turn-1";
+    h.bus.emit(sessionStarted(child, 1));
+    h.bus.emit(turnStarted(child, firstTurn, 2));
+    h.bus.emit(turnCompleted(child, firstTurn, 3));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    h.bus.emit({ type: "session.exited", threadId: child, provider: "opencode", at: 4, source: "kone.store" });
+    return child;
+  }
+
+  /** Spawn one child whose session is live and idle — started, no turn yet. */
+  async function liveChild(h: EngineHarness): Promise<string> {
+    const spawned = await h.engine.spawn(CALLER, REQUEST);
+    h.bus.emit(sessionStarted(spawned.threadId, 1));
+    return spawned.threadId;
+  }
+
+  test("a follow-up dispatches into the same thread, pinned to the spawning turn", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const child = await liveChild(h);
+
+    const result = await h.engine.continueThread(CALLER, {
+      threadId: child,
+      message: "Also update the README to match.",
+    });
+
+    expect(result).toEqual({
+      threadId: child,
+      parentThreadId: CALLER.threadId,
+      turnId: "turn-2",
+      resumed: false,
+    });
+    // No second startThread — the child's session is still live.
+    expect(h.dispatcher.started).toHaveLength(1);
+    expect(h.dispatcher.sent).toHaveLength(2);
+    expect(h.dispatcher.sent[1]?.input).toEqual({
+      threadId: child,
+      input: "Also update the README to match.",
+    });
+    // The follow-up is the caller's turn speaking into the child: no rename,
+    // and the child's events correlate back to the caller's turn (F10).
+    expect(h.dispatcher.sent[1]?.options).toEqual({
+      generateTitle: false,
+      parentTurnId: CALLER.turnId,
+    });
+  });
+
+  test("a follow-up to a settled child brings its session back up first", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const child = await settledChild(h);
+    // Settling released the child's provider process (F6).
+    expect(h.providers.stopped).toContain(child);
+    const startsBefore = h.dispatcher.started.length;
+
+    const result = await h.engine.continueThread(CALLER, {
+      threadId: child,
+      message: "One more thing: the sidebar flickers on resize.",
+    });
+
+    expect(result.resumed).toBe(true);
+    expect(h.dispatcher.started).toHaveLength(startsBefore + 1);
+    // SAFETY: started only ever collects SessionStartInput objects.
+    const restart = h.dispatcher.started[h.dispatcher.started.length - 1]!;
+    expect(restart.threadId).toBe(child);
+    expect(restart.provider).toBe("opencode");
+    expect(restart.cwd).toBe(CALLER.cwd);
+    expect(restart.model).toBe("deepseek-v4");
+    // The restart is the caller's doing, same as the original spawn.
+    expect(h.dispatcher.startedParentTurns[startsBefore]).toBe(CALLER.turnId);
+    // And the turn itself landed on the same thread.
+    expect(h.dispatcher.sent[h.dispatcher.sent.length - 1]?.input.threadId).toBe(child);
+  });
+
+  test("a restarted delegation wakes as its agent again", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    h.store.agents.set("agent-backend", {
+      name: "Backend",
+      instructions: "You own the API layer.",
+    });
+    const delegated: SpawnRequest = {
+      ...REQUEST,
+      requestId: "req-del-1",
+      delegateToAgentId: "agent-backend",
+      persona: { name: "Backend", instructions: "You own the API layer." },
+    };
+    const spawned = await h.engine.spawn(CALLER, delegated);
+    const child = spawned.threadId;
+    const firstTurn = spawned.firstTurnId ?? "turn-1";
+    h.bus.emit(sessionStarted(child, 1));
+    h.bus.emit(turnStarted(child, firstTurn, 2));
+    h.bus.emit(turnCompleted(child, firstTurn, 3));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    h.bus.emit({
+      type: "session.exited",
+      threadId: child,
+      provider: "opencode",
+      at: 4,
+      source: "kone.store",
+    });
+
+    await h.engine.continueThread(CALLER, { threadId: child, message: "Ship it behind a flag." });
+
+    expect(h.dispatcher.started).toHaveLength(2);
+    // SAFETY: started only ever collects SessionStartInput objects.
+    const restart = h.dispatcher.started[1]!;
+    expect(restart.agent).toEqual({ name: "Backend", instructions: "You own the API layer." });
+  });
+
+  test("refuses the caller's own thread and a thread outside its subtree", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+
+    const own = await h.engine
+      .continueThread(CALLER, { threadId: CALLER.threadId, message: "hello" })
+      .catch((e) => e);
+    expect(own).toBeInstanceOf(SpawnError);
+    // SAFETY: asserted to be a SpawnError immediately above.
+    expect((own as SpawnError).code).toBe("invalid_input");
+
+    const stranger = await h.engine
+      .continueThread(CALLER, { threadId: "stranger-1", message: "hello" })
+      .catch((e) => e);
+    expect(stranger).toBeInstanceOf(SpawnError);
+    // SAFETY: asserted to be a SpawnError immediately above.
+    expect((stranger as SpawnError).code).toBe("not_found");
+  });
+
+  test("a stable requestId replays the same follow-up; a changed one conflicts", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const child = await liveChild(h);
+
+    const first = await h.engine.continueThread(CALLER, {
+      threadId: child,
+      message: "Also update the README.",
+      requestId: "fu-1",
+    });
+    const retry = await h.engine.continueThread(CALLER, {
+      threadId: child,
+      message: "Also update the README.",
+      requestId: "fu-1",
+    });
+
+    expect(retry).toEqual(first);
+    expect(h.dispatcher.sent).toHaveLength(2);
+
+    const conflict = await h.engine
+      .continueThread(CALLER, { threadId: child, message: "Different ask.", requestId: "fu-1" })
+      .catch((e) => e);
+    expect(conflict).toBeInstanceOf(SpawnError);
+    // SAFETY: asserted to be a SpawnError immediately above.
+    expect((conflict as SpawnError).code).toBe("idempotency_conflict");
+    // The conflicting call dispatched nothing.
+    expect(h.dispatcher.sent).toHaveLength(2);
+  });
+
+  test("a follow-up puts the settled child back into the live counts", async () => {
+    const h = makeEngine();
+    setupParent(h.store, h.providers);
+    const child = await settledChild(h);
+    const settledLimits = (await h.engine.targets(CALLER)).limits;
+
+    await h.engine.continueThread(CALLER, {
+      threadId: child,
+      message: "Also update the README.",
+    });
+
+    const resumedLimits = (await h.engine.targets(CALLER)).limits;
+    expect(resumedLimits.remainingAppWide).toBe(settledLimits.remainingAppWide - 1);
+    expect(resumedLimits.remainingChildren).toBe(settledLimits.remainingChildren - 1);
   });
 });
 

@@ -53,9 +53,12 @@ export interface AgentRosterEntry {
   /** The face's two colours, so a recolour can be described relative to what is
    *  already there. */
   face: { body: string; ink: string };
-  /** The one model the agent runs on, or null for no preference — at which
-   *  point each turn picks its own. */
+  /** The one model the agent runs on first, or null to inherit — at which
+   *  point each turn (or a spawned child) rides its caller. */
   model: { provider: string; model: string; label?: string } | null;
+  /** Ordered fallbacks behind `model`. Empty when the agent inherits or has
+   *  no second choice. */
+  modelFallbacks: readonly { provider: string; model: string; label?: string }[];
   /** The skills assigned to the agent, by name. Additive, so empty is none. */
   skills: readonly string[];
   /** True for an agent kone ships. Worth reporting: clearing a field on a
@@ -114,6 +117,16 @@ export function resolveAgent(
 
 /** One roster entry as a structured result. Arrays are copied because a decoded
  *  gateway payload is readonly and a result record is not. */
+function modelRefPayload(ref: {
+  provider: string;
+  model: string;
+  label?: string;
+}): GatewayRecord {
+  const payload: GatewayRecord = { provider: ref.provider, model: ref.model };
+  if (ref.label !== undefined) payload.label = ref.label;
+  return payload;
+}
+
 function entryPayload(agent: AgentRosterEntry): GatewayRecord {
   const payload: GatewayRecord = {
     id: agent.id,
@@ -121,11 +134,8 @@ function entryPayload(agent: AgentRosterEntry): GatewayRecord {
     role: agent.role,
     instructions: agent.instructions,
     face: { body: agent.face.body, ink: agent.face.ink },
-    model: agent.model
-      ? agent.model.label !== undefined
-        ? { provider: agent.model.provider, model: agent.model.model, label: agent.model.label }
-        : { provider: agent.model.provider, model: agent.model.model }
-      : null,
+    model: agent.model ? modelRefPayload(agent.model) : null,
+    modelFallbacks: (agent.modelFallbacks ?? []).map(modelRefPayload),
     skills: [...agent.skills],
     builtIn: agent.builtIn,
     active: agent.active,
@@ -136,9 +146,14 @@ function entryPayload(agent: AgentRosterEntry): GatewayRecord {
 
 /** One roster line, for the text half of a result. */
 function entryLine(agent: AgentRosterEntry): string {
+  const chain = agent.model
+    ? [agent.model, ...(agent.modelFallbacks ?? [])]
+        .map((ref) => `${ref.provider}/${ref.model}`)
+        .join(" → ")
+    : "inherits";
   const bits = [
     agent.builtIn ? "built-in" : "user-made",
-    agent.model ? `${agent.model.provider}/${agent.model.model}` : "no model preference",
+    `model: ${chain}`,
   ];
   if (agent.skills.length > 0) bits.push(`skills: ${agent.skills.join(", ")}`);
   if (agent.teams.length > 0) bits.push(`teams: ${agent.teams.length}`);
@@ -267,6 +282,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     if (params.instructions !== undefined) fields.instructions = params.instructions;
     if (params.face !== undefined) fields.face = params.face;
     if (params.model !== undefined) fields.model = params.model;
+    if (params.modelFallbacks !== undefined) fields.modelFallbacks = [...params.modelFallbacks];
 
     const mutation: Parameters<typeof emitMutation>[1] = { op: "create", agentId, fields };
     // The calling thread's project is the only one this session can speak for,
@@ -310,6 +326,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     if (params.instructions !== undefined) fields.instructions = params.instructions;
     if (params.face !== undefined) fields.face = params.face;
     if (params.model !== undefined) fields.model = params.model;
+    if (params.modelFallbacks !== undefined) fields.modelFallbacks = [...params.modelFallbacks];
 
     const cleared = params.clear ?? [];
     // A field both set and cleared in one call is a contradiction, and picking a
@@ -418,7 +435,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     {
       name: "app_list_agents",
       description:
-        "List the agents in kone's roster — the ones it ships plus any the user or an agent created — with each one's role, standing instructions, model, skills, project teams, and whether it takes the user's next turn.",
+        "List the agents in kone's roster — the ones it ships plus any the user or an agent created — with each one's role, standing instructions, model (and fallback chain), skills, project teams, and whether it takes the user's next turn.",
       inputSchema: ListAppAgentsInputSchema,
       jsonSchema: LIST_APP_AGENTS_JSON_SCHEMA,
       permission: "allow",
@@ -433,7 +450,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     {
       name: "app_create_agent",
       description:
-        "Add an agent to kone's roster: a name, an optional role line, the standing instructions it works from, the model it runs on, and the colours its face is drawn in. Use this when the user asks for a new agent or teammate in the app.",
+        "Add an agent to kone's roster: a name, an optional role line, the standing instructions it works from, the model it runs on (optionally with fallbacks), and the colours its face is drawn in. Use this when the user asks for a new agent or teammate in the app.",
       inputSchema: CreateAppAgentInputSchema,
       jsonSchema: CREATE_APP_AGENT_JSON_SCHEMA,
       permission: "allow",

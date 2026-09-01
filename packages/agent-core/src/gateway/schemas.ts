@@ -152,10 +152,10 @@ export const SCRATCHPAD_WRITE_JSON_SCHEMA = {
   required: ["title", "body"],
 } satisfies GatewayRecord;
 
-// ── spawn tool inputs (docs/thread-spawning-design.md) ───────────────────────
-// Schemas for the four thread-spawning tools. The zod `inputSchema` validates
-// args; the hand-written JSON schemas are what tools/list advertises, so the
-// enum literals are repeated there — the client never sees zod.
+// ── worker/teammate dispatch tool inputs (docs/thread-spawning-design.md) ────
+// Schemas for the worker- and teammate-dispatching tools. The zod `inputSchema`
+// validates args; the hand-written JSON schemas are what tools/list advertises,
+// so the enum literals are repeated there — the client never sees zod.
 
 /** The six provider kinds as a literal tuple — ProviderKind is a plain union,
  *  and zod needs a runtime value for its enum. */
@@ -166,23 +166,27 @@ const INTERACTION_MODES = ["ask", "accept-edits", "full-access"] as const;
 
 export const SpawnTargetsInputSchema = z.object({});
 
-export const SpawnThreadInputSchema = z.object({
+export const SpawnWorkerInputSchema = z.object({
   /** The child's first turn — the brief it wakes up to. */
   prompt: z.string().min(1),
   /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
   requestId: z.string().min(1).max(200),
   /** Overrides the prompt-derived working title. */
   title: z.string().min(1).optional(),
-  target: z.object({
-    provider: z.enum(PROVIDER_KINDS),
-    model: z.string().min(1).optional(),
-    effort: z.string().min(1).optional(),
-  }),
+  /** Where to run. Omitted, the worker inherits this thread's provider and
+   *  model — a custom spawn with no model of its own. */
+  target: z
+    .object({
+      provider: z.enum(PROVIDER_KINDS),
+      model: z.string().min(1).optional(),
+      effort: z.string().min(1).optional(),
+    })
+    .optional(),
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
 });
 
-export const SpawnFromPresetInputSchema = z.object({
+export const SpawnWorkerPresetInputSchema = z.object({
   /** The preset sub-agent to cut this spawn from — its name or its id. */
   preset: z.string().min(1).max(200),
   /** The specific work for this spawn, laid under the preset's standing
@@ -194,9 +198,18 @@ export const SpawnFromPresetInputSchema = z.object({
   title: z.string().min(1).optional(),
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
+  /** A model named for this spawn only — the user asking for this piece of
+   *  work to run somewhere specific. Beats the preset's own chain. */
+  model: z
+    .object({
+      provider: z.enum(PROVIDER_KINDS),
+      model: z.string().min(1),
+      label: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 
-export const DelegateInputSchema = z.object({
+export const DelegateToTeammateInputSchema = z.object({
   /** The project-team agent to hand this work to — its name or its id. */
   agent: z.string().min(1).max(200),
   /** The specific work being delegated — the child's opening brief. The agent's
@@ -209,6 +222,14 @@ export const DelegateInputSchema = z.object({
   title: z.string().min(1).optional(),
   /** Clamped to the caller's mode — privilege never escalates across a spawn. */
   mode: z.enum(INTERACTION_MODES).optional(),
+  /** A model named for this delegation only — beats the teammate's own chain. */
+  model: z
+    .object({
+      provider: z.enum(PROVIDER_KINDS),
+      model: z.string().min(1),
+      label: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 export const SpawnBatchItemSchema = z.object({
   /** Agent-supplied idempotency key scoped to (caller thread, caller turn, item index). */
@@ -231,6 +252,14 @@ export const SpawnBatchItemSchema = z.object({
   agent: z.string().min(1).max(200).optional(),
   /** Clamped to caller mode. */
   mode: z.enum(INTERACTION_MODES).optional(),
+  /** A model named for this item only — beats a preset's or teammate's chain. */
+  model: z
+    .object({
+      provider: z.enum(PROVIDER_KINDS),
+      model: z.string().min(1),
+      label: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 
 export const SpawnBatchInputSchema = z.object({
@@ -238,7 +267,7 @@ export const SpawnBatchInputSchema = z.object({
   items: z.array(SpawnBatchItemSchema).min(1).max(16),
 });
 
-export const WaitForThreadsInputSchema = z.object({
+export const WaitForResponsesInputSchema = z.object({
   threadIds: z.array(z.string().min(1)).min(1).max(12),
   /** Positionally paired with `threadIds`: the exact turn of that child to wait
    *  on, so a human typing into the child mid-wait can't hand the parent a
@@ -248,7 +277,7 @@ export const WaitForThreadsInputSchema = z.object({
   timeoutMs: z.number().int().nonnegative().optional(),
 });
 
-export const ReadThreadInputSchema = z.object({
+export const ReadResponseInputSchema = z.object({
   threadId: z.string().min(1),
   /** Blocks to return, newest last. Default 20. */
   limit: z.number().int().min(1).max(100).optional(),
@@ -256,12 +285,23 @@ export const ReadThreadInputSchema = z.object({
   maxTextChars: z.number().int().min(200).optional(),
 });
 
+export const ContinueThreadInputSchema = z.object({
+  /** The child thread to post the follow-up into — one kone_continue_thread
+   *  returned earlier. Must be in the caller's own spawned subtree. */
+  threadId: z.string().min(1),
+  /** The follow-up: a complete, self-contained ask that continues the thread's
+   *  existing conversation. */
+  message: z.string().min(1),
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn). */
+  requestId: z.string().min(1).max(200).optional(),
+});
+
 export const SPAWN_TARGETS_JSON_SCHEMA = {
   type: "object",
   properties: {},
 } satisfies GatewayRecord;
 
-export const SPAWN_THREAD_JSON_SCHEMA = {
+export const SPAWN_WORKER_JSON_SCHEMA = {
   type: "object",
   properties: {
     prompt: { type: "string" },
@@ -278,10 +318,10 @@ export const SPAWN_THREAD_JSON_SCHEMA = {
     },
     mode: { type: "string", enum: [...INTERACTION_MODES] },
   },
-  required: ["prompt", "requestId", "target"],
+  required: ["prompt", "requestId"],
 } satisfies GatewayRecord;
 
-export const SPAWN_FROM_PRESET_JSON_SCHEMA = {
+export const SPAWN_WORKER_PRESET_JSON_SCHEMA = {
   type: "object",
   properties: {
     preset: {
@@ -293,11 +333,20 @@ export const SPAWN_FROM_PRESET_JSON_SCHEMA = {
     requestId: { type: "string" },
     title: { type: "string" },
     mode: { type: "string", enum: [...INTERACTION_MODES] },
+    model: {
+      type: "object",
+      properties: {
+        provider: { type: "string", enum: [...PROVIDER_KINDS] },
+        model: { type: "string" },
+        label: { type: "string" },
+      },
+      required: ["provider", "model"],
+    },
   },
   required: ["preset", "task", "requestId"],
 } satisfies GatewayRecord;
 
-export const DELEGATE_JSON_SCHEMA = {
+export const DELEGATE_TO_TEAMMATE_JSON_SCHEMA = {
   type: "object",
   properties: {
     agent: {
@@ -309,11 +358,20 @@ export const DELEGATE_JSON_SCHEMA = {
     requestId: { type: "string" },
     title: { type: "string" },
     mode: { type: "string", enum: [...INTERACTION_MODES] },
+    model: {
+      type: "object",
+      properties: {
+        provider: { type: "string", enum: [...PROVIDER_KINDS] },
+        model: { type: "string" },
+        label: { type: "string" },
+      },
+      required: ["provider", "model"],
+    },
   },
   required: ["agent", "task", "requestId"],
 } satisfies GatewayRecord;
 
-export const WAIT_FOR_THREADS_JSON_SCHEMA = {
+export const WAIT_FOR_RESPONSES_JSON_SCHEMA = {
   type: "object",
   properties: {
     threadIds: { type: "array", items: { type: "string" } },
@@ -323,7 +381,7 @@ export const WAIT_FOR_THREADS_JSON_SCHEMA = {
   required: ["threadIds"],
 } satisfies GatewayRecord;
 
-export const READ_THREAD_JSON_SCHEMA = {
+export const READ_RESPONSE_JSON_SCHEMA = {
   type: "object",
   properties: {
     threadId: { type: "string" },
@@ -331,6 +389,28 @@ export const READ_THREAD_JSON_SCHEMA = {
     maxTextChars: { type: "integer" },
   },
   required: ["threadId"],
+} satisfies GatewayRecord;
+
+export const CONTINUE_THREAD_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: {
+      type: "string",
+      description:
+        "The spawned child thread to post the follow-up into — a threadId an earlier spawn, delegation or batch returned. It must be in your own spawned subtree.",
+    },
+    message: {
+      type: "string",
+      description:
+        "The follow-up: a complete, self-contained ask. It continues the thread's existing conversation — the child still has everything it did.",
+    },
+    requestId: {
+      type: "string",
+      description:
+        "Stable idempotency key for this follow-up, so a retry returns the same result instead of running the child twice.",
+    },
+  },
+  required: ["threadId", "message"],
 } satisfies GatewayRecord;
 export const SPAWN_BATCH_JSON_SCHEMA = {
   type: "object",
@@ -355,6 +435,15 @@ export const SPAWN_BATCH_JSON_SCHEMA = {
           preset: { type: "string" },
           agent: { type: "string" },
           mode: { type: "string", enum: [...INTERACTION_MODES] },
+          model: {
+            type: "object",
+            properties: {
+              provider: { type: "string", enum: [...PROVIDER_KINDS] },
+              model: { type: "string" },
+              label: { type: "string" },
+            },
+            required: ["provider", "model"],
+          },
         },
         required: ["requestId", "prompt"],
       },
@@ -810,6 +899,24 @@ const AGENT_MODEL_REF_JSON_SCHEMA = {
   required: ["provider", "model"],
 } satisfies GatewayRecord;
 
+/** How many fallbacks may sit behind a primary. Long enough for a real chain
+ *  across providers, short enough that a spawn cannot walk an unbounded list. */
+const MODEL_FALLBACKS_MAX = 8;
+
+const AGENT_MODEL_FALLBACKS_JSON_SCHEMA = {
+  type: "array",
+  items: AGENT_MODEL_REF_JSON_SCHEMA,
+  description:
+    "Ordered fallbacks tried after the primary on a 429, spent quota, or unavailable provider. Ignored when no primary model is set.",
+} satisfies GatewayRecord;
+
+const AgentModelFallbacksSchema = z
+  .array(AgentModelRefSchema)
+  .max(MODEL_FALLBACKS_MAX)
+  .describe(
+    "Ordered fallbacks tried after the primary on a 429, spent quota, or unavailable provider. Ignored when no primary model is set.",
+  );
+
 /** The two opaque colours a drawn face is painted with. Both move together: a
  *  repainted body with last week's ink on it is how a face goes unreadable. */
 export const AgentFacePaintSchema = z.object({
@@ -862,7 +969,10 @@ export const CreateAppAgentInputSchema = z.object({
     "The colours the agent's face is drawn in. Omitted, kone paints one from the name.",
   ),
   model: AgentModelRefSchema.optional().describe(
-    "The one model this agent runs on. Omitted, the agent has no preference and each turn picks its own.",
+    "The model this agent runs on first. Omitted, the agent inherits — each turn (or a spawned child) rides the caller.",
+  ),
+  modelFallbacks: AgentModelFallbacksSchema.optional().describe(
+    "Ordered fallbacks behind `model`. Ignored when no primary is set.",
   ),
   addToActiveProject: z
     .boolean()
@@ -890,8 +1000,9 @@ export const CREATE_APP_AGENT_JSON_SCHEMA = {
     model: {
       ...AGENT_MODEL_REF_JSON_SCHEMA,
       description:
-        "The one model this agent runs on. Omitted, the agent has no preference and each turn picks its own.",
+        "The model this agent runs on first. Omitted, the agent inherits — each turn (or a spawned child) rides the caller.",
     },
+    modelFallbacks: AGENT_MODEL_FALLBACKS_JSON_SCHEMA,
     addToActiveProject: {
       type: "boolean",
       description:
@@ -921,6 +1032,9 @@ export const UpdateAppAgentInputSchema = z
       .describe("Replace the agent's standing orders."),
     face: AgentFacePaintSchema.optional().describe("Repaint the agent's face."),
     model: AgentModelRefSchema.optional().describe("Pin the agent to this model."),
+    modelFallbacks: AgentModelFallbacksSchema.optional().describe(
+      "Replace the ordered fallbacks behind the agent's primary model.",
+    ),
     clear: z
       .array(z.enum(APP_AGENT_CLEARABLE))
       .optional()
@@ -933,6 +1047,7 @@ export const UpdateAppAgentInputSchema = z
       data.instructions !== undefined ||
       data.face !== undefined ||
       data.model !== undefined ||
+      data.modelFallbacks !== undefined ||
       (data.clear?.length ?? 0) > 0,
     { message: "Name at least one field to change, or one to clear." },
   );
@@ -946,6 +1061,7 @@ export const UPDATE_APP_AGENT_JSON_SCHEMA = {
     instructions: { type: "string", description: "Replace the agent's standing orders." },
     face: { ...AGENT_FACE_PAINT_JSON_SCHEMA, description: "Repaint the agent's face." },
     model: { ...AGENT_MODEL_REF_JSON_SCHEMA, description: "Pin the agent to this model." },
+    modelFallbacks: AGENT_MODEL_FALLBACKS_JSON_SCHEMA,
     clear: {
       type: "array",
       items: { type: "string", enum: [...APP_AGENT_CLEARABLE] },
@@ -1030,14 +1146,17 @@ export const CreateSubagentPresetInputSchema = z.object({
     .string()
     .min(1)
     .max(64)
-    .describe("What the preset is called. This is also how kone_spawn_from_preset refers to it."),
+    .describe("What the preset is called. This is also how kone_spawn_worker_preset refers to it."),
   instructions: z
     .string()
     .max(4000)
     .optional()
     .describe("What a sub-agent cut from this preset is told before it starts work."),
   model: AgentModelRefSchema.optional().describe(
-    "The model a spawn from this preset runs on. Omitted, the spawn runs wherever its caller runs.",
+    "The model a spawn from this preset runs on first. Omitted, the spawn inherits its caller's model.",
+  ),
+  modelFallbacks: AgentModelFallbacksSchema.optional().describe(
+    "Ordered fallbacks behind `model`. Ignored when no primary is set.",
   ),
 });
 
@@ -1047,7 +1166,7 @@ export const CREATE_SUBAGENT_PRESET_JSON_SCHEMA = {
     name: {
       type: "string",
       description:
-        "What the preset is called. This is also how kone_spawn_from_preset refers to it.",
+        "What the preset is called. This is also how kone_spawn_worker_preset refers to it.",
     },
     instructions: {
       type: "string",
@@ -1056,8 +1175,9 @@ export const CREATE_SUBAGENT_PRESET_JSON_SCHEMA = {
     model: {
       ...AGENT_MODEL_REF_JSON_SCHEMA,
       description:
-        "The model a spawn from this preset runs on. Omitted, the spawn runs wherever its caller runs.",
+        "The model a spawn from this preset runs on first. Omitted, the spawn inherits its caller's model.",
     },
+    modelFallbacks: AGENT_MODEL_FALLBACKS_JSON_SCHEMA,
   },
   required: ["name"],
 } satisfies GatewayRecord;
@@ -1073,6 +1193,9 @@ export const UpdateSubagentPresetInputSchema = z
     name: z.string().min(1).max(64).optional().describe("Rename the preset."),
     instructions: z.string().max(4000).optional().describe("Replace the preset's instructions."),
     model: AgentModelRefSchema.optional().describe("Pin spawns from this preset to this model."),
+    modelFallbacks: AgentModelFallbacksSchema.optional().describe(
+      "Replace the ordered fallbacks behind the preset's primary model.",
+    ),
     clear: z
       .array(z.enum(SUBAGENT_PRESET_CLEARABLE))
       .optional()
@@ -1083,6 +1206,7 @@ export const UpdateSubagentPresetInputSchema = z
       data.name !== undefined ||
       data.instructions !== undefined ||
       data.model !== undefined ||
+      data.modelFallbacks !== undefined ||
       (data.clear?.length ?? 0) > 0,
     { message: "Name at least one field to change, or one to clear." },
   );
@@ -1100,6 +1224,7 @@ export const UPDATE_SUBAGENT_PRESET_JSON_SCHEMA = {
       ...AGENT_MODEL_REF_JSON_SCHEMA,
       description: "Pin spawns from this preset to this model.",
     },
+    modelFallbacks: AGENT_MODEL_FALLBACKS_JSON_SCHEMA,
     clear: {
       type: "array",
       items: { type: "string", enum: [...SUBAGENT_PRESET_CLEARABLE] },

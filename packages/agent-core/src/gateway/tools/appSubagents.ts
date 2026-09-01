@@ -1,5 +1,5 @@
 // The preset sub-agents, as gateway tools: the standing definitions
-// `kone_spawn_from_preset` cuts a spawn from, now authored from the same side
+// `kone_spawn_worker_preset` cuts a spawn from, now authored from the same side
 // that spawns them.
 //
 // Unlike the roster next door, these need no help from the renderer. A preset is
@@ -59,8 +59,8 @@ export interface AppSubagentToolOptions {
   emit?: EmitEvent;
 }
 
-/** Ids and names compare without their punctuation, so "fast-scout",
- *  "Fast Scout" and "fastscout" all reach the same preset. */
+/** Ids and names compare without their punctuation, so "code-reviewer",
+ *  "Code Reviewer" and "codereviewer" all reach the same preset. */
 function squash(value: string): string {
   return value.toLowerCase().replace(/[\s_-]+/g, "");
 }
@@ -72,16 +72,24 @@ function isBuiltin(preset: SubagentPresetRecord): boolean {
   return BUILTIN_SWARM_PRESETS.some((builtin) => builtin.presetId === preset.presetId);
 }
 
+function modelRefPayload(ref: {
+  provider: string;
+  model: string;
+  label?: string;
+}): GatewayRecord {
+  const payload: GatewayRecord = { provider: ref.provider, model: ref.model };
+  if (ref.label !== undefined) payload.label = ref.label;
+  return payload;
+}
+
 function presetPayload(preset: SubagentPresetRecord): GatewayRecord {
+  const fallbacks = preset.modelFallbacks ?? [];
   return {
     presetId: preset.presetId,
     name: preset.name,
     instructions: preset.instructions,
-    model: preset.model
-      ? preset.model.label !== undefined
-        ? { provider: preset.model.provider, model: preset.model.model, label: preset.model.label }
-        : { provider: preset.model.provider, model: preset.model.model }
-      : null,
+    model: preset.model ? modelRefPayload(preset.model) : null,
+    modelFallbacks: fallbacks.map(modelRefPayload),
     builtIn: isBuiltin(preset),
   };
 }
@@ -92,9 +100,14 @@ function presetPayload(preset: SubagentPresetRecord): GatewayRecord {
 function presetLine(preset: SubagentPresetRecord): string {
   const gist = preset.instructions?.trim().replace(/\s+/g, " ") ?? "";
   const shortened = gist.length > 140 ? `${gist.slice(0, 139)}…` : gist;
+  const chain = preset.model
+    ? [preset.model, ...(preset.modelFallbacks ?? [])]
+        .map((ref) => `${ref.provider}/${ref.model}`)
+        .join(" → ")
+    : "inherits the caller";
   const bits = [
     isBuiltin(preset) ? "built-in, read-only" : "editable",
-    preset.model ? `${preset.model.provider}/${preset.model.model}` : "runs where its caller runs",
+    `model: ${chain}`,
   ];
   return `- **${preset.name}** (\`${preset.presetId}\`) [${bits.join(", ")}]${shortened ? `: ${shortened}` : ""}`;
 }
@@ -105,7 +118,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
 
   /** Every preset an agent can name: the user's own first, then the shipped
    *  ones a user preset hasn't taken the name of. The same precedence
-   *  `kone_spawn_from_preset` resolves by, so what is listed here is what a
+   *  `kone_spawn_worker_preset` resolves by, so what is listed here is what a
    *  spawn from that name would actually use. */
   const allPresets = (): SubagentPresetRecord[] => {
     const stored = store.listSubagentPresets();
@@ -191,7 +204,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
               ? "No preset sub-agents match. Use app_create_subagent_preset to define one."
               : `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"}, in the order a spawn resolves a name:\n` +
                 presets.map(presetLine).join("\n") +
-                "\nSpawn from one with kone_spawn_from_preset.",
+                "\nStart a worker from one with kone_spawn_worker_preset.",
         },
       ],
       structuredContent: {
@@ -222,6 +235,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     const input: SubagentPresetCreateInput = { name };
     if (params.instructions !== undefined) input.instructions = params.instructions;
     if (params.model !== undefined) input.model = params.model;
+    if (params.modelFallbacks !== undefined) input.modelFallbacks = [...params.modelFallbacks];
 
     const created = store.createSubagentPreset(input);
     if (!created) {
@@ -237,7 +251,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
       content: [
         {
           type: "text",
-          text: `${summary} Spawn from it by name with kone_spawn_from_preset.`,
+          text: `${summary} Start a worker from it by name with kone_spawn_worker_preset.`,
         },
       ],
       structuredContent: { ok: true, summary, preset: presetPayload(created) },
@@ -255,6 +269,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     if (params.name !== undefined) patch.name = params.name.trim();
     if (params.instructions !== undefined) patch.instructions = params.instructions;
     if (params.model !== undefined) patch.model = params.model;
+    if (params.modelFallbacks !== undefined) patch.modelFallbacks = [...params.modelFallbacks];
 
     const cleared = params.clear ?? [];
     // Set and cleared in one call is a contradiction, and picking a winner would
@@ -294,7 +309,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
 
     // Read off the arguments rather than the assembled patch: the clears were
     // written into it as nulls, and they are reported separately below.
-    const set = (["name", "instructions", "model"] as const).filter(
+    const set = (["name", "instructions", "model", "modelFallbacks"] as const).filter(
       (field) => params[field] !== undefined,
     );
     const parts: string[] = [];
@@ -347,7 +362,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     {
       name: "app_list_subagent_presets",
       description:
-        "List the preset sub-agents in kone — the reusable definitions (name, standing instructions, model) that kone_spawn_from_preset cuts a spawn from. Includes the presets kone ships, marked read-only.",
+        "List the preset sub-agents in kone — the reusable definitions (name, standing instructions, model) that kone_spawn_worker_preset starts a specialist worker from. Includes the presets kone ships, marked read-only.",
       inputSchema: ListSubagentPresetsInputSchema,
       jsonSchema: LIST_SUBAGENT_PRESETS_JSON_SCHEMA,
       permission: "allow",
@@ -370,7 +385,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
       promptSnippet:
         "`app_create_subagent_preset`: define a reusable sub-agent (name, instructions, model).",
       promptGuidelines: [
-        "Use `app_create_subagent_preset` for a sub-agent the user wants to reuse; for a single task, delegate with `kone_delegate` instead of leaving a preset behind.",
+        "Use `app_create_subagent_preset` for a sub-agent the user wants to reuse; for a single task, spawn a one-off worker with `kone_spawn_worker` instead of leaving a preset behind.",
       ],
       handler: createHandler,
     },

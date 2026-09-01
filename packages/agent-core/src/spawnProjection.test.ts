@@ -169,7 +169,7 @@ describe("projectSpawnedThread", () => {
     const long = "x".repeat(SPAWN_SUMMARY_CHAR_CAP + 10);
     const capped = projectSpawnedThread(base({ latestAssistantText: long }));
     expect(capped.summary).toBe(`${"x".repeat(SPAWN_SUMMARY_CHAR_CAP)}${SPAWN_SUMMARY_TRUNCATION_MARKER}`);
-    expect(SPAWN_SUMMARY_TRUNCATION_MARKER).toContain("kone_read_thread");
+    expect(SPAWN_SUMMARY_TRUNCATION_MARKER).toContain("kone_read_response");
 
     const exact = projectSpawnedThread(
       base({ latestAssistantText: "y".repeat(SPAWN_SUMMARY_CHAR_CAP) }),

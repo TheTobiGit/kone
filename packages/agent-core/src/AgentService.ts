@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isQuotaOrRateLimitError } from "./adapters/errors.js";
-import { resolveModelWithFallback, type ProviderAvailability } from "./agentModel.js";
+import {
+  resolveModelWithFallback,
+  type ModelCandidate,
+  type ProviderAvailability,
+} from "./agentModel.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
@@ -214,7 +218,7 @@ export class AgentService {
   /** threadId -> SessionStartInput, remembered so a fallback provider switch can start a session. */
   private readonly sessionInputs = new Map<string, SessionStartInput>();
   /** threadId -> configured fallback chain for the thread. */
-  private readonly threadFallbacks = new Map<string, Array<{ provider: string; model?: string }>>();
+  private readonly threadFallbacks = new Map<string, ModelCandidate[]>();
   private queueUnavailableWarned = false;
   /** The wedge sweep timer — lazily started on first session, cleared on stopAll. */
   private wedgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -724,33 +728,34 @@ export class AgentService {
       const fallbacks = input.fallbacks ?? this.threadFallbacks.get(threadId);
       if (isQuotaOrRateLimitError(error) && fallbacks && fallbacks.length > 0) {
         const availability = this.buildAvailabilitySnapshot();
-        for (let i = 0; i < fallbacks.length; i++) {
-          const candidate = fallbacks[i];
-          if (!candidate) continue;
-          const remaining = fallbacks.slice(i + 1);
-          const resolution = resolveModelWithFallback(candidate, remaining, availability);
-          if (resolution.outcome !== "resolved") {
+        let chain = [...fallbacks];
+        while (chain.length > 0) {
+          const head = chain[0];
+          if (!head) break;
+          const resolution = resolveModelWithFallback(head, chain.slice(1), availability);
+          if (resolution.outcome !== "resolved") break;
+          const target = resolution.ref;
+          const targetProvider = target.provider;
+          const targetAdapter = this.adapters.get(targetProvider);
+          if (!targetAdapter) {
+            chain = [...resolution.remaining];
             continue;
           }
-          const target = resolution.ref;
-          // SAFETY: resolveModelWithFallback resolves target.provider from valid ProviderAvailability kinds.
-          const targetProvider = target.provider as ProviderKind;
-          const targetAdapter = this.adapters.get(targetProvider);
-          if (!targetAdapter) continue;
 
           console.warn(
             `[agent] 429/quota error on ${currentProvider ?? "unknown"}; falling back to ${targetProvider}${target.model ? `/${target.model}` : ""}`,
           );
 
           this.routing.set(threadId, targetProvider);
+          this.threadFallbacks.set(threadId, [...resolution.remaining]);
           const nextModel = this.validModelFor(targetProvider, target.model);
           const nextEffort = this.validEffortFor(targetProvider, nextModel, input.effort);
           const nextInput: SendTurnInput = {
             ...input,
             model: nextModel,
             effort: nextEffort,
-            fallbacks: remaining,
           };
+          if (resolution.remaining.length > 0) nextInput.fallbacks = [...resolution.remaining];
 
           if ("hasSession" in targetAdapter && targetAdapter.hasSession instanceof Function) {
             const has = await targetAdapter.hasSession(threadId);
@@ -771,6 +776,7 @@ export class AgentService {
             return await targetAdapter.sendTurn(nextInput);
           } catch (nextErr) {
             if (isQuotaOrRateLimitError(nextErr)) {
+              chain = [...resolution.remaining];
               continue;
             }
             throw nextErr;

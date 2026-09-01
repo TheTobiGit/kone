@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { isQuotaOrRateLimitError } from "./adapters/errors.js";
+import type { ModelCandidate } from "./agentModel.js";
 import type { ThreadDispatcher } from "./dispatch.js";
 import { checkSpawn, type SpawnRefusalDetails } from "./spawnGuards.js";
 import {
@@ -21,7 +23,9 @@ import type {
   ProviderKind,
   ProviderStatus,
   RuntimeEvent,
+  SendTurnInput,
   Session,
+  SessionStartInput,
   SpawnedThread,
   SpawnThreadResult,
   SpawnTarget,
@@ -55,6 +59,11 @@ export interface SpawnEngineStore {
    *  dispatches. The return value is ignored — the engine only needs the write
    *  to land so the thread's transcript names who answered. */
   bindThreadAgent(threadId: string, agentId: string): void;
+  /** Persist the provider/model a child actually started on, after a spawn-time
+   *  failover moved it off the primary. The row is written before dispatch, so
+   *  a retry that lands on a later candidate has to rewrite the stored target
+   *  or the sidebar would keep showing the model that couldn't start. */
+  retargetSpawnedThread(threadId: string, provider: ProviderKind, model?: string): void;
   spawnedChildren(parentThreadId: string): StoredThreadMeta[];
   spawnDepth(threadId: string): number;
   liveSpawnedThreadIds(): string[];
@@ -92,6 +101,13 @@ export interface SpawnEngineStore {
     turnId: string;
     requestId: string;
   }): void;
+  /** The agent a delegated thread runs as, when it has one. Optional because
+   *  only a session restart of a delegation needs it: the binding is already
+   *  on the thread for every turn the original session drove. */
+  getThreadAgent?(threadId: string): { agentId: string | null } | null;
+  /** One agent by id — the name and standing instructions a restarted
+   *  delegation needs to wake up as itself. */
+  getAgent?(agentId: string): { name: string | null; instructions?: string | null } | null;
 }
 
 /** Structural — the real AgentService satisfies it. */
@@ -106,6 +122,10 @@ export interface SpawnEngineProviders {
    *  OpenCode `serve`, a Cursor `acp`, …) is released instead of being held
    *  until app quit. The store row and transcript stay. */
   stopSession(threadId: string): Promise<void>;
+  /** Whether the thread has a live provider session right now. A follow-up to
+   *  a settled child must bring its session back up before dispatching; one to
+   *  a child that never stopped goes straight to the turn. */
+  hasLiveSession(threadId: string): boolean;
 }
 
 export interface SpawnEngineDeps {
@@ -146,6 +166,13 @@ export type SpawnRequest = {
    *  on the child's session so the model works as that agent. Only meaningful
    *  alongside `delegateToAgentId`; ignored otherwise. */
   persona?: AgentPersona;
+  /** What is left of the target's fallback chain, in the order to try it. Used
+   *  twice, at two different moments: the engine walks it here if the child
+   *  cannot even be STARTED on `target` because that model is rate-limited or
+   *  spent, and it rides along to the session and the first turn so the runtime
+   *  can fail the child over again if a 429 lands mid-turn. Absent for a target
+   *  with no chain behind it — the overwhelming majority of spawns. */
+  fallbacks?: readonly ModelCandidate[];
 };
 
 export type SpawnErrorCode =
@@ -190,7 +217,7 @@ export type SpawnTargetsReport = {
     remainingChildren: number;
     remainingAppWide: number;
   };
-  /** The preset sub-agents `kone_spawn_from_preset` can invoke by name, in the
+  /** The preset sub-agents `kone_spawn_worker_preset` can invoke by name, in the
    *  order the user keeps them. Filled by the gateway tool, not the engine —
    *  presets live outside the engine's store — so it is optional: absent means
    *  the report was built without them (the engine's own `targets`), and `[]`
@@ -203,9 +230,10 @@ export type SpawnTargetsReport = {
      *  runtime picks. */
     model?: { provider: ProviderKind; model: string };
   }>;
-  /** The teammates `kone_delegate` can hand work to on the caller's own project,
-   *  in team order. Same provenance as `presets`. A nameless agent is left out —
-   *  delegation resolves by name, so one with no name cannot be reached. */
+  /** The teammates `kone_delegate_to_teammate` can hand work to on the caller's
+   *  own project, in roster order. Same provenance as `presets`. A nameless agent
+   *  is left out — delegation resolves by name, so one with no name cannot be
+   *  reached. */
   teammates?: Array<{
     id: string;
     name: string;
@@ -218,6 +246,37 @@ export type SpawnTargetsReport = {
 export const SPAWN_WAIT_DEFAULT_MS = 30_000;
 export const SPAWN_WAIT_MAX_MS = 60_000;
 
+/** The gateway-op ledger kind a follow-up reserves under. Deliberately NOT
+ *  "spawn.thread": boot recovery seals undispatched spawn.thread rows as dead
+ *  children because a spawn creates a thread row before dispatching — a
+ *  follow-up creates nothing, so an undispatched one only needs to error to
+ *  the caller, and a kind of its own keeps the sweeper from ever seeing it. */
+export const CONTINUE_THREAD_OP_KIND = "spawn.follow-up";
+
+/** A follow-up turn an orchestrator posts into a child thread it (or a
+ *  descendant of it) already spawned. */
+export type ContinueThreadRequest = {
+  /** The child thread to dispatch into. */
+  threadId: string;
+  /** The follow-up itself — a new standing ask, not a steer of work in flight. */
+  message: string;
+  /** Agent-supplied idempotency key scoped to (caller thread, caller turn).
+   *  Optional: a dispatch that creates no row still bills a turn, so a retry
+   *  without a key would run the child twice. */
+  requestId?: string;
+};
+
+export type ContinueThreadResult = {
+  threadId: string;
+  parentThreadId: string;
+  /** The follow-up turn's id — pass it back as turnIds to pin
+   *  kone_wait_for_responses to this exact turn. */
+  turnId: string;
+  /** True when the child's provider session had settled and this follow-up
+   *  brought it back up before dispatching. */
+  resumed: boolean;
+};
+
 /** The rejection a cancelled wait settles with — named AbortError so the
  *  gateway transport can tell a client-cancelled call from a tool failure. */
 function abortWaitError(): Error {
@@ -226,6 +285,10 @@ function abortWaitError(): Error {
 
 export interface SpawnEngine {
   spawn(caller: SpawnCaller, request: SpawnRequest): Promise<SpawnThreadResult>;
+  /** Post a follow-up turn into an existing spawned child of the caller's
+   *  subtree, continuing that thread's conversation in place — no new row, no
+   *  new sidebar tab. */
+  continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult>;
   targets(caller: SpawnCaller): Promise<SpawnTargetsReport>;
   /** Live snapshots of a parent's direct children, oldest first. */
   children(parentThreadId: string): SpawnedThread[];
@@ -309,6 +372,14 @@ function catalogOf(
 // re-reading the DB. `lastProjection` is what the diff-guard compares against
 // before emitting thread.spawn-updated: a recompute that changes nothing emits
 // nothing — the difference between a calm stream and a firehose.
+/** The provider, model and effort one dispatch attempt runs on — the primary
+ *  target first, then whichever rung of the fallback chain replaced it. */
+type SpawnAttempt = {
+  provider: ProviderKind;
+  model?: string;
+  effort?: string;
+};
+
 type TrackedChild = {
   threadId: string;
   parentThreadId: string;
@@ -438,6 +509,7 @@ class SpawnEngineImpl implements SpawnEngine {
     //    inside one turn walks straight through the cap.
     const surface = this.providers.cachedSurface();
     const { liveChildrenOfParent, liveSpawnedTotal } = this.liveCounts(caller.threadId);
+    const parentDepth = this.store.spawnDepth(caller.threadId);
 
     // 5. Admission — every rule lives in checkSpawn (spawnGuards.ts); this
     //    engine only feeds it resolved values and surfaces its verdict.
@@ -447,7 +519,7 @@ class SpawnEngineImpl implements SpawnEngine {
       requestedMode: request.mode,
       parentMode,
       parentEffort,
-      parentDepth: this.store.spawnDepth(caller.threadId),
+      parentDepth,
       liveChildrenOfParent,
       liveSpawnedTotal,
       providerStatus: providerStatusOf(surface.statuses, request.target.provider),
@@ -559,91 +631,408 @@ class SpawnEngineImpl implements SpawnEngine {
     //     the child's first turn is ACCEPTED, never when it completes. The
     //     title + generateTitle: false options keep the title the parent chose
     //     and skip the background naming round-trip.
-    try {
-      await this.dispatcher.startThread(
-        {
+    //
+    //     A target with a fallback chain behind it gets more than one go. When
+    //     the start fails specifically because the model is rate limited or its
+    //     quota is spent, the engine walks down the chain and restarts the child
+    //     on the next candidate the guards admit, rather than handing the parent
+    //     a dead child it would only have to respawn by hand. Every other
+    //     failure — a crashed CLI, a bad cwd, a refused prompt — goes straight
+    //     through: those do not get better on a different model.
+    let attempt: SpawnAttempt = { provider: request.target.provider, model, effort };
+    const chain: ModelCandidate[] = [...(request.fallbacks ?? [])];
+
+    for (;;) {
+      // The rest of the chain rides along to the session and the first turn, so
+      // a 429 that lands mid-turn — after the child started cleanly — fails the
+      // child over again inside the runtime instead of surfacing as a dead turn.
+      const failover = chain.length > 0 ? chain.map((c) => ({ ...c })) : undefined;
+      try {
+        const startInput: SessionStartInput = {
           threadId,
-          provider: request.target.provider,
+          provider: attempt.provider,
           cwd: caller.cwd,
-          model,
-          effort,
+          model: attempt.model,
+          effort: attempt.effort,
           mode,
           // A delegated child runs as its agent: the persona reaches the session
           // so the model works under that name and its standing instructions.
           // Absent for an anonymous sub-agent spawn, which stays a guest.
           agent: request.persona,
-        },
-        // The child's events carry the spawning turn's id (F10), so a consumer
-        // can correlate the child's whole traffic to the parent turn without
-        // walking the store.
-        { parentTurnId: caller.turnId },
-      );
-      // The child is now genuinely dispatched: mark the ledger bit AFTER
-      // startThread returns (F8), so a crash between the store write and here
-      // leaves a reserved-but-undispatched op — which boot-time recovery seals
-      // as a failed child instead of leaving it projecting idle forever.
-      this.store.markGatewayOpDispatched({
-        threadId: caller.threadId,
-        turnId: caller.turnId,
-        requestId: request.requestId,
-      });
-      const turnStart = await this.dispatcher.sendThreadTurn(
-        { threadId, input: request.prompt },
-        { title, generateTitle: false, parentTurnId: caller.turnId },
-      );
-      // The parent pins kone_wait_for_threads to the child's FIRST turn so a
-      // newer turn can't swap the outcome mid-wait (F7). Persist it on the
-      // stored result too, so a replay returns the same pin for free.
-      result.firstTurnId = turnStart.turnId;
-      this.store.setGatewayOpResult({
-        threadId: caller.threadId,
-        turnId: caller.turnId,
-        requestId: request.requestId,
-        resultJson: JSON.stringify(result),
-      });
-    } catch (err) {
-      // The row stays — a failed child is visible, not silently erased. The
-      // failure can hit sendThreadTurn after startThread succeeded, by which
-      // point the live stream has set hasLiveSession and may have pushed a
-      // running turn — whose "running" state outranks any failed turn, so the
-      // child would read "working" forever. Settle every running turn as
-      // failed first, then the projection reads failed + terminal
-      // unconditionally.
-      const message = err instanceof Error ? err.message : String(err);
-      const at = Date.now();
-      let settledRunning = false;
-      for (const turn of child.turns) {
-        if (turn.state !== "running") continue;
-        settledRunning = true;
-        turn.state = "failed";
-        turn.endedAt = at;
-        turn.error = message;
-      }
-      // Release any provider session startThread already started before
-      // sendThreadTurn failed, so the child process is not leaked in the background.
-      if (!child.sessionStopped) {
-        child.sessionStopped = true;
-        void this.providers.stopSession(child.threadId).catch(() => {});
-      }
-      child.hasLiveSession = false;
-      child.gate = null;
-      if (!settledRunning) {
-        child.turns.push({
-          turnId: "<dispatch>",
-          state: "failed",
-          at,
-          endedAt: at,
-          error: message,
+        };
+        if (failover) startInput.fallbacks = failover;
+        await this.dispatcher.startThread(
+          startInput,
+          // The child's events carry the spawning turn's id (F10), so a consumer
+          // can correlate the child's whole traffic to the parent turn without
+          // walking the store.
+          { parentTurnId: caller.turnId },
+        );
+        // The child is now genuinely dispatched: mark the ledger bit AFTER
+        // startThread returns (F8), so a crash between the store write and here
+        // leaves a reserved-but-undispatched op — which boot-time recovery seals
+        // as a failed child instead of leaving it projecting idle forever.
+        this.store.markGatewayOpDispatched({
+          threadId: caller.threadId,
+          turnId: caller.turnId,
+          requestId: request.requestId,
         });
+        const turnInput: SendTurnInput = { threadId, input: request.prompt };
+        if (failover) turnInput.fallbacks = failover;
+        const turnStart = await this.dispatcher.sendThreadTurn(
+          turnInput,
+          { title, generateTitle: false, parentTurnId: caller.turnId },
+        );
+        // The parent pins kone_wait_for_responses to the child's FIRST turn so a
+        // newer turn can't swap the outcome mid-wait (F7). Persist it on the
+        // stored result too, so a replay returns the same pin for free.
+        result.firstTurnId = turnStart.turnId;
+        this.store.setGatewayOpResult({
+          threadId: caller.threadId,
+          turnId: caller.turnId,
+          requestId: request.requestId,
+          resultJson: JSON.stringify(result),
+        });
+        break;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Only a rate limit or a spent quota is worth another model, and only
+        // while the chain still has one to offer. The next candidate goes
+        // through the same guards the primary did — the counts are the ones
+        // taken before this child was tracked, so re-admitting it can't trip its
+        // own breadth cap.
+        const nextTarget = isQuotaOrRateLimitError(err)
+          ? this.admitFallback(chain, {
+              prompt: request.prompt,
+              requestedMode: request.mode,
+              parentMode,
+              parentEffort,
+              parentDepth,
+              liveChildrenOfParent,
+              liveSpawnedTotal,
+            })
+          : null;
+
+        if (nextTarget) {
+          // Release the half-started session before moving providers, and drop
+          // the turns it never really ran: the child is being restarted, not
+          // failed, and a settled-failed turn here would make it project as
+          // dead for the rest of its life.
+          await this.providers.stopSession(threadId).catch(() => {});
+          child.turns = child.turns.filter((turn) => turn.state !== "running");
+          child.hasLiveSession = false;
+          child.gate = null;
+          if (!result.failedOverFrom) {
+            result.failedOverFrom = { provider: attempt.provider, reason: message };
+            if (attempt.model) result.failedOverFrom.model = attempt.model;
+          }
+          attempt = nextTarget;
+          child.provider = attempt.provider;
+          child.model = attempt.model;
+          child.effort = attempt.effort;
+          result.provider = attempt.provider;
+          result.model = attempt.model;
+          result.effort = attempt.effort;
+          this.store.retargetSpawnedThread(threadId, attempt.provider, attempt.model);
+          this.recompute(child);
+          continue;
+        }
+
+        // The row stays — a failed child is visible, not silently erased. The
+        // failure can hit sendThreadTurn after startThread succeeded, by which
+        // point the live stream has set hasLiveSession and may have pushed a
+        // running turn — whose "running" state outranks any failed turn, so the
+        // child would read "working" forever. Settle every running turn as
+        // failed first, then the projection reads failed + terminal
+        // unconditionally.
+        const at = Date.now();
+        let settledRunning = false;
+        for (const turn of child.turns) {
+          if (turn.state !== "running") continue;
+          settledRunning = true;
+          turn.state = "failed";
+          turn.endedAt = at;
+          turn.error = message;
+        }
+        // Release any provider session startThread already started before
+        // sendThreadTurn failed, so the child process is not leaked in the background.
+        if (!child.sessionStopped) {
+          child.sessionStopped = true;
+          void this.providers.stopSession(child.threadId).catch(() => {});
+        }
+        child.hasLiveSession = false;
+        child.gate = null;
+        if (!settledRunning) {
+          child.turns.push({
+            turnId: "<dispatch>",
+            state: "failed",
+            at,
+            endedAt: at,
+            error: message,
+          });
+        }
+        this.recompute(child);
+        throw new SpawnError(
+          "provider_unavailable",
+          `The child thread could not be started on ${attempt.provider}: ${message}. The child remains visible in a failed state — retry with a fresh requestId once the provider is healthy.`,
+        );
       }
-      this.recompute(child);
-      throw new SpawnError(
-        "provider_unavailable",
-        `The child thread could not be started on ${request.target.provider}: ${message}. The child remains visible in a failed state — retry with a fresh requestId once the provider is healthy.`,
-      );
     }
 
     return result;
+  }
+
+  /** Take the next candidate off a fallback chain that the spawn guards will
+   *  admit, resolving its model and effort the same way the primary target's
+   *  were. Consumes the chain as it goes, so a candidate that is refused is
+   *  never offered twice, and returns null once nothing is left to try.
+   *
+   *  `counts` are the caller's own pre-admission numbers: this child is already
+   *  tracked as live by the time a fallback is needed, and counting it against
+   *  itself would refuse the retry on a breadth cap it has already passed. */
+  private admitFallback(
+    chain: ModelCandidate[],
+    counts: {
+      prompt: string;
+      requestedMode: InteractionMode | undefined;
+      parentMode: InteractionMode;
+      parentEffort: string | undefined;
+      parentDepth: number;
+      liveChildrenOfParent: number;
+      liveSpawnedTotal: number;
+    },
+  ): SpawnAttempt | null {
+    const surface = this.providers.cachedSurface();
+    while (chain.length > 0) {
+      const candidate = chain.shift();
+      if (!candidate) continue;
+      const target: SpawnTarget = { provider: candidate.provider };
+      if (candidate.model) target.model = candidate.model;
+      const check = checkSpawn({
+        prompt: counts.prompt,
+        target,
+        requestedMode: counts.requestedMode,
+        parentMode: counts.parentMode,
+        parentEffort: counts.parentEffort,
+        parentDepth: counts.parentDepth,
+        liveChildrenOfParent: counts.liveChildrenOfParent,
+        liveSpawnedTotal: counts.liveSpawnedTotal,
+        providerStatus: providerStatusOf(surface.statuses, candidate.provider),
+        catalog: catalogOf(surface.models, candidate.provider),
+      });
+      if (!check.ok) continue;
+      const next: SpawnAttempt = { provider: candidate.provider };
+      if (check.model) next.model = check.model;
+      if (check.effort) next.effort = check.effort;
+      return next;
+    }
+    return null;
+  }
+
+  /**
+   * Post a follow-up turn into a child thread the caller's subtree already
+   * spawned — the second question to a worker, the changed brief to a
+   * teammate — continuing that thread's conversation in place.
+   *
+   * The child keeps its row, its title and its transcript; only a turn is
+   * added. A child that is mid-turn gets its follow-up queued behind the live
+   * one (the service's durable queue), and a child whose session settled —
+   * the engine releases a terminal child's provider process — gets its session
+   * brought back up first, resuming the stored provider conversation so the
+   * follow-up lands with the child's full context. The dispatch is journaled
+   * like the opening brief is: the parent agent said it, and the child's
+   * transcript should show what it was actually asked.
+   */
+  async continueThread(
+    caller: SpawnCaller,
+    request: ContinueThreadRequest,
+  ): Promise<ContinueThreadResult> {
+    const message = request.message.trim();
+    if (!message) {
+      throw new SpawnError("invalid_input", "The follow-up message cannot be empty.");
+    }
+    // Continuing your own thread is what speaking already does — the only
+    // sensible targets are the children the subtree spawned.
+    if (request.threadId === caller.threadId) {
+      throw new SpawnError(
+        "invalid_input",
+        "That is your own thread — write your reply instead of continuing it.",
+      );
+    }
+    if (!this.isInSubtree(caller.threadId, request.threadId)) {
+      throw new SpawnError(
+        "not_found",
+        `Thread "${request.threadId}" is not in this conversation's subtree — you can only continue a thread you (or a descendant of yours) spawned.`,
+        { threadId: request.threadId },
+      );
+    }
+    return this.dispatchFollowUp(caller, request, message);
+  }
+
+  /** The dispatch half of continueThread: idempotency, target resolution,
+   *  session wake, and the turn itself. Split out so the refusal checks above
+   *  read before anything stateful happens. */
+  private async dispatchFollowUp(
+    caller: SpawnCaller,
+    request: ContinueThreadRequest,
+    message: string,
+  ): Promise<ContinueThreadResult> {
+    // Retry safety. The dispatch bills the child a turn whether or not the
+    // caller hears back, so an ambiguous failure retried without a key would
+    // run the child twice on the same ask. Same ledger, same semantics as a
+    // spawn: same key + same fingerprint replays the stored result.
+    if (request.requestId !== undefined) {
+      const reserved = this.store.reserveGatewayOp({
+        threadId: caller.threadId,
+        turnId: caller.turnId,
+        requestId: request.requestId,
+        kind: CONTINUE_THREAD_OP_KIND,
+        fingerprint: fingerprintOf([request.threadId, message]),
+      });
+      if (reserved === null) {
+        throw new SpawnError("internal", "Failed to reserve the follow-up operation.");
+      }
+      if (reserved.kind === "replay") {
+        // SAFETY: the engine only ever stores JSON.stringify of a
+        // ContinueThreadResult under this op kind (below), so a completed row
+        // parses back into exactly that shape.
+        return reserved.result as ContinueThreadResult;
+      }
+      if (reserved.kind === "conflict") {
+        throw new SpawnError(
+          "idempotency_conflict",
+          `Request id "${request.requestId}" was already used in this turn with a different follow-up — pass a fresh requestId to send a different message.`,
+        );
+      }
+    }
+
+    const meta = this.store.threadMeta(request.threadId);
+    const lineage = meta ? this.store.threadLineage(request.threadId) : null;
+    // The subtree check passed, so this row exists and is spawned — its absence
+    // here means it was deleted between the two reads. Refuse rather than
+    // dispatch a turn into a thread with no row to hang it on.
+    if (!meta || !lineage || !isSpawnedRelationship(lineage.relationshipToParent)) {
+      throw new SpawnError(
+        "not_found",
+        `Thread "${request.threadId}" is not a spawned child — nothing to continue.`,
+        { threadId: request.threadId },
+      );
+    }
+    return this.wakeAndSend(caller, request, message, meta, lineage);
+  }
+
+  /** Session wake (when the child's process had been released) plus the
+   *  follow-up dispatch itself. */
+  private async wakeAndSend(
+    caller: SpawnCaller,
+    request: ContinueThreadRequest,
+    message: string,
+    meta: StoredThreadMeta,
+    lineage: ThreadLineage,
+  ): Promise<ContinueThreadResult> {
+    const tracked = this.tracked.get(request.threadId);
+    const live = tracked ? tracked.hasLiveSession : this.providers.hasLiveSession(request.threadId);
+    let resumed = false;
+    if (!live) {
+      resumed = true;
+      // Restart exactly what the child ran as: its own provider, model, mode
+      // and effort are persisted on the row (the spawn stamped them), and a
+      // delegation wakes as its agent again. Resuming the stored provider
+      // conversation is what makes this a continuation rather than a stranger
+      // reading the transcript cold — and when a provider refuses the resume,
+      // the adapter falls back to a fresh conversation and the dispatch path
+      // replays the transcript, so the follow-up still lands with context.
+      const startInput: SessionStartInput = {
+        threadId: request.threadId,
+        provider: meta.provider,
+        cwd: meta.projectPath,
+        model: meta.model,
+        mode: meta.selection?.mode,
+        effort: meta.selection?.effort,
+        resume: meta.conversationId,
+        resumeSessionAt: meta.resumeSessionAt,
+        agent: this.personaFor(request.threadId, lineage),
+      };
+      if (tracked) {
+        // Before startThread, not after: the session.started event that turns
+        // these back on the honest way races the recompute that must not read
+        // the child as still-stopped.
+        tracked.sessionStopped = false;
+        tracked.hasLiveSession = true;
+      }
+      try {
+        await this.dispatcher.startThread(startInput, { parentTurnId: caller.turnId });
+      } catch (err) {
+        if (tracked) {
+          tracked.hasLiveSession = false;
+          tracked.sessionStopped = true;
+        }
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new SpawnError(
+          "provider_unavailable",
+          `The child thread could not be brought back up on ${meta.provider}: ${detail}. Its transcript is intact — retry the follow-up once the provider is healthy.`,
+          { threadId: request.threadId },
+        );
+      }
+      if (tracked) this.recompute(tracked);
+    }
+
+    const finish = (turnId: string): ContinueThreadResult => ({
+      threadId: request.threadId,
+      parentThreadId: caller.threadId,
+      turnId,
+      resumed,
+    });
+
+    try {
+      // A live turn on the child is not an obstacle: the service durably
+      // queues this behind it, so a follow-up sent mid-run lands in order.
+      // generateTitle stays off — the thread already has its name; a fresh
+      // one would erase what the parent (or user) chose.
+      const turn = await this.dispatcher.sendThreadTurn(
+        { threadId: request.threadId, input: message },
+        { generateTitle: false, parentTurnId: caller.turnId },
+      );
+      if (tracked) {
+        // The breadth caps count live children; a child that settled left the
+        // live set, and this turn puts it back in before any event does.
+        this.liveChildren.add(request.threadId);
+      }
+      if (request.requestId !== undefined) {
+        this.store.setGatewayOpResult({
+          threadId: caller.threadId,
+          turnId: caller.turnId,
+          requestId: request.requestId,
+          resultJson: JSON.stringify(finish(turn.turnId)),
+        });
+      }
+      return finish(turn.turnId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new SpawnError(
+        "provider_unavailable",
+        `The follow-up turn could not be dispatched to ${request.threadId}: ${detail}.`,
+        { threadId: request.threadId },
+      );
+    }
+  }
+
+  /** The persona a restarted delegation runs as, read from the thread's agent
+   *  binding — the same identity the original session carried. Absent for an
+   *  anonymous worker, and absent when the store cannot answer: a follow-up
+   *  that wakes a guest is better than one that wakes nobody. */
+  private personaFor(threadId: string, lineage: ThreadLineage): AgentPersona | undefined {
+    if (lineage.relationshipToParent !== "delegation") return undefined;
+    const binding = this.store.getThreadAgent?.(threadId);
+    const agentId = binding?.agentId;
+    if (!agentId) return undefined;
+    const record = this.store.getAgent?.(agentId);
+    // A nameless agent has no identity to wake as — a guest that still reads
+    // the transcript beats a persona made of nothing.
+    if (!record?.name) return undefined;
+    const persona: AgentPersona = { name: record.name };
+    if (record.instructions) persona.instructions = record.instructions;
+    return persona;
   }
 
   async targets(caller: SpawnCaller): Promise<SpawnTargetsReport> {
@@ -959,13 +1348,14 @@ class SpawnEngineImpl implements SpawnEngine {
   private recompute(child: TrackedChild): void {
     const spawned = this.project(child, Date.now());
     if (spawned.terminal) this.liveChildren.delete(child.threadId);
+    else this.liveChildren.add(child.threadId);
     // Release the child's provider session the moment it settles (F6): each
     // spawned child owns a dedicated provider process, and nothing else ever
     // stops it — children are never in the renderer registry, so the
     // agent:stop-session IPC and quit-time stopAll are the only other callers.
-    // The engine only ever drives the child's single brief, so a terminal
-    // projection means no follow-up turn is queued. Keep the store row and
-    // transcript; only the process goes. One-shot, and idempotent downstream
+    // The release is not a close: a follow-up turn brings the session back up
+    // and resumes the stored conversation. Keep the store row and transcript;
+    // only the process goes. One-shot, and idempotent downstream
     // (AgentService.stopSession no-ops for an unknown thread).
     if (spawned.terminal && child.hasLiveSession && !child.sessionStopped) {
       child.sessionStopped = true;
