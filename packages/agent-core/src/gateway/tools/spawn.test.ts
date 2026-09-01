@@ -444,6 +444,58 @@ describe("spawn gateway tools", () => {
     });
   });
 
+  test("kone_wait_for_threads puts each child's reply in the text content", async () => {
+    currentEngine = makeEngine({
+      waitFor: async () => ({
+        threads: [
+          spawnedThread({
+            threadId: "child-1",
+            title: "Maya",
+            status: "completed",
+            terminal: true,
+            elapsedMs: 52_000,
+            summary: "Zere, kone and Kwame are on this project.",
+          }),
+          spawnedThread({
+            threadId: "child-2",
+            title: "Leo",
+            status: "failed",
+            terminal: true,
+            detail: "The provider refused the model.",
+          }),
+        ],
+        allTerminal: true,
+        timedOut: false,
+        turnIds: ["turn-1", "turn-2"],
+      }),
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_wait_for_threads", {
+      threadIds: ["child-1", "child-2"],
+    });
+    const text = res.content[0]?.text ?? "";
+    expect(text).toContain("All 2 threads settled.");
+    expect(text).toContain("[Maya] completed in 52s (child-1):");
+    expect(text).toContain("Zere, kone and Kwame are on this project.");
+    // A failure explains itself in the same place a success reports.
+    expect(text).toContain("[Leo] failed (child-2):");
+    expect(text).toContain("The provider refused the model.");
+  });
+
+  test("kone_wait_for_threads says so when a settled child left no reply text", async () => {
+    currentEngine = makeEngine({
+      waitFor: async () => ({
+        threads: [spawnedThread({ status: "completed", terminal: true })],
+        allTerminal: true,
+        timedOut: false,
+        turnIds: ["turn-1"],
+      }),
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_wait_for_threads", { threadIds: ["child-1"] });
+    expect(res.content[0]?.text ?? "").toContain("(no reply text — read the thread");
+  });
+
   test("kone_wait_for_threads forwards ctx.signal into engine.waitFor", async () => {
     const controller = new AbortController();
     let captured: FakeWaitInput | null = null;
@@ -583,6 +635,74 @@ describe("spawn gateway tools", () => {
     expect(messages).toHaveLength(20);
     expect(messages[0]).toEqual({ role: "user", text: "message 5" });
     expect(messages[19]).toEqual({ role: "user", text: "message 24" });
+  });
+
+  test("kone_read_thread puts the transcript in the text content", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const thread: StoredThread = {
+      threadId: "child-1",
+      projectPath: "/proj",
+      provider: "codex",
+      createdAt: 1,
+      updatedAt: 2,
+      title: "Ask Maya about teammates",
+      blocks: [
+        { id: "b1", role: "user", text: "what teammates do you have?", at: 3 },
+        {
+          id: "b2",
+          role: "assistant",
+          turnId: "t1",
+          state: "completed",
+          at: 4,
+          items: [
+            { itemId: "i1", kind: "assistant_text", status: "completed", text: "Zere, kone, Kwame." },
+          ],
+        },
+        {
+          id: "b3",
+          role: "assistant",
+          turnId: "t2",
+          state: "completed",
+          at: 5,
+          items: [
+            {
+              itemId: "i2",
+              kind: "tool_call",
+              status: "completed",
+              text: "bash -c 'echo SECRET'",
+              name: "bash",
+              detail: "SECRET_PAYLOAD_DO_NOT_LEAK",
+            },
+          ],
+        },
+      ],
+    };
+    const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
+    const res = await registry.call(ctx, "kone_read_thread", { threadId: "child-1" });
+    const text = res.content[0]?.text ?? "";
+    expect(text).toContain('Read 3 messages from "Ask Maya about teammates", oldest first:');
+    expect(text).toContain("[user] what teammates do you have?");
+    expect(text).toContain("[assistant] Zere, kone, Kwame.");
+    // A turn that was all tool calls reads as empty rather than as a blank line.
+    expect(text).toContain("[assistant] (no text — tool calls only)");
+    // The rendered transcript keeps the same tool-payload isolation as the read.
+    expect(text).not.toContain("SECRET_PAYLOAD_DO_NOT_LEAK");
+  });
+
+  test("kone_read_thread reports an empty transcript as empty", async () => {
+    currentEngine = makeEngine({ isInSubtree: () => true });
+    const thread: StoredThread = {
+      threadId: "child-1",
+      projectPath: "/proj",
+      provider: "codex",
+      createdAt: 1,
+      updatedAt: 2,
+      title: "Child one",
+      blocks: [],
+    };
+    const registry = createRegistry(createSpawnTools({ store: makeStore([thread]) }));
+    const res = await registry.call(ctx, "kone_read_thread", { threadId: "child-1" });
+    expect(res.content[0]?.text).toBe('"Child one" has no messages yet.');
   });
 });
 
