@@ -335,6 +335,18 @@ describe("an agent's capabilities", () => {
     expect(kone.model).toBeNull();
   });
 
+  test("a chain stores primary first and fallbacks as the tail", () => {
+    const store = seeded();
+    const made = store.createAgent({
+      name: "Ama",
+      model: { provider: "claudeAgent", model: "opus" },
+      modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+    })!;
+    expect(made.model).toEqual({ provider: "claudeAgent", model: "opus" });
+    expect(made.modelFallbacks).toEqual([{ provider: "codex", model: "gpt-5" }]);
+    expect(store.updateAgent(made.agentId, { model: null })?.modelFallbacks).toBeNull();
+  });
+
   test("a new agent keeps the capabilities it was made with", () => {
     const made = seeded().createAgent({
       name: "Ama",
