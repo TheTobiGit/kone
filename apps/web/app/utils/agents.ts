@@ -30,6 +30,7 @@
  */
 import type {
   AgentAvatarRef,
+  AgentCreateInput,
   AgentDuplicateInput,
   AgentModelRef,
   AgentPatch,
@@ -162,9 +163,13 @@ export interface Agent {
   svg: string;
   /** The colour the face is painted, carried alongside the drawn SVG so a
    *  surface can tint something *around* the face — the roster's dither field —
-   *  in the agent's own hue instead of parsing it back out of the markup. Ink is
-   *  deliberately not here: nothing outside the face has needed it. */
+   *  in the agent's own hue instead of parsing it back out of the markup. */
   hue: string;
+  /** The colour the eyes are drawn in. Here for the same reason as `hue`, and
+   *  only because the two have to be read as a pair: an agent asked to recolour
+   *  a face has to know what it is repainting, and half a paint job is how a
+   *  face goes unreadable. */
+  ink: string;
   /** The agent's standing instructions, when it has any — carried through so
    *  the send path can hand them to the session. */
   instructions?: string;
@@ -442,12 +447,20 @@ function resolveRow(row: AgentRecord): Agent | undefined {
     role: row.role ?? preset?.role ?? "",
     svg: agentFace(paint),
     hue: paint.body,
+    ink: paint.ink,
     capabilities,
     avatar,
     bot,
   };
   if (instructions) agent.instructions = instructions;
   return agent;
+}
+
+/** Whether an id belongs to an agent this build ships. Worth asking outside
+ *  this file: clearing a field on a shipped agent hands it back to the preset,
+ *  and on a user-made one unsets it, so the same edit means two things. */
+export function isShippedAgent(id: string): boolean {
+  return PRESET_IDS.includes(id);
 }
 
 /** Everyone you can hand a turn to, in roster order. */
@@ -660,6 +673,10 @@ export function agentPersonaForThread(threadId: string | null | undefined): Agen
 /** What you fill in to make an agent: a name, and whatever else you have.
  *  Everything but the name is optional — an agent can be a name and a face. */
 export interface AgentDraft {
+  /** The id to store the agent under. The caller's to mint when it has to name
+   *  the agent before the row exists — an agent tool reporting what it just
+   *  created, say. Left out, the store mints one. */
+  id?: string;
   name: string;
   role?: string;
   instructions?: string;
@@ -721,7 +738,7 @@ export function renameAgent(id: string, name: string): Promise<Agent | undefined
 /** Add an agent. Returns the agent as stored, or undefined if it was refused —
  *  which only happens for a draft with nothing to be called. */
 export async function createAgent(draft: AgentDraft): Promise<Agent | undefined> {
-  const row = await insertAgentRow({
+  const input: AgentCreateInput = {
     name: draft.name,
     role: draft.role ?? null,
     instructions: draft.instructions ?? null,
@@ -731,7 +748,11 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
     model: draft.model ?? null,
     avatar: draft.avatar ?? null,
     bot: draft.bot ?? null,
-  });
+  };
+  // Set only when the caller minted one: an explicit undefined would read as a
+  // field the store has to answer, and the store's answer is to mint its own.
+  if (draft.id) input.agentId = draft.id;
+  const row = await insertAgentRow(input);
   return row ? resolveRow(row) : undefined;
 }
 
