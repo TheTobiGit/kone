@@ -43,9 +43,30 @@ if (process.versions.electron && process.env.ELECTRON_RUN_AS_NODE !== "1") {
   child.on("exit", (code) => process.exit(code ?? 0));
 } else {
 
-const url = process.env.KONE_GATEWAY_URL;
-let token = process.env.KONE_GATEWAY_TOKEN;
-const bootstrapToken = process.env.KONE_GATEWAY_BOOTSTRAP_TOKEN;
+// A provider that writes our env vars into its own config file can hand them
+// back unexpanded, so the value arrives as the literal "$KONE_GATEWAY_URL".
+// Treating that as a real value produces a request to a nonsense host; treating
+// it as absent at least fails as "gateway off" rather than as a network error.
+const unexpanded = (value) => Boolean(value) && value.startsWith("$");
+
+const rawUrl = process.env.KONE_GATEWAY_URL;
+const rawToken = process.env.KONE_GATEWAY_TOKEN;
+const rawBootstrap = process.env.KONE_GATEWAY_BOOTSTRAP_TOKEN;
+
+const url = rawUrl && !unexpanded(rawUrl) ? rawUrl : undefined;
+let token = rawToken && !unexpanded(rawToken) ? rawToken : undefined;
+let bootstrapToken = rawBootstrap && !unexpanded(rawBootstrap) ? rawBootstrap : undefined;
+
+// Silently going inactive here looks identical to "kone never configured me",
+// which is a long debugging detour. Say which one it was.
+if (unexpanded(rawUrl) || unexpanded(rawToken) || unexpanded(rawBootstrap)) {
+  process.stderr.write(
+    "[kone gateway] Ignoring unexpanded environment placeholders " +
+      "(KONE_GATEWAY_URL/TOKEN/BOOTSTRAP_TOKEN arrived literally, e.g. \"$KONE_GATEWAY_URL\"). " +
+      "The gateway will be unavailable for this session.\n",
+  );
+}
+
 const active = Boolean(url && (token || bootstrapToken));
 
 const BOOTSTRAP_TIMEOUT_MS = 5000;
