@@ -17,8 +17,10 @@ import { computed, nextTick, onActivated, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   Add01Icon,
+  Archive02Icon,
   ArchiveRestoreIcon,
   CheckmarkCircle02Icon,
+  Delete02Icon,
   Folder01Icon,
   GitBranchIcon,
   InboxUnreadIcon,
@@ -104,8 +106,16 @@ const ranks = computed(() => props.view !== "done");
 const pinnedRows = computed(() => (ranks.value ? forView(source.pinned.value) : []));
 const threads = computed(() => {
   const rest = forView(source.recent.value);
-  if (ranks.value) return [...pinnedRows.value, ...rest];
-  return [...forView(source.pinned.value), ...rest].sort(byRecency);
+  const sel = selected.value;
+  const includeSel = Boolean(
+    sel &&
+      props.view === "inbox" &&
+      !source.pinned.value.some((s) => s.threadId === sel.threadId) &&
+      !source.recent.value.some((s) => s.threadId === sel.threadId),
+  );
+  const recentList = includeSel && sel ? [sel, ...rest] : rest;
+  if (ranks.value) return [...pinnedRows.value, ...recentList];
+  return [...forView(source.pinned.value), ...recentList].sort(byRecency);
 });
 const pinnedCount = computed(() => pinnedRows.value.length);
 
@@ -203,6 +213,9 @@ function togglePin(row: SessionSummary): void {
 
 function toggleDone(row: SessionSummary): void {
   cue("press");
+  if (selected.value?.threadId === row.threadId && props.view === "inbox") {
+    selected.value = null;
+  }
   source.toggleDone(row.threadId);
 }
 
@@ -227,6 +240,18 @@ function restore(row: SessionSummary): void {
   cue("press");
   if (selected.value?.threadId === row.threadId) selected.value = null;
   void source.restore(row.threadId);
+}
+
+function archiveRow(row: SessionSummary): void {
+  cue("press");
+  if (selected.value?.threadId === row.threadId) selected.value = null;
+  void source.archive(row.threadId, true);
+}
+
+function removeRow(row: SessionSummary): void {
+  cue("press");
+  if (selected.value?.threadId === row.threadId) selected.value = null;
+  source.remove(row.threadId);
 }
 </script>
 
@@ -373,6 +398,20 @@ function restore(row: SessionSummary): void {
                   aria-hidden="true"
                 />
               </button>
+              <button
+                type="button"
+                class="tl__act tl__act--danger"
+                :aria-label="`Delete ${s.title}`"
+                title="Delete"
+                @click="removeRow(s)"
+              >
+                <HugeiconsIcon
+                  :icon="Delete02Icon"
+                  :size="14"
+                  :stroke-width="1.9"
+                  aria-hidden="true"
+                />
+              </button>
             </div>
             <div v-else class="tl__acts">
               <button
@@ -416,6 +455,20 @@ function restore(row: SessionSummary): void {
               >
                 <HugeiconsIcon
                   :icon="CheckmarkCircle02Icon"
+                  :size="14"
+                  :stroke-width="1.9"
+                  aria-hidden="true"
+                />
+              </button>
+              <button
+                type="button"
+                class="tl__act"
+                :aria-label="`Archive ${s.title}`"
+                title="Archive"
+                @click="archiveRow(s)"
+              >
+                <HugeiconsIcon
+                  :icon="Archive02Icon"
                   :size="14"
                   :stroke-width="1.9"
                   aria-hidden="true"
@@ -796,6 +849,10 @@ function restore(row: SessionSummary): void {
 .tl__act--on,
 .tl__act--on:hover {
   color: var(--accent);
+}
+.tl__act--danger:hover {
+  color: var(--danger, var(--diff-del));
+  background: color-mix(in srgb, var(--danger, var(--diff-del)) 10%, transparent);
 }
 
 .tl__quiet {
