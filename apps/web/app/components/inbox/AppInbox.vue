@@ -107,10 +107,15 @@ function onThreadStarted(row: SessionSummary, sessionKey: string): void {
 }
 
 /** A thread picked out of the list: the composer's, if it was up, goes away, and
- *  so does its session key — this thread is opened the ordinary way. */
+ *  so does its session key — this thread is opened the ordinary way. When opened
+ *  from the active inbox list, it joins its project's studio row as well. */
 function onPickThread(): void {
   composing.value = false;
   handedKey.value = null;
+  const row = selected.value;
+  if (row?.projectPath && !row.done && view.value === "inbox") {
+    void intake.adoptThread(row.projectPath, row.threadId);
+  }
 }
 
 // Which thread the reading pane is showing. Portal-level rather than per-view,

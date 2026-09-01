@@ -89,5 +89,68 @@ export function useStudioIntake() {
     store.saveRow(next);
   }
 
-  return { adoptThread };
+  /** Remove a thread from its project's studio row. Safe to call for a thread that is
+   *  not on the row or a project that has no row yet — both paths no-op cleanly. */
+  async function dismissThread(projectPath: string, threadId: string): Promise<void> {
+    if (!projectPath || !threadId) return;
+
+    const mounted = rowRegistry.rowFor(projectPath);
+    if (mounted) {
+      mounted.dismissThread(threadId);
+      return;
+    }
+
+    const store = useStudioPersistence(projectPath);
+    const existing = await store.loadRow();
+
+    // Hand over if the row mounted while reading the cold plane.
+    const arrived = rowRegistry.rowFor(projectPath);
+    if (arrived) {
+      arrived.dismissThread(threadId);
+      return;
+    }
+
+    const panes = existing?.panes ?? [];
+    const nextPanes = panes.filter(
+      (p) => !(p.anchor.kind === "thread" && p.anchor.threadId === threadId),
+    );
+    if (nextPanes.length === panes.length) return;
+
+    const removed = panes.find(
+      (p) => p.anchor.kind === "thread" && p.anchor.threadId === threadId,
+    );
+    const focusedId =
+      existing?.focusedId === removed?.id ? null : (existing?.focusedId ?? null);
+
+    const next: StudioRow = {
+      projectPath,
+      panes: nextPanes,
+      focusedId,
+    };
+    store.saveRow(next);
+  }
+
+  /** Drop a thread's pane wherever it is, without being told which project it
+   *  belongs to. An archive stamp names a thread and an instant — the store
+   *  fans it out over the spawned subtree, and a descendant's project is not
+   *  something the surface that pressed archive ever knew. So every mounted row
+   *  is asked (a row that isn't hosting it no-ops), and every persisted row that
+   *  holds a pane for it is rewritten. */
+  async function dismissThreadAnywhere(threadId: string): Promise<void> {
+    if (!threadId) return;
+
+    for (const row of rowRegistry.mountedRows()) row.dismissThread(threadId);
+
+    // Any path reads the same document; the plane is one store, not one per row.
+    const plane = await useStudioPersistence("").loadPlane();
+    const paths = plane.rows
+      .filter((row) =>
+        row.panes.some((p) => p.anchor.kind === "thread" && p.anchor.threadId === threadId),
+      )
+      .map((row) => row.projectPath);
+    for (const path of paths) await dismissThread(path, threadId);
+  }
+
+  return { adoptThread, dismissThread, dismissThreadAnywhere };
 }
+

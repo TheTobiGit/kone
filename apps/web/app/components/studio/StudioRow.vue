@@ -1475,6 +1475,7 @@ const rowApi: StudioRowApi = {
   sessionBusy,
   openThread: onOpenThread,
   adoptThread: (threadId) => void adoptThreadPane(threadId),
+  dismissThread: (threadId) => closePaneHosting(threadId),
   newThread: () => void newThreadPane(),
   openTerminal: newTerminalPane,
   openScratchpad: newScratchpadPane,

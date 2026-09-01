@@ -2,6 +2,7 @@ import { computed, ref, watch } from "vue";
 import { tryOnScopeDispose, useStorage } from "@vueuse/core";
 import type { RuntimeEvent, StoredThreadMeta } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
+import { useStudioIntake } from "~/composables/useStudioIntake";
 import {
   byRecency,
   liftLegacyPins,
@@ -36,6 +37,7 @@ const historyApi = () =>
 
 export function useSessionList(source: SessionListSource) {
   const api = () => historyApi();
+  const intake = useStudioIntake();
 
   const pinnedIds = useStorage<string[]>(SESSION_PIN_KEY, []);
   const items = ref<SessionSummary[]>([]);
@@ -110,6 +112,9 @@ export function useSessionList(source: SessionListSource) {
     const next = !row.done;
     row.done = next;
     void api()?.setDone(threadId, next).catch(() => {});
+    if (next && row.projectPath) {
+      void intake.dismissThread(row.projectPath, threadId);
+    }
   }
 
   // Record that the user has just had this thread in front of them, which is
@@ -174,9 +179,25 @@ export function useSessionList(source: SessionListSource) {
     const wasPinned = pinnedIds.value.includes(threadId);
     dropLocally(threadId);
     const bridge = api();
-    if (!bridge) return true; // browser-dev mock: no store behind the list, the drop is the whole story
+    if (!bridge) {
+      // browser-dev mock: no store behind the list, the drop is the whole story
+      if (archived && row?.projectPath) {
+        void intake.dismissThread(row.projectPath, threadId);
+      }
+      return true;
+    }
     const result = await bridge.archive(threadId, archived).catch(() => null);
-    if (result?.ok) return true;
+    // The panes go once the stamp has landed, never ahead of it: a refusal puts
+    // the row back, and a column torn off a thread that is still there would
+    // have nothing to put it back from. The archived thread's own pane is closed
+    // here so the studio empties the moment you press it; the store's subtree
+    // fan-out reaches the rest through `thread.archived`.
+    if (result?.ok) {
+      if (archived && row?.projectPath) {
+        void intake.dismissThread(row.projectPath, threadId);
+      }
+      return true;
+    }
     if (row) {
       const at = Math.min(index, items.value.length);
       items.value.splice(at, 0, row);
@@ -193,6 +214,10 @@ export function useSessionList(source: SessionListSource) {
   }
 
   function remove(threadId: string): void {
+    const row = items.value.find((s) => s.threadId === threadId);
+    if (row?.projectPath) {
+      void intake.dismissThread(row.projectPath, threadId);
+    }
     dropLocally(threadId);
     void api()?.remove(threadId).catch(() => {});
   }
@@ -204,6 +229,7 @@ export function useSessionList(source: SessionListSource) {
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   const detach = agent()?.onEvent((event: RuntimeEvent) => {
     if (
+      event.type !== "turn.started" &&
       event.type !== "turn.completed" &&
       event.type !== "thread.token-usage.updated" &&
       event.type !== "thread.title.updated" &&
