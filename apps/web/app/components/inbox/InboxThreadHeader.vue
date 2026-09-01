@@ -117,20 +117,19 @@ const effectiveBrand = computed(() =>
 
 .ith__badge {
   position: absolute;
-  top: 0;
-  left: 0;
+  right: -2px;
+  bottom: -2px;
   z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: var(--panel);
-  box-shadow: 0 0 0 3px var(--panel);
+  box-shadow: 0 0 0 2.5px var(--panel);
   color: var(--ink);
   transform-origin: center center;
-  transform: translate(11px, 11px) scale(0.52);
   will-change: transform;
   transition:
     transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
@@ -140,16 +139,21 @@ const effectiveBrand = computed(() =>
 
 .ith__badge :deep(svg) {
   transform-origin: center center;
-  transform: scale(1.22);
+  transform: scale(0.85);
   will-change: transform;
   transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .ith:hover .ith__badge,
 .ith__lead:hover .ith__badge {
-  transform: translate(42px, 0) scale(1);
+  transform: translate(44px, -8px) scale(1.8);
   background: color-mix(in srgb, var(--ink) 6%, transparent);
   box-shadow: 0 0 0 0px transparent;
+}
+
+.ith:hover .ith__badge :deep(svg),
+.ith__lead:hover .ith__badge :deep(svg) {
+  transform: scale(0.68);
 }
 
 .ith__body {

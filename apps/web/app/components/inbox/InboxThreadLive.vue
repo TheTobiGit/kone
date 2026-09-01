@@ -111,7 +111,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   <div class="live">
     <InboxThreadHeader
       :title="threadTitle"
-      :seed="session?.threadId.value ?? row.threadId"
+      :seed="row.threadId ?? session?.threadId.value"
       :provider="session?.provider.value || agent.provider.value || row.provider"
       :brand="row.brand"
       :token-usage="session?.tokenUsage.value ?? undefined"
@@ -127,7 +127,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :blocks="blocks"
         :now="agent.now.value"
         :thread-id="row.threadId"
-        :agent-seed="session?.threadId.value ?? row.threadId"
+        :agent-seed="row.threadId ?? session?.threadId.value"
         mode="reply"
         :session-error="session?.error.value"
         :load-failed="session?.transcriptLoadFailed.value"
