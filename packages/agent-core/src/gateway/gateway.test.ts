@@ -345,6 +345,22 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_irc_list",
       "kone_irc_inbox",
       "kone_launch",
+      "app_get_theme_state",
+      "app_list_available_themes",
+      "app_set_theme",
+      "app_preview_theme_override",
+      "app_create_custom_theme",
+      "app_list_agents",
+      "app_create_agent",
+      "app_update_agent",
+      "app_delete_agent",
+      "app_set_active_agent",
+      "app_list_subagent_presets",
+      "app_create_subagent_preset",
+      "app_update_subagent_preset",
+      "app_delete_subagent_preset",
+      "app_get_strip_settings",
+      "app_set_strip_settings",
     ]);
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
     expect(rpcResult(res).isError).toBe(true);

@@ -540,3 +540,668 @@ export const LAUNCH_JSON_SCHEMA = {
 } satisfies GatewayRecord;
 
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
+
+// ── theming and visual steering tools ──────────────────────────────────────
+
+export const GetThemeStateInputSchema = z.object({});
+
+export const GET_THEME_STATE_JSON_SCHEMA = {
+  type: "object",
+  properties: {},
+} satisfies GatewayRecord;
+
+export const ListAvailableThemesInputSchema = z.object({
+  query: z
+    .string()
+    .optional()
+    .describe("Optional search query matched against theme names, descriptions and accent colours (e.g. 'dark', 'green', 'warm', 'imported')."),
+  kind: z
+    .enum(["system", "adaptive", "fixed"])
+    .optional()
+    .describe("Filter by theme behavior kind ('system' | 'adaptive' | 'fixed')."),
+  appearance: z
+    .enum(["light", "dark"])
+    .optional()
+    .describe("Filter by visual appearance ('light' | 'dark')."),
+});
+
+export const LIST_AVAILABLE_THEMES_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description: "Optional search query matched against theme names, descriptions and accent colours (e.g. 'dark', 'green', 'warm', 'imported').",
+    },
+    kind: {
+      type: "string",
+      enum: ["system", "adaptive", "fixed"],
+      description: "Filter by theme behavior kind ('system' | 'adaptive' | 'fixed').",
+    },
+    appearance: {
+      type: "string",
+      enum: ["light", "dark"],
+      description: "Filter by visual appearance ('light' | 'dark').",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const SetThemeInputSchema = z
+  .object({
+    themeId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Theme identifier or name as app_list_available_themes reports it. A description ('the green one') resolves too, but only against themes this install holds."),
+    theme: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Alternative parameter alias for themeId."),
+    name: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Alternative parameter alias for themeId."),
+    mode: z
+      .enum(["dark", "light", "system"])
+      .optional()
+      .describe("Appearance mode: 'dark', 'light', or 'system' (follow OS)."),
+  })
+  .refine(
+    (data) =>
+      data.themeId !== undefined ||
+      data.theme !== undefined ||
+      data.name !== undefined ||
+      data.mode !== undefined,
+    {
+      message: "At least one of 'themeId', 'theme', 'name', or 'mode' must be provided.",
+    },
+  );
+
+export const SET_THEME_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    themeId: {
+      type: "string",
+      description: "Theme identifier or name as app_list_available_themes reports it. A description ('the green one') resolves too, but only against themes this install holds.",
+    },
+    theme: {
+      type: "string",
+      description: "Alternative parameter alias for themeId.",
+    },
+    name: {
+      type: "string",
+      description: "Alternative parameter alias for themeId.",
+    },
+    mode: {
+      type: "string",
+      enum: ["dark", "light", "system"],
+      description: "Appearance mode: 'dark', 'light', or 'system' (follow OS).",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const PreviewThemeOverrideInputSchema = z.object({
+  themeId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Theme identifier to preview."),
+  theme: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Alternative parameter alias for themeId."),
+  mode: z
+    .enum(["dark", "light", "system"])
+    .optional()
+    .describe("Appearance mode to preview."),
+  colors: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe("Key-value mapping of semantic token roles to hex/rgb colors to temporarily preview on the interface."),
+  cancel: z
+    .boolean()
+    .optional()
+    .describe("Set true to cancel/dismiss any active preview and restore the saved theme."),
+});
+
+export const PREVIEW_THEME_OVERRIDE_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    themeId: {
+      type: "string",
+      description: "Theme identifier to preview.",
+    },
+    theme: {
+      type: "string",
+      description: "Alternative parameter alias for themeId.",
+    },
+    mode: {
+      type: "string",
+      enum: ["dark", "light", "system"],
+      description: "Appearance mode to preview.",
+    },
+    colors: {
+      type: "object",
+      additionalProperties: { type: "string" },
+      description: "Key-value mapping of semantic token roles to hex/rgb colors to temporarily preview on the interface.",
+    },
+    cancel: {
+      type: "boolean",
+      description: "Set true to cancel/dismiss any active preview and restore the saved theme.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const CreateCustomThemeInputSchema = z.object({
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9-_]+$/, "ID must contain only lowercase alphanumeric characters, dashes, and underscores.")
+    .describe("Unique slug identifier for the custom theme (e.g. 'brand-indigo', 'midnight-cyber')."),
+  label: z
+    .string()
+    .min(1)
+    .max(100)
+    .describe("Human-readable display name for the theme."),
+  blurb: z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Short description of the theme's aesthetic."),
+  appearance: z
+    .enum(["light", "dark", "adaptive"])
+    .default("dark")
+    .describe("Target appearance: 'dark', 'light', or 'adaptive'."),
+  accent: z
+    .string()
+    .min(1)
+    .describe("Primary brand/accent hex color (e.g. '#6366f1')."),
+  ground: z
+    .string()
+    .optional()
+    .describe("Base background/canvas hex color (e.g. '#0f172a'). Optional; defaults to standard dark/light surface."),
+  roles: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe("Optional granular role token overrides (e.g. { panel: '#1e293b', chip: '#334155' })."),
+});
+
+export const CREATE_CUSTOM_THEME_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      description: "Unique slug identifier for the custom theme (e.g. 'brand-indigo', 'midnight-cyber').",
+    },
+    label: {
+      type: "string",
+      description: "Human-readable display name for the theme.",
+    },
+    blurb: {
+      type: "string",
+      description: "Short description of the theme's aesthetic.",
+    },
+    appearance: {
+      type: "string",
+      enum: ["light", "dark", "adaptive"],
+      description: "Target appearance: 'dark', 'light', or 'adaptive'.",
+    },
+    accent: {
+      type: "string",
+      description: "Primary brand/accent hex color (e.g. '#6366f1').",
+    },
+    ground: {
+      type: "string",
+      description: "Base background/canvas hex color (e.g. '#0f172a'). Optional; defaults to standard dark/light surface.",
+    },
+    roles: {
+      type: "object",
+      additionalProperties: { type: "string" },
+      description: "Optional granular role token overrides (e.g. { panel: '#1e293b', chip: '#334155' }).",
+    },
+  },
+  required: ["id", "label", "accent"],
+} satisfies GatewayRecord;
+
+export type GetThemeStateInput = z.infer<typeof GetThemeStateInputSchema>;
+export type ListAvailableThemesInput = z.infer<typeof ListAvailableThemesInputSchema>;
+export type SetThemeInput = z.infer<typeof SetThemeInputSchema>;
+export type PreviewThemeOverrideInput = z.infer<typeof PreviewThemeOverrideInputSchema>;
+export type CreateCustomThemeInput = z.infer<typeof CreateCustomThemeInputSchema>;
+
+
+// ── the app's own agents, its preset sub-agents, and the thread strip ───────
+//
+// The same shape as the theme tools above: a hand-written JSON Schema beside
+// every zod schema, because tools/list advertises the former and only the
+// handler sees the latter.
+//
+// One convention runs through all of these and is worth stating once. A field
+// left out of a patch is left alone, and a field is *cleared* by naming it in
+// `clear` rather than by sending null. Null across JSON-RPC is
+// indistinguishable from a client that helpfully filled in the blanks, and on a
+// built-in agent a clear is not a delete but a hand-back — the field returns to
+// the shipped preset. Making that an explicit list means an agent has to mean it.
+
+/** A model an agent or preset runs on. `label` is display text and rides along
+ *  the way the app's own model refs carry one. */
+export const AgentModelRefSchema = z.object({
+  provider: z
+    .enum(["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"])
+    .describe("The provider CLI the model belongs to."),
+  model: z.string().min(1).max(200).describe("The model id within that provider."),
+  label: z.string().min(1).max(200).optional().describe("Optional display label for the model."),
+});
+
+const AGENT_MODEL_REF_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    provider: {
+      type: "string",
+      enum: ["codex", "claudeAgent", "opencode", "cursor", "droid", "antigravity"],
+      description: "The provider CLI the model belongs to.",
+    },
+    model: { type: "string", description: "The model id within that provider." },
+    label: { type: "string", description: "Optional display label for the model." },
+  },
+  required: ["provider", "model"],
+} satisfies GatewayRecord;
+
+/** The two opaque colours a drawn face is painted with. Both move together: a
+ *  repainted body with last week's ink on it is how a face goes unreadable. */
+export const AgentFacePaintSchema = z.object({
+  body: z.string().min(1).max(64).describe("The face's fill colour (hex, e.g. '#6366f1')."),
+  ink: z.string().min(1).max(64).describe("The colour the eyes are drawn in (hex, e.g. '#0b1020')."),
+});
+
+const AGENT_FACE_PAINT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    body: { type: "string", description: "The face's fill colour (hex, e.g. '#6366f1')." },
+    ink: {
+      type: "string",
+      description: "The colour the eyes are drawn in (hex, e.g. '#0b1020').",
+    },
+  },
+  required: ["body", "ink"],
+} satisfies GatewayRecord;
+
+export const ListAppAgentsInputSchema = z.object({
+  query: z
+    .string()
+    .optional()
+    .describe("Optional search matched against an agent's name, role and instructions."),
+});
+
+export const LIST_APP_AGENTS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description: "Optional search matched against an agent's name, role and instructions.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const CreateAppAgentInputSchema = z.object({
+  name: z.string().min(1).max(64).describe("What the agent is called. The one required field."),
+  role: z
+    .string()
+    .max(120)
+    .optional()
+    .describe("One line under the name saying what the agent is for. Shown in the roster only."),
+  instructions: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("The agent's standing orders, in its own words — this is what reaches the model when a thread is handed to it."),
+  face: AgentFacePaintSchema.optional().describe(
+    "The colours the agent's face is drawn in. Omitted, kone paints one from the name.",
+  ),
+  model: AgentModelRefSchema.optional().describe(
+    "The one model this agent runs on. Omitted, the agent has no preference and each turn picks its own.",
+  ),
+  addToActiveProject: z
+    .boolean()
+    .optional()
+    .describe("Also put the new agent on the calling thread's project team, so it can work within that project."),
+});
+
+export const CREATE_APP_AGENT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string", description: "What the agent is called. The one required field." },
+    role: {
+      type: "string",
+      description: "One line under the name saying what the agent is for. Shown in the roster only.",
+    },
+    instructions: {
+      type: "string",
+      description:
+        "The agent's standing orders, in its own words — this is what reaches the model when a thread is handed to it.",
+    },
+    face: {
+      ...AGENT_FACE_PAINT_JSON_SCHEMA,
+      description: "The colours the agent's face is drawn in. Omitted, kone paints one from the name.",
+    },
+    model: {
+      ...AGENT_MODEL_REF_JSON_SCHEMA,
+      description:
+        "The one model this agent runs on. Omitted, the agent has no preference and each turn picks its own.",
+    },
+    addToActiveProject: {
+      type: "boolean",
+      description:
+        "Also put the new agent on the calling thread's project team, so it can work within that project.",
+    },
+  },
+  required: ["name"],
+} satisfies GatewayRecord;
+
+/** The fields an update may hand back. `name` is absent on purpose: an agent
+ *  with no name has nothing to be called, and on a user-made agent there is no
+ *  preset underneath to hand it back to. */
+const APP_AGENT_CLEARABLE = ["role", "instructions", "face", "model"] as const;
+
+export const UpdateAppAgentInputSchema = z
+  .object({
+    agent: z
+      .string()
+      .min(1)
+      .describe("The agent's id or name, as app_list_agents reports it."),
+    name: z.string().min(1).max(64).optional().describe("Rename the agent."),
+    role: z.string().max(120).optional().describe("Replace the line under the name."),
+    instructions: z
+      .string()
+      .max(4000)
+      .optional()
+      .describe("Replace the agent's standing orders."),
+    face: AgentFacePaintSchema.optional().describe("Repaint the agent's face."),
+    model: AgentModelRefSchema.optional().describe("Pin the agent to this model."),
+    clear: z
+      .array(z.enum(APP_AGENT_CLEARABLE))
+      .optional()
+      .describe("Fields to clear. On a built-in agent a cleared field returns to the value kone ships; on a user-made one it is unset. Use this rather than sending an empty value."),
+  })
+  .refine(
+    (data) =>
+      data.name !== undefined ||
+      data.role !== undefined ||
+      data.instructions !== undefined ||
+      data.face !== undefined ||
+      data.model !== undefined ||
+      (data.clear?.length ?? 0) > 0,
+    { message: "Name at least one field to change, or one to clear." },
+  );
+
+export const UPDATE_APP_AGENT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    agent: { type: "string", description: "The agent's id or name, as app_list_agents reports it." },
+    name: { type: "string", description: "Rename the agent." },
+    role: { type: "string", description: "Replace the line under the name." },
+    instructions: { type: "string", description: "Replace the agent's standing orders." },
+    face: { ...AGENT_FACE_PAINT_JSON_SCHEMA, description: "Repaint the agent's face." },
+    model: { ...AGENT_MODEL_REF_JSON_SCHEMA, description: "Pin the agent to this model." },
+    clear: {
+      type: "array",
+      items: { type: "string", enum: [...APP_AGENT_CLEARABLE] },
+      description:
+        "Fields to clear. On a built-in agent a cleared field returns to the value kone ships; on a user-made one it is unset. Use this rather than sending an empty value.",
+    },
+  },
+  required: ["agent"],
+} satisfies GatewayRecord;
+
+export const DeleteAppAgentInputSchema = z.object({
+  agent: z.string().min(1).describe("The agent's id or name."),
+  confirm: z
+    .literal(true)
+    .describe("Must be true. Set it only when the user has asked for this agent to go; the threads it worked keep its name, but it leaves the roster."),
+});
+
+export const DELETE_APP_AGENT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    agent: { type: "string", description: "The agent's id or name." },
+    confirm: {
+      type: "boolean",
+      enum: [true],
+      description:
+        "Must be true. Set it only when the user has asked for this agent to go; the threads it worked keep its name, but it leaves the roster.",
+    },
+  },
+  required: ["agent", "confirm"],
+} satisfies GatewayRecord;
+
+export const SetActiveAgentInputSchema = z
+  .object({
+    agent: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("The agent's id or name — who the user's next turn is handed to."),
+    guest: z
+      .boolean()
+      .optional()
+      .describe("Set true to hand the next turn to nobody in particular, which is kone's shipped default."),
+  })
+  .refine((data) => data.agent !== undefined || data.guest === true, {
+    message: "Name an agent, or set guest: true.",
+  });
+
+export const SET_ACTIVE_AGENT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    agent: {
+      type: "string",
+      description: "The agent's id or name — who the user's next turn is handed to.",
+    },
+    guest: {
+      type: "boolean",
+      description:
+        "Set true to hand the next turn to nobody in particular, which is kone's shipped default.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const ListSubagentPresetsInputSchema = z.object({
+  query: z
+    .string()
+    .optional()
+    .describe("Optional search matched against a preset's name and instructions."),
+});
+
+export const LIST_SUBAGENT_PRESETS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description: "Optional search matched against a preset's name and instructions.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const CreateSubagentPresetInputSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(64)
+    .describe("What the preset is called. This is also how kone_spawn_from_preset refers to it."),
+  instructions: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe("What a sub-agent cut from this preset is told before it starts work."),
+  model: AgentModelRefSchema.optional().describe(
+    "The model a spawn from this preset runs on. Omitted, the spawn runs wherever its caller runs.",
+  ),
+});
+
+export const CREATE_SUBAGENT_PRESET_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    name: {
+      type: "string",
+      description:
+        "What the preset is called. This is also how kone_spawn_from_preset refers to it.",
+    },
+    instructions: {
+      type: "string",
+      description: "What a sub-agent cut from this preset is told before it starts work.",
+    },
+    model: {
+      ...AGENT_MODEL_REF_JSON_SCHEMA,
+      description:
+        "The model a spawn from this preset runs on. Omitted, the spawn runs wherever its caller runs.",
+    },
+  },
+  required: ["name"],
+} satisfies GatewayRecord;
+
+const SUBAGENT_PRESET_CLEARABLE = ["instructions", "model"] as const;
+
+export const UpdateSubagentPresetInputSchema = z
+  .object({
+    preset: z
+      .string()
+      .min(1)
+      .describe("The preset's id or name, as app_list_subagent_presets reports it."),
+    name: z.string().min(1).max(64).optional().describe("Rename the preset."),
+    instructions: z.string().max(4000).optional().describe("Replace the preset's instructions."),
+    model: AgentModelRefSchema.optional().describe("Pin spawns from this preset to this model."),
+    clear: z
+      .array(z.enum(SUBAGENT_PRESET_CLEARABLE))
+      .optional()
+      .describe("Fields to unset. A preset has nothing above it to inherit from, so a cleared field is simply gone."),
+  })
+  .refine(
+    (data) =>
+      data.name !== undefined ||
+      data.instructions !== undefined ||
+      data.model !== undefined ||
+      (data.clear?.length ?? 0) > 0,
+    { message: "Name at least one field to change, or one to clear." },
+  );
+
+export const UPDATE_SUBAGENT_PRESET_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    preset: {
+      type: "string",
+      description: "The preset's id or name, as app_list_subagent_presets reports it.",
+    },
+    name: { type: "string", description: "Rename the preset." },
+    instructions: { type: "string", description: "Replace the preset's instructions." },
+    model: {
+      ...AGENT_MODEL_REF_JSON_SCHEMA,
+      description: "Pin spawns from this preset to this model.",
+    },
+    clear: {
+      type: "array",
+      items: { type: "string", enum: [...SUBAGENT_PRESET_CLEARABLE] },
+      description:
+        "Fields to unset. A preset has nothing above it to inherit from, so a cleared field is simply gone.",
+    },
+  },
+  required: ["preset"],
+} satisfies GatewayRecord;
+
+export const DeleteSubagentPresetInputSchema = z.object({
+  preset: z.string().min(1).describe("The preset's id or name."),
+  confirm: z
+    .literal(true)
+    .describe("Must be true. A preset keeps no history, so this is a real delete — set it only when the user has asked for it."),
+});
+
+export const DELETE_SUBAGENT_PRESET_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    preset: { type: "string", description: "The preset's id or name." },
+    confirm: {
+      type: "boolean",
+      enum: [true],
+      description:
+        "Must be true. A preset keeps no history, so this is a real delete — set it only when the user has asked for it.",
+    },
+  },
+  required: ["preset", "confirm"],
+} satisfies GatewayRecord;
+
+export const GetStripSettingsInputSchema = z.object({});
+
+export const GET_STRIP_SETTINGS_JSON_SCHEMA = {
+  type: "object",
+  properties: {},
+} satisfies GatewayRecord;
+
+/** The pane kinds that carry an opening width. Named here rather than imported
+ *  from the renderer: the gateway validates what an agent sent, and a kind the
+ *  renderer adds later is a schema change either way. */
+const STRIP_PANE_KINDS = ["thread", "terminal", "scratchpad"] as const;
+
+export const SetStripSettingsInputSchema = z
+  .object({
+    centering: z
+      .enum(["never", "on-overflow", "always"])
+      .optional()
+      .describe("Where the strip lands when a column takes focus: 'never' holds it still and nudges the column into view, 'on-overflow' centres it only when it has to move, 'always' recentres on every focus change."),
+    defaultWidths: z
+      // An explicit object rather than a record keyed on the enum: a record's
+      // inferred type makes every kind required, which would have the handler
+      // read a rung the caller never sent.
+      .object({
+        thread: z.number().int().min(0).optional(),
+        terminal: z.number().int().min(0).optional(),
+        scratchpad: z.number().int().min(0).optional(),
+      })
+      .optional()
+      .describe("The rung a newly opened pane of each kind starts at, as an index into the width ladder (0 is narrowest). Existing panes keep the width they already have."),
+  })
+  .refine(
+    (data) =>
+      data.centering !== undefined ||
+      Object.keys(data.defaultWidths ?? {}).length > 0,
+    { message: "Name at least one setting to change." },
+  );
+
+export const SET_STRIP_SETTINGS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    centering: {
+      type: "string",
+      enum: ["never", "on-overflow", "always"],
+      description:
+        "Where the strip lands when a column takes focus: 'never' holds it still and nudges the column into view, 'on-overflow' centres it only when it has to move, 'always' recentres on every focus change.",
+    },
+    defaultWidths: {
+      type: "object",
+      properties: Object.fromEntries(
+        STRIP_PANE_KINDS.map((kind) => [
+          kind,
+          { type: "number", description: `Opening rung for a new ${kind} pane.` },
+        ]),
+      ),
+      additionalProperties: false,
+      description:
+        "The rung a newly opened pane of each kind starts at, as an index into the width ladder (0 is narrowest). Existing panes keep the width they already have.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export type AgentModelRefInput = z.infer<typeof AgentModelRefSchema>;
+export type AgentFacePaintInput = z.infer<typeof AgentFacePaintSchema>;
+export type ListAppAgentsInput = z.infer<typeof ListAppAgentsInputSchema>;
+export type CreateAppAgentInput = z.infer<typeof CreateAppAgentInputSchema>;
+export type UpdateAppAgentInput = z.infer<typeof UpdateAppAgentInputSchema>;
+export type DeleteAppAgentInput = z.infer<typeof DeleteAppAgentInputSchema>;
+export type SetActiveAgentInput = z.infer<typeof SetActiveAgentInputSchema>;
+export type ListSubagentPresetsInput = z.infer<typeof ListSubagentPresetsInputSchema>;
+export type CreateSubagentPresetInput = z.infer<typeof CreateSubagentPresetInputSchema>;
+export type UpdateSubagentPresetInput = z.infer<typeof UpdateSubagentPresetInputSchema>;
+export type DeleteSubagentPresetInput = z.infer<typeof DeleteSubagentPresetInputSchema>;
+export type GetStripSettingsInput = z.infer<typeof GetStripSettingsInputSchema>;
+export type SetStripSettingsInput = z.infer<typeof SetStripSettingsInputSchema>;

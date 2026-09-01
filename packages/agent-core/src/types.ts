@@ -1122,6 +1122,67 @@ export type RuntimeEvent =
       savedAt: number;
       writer: ScratchpadWriter | null;
     })
+  // An agent tool call mutated the workspace theme or visual appearance.
+  // The renderer applies the new themeId, mode, or preview overrides in real-time.
+  | (BaseEvent & {
+      type: "app.theme_mutation";
+      themeId?: string;
+      mode?: "system" | "dark" | "light";
+      preview?: boolean;
+      colors?: Record<string, string>;
+      customTheme?: {
+        id: string;
+        label: string;
+        blurb?: string;
+        appearance: "light" | "dark" | "adaptive";
+        accent: string;
+        ground?: string;
+        roles?: Record<string, string>;
+      };
+    })
+  // An agent tool call changed the app's agent roster — who a thread can be
+  // handed to. The write is the renderer's to make: the shipped agents are
+  // prose in its bundle and a stored row is a delta against one, so only it can
+  // say what a cleared field falls back to.
+  | (BaseEvent & {
+      type: "app.agent_mutation";
+      op: "create" | "update" | "delete" | "select";
+      /** Which agent. Absent only on a `select` handing the next turn to a
+       *  guest, which is a real choice rather than a missing one. */
+      agentId?: string;
+      /** The fields to write. On a `create` the id above is the one the tool
+       *  minted, so it can name the agent it made before the row exists. */
+      fields?: {
+        name?: string;
+        role?: string;
+        instructions?: string;
+        face?: { body: string; ink: string };
+        model?: { provider: string; model: string; label?: string };
+      };
+      /** Fields to hand back: to the shipped preset on a built-in, unset on a
+       *  user-made agent. Named rather than sent as null, because a null across
+       *  IPC cannot be told from a client that filled in the blanks. */
+      clear?: ("role" | "instructions" | "face" | "model")[];
+      /** On a `create`, the project whose team the new agent also joins. */
+      projectPath?: string;
+    })
+  // An agent tool call added, edited or removed a preset sub-agent — one of the
+  // standing definitions `kone_spawn_from_preset` cuts a spawn from. Unlike the
+  // roster there is no inheritance to resolve, so the gateway has already
+  // written the row and this only tells the open windows to re-read.
+  | (BaseEvent & {
+      type: "app.subagent_presets_changed";
+      op: "create" | "update" | "delete";
+      presetId: string;
+    })
+  // An agent tool call changed the thread strip's own settings: where the strip
+  // lands when a column takes focus, and the width a new pane opens at. Per
+  // install rather than per project, and the renderer's alone to hold.
+  | (BaseEvent & {
+      type: "app.strip_mutation";
+      centering?: "never" | "on-overflow" | "always";
+      defaultWidths?: { thread?: number; terminal?: number; scratchpad?: number };
+    })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
