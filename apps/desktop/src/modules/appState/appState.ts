@@ -33,6 +33,9 @@ export type AgentRosterEntry = {
   instructions: string;
   face: { body: string; ink: string };
   model: { provider: string; model: string; label?: string } | null;
+  /** Ordered fallbacks behind `model`. Empty when the agent inherits or has no
+   *  second choice. */
+  modelFallbacks: { provider: string; model: string; label?: string }[];
   skills: string[];
   /** True for an agent kone ships. Worth mirroring: clearing a field on a
    *  built-in hands it back to the shipped value and on a user-made agent unsets
@@ -107,6 +110,18 @@ function readModelRef(
   return label === undefined ? { provider, model } : { provider, model, label };
 }
 
+function readModelChain(
+  value: AgentRosterEntry["modelFallbacks"] | undefined,
+): AgentRosterEntry["modelFallbacks"] {
+  if (!Array.isArray(value)) return [];
+  const out: AgentRosterEntry["modelFallbacks"] = [];
+  for (const entry of value) {
+    const ref = readModelRef(entry);
+    if (ref) out.push(ref);
+  }
+  return out;
+}
+
 /** One roster entry, or null if the payload isn't one. The renderer builds these
  *  from its own roster so they arrive well-formed; this is the guard for a
  *  renderer of a different vintage than the shell it is talking to. */
@@ -118,6 +133,7 @@ function readAgentEntry(
   if (!id) return null;
   const body = nonEmpty(value.face?.body) ?? "";
   const ink = nonEmpty(value.face?.ink) ?? "";
+  const model = readModelRef(value.model ?? null);
   return {
     id,
     // An agent with no readable name is still in the roster and still takes
@@ -126,7 +142,8 @@ function readAgentEntry(
     role: nonEmpty(value.role) ?? "",
     instructions: nonEmpty(value.instructions) ?? "",
     face: { body, ink },
-    model: readModelRef(value.model ?? null),
+    model,
+    modelFallbacks: model ? readModelChain(value.modelFallbacks) : [],
     skills: Array.isArray(value.skills)
       ? value.skills.map((skill) => nonEmpty(skill)).filter((skill): skill is string => !!skill)
       : [],
