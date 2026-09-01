@@ -23,11 +23,14 @@ function threadIdsOn(projectPath: string): (string | null)[] {
 }
 
 /** A row that records what it was handed, standing in for a mounted one. */
-function fakeRow(): StudioRowApi & { adopted: string[] } {
+function fakeRow(): StudioRowApi & { adopted: string[]; dismissed: string[] } {
   const adopted: string[] = [];
+  const dismissed: string[] = [];
   return {
     adopted,
+    dismissed,
     adoptThread: (threadId: string) => adopted.push(threadId),
+    dismissThread: (threadId: string) => dismissed.push(threadId),
     openSession: () => {},
     revealThread: async () => {},
     archiveSession: () => {},
@@ -88,6 +91,45 @@ describe("no row mounted", () => {
     expect(threadIdsOn(A)).toEqual(["t-a"]);
     expect(threadIdsOn(B)).toEqual(["t-b"]);
   });
+
+  test("dismissing a thread removes its pane from the stored row", async () => {
+    useStudioPersistence(A).saveRow({
+      projectPath: A,
+      panes: [pane("p1", "t-1"), pane("p2", "t-2"), pane("p3", null)],
+      focusedId: "p2",
+    });
+    await useStudioIntake().dismissThread(A, "t-1");
+    expect(threadIdsOn(A)).toEqual(["t-2", null]);
+    expect(rowFor(A)?.focusedId).toBe("p2");
+  });
+
+  test("dismissing the focused pane clears focusedId to null", async () => {
+    useStudioPersistence(A).saveRow({
+      projectPath: A,
+      panes: [pane("p1", "t-1"), pane("p2", "t-2")],
+      focusedId: "p1",
+    });
+    await useStudioIntake().dismissThread(A, "t-1");
+    expect(threadIdsOn(A)).toEqual(["t-2"]);
+    expect(rowFor(A)?.focusedId).toBeNull();
+  });
+
+  test("dismissing a thread not on the row is a clean no-op", async () => {
+    useStudioPersistence(A).saveRow({
+      projectPath: A,
+      panes: [pane("p1", "t-1")],
+      focusedId: "p1",
+    });
+    await useStudioIntake().dismissThread(A, "t-unknown");
+    expect(threadIdsOn(A)).toEqual(["t-1"]);
+    expect(rowFor(A)?.focusedId).toBe("p1");
+  });
+
+  test("dismissing with empty projectPath or threadId is a no-op", async () => {
+    await useStudioIntake().dismissThread("", "t-1");
+    await useStudioIntake().dismissThread(A, "");
+    expect(rowFor(A)).toBeNull();
+  });
 });
 
 describe("row mounted", () => {
@@ -108,5 +150,64 @@ describe("row mounted", () => {
     await pending;
     expect(row.adopted).toEqual(["t-1"]);
     expect(rowFor(A)).toBeNull();
+  });
+
+  test("dismissing a thread delegates to the mounted row", async () => {
+    const row = fakeRow();
+    registry.register(A, row);
+    await useStudioIntake().dismissThread(A, "t-1");
+    expect(row.dismissed).toEqual(["t-1"]);
+    expect(rowFor(A)).toBeNull();
+  });
+
+  test("a row that mounts while reading the plane receives the dismissal", async () => {
+    const row = fakeRow();
+    const pending = useStudioIntake().dismissThread(A, "t-1");
+    registry.register(A, row);
+    await pending;
+    expect(row.dismissed).toEqual(["t-1"]);
+    expect(rowFor(A)).toBeNull();
+  });
+});
+
+// Archiving stamps a thread, not a project — and the store fans the stamp out
+// over the spawned subtree, so the pane to close can be on a row the archiving
+// surface never named.
+describe("dismissing without a project", () => {
+  test("a persisted pane is dropped from whichever row holds it", async () => {
+    useStudioPersistence(A).saveRow({
+      projectPath: A,
+      panes: [pane("p1", "t-1"), pane("p2", "t-2")],
+      focusedId: "p1",
+    });
+    useStudioPersistence(B).saveRow({
+      projectPath: B,
+      panes: [pane("p3", "t-3")],
+      focusedId: "p3",
+    });
+    await useStudioIntake().dismissThreadAnywhere("t-3");
+    expect(threadIdsOn(A)).toEqual(["t-1", "t-2"]);
+    expect(rowFor(B)).toBeNull();
+  });
+
+  test("every mounted row is asked, so the one hosting it closes its pane", async () => {
+    const rowA = fakeRow();
+    const rowB = fakeRow();
+    registry.register(A, rowA);
+    registry.register(B, rowB);
+    await useStudioIntake().dismissThreadAnywhere("t-1");
+    expect(rowA.dismissed).toEqual(["t-1"]);
+    expect(rowB.dismissed).toEqual(["t-1"]);
+  });
+
+  test("a thread on no row at all is a clean no-op", async () => {
+    useStudioPersistence(A).saveRow({
+      projectPath: A,
+      panes: [pane("p1", "t-1")],
+      focusedId: "p1",
+    });
+    await useStudioIntake().dismissThreadAnywhere("t-9");
+    expect(threadIdsOn(A)).toEqual(["t-1"]);
+    expect(rowFor(A)?.focusedId).toBe("p1");
   });
 });

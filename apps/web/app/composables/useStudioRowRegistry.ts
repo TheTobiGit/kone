@@ -32,6 +32,8 @@ export interface StudioRowApi {
    *  column is waiting when you next travel here. Deduped: a thread the row
    *  already hosts stays where it is. */
   adoptThread: (threadId: string) => void;
+  /** Drop a thread pane from this row if one is open/dormant for it. */
+  dismissThread: (threadId: string) => void;
   newThread: () => void;
   openTerminal: () => void;
   openScratchpad: () => void;
@@ -103,6 +105,13 @@ export function useStudioRowRegistry() {
      *  caller has to handle null: a page can outlive, or precede, its row. */
     rowFor(projectPath: string): StudioRowApi | null {
       return rows.get(projectPath) ?? null;
+    },
+
+    /** Every row the plane currently has mounted. For work that is thread-shaped
+     *  rather than project-shaped — an archive stamp names a thread and nothing
+     *  else, so the row hosting it has to be found rather than known. */
+    mountedRows(): StudioRowApi[] {
+      return [...rows.values()];
     },
 
     /** A project page publishes its conversation list here for the lifetime of

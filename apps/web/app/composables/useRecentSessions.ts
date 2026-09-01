@@ -109,8 +109,9 @@ export function useRecentSessions(cwd: () => string) {
     fetch: async () => {
       const api = history();
       if (!api) return [];
-      const metas = await api.list(cwd());
-      return metas.map((meta) => ({ meta }));
+      const projectPath = cwd();
+      const metas = await api.list(projectPath);
+      return metas.map((meta) => ({ meta, project: { projectPath } }));
     },
     mock: mockSessions,
     trigger: cwd,
