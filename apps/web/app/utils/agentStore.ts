@@ -511,6 +511,7 @@ function ensureLocalRow(presetId: string): AgentRecord {
     faceInk: null,
     skills: null,
     model: null,
+    modelFallbacks: null,
     avatar: null,
     bot: null,
     sortOrder: nextSortOrder(),
@@ -536,6 +537,7 @@ function insertLocalRow(input: AgentCreateInput): AgentRecord | null {
     faceInk: clamp(input.faceInk, PAINT_MAX),
     skills: clampList(input.skills),
     model: clampModel(input.model),
+    modelFallbacks: clampModel(input.model) ? (clampList(input.modelFallbacks) ?? []) : null,
     avatar: clampAvatar(input.avatar),
     bot: clampBot(input.bot),
     sortOrder: nextSortOrder(),
@@ -558,6 +560,8 @@ function patchLocalRow(agentId: string, patch: AgentPatch): AgentRecord | null {
   if (patch.faceInk !== undefined) next.faceInk = clamp(patch.faceInk, PAINT_MAX);
   if (patch.skills !== undefined) next.skills = clampList(patch.skills);
   if (patch.model !== undefined) next.model = clampModel(patch.model);
+  if (patch.modelFallbacks !== undefined) next.modelFallbacks = clampList(patch.modelFallbacks);
+  if (next.model === null) next.modelFallbacks = null;
   if (patch.avatar !== undefined) next.avatar = clampAvatar(patch.avatar);
   if (patch.bot !== undefined) next.bot = clampBot(patch.bot);
   // The store's CHECK, mirrored: an agent with nothing to inherit from has to
@@ -591,6 +595,7 @@ function forkLocalRow(input: AgentDuplicateInput): AgentRecord | null {
     faceInk: clamp(source.faceInk ?? inherited.faceInk, PAINT_MAX),
     skills: clampList(source.skills ?? inherited.skills),
     model: clampModel(source.model ?? inherited.model),
+    modelFallbacks: clampList(source.modelFallbacks ?? inherited.modelFallbacks),
     avatar: clampAvatar(source.avatar ?? inherited.avatar),
     bot: clampBot(source.bot ?? inherited.bot),
     sortOrder: source.sortOrder + 1,

@@ -16,12 +16,19 @@ import type { AgentModelRef, ProviderKind } from "~/types/desktop";
 // editor and the preset editor mount this, so the drill-down lives in one place
 // and the two surfaces can't drift apart.
 //
-// One model, or none. Picking the model already pinned clears it back to null
-// (no preference); picking any other replaces it. There is never a fallback
-// list and no separate provider axis — the provider is implied by the model.
+// One model, or a chain. Picking the model already pinned clears it back to
+// inherit (no preference). When `fallbacks` is bound, later picks append as
+// fallbacks rather than replacing the primary — click a fallback to drop it,
+// click the primary to promote the next fallback (or inherit if none remain).
 
-const props = defineProps<{ model: AgentModelRef | null }>();
-const emit = defineEmits<{ "update:model": [AgentModelRef | null] }>();
+const props = defineProps<{
+  model: AgentModelRef | null;
+  fallbacks?: AgentModelRef[] | null;
+}>();
+const emit = defineEmits<{
+  "update:model": [AgentModelRef | null];
+  "update:fallbacks": [AgentModelRef[]];
+}>();
 
 const { modelCache, prepare } = useAgentProviders();
 const { cue } = useSound();
@@ -74,18 +81,61 @@ function modelOn(p: ProviderKind, key: string): boolean {
   return props.model?.provider === p && props.model?.model === key;
 }
 
+function fallbackIndex(p: ProviderKind, key: string): number {
+  return (props.fallbacks ?? []).findIndex((f) => f.provider === p && f.model === key);
+}
+
+function chainRank(p: ProviderKind, key: string): number | null {
+  if (modelOn(p, key)) return 1;
+  const i = fallbackIndex(p, key);
+  return i >= 0 ? i + 2 : null;
+}
+
+// A number only earns its place once the chain has somewhere to go: with one
+// model pinned and nothing behind it, "1" is a rank of one thing, and the tick
+// says the same in a glyph the eye already reads as "chosen".
+const ranked = computed(() => (props.fallbacks?.length ?? 0) > 0);
+
 function selectProvider(p: ProviderKind) {
   if (p === openProvider.value) return;
   cue("select");
   openProvider.value = p;
 }
 
-// Single-select: picking the model already on clears it back to "no model",
-// and picking any other replaces it. There is only ever one model.
 function pickModel(p: ProviderKind, opt: ModelOption) {
   cue("toggle");
-  if (modelOn(p, opt.key)) emit("update:model", null);
-  else emit("update:model", { provider: p, model: opt.key, label: opt.label });
+  const next: AgentModelRef = { provider: p, model: opt.key, label: opt.label };
+  const chain = props.fallbacks !== undefined;
+
+  if (!chain) {
+    if (modelOn(p, opt.key)) emit("update:model", null);
+    else emit("update:model", next);
+    return;
+  }
+
+  if (!props.model) {
+    emit("update:model", next);
+    emit("update:fallbacks", []);
+    return;
+  }
+  if (modelOn(p, opt.key)) {
+    const rest = [...(props.fallbacks ?? [])];
+    const promoted = rest.shift() ?? null;
+    emit("update:model", promoted);
+    emit("update:fallbacks", rest);
+    return;
+  }
+  const at = fallbackIndex(p, opt.key);
+  if (at >= 0) {
+    emit("update:model", props.model);
+    emit(
+      "update:fallbacks",
+      (props.fallbacks ?? []).filter((_, i) => i !== at),
+    );
+    return;
+  }
+  emit("update:model", props.model);
+  emit("update:fallbacks", [...(props.fallbacks ?? []), next]);
 }
 </script>
 
@@ -116,15 +166,19 @@ function pickModel(p: ProviderKind, opt: ModelOption) {
         :key="opt.key"
         type="button"
         class="pin__row"
-        :class="{ 'pin__row--on': openProvider && modelOn(openProvider, opt.key) }"
-        :aria-pressed="openProvider ? modelOn(openProvider, opt.key) : false"
+        :class="{ 'pin__row--on': openProvider && chainRank(openProvider, opt.key) !== null }"
+        :aria-pressed="openProvider ? chainRank(openProvider, opt.key) !== null : false"
         @click="openProvider && pickModel(openProvider, opt)"
       >
         <span class="pin__mark"><ProviderLogo :brand="opt.brand" :size="16" /></span>
         <span class="pin__name">{{ opt.label }}</span>
         <span v-if="opt.vendor" class="pin__vendor">{{ opt.vendor }}</span>
+        <span
+          v-if="ranked && openProvider && chainRank(openProvider, opt.key) !== null"
+          class="pin__rank"
+        >{{ chainRank(openProvider, opt.key) }}</span>
         <HugeiconsIcon
-          v-if="openProvider && modelOn(openProvider, opt.key)"
+          v-else-if="openProvider && modelOn(openProvider, opt.key)"
           :icon="Tick02Icon"
           :size="15"
           :stroke-width="2"
@@ -248,6 +302,14 @@ function pickModel(p: ProviderKind, opt: ModelOption) {
 .pin__check {
   flex: none;
   color: var(--accent);
+}
+.pin__rank {
+  flex: none;
+  min-width: 16px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-align: right;
 }
 
 .pin__none,

@@ -75,17 +75,18 @@ export interface FacePaint {
  * are additive — the ones this agent is given — so an empty list is "none".
  * `model` is the one model the agent uses: a ref pins it there, and `null` is no
  * preference at all, which is the shipped default (a thread picks whatever it
- * likes, per turn). The provider is implied by the model ref, so there is no
+ * likes, per turn). `modelFallbacks` is the ordered chain behind that pin — tried
+ * when the primary is rate-limited or spent. An empty list is a pin with no
+ * second choice. The provider is implied by the model ref, so there is no
  * separate provider axis.
  *
  * Reasoning is deliberately absent: it is a per-turn choice made when a model is
- * actually being used, not a standing capability of the agent. And so are
- * fallbacks — an agent runs on one model, and when it can't run the spawn is
- * refused rather than quietly swapped.
+ * actually being used, not a standing capability of the agent.
  */
 export interface AgentCapabilities {
   skills: AgentSkillRef[];
   model: AgentModelRef | null;
+  modelFallbacks: AgentModelRef[];
 }
 
 /**
@@ -190,8 +191,9 @@ export interface Agent {
   bot: AgentBot | null;
 }
 
-/** What a thread with no agent on it is called. */
-export const GUEST_LABEL = "Guest";
+/** What a solo thread with no teammate persona picked is called. */
+export const DEFAULT_PARTNER_LABEL = "Default";
+export const GUEST_LABEL = DEFAULT_PARTNER_LABEL;
 
 /**
  * kone itself — the agent every user starts with.
@@ -368,6 +370,7 @@ function implicitRow(presetId: string, index: number): AgentRecord {
     faceInk: null,
     skills: null,
     model: null,
+    modelFallbacks: null,
     avatar: null,
     bot: null,
     sortOrder: index,
@@ -431,6 +434,10 @@ function resolveRow(row: AgentRecord): Agent | undefined {
   const capabilities: AgentCapabilities = {
     skills: row.skills ?? preset?.capabilities?.skills ?? [],
     model: row.model ?? preset?.capabilities?.model ?? null,
+    modelFallbacks:
+      row.model !== null
+        ? (row.modelFallbacks ?? [])
+        : (preset?.capabilities?.modelFallbacks ?? []),
   };
 
   // Appearance resolves as one overlay each, like the prose: null on the row is
@@ -683,6 +690,7 @@ export interface AgentDraft {
   face?: FacePaint;
   skills?: AgentSkillRef[];
   model?: AgentModelRef;
+  modelFallbacks?: AgentModelRef[];
   avatar?: AgentAvatar;
   bot?: AgentBot;
 }
@@ -699,6 +707,7 @@ export interface AgentEdit {
   face?: FacePaint | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
   /** Appearance clears the same way: null re-inherits the preset's picture or
    *  bot, and on a user-made agent takes it away entirely. */
   avatar?: AgentAvatar | null;
@@ -718,6 +727,7 @@ function inheritedFrom(preset: AgentPreset | undefined) {
     faceInk: preset.face.ink,
     skills: preset.capabilities?.skills ?? null,
     model: preset.capabilities?.model ?? null,
+    modelFallbacks: preset.capabilities?.modelFallbacks ?? null,
     avatar: preset.avatar ?? null,
     bot: preset.bot ?? null,
   };
@@ -746,6 +756,7 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
     faceInk: draft.face?.ink ?? null,
     skills: draft.skills ?? null,
     model: draft.model ?? null,
+    modelFallbacks: draft.model ? (draft.modelFallbacks ?? []) : null,
     avatar: draft.avatar ?? null,
     bot: draft.bot ?? null,
   };
@@ -773,6 +784,7 @@ export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | 
   }
   if (edit.skills !== undefined) patch.skills = edit.skills;
   if (edit.model !== undefined) patch.model = edit.model;
+  if (edit.modelFallbacks !== undefined) patch.modelFallbacks = edit.modelFallbacks;
   if (edit.avatar !== undefined) patch.avatar = edit.avatar;
   if (edit.bot !== undefined) patch.bot = edit.bot;
   const row = await patchAgentRow(id, patch, preset ? { presetId: preset.id } : undefined);

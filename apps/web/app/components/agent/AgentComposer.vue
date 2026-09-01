@@ -6,7 +6,6 @@ import {
   AiBrain01Icon,
   BubbleChatTemporaryIcon,
   CornerDownRightIcon,
-  DiceFaces05Icon,
   FlashIcon,
   Folder01Icon,
   GitBranchIcon,
@@ -15,6 +14,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
+import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import type { AttachmentKind, InteractionMode } from "~/types/desktop";
@@ -219,39 +219,24 @@ const trayMark = computed(() => {
   return settledIdentity.value?.svg ?? currentAgent.value?.svg ?? null;
 });
 
-const agentMenu = ref(false);
-const agentPop = ref<HTMLElement>();
+const agentPickerOpen = ref(false);
 
-/** The tray clips its own contents so it can collapse to nothing, which would
- *  also cut off a menu opening out of it. This lifts the clip for as long as the
- *  menu needs it — raised the moment it opens, dropped only once the leave
- *  transition has finished, so the menu fades out whole instead of vanishing. */
-const spilling = ref(false);
-
-function toggleAgentMenu() {
-  agentMenu.value = !agentMenu.value;
-  if (agentMenu.value) spilling.value = true;
+function openAgentPicker() {
+  if (!canSwitchAgent.value) return;
+  agentPickerOpen.value = true;
   cue("toggle");
 }
 
 function pickAgent(id: string | null) {
-  agentMenu.value = false;
+  agentPickerOpen.value = false;
   if (id === (currentAgent.value?.id ?? null)) return;
   emit("update:agentId", id);
   cue("select");
 }
 
-onClickOutside(agentPop, () => {
-  agentMenu.value = false;
-});
-
-// A thread settling while the roster is up takes the popover down with it, and
-// the clip it lifted would never be dropped, because the leave transition that
-// drops it no longer has anything to run on.
 watch(canSwitchAgent, (can) => {
   if (can) return;
-  agentMenu.value = false;
-  spilling.value = false;
+  agentPickerOpen.value = false;
 });
 
 // ── model + effort pickers (both on the right) ─────────────────────────────────
@@ -552,14 +537,14 @@ function close() {
 onClickOutside(dock, () => {
   // The picker lives outside our dock, so its clicks read as "outside" — but it
   // is our own surface, one step removed. Don't collapse while it's up.
-  if (props.picking) return;
+  if (props.picking || agentPickerOpen.value) return;
   close();
 });
 onKeyStroke("Escape", () => {
-  // Escape walks out one layer at a time: a popover over the bar goes first, so
-  // dismissing the roster doesn't also throw away the draft behind it.
-  if (agentMenu.value) {
-    agentMenu.value = false;
+  // Escape walks out one layer at a time: a modal/picker over the bar goes first, so
+  // dismissing the picker doesn't also throw away the draft behind it.
+  if (agentPickerOpen.value) {
+    agentPickerOpen.value = false;
     return;
   }
   close();
@@ -1030,7 +1015,7 @@ defineExpose({ wake, setDraft });
          where, and the right names the conversation. -->
     <div
       class="tray"
-      :class="{ 'is-shown': open, 'is-closing': closing, 'is-spilling': spilling }"
+      :class="{ 'is-shown': open, 'is-closing': closing }"
       :inert="!open"
       aria-label="Turn context"
     >
@@ -1045,7 +1030,7 @@ defineExpose({ wake, setDraft });
            that is still open. The mark is the bot when there is one, matching
            the bead this strip sits under. -->
       <span
-        v-if="settledIdentity"
+        v-if="!canSwitchAgent && settledIdentity"
         class="tray__item"
         :title="`${settledIdentity.name} is on this thread`"
       >
@@ -1055,84 +1040,28 @@ defineExpose({ wake, setDraft });
         <span class="tray__face" aria-hidden="true" v-html="trayMark" />
         <span class="tray__label tray__label--strong">{{ settledIdentity.name }}</span>
       </span>
-      <div v-else ref="agentPop" class="tray__who">
-        <Transition name="menu" @after-leave="spilling = false">
-          <div v-if="agentMenu" class="menu menu--agent" role="menu">
-            <button
-              type="button"
-              class="opt"
-              :class="{ 'opt--on': !currentAgent }"
-              role="menuitemradio"
-              :aria-checked="!currentAgent"
-              @click.stop="pickAgent(null)"
-            >
-              <span class="opt__logo">
-                <HugeiconsIcon :icon="DiceFaces05Icon" :size="15" :stroke-width="1.8" />
-              </span>
-              <span class="opt__stack">
-                <span class="opt__label">{{ GUEST_LABEL }}</span>
-                <span class="opt__vendor">A name and face for this thread</span>
-              </span>
-              <HugeiconsIcon
-                v-if="!currentAgent"
-                class="opt__check"
-                :icon="Tick02Icon"
-                :size="14"
-                :stroke-width="2.2"
-                aria-hidden="true"
-              />
-            </button>
-            <button
-              v-for="a in roster"
-              :key="a.id"
-              type="button"
-              class="opt"
-              :class="{ 'opt--on': a.id === currentAgent?.id }"
-              role="menuitemradio"
-              :aria-checked="a.id === currentAgent?.id"
-              @click.stop="pickAgent(a.id)"
-            >
-              <span
-                class="opt__face"
-                aria-hidden="true"
-                v-html="a.bot ? botMark(a.bot) : a.svg"
-              />
-              <span class="opt__stack">
-                <span class="opt__label">{{ a.name }}</span>
-                <span class="opt__vendor">{{ a.role }}</span>
-              </span>
-              <HugeiconsIcon
-                v-if="a.id === currentAgent?.id"
-                class="opt__check"
-                :icon="Tick02Icon"
-                :size="14"
-                :stroke-width="2.2"
-                aria-hidden="true"
-              />
-            </button>
-          </div>
-        </Transition>
-        <button
-          type="button"
-          class="tray__item tray__item--action"
-          :tabindex="open ? 0 : -1"
-          aria-haspopup="menu"
-          :aria-expanded="agentMenu"
-          :aria-label="`${currentAgent?.name ?? GUEST_LABEL} is taking the turn. Change who takes it.`"
-          :title="
-            currentAgent
-              ? `${currentAgent.name} — ${currentAgent.role}`
-              : `${GUEST_LABEL} — a name and face for this thread only`
-          "
-          @click.stop="toggleAgentMenu"
-        >
-          <span v-if="trayMark" class="tray__face" aria-hidden="true" v-html="trayMark" />
-          <HugeiconsIcon v-else :icon="DiceFaces05Icon" :size="13" :stroke-width="1.8" />
-          <span class="tray__label tray__label--strong">
-            {{ currentAgent?.name ?? GUEST_LABEL }}
-          </span>
-        </button>
-      </div>
+      <button
+        v-else
+        type="button"
+        class="tray__item tray__item--action"
+        :tabindex="open ? 0 : -1"
+        :aria-label="`${currentAgent?.name ?? GUEST_LABEL} is taking the turn. Change who takes it.`"
+        :title="
+          currentAgent
+            ? `${currentAgent.name}${currentAgent.role ? ` — ${currentAgent.role}` : ''}`
+            : `${GUEST_LABEL} — Solo pair programming mode`
+        "
+        @click.stop="openAgentPicker"
+      >
+        <span v-if="trayMark" class="tray__face" aria-hidden="true" v-html="trayMark" />
+        <HugeiconsIcon v-else :icon="FlashIcon" :size="13" :stroke-width="1.8" />
+        <span class="tray__label tray__label--strong">
+          {{ currentAgent?.name ?? GUEST_LABEL }}
+        </span>
+        <span v-if="currentAgent?.role" class="tray__role">
+          · {{ currentAgent.role }}
+        </span>
+      </button>
       <span v-if="projectName" class="tray__item">
         <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">{{ projectName }}</span>
@@ -1164,6 +1093,15 @@ defineExpose({ wake, setDraft });
         <span class="tray__label">{{ threadLabel }}</span>
       </span>
     </div>
+
+    <!-- Partner / Solo Mode Picker in the app's modal shell -->
+    <AgentPickerModal
+      v-if="agentPickerOpen && canSwitchAgent"
+      :agents="roster"
+      :active-agent-id="currentAgent?.id ?? null"
+      @select="pickAgent"
+      @cancel="agentPickerOpen = false"
+    />
   </div>
 </template>
 
@@ -1724,19 +1662,17 @@ html.dark .dock {
 .tray__item--end .tray__label {
   max-width: 220px;
 }
-
-/* The one tray slot that opens something. It's a positioning frame only — the
-   button inside keeps the row's own metrics, so the agent lines up with the
-   project and the branch instead of sitting a pixel off them. */
-.tray__who {
-  position: relative;
-  display: flex;
-  /* The offset that keeps every tray slot on the strip that shows has to live on
-     the frame, not the button: the tray centres its items with their margins
-     counted in, so leaving it inside would set the agent a row above the rest. */
-  margin-top: 12px;
+.tray__role {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 14px;
+  opacity: 0.72;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.tray__who > .tray__item { margin-top: 0; }
+
 /* Big enough to read as a face rather than a dot, and level with the glyphs
    beside it: a marble has no stroke and no counters, so at their nominal size
    it reads optically smaller than they do. A bot fills the same tile; its
@@ -1753,8 +1689,6 @@ html.dark .dock {
   height: 100%;
   overflow: visible;
 }
-/* Lifted only while the roster is up — see `spilling`. */
-.tray.is-spilling { overflow: visible; }
 
 /* ── Send seed ────────────────────────────────────────────────────────────── */
 .seed {
@@ -1999,75 +1933,6 @@ html.dark .dock {
     rgb(0 0 0 / 0.06) 0 2px 8px -2px,
     var(--line) 0 0 0 1px;
 }
-.menu--model { right: 0; min-width: 232px; max-width: 320px; max-height: 340px; overflow-y: auto; }
-/* The roster opens from the tray's own left edge and grows rightward, so it
-   stays over the composer it belongs to rather than hanging off it. Wide enough
-   that no row's description wraps: every row here carries one, and a two-line
-   row beside a one-line row makes an even list look ragged. */
-.menu--agent { left: 0; min-width: 274px; max-width: 320px; }
-.menu--agent .opt__vendor { white-space: nowrap; }
-.menu__empty {
-  margin: 0;
-  padding: 10px 12px;
-  color: var(--faint);
-  font-size: 13px;
-}
-.opt {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  transition: background-color 0.14s ease;
-}
-.opt:hover { background: var(--hover); }
-.opt--on { background: var(--hover); }
-.opt__logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: var(--hover);
-}
-/* An agent's mark takes the slot a provider logomark would, at the same measure
-   but with no tile behind it — the marble (or the bot) is already a solid
-   shape, and putting it on a tile would read as a logo in a box. */
-.opt__face {
-  display: block;
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-}
-.opt__face :deep(svg) {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-.opt__stack { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
-.opt__label { flex: 1 1 auto; color: var(--ink); font-size: 13.5px; font-weight: 500; }
-.opt__stack .opt__label { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.opt__vendor { color: var(--faint); font-size: 11px; line-height: 1.2; }
-.opt__hint { color: var(--faint); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
-.opt--model { align-items: center; }
-.opt .stack { flex-shrink: 0; }
-.opt__check { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent); }
-
-.menu-enter-active { transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1); }
-.menu-leave-active { transition: opacity 0.12s ease, transform 0.12s ease; }
-.menu-enter-from, .menu-leave-to { opacity: 0; transform: translateY(6px) scale(0.98); }
-
-/* ── Stop glyph (seed while a turn runs) ──────────────────────────────────── */
-.seed__stop { width: 15px; height: 15px; }
-
 .fade-enter-active { transition: opacity 0.24s ease 0.08s; }
 .fade-leave-active { transition: opacity 0.14s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

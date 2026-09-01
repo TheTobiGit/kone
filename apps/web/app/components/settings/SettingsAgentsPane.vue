@@ -191,7 +191,7 @@ function onCreated(agent: Agent) {
     <template #foot>
       An agent is whoever does the work, kept apart from the threads they do it in, so the same name
       and face follow them across every conversation. Pick one in the composer to hand it the next
-      turn; leave it on Guest and the thread gets a name and a face of its own, good for that
+      turn; leave it on Default and the thread gets a name and a face of its own, good for that
       conversation and nothing beyond it. A named agent is told its name and, when it has them, its
       instructions for how to work; it answers to the name and follows the instructions. An agent can
       also be given a picture, which is what it is shown as wherever it answers, and a bot, the

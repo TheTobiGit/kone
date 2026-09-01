@@ -10,8 +10,10 @@ import {
   agentRoster,
   carryThreadAgent,
   createAgent,
+  DEFAULT_PARTNER_LABEL,
   deleteAgent,
   duplicateAgent,
+  GUEST_LABEL,
   hydrateRoster,
   isOnProjectTeam,
   KONE,
@@ -66,8 +68,10 @@ describe("the roster", () => {
     expect(agentById(KONE.id)?.name).toBe(KONE.name);
   });
 
-  test("nobody is picked for you — a fresh app sends work to a guest", () => {
+  test("nobody is picked for you — a fresh app sends work to a default solo partner", () => {
     expect(selectedAgent()).toBeUndefined();
+    expect(DEFAULT_PARTNER_LABEL).toBe("Default");
+    expect(GUEST_LABEL).toBe("Default");
   });
 
   test("an id that isn't in the roster resolves to nobody rather than a stub", () => {
@@ -479,21 +483,27 @@ describe("an agent's capabilities", () => {
     const kone = agentById(KONE.id)!;
     expect(kone.capabilities.skills).toEqual([]);
     expect(kone.capabilities.model).toBeNull();
+    expect(kone.capabilities.modelFallbacks).toEqual([]);
   });
 
   test("a new agent keeps the capabilities it was made with", async () => {
     const made = await createAgent({
       name: "Ada",
       model: { provider: "codex", model: "gpt-5", label: "GPT-5" },
+      modelFallbacks: [{ provider: "claudeAgent", model: "opus", label: "Opus" }],
       skills: [{ path: "/s/a.md", name: "A", origin: "project" }],
     });
     expect(made?.capabilities.model).toEqual({ provider: "codex", model: "gpt-5", label: "GPT-5" });
+    expect(made?.capabilities.modelFallbacks).toEqual([
+      { provider: "claudeAgent", model: "opus", label: "Opus" },
+    ]);
     expect(made?.capabilities.skills).toEqual([{ path: "/s/a.md", name: "A", origin: "project" }]);
   });
 
   test("a new agent silent about its capabilities runs anywhere", async () => {
     const made = await createAgent({ name: "Ada" });
     expect(made?.capabilities.model).toBeNull();
+    expect(made?.capabilities.modelFallbacks).toEqual([]);
     expect(made?.capabilities.skills).toEqual([]);
   });
 
@@ -506,6 +516,15 @@ describe("an agent's capabilities", () => {
 
     await updateAgent(KONE.id, { model: null });
     expect(rowFor(KONE.id).model).toBeNull();
+  });
+
+  test("clearing the model drops the fallback chain", async () => {
+    await updateAgent(KONE.id, {
+      model: { provider: "codex", model: "gpt-5" },
+      modelFallbacks: [{ provider: "claudeAgent", model: "opus" }],
+    });
+    await updateAgent(KONE.id, { model: null });
+    expect(rowFor(KONE.id).modelFallbacks).toBeNull();
   });
 
   test("a capability left out of an edit is left alone", async () => {
@@ -523,9 +542,13 @@ describe("an agent's capabilities", () => {
   // the row rather than left to resolve against a preset it no longer overlays.
   test("a fork carries the capabilities the source reads as", async () => {
     await hydrateRoster();
-    await updateAgent(KONE.id, { model: { provider: "codex", model: "gpt-5" } });
+    await updateAgent(KONE.id, {
+      model: { provider: "codex", model: "gpt-5" },
+      modelFallbacks: [{ provider: "claudeAgent", model: "opus" }],
+    });
     const copy = await duplicateAgent(KONE.id, "kone copy");
     expect(copy?.capabilities.model).toEqual({ provider: "codex", model: "gpt-5" });
+    expect(copy?.capabilities.modelFallbacks).toEqual([{ provider: "claudeAgent", model: "opus" }]);
   });
 });
 
@@ -634,6 +657,7 @@ describe("the store's answer arriving", () => {
       faceInk: null,
       skills: null,
       model: null,
+      modelFallbacks: null,
       avatar: null,
       bot: null,
       sortOrder: 0,
