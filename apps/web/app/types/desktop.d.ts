@@ -1223,6 +1223,67 @@ export type RuntimeEvent =
       savedAt: number;
       writer: ScratchpadWriter | null;
     })
+  // An agent tool call mutated the workspace theme or visual appearance.
+  // The renderer applies the new themeId, mode, or preview overrides in real-time.
+  | (AgentBaseEvent & {
+      type: "app.theme_mutation";
+      themeId?: string;
+      mode?: "system" | "dark" | "light";
+      preview?: boolean;
+      colors?: Record<string, string>;
+      customTheme?: {
+        id: string;
+        label: string;
+        blurb?: string;
+        appearance: "light" | "dark" | "adaptive";
+        accent: string;
+        ground?: string;
+        roles?: Record<string, string>;
+      };
+    })
+  // An agent tool call changed the app's agent roster — who a thread can be
+  // handed to. The write is the renderer's to make: the shipped agents are
+  // prose in its bundle and a stored row is a delta against one, so only it can
+  // say what a cleared field falls back to.
+  | (AgentBaseEvent & {
+      type: "app.agent_mutation";
+      op: "create" | "update" | "delete" | "select";
+      /** Which agent. Absent only on a `select` handing the next turn to a
+       *  guest, which is a real choice rather than a missing one. */
+      agentId?: string;
+      /** The fields to write. On a `create` the id above is the one the tool
+       *  minted, so it can name the agent it made before the row exists. */
+      fields?: {
+        name?: string;
+        role?: string;
+        instructions?: string;
+        face?: { body: string; ink: string };
+        model?: { provider: string; model: string; label?: string };
+      };
+      /** Fields to hand back: to the shipped preset on a built-in, unset on a
+       *  user-made agent. Named rather than sent as null, because a null across
+       *  IPC cannot be told from a client that filled in the blanks. */
+      clear?: ("role" | "instructions" | "face" | "model")[];
+      /** On a `create`, the project whose team the new agent also joins. */
+      projectPath?: string;
+    })
+  // An agent tool call added, edited or removed a preset sub-agent — one of the
+  // standing definitions `kone_spawn_from_preset` cuts a spawn from. Unlike the
+  // roster there is no inheritance to resolve, so the gateway has already
+  // written the row and this only tells the open windows to re-read.
+  | (AgentBaseEvent & {
+      type: "app.subagent_presets_changed";
+      op: "create" | "update" | "delete";
+      presetId: string;
+    })
+  // An agent tool call changed the thread strip's own settings: where the strip
+  // lands when a column takes focus, and the width a new pane opens at. Per
+  // install rather than per project, and the renderer's alone to hold.
+  | (AgentBaseEvent & {
+      type: "app.strip_mutation";
+      centering?: "never" | "on-overflow" | "always";
+      defaultWidths?: { thread?: number; terminal?: number; scratchpad?: number };
+    })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
@@ -2682,10 +2743,75 @@ export type KonePresetsApi = {
   delete: (input: PresetDeleteInput) => Promise<boolean>;
 };
 
+/** One theme in the renderer's library as the shell mirrors it. Deliberately
+ *  flatter than a `ThemeDefinition`: the shell needs a theme's identity and its
+ *  two defining colours, not its role table. */
+export type KoneThemeRosterEntry = {
+  id: string;
+  label: string;
+  blurb: string;
+  kind: "system" | "adaptive" | "fixed";
+  appearance: "light" | "dark";
+  schemes: ("light" | "dark")[];
+  accent: string;
+  ground: string;
+  origin: "built-in" | "custom" | "imported";
+};
+
+/** One agent in the roster as the shell mirrors it. Resolved and flattened: the
+ *  shell wants who an agent is and what it runs on, not a drawn face or a sort
+ *  order. */
+export type KoneAgentRosterEntry = {
+  id: string;
+  name: string;
+  role: string;
+  instructions: string;
+  face: { body: string; ink: string };
+  model: { provider: string; model: string; label?: string } | null;
+  skills: string[];
+  /** True for an agent kone ships — the ones whose cleared fields fall back to
+   *  a shipped preset rather than being unset. */
+  builtIn: boolean;
+  /** True for the agent the next turn is handed to. */
+  active: boolean;
+  /** The project paths whose team this agent is on. */
+  teams: string[];
+};
+
+/** The thread strip's settings as the shell mirrors them. The ladder rides along
+ *  because a width is a rung index rather than a size. */
+export type KoneStripSettings = {
+  centering: "never" | "on-overflow" | "always";
+  defaultWidths: { thread: number; terminal: number; scratchpad: number };
+  ladder: number[];
+};
+
 export type KoneDesktopApi = {
   platform: string;
-  /** Hands the chosen appearance to the shell so native chrome follows it. */
-  setTheme: (mode: "light" | "dark" | "system") => Promise<void>;
+  /** Hands the chosen appearance to the shell so native chrome follows it.
+   *  `state` additionally mirrors which theme is painted, the scheme it
+   *  resolved to, and the library it was chosen from — none of which the shell
+   *  can derive from the mode alone, and all of which the agent gateway reads
+   *  back to describe and change the interface. */
+  setTheme: (
+    mode: "light" | "dark" | "system",
+    state?: {
+      themeId: string;
+      themeLabel: string;
+      mode: "light" | "dark" | "system";
+      scheme: "light" | "dark";
+      locked: boolean;
+      themes?: KoneThemeRosterEntry[];
+    },
+  ) => Promise<void>;
+  /** Mirrors what the renderer knows about itself and the shell cannot derive:
+   *  the resolved agent roster, and the thread strip's settings. The agent
+   *  gateway reads it back so its tools describe and change the surfaces the
+   *  user is actually looking at. */
+  setAppState: (state: {
+    agents?: KoneAgentRosterEntry[];
+    strip?: KoneStripSettings;
+  }) => Promise<void>;
   fs: KoneFsApi;
   git: KoneGitApi;
   system: KoneSystemApi;
