@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 
+import type { AppearancePush, ThemeRosterEntry } from "./system.js";
+
 // system.ts imports electron bindings at module top (only used inside
 // functions), and Bun cannot load the electron package outside Electron — so
 // stub the package before importing the module under test. `ipcMain`,
@@ -30,7 +32,7 @@ mock.module("electron", () => ({
 }));
 
 const electron = await import("electron");
-const { reveal } = await import("./system.js");
+const { currentAppearance, currentThemeRoster, reveal, setTheme } = await import("./system.js");
 
 // Electron mocks leak across files: whichever test file stubs the package
 // first wins for the rest of the suite. Re-bind the spies onto the live
@@ -121,5 +123,80 @@ describe("reveal", () => {
 
     expect(openPathCalls).toEqual([path.resolve(subdir)]);
     expect(showItemInFolderCalls).toEqual([]);
+  });
+});
+
+// The renderer owns the theme library — built-ins plus whatever the user
+// imported or authored — and the shell only mirrors what it reports. These
+// cover the mirror, because the agent gateway offers themes out of it and a
+// roster that empties or fills with junk is a library the agent gets wrong.
+describe("appearance mirror", () => {
+  const entry = (id: string, overrides: Partial<ThemeRosterEntry> = {}): ThemeRosterEntry => ({
+    id,
+    label: id,
+    blurb: "",
+    kind: "fixed",
+    appearance: "dark",
+    schemes: ["dark"],
+    accent: "#a78bfa",
+    ground: "#0f1018",
+    origin: "built-in",
+    ...overrides,
+  });
+
+  /** One appearance push, optionally carrying a library. `themes` is loose on
+   *  purpose: what crosses IPC is whatever the renderer sent, and validating it
+   *  is the thing under test. */
+  const push = (themes?: Partial<ThemeRosterEntry>[]) => {
+    const state: AppearancePush = {
+      themeId: "nocturne",
+      themeLabel: "Nocturne",
+      mode: "dark",
+      scheme: "dark",
+      locked: true,
+    };
+    if (themes) {
+      // SAFETY: a malformed entry is the point of these cases; readRosterEntry decides what survives.
+      state.themes = themes as ThemeRosterEntry[];
+    }
+    setTheme("dark", state);
+  };
+
+  test("mirrors the appearance and the library the renderer reports", () => {
+    push([entry("nocturne"), entry("dracula", { origin: "imported" })]);
+
+    expect(currentAppearance()?.themeId).toBe("nocturne");
+    expect(currentThemeRoster()?.map((t) => t.id)).toEqual(["nocturne", "dracula"]);
+    expect(currentThemeRoster()?.[1]?.origin).toBe("imported");
+  });
+
+  // A mode toggle carries no library, and treating that as "the library is
+  // now empty" would take every theme away from the agent until the next push.
+  test("keeps the last roster when a push carries none", () => {
+    push([entry("nocturne")]);
+    push();
+
+    expect(currentThemeRoster()?.map((t) => t.id)).toEqual(["nocturne"]);
+  });
+
+  test("drops an entry it cannot read and keeps the rest", () => {
+    push([entry("nocturne"), { id: "broken" }, entry("grove", { kind: "adaptive", schemes: ["light", "dark"] })]);
+
+    expect(currentThemeRoster()?.map((t) => t.id)).toEqual(["nocturne", "grove"]);
+  });
+
+  // Same reasoning as the missing-roster case: nothing usable arrived, so the
+  // last good answer is better than no answer.
+  test("keeps the last roster when nothing in a push survives validation", () => {
+    push([entry("nocturne")]);
+    push([{ id: "broken" }]);
+
+    expect(currentThemeRoster()?.map((t) => t.id)).toEqual(["nocturne"]);
+  });
+
+  test("falls back to the theme's own appearance when it reports no schemes", () => {
+    push([entry("northlight", { appearance: "light", schemes: [] })]);
+
+    expect(currentThemeRoster()?.[0]?.schemes).toEqual(["light"]);
   });
 });

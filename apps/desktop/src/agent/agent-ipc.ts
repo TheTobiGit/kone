@@ -14,6 +14,8 @@ import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
 import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
+import { currentAppearance, currentThemeRoster } from "../modules/system/system.js";
+import { currentAgentRoster, currentStripSettings } from "../modules/appState/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import { skillRootTargets } from "@kone/agent-core/inventory/skills.js";
@@ -129,6 +131,21 @@ export function registerAgentIpc(): void {
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
+    // The renderer owns the appearance and pushes it to the shell; reading it
+    // back here is what lets app_get_theme_state describe the actual window
+    // instead of the last theme an agent asked for.
+    readAppearance: () => currentAppearance(),
+    // Likewise the library: an install's themes are its built-ins plus whatever
+    // the user imported or authored, and the renderer is the only one that
+    // knows the whole set.
+    readThemes: () => currentThemeRoster(),
+    // The roster the same way: kone's shipped agents are prose in the
+    // renderer's bundle and a stored row is a delta against one, so the
+    // resolved roster an agent should be told about exists only there.
+    readAgents: () => currentAgentRoster(),
+    // And the thread strip's settings, which are per-install renderer storage
+    // the main process has no way to read.
+    readStripSettings: () => currentStripSettings(),
   });
   svc.attachGateway(gateway);
 
@@ -209,7 +226,15 @@ export function registerAgentIpc(): void {
       // the column directly, so journaling the announcement would record
       // derived state in the transcript journal.
       event.type !== "thread.archived" &&
-      event.type !== "thread.unarchived";
+      event.type !== "thread.unarchived" &&
+      // App steering is live instruction for the renderer, not transcript: the
+      // theme, the agent roster, the preset sub-agents and the thread strip are
+      // app state the user can see for themselves, and journaling the
+      // announcement would record derived state in the turn's transcript.
+      event.type !== "app.theme_mutation" &&
+      event.type !== "app.agent_mutation" &&
+      event.type !== "app.subagent_presets_changed" &&
+      event.type !== "app.strip_mutation";
     broadcast(event, journal);
     // When a turn settles, snapshot the repo state it left behind (branch +
     // working-tree diffstat) onto the thread, so the Project Home "recent

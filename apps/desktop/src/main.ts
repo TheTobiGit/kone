@@ -15,6 +15,7 @@ import { registerStudioIpc } from "./modules/studio/index.js";
 import { registerRosterIpc } from "./modules/roster/index.js";
 import { registerAvatarsIpc } from "./modules/avatars/index.js";
 import { registerPresetsIpc } from "./modules/presets/index.js";
+import { registerAppStateIpc } from "./modules/appState/index.js";
 import { registerScratchpadIpc } from "./modules/scratchpad/index.js";
 import { registerTerminalIpc, shutdownTerminals } from "./modules/terminal/index.js";
 import {
@@ -133,6 +134,11 @@ function registerIpc() {
 
   // Preset sub-agents: reusable definitions a spawn is cut from.
   registerPresetsIpc();
+
+  // What the renderer knows about itself and the main process does not — the
+  // resolved agent roster and the thread strip's settings — mirrored so the
+  // agent gateway can read the app the user is actually looking at.
+  registerAppStateIpc();
 
   // Pictures for agents: one network read the renderer isn't allowed to do.
   registerAvatarsIpc();
