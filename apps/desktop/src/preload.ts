@@ -89,7 +89,8 @@ import type {
 } from "./modules/presets/index.js";
 import type { AvatarFetchInput, AvatarFetchResult } from "./modules/avatars/index.js";
 import type { DirListing } from "./modules/fs/fs.js";
-import type { ThemeMode } from "./modules/system/system.js";
+import type { AppearancePush, ThemeMode } from "./modules/system/system.js";
+import type { AppStatePush } from "./modules/appState/index.js";
 import type {
   CloneProgress,
   CloneResult,
@@ -317,9 +318,17 @@ const api = {
       ipcRenderer.invoke("system:reveal", target),
   },
   // Appearance: "light" | "dark" | "system". The main process applies it to
-  // nativeTheme so the OS chrome and the window follow the same choice.
-  setTheme: (mode: ThemeMode): Promise<void> =>
-    ipcRenderer.invoke("theme:set", mode),
+  // nativeTheme so the OS chrome and the window follow the same choice, and
+  // mirrors `state` so the agent gateway can report the theme actually on
+  // screen and offer the themes this install actually holds.
+  setTheme: (mode: ThemeMode, state?: AppearancePush): Promise<void> =>
+    ipcRenderer.invoke("theme:set", mode, state),
+  // The other half of the same mirror: what the renderer knows about itself and
+  // the main process cannot derive — the resolved agent roster, and the thread
+  // strip's settings. The agent gateway reads it back to describe those surfaces
+  // and to change them.
+  setAppState: (state: AppStatePush): Promise<void> =>
+    ipcRenderer.invoke("app:state", state),
   // Window chrome for the renderer's caption buttons. getState/toggleMaximize
   // return live maximized/fullscreen flags; onState pushes each transition.
   window: {
