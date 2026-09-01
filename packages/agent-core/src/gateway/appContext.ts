@@ -49,7 +49,8 @@ export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_
 /** What every gateway session is told regardless of which tools it got. */
 const HOST_CONTEXT_PREAMBLE = [
   "You are running inside kone, a desktop app for AI-assisted development. kone hosts this agent session and renders your work on the user's project board.",
-  "The `kone` MCP server is kone's app gateway: your native connection to the app the user is looking at. App tools are part of your job — when one fits, use it instead of inventing file-based workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
+  "The `kone` MCP server is kone's app gateway: your native connection to the app the user is looking at. App tools are part of your job — when one fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
+  "WORKSPACE CONTROLS: To change themes, dark/light mode, or workspace appearance, invoke `app_set_theme` directly. Never run shell commands (grep, ps, node, curl) to configure the UI.",
 ];
 
 /**
