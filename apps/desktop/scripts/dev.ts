@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { cpSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -85,6 +85,13 @@ const compilePreload = spawnSync(
 if (compileMain.status !== 0 || compilePreload.status !== 0) {
   shutdown(compileMain.status ?? compilePreload.status ?? 1);
 }
+
+// The stdio→HTTP MCP proxy is a plain runtime asset (not bundled — injection.ts
+// resolves it relative to the bundle, so it must sit next to dist/main.js).
+cpSync(
+  path.join(rootDir, "packages/agent-core/src/gateway/stdioProxy.mjs"),
+  path.join(desktopDir, "dist/stdioProxy.mjs"),
+);
 
 const mainEntry = path.join(desktopDir, "dist/main.js");
 if (!existsSync(mainEntry)) {
