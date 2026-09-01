@@ -27,7 +27,14 @@ import type {
   SpawnRequest,
   SpawnTargetsReport,
 } from "../../threadSpawn.js";
-import type { InteractionMode, ProviderKind, SpawnTarget, StoredBlock, StoredThread } from "../../types.js";
+import type {
+  InteractionMode,
+  ProviderKind,
+  SpawnedThread,
+  SpawnTarget,
+  StoredBlock,
+  StoredThread,
+} from "../../types.js";
 import type { AgentRecord, SubagentPresetRecord } from "../../ConversationStore.js";
 import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "../../presetSpawn.js";
 import { resolveDelegation } from "../../delegate.js";
@@ -233,6 +240,24 @@ function blockText(block: StoredBlock): string {
     .filter((item) => item.kind === "assistant_text")
     .map((item) => item.text)
     .join("\n");
+}
+
+/** One child's outcome as prose. The summary is the whole point of the wait —
+ *  a caller that only reads `content` (structuredContent is advisory, and a
+ *  client is free to ignore it) would otherwise collect a receipt saying the
+ *  child replied and never learn what it said. */
+function waitThreadText(thread: SpawnedThread): string {
+  const took =
+    thread.elapsedMs !== undefined ? ` in ${Math.round(thread.elapsedMs / 1000)}s` : "";
+  const head = `[${thread.title}] ${thread.status}${took} (${thread.threadId}):`;
+  const body = thread.summary?.trim() || thread.detail?.trim();
+  if (body) return `${head}\n${body}`;
+  return `${head}\n(no reply text — read the thread with kone_read_thread)`;
+}
+
+/** One transcript message as prose, for the same reason. */
+function messageText(message: { role: string; text: string }): string {
+  return `[${message.role}] ${message.text.trim() || "(no text — tool calls only)"}`;
 }
 
 export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
@@ -651,13 +676,14 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         (t) => t.status === "waiting-for-approval" || t.status === "waiting-for-user-input",
       ).length;
       const count = outcome.threads.length;
-      const text = outcome.allTerminal
+      const headline = outcome.allTerminal
         ? `All ${count} thread${count === 1 ? "" : "s"} settled.`
         : outcome.timedOut
           ? `Timed out with ${running} thread${running === 1 ? "" : "s"} still running — call again to keep waiting.`
           : parked > 0
             ? `${parked} thread${parked === 1 ? "" : "s"} parked on a human response — get the user's answer, then wait again.`
             : `${count} thread${count === 1 ? "" : "s"} reported; ${running} still running.`;
+      const text = [headline, ...outcome.threads.map(waitThreadText)].join("\n\n");
       return { content: [{ type: "text", text }], structuredContent: outcome };
     } catch (error) {
       // An aborted wait is the caller cancelling — the transport turns it into
@@ -693,11 +719,15 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       role: block.role,
       text: truncateTo(blockText(block), maxTextChars),
     }));
+    const heading =
+      messages.length === 0
+        ? `"${thread.title ?? args.threadId}" has no messages yet.`
+        : `Read ${messages.length} message${messages.length === 1 ? "" : "s"} from "${thread.title ?? args.threadId}", oldest first:`;
     return {
       content: [
         {
           type: "text",
-          text: `Read ${messages.length} message${messages.length === 1 ? "" : "s"} from "${thread.title ?? args.threadId}".`,
+          text: [heading, ...messages.map(messageText)].join("\n\n"),
         },
       ],
       structuredContent: {
