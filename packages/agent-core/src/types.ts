@@ -161,8 +161,10 @@ export type SessionStartInput = {
    *  a system channel fix theirs when the process spawns. Absent runs the
    *  session as a guest. */
   agent?: AgentPersona;
-  /** Candidate fallback models/providers to retry when 429/quota error occurs. */
-  fallbacks?: Array<{ provider: string; model?: string }>;
+  /** Candidate providers/models to retry, in order, when a turn fails with a
+   *  429 / quota / rate-limit error. A rung that names no model runs whatever
+   *  that provider picks. */
+  fallbacks?: Array<{ provider: ProviderKind; model?: string }>;
 };
 
 export type Session = {
@@ -271,8 +273,10 @@ export type SendTurnInput = {
    *  to a live `autoCompactWindow` Setting toggled without restarting the
    *  session. Absent means the model's default window. */
   contextWindow?: string;
-  /** Candidate fallback models/providers to retry when 429/quota error occurs. */
-  fallbacks?: Array<{ provider: string; model?: string }>;
+  /** Candidate providers/models to retry, in order, when a turn fails with a
+   *  429 / quota / rate-limit error. A rung that names no model runs whatever
+   *  that provider picks. */
+  fallbacks?: Array<{ provider: ProviderKind; model?: string }>;
 };
 
 export type TurnStartResult = {
@@ -753,8 +757,8 @@ export type SpawnAdjustment = {
 
 export type SpawnThreadResult = {
   requestId: string;
-  /** The child thread's kone id — the handle for `kone_wait_for_threads` and
-   *  `kone_read_thread`. Minted in the main process; agents never choose ids. */
+  /** The child thread's kone id — the handle for `kone_wait_for_responses` and
+   *  `kone_read_response`. Minted in the main process; agents never choose ids. */
   threadId: string;
   parentThreadId: string;
   title: string;
@@ -762,7 +766,12 @@ export type SpawnThreadResult = {
   model?: string;
   effort?: string;
   mode: InteractionMode;
-  /** The child's FIRST turn id — the turnId to pin kone_wait_for_threads to, so
+  /** Set when the model the child was planned for could not be started and the
+   *  engine moved down its fallback chain: the candidate that was abandoned, so
+   *  the dispatching agent can see that `provider`/`model` above are not what it
+   *  asked for and why. */
+  failedOverFrom?: { provider: ProviderKind; model?: string; reason: string };
+  /** The child's FIRST turn id — the turnId to pin kone_wait_for_responses to, so
    *  the parent waits on the turn it spawned rather than whatever the child's
    *  latest turn happens to be when the wait runs. */
   firstTurnId?: string;
@@ -807,7 +816,7 @@ export type SpawnedThread = {
   /** The child's final assistant text, capped. THE ONLY thing that crosses
    *  back into the parent's context — tool calls, reasoning and intermediate
    *  output stay isolated in the child thread and are read on demand via
-   *  `kone_read_thread`. */
+   *  `kone_read_response`. */
   summary?: string;
   /** Set when the child failed, or when it is parked: the question/approval
    *  the child is blocked on, so the parent can tell the user what to do. */
@@ -1097,7 +1106,7 @@ export type RuntimeEvent =
       sourceThreadId: string;
       requestId: string;
     })
-  // An agent spawned a child thread (kone_spawn_thread), and every subsequent
+  // An agent spawned a child thread (kone_spawn_worker), and every subsequent
   // change to that child's rolled-up state. `threadId` is the CHILD's id, so
   // these route like any other thread event; the snapshot carries the parent
   // pointer. Both carry the whole `SpawnedThread` value (the same
@@ -1158,6 +1167,8 @@ export type RuntimeEvent =
         instructions?: string;
         face?: { body: string; ink: string };
         model?: { provider: string; model: string; label?: string };
+        /** Ordered fallbacks behind `model`. Ignored when no primary is set. */
+        modelFallbacks?: { provider: string; model: string; label?: string }[];
       };
       /** Fields to hand back: to the shipped preset on a built-in, unset on a
        *  user-made agent. Named rather than sent as null, because a null across
@@ -1167,7 +1178,7 @@ export type RuntimeEvent =
       projectPath?: string;
     })
   // An agent tool call added, edited or removed a preset sub-agent — one of the
-  // standing definitions `kone_spawn_from_preset` cuts a spawn from. Unlike the
+  // standing definitions `kone_spawn_worker_preset` cuts a spawn from. Unlike the
   // roster there is no inheritance to resolve, so the gateway has already
   // written the row and this only tells the open windows to re-read.
   | (BaseEvent & {

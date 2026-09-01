@@ -2507,6 +2507,26 @@ export class ConversationStore {
     }
   }
 
+  /** Rewrite a spawned child's stored provider/model after a spawn-time
+   *  failover. The row is written before dispatch, so a child that actually
+   *  started on a later candidate would otherwise keep showing the model that
+   *  could not start. */
+  retargetSpawnedThread(threadId: string, provider: ProviderKind, model?: string): void {
+    const db = this.handle();
+    if (!db) return;
+    try {
+      this.durably(db, () => {
+        db.prepare(`UPDATE threads SET provider = ?, model = ? WHERE thread_id = ?`).run(
+          provider,
+          model ?? null,
+          threadId,
+        );
+      });
+    } catch (err) {
+      console.error("[conversation-store] retargetSpawnedThread failed:", err);
+    }
+  }
+
   /** The thread's stored lineage block, or null when the thread has none (a
    *  plain root, or a missing row). Reads `lineage_json` — the source of
    *  truth; callers that walk the tree use the indexed parent pointer instead. */
@@ -2623,7 +2643,7 @@ export class ConversationStore {
    *  items concatenated in arrival order, trimmed. This is what becomes the
    *  child's summary, so it is the narrative only: reasoning, plan and tool
    *  calls are excluded (they stay in the child's transcript, readable on
-   *  demand via kone_read_thread). Null when the thread has never produced
+   *  demand via kone_read_response). Null when the thread has never produced
    *  assistant text. */
   latestAssistantText(threadId: string): string | null {
     const db = this.handle();
@@ -3050,7 +3070,7 @@ export class ConversationStore {
         // The `providers` column is dormant since the collapse to one model —
         // provider comes from the model ref — so it is always written null.
         null,
-        serializeModelRef(input.model),
+        serializeModelRef(input.model, input.modelFallbacks),
         serializeAgentAvatar(input.avatar),
         serializeAgentBot(input.bot),
         this.nextAgentSortOrder(db),
@@ -3091,8 +3111,18 @@ export class ConversationStore {
     if (patch.skills !== undefined) {
       edits.push(["skills", serializeAgentList(patch.skills, normalizeSkillRef)]);
     }
-    if (patch.model !== undefined) {
-      edits.push(["models", serializeModelRef(patch.model)]);
+    if (patch.model !== undefined || patch.modelFallbacks !== undefined) {
+      // Primary and fallbacks share one ordered column, so a patch that names
+      // only one of them has to be merged against what is stored rather than
+      // written alone — otherwise pinning a new primary would silently drop the
+      // fallbacks the user had already lined up behind it.
+      const current = this.getAgent(agentId);
+      const primary = patch.model !== undefined ? patch.model : (current?.model ?? null);
+      const fallbacks =
+        patch.modelFallbacks !== undefined
+          ? patch.modelFallbacks
+          : (current?.modelFallbacks ?? null);
+      edits.push(["models", serializeModelRef(primary, fallbacks)]);
     }
     if (patch.avatar !== undefined) {
       edits.push(["avatar", serializeAgentAvatar(patch.avatar)]);
@@ -3200,7 +3230,12 @@ export class ConversationStore {
           serializeAgentList(source.skills ?? inherited.skills, normalizeSkillRef),
           // Dormant since the collapse to one model — always null.
           null,
-          serializeModelRef(source.model ?? inherited.model),
+          // Primary and fallbacks travel together: a fork that took its
+          // primary from the shipped preset must take that preset's chain too,
+          // not splice the source row's fallbacks under a different model.
+          source.model
+            ? serializeModelRef(source.model, source.modelFallbacks)
+            : serializeModelRef(inherited.model, inherited.modelFallbacks),
           serializeAgentAvatar(source.avatar ?? inherited.avatar),
           serializeAgentBot(source.bot ?? inherited.bot),
           source.sortOrder + 1,
@@ -3360,7 +3395,7 @@ export class ConversationStore {
         presetId,
         name,
         clampAgentField(input.instructions, AGENT_PROSE_MAX),
-        serializeModelRef(input.model),
+        serializeModelRef(input.model, input.modelFallbacks),
         this.nextSubagentPresetSortOrder(db),
         now,
         now,
@@ -3390,8 +3425,15 @@ export class ConversationStore {
     if (patch.instructions !== undefined) {
       edits.push(["instructions", clampAgentField(patch.instructions, AGENT_PROSE_MAX)]);
     }
-    if (patch.model !== undefined) {
-      edits.push(["models", serializeModelRef(patch.model)]);
+    if (patch.model !== undefined || patch.modelFallbacks !== undefined) {
+      // Same one-column merge as an agent's: see updateAgent.
+      const current = this.getSubagentPreset(presetId);
+      const primary = patch.model !== undefined ? patch.model : (current?.model ?? null);
+      const fallbacks =
+        patch.modelFallbacks !== undefined
+          ? patch.modelFallbacks
+          : (current?.modelFallbacks ?? null);
+      edits.push(["models", serializeModelRef(primary, fallbacks)]);
     }
     if (edits.length === 0) return this.getSubagentPreset(presetId);
     try {

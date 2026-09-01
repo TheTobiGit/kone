@@ -64,6 +64,13 @@ export type AgentRecord = {
    *  always has). */
   skills: AgentSkillRef[] | null;
   model: AgentModelRef | null;
+  /** The models tried, in order, when `model` can't run — a rate limit, a spent
+   *  quota, or a provider that is down. Only meaningful alongside a `model`:
+   *  with no primary there is nothing to fall back FROM, so the list is ignored.
+   *  Null alongside a null `model` is the inherit case; `[]` is a pinned model
+   *  with no second choice. Stored in the same column as `model` — one ordered
+   *  chain, primary first — so the two can never disagree about their order. */
+  modelFallbacks: AgentModelRef[] | null;
   /** How the agent looks (v27), each an overlay: null inherits the preset's. An
    *  agent with neither is drawn by the face they have always had. */
   avatar: AgentAvatarRef | null;
@@ -87,6 +94,7 @@ export type AgentCreateInput = {
   faceInk?: string | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
   avatar?: AgentAvatarRef | null;
   bot?: AgentBotRef | null;
 };
@@ -101,6 +109,7 @@ export type AgentPatch = {
   faceInk?: string | null;
   skills?: AgentSkillRef[] | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
   avatar?: AgentAvatarRef | null;
   bot?: AgentBotRef | null;
 };
@@ -122,6 +131,7 @@ export type AgentDuplicateInput = {
     faceInk?: string | null;
     skills?: AgentSkillRef[] | null;
     model?: AgentModelRef | null;
+    modelFallbacks?: AgentModelRef[] | null;
     avatar?: AgentAvatarRef | null;
     bot?: AgentBotRef | null;
   };
@@ -154,6 +164,10 @@ export type SubagentPresetRecord = {
    *  `model` there is no preset above this to inherit from, so null here means
    *  "no model", not "inherit". */
   model: AgentModelRef | null;
+  /** The models a spawn from this preset tries, in order, when `model` can't
+   *  run. Same rules as an agent's: only meaningful alongside a `model`, and
+   *  held in the same ordered column. */
+  modelFallbacks: AgentModelRef[] | null;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -166,6 +180,7 @@ export type SubagentPresetCreateInput = {
   name: string;
   instructions?: string | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
 };
 
 /** An edit to a preset sub-agent. A key left out is left alone; the name is the
@@ -174,6 +189,7 @@ export type SubagentPresetPatch = {
   name?: string;
   instructions?: string | null;
   model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
 };
 
 /** Room for a name the roster can lay out on one line. */
@@ -313,32 +329,74 @@ export function normalizeModelRef(entry: ColumnValue | undefined): AgentModelRef
   return out;
 }
 
-/** Serialize the single model an agent runs on to the JSON its column holds.
- *  Null and undefined both store as null ("inherit"/"no model"); a ref stores
- *  as a JSON object, validated and bounded. A ref that can't be made valid
- *  stores as null rather than malformed. */
-export function serializeModelRef(value: AgentModelRef | null | undefined): string | null {
-  if (value === null || value === undefined) return null;
-  const normalized = normalizeModelRef(value);
-  return normalized === null ? null : JSON.stringify(normalized);
+/** Serialize the ordered chain of models an entity runs on — primary first,
+ *  then each fallback — to the JSON its one model column holds. One column for
+ *  the whole chain, because the order IS the data: split across two columns the
+ *  primary and its fallbacks could disagree about which comes first.
+ *
+ *  Null and undefined both store as null ("inherit"/"no model"), and so does an
+ *  empty chain — a chain with no primary is inheritance however it was spelt.
+ *  Each ref is validated and bounded, and one that can't be made valid is
+ *  dropped rather than stored malformed. */
+export function serializeModelChain(
+  chain: readonly (AgentModelRef | ColumnValue)[] | null | undefined,
+): string | null {
+  if (chain === null || chain === undefined) return null;
+  const clean: AgentModelRef[] = [];
+  for (const entry of chain.slice(0, AGENT_LIST_MAX)) {
+    const normalized = normalizeModelRef(entry);
+    if (normalized !== null) clean.push(normalized);
+  }
+  return clean.length === 0 ? null : JSON.stringify(clean);
 }
 
-/** Read the model column back into its single ref, or null when the column is
- *  null ("inherit"/"no model"). Tolerates a legacy array (the column once held
- *  an ordered preference list) by taking its first entry, so a row written
- *  before the collapse to one model still reads. Unparseable JSON reads as null,
- *  exactly as a malformed capability list does. */
-export function parseModelRef(raw: string | null): AgentModelRef | null {
-  if (raw === null) return null;
+/** Serialize an entity's primary and its fallbacks as the one ordered chain the
+ *  column holds. A null primary drops the fallbacks with it: there is nothing
+ *  to fall back FROM, so storing the tail alone would invent a primary on the
+ *  next read. */
+export function serializeModelRef(
+  value: AgentModelRef | null | undefined,
+  fallbacks?: readonly AgentModelRef[] | null,
+): string | null {
+  if (value === null || value === undefined) return null;
+  return serializeModelChain([value, ...(fallbacks ?? [])]);
+}
+
+/** Read the model column back into its ordered chain. Null column, unparseable
+ *  JSON, or nothing valid inside all read as `[]` — a malformed chain is no
+ *  chain, and the entity inherits exactly as it would for an absent one. A
+ *  column holding a bare object (the shape written while the chain was capped
+ *  at one model) reads as a one-entry chain. */
+export function parseModelChain(raw: string | null): AgentModelRef[] {
+  if (raw === null) return [];
   try {
     // SAFETY: the column hands back arbitrary JSON; every field is revalidated
     // through normalizeModelRef before use.
     const parsed = JSON.parse(raw) as ColumnValue;
-    const entry = Array.isArray(parsed) ? parsed[0] : parsed;
-    return normalizeModelRef(entry);
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    const out: AgentModelRef[] = [];
+    for (const entry of entries) {
+      const normalized = normalizeModelRef(entry);
+      if (normalized !== null) out.push(normalized);
+    }
+    return out;
   } catch {
-    return null;
+    return [];
   }
+}
+
+/** The chain's head — the model the entity runs on first — or null when it
+ *  names none and inherits its caller's. */
+export function parseModelRef(raw: string | null): AgentModelRef | null {
+  return parseModelChain(raw)[0] ?? null;
+}
+
+/** The chain's tail — the models tried in order once the head can't run — or
+ *  null when the entity names no model at all, matching the null the primary
+ *  reads as. An entity pinned to one model with no second choice reads `[]`. */
+export function parseModelFallbacks(raw: string | null): AgentModelRef[] | null {
+  const chain = parseModelChain(raw);
+  return chain.length === 0 ? null : chain.slice(1);
 }
 
 /** Read a capability column back into its list, or null when the column is null
@@ -467,6 +525,7 @@ export function rowToAgent(row: AgentRow): AgentRecord {
     faceInk: row.face_ink,
     skills: parseAgentList(row.skills, normalizeSkillRef),
     model: parseModelRef(row.models),
+    modelFallbacks: parseModelFallbacks(row.models),
     avatar: parseAgentAvatar(row.avatar),
     bot: parseAgentBot(row.bot),
     sortOrder: row.sort_order,
@@ -497,6 +556,7 @@ export function rowToSubagentPreset(row: SubagentPresetRow): SubagentPresetRecor
     // A null column reads as "no model" because a preset has no preset above it
     // to inherit from, unlike an agent's `model`.
     model: parseModelRef(row.models),
+    modelFallbacks: parseModelFallbacks(row.models),
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

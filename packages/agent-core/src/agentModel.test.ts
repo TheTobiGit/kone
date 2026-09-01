@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveAgentModel, resolveModelWithFallback, type ProviderAvailability } from "./agentModel.js";
+import {
+  planSpawnModel,
+  resolveAgentModel,
+  resolveAgentModelChain,
+  resolveModelWithFallback,
+  type ProviderAvailability,
+} from "./agentModel.js";
 import type { AgentModelRef } from "./ConversationStore.js";
 
 // A small readable availability snapshot: two providers logged in, one not.
@@ -23,7 +29,11 @@ describe("resolveAgentModel", () => {
 
   test("an available model resolves to itself", () => {
     const r = resolveAgentModel(ref("claudeAgent", "opus"), surface());
-    expect(r).toEqual({ outcome: "resolved", ref: ref("claudeAgent", "opus") });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: ref("claudeAgent", "opus"),
+      remaining: [],
+    });
   });
 
   // The pin can't run: its provider isn't logged in. There's no fallback list —
@@ -31,12 +41,12 @@ describe("resolveAgentModel", () => {
   // unavailable, naming what was tried.
   test("a model whose provider isn't logged in is unavailable", () => {
     const r = resolveAgentModel(ref("cursor", "auto"), surface());
-    expect(r).toEqual({ outcome: "unavailable", tried: ref("cursor", "auto") });
+    expect(r).toEqual({ outcome: "unavailable", tried: [ref("cursor", "auto")] });
   });
 
   test("a model the provider doesn't offer is unavailable", () => {
     const r = resolveAgentModel(ref("claudeAgent", "gpt-6"), surface());
-    expect(r).toEqual({ outcome: "unavailable", tried: ref("claudeAgent", "gpt-6") });
+    expect(r).toEqual({ outcome: "unavailable", tried: [ref("claudeAgent", "gpt-6")] });
   });
 
   // "or has exhausted its available usage" — a spent model can't run even
@@ -51,12 +61,12 @@ describe("resolveAgentModel", () => {
       },
     });
     const r = resolveAgentModel(ref("claudeAgent", "opus"), s);
-    expect(r).toEqual({ outcome: "unavailable", tried: ref("claudeAgent", "opus") });
+    expect(r).toEqual({ outcome: "unavailable", tried: [ref("claudeAgent", "opus")] });
   });
 
   test("a provider absent from the snapshot is treated as unavailable", () => {
     const r = resolveAgentModel(ref("droid", "kimi"), surface());
-    expect(r).toEqual({ outcome: "unavailable", tried: ref("droid", "kimi") });
+    expect(r).toEqual({ outcome: "unavailable", tried: [ref("droid", "kimi")] });
   });
 
   test("an empty exhausted list blocks nothing", () => {
@@ -64,7 +74,23 @@ describe("resolveAgentModel", () => {
       codex: { provider: "codex", available: true, models: ["gpt-5"], exhausted: [] },
     });
     const r = resolveAgentModel(ref("codex", "gpt-5"), s);
-    expect(r).toEqual({ outcome: "resolved", ref: ref("codex", "gpt-5") });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: ref("codex", "gpt-5"),
+      remaining: [],
+    });
+  });
+});
+
+describe("resolveAgentModelChain", () => {
+  test("walks past an unavailable primary and keeps the untried tail", () => {
+    const chain = [ref("cursor", "auto"), ref("claudeAgent", "opus"), ref("codex", "gpt-5")];
+    const r = resolveAgentModelChain(chain, surface());
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: ref("claudeAgent", "opus"),
+      remaining: [ref("codex", "gpt-5")],
+    });
   });
 });
 
@@ -73,14 +99,22 @@ describe("resolveModelWithFallback", () => {
     const primary = { provider: "claudeAgent", model: "opus" };
     const fallbacks = [{ provider: "codex", model: "gpt-5" }];
     const r = resolveModelWithFallback(primary, fallbacks, surface());
-    expect(r).toEqual({ outcome: "resolved", ref: primary });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: primary,
+      remaining: [{ provider: "codex", model: "gpt-5" }],
+    });
   });
 
   test("falls back smoothly when primary provider is marked unavailable", () => {
     const primary = { provider: "cursor", model: "auto" };
     const fallbacks = [{ provider: "codex", model: "gpt-5" }];
     const r = resolveModelWithFallback(primary, fallbacks, surface());
-    expect(r).toEqual({ outcome: "resolved", ref: { provider: "codex", model: "gpt-5" } });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: { provider: "codex", model: "gpt-5" },
+      remaining: [],
+    });
   });
 
   test("falls back when primary model is exhausted", () => {
@@ -98,7 +132,11 @@ describe("resolveModelWithFallback", () => {
       { provider: "codex", model: "gpt-5" },
     ];
     const r = resolveModelWithFallback(primary, fallbacks, s);
-    expect(r).toEqual({ outcome: "resolved", ref: { provider: "claudeAgent", model: "sonnet" } });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: { provider: "claudeAgent", model: "sonnet" },
+      remaining: [{ provider: "codex", model: "gpt-5" }],
+    });
   });
 
   test("transitions across multiple unavailable candidates to first available", () => {
@@ -109,14 +147,22 @@ describe("resolveModelWithFallback", () => {
       { provider: "codex", model: "gpt-5" },
     ];
     const r = resolveModelWithFallback(primary, fallbacks, surface());
-    expect(r).toEqual({ outcome: "resolved", ref: { provider: "codex", model: "gpt-5" } });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: { provider: "codex", model: "gpt-5" },
+      remaining: [],
+    });
   });
 
   test("resolves a fallback candidate with no model specified if provider is available", () => {
     const primary = { provider: "cursor", model: "auto" };
     const fallbacks = [{ provider: "codex" }];
     const r = resolveModelWithFallback(primary, fallbacks, surface());
-    expect(r).toEqual({ outcome: "resolved", ref: { provider: "codex" } });
+    expect(r).toEqual({
+      outcome: "resolved",
+      ref: { provider: "codex" },
+      remaining: [],
+    });
   });
 
   test("returns unavailable when primary and all fallbacks cannot run", () => {
@@ -139,5 +185,60 @@ describe("resolveModelWithFallback", () => {
       outcome: "unavailable",
       tried: [primary],
     });
+  });
+});
+
+describe("planSpawnModel", () => {
+  test("a requested model beats the entity's own chain", () => {
+    const plan = planSpawnModel({
+      requested: ref("codex", "gpt-5"),
+      chain: [ref("claudeAgent", "opus"), ref("claudeAgent", "sonnet")],
+      caller: { provider: "claudeAgent", model: "haiku" },
+      availability: surface(),
+    });
+    expect(plan).toEqual({
+      ok: true,
+      target: { provider: "codex", model: "gpt-5" },
+      fallbacks: [],
+      selection: "requested",
+    });
+  });
+
+  test("an assigned chain walks to the first runnable rung and keeps the rest", () => {
+    const plan = planSpawnModel({
+      chain: [ref("cursor", "auto"), ref("claudeAgent", "opus"), ref("codex", "gpt-5")],
+      caller: { provider: "codex", model: "gpt-5" },
+      availability: surface(),
+    });
+    expect(plan).toEqual({
+      ok: true,
+      target: { provider: "claudeAgent", model: "opus" },
+      fallbacks: [{ provider: "codex", model: "gpt-5" }],
+      selection: "assigned",
+    });
+  });
+
+  test("an empty chain inherits the caller's provider and model", () => {
+    const plan = planSpawnModel({
+      chain: [],
+      caller: { provider: "codex", model: "gpt-5" },
+      availability: surface(),
+    });
+    expect(plan).toEqual({
+      ok: true,
+      target: { provider: "codex", model: "gpt-5" },
+      fallbacks: [],
+      selection: "inherited",
+    });
+  });
+
+  test("a requested model that cannot run is refused rather than inherited", () => {
+    const plan = planSpawnModel({
+      requested: ref("cursor", "auto"),
+      chain: [ref("claudeAgent", "opus")],
+      caller: { provider: "codex", model: "gpt-5" },
+      availability: surface(),
+    });
+    expect(plan).toEqual({ ok: false, tried: [ref("cursor", "auto")] });
   });
 });
