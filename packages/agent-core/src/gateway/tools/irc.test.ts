@@ -499,6 +499,7 @@ describe("IrcMailbox core engine", () => {
         faceInk: null,
         skills: null,
         model: null,
+        modelFallbacks: null,
         avatar: null,
         bot: null,
         sortOrder: 1,
@@ -619,6 +620,25 @@ describe("createIrcTools gateway registration and execution", () => {
     expect(inboxTool!.permission).toBe("allow");
     expect(inboxTool!.requiresActiveTurn).toBe(false);
     expect(inboxTool!.jsonSchema).toBe(IRC_INBOX_JSON_SCHEMA);
+  });
+
+  test("kone_irc_send tells the agent that idle peers are reachable", () => {
+    const tools = createIrcTools();
+    // SAFETY: the previous test pins the tool order; the send tool is first.
+    const send = tools[0]!;
+    // The failure mode this guards against is an agent concluding a peer that
+    // has settled is closed, and re-spawning it to reach it — so both the
+    // description and the prompt snippet must say idle is deliverable, and
+    // name the two delivery shapes (steer vs wake).
+    expect(send.description).toContain("idle");
+    expect(send.description).toMatch(/running right now or idle/);
+    expect(send.description).toMatch(/steered into its active turn/);
+    expect(send.description).toMatch(/woken with a new turn on its existing thread/);
+    expect(send.promptSnippet).toMatch(/running or idle/);
+    expect(send.promptSnippet).toMatch(/steered mid-turn/);
+    expect(send.promptSnippet).toMatch(/wakes with a new turn/);
+    const guidelines = send.promptGuidelines ?? [];
+    expect(guidelines.some((g) => /idle peer is not a closed one/.test(g))).toBe(true);
   });
 
   test("kone_irc_send requires an active turn", async () => {

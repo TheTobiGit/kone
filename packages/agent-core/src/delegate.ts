@@ -23,16 +23,19 @@
 //     nameless child, and the tool surfaces that as a clear "no identity" no.
 
 import type { AgentModelRef, AgentRecord } from "./ConversationStore.js";
-import { resolveAgentModel, type ProviderAvailability } from "./agentModel.js";
+import {
+  modelChainOf,
+  planSpawnModel,
+  type ModelCandidate,
+  type ModelSelection,
+  type ProviderAvailability,
+} from "./agentModel.js";
 import type { AgentPersona, ProviderKind, SpawnTarget } from "./types.js";
 
 /** Where the delegated child's model came from — a signal the tool relays so
- *  the delegating agent knows whether its teammate ran on its own model.
- *   - `preferred` — the agent's own model was available and ran.
- *   - `caller-default` — the agent expresses no model preference, so the child
- *     runs on the delegating agent's own provider/model, exactly as an
- *     unspecified spawn does. */
-export type DelegationSelection = "preferred" | "caller-default";
+ *  the delegating agent knows whether its teammate ran on its own model. See
+ *  `ModelSelection` for what each value means. */
+export type DelegationSelection = ModelSelection;
 
 export type DelegationPlan =
   | {
@@ -42,6 +45,9 @@ export type DelegationPlan =
       /** The provider/model the child spawns on. Effort is left to the engine's
        *  parent-inheritance, exactly as a plain spawn's is. */
       target: SpawnTarget;
+      /** What is left of the teammate's chain below the chosen model — the
+       *  child's failover list for a mid-turn rate limit. */
+      fallbacks: readonly ModelCandidate[];
       /** The child's opening brief: the task alone. The agent's instructions
        *  reach the model through the identity channel, not the prompt. */
       prompt: string;
@@ -54,9 +60,9 @@ export type DelegationPlan =
        *  the model the agent runs on is unavailable right now. */
       code: "no_identity" | "none_available";
       reason: string;
-      /** The model tried, for `none_available` — so the tool can report what it
-       *  looked for. */
-      tried?: AgentModelRef;
+      /** The models tried, in order, for `none_available` — so the tool can
+       *  report everything it looked for, not just the primary. */
+      tried?: readonly AgentModelRef[];
     };
 
 /** Trim to a real value, or undefined for null/blank — the store keeps a
@@ -74,6 +80,10 @@ export function resolveDelegation(input: {
   task: string;
   availability: readonly ProviderAvailability[];
   caller: { provider: ProviderKind; model?: string };
+  /** A model named in the delegation call itself — the user asking for this
+   *  piece of work to run somewhere specific. Overrides the teammate's own
+   *  chain: it is the more recent and more specific instruction. */
+  requestedModel?: AgentModelRef | null;
 }): DelegationPlan {
   const name = text(input.agent.name);
   if (!name) {
@@ -88,31 +98,31 @@ export function resolveDelegation(input: {
   const instructions = text(input.agent.instructions);
   if (instructions) persona.instructions = instructions;
 
-  // The agent's own model, checked against what's runnable now. An agent that
-  // names none expresses no preference and rides the delegating agent's own
-  // model — the same "no model named" path a plain spawn takes.
-  const resolution = resolveAgentModel(input.agent.model, input.availability);
+  // The model the child runs on: what the caller asked for, else the agent's
+  // own chain walked down to the first rung that can run, else — for an agent
+  // that names none — the delegating agent's own model.
+  const plan = planSpawnModel({
+    requested: input.requestedModel,
+    chain: modelChainOf(input.agent.model, input.agent.modelFallbacks),
+    caller: input.caller,
+    availability: input.availability,
+  });
 
   const prompt = input.task;
 
-  if (resolution.outcome === "resolved") {
-    return {
-      ok: true,
-      persona,
-      target: { provider: resolution.ref.provider, model: resolution.ref.model },
-      prompt,
-      selection: "preferred",
-    };
+  if (plan.ok) {
+    const target: SpawnTarget = { provider: plan.target.provider };
+    if (plan.target.model) target.model = plan.target.model;
+    return { ok: true, persona, target, fallbacks: plan.fallbacks, prompt, selection: plan.selection };
   }
-  if (resolution.outcome === "no-preference") {
-    const target: SpawnTarget = { provider: input.caller.provider };
-    if (input.caller.model) target.model = input.caller.model;
-    return { ok: true, persona, target, prompt, selection: "caller-default" };
-  }
+
   return {
     ok: false,
     code: "none_available",
-    reason: `${name}'s model can't run right now — the delegation was refused rather than run on a model the agent isn't set up for.`,
-    tried: resolution.tried,
+    reason:
+      plan.tried.length > 1
+        ? `None of ${name}'s models can run right now — every fallback was tried, and the delegation was refused rather than run on a model the agent isn't set up for.`
+        : `${name}'s model can't run right now — the delegation was refused rather than run on a model the agent isn't set up for.`,
+    tried: plan.tried,
   };
 }

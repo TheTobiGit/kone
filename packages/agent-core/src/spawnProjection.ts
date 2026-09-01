@@ -2,7 +2,7 @@
 // One pure function turns the raw facts about a spawned child — its stored
 // turns, its gate, whether a live session still backs it — into the single
 // `SpawnedThread` snapshot BOTH consumers read: the parent agent via
-// kone_wait_for_threads, and the UI via thread.spawned / thread.spawn-updated.
+// kone_wait_for_responses, and the UI via thread.spawned / thread.spawn-updated.
 // Exactly one projection, deliberately: two view models over one child is how
 // panel models drift apart (trap #10), and drift here means a parent waits on
 // a child the UI already shows as dead.
@@ -83,7 +83,7 @@ export type SpawnProjectionInput = {
 /** Appended to a summary that exceeded SPAWN_SUMMARY_CHAR_CAP, on its own
  *  line, so the reader knows the rest exists and where to find it. */
 export const SPAWN_SUMMARY_TRUNCATION_MARKER =
-  "\n— the rest of the reply is in the child's transcript; read it with kone_read_thread —";
+  "\n— the rest of the reply is in the child's transcript; read it with kone_read_response —";
 
 /** Project the raw facts about a spawned child into the single snapshot both
  *  the wait tool and the UI consume. Pure: no store, no I/O, never throws —

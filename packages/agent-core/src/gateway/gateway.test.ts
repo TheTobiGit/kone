@@ -25,8 +25,8 @@ import type { initSpawnEngine as initSpawnEngineType } from "../threadSpawn.js";
 import type { GatewayRecord, GatewayValue } from "./schemas.js";
 import {
   SPAWN_BATCH_JSON_SCHEMA,
-  IRC_SEND_JSON_SCHEMA,
-  IRC_INBOX_JSON_SCHEMA,
+  CONTINUE_THREAD_JSON_SCHEMA,
+  READ_RESPONSE_JSON_SCHEMA,
 } from "./schemas.js";
 
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
@@ -335,26 +335,18 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_scratchpad_read",
       "kone_scratchpad_write",
       "kone_spawn_targets",
-      "kone_spawn_thread",
-      "kone_spawn_from_preset",
-      "kone_delegate",
+      "kone_spawn_worker",
+      "kone_spawn_worker_preset",
       "kone_spawn_batch",
-      "kone_wait_for_threads",
-      "kone_read_thread",
-      "kone_irc_send",
-      "kone_irc_list",
-      "kone_irc_inbox",
+      "kone_continue_thread",
+      "kone_wait_for_responses",
+      "kone_read_response",
       "kone_launch",
       "app_get_theme_state",
       "app_list_available_themes",
       "app_set_theme",
       "app_preview_theme_override",
       "app_create_custom_theme",
-      "app_list_agents",
-      "app_create_agent",
-      "app_update_agent",
-      "app_delete_agent",
-      "app_set_active_agent",
       "app_list_subagent_presets",
       "app_create_subagent_preset",
       "app_update_subagent_preset",
@@ -464,7 +456,6 @@ describe("gateway integration (real store + HTTP)", () => {
 
     const connAlice = gateway.connectionForThread("thread-alice", "claudeAgent", "sonnet");
     const connBob = gateway.connectionForThread("thread-bob", "claudeAgent", "sonnet");
-    const connCharlie = gateway.connectionForThread("thread-charlie", "codex", "gpt-5");
 
     store.ensureThread({
       threadId: "thread-alice",
@@ -478,14 +469,8 @@ describe("gateway integration (real store + HTTP)", () => {
       provider: "claudeAgent",
       model: "sonnet",
     });
-    store.ensureThread({
-      threadId: "thread-charlie",
-      projectPath: "/tmp/other-proj",
-      provider: "codex",
-      model: "gpt-5",
-    });
 
-    // 1. tools/list advertises all new tools with valid schemas
+    // 1. tools/list advertises dispatch tools with valid schemas
     const listRes = await mcpPost(url, connAlice.bearerToken, {
       jsonrpc: "2.0",
       id: 1,
@@ -494,13 +479,71 @@ describe("gateway integration (real store + HTTP)", () => {
     const toolList = rpcResult(listRes).tools ?? [];
     const toolNames = toolList.map((t) => t.name);
     expect(toolNames).toContain("kone_spawn_batch");
-    expect(toolNames).toContain("kone_irc_send");
-    expect(toolNames).toContain("kone_irc_inbox");
+    expect(toolNames).toContain("kone_continue_thread");
+    expect(toolNames).toContain("kone_read_response");
 
     const toolMap = new Map(toolList.map((t) => [t.name, t]));
     expect(toolMap.get("kone_spawn_batch")?.inputSchema).toEqual(SPAWN_BATCH_JSON_SCHEMA);
-    expect(toolMap.get("kone_irc_send")?.inputSchema).toEqual(IRC_SEND_JSON_SCHEMA);
-    expect(toolMap.get("kone_irc_inbox")?.inputSchema).toEqual(IRC_INBOX_JSON_SCHEMA);
+    expect(toolMap.get("kone_continue_thread")?.inputSchema).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(toolMap.get("kone_read_response")?.inputSchema).toEqual(READ_RESPONSE_JSON_SCHEMA);
+
+    initSpawnEngine({
+      store,
+      providers: {
+        cachedSurface: () => ({
+          statuses: [
+            { provider: "codex" as const, available: true, label: "Codex" },
+            { provider: "claudeAgent" as const, available: true, label: "Claude Agent" },
+          ],
+          models: {
+            codex: [{ id: "gpt-5", label: "GPT-5" }],
+            claudeAgent: [{ id: "sonnet", label: "Sonnet" }],
+          },
+        }),
+        listSessions: async () => [],
+        stopSession: async () => {},
+        hasLiveSession: () => false,
+      },
+      dispatcher: {
+        startThread: async () => ({
+          threadId: "unused",
+          provider: "claudeAgent" as const,
+          cwd: "/tmp/proj",
+          status: "running" as const,
+          mode: "full-access" as const,
+          startedAt: 100,
+          updatedAt: 100,
+        }),
+        sendThreadTurn: async () => ({ turnId: "turn-child-1" }),
+      },
+      emit: () => {},
+      onEvents: () => () => {},
+    });
+
+    store.writeSpawnedThread({
+      threadId: "child-of-alice",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      createdAt: 100,
+      title: "Alice worker",
+      lineage: {
+        parentThreadId: "thread-alice",
+        relationshipToParent: "subagent",
+        rootThreadId: "thread-alice",
+      },
+    });
+    store.writeSpawnedThread({
+      threadId: "child-of-bob",
+      projectPath: "/tmp/proj",
+      provider: "claudeAgent",
+      createdAt: 100,
+      title: "Bob worker",
+      lineage: {
+        parentThreadId: "thread-bob",
+        relationshipToParent: "subagent",
+        rootThreadId: "thread-bob",
+      },
+    });
 
     // 2. Active turn check: turnless writes are rejected with capability_denied
     const turnlessSpawnBatch = await mcpPost(url, connAlice.bearerToken, {
@@ -523,196 +566,87 @@ describe("gateway integration (real store + HTTP)", () => {
     expect(rpcResult(turnlessSpawnBatch).isError).toBe(true);
     expect(rpcResult(turnlessSpawnBatch).structuredContent.error.code).toBe("capability_denied");
 
-    const turnlessIrcSend = await mcpPost(url, connAlice.bearerToken, {
+    const turnlessContinue = await mcpPost(url, connAlice.bearerToken, {
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
       params: {
-        name: "kone_irc_send",
-        arguments: { to: "thread-bob", message: "Turnless message attempt" },
+        name: "kone_continue_thread",
+        arguments: { threadId: "child-of-alice", message: "Turnless follow-up" },
       },
     });
-    expect(rpcResult(turnlessIrcSend).isError).toBe(true);
-    expect(rpcResult(turnlessIrcSend).structuredContent.error.code).toBe("capability_denied");
+    expect(rpcResult(turnlessContinue).isError).toBe(true);
+    expect(rpcResult(turnlessContinue).structuredContent.error.code).toBe("capability_denied");
 
-    // 3. Turnless read: kone_irc_inbox functions turnlessly as designed
-    const turnlessInbox = await mcpPost(url, connBob.bearerToken, {
+    // 3. Turnless read: kone_read_response works without an active turn
+    const aliceReadsOwnChild = await mcpPost(url, connAlice.bearerToken, {
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "kone_irc_inbox", arguments: {} },
+      params: { name: "kone_read_response", arguments: { threadId: "child-of-alice" } },
     });
-    expect(rpcResult(turnlessInbox).isError).toBeUndefined();
-    expect(rpcResult(turnlessInbox).structuredContent).toMatchObject({
-      count: 0,
-      unreadRemaining: 0,
-    });
+    expect(rpcResult(aliceReadsOwnChild).isError).toBeUndefined();
 
-    // 4. Session token binding & thread write authority isolation
-    // Start Alice's turn
-    turn({
-      type: "turn.started",
-      threadId: "thread-alice",
-      provider: "claudeAgent",
-      at: 1,
-      source: "claude.sdk.message",
-      turnId: "turn-alice-1",
-    });
-
-    // Alice sends message to Bob
-    const aliceSend = await mcpPost(url, connAlice.bearerToken, {
+    // 4. Subtree isolation: peers cannot read or continue each other's workers
+    const bobReadsAliceChild = await mcpPost(url, connBob.bearerToken, {
       jsonrpc: "2.0",
       id: 5,
       method: "tools/call",
-      params: {
-        name: "kone_irc_send",
-        arguments: { to: "thread-bob", message: "Hello Bob from Alice!" },
-      },
+      params: { name: "kone_read_response", arguments: { threadId: "child-of-alice" } },
     });
-    expect(rpcResult(aliceSend).isError).toBeUndefined();
-    expect(rpcResult(aliceSend).structuredContent).toMatchObject({
-      from: "thread-alice",
-      to: "thread-bob",
-      delivered: true,
-      recipients: ["thread-bob"],
-    });
-    const msgId = rpcResult(aliceSend).structuredContent.messageId;
-    expect(msgId).toMatch(/^msg_/);
+    expect(rpcResult(bobReadsAliceChild).isError).toBe(true);
+    expect(rpcResult(bobReadsAliceChild).structuredContent.error.code).toBe("not_found");
 
-    // Bob has NO active turn -> Bob cannot write (authority is bound to Alice's token/turn only!)
-    const bobUnauthorizedSend = await mcpPost(url, connBob.bearerToken, {
-      jsonrpc: "2.0",
-      id: 6,
-      method: "tools/call",
-      params: {
-        name: "kone_irc_send",
-        arguments: { to: "thread-alice", message: "Unauthorized write from Bob" },
-      },
-    });
-    expect(rpcResult(bobUnauthorizedSend).isError).toBe(true);
-    expect(rpcResult(bobUnauthorizedSend).structuredContent.error.code).toBe("capability_denied");
-
-    // Bob reads his inbox (turnlessly, with peek: true)
-    const bobPeek = await mcpPost(url, connBob.bearerToken, {
-      jsonrpc: "2.0",
-      id: 7,
-      method: "tools/call",
-      params: { name: "kone_irc_inbox", arguments: { peek: true } },
-    });
-    expect(rpcResult(bobPeek).isError).toBeUndefined();
-    expect(rpcResult(bobPeek).structuredContent.count).toBe(1);
-    expect(rpcResult(bobPeek).structuredContent.unreadRemaining).toBe(1);
-    expect(rpcResult(bobPeek).structuredContent.messages[0]).toMatchObject({
-      id: msgId,
-      from: "thread-alice",
-      to: "thread-bob",
-      message: "Hello Bob from Alice!",
-    });
-
-    // Alice checks her inbox -> empty (Thread inbox isolation: Alice cannot read Bob's inbox)
-    const aliceInbox = await mcpPost(url, connAlice.bearerToken, {
-      jsonrpc: "2.0",
-      id: 8,
-      method: "tools/call",
-      params: { name: "kone_irc_inbox", arguments: {} },
-    });
-    expect(rpcResult(aliceInbox).structuredContent.count).toBe(0);
-
-    // Alice's turn completes -> Alice's write authority is retired
-    turn({
-      type: "turn.completed",
-      threadId: "thread-alice",
-      provider: "claudeAgent",
-      at: 2,
-      source: "claude.sdk.message",
-      turnId: "turn-alice-1",
-    });
-
-    const alicePostTurnSend = await mcpPost(url, connAlice.bearerToken, {
-      jsonrpc: "2.0",
-      id: 9,
-      method: "tools/call",
-      params: {
-        name: "kone_irc_send",
-        arguments: { to: "thread-bob", message: "Post turn write attempt" },
-      },
-    });
-    expect(rpcResult(alicePostTurnSend).isError).toBe(true);
-    expect(rpcResult(alicePostTurnSend).structuredContent.error.code).toBe("capability_denied");
-
-    // Bob drains his inbox
-    const bobDrain = await mcpPost(url, connBob.bearerToken, {
-      jsonrpc: "2.0",
-      id: 10,
-      method: "tools/call",
-      params: { name: "kone_irc_inbox", arguments: {} },
-    });
-    expect(rpcResult(bobDrain).structuredContent.count).toBe(1);
-    expect(rpcResult(bobDrain).structuredContent.unreadRemaining).toBe(0);
-
-    // Bob's turn starts -> Bob can now send a reply
     turn({
       type: "turn.started",
       threadId: "thread-bob",
       provider: "claudeAgent",
-      at: 3,
+      at: 1,
       source: "claude.sdk.message",
       turnId: "turn-bob-1",
     });
 
-    const bobReply = await mcpPost(url, connBob.bearerToken, {
+    const bobContinuesAliceChild = await mcpPost(url, connBob.bearerToken, {
       jsonrpc: "2.0",
-      id: 11,
+      id: 6,
       method: "tools/call",
       params: {
-        name: "kone_irc_send",
-        arguments: { to: "thread-alice", message: "Hello Alice, reply received!", replyTo: msgId },
+        name: "kone_continue_thread",
+        arguments: {
+          threadId: "child-of-alice",
+          message: "Unauthorized follow-up from Bob",
+          requestId: "req-bob-1",
+        },
       },
     });
-    expect(rpcResult(bobReply).isError).toBeUndefined();
-    expect(rpcResult(bobReply).structuredContent).toMatchObject({
-      from: "thread-bob",
-      to: "thread-alice",
-      replyTo: msgId,
-      delivered: true,
-    });
+    expect(rpcResult(bobContinuesAliceChild).isError).toBe(true);
+    expect(rpcResult(bobContinuesAliceChild).structuredContent.error.code).toBe("not_found");
 
-    // Alice reads Bob's reply turnlessly
-    const aliceReceivedReply = await mcpPost(url, connAlice.bearerToken, {
-      jsonrpc: "2.0",
-      id: 12,
-      method: "tools/call",
-      params: { name: "kone_irc_inbox", arguments: {} },
-    });
-    expect(rpcResult(aliceReceivedReply).structuredContent.count).toBe(1);
-    expect(rpcResult(aliceReceivedReply).structuredContent.messages[0]).toMatchObject({
-      from: "thread-bob",
-      to: "thread-alice",
-      replyTo: msgId,
-      message: "Hello Alice, reply received!",
-    });
-
-    // 5. Cross-project authorization: Charlie on /tmp/other-proj cannot message Bob on /tmp/proj
+    // 5. Write authority is bound to the active turn
     turn({
-      type: "turn.started",
-      threadId: "thread-charlie",
-      provider: "codex",
-      at: 4,
-      source: "codex.message",
-      turnId: "turn-charlie-1",
+      type: "turn.completed",
+      threadId: "thread-bob",
+      provider: "claudeAgent",
+      at: 2,
+      source: "claude.sdk.message",
+      turnId: "turn-bob-1",
     });
 
-    const charlieCrossProjectSend = await mcpPost(url, connCharlie.bearerToken, {
+    const bobPostTurnContinue = await mcpPost(url, connBob.bearerToken, {
       jsonrpc: "2.0",
-      id: 13,
+      id: 7,
       method: "tools/call",
       params: {
-        name: "kone_irc_send",
-        arguments: { to: "thread-bob", message: "Cross-project unauthorized ping" },
+        name: "kone_continue_thread",
+        arguments: {
+          threadId: "child-of-bob",
+          message: "Post-turn follow-up attempt",
+          requestId: "req-bob-2",
+        },
       },
     });
-    expect(rpcResult(charlieCrossProjectSend).isError).toBe(true);
-    expect(rpcResult(charlieCrossProjectSend).structuredContent.error.code).toBe("permission_denied");
+    expect(rpcResult(bobPostTurnContinue).isError).toBe(true);
+    expect(rpcResult(bobPostTurnContinue).structuredContent.error.code).toBe("capability_denied");
 
     // 6. Revocation isolation: Revoking Alice's thread drops Alice's token; Bob's token is untouched
     gateway.revokeThread("thread-alice");

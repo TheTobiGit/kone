@@ -1,14 +1,23 @@
-import type { SubagentPresetRecord } from "./ConversationStore.js";
+import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
+import type { AgentModelRef, SubagentPresetRecord } from "./ConversationStore.js";
 import type { ProviderKind, SpawnTarget } from "./types.js";
-import { resolveAgentModel, type ProviderAvailability } from "./agentModel.js";
+import {
+  describeChain,
+  modelChainOf,
+  planSpawnModel,
+  type ModelCandidate,
+  type ModelSelection,
+  type ProviderAvailability,
+} from "./agentModel.js";
 
-// §3.4/§3.5 wiring: turning a preset sub-agent plus a piece of work into a
+// §3.4/§3.5 wiring: turning a preset worker plus a piece of work into a
 // concrete spawn. Two things have to be resolved — the prompt the child wakes
 // up to (the preset's standing instructions in front of the specific task) and
-// the model it runs on (the preset's chosen model, when it can run). Kept pure
-// and apart from the gateway so the resolution is unit-testable with plain
-// data: the tool layer feeds it the preset, the task, and a snapshot of what's
-// available, and gets back a plan or a refusal.
+// the model it runs on (the caller's request, else the preset's assigned chain,
+// else the caller's own model). Kept pure and apart from the gateway so the
+// resolution is unit-testable with plain data: the tool layer feeds it the
+// preset, the task, and a snapshot of what's available, and gets back a plan or
+// a refusal.
 
 /** The caller's own provider/model, used as the default when a preset states no
  *  model preference — the spawn then runs where the parent runs. */
@@ -19,16 +28,16 @@ export type PresetSpawnPlan =
       ok: true;
       prompt: string;
       target: SpawnTarget;
-      /** How the model was chosen — the preset's own model, or the caller's own
-       *  when the preset named none. Carried so the tool can tell the agent
-       *  whether its teammate ran on the preset's model. */
-      selection: "preferred" | "caller-default";
+      /** What is left of the preset's chain below the chosen model — the
+       *  child's failover list for a mid-turn rate limit. */
+      fallbacks: readonly ModelCandidate[];
+      selection: ModelSelection;
     }
   | {
       ok: false;
       reason: string;
-      /** The `provider/model` string that was tried and couldn't run — so the
-       *  refusal names exactly what was unavailable. */
+      /** The `provider/model` strings that were tried and couldn't run — so the
+       *  refusal names exactly what was unavailable, in the order it was tried. */
       tried: readonly string[];
     };
 
@@ -44,83 +53,57 @@ function composePrompt(instructions: string | null, task: string): string {
   return `${brief}\n\nYour task:\n${work}`;
 }
 
-/** Plan a spawn from a preset: check its chosen model against what's available
- *  and compose the prompt. Returns a refusal only when the preset names a model
- *  and it can't run — a preset with no model always plans, falling back to the
- *  caller's own provider. */
+/** Plan a spawn from a preset: choose the model and compose the prompt.
+ *  Returns a refusal only when a model was actually named — by the caller, or
+ *  by the preset's own chain — and none of the named models can run. A preset
+ *  with no chain always plans, inheriting the caller's own provider. */
 export function planPresetSpawn(
   preset: SubagentPresetRecord,
   task: string,
   availability: readonly ProviderAvailability[],
   caller: PresetSpawnCaller,
+  /** A model named in the dispatch call itself — the user asking for this piece
+   *  of work to run somewhere specific. Overrides the preset's own chain. */
+  requested?: AgentModelRef | null,
 ): PresetSpawnPlan {
   const prompt = composePrompt(preset.instructions, task);
-  const resolution = resolveAgentModel(preset.model, availability);
+  const chain = modelChainOf(preset.model, preset.modelFallbacks);
+  const plan = planSpawnModel({ requested, chain, caller, availability });
 
-  if (resolution.outcome === "resolved") {
+  if (!plan.ok) {
+    const tried = describeChain(plan.tried);
     return {
-      ok: true,
-      prompt,
-      target: { provider: resolution.ref.provider, model: resolution.ref.model },
-      selection: "preferred",
+      ok: false,
+      reason:
+        plan.tried.length > 1
+          ? `None of ${preset.name}'s models can run right now — every fallback was tried.`
+          : `${preset.name}'s model can't run right now.`,
+      tried,
     };
   }
 
-  if (resolution.outcome === "no-preference") {
-    return {
-      ok: true,
-      prompt,
-      // No model named: run where the parent runs, leaving the model for the
-      // engine's own default when the caller's is unknown.
-      target: { provider: caller.provider, model: caller.model },
-      selection: "caller-default",
-    };
-  }
-
-  return {
-    ok: false,
-    reason: `${preset.name}'s model can't run right now.`,
-    tried: [`${resolution.tried.provider}/${resolution.tried.model}`],
-  };
+  const target: SpawnTarget = { provider: plan.target.provider };
+  if (plan.target.model) target.model = plan.target.model;
+  return { ok: true, prompt, target, fallbacks: plan.fallbacks, selection: plan.selection };
 }
 
 // ── Built-in Swarm Presets ──────────────────────────────────────────────────
 
-export const BUILTIN_SWARM_PRESETS: readonly SubagentPresetRecord[] = [
-  {
-    presetId: "builtin-fast-scout",
-    name: "Fast Scout",
-    instructions:
-      "You are the Fast Scout subagent. Your focus is lightning-fast codebase exploration, repository mapping, symbol discovery, and targeted test execution. " +
-      "Do not make speculative code edits. Report findings directly with exact file paths, line numbers, and concrete code evidence to the orchestrator.",
+// The shipped presets as full records, projected from the one shared list the
+// settings pane seeds from too. They carry no row of their own, so their
+// timestamps are zero and their order is the list's order; a stored preset of
+// the same name always shadows them.
+export const BUILTIN_SWARM_PRESETS: readonly SubagentPresetRecord[] =
+  BUILTIN_SUBAGENT_PRESETS.map((preset, index) => ({
+    presetId: preset.presetId,
+    name: preset.name,
+    instructions: preset.instructions,
     model: null,
-    sortOrder: 0,
+    modelFallbacks: null,
+    sortOrder: index,
     createdAt: 0,
     updatedAt: 0,
-  },
-  {
-    presetId: "builtin-reviewer",
-    name: "Reviewer",
-    instructions:
-      "You are the Reviewer subagent. Your focus is reviewing changes for architectural soundness, invariant safety, performance regressions, and logic bugs. " +
-      "Inspect proposed implementations thoroughly, check error paths, verify edge cases, and deliver concise, actionable verdicts grounded in evidence.",
-    model: null,
-    sortOrder: 1,
-    createdAt: 0,
-    updatedAt: 0,
-  },
-  {
-    presetId: "builtin-refactorer",
-    name: "Refactorer",
-    instructions:
-      "You are the Refactorer subagent. Execute assigned code transformations, migrations, and surgical edits with precision. " +
-      "Preserve existing conventions, remove obsolete code and dead branches, verify correctness locally, and report your completed diff back to the coordinator.",
-    model: null,
-    sortOrder: 2,
-    createdAt: 0,
-    updatedAt: 0,
-  },
-];
+  }));
 
 export function findBuiltinPreset(nameOrId: string): SubagentPresetRecord | null {
   const query = nameOrId.trim().toLowerCase();

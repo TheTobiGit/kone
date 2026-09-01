@@ -15,6 +15,9 @@ function agent(overrides: Partial<AgentRecord> = {}): AgentRecord {
     faceInk: null,
     skills: null,
     model: null,
+    modelFallbacks: null,
+    avatar: null,
+    bot: null,
     sortOrder: 0,
     createdAt: 1,
     updatedAt: 1,
@@ -79,7 +82,7 @@ describe("resolveDelegation", () => {
     expect(plan.prompt).not.toContain("API layer");
   });
 
-  test("the agent's model is picked as the preferred selection", () => {
+  test("the agent's model is picked as the assigned selection", () => {
     const plan = resolveDelegation({
       agent: agent({ model: { provider: "claudeAgent", model: "sonnet" } }),
       task: "Build /users",
@@ -88,7 +91,7 @@ describe("resolveDelegation", () => {
     });
     expect(plan.ok).toBe(true);
     if (!plan.ok) return;
-    expect(plan.selection).toBe("preferred");
+    expect(plan.selection).toBe("assigned");
     expect(plan.target).toEqual({ provider: "claudeAgent", model: "sonnet" });
   });
 
@@ -96,11 +99,11 @@ describe("resolveDelegation", () => {
     const plan = resolveDelegation({ agent: agent({ model: null }), task: "Build /users", availability, caller });
     expect(plan.ok).toBe(true);
     if (!plan.ok) return;
-    expect(plan.selection).toBe("caller-default");
+    expect(plan.selection).toBe("inherited");
     expect(plan.target).toEqual({ provider: "opencode", model: "deepseek-v4" });
   });
 
-  test("caller-default without a caller model leaves the model to the provider", () => {
+  test("inherited without a caller model leaves the model to the provider", () => {
     const plan = resolveDelegation({
       agent: agent({ model: null }),
       task: "Build /users",
@@ -118,6 +121,6 @@ describe("resolveDelegation", () => {
     expect(plan.ok).toBe(false);
     if (plan.ok) return;
     expect(plan.code).toBe("none_available");
-    expect(plan.tried).toEqual(model);
+    expect(plan.tried).toEqual([model]);
   });
 });

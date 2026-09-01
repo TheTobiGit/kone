@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "./presetSpawn.js";
+import type { ProviderAvailability } from "./agentModel.js";
 import type { SubagentPresetRecord } from "./ConversationStore.js";
 
 function preset(overrides: Partial<SubagentPresetRecord> = {}): SubagentPresetRecord {
@@ -9,6 +10,7 @@ function preset(overrides: Partial<SubagentPresetRecord> = {}): SubagentPresetRe
     name: "Explorer",
     instructions: "Read only.",
     model: { provider: "claudeAgent", model: "haiku" },
+    modelFallbacks: null,
     sortOrder: 0,
     createdAt: 1,
     updatedAt: 1,
@@ -35,12 +37,12 @@ describe("planPresetSpawn", () => {
     if (plan.ok) expect(plan.prompt).toBe("Map auth.");
   });
 
-  test("the preset's model is the target, marked preferred", () => {
+  test("the preset's model is the target, marked assigned", () => {
     const plan = planPresetSpawn(preset(), "Go.", available, { provider: "codex" });
     expect(plan).toMatchObject({
       ok: true,
       target: { provider: "claudeAgent", model: "haiku" },
-      selection: "preferred",
+      selection: "assigned",
     });
   });
 
@@ -52,7 +54,7 @@ describe("planPresetSpawn", () => {
     expect(plan).toMatchObject({
       ok: true,
       target: { provider: "codex", model: "gpt-5" },
-      selection: "caller-default",
+      selection: "inherited",
     });
   });
 
@@ -66,29 +68,63 @@ describe("planPresetSpawn", () => {
     }
   });
 
-  test("resolves built-in swarm presets (Fast Scout, Reviewer, Refactorer)", () => {
-    expect(BUILTIN_SWARM_PRESETS.length).toBeGreaterThanOrEqual(3);
+  test("a named override beats the preset's chain", () => {
+    const plan = planPresetSpawn(
+      preset({ modelFallbacks: [{ provider: "codex", model: "gpt-5" }] }),
+      "Go.",
+      available,
+      { provider: "codex", model: "gpt-5" },
+      { provider: "claudeAgent", model: "opus" },
+    );
+    expect(plan).toMatchObject({
+      ok: true,
+      target: { provider: "claudeAgent", model: "opus" },
+      fallbacks: [],
+      selection: "requested",
+    });
+  });
 
-    const scout = findBuiltinPreset("Fast Scout");
-    expect(scout).not.toBeNull();
-    expect(scout?.name).toBe("Fast Scout");
+  test("an assigned chain keeps the untried tail as fallbacks", () => {
+    const plan = planPresetSpawn(
+      preset({
+        model: { provider: "claudeAgent", model: "haiku" },
+        modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+      }),
+      "Go.",
+      available,
+      { provider: "codex" },
+    );
+    expect(plan).toMatchObject({
+      ok: true,
+      target: { provider: "claudeAgent", model: "haiku" },
+      fallbacks: [{ provider: "codex", model: "gpt-5" }],
+      selection: "assigned",
+    });
+  });
 
-    const reviewer = findBuiltinPreset("builtin-reviewer");
+  test("resolves built-in presets (Explorer, Code Reviewer, PR Handler, Git Handler)", () => {
+    expect(BUILTIN_SWARM_PRESETS.length).toBeGreaterThanOrEqual(4);
+
+    const explorer = findBuiltinPreset("Explorer");
+    expect(explorer).not.toBeNull();
+    expect(explorer?.name).toBe("Explorer");
+
+    const reviewer = findBuiltinPreset("builtin-code-reviewer");
     expect(reviewer).not.toBeNull();
-    expect(reviewer?.name).toBe("Reviewer");
+    expect(reviewer?.name).toBe("Code Reviewer");
 
-    const refactorer = findBuiltinPreset("refactorer");
-    expect(refactorer).not.toBeNull();
-    expect(refactorer?.name).toBe("Refactorer");
+    const prHandler = findBuiltinPreset("pr-handler");
+    expect(prHandler).not.toBeNull();
+    expect(prHandler?.name).toBe("PR Handler");
 
-    if (scout) {
-      const plan = planPresetSpawn(scout, "Audit repo structure", available, {
+    if (explorer) {
+      const plan = planPresetSpawn(explorer, "Audit repo structure", available, {
         provider: "claudeAgent",
         model: "sonnet",
       });
       expect(plan.ok).toBe(true);
       if (plan.ok) {
-        expect(plan.prompt).toContain("You are the Fast Scout subagent");
+        expect(plan.prompt).toContain("Map the code and report what you find");
         expect(plan.prompt).toContain("Audit repo structure");
       }
     }

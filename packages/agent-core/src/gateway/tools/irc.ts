@@ -576,7 +576,7 @@ export function resetIrcMailbox(): void {
 // reflex to acknowledge, which manufactures the next message from the other side.
 
 const IRC_SEND_DESCRIPTION = [
-  "Send a short text message to another agent working on this project.",
+  "Send a short text message to another agent working on this project — whether that peer is running right now or idle. Both are reachable: a running peer has your message steered into its active turn, and an idle peer is woken with a new turn on its existing thread, keeping whatever it was doing. There is no such thing as a peer that has gone unreachable by settling — idle means waiting, not closed.",
   "",
   "A message is not free. It interrupts a peer that is running, or wakes one that is idle, and costs it a whole turn to read. `to: \"all\"` charges that to every peer at once. Call `kone_irc_list` first to see who exists and whether they are running; address peers by their exact id and never invent one.",
   "",
@@ -750,10 +750,11 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
       permission: "allow",
       requiresActiveTurn: true,
       promptSnippet:
-        "Reach another agent working this project while it is still running — the channel waiting is not: waiting collects outcomes at the end, messaging changes what somebody does in the middle.",
+        "Reach another agent working this project — running or idle, both are reachable: a running peer is steered mid-turn, an idle one wakes with a new turn on its existing thread. Waiting only collects outcomes at the end; messaging changes what somebody does.",
       promptGuidelines: [
         "Use a message to claim a file before you edit it, to name a decision that is not yours, or to stop a peer whose work you have just made pointless.",
         "A message costs the agent that receives it a full turn, so send only what changes what somebody does. Never send an acknowledgement, a progress report, or a plan: silence is the acknowledgement, and two agents answering only each other is a loop that bills the user for both sides.",
+        "An idle peer is not a closed one — it is woken with a new turn on its own thread. Do not re-spawn or re-delegate to reach someone who has merely settled.",
       ],
       handler: sendHandler,
     },

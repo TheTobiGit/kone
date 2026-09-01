@@ -127,14 +127,8 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const tools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
-    ...createIrcTools(
-      input.isThreadLive
-        ? { store: input.store, isThreadLive: input.isThreadLive }
-        : { store: input.store },
-    ),
     ...createLaunchTools({ supervisor: launchSupervisor }),
     ...createAppThemeTools(appThemeOptions),
-    ...createAppAgentTools(appAgentOptions),
     ...createAppSubagentTools({ store: input.store, emit: input.emit }),
     ...createAppStripTools(appStripOptions),
   ];
@@ -148,15 +142,12 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     inFlight,
     instructions:
       "kone gateway: tools that read and write the project scratchpad, that " +
-      "open, follow and read kone threads, and that steer the app itself — its " +
-      "theme, its agent roster, its reusable sub-agent definitions, and its " +
-      "thread strip. Scratchpad writes are attributed to the calling agent and " +
-      "guarded by a revision shared with the web editor; spawned threads are " +
-      "first-class conversations the user can see; agents working the same " +
-      "project can message each other, and a message reaches its recipient's " +
-      "turn rather than sitting in a mailbox. The app-steering tools act on the " +
-      "window the user is looking at, so use them instead of editing files or " +
-      "running shell commands to configure kone.",
+      "open, follow and read worker threads, and that steer the app appearance " +
+      "and settings. Scratchpad writes are attributed to the calling agent and " +
+      "guarded by a revision shared with the web editor; spawned worker threads " +
+      "are first-class conversations the user can see in the sidebar. " +
+      "The app-steering tools act on the window the user is looking at, so use " +
+      "them instead of editing files or running shell commands to configure kone.",
   });
   const server = startGatewayHttpServer({ credentials, transport });
 
