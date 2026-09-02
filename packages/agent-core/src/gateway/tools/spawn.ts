@@ -42,7 +42,7 @@ import type {
 import type { AgentModelRef, AgentRecord, SubagentPresetRecord } from "../../ConversationStore.js";
 import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "../../presetSpawn.js";
 import { resolveDelegation } from "../../delegate.js";
-import type { ModelCandidate, ProviderAvailability } from "../../agentModel.js";
+import type { ModelCandidate, ModelSelection, ProviderAvailability } from "../../agentModel.js";
 import type {
   GatewayRecord,
   GatewayToolContext,
@@ -53,8 +53,6 @@ import type {
 import {
   ContinueThreadInputSchema,
   CONTINUE_THREAD_JSON_SCHEMA,
-  DelegateToTeammateInputSchema,
-  DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
   GatewayToolError,
   ReadResponseInputSchema,
   READ_RESPONSE_JSON_SCHEMA,
@@ -192,7 +190,7 @@ function presetTargets(store: SpawnToolStore): NonNullable<SpawnTargetsReport["p
  *  for the report and in roster order. A nameless agent drops out:
  *  `kone_delegate_to_teammate` resolves by name, so listing one with no name
  *  would only offer a target the agent could never actually reach. */
-function teammateTargets(
+export function teammateTargets(
   store: SpawnToolStore,
   cwd: string,
 ): NonNullable<SpawnTargetsReport["teammates"]> {
@@ -259,6 +257,159 @@ function withPlanFallbacks(
   return { ...request, fallbacks };
 }
 
+type DispatchItemInput = {
+  requestId: string;
+  prompt: string;
+  title?: string;
+  target?: { provider: ProviderKind; model?: string; effort?: string };
+  preset?: string;
+  agent?: string;
+  mode?: InteractionMode;
+  model?: AgentModelRef;
+};
+
+type PreparedDispatch =
+  | {
+      ok: true;
+      request: SpawnRequest;
+      meta: {
+        kind: "spawn" | "preset" | "delegation";
+        preset?: string;
+        agent?: string;
+        selection?: ModelSelection;
+      };
+    }
+  | {
+      ok: false;
+      error: GatewayToolError;
+    };
+type BatchSpawnSuccess = {
+  index: number;
+  ok: true;
+  threadId: string;
+  title: string;
+  provider: ProviderKind;
+  model?: string;
+  kind: "spawn" | "preset" | "delegation";
+  agent?: string;
+  preset?: string;
+};
+
+type BatchItemResult =
+  | BatchSpawnSuccess
+  | { index: number; ok: false; error: string };
+
+
+async function prepareDispatch(
+  store: SpawnToolStore,
+  caller: SpawnCaller,
+  item: DispatchItemInput,
+  getAvailability: () => Promise<ProviderAvailability[]>,
+): Promise<PreparedDispatch> {
+  if (item.agent) {
+    const agent = findTeamAgent(store, caller.cwd, item.agent);
+    if (!agent) {
+      return {
+        ok: false,
+        error: new GatewayToolError("not_found", `No agent "${item.agent}" on this project's team.`),
+      };
+    }
+    const availability = await getAvailability();
+    const plan = resolveDelegation({
+      agent,
+      task: item.prompt,
+      availability,
+      caller: { provider: caller.provider, model: caller.model },
+      requestedModel: item.model,
+    });
+    if (!plan.ok) {
+      return {
+        ok: false,
+        error: new GatewayToolError(
+          plan.code === "no_identity" ? "invalid_input" : "provider_unavailable",
+          plan.reason,
+          plan.tried ? { tried: plan.tried } : undefined,
+        ),
+      };
+    }
+    return {
+      ok: true,
+      request: withPlanFallbacks(
+        {
+          requestId: item.requestId,
+          prompt: plan.prompt,
+          title: item.title,
+          target: plan.target,
+          mode: item.mode,
+          delegateToAgentId: agent.agentId,
+          persona: plan.persona,
+        },
+        plan.fallbacks,
+      ),
+      meta: {
+        kind: "delegation",
+        agent: plan.persona.name,
+        selection: plan.selection,
+      },
+    };
+  }
+
+  if (item.preset) {
+    const preset = findPreset(store, item.preset);
+    if (!preset) {
+      return {
+        ok: false,
+        error: new GatewayToolError("not_found", `No preset sub-agent "${item.preset}".`),
+      };
+    }
+    const availability = await getAvailability();
+    const plan = planPresetSpawn(
+      preset,
+      item.prompt,
+      availability,
+      { provider: caller.provider, model: caller.model },
+      item.model,
+    );
+    if (!plan.ok) {
+      return {
+        ok: false,
+        error: new GatewayToolError("provider_unavailable", plan.reason, { tried: plan.tried }),
+      };
+    }
+    return {
+      ok: true,
+      request: withPlanFallbacks(
+        {
+          requestId: item.requestId,
+          prompt: plan.prompt,
+          title: item.title,
+          target: plan.target,
+          mode: item.mode,
+        },
+        plan.fallbacks,
+      ),
+      meta: {
+        kind: "preset",
+        preset: preset.name,
+        selection: plan.selection,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    request: {
+      requestId: item.requestId,
+      prompt: item.prompt,
+      title: item.title,
+      target: inheritSpawnTarget(caller, item.target),
+      mode: item.mode,
+    },
+    meta: {
+      kind: "spawn",
+    },
+  };
+}
 /** A note about the model the child actually ended up on, when it is not the
  *  one it was planned for — the engine walked the fallback chain because the
  *  first choice was rate limited or out of quota. Empty when nothing moved, so
@@ -318,7 +469,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       const base = await engine.targets(caller);
       // The engine reports providers/models/limits — all it knows. Presets and
       const presets = presetTargets(input.store);
-      const report: SpawnTargetsReport = { ...base, presets, teammates: [] };
+      const report: SpawnTargetsReport = { ...base, presets, teammates: teammateTargets(input.store, caller.cwd) };
       const ready = report.providers.filter((p) => p.available).map((p) => p.provider);
       const parts = [
         ready.length > 0
@@ -346,8 +497,6 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       mode?: InteractionMode;
     },
   ): Promise<GatewayToolResult> => {
-    // The registry already refuses turn-less writes; this guard keeps a direct
-    // handler call honest and never lets an empty turn id bind idempotency.
     if (!ctx.turnId) {
       return gatewayToolErrorResult(
         new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
@@ -355,15 +504,17 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     }
     const engine = requiredEngine();
     const caller = callerOf(ctx);
-    const request: SpawnRequest = {
-      requestId: args.requestId,
-      prompt: args.prompt,
-      title: args.title,
-      target: inheritSpawnTarget(caller, args.target),
-      mode: args.mode,
-    };
+    let prepared: PreparedDispatch;
     try {
-      const result = await engine.spawn(caller, request);
+      prepared = await prepareDispatch(input.store, caller, args, async () => []);
+    } catch (error) {
+      return gatewayToolErrorResult(mapSpawnError(error));
+    }
+    if (!prepared.ok) {
+      return gatewayToolErrorResult(prepared.error);
+    }
+    try {
+      const result = await engine.spawn(caller, prepared.request);
       return {
         content: [
           {
@@ -394,149 +545,54 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
       );
     }
-    const preset = findPreset(input.store, args.preset);
-    if (!preset) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("not_found", `No preset sub-agent "${args.preset}".`),
-      );
-    }
     const engine = requiredEngine();
     const caller = callerOf(ctx);
-    let availability: ProviderAvailability[];
-    try {
+    const getAvailability = async (): Promise<ProviderAvailability[]> => {
       const report = await engine.targets(caller);
-      availability = availabilityFromReport(report.providers);
+      return availabilityFromReport(report.providers);
+    };
+    let prepared: PreparedDispatch;
+    try {
+      prepared = await prepareDispatch(
+        input.store,
+        caller,
+        {
+          requestId: args.requestId,
+          prompt: args.task,
+          title: args.title,
+          preset: args.preset,
+          mode: args.mode,
+          model: args.model,
+        },
+        getAvailability,
+      );
     } catch (error) {
       return gatewayToolErrorResult(mapSpawnError(error));
     }
-    // The preset's model preference is walked down to the first that can run;
-    // its instructions go in front of the task as the child's opening brief.
-    const plan = planPresetSpawn(
-      preset,
-      args.task,
-      availability,
-      {
-        provider: caller.provider,
-        model: caller.model,
-      },
-      args.model,
-    );
-    if (!plan.ok) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("provider_unavailable", plan.reason, { tried: plan.tried }),
-      );
+    if (!prepared.ok) {
+      return gatewayToolErrorResult(prepared.error);
     }
-    const request = withPlanFallbacks(
-      {
-        requestId: args.requestId,
-        prompt: plan.prompt,
-        title: args.title,
-        target: plan.target,
-        mode: args.mode,
-      },
-      plan.fallbacks,
-    );
     try {
-      const result = await engine.spawn(caller, request);
+      const result = await engine.spawn(caller, prepared.request);
+      const structuredContent: GatewayRecord = {
+        spawn: result,
+        preset: prepared.meta.preset ?? args.preset,
+      };
+      if (prepared.meta.selection) structuredContent.selection = prepared.meta.selection;
       return {
         content: [
           {
             type: "text",
-            text: `Spawned "${result.title}" from preset ${preset.name} on ${result.provider}${result.model ? `/${result.model}` : ""} as ${result.threadId}.${failoverNote(result)}`,
+            text: `Spawned "${result.title}" from preset ${prepared.meta.preset ?? args.preset} on ${result.provider}${result.model ? `/${result.model}` : ""} as ${result.threadId}.${failoverNote(result)}`,
           },
         ],
-        structuredContent: { spawn: result, preset: preset.name, selection: plan.selection },
+        structuredContent,
       };
     } catch (error) {
       return gatewayToolErrorResult(mapSpawnError(error));
     }
   };
 
-  const delegateToTeammateHandler = async (
-    ctx: GatewayToolContext,
-    args: {
-      agent: string;
-      task: string;
-      requestId: string;
-      title?: string;
-      mode?: InteractionMode;
-      model?: AgentModelRef;
-    },
-  ): Promise<GatewayToolResult> => {
-    if (!ctx.turnId) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
-      );
-    }
-    const caller = callerOf(ctx);
-    // Delegation only reaches the caller's OWN project team — an agent the user
-    // hasn't put on this project's team is not a teammate to hand work to.
-    const agent = findTeamAgent(input.store, caller.cwd, args.agent);
-    if (!agent) {
-      return gatewayToolErrorResult(
-        new GatewayToolError(
-          "not_found",
-          `No agent "${args.agent}" on this project's team — you can only delegate to a teammate the user has added to this project.`,
-        ),
-      );
-    }
-    const engine = requiredEngine();
-    let availability: ProviderAvailability[];
-    try {
-      const report = await engine.targets(caller);
-      availability = availabilityFromReport(report.providers);
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
-    const plan = resolveDelegation({
-      agent,
-      task: args.task,
-      availability,
-      caller: { provider: caller.provider, model: caller.model },
-      requestedModel: args.model,
-    });
-    if (!plan.ok) {
-      // A nameless agent is a bad target (invalid_input); an unavailable pinned
-      // model is a real dead end (provider_unavailable) — kept distinct so the
-      // delegating agent can tell "fix the team" from "try again later".
-      const code = plan.code === "no_identity" ? "invalid_input" : "provider_unavailable";
-      return gatewayToolErrorResult(
-        new GatewayToolError(code, plan.reason, plan.tried ? { tried: plan.tried } : undefined),
-      );
-    }
-    try {
-      const result = await engine.spawn(
-        caller,
-        withPlanFallbacks(
-          {
-            requestId: args.requestId,
-            prompt: plan.prompt,
-            title: args.title,
-            target: plan.target,
-            mode: args.mode,
-            delegateToAgentId: agent.agentId,
-            persona: plan.persona,
-          },
-          plan.fallbacks,
-        ),
-      );
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Delegated "${result.title}" to ${plan.persona.name} on ${result.provider}${result.model ? `/${result.model}` : ""} as ${result.threadId}.${failoverNote(result)} Collect its response with kone_wait_for_responses.`,
-          },
-        ],
-        structuredContent: {
-          delegation: result,
-          agent: plan.persona.name,
-          selection: plan.selection,
-        },
-      };
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
-  };
 
   const continueThreadHandler = async (
     ctx: GatewayToolContext,
@@ -580,16 +636,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
   const spawnBatchHandler = async (
     ctx: GatewayToolContext,
     args: {
-      items: Array<{
-        requestId: string;
-        prompt: string;
-        title?: string;
-        target?: { provider: ProviderKind; model?: string; effort?: string };
-        preset?: string;
-        agent?: string;
-        mode?: InteractionMode;
-        model?: AgentModelRef;
-      }>;
+      items: Array<DispatchItemInput>;
     },
   ): Promise<GatewayToolResult> => {
     if (!ctx.turnId) {
@@ -600,151 +647,42 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     const engine = requiredEngine();
     const caller = callerOf(ctx);
 
-    let availability: ProviderAvailability[] | null = null;
-    const getAvailability = async (): Promise<ProviderAvailability[]> => {
-      if (availability) return availability;
-      const report = await engine.targets(caller);
-      availability = availabilityFromReport(report.providers);
-      return availability;
+    let availabilityPromise: Promise<ProviderAvailability[]> | null = null;
+    const getAvailability = (): Promise<ProviderAvailability[]> => {
+      if (!availabilityPromise) {
+        availabilityPromise = engine.targets(caller).then((r) => availabilityFromReport(r.providers));
+      }
+      return availabilityPromise;
     };
 
     const spawnPromises = args.items.map(async (item, index) => {
       try {
-        if (item.agent) {
-          const agent = findTeamAgent(input.store, caller.cwd, item.agent);
-          if (!agent) {
-            return {
-              index,
-              ok: false,
-              error: `No agent "${item.agent}" on this project's team.`,
-            };
-          }
-          const avail = await getAvailability();
-          const plan = resolveDelegation({
-            agent,
-            task: item.prompt,
-            availability: avail,
-            caller: { provider: caller.provider, model: caller.model },
-            requestedModel: item.model,
-          });
-          if (!plan.ok) {
-            return { index, ok: false, error: plan.reason };
-          }
-          const result = await engine.spawn(
-            caller,
-            withPlanFallbacks(
-              {
-                requestId: item.requestId,
-                prompt: plan.prompt,
-                title: item.title,
-                target: plan.target,
-                mode: item.mode,
-                delegateToAgentId: agent.agentId,
-                persona: plan.persona,
-              },
-              plan.fallbacks,
-            ),
-          );
-          return {
-            index,
-            ok: true,
-            threadId: result.threadId,
-            title: result.title,
-            provider: result.provider,
-            model: result.model,
-            agent: plan.persona.name,
-            kind: "delegation" as const,
-          };
-        } else if (item.preset) {
-          const preset = findPreset(input.store, item.preset);
-          if (!preset) {
-            return {
-              index,
-              ok: false,
-              error: `No preset sub-agent "${item.preset}".`,
-            };
-          }
-          const avail = await getAvailability();
-          const plan = planPresetSpawn(
-            preset,
-            item.prompt,
-            avail,
-            {
-              provider: caller.provider,
-              model: caller.model,
-            },
-            item.model,
-          );
-          if (!plan.ok) {
-            return { index, ok: false, error: plan.reason };
-          }
-          const result = await engine.spawn(
-            caller,
-            withPlanFallbacks(
-              {
-                requestId: item.requestId,
-                prompt: plan.prompt,
-                title: item.title,
-                target: plan.target,
-                mode: item.mode,
-              },
-              plan.fallbacks,
-            ),
-          );
-          return {
-            index,
-            ok: true,
-            threadId: result.threadId,
-            title: result.title,
-            provider: result.provider,
-            model: result.model,
-            preset: preset.name,
-            kind: "preset" as const,
-          };
-        } else if (item.target) {
-          const result = await engine.spawn(caller, {
-            requestId: item.requestId,
-            prompt: item.prompt,
-            title: item.title,
-            target: inheritSpawnTarget(caller, item.target),
-            mode: item.mode,
-          });
-          return {
-            index,
-            ok: true,
-            threadId: result.threadId,
-            title: result.title,
-            provider: result.provider,
-            model: result.model,
-            kind: "spawn" as const,
-          };
-        } else {
-          const result = await engine.spawn(caller, {
-            requestId: item.requestId,
-            prompt: item.prompt,
-            title: item.title,
-            target: inheritSpawnTarget(caller),
-            mode: item.mode,
-          });
-          return {
-            index,
-            ok: true,
-            threadId: result.threadId,
-            title: result.title,
-            provider: result.provider,
-            model: result.model,
-            kind: "spawn" as const,
-          };
+        const prepared = await prepareDispatch(input.store, caller, item, getAvailability);
+        if (!prepared.ok) {
+          return { index, ok: false as const, error: prepared.error.message };
         }
+        const result = await engine.spawn(caller, prepared.request);
+        const entry: BatchSpawnSuccess = {
+          index,
+          ok: true,
+          threadId: result.threadId,
+          title: result.title,
+          provider: result.provider,
+          model: result.model,
+          kind: prepared.meta.kind,
+        };
+        if (prepared.meta.agent) entry.agent = prepared.meta.agent;
+        if (prepared.meta.preset) entry.preset = prepared.meta.preset;
+        return entry;
       } catch (error) {
         const mapped = mapSpawnError(error);
-        return { index, ok: false, error: mapped.message };
+        return { index, ok: false as const, error: mapped.message };
       }
     });
 
-    const results = await Promise.all(spawnPromises);
-    const succeeded = results.filter((r) => r.ok);
-    const failed = results.filter((r) => !r.ok);
+    const results: BatchItemResult[] = await Promise.all(spawnPromises);
+    const succeeded = results.filter((r): r is BatchSpawnSuccess => r.ok);
+    const failed = results.filter((r): r is { index: number; ok: false; error: string } => !r.ok);
 
     const summaryParts: string[] = [];
     if (succeeded.length > 0) {
@@ -756,7 +694,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     }
     if (failed.length > 0) {
       const errList = failed
-        .map((f) => `item ${f.index}: ${f.error?.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
+        .map((f) => `item ${f.index}: ${f.error.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
         .join("; ");
       summaryParts.push(`${failed.length} spawn failed: ${errList}.`);
     }
@@ -770,19 +708,25 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
           succeeded: succeeded.length,
           failed: failed.length,
           threads: results.map((r) => {
-            const entry: GatewayRecord = {
+            if (r.ok) {
+              const entry: GatewayRecord = {
+                index: r.index,
+                ok: true,
+                threadId: r.threadId,
+                title: r.title,
+                provider: r.provider,
+                model: r.model ?? null,
+                kind: r.kind,
+              };
+              if (r.agent !== undefined) entry.agent = r.agent;
+              if (r.preset !== undefined) entry.preset = r.preset;
+              return entry;
+            }
+            return {
               index: r.index,
-              ok: r.ok,
+              ok: false,
+              error: r.error,
             };
-            if (r.threadId !== undefined) entry.threadId = r.threadId;
-            if (r.title !== undefined) entry.title = r.title;
-            if (r.provider !== undefined) entry.provider = r.provider;
-            if (r.model !== undefined) entry.model = r.model;
-            if (r.agent !== undefined) entry.agent = r.agent;
-            if (r.preset !== undefined) entry.preset = r.preset;
-            if (r.kind !== undefined) entry.kind = r.kind;
-            if (r.error !== undefined) entry.error = r.error;
-            return entry;
           }),
         },
       },

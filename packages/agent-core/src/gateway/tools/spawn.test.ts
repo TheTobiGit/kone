@@ -6,7 +6,6 @@ import type { AgentRecord, SubagentPresetRecord } from "../../ConversationStore.
 import type { GatewayToolContext, ToolEntry } from "../schemas.js";
 import {
   CONTINUE_THREAD_JSON_SCHEMA,
-  DELEGATE_TO_TEAMMATE_JSON_SCHEMA,
   READ_RESPONSE_JSON_SCHEMA,
   SPAWN_BATCH_JSON_SCHEMA,
   SPAWN_WORKER_PRESET_JSON_SCHEMA,
@@ -932,7 +931,7 @@ describe("kone_spawn_worker_preset", () => {
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toMatchObject({
       code: "provider_unavailable",
-      details: { tried: ["cursor/auto"] },
+      details: { tried: [{ provider: "cursor", model: "auto" }] },
     });
   });
 

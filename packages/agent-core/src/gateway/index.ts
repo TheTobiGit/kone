@@ -20,7 +20,7 @@ import { makeMcpTransport } from "./mcpTransport.js";
 import { createRegistry, type GatewayApprove } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
-import { createIrcTools } from "./tools/irc.js";
+
 import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 import {
   createAppThemeTools,
@@ -29,7 +29,6 @@ import {
   type ThemeRosterEntry,
 } from "./tools/appTheme.js";
 import {
-  createAppAgentTools,
   type AgentRosterEntry,
   type AppAgentToolOptions,
 } from "./tools/appAgents.js";
@@ -45,6 +44,8 @@ export { GatewayCredentials } from "./credentials.js";
 export { GatewayToolError } from "./schemas.js";
 export type { GatewayApprove, GatewayApprovalRequest } from "./registry.js";
 
+export { createIrcTools } from "./tools/irc.js";
+export { createAppAgentTools } from "./tools/appAgents.js";
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 
 /** The live-turn ledger the gateway learns by listening to the existing

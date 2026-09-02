@@ -37,6 +37,7 @@ import {
   type GatewayRecord,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
+import { modelRefPayload, squash } from "../helpers.js";
 
 /** The slice of the store these tools use. Narrow on purpose: the same reason
  *  the spawn tools declare their own — a test can stand one up without a
@@ -59,11 +60,6 @@ export interface AppSubagentToolOptions {
   emit?: EmitEvent;
 }
 
-/** Ids and names compare without their punctuation, so "code-reviewer",
- *  "Code Reviewer" and "codereviewer" all reach the same preset. */
-function squash(value: string): string {
-  return value.toLowerCase().replace(/[\s_-]+/g, "");
-}
 
 /** A shipped preset, which has no row behind it. Editing one is refused rather
  *  than quietly forked: a fork under the same name would be spawned from in
@@ -72,15 +68,6 @@ function isBuiltin(preset: SubagentPresetRecord): boolean {
   return BUILTIN_SWARM_PRESETS.some((builtin) => builtin.presetId === preset.presetId);
 }
 
-function modelRefPayload(ref: {
-  provider: string;
-  model: string;
-  label?: string;
-}): GatewayRecord {
-  const payload: GatewayRecord = { provider: ref.provider, model: ref.model };
-  if (ref.label !== undefined) payload.label = ref.label;
-  return payload;
-}
 
 function presetPayload(preset: SubagentPresetRecord): GatewayRecord {
   const fallbacks = preset.modelFallbacks ?? [];
