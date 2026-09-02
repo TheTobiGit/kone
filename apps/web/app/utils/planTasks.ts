@@ -7,12 +7,14 @@
 // keeps only the renderer-coupled derivation over thread blocks.
 
 import {
+  labelForTask,
   parsePlanTasks,
   type PlanTask,
 } from "@kone/protocol/plan-tasks";
 
 export {
   formatPlanTasks,
+  labelForTask,
   parsePlanTasks,
   planTaskCounts,
   reconcilePlanTasks,
@@ -20,15 +22,11 @@ export {
   type PlanTaskCounts,
   type PlanTaskStatus,
 } from "@kone/protocol/plan-tasks";
-
 export type ActivePlanState = {
   tasks: PlanTask[];
   streaming: boolean;
 };
 
-function labelForTask(task: PlanTask): string {
-  return task.status === "in-progress" && task.activeForm ? task.activeForm : task.content;
-}
 
 /** The one task a thread is on right now, in the compact shape the away-from-
  *  thread pill needs: the task's own present-tense label plus where it sits in

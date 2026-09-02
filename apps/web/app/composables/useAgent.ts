@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from "vue";
+import { computed, getCurrentInstance, onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from "vue";
 import type {
   ApprovalDecision,
   ChatAttachment,
@@ -2366,20 +2366,24 @@ export function useAgent(options: UseAgentOptions) {
     await evict(s);
   }
 
-  onBeforeUnmount(() => {
-    // Stop this view's own ticking clock — it restarts on re-mount if any
-    // session is still busy (the watch runs immediate).
-    if (clock !== null) clearInterval(clock);
-    clock = null;
-    // Deliberately NOT disposing sessions here. The registry is module-scoped
-    // per project path; disposing on unmount is what killed every thread of a
-    // project the moment the user switched projects — including busy
-    // background turns (the provider processes live in the main process, and
-    // the renderer's dispose() is the only thing that stops them). Sessions
-    // are torn down on explicit thread close (evict/forgetThread) and
-    // hibernated when idle (the sweep) — a project switch is a swap of
-    // registries, not a massacre.
-  });
+  if (getCurrentInstance()) {
+    onBeforeUnmount(() => {
+      // Stop this view's own ticking clock — it restarts on re-mount if any
+      // session is still busy (the watch runs immediate).
+      if (clock !== null) {
+        clearInterval(clock);
+        clock = null;
+      }
+      // Deliberately NOT disposing sessions here. The registry is module-scoped
+      // per project path; disposing on unmount is what killed every thread of a
+      // project the moment the user switched projects — including busy
+      // background turns (the provider processes live in the main process, and
+      // the renderer's dispose() is the only thing that stops them). Sessions
+      // are torn down on explicit thread close (evict/forgetThread) and
+      // hibernated when idle (the sweep) — a project switch is a swap of
+      // registries, not a massacre.
+    });
+  }
 
   return {
     // identity (active-thread projection)
