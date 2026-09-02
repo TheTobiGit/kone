@@ -26,7 +26,7 @@ export type PlanTask = {
   status: PlanTaskStatus;
 };
 
-const MD_LINE = /^-\s+\[( |x|X|\/|-)\]\s+(.+)$/;
+const MD_LINE = /^[-*+]\s+\[( |x|X|\/|-)\]\s+(.+)$/;
 const UNICODE_LINE = /^([○→✓])\s+(.+)$/;
 
 function mintPlanTaskId(): string {
@@ -52,7 +52,8 @@ function markerForStatus(status: PlanTaskStatus): string {
   return "[ ]";
 }
 
-function labelForTask(task: PlanTask): string {
+/** Returns the display label for a task (activeForm when in-progress, else content). */
+export function labelForTask(task: PlanTask): string {
   return task.status === "in-progress" && task.activeForm ? task.activeForm : task.content;
 }
 

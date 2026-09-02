@@ -29,6 +29,24 @@ export const IPC_ERROR_KINDS = [
 
 export type IpcErrorKind = (typeof IPC_ERROR_KINDS)[number];
 
+const IPC_ERROR_KIND_MAP = {
+  AUTH_FAILURE: true,
+  NOT_AUTHENTICATED: true,
+  NOT_INSTALLED: true,
+  NOT_A_REPO: true,
+  NO_GITHUB_REMOTE: true,
+  NOT_FOUND: true,
+  NETWORK: true,
+  INVALID_INPUT: true,
+  INTERNAL: true,
+  TIMEOUT: true,
+} as const satisfies Record<IpcErrorKind, true>;
+
+/** Check if a string is a valid machine-readable IpcErrorKind. */
+export function isIpcErrorKind(value: string): value is IpcErrorKind {
+  return value in IPC_ERROR_KIND_MAP;
+}
+
 /** The marker prefix a classified error carries: "[kone:<KIND>] ". Also
  *  matches a bare marker with nothing after it (the human text may be empty). */
 const KIND_MARKER = /^\[kone:(\w+)\]( |$)/;
@@ -52,6 +70,7 @@ export function parseKind(
 ): ParsedIpcMessage {
   const match = KIND_MARKER.exec(message);
   if (!match) return { kind: null, message };
-  // SAFETY: the marker is only ever written by markKind(), whose argument is an IpcErrorKind.
-  return { kind: match[1] as IpcErrorKind, message: message.slice(match[0].length) };
+  const rawKind = match[1];
+  if (!rawKind || !isIpcErrorKind(rawKind)) return { kind: null, message };
+  return { kind: rawKind, message: message.slice(match[0].length) };
 }
