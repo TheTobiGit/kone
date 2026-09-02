@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { IPC_ERROR_KINDS, markKind, parseKind } from "./ipcError.js";
+import { IPC_ERROR_KINDS, isIpcErrorKind, markKind, parseKind } from "./ipcError.js";
 
 describe("markKind", () => {
   test("prefixes the message with the [kone:KIND] marker", () => {
@@ -48,6 +48,19 @@ describe("parseKind", () => {
 
   test("handles an empty message", () => {
     expect(parseKind("")).toEqual({ kind: null, message: "" });
+  });
+
+  test("returns null kind for an unrecognized marker", () => {
+    expect(parseKind("[kone:UNKNOWN_FUTURE_KIND] something went wrong")).toEqual({
+      kind: null,
+      message: "[kone:UNKNOWN_FUTURE_KIND] something went wrong",
+    });
+  });
+
+  test("validates kinds with isIpcErrorKind", () => {
+    expect(isIpcErrorKind("AUTH_FAILURE")).toBe(true);
+    expect(isIpcErrorKind("INVALID_STUFF")).toBe(false);
+    expect(isIpcErrorKind("")).toBe(false);
   });
 });
 

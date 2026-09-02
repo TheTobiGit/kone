@@ -213,15 +213,15 @@ describe("clone", () => {
     const dest1 = path.join(parent, "one");
     const dest2 = path.join(parent, "two");
 
-    const p1 = api.clone("https://github.com/owner/a.git", dest1, () => {});
-    const p2 = api.clone("https://github.com/owner/b.git", dest2, () => {});
+    const p1 = api.clone("https://github.com/owner/a.git", dest1, () => {}).catch((e) => e);
+    const p2 = api.clone("https://github.com/owner/b.git", dest2, () => {}).catch((e) => e);
     api.cancelAllClones();
 
-    const err1 = await p1.catch((e) => e);
+    const err1 = await p1;
     expect(err1).toBeInstanceOf(GitError);
     if (!(err1 instanceof GitError)) throw err1;
     expect(err1.message).toBe("Clone cancelled");
-    const err2 = await p2.catch((e) => e);
+    const err2 = await p2;
     expect(err2).toBeInstanceOf(GitError);
     if (!(err2 instanceof GitError)) throw err2;
     expect(err2.message).toBe("Clone cancelled");
