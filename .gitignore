@@ -70,7 +70,8 @@ docs/
 
 # Misc
 *.tgz
-.cache
+*.mp4
+*.cache
 tmp
 temp
 
