@@ -33,6 +33,7 @@ import {
   type GatewayRecord,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
+import { modelRefPayload, squash } from "../helpers.js";
 
 /**
  * One agent as the renderer reports it: resolved, so every field here is what
@@ -80,12 +81,6 @@ export interface AppAgentToolOptions {
   readAgents?: () => readonly AgentRosterEntry[] | null;
 }
 
-/** Ids and names compare without their punctuation, so "code-reviewer",
- *  "Code Reviewer" and "codereviewer" all reach the same agent. */
-function squash(value: string): string {
-  return value.toLowerCase().replace(/[\s_-]+/g, "");
-}
-
 /** Everything an agent can be matched on for a search, lower-cased. */
 function searchText(agent: AgentRosterEntry): string {
   return [agent.name, agent.role, agent.instructions, ...agent.skills].join(" ").toLowerCase();
@@ -113,18 +108,6 @@ export function resolveAgent(
     agents.find((a) => squash(a.name).includes(clean)) ??
     agents.find((a) => searchText(a).includes(normalized))
   );
-}
-
-/** One roster entry as a structured result. Arrays are copied because a decoded
- *  gateway payload is readonly and a result record is not. */
-function modelRefPayload(ref: {
-  provider: string;
-  model: string;
-  label?: string;
-}): GatewayRecord {
-  const payload: GatewayRecord = { provider: ref.provider, model: ref.model };
-  if (ref.label !== undefined) payload.label = ref.label;
-  return payload;
 }
 
 function entryPayload(agent: AgentRosterEntry): GatewayRecord {

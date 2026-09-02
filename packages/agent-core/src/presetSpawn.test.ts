@@ -59,12 +59,13 @@ describe("planPresetSpawn", () => {
   });
 
   test("refuses, naming what it tried, when the preset's model can't run", () => {
-    const p = preset({ model: { provider: "cursor", model: "auto" } });
+    const modelRef = { provider: "cursor" as const, model: "auto" };
+    const p = preset({ model: modelRef });
     const plan = planPresetSpawn(p, "Go.", available, { provider: "codex" });
     expect(plan.ok).toBe(false);
     if (!plan.ok) {
       expect(plan.reason).toContain("Explorer");
-      expect(plan.tried).toEqual(["cursor/auto"]);
+      expect(plan.tried).toEqual([modelRef]);
     }
   });
 

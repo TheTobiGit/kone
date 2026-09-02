@@ -18,6 +18,7 @@ import {
   type GatewayValue,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
+import { squash } from "../helpers.js";
 
 /**
  * One theme as the renderer reports it.
@@ -165,11 +166,6 @@ function searchText(theme: ThemeRosterEntry): string {
     .toLowerCase();
 }
 
-/** Ids and labels compare without their punctuation, so "t3chat", "t3-chat"
- *  and "T3 Chat" all reach the theme they name. */
-function squash(value: string): string {
-  return value.toLowerCase().replace(/[\s_-]+/g, "");
-}
 
 /**
  * Resolve a user-supplied identifier or description to a theme in the roster.

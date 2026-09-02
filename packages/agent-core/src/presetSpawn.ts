@@ -2,7 +2,6 @@ import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
 import type { AgentModelRef, SubagentPresetRecord } from "./ConversationStore.js";
 import type { ProviderKind, SpawnTarget } from "./types.js";
 import {
-  describeChain,
   modelChainOf,
   planSpawnModel,
   type ModelCandidate,
@@ -36,9 +35,8 @@ export type PresetSpawnPlan =
   | {
       ok: false;
       reason: string;
-      /** The `provider/model` strings that were tried and couldn't run — so the
-       *  refusal names exactly what was unavailable, in the order it was tried. */
-      tried: readonly string[];
+      /** The models that were tried and couldn't run, in order. */
+      tried: readonly AgentModelRef[];
     };
 
 /** The child's opening brief: the preset's standing instructions, then the
@@ -71,14 +69,13 @@ export function planPresetSpawn(
   const plan = planSpawnModel({ requested, chain, caller, availability });
 
   if (!plan.ok) {
-    const tried = describeChain(plan.tried);
     return {
       ok: false,
       reason:
         plan.tried.length > 1
           ? `None of ${preset.name}'s models can run right now — every fallback was tried.`
           : `${preset.name}'s model can't run right now.`,
-      tried,
+      tried: plan.tried,
     };
   }
 
