@@ -117,6 +117,9 @@ export type ThreadRow = {
 };
 
 export type BlockRow = {
+  /** Arrival order within the thread — the row id. Ordering key for the
+   *  windowed walk; never a cursor's payload (see loadThreadPage). */
+  seq: number;
   block_id: string;
   thread_id: string;
   role: "user" | "assistant";
@@ -539,10 +542,12 @@ export function assembleBlocks(
 }
 
 // ── windowed thread reads (user-anchored keyset cursor) ───────────────────────
-// kone's block model: blocks are the turn analog, the anchor is a block's
-// `at` (the user-visible timestamp — the analog of requested_at/started_at),
-// and the tiebreak is the content-derived `block_id` string — deliberately NOT
-// `seq`, the row_id analog (see loadThreadPage).
+// kone's block model: blocks are the turn analog. The walk is ordered by `seq`
+// (arrival order — the only order that keeps a reply behind its own prompt),
+// while the cursor travels as the content-derived pair (`at`, `block_id`),
+// deliberately NOT that seq, so it survives a renumbering rewrite; the
+// boundary's seq is resolved from its block_id on each read (see
+// loadThreadPage).
 
 /** User blocks (user prompts) per page — each page's window ends at the
  *  limit-th newest prompt. */

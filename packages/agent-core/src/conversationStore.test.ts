@@ -1265,6 +1265,61 @@ describe("loadThreadPage user-anchored windows", () => {
     expect(p3.hasMore).toBe(false);
   });
 
+  test("a reply stamped in its prompt's millisecond still pages after that prompt", () => {
+    const store = freshStore();
+    // The thread id leads the assistant block id ("<threadId>::<turnId>"), and
+    // a "0-" thread makes every one of those sort below the random uuid of a
+    // user block — so an id tiebreak inverts each pair here by construction,
+    // not by luck.
+    store.ensureThread({ threadId: "0-t", projectPath: "/p", provider: "opencode" });
+    // Same `at` for the prompt and the turn that answers it — the real stamping
+    // whenever dispatch and turn.started land in one millisecond.
+    for (let n = 1; n <= 8; n++) {
+      const at = 100 * n;
+      store.recordUserBlock({ threadId: "0-t", text: `prompt ${n}`, at });
+      store.applyEvent(turnStarted("0-t", `turn-${n}`, at));
+      store.applyEvent(turnCompleted("0-t", `turn-${n}`, at + 7));
+    }
+
+    // Page order is the full read's order, block for block.
+    const full = store.loadThread("0-t")!.blocks.map((b) => b.id);
+    const page = store.loadThreadPage("0-t", { limit: 8 })!;
+    expect(page.blocks.map((b) => b.id)).toEqual(full);
+
+    // And every window boundary keeps the pair together: a page that ends on a
+    // prompt must carry that prompt's reply, never leave it behind.
+    const walked: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const p = cursor
+        ? store.loadThreadPage("0-t", { limit: 2, cursor })!
+        : store.loadThreadPage("0-t", { limit: 2 })!;
+      for (const block of p.blocks) {
+        if (block.role === "assistant") expect(block.turnId).toBeTruthy();
+      }
+      walked.unshift(...p.blocks.map((b) => b.id));
+      cursor = p.nextCursor;
+    } while (cursor);
+    expect(walked).toEqual(full);
+  });
+
+  test("a cursor whose block is gone falls back to its `at` and still walks older", async () => {
+    const { encodeThreadPageCursor } = await import("./ConversationStore.js");
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-p", projectPath: "/p", provider: "opencode" });
+    for (let n = 1; n <= 3; n++) buildExchange(store, "t-p", n);
+    const p1 = store.loadThreadPage("t-p", { limit: 1 })!;
+    const oldest = p1.blocks[0]!;
+    const stale = encodeThreadPageCursor({
+      threadId: "t-p",
+      beforeAnchorAt: oldest.at,
+      beforeBlockId: "block-that-no-longer-exists",
+    });
+    const p2 = store.loadThreadPage("t-p", { limit: 1, cursor: stale })!;
+    expect(p2.blocks.length).toBeGreaterThan(0);
+    expect(Math.max(...p2.blocks.map((b) => b.at))).toBeLessThan(oldest.at);
+  });
+
   test("malformed and foreign-thread cursors degrade to a first-page request", async () => {
     const { encodeThreadPageCursor } = await import("./ConversationStore.js");
     const store = freshStore();
