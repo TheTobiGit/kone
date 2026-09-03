@@ -7,7 +7,8 @@
 // thread-spawning tools — agents read/edit the project scratchpad the web
 // board renders, and open, follow and read kone threads — and with the
 // app-steering tools: the theme, the agent roster, the reusable sub-agent
-// definitions, and the thread strip. Every one of those is a pure registry
+// definitions, the thread strip, the projects the app holds, and the threads
+// inside them. Every one of those is a pure registry
 // entry on the same server, which is what makes the next surface an agent can
 // steer a new tools/ module rather than a new transport.
 
@@ -40,6 +41,17 @@ import {
   type AppStripToolOptions,
   type StripSettingsReading,
 } from "./tools/appStrip.js";
+import {
+  createAppProjectTools,
+  type AppProjectsToolOptions,
+  type ProjectRosterEntry,
+} from "./tools/appProjects.js";
+import {
+  createAppThreadTools,
+  type AppThreadsAvailability,
+  type AppThreadsRunner,
+  type AppThreadsToolOptions,
+} from "./tools/appThreads.js";
 
 export type { GatewaySessionCredential } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
@@ -48,6 +60,10 @@ export type { GatewayApprove, GatewayApprovalRequest } from "./registry.js";
 
 export { createIrcTools } from "./tools/irc.js";
 export { createAppAgentTools } from "./tools/appAgents.js";
+export { createAppProjectTools } from "./tools/appProjects.js";
+export type { ProjectRosterEntry } from "./tools/appProjects.js";
+export { createAppThreadTools } from "./tools/appThreads.js";
+export type { AppThreadsRunner } from "./tools/appThreads.js";
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 
 /** The live-turn ledger the gateway learns by listening to the existing
@@ -106,6 +122,21 @@ export interface GatewayInput {
    *  tools report them as unknown rather than naming defaults the user may
    *  have changed. */
   readStripSettings?: () => StripSettingsReading | null;
+  /** The projects the renderer last reported. Absent, the project tools say so
+   *  rather than offering a list of their own — which folders the user has
+   *  opened is browser storage, and the shell holds no second copy of it. The
+   *  git state behind each one is not mirrored: the tools read it at call time,
+   *  because a branch and a diff go stale faster than a push can keep up. */
+  readProjects?: () => readonly ProjectRosterEntry[] | null;
+  /** Starts and drives threads — the same dispatcher the renderer's own "new
+   *  thread" path forwards to, so a thread the assistant opens is an ordinary
+   *  thread on the project's board. Absent, `app_start_thread` refuses rather
+   *  than reporting a thread nothing is running. */
+  threads?: AppThreadsRunner;
+  /** What providers and models can run right now, so a thread is never started
+   *  on one this install cannot reach. Absent, the caller's own provider is
+   *  taken at its word. */
+  threadAvailability?: AppThreadsAvailability;
 }
 
 export function createGateway(input: GatewayInput): GatewayHandle {
@@ -122,6 +153,20 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.readAgents) appAgentOptions.readAgents = input.readAgents;
   const appStripOptions: AppStripToolOptions = { emit: input.emit };
   if (input.readStripSettings) appStripOptions.readStripSettings = input.readStripSettings;
+  // The projects module reads two mirrors: the project list, and the roster it
+  // takes the team names from. Both stay omitted rather than undefined for the
+  // same reason as the rest.
+  const appProjectOptions: AppProjectsToolOptions = { store: input.store };
+  if (input.readProjects) appProjectOptions.readProjects = input.readProjects;
+  if (input.readAgents) appProjectOptions.readAgents = input.readAgents;
+  // The threads module reads the same project mirror (a project is named the
+  // same way everywhere) and, unlike the rest of the family, also writes: its
+  // runner is the dispatcher, absent in a gateway built without one.
+  const appThreadOptions: AppThreadsToolOptions = { store: input.store };
+  if (input.readProjects) appThreadOptions.readProjects = input.readProjects;
+  if (input.isThreadLive) appThreadOptions.isThreadLive = input.isThreadLive;
+  if (input.threads) appThreadOptions.runner = input.threads;
+  if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
 
   const credentials = new GatewayCredentials();
   const inFlight = makeInFlightRequestRegistry();
@@ -143,6 +188,8 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppAgentTools(appAgentOptions),
     ...createAppSubagentTools({ store: input.store, emit: input.emit }),
     ...createAppStripTools(appStripOptions),
+    ...createAppProjectTools(appProjectOptions),
+    ...createAppThreadTools(appThreadOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
 
   const tools = [...workerTools, ...assistantTools];
@@ -156,8 +203,9 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     inFlight,
     instructions:
       "kone gateway: tools that read and write the project scratchpad, that " +
-      "open, follow and read worker threads, and that steer the app appearance " +
-      "and settings. Scratchpad writes are attributed to the calling agent and " +
+      "open, follow and read worker threads, that report the projects the app " +
+      "holds with their live git state and the conversations inside them, and " +
+      "that steer the app appearance and settings. Scratchpad writes are attributed to the calling agent and " +
       "guarded by a revision shared with the web editor; spawned worker threads " +
       "are first-class conversations the user can see in the sidebar. " +
       "The app-steering tools act on the window the user is looking at, so use " +
