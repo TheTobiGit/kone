@@ -1,5 +1,6 @@
 export {
   currentAgentRoster,
+  currentProjects,
   currentStripSettings,
   registerAppStateIpc,
   setAppState,
@@ -7,6 +8,7 @@ export {
 export type {
   AgentRosterEntry,
   AppStatePush,
+  ProjectEntry,
   StripCentering,
   StripPaneKind,
   StripSettingsState,

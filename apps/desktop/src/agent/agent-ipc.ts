@@ -15,7 +15,11 @@ import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
 import { createGateway, type GatewayHandle } from "@kone/agent-core/gateway/index.js";
 import { currentAppearance, currentThemeRoster } from "../modules/system/system.js";
-import { currentAgentRoster, currentStripSettings } from "../modules/appState/index.js";
+import {
+  currentAgentRoster,
+  currentProjects,
+  currentStripSettings,
+} from "../modules/appState/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import { skillRootTargets } from "@kone/agent-core/inventory/skills.js";
@@ -146,6 +150,27 @@ export function registerAgentIpc(): void {
     // And the thread strip's settings, which are per-install renderer storage
     // the main process has no way to read.
     readStripSettings: () => currentStripSettings(),
+    // The projects the same way — which folders the user has opened is browser
+    // storage. Only the list crosses: the branch and diff behind each one are
+    // read from git when a tool is called, so they are never a stale mirror.
+    readProjects: () => currentProjects(),
+    // Starting a thread goes through the same dispatcher the renderer's own
+    // "new thread" path forwards to, so a thread the assistant opens is an
+    // ordinary thread on the project's board rather than a second kind of one.
+    threads: {
+      startThread: (start) => dispatcher.startThread(start),
+      sendThreadTurn: (turn, options) => dispatcher.sendThreadTurn(turn, options),
+    },
+    // And the provider surface the service already keeps warm, so a thread is
+    // never started on a CLI this machine cannot run.
+    threadAvailability: async () => {
+      const surface = svc.cachedSurface();
+      return surface.statuses.map((status) => ({
+        provider: status.provider,
+        available: status.available,
+        models: (surface.models[status.provider] ?? []).map((model) => model.id),
+      }));
+    },
   });
   svc.attachGateway(gateway);
 
