@@ -1336,3 +1336,273 @@ export type UpdateSubagentPresetInput = z.infer<typeof UpdateSubagentPresetInput
 export type DeleteSubagentPresetInput = z.infer<typeof DeleteSubagentPresetInputSchema>;
 export type GetStripSettingsInput = z.infer<typeof GetStripSettingsInputSchema>;
 export type SetStripSettingsInput = z.infer<typeof SetStripSettingsInputSchema>;
+
+// ── projects ─────────────────────────────────────────────────────────────────
+
+/** What every paged tool says about its `cursor` parameter. Written once: three
+ *  tools that page the same way must not describe it three different ways, or
+ *  a caller learns the concept three times. */
+export const CURSOR_DESCRIPTION =
+  "Continue the previous answer from this tool: pass back the `nextCursor` it returned. Omit for the first page. A cursor is opaque - pass it back unchanged rather than building one.";
+
+/** How many projects one page names. A page is also how many repositories get
+ *  read: the git state behind each one is a handful of git processes, so a
+ *  smaller page is a cheaper call as well as a shorter answer. */
+export const PROJECT_LIST_DEFAULT_LIMIT = 10;
+
+export const ListAppProjectsInputSchema = z.object({
+  refreshGit: z
+    .boolean()
+    .optional()
+    .describe(
+      "Read each project's git state from disk (default true). Set false for a fast answer that names the projects and where they live without touching the repositories.",
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe(`How many projects to name (default ${PROJECT_LIST_DEFAULT_LIMIT}).`),
+  cursor: z.string().min(1).optional().describe(CURSOR_DESCRIPTION),
+});
+
+export const LIST_APP_PROJECTS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    refreshGit: {
+      type: "boolean",
+      description:
+        "Read each project's git state from disk (default true). Set false for a fast answer that names the projects and where they live without touching the repositories.",
+    },
+    limit: {
+      type: "integer",
+      description: `How many projects to name (default ${PROJECT_LIST_DEFAULT_LIMIT}).`,
+    },
+    cursor: { type: "string", description: CURSOR_DESCRIPTION },
+  },
+} satisfies GatewayRecord;
+
+/** How many changed files `app_get_project` names before it stops listing and
+ *  reports the remainder as a count. A repo mid-refactor can carry hundreds,
+ *  and a wall of paths buys nothing a total does not. */
+export const PROJECT_CHANGE_LIST_CAP = 40;
+
+export const GetAppProjectInputSchema = z.object({
+  project: z
+    .string()
+    .min(1)
+    .describe(
+      "Which project: its absolute path, or its name as the app shows it. Omit-free — name the project even when only one is open.",
+    ),
+  changes: z
+    .boolean()
+    .optional()
+    .describe(
+      `List the changed files with their per-file line counts (default false). The summary already says how many files changed and by how many lines; ask for this when you need to know WHICH files. One page names ${PROJECT_CHANGE_LIST_CAP}.`,
+    ),
+  cursor: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Continue the changed-file list from a previous answer: pass the `nextCursor` it returned. Implies changes: true. A cursor is opaque - pass it back unchanged rather than building one.",
+    ),
+});
+
+export const GET_APP_PROJECT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    project: {
+      type: "string",
+      description:
+        "Which project: its absolute path, or its name as the app shows it. Name the project even when only one is open.",
+    },
+    changes: {
+      type: "boolean",
+      description: `List the changed files with their per-file line counts (default false). The summary already says how many files changed and by how many lines; ask for this when you need to know WHICH files. One page names ${PROJECT_CHANGE_LIST_CAP}.`,
+    },
+    cursor: {
+      type: "string",
+      description:
+        "Continue the changed-file list from a previous answer: pass the `nextCursor` it returned. Implies changes: true. A cursor is opaque - pass it back unchanged rather than building one.",
+    },
+  },
+  required: ["project"],
+} satisfies GatewayRecord;
+
+export type ListAppProjectsInput = z.infer<typeof ListAppProjectsInputSchema>;
+export type GetAppProjectInput = z.infer<typeof GetAppProjectInputSchema>;
+
+// ── threads in a project ─────────────────────────────────────────────────────
+
+/** How many threads a list answer names before it stops and reports the rest as
+ *  a count. A long-running project carries hundreds, and the question behind
+ *  the call is nearly always "what has been happening lately". */
+export const THREAD_LIST_DEFAULT_LIMIT = 20;
+export const THREAD_LIST_MAX_LIMIT = 100;
+
+export const ListAppThreadsInputSchema = z.object({
+  project: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Which project's threads to list, by absolute path or by name. Omit to list across every project the app holds.",
+    ),
+  archived: z
+    .boolean()
+    .optional()
+    .describe(
+      "List the archived threads instead of the live ones (default false). The two are separate places, not a combined list.",
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(THREAD_LIST_MAX_LIMIT)
+    .optional()
+    .describe(`How many threads to name, newest first (default ${THREAD_LIST_DEFAULT_LIMIT}).`),
+  cursor: z.string().min(1).optional().describe(CURSOR_DESCRIPTION),
+});
+
+export const LIST_APP_THREADS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    project: {
+      type: "string",
+      description:
+        "Which project's threads to list, by absolute path or by name. Omit to list across every project the app holds.",
+    },
+    archived: {
+      type: "boolean",
+      description:
+        "List the archived threads instead of the live ones (default false). The two are separate places, not a combined list.",
+    },
+    limit: {
+      type: "integer",
+      description: `How many threads to name, newest first (default ${THREAD_LIST_DEFAULT_LIMIT}).`,
+    },
+    cursor: { type: "string", description: CURSOR_DESCRIPTION },
+  },
+} satisfies GatewayRecord;
+
+export const ReadAppThreadInputSchema = z.object({
+  threadId: z.string().min(1).describe("The thread to read, as app_list_threads reports it."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("How many messages to read, counting back from the newest (default 20)."),
+  maxTextChars: z
+    .number()
+    .int()
+    .min(100)
+    .max(20_000)
+    .optional()
+    .describe("Truncate each message to this many characters (default 1500)."),
+});
+
+export const READ_APP_THREAD_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: { type: "string", description: "The thread to read, as app_list_threads reports it." },
+    limit: {
+      type: "integer",
+      description: "How many messages to read, counting back from the newest (default 20).",
+    },
+    maxTextChars: {
+      type: "integer",
+      description: "Truncate each message to this many characters (default 1500).",
+    },
+  },
+  required: ["threadId"],
+} satisfies GatewayRecord;
+
+export const StartAppThreadInputSchema = z.object({
+  project: z
+    .string()
+    .min(1)
+    .describe("The project to open the thread in, by absolute path or by name."),
+  prompt: z
+    .string()
+    .min(1)
+    .describe(
+      "The thread's first turn — the brief it wakes up to. Write it as a complete standing brief: the thread starts with no memory of this conversation.",
+    ),
+  title: z.string().min(1).max(200).optional().describe("A title for the thread, instead of one derived from the prompt."),
+  agent: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Hand the thread to one of the project's team agents, by name or id. The thread then runs as that agent, on the model that agent is set up for.",
+    ),
+  provider: z
+    .enum(PROVIDER_KINDS)
+    .optional()
+    .describe("Which CLI to run the thread on. Omit to run it where this conversation runs."),
+  model: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The provider's model id. Omit to inherit this conversation's model, or the agent's."),
+  mode: z
+    .enum(INTERACTION_MODES)
+    .optional()
+    .describe(
+      "What the thread may do without stopping to ask. Nobody is sitting in a thread you start: one that parks for permission stays parked until the user notices.",
+    ),
+  requestId: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe(
+      "A stable idempotency key for this start. Retrying with the same one returns the thread you already opened instead of opening a second.",
+    ),
+});
+
+export const START_APP_THREAD_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    project: { type: "string", description: "The project to open the thread in, by absolute path or by name." },
+    prompt: {
+      type: "string",
+      description:
+        "The thread's first turn — the brief it wakes up to. Write it as a complete standing brief: the thread starts with no memory of this conversation.",
+    },
+    title: { type: "string", description: "A title for the thread, instead of one derived from the prompt." },
+    agent: {
+      type: "string",
+      description:
+        "Hand the thread to one of the project's team agents, by name or id. The thread then runs as that agent, on the model that agent is set up for.",
+    },
+    provider: {
+      type: "string",
+      enum: [...PROVIDER_KINDS],
+      description: "Which CLI to run the thread on. Omit to run it where this conversation runs.",
+    },
+    model: {
+      type: "string",
+      description: "The provider's model id. Omit to inherit this conversation's model, or the agent's.",
+    },
+    mode: {
+      type: "string",
+      enum: [...INTERACTION_MODES],
+      description:
+        "What the thread may do without stopping to ask. Nobody is sitting in a thread you start: one that parks for permission stays parked until the user notices.",
+    },
+    requestId: {
+      type: "string",
+      description:
+        "A stable idempotency key for this start. Retrying with the same one returns the thread you already opened instead of opening a second.",
+    },
+  },
+  required: ["project", "prompt", "requestId"],
+} satisfies GatewayRecord;
+
+export type ListAppThreadsInput = z.infer<typeof ListAppThreadsInputSchema>;
+export type ReadAppThreadInput = z.infer<typeof ReadAppThreadInputSchema>;
+export type StartAppThreadInput = z.infer<typeof StartAppThreadInputSchema>;

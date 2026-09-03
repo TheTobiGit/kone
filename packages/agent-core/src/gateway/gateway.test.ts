@@ -28,6 +28,7 @@ import {
   CONTINUE_THREAD_JSON_SCHEMA,
   READ_RESPONSE_JSON_SCHEMA,
 } from "./schemas.js";
+import { GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
 
 /** Point the agent layer at a fresh temp state dir (see userDataDir.ts). */
 function useUserDataDir(dir: string): string {
@@ -295,6 +296,11 @@ describe("gateway integration (real store + HTTP)", () => {
     });
 
     // No live turn yet → write denied, read still works (not_found).
+    //
+    // This thread is on a codebase, so it is served the worker set and nothing
+    // else. The app-steering tools are the assistant's — asserted below, on a
+    // thread of that kind — and a worker seeing them here would mean a session
+    // on a user's repo could repaint the app.
     let res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     const names = (rpcResult(res).tools ?? []).map((t) => t.name);
     expect(names).toEqual([
@@ -311,17 +317,6 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_irc_list",
       "kone_irc_inbox",
       "kone_launch",
-      "app_get_theme_state",
-      "app_list_available_themes",
-      "app_set_theme",
-      "app_preview_theme_override",
-      "app_create_custom_theme",
-      "app_list_subagent_presets",
-      "app_create_subagent_preset",
-      "app_update_subagent_preset",
-      "app_delete_subagent_preset",
-      "app_get_strip_settings",
-      "app_set_strip_settings",
     ]);
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
     expect(rpcResult(res).isError).toBe(true);
@@ -386,6 +381,73 @@ describe("gateway integration (real store + HTTP)", () => {
     gateway.revokeThread("thread-1");
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 11, method: "ping" });
     expect(res.status).toBe(401);
+
+    await gateway.shutdown();
+  });
+
+  test("an assistant thread is served the app-steering set, and only it", async () => {
+    const store = freshStore();
+    const { gateway } = makeGateway(store);
+    await gateway.ready;
+
+    // The other side of the scope boundary the round-trip test asserts. This
+    // thread sits on the assistant's sentinel path rather than a codebase, and
+    // that one fact is what swaps the whole served set: the app-steering tools
+    // in, the worker tools out.
+    store.ensureThread({
+      threadId: "assistant-1",
+      projectPath: GLOBAL_ASSISTANT_PROJECT_PATH,
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+    const conn = gateway.connectionForThread("assistant-1", "claudeAgent", "sonnet");
+    expect(conn.scope).toBe("assistant");
+
+    const res = await mcpPost(conn.url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    });
+    const names = (rpcResult(res).tools ?? []).map((t) => t.name);
+    expect(names).toEqual([
+      "app_get_theme_state",
+      "app_list_available_themes",
+      "app_set_theme",
+      "app_preview_theme_override",
+      "app_create_custom_theme",
+      "app_list_agents",
+      "app_create_agent",
+      "app_update_agent",
+      "app_delete_agent",
+      "app_set_active_agent",
+      "app_list_subagent_presets",
+      "app_create_subagent_preset",
+      "app_update_subagent_preset",
+      "app_delete_subagent_preset",
+      "app_get_strip_settings",
+      "app_set_strip_settings",
+      "app_list_projects",
+      "app_get_project",
+      "app_list_threads",
+      "app_read_thread",
+      "app_start_thread",
+    ]);
+
+    // Every tool it was handed is one the host-context block will name — the
+    // grant and the prose are minted together, so a session can never be told
+    // about a tool it did not get, or given one it was never told about.
+    expect(conn.tools.map((tool) => tool.name)).toEqual(names);
+
+    // The boundary holds at call time too, not just in the listing: a worker
+    // tool the assistant never saw is refused rather than quietly run.
+    const denied = await mcpPost(conn.url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "kone_scratchpad_read", arguments: {} },
+    });
+    expect(rpcResult(denied).isError).toBe(true);
+    expect(rpcResult(denied).structuredContent.error.code).toBe("permission_denied");
 
     await gateway.shutdown();
   });

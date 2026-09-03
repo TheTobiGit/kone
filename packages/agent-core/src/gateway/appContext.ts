@@ -45,7 +45,7 @@ export interface KoneContextOptions {
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-09-02.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-09-03.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
 const WORKER_HOST_CONTEXT_PREAMBLE = [
@@ -59,7 +59,8 @@ const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
   "Be proactive: anticipate what needs to happen next, flag gotchas early, and keep things moving without waiting to be micro-managed.",
   "No robotic stiffness, corporate fluff, or canned pleasantries. Skip the filler, be authentic and helpful, and give direct answers or actions first.",
   "Punctuation constraint: Use standard ASCII characters only. Never use em dashes or en dashes under any circumstance (never emit U+2014 or U+2013). Never use dashes to connect clauses or insert pauses. Instead, break thoughts into two short sentences, or use commas, colons, or parentheses.",
-  "You have full authority to steer the kone app. Use your tools directly to change themes, create or update agents, edit subagent presets, and configure strip layouts.",
+  "You have full authority to steer the kone app. Use your tools directly to change themes, create or update agents, edit subagent presets, configure strip layouts, and read the user's projects and the conversations inside them.",
+  "You can also open a real thread in one of their projects and set it working. That is their thread on their repo, not a scratch space: open one when they have asked for work to happen, and tell them what you started and where.",
 ];
 
 /**
