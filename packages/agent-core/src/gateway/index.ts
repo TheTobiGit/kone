@@ -20,7 +20,7 @@ import { makeMcpTransport } from "./mcpTransport.js";
 import { createRegistry, type GatewayApprove } from "./registry.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
-
+import { createIrcTools } from "./tools/irc.js";
 import { createLaunchTools, ProcessSupervisor } from "./tools/launch.js";
 import {
   createAppThemeTools,
@@ -31,8 +31,10 @@ import {
 import {
   type AgentRosterEntry,
   type AppAgentToolOptions,
+  createAppAgentTools,
 } from "./tools/appAgents.js";
 import { createAppSubagentTools } from "./tools/appSubagents.js";
+import { GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
 import {
   createAppStripTools,
   type AppStripToolOptions,
@@ -125,14 +127,25 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const inFlight = makeInFlightRequestRegistry();
   const turnState = new Map<string, TurnState>();
   const launchSupervisor = new ProcessSupervisor();
-  const tools = [
+  const workerTools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
+    ...createIrcTools(
+      input.isThreadLive
+        ? { store: input.store, isThreadLive: input.isThreadLive }
+        : { store: input.store },
+    ),
     ...createLaunchTools({ supervisor: launchSupervisor }),
+  ].map((tool) => ({ ...tool, target: "worker" as const }));
+
+  const assistantTools = [
     ...createAppThemeTools(appThemeOptions),
+    ...createAppAgentTools(appAgentOptions),
     ...createAppSubagentTools({ store: input.store, emit: input.emit }),
     ...createAppStripTools(appStripOptions),
-  ];
+  ].map((tool) => ({ ...tool, target: "assistant" as const }));
+
+  const tools = [...workerTools, ...assistantTools];
   const registry = createRegistry(tools, { approve: input.approve });
   const transport = makeMcpTransport({
     credentials,
@@ -183,10 +196,15 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     // GatewayCredentials, the tool half from the registry that will actually
     // serve the calls. An adapter can then describe the session's tools without
     // knowing a registry exists.
-    connectionForThread: (threadId, provider, model) => ({
-      ...credentials.connectionForThread(threadId, provider, model),
-      tools: registry.listToolPrompts(),
-    }),
+    connectionForThread: (threadId, provider, model) => {
+      const isAssistant = input.store.threadProjectPath(threadId) === GLOBAL_ASSISTANT_PROJECT_PATH;
+      const scope = isAssistant ? "assistant" : "worker";
+      return {
+        ...credentials.connectionForThread(threadId, provider, model),
+        tools: registry.listToolPrompts(scope),
+        scope,
+      };
+    },
     issueBootstrapToken: (sessionToken) => credentials.issueStdioBootstrapToken(sessionToken),
     revokeThread: (threadId) => {
       // Revoke in-flight work before dropping the token so an active

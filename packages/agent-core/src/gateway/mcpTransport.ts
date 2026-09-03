@@ -12,6 +12,7 @@
 // the HTTP layer.
 
 import type { ConversationStore } from "../ConversationStore.js";
+import { isAssistantProjectPath, workingDirFor } from "../assistantWorkspace.js";
 import type { ProviderKind } from "../types.js";
 import type { GatewayCredentials } from "./credentials.js";
 import type { InFlightRequestRegistry } from "./inFlightRequests.js";
@@ -192,6 +193,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       cwd: string;
       turnId: string | null;
       signal?: AbortSignal;
+      isAssistant?: boolean;
     },
   ): Promise<GatewayRecord> {
     switch (request.method) {
@@ -207,12 +209,13 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
       case "ping":
         return jsonRpcResult(request.id, {});
       case "tools/list": {
+        const scope = ctx.isAssistant ? "assistant" : "worker";
         // SAFETY: a tool's input schema is plain JSON by construction — the
         // registry types it as a record of unknown values only because tool
         // declarations arrive from many modules; here it crosses into the
         // JSON-RPC envelope that is serialized verbatim, where the concrete
         // gateway value type applies.
-        const tools = input.registry.listTools() as ReadonlyArray<{
+        const tools = input.registry.listTools(scope) as ReadonlyArray<{
           name: string;
           description: string;
           inputSchema: GatewayRecord;
@@ -233,7 +236,8 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
           requestId: request.id,
           signal: ctx.signal,
         };
-        const result = await input.registry.call(toolCtx, name, request.params.arguments);
+        const scope = ctx.isAssistant ? "assistant" : "worker";
+        const result = await input.registry.call(toolCtx, name, request.params.arguments, scope);
         return jsonRpcResult(request.id, result);
       }
       default:
@@ -260,8 +264,8 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
         };
       }
       const { threadId, provider, model } = identity;
-      const cwd = input.store.threadProjectPath(threadId);
-      if (!cwd) {
+      const projectPath = input.store.threadProjectPath(threadId);
+      if (!projectPath) {
         return {
           status: 401,
           body: jsonRpcError(
@@ -271,6 +275,12 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
           ),
         };
       }
+      // The assistant's project path is a sentinel, not a place, so the cwd a
+      // tool call runs against is resolved the same way a session's own spawn
+      // resolves it — one answer for both, or a tool and the CLI it belongs to
+      // would disagree about where the thread is.
+      const isAssistant = isAssistantProjectPath(projectPath);
+      const cwd = workingDirFor(projectPath);
 
       // The security boundary: a write tool's authority is the exact turn
       // running when the request arrives. Bind at ingress — the first bind
@@ -332,7 +342,7 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
             try {
               const result = await handleRequest(
                 message.request,
-                { threadId, provider, model, cwd, turnId, signal: controller.signal },
+                { threadId, provider, model, cwd, turnId, signal: controller.signal, isAssistant },
               );
               response = controller.signal.aborted ? null : result;
             } catch {

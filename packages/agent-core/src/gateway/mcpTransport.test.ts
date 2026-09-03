@@ -21,6 +21,7 @@ import {
 import { createIrcTools, IrcMailbox } from "./tools/irc.js";
 import { createSpawnTools } from "./tools/spawn.js";
 import { initSpawnEngine } from "../threadSpawn.js";
+import { GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
 
 const PROJECT = "/tmp/proj";
 
@@ -985,5 +986,72 @@ describe("mcp transport: new tools (kone_spawn_batch, kone_irc_send, kone_irc_in
     expect(responses[0]?.result.structuredContent.delivered).toBe(true);
     expect(responses[1]?.id).toBe(52);
     expect(responses[1]?.result.structuredContent.count).toBe(0);
+  });
+
+  test("assistant thread tools/list returns assistant tools and omits worker tools", async () => {
+    const credentials = new GatewayCredentials();
+    const workerTool: ToolEntry = {
+      name: "kone_scratchpad_read",
+      description: "Worker tool",
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object" },
+      permission: "allow",
+      requiresActiveTurn: false,
+      target: "worker",
+      handler: async () => ({ content: [] }),
+    };
+    const assistantTool: ToolEntry = {
+      name: "app_apply_theme",
+      description: "Assistant tool",
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object" },
+      permission: "allow",
+      requiresActiveTurn: false,
+      target: "assistant",
+      handler: async () => ({ content: [] }),
+    };
+    const registry = createRegistry([workerTool, assistantTool]);
+    const store: GatewayTransportStore = {
+      threadProjectPath: (threadId: string) =>
+        threadId === "thread-assistant"
+          ? GLOBAL_ASSISTANT_PROJECT_PATH
+          : threadId === "thread-worker"
+            ? "/workspace/project"
+            : null,
+    };
+    const transport = makeMcpTransport({
+      credentials,
+      registry,
+      store,
+      turnState: new Map(),
+      serverVersion: "0.1.0",
+      instructions: "test",
+    });
+
+    const connAssistant = credentials.connectionForThread("thread-assistant", "claude");
+    const authAssistant = `Bearer ${connAssistant.bearerToken}`;
+    const resAssistant = await post(transport, authAssistant, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {},
+    });
+    // SAFETY: Verified response structure
+    const bodyAssistant = resAssistant.body as { result: { tools: Array<{ name: string }> } };
+    const toolNamesAssistant = bodyAssistant.result.tools.map((t) => t.name);
+    expect(toolNamesAssistant).toEqual(["app_apply_theme"]);
+
+    const connWorker = credentials.connectionForThread("thread-worker", "claude");
+    const authWorker = `Bearer ${connWorker.bearerToken}`;
+    const resWorker = await post(transport, authWorker, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+      params: {},
+    });
+    // SAFETY: Verified response structure
+    const bodyWorker = resWorker.body as { result: { tools: Array<{ name: string }> } };
+    const toolNamesWorker = bodyWorker.result.tools.map((t) => t.name);
+    expect(toolNamesWorker).toEqual(["kone_scratchpad_read"]);
   });
 });

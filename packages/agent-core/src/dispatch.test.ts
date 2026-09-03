@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
@@ -12,8 +12,11 @@ import type {
   QueuedTurnStore,
   RuntimeEvent,
   SendTurnInput,
+  SessionStartInput,
   TurnStartResult,
 } from "./types.js";
+import { assistantWorkingDir } from "./assistantWorkspace.js";
+import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
 // The thread dispatcher against a REAL ConversationStore and a real
 // AgentService, with only the provider adapter faked. The store is what makes
@@ -44,6 +47,7 @@ class FakeAdapter {
     supportsSubagents: false,
   };
   static sent: string[] = [];
+  static startedCwds: string[] = [];
   static turnCounter = 0;
   constructor(readonly emit: EmitEvent) {}
   async discover(): Promise<never[]> {
@@ -52,8 +56,12 @@ class FakeAdapter {
   async listModels(): Promise<never[]> {
     return [];
   }
-  async startSession(): Promise<{ threadId: string; provider: "codex" }> {
-    return { threadId: THREAD, provider: "codex" };
+  async startSession(
+    input: Pick<SessionStartInput, "threadId" | "cwd">,
+  ): Promise<{ threadId: string; provider: "codex" }> {
+    // The directory a provider process would have been spawned in.
+    FakeAdapter.startedCwds.push(input.cwd);
+    return { threadId: input.threadId, provider: "codex" };
   }
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
     FakeAdapter.sent.push(input.input);
@@ -262,5 +270,46 @@ describe("composeTurnDelivery", () => {
   test("an empty preamble changes nothing", () => {
     expect(composeTurnDelivery({ message: "hi", preamble: "" }).dispatch).toBe("hi");
     expect(composeTurnDelivery({ message: "hi", preamble: null }).dispatch).toBe("hi");
+  });
+});
+
+// The global assistant has no project, and its project path says so: a
+// sentinel, not a directory. It is the right thing to store and to scope tools
+// by — and the wrong thing to hand a child process, which is what took the
+// assistant's very first send down: no CLI came up, so the turn arrived at a
+// thread with no session behind it.
+describe("thread dispatcher: where a session is spawned", () => {
+  beforeEach(() => {
+    FakeAdapter.sent.length = 0;
+    FakeAdapter.startedCwds.length = 0;
+    FakeAdapter.turnCounter = 0;
+  });
+
+  test("an assistant thread keeps the sentinel and spawns in a real directory", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+
+    const assistantThread = "t-assistant";
+    await dispatcher.startThread({
+      threadId: assistantThread,
+      provider: "codex",
+      cwd: GLOBAL_ASSISTANT_PROJECT_PATH,
+    });
+
+    // The thread's identity is untouched — this is what the gateway reads to
+    // know it is talking to the assistant rather than to a worker.
+    expect(store.threadProjectPath(assistantThread)).toBe(GLOBAL_ASSISTANT_PROJECT_PATH);
+    const spawnedIn = FakeAdapter.startedCwds;
+    expect(spawnedIn).toEqual([assistantWorkingDir()]);
+    expect(existsSync(spawnedIn[0] ?? "")).toBe(true);
+  });
+
+  test("a project thread spawns where it lives", async () => {
+    const { dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+
+    await dispatcher.startThread({ threadId: "t-project", provider: "codex", cwd: CWD });
+
+    expect(FakeAdapter.startedCwds).toEqual([CWD]);
   });
 });

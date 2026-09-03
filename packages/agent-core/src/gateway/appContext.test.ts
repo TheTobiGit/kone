@@ -94,6 +94,13 @@ describe("kone host context (app-context injection)", () => {
     expect(claudeSystemPromptAppend({ gateway: grant() })).toBe(renderKoneHostContext(TOOLS));
     expect(claudeSystemPromptAppend({})).toBe("");
   });
+  test("assistant scope renders global assistant personality preamble", () => {
+    const block = renderKoneHostContext(TOOLS, "assistant");
+    expect(block).toContain("You are kone's global assistant");
+    expect(block).toContain("hyper-organized close friend");
+    expect(block).toContain("Never use em dashes");
+    expect(block).toContain("full authority to steer the kone app");
+  });
 
   test("codex channel: full developer_instructions with a Default collaboration-mode block", () => {
     const block = codexDeveloperInstructions({ gateway: grant() });

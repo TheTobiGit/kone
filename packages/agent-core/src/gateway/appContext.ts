@@ -37,20 +37,29 @@ import type { AgentPersona, GatewayConnection, GatewayToolPrompt } from "../type
 export interface KoneContextOptions {
   /** The session's gateway grant. Absent means no `kone_*` tools were installed,
    *  and no host-context block is delivered at all. */
-  gateway?: Pick<GatewayConnection, "tools">;
+  gateway?: Pick<GatewayConnection, "tools" | "scope">;
   /** Whose name is on the thread. Absent for a guest, which is told nothing. */
   agent?: AgentPersona;
+  /** Session role: worker agent on a codebase or global app assistant. */
+  scope?: "worker" | "assistant";
 }
 
 /** Versioned marker so a host-context block in a transcript can be dated. */
-export const KONE_HOST_CONTEXT_VERSION = "2026-09-01.1";
+export const KONE_HOST_CONTEXT_VERSION = "2026-09-02.1";
 export const KONE_HOST_CONTEXT_MARKER = `[kone host context ${KONE_HOST_CONTEXT_VERSION}]`;
 
-/** What every gateway session is told regardless of which tools it got. */
-const HOST_CONTEXT_PREAMBLE = [
+const WORKER_HOST_CONTEXT_PREAMBLE = [
   "You are running inside kone, a desktop app for AI-assisted development. kone hosts this agent session and renders your work on the user's project board.",
-  "The `kone` MCP server is kone's app gateway: your native connection to the app the user is looking at. App tools are part of your job — when one fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
-  "WORKSPACE CONTROLS: To change themes, dark/light mode, or workspace appearance, invoke `app_set_theme` directly. Never run shell commands (grep, ps, node, curl) to configure the UI.",
+  "The `kone` MCP server is kone's app gateway: your connection to the workspace. App tools are part of your job — when one fits, use it directly instead of searching files or inventing terminal workarounds. Tool names may carry an MCP prefix (e.g. `mcp__kone__kone_scratchpad_read`); the semantics are the same.",
+];
+
+const ASSISTANT_HOST_CONTEXT_PREAMBLE = [
+  "You are kone's global assistant: a permanent, unscoped technical partner and app steering co-pilot.",
+  "You talk like a hyper-organized close friend texting: casual, warm, conversational, and direct. Keep the cadence natural, concise, and easy to read in quick bursts.",
+  "Be proactive: anticipate what needs to happen next, flag gotchas early, and keep things moving without waiting to be micro-managed.",
+  "No robotic stiffness, corporate fluff, or canned pleasantries. Skip the filler, be authentic and helpful, and give direct answers or actions first.",
+  "Punctuation constraint: Use standard ASCII characters only. Never use em dashes or en dashes under any circumstance (never emit U+2014 or U+2013). Never use dashes to connect clauses or insert pauses. Instead, break thoughts into two short sentences, or use commas, colons, or parentheses.",
+  "You have full authority to steer the kone app. Use your tools directly to change themes, create or update agents, edit subagent presets, and configure strip layouts.",
 ];
 
 /**
@@ -65,8 +74,12 @@ const HOST_CONTEXT_PREAMBLE = [
  * Returns "" for a session that got no announceable tools, which keeps a
  * gateway that served nothing from claiming otherwise.
  */
-export function renderKoneHostContext(tools: readonly GatewayToolPrompt[]): string {
+export function renderKoneHostContext(
+  tools: readonly GatewayToolPrompt[],
+  scope: "worker" | "assistant" = "worker",
+): string {
   if (!tools?.length) return "";
+  const preamble = scope === "assistant" ? ASSISTANT_HOST_CONTEXT_PREAMBLE : WORKER_HOST_CONTEXT_PREAMBLE;
   const index = tools.map((tool) => {
     const approval = tool.needsApproval ? " (stops for the user's approval)" : "";
     return `- \`${tool.name}\`: ${tool.snippet}${approval}`;
@@ -82,7 +95,7 @@ export function renderKoneHostContext(tools: readonly GatewayToolPrompt[]): stri
   }
   return [
     KONE_HOST_CONTEXT_MARKER,
-    ...HOST_CONTEXT_PREAMBLE,
+    ...preamble,
     "",
     "Tools kone gives you in this session:",
     ...index,
@@ -196,8 +209,11 @@ export interface KoneContextBlocks {
  * name it does not have.
  */
 export function buildKoneContext(options: KoneContextOptions): KoneContextBlocks {
+  const scope = options.scope ?? options.gateway?.scope ?? "worker";
   return {
-    hostContext: options.gateway ? renderKoneHostContext(options.gateway.tools) : "",
+    hostContext: options.gateway
+      ? renderKoneHostContext(options.gateway.tools, scope)
+      : "",
     identity: renderAgentIdentity(options.agent),
   };
 }
