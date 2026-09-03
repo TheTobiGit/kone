@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { app, BrowserWindow, nativeTheme, net, protocol, shell } from "electron";
+import { app, BrowserWindow, globalShortcut, nativeTheme, net, protocol, shell } from "electron";
 
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
@@ -300,11 +300,23 @@ if (gotSingleInstanceLock) {
     registerIpc();
     await createWindow();
 
+    globalShortcut.register("CommandOrControl+E", () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send("assistant:toggle");
+    });
+
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         void createWindow();
       }
     });
+  });
+
+  app.on("will-quit", () => {
+    globalShortcut.unregisterAll();
   });
 
   app.on("window-all-closed", () => {

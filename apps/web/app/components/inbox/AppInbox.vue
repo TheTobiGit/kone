@@ -17,7 +17,7 @@
 // gutter between them. The window itself is the outer shelf, so there is no
 // frame around the panes to repeat an edge that is already there.
 
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useElementSize, useEventListener, useStorage } from "@vueuse/core";
 import {
   CHROME_WIDTH,
@@ -28,6 +28,8 @@ import {
   MIN_LIST_WIDTH,
   RAIL_WIDTH,
 } from "~/utils/inboxLayout";
+import InboxNewThread from "~/components/inbox/InboxNewThread.vue";
+import { useShortcuts } from "~/composables/useShortcuts";
 import type { InboxViewId } from "~/types/inbox";
 import type { SessionSummary } from "~/types/session";
 
@@ -41,6 +43,7 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+const { matchesShortcut } = useShortcuts();
 // Where a thread started here goes on the plane. See useStudioIntake.
 const intake = useStudioIntake();
 
@@ -84,9 +87,14 @@ watch(
   { immediate: true },
 );
 
+const newThreadRef = ref<InstanceType<typeof InboxNewThread> | null>(null);
+
 function startNewThread(): void {
   cue("select");
   composing.value = true;
+  void nextTick(() => {
+    newThreadRef.value?.focus();
+  });
 }
 
 /** The composer's thread has started, so the composer's work is done. Showing
@@ -200,13 +208,24 @@ function onGutterReset(): void {
   stored.value = DEFAULT_LIST_WIDTH;
 }
 
-// ── leaving ──────────────────────────────────────────────────────────────────
+// ── keyboard shortcuts & leaving ─────────────────────────────────────────────
 // Escape leaves, but only when nothing inside owns it first — anything that
 // answers Escape of its own stops the event at its handler, so reaching here
 // means the inbox itself is the frontmost thing.
+//
+// ⌘N starts a new conversation in the inbox portal rather than delegating to
+// the studio plane behind it.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!props.open || e.key !== "Escape" || e.defaultPrevented) return;
-  close();
+  if (!props.open || e.defaultPrevented) return;
+  if (matchesShortcut("new-thread", e)) {
+    e.preventDefault();
+    startNewThread();
+    return;
+  }
+  if (e.key === "Escape") {
+    close();
+    return;
+  }
 });
 
 function close(): void {
@@ -270,7 +289,11 @@ function close(): void {
     </div>
 
     <section class="inbox__pane inbox__pane--read" aria-label="Thread">
-      <InboxNewThread v-if="visited && writing" @started="onThreadStarted" />
+      <InboxNewThread
+        v-if="visited && writing"
+        ref="newThreadRef"
+        @started="onThreadStarted"
+      />
       <InboxThreadReader
         v-else-if="selected"
         :row="selected"

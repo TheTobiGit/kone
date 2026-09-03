@@ -230,6 +230,32 @@ function onSettingsHotkey(e: KeyboardEvent) {
 }
 onMounted(() => window.addEventListener("keydown", onSettingsHotkey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
+
+// The assistant's card is mounted only while it is up, the way every other
+// modal on this page is: the shell's exit animation is played by the card
+// itself, and a card that is never unmounted has no entrance left to play.
+const { isOpen: assistantOpen, toggle: toggleAssistant } = useGlobalAssistant();
+const { matchesShortcut: matchesAssistantHotkey } = useShortcuts();
+function onAssistantHotkey(e: KeyboardEvent) {
+  if (!matchesAssistantHotkey("open-assistant", e)) return;
+  if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
+  e.preventDefault();
+  cue("press");
+  toggleAssistant();
+}
+onMounted(() => window.addEventListener("keydown", onAssistantHotkey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onAssistantHotkey));
+
+// The desktop shell's own summon (tray / app menu). It is listened for here
+// rather than inside the card because the card is not there to hear it when
+// the assistant is away, which is precisely when it is being called for.
+onMounted(() => {
+  if (!import.meta.client) return;
+  const onToggle = window.koneDesktop?.window?.onAssistantToggle;
+  if (!onToggle) return;
+  const unsub = onToggle(() => toggleAssistant());
+  onBeforeUnmount(unsub);
+});
 </script>
 
 <template>
@@ -281,6 +307,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
         <StudioAppStudio
           :open="studioOpen"
           :active-project="project"
+          :inbox-open="inboxOpen"
           @summon="summonStudio"
           @close="studioOpen = false"
           @open-file="onStudioOpenFile"
@@ -321,5 +348,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onSettingsHotkey));
       @create="onCreated"
       @cancel="onCreateCancel"
     />
+
+    <AssistantGlobalAssistantModal v-if="assistantOpen" />
   </div>
 </template>

@@ -73,6 +73,16 @@ const ACTIONS: ShortcutAction[] = [
     personalize: true,
   },
   {
+    id: "open-assistant",
+    label: "Summon the assistant",
+    hint: "Bring the global assistant over whatever you are looking at; press again to send it away.",
+    description: "A global AI assistant for quick questions, syntax, architecture, and steering the app.",
+    group: "General",
+    default: "mod+e",
+    rebindable: true,
+    personalize: true,
+  },
+  {
     id: "toggle-settings",
     label: "Open settings drawer",
     hint: "Open or close the personalization drawer.",

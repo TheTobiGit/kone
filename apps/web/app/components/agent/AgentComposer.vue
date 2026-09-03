@@ -53,6 +53,16 @@ import {
 const props = defineProps<{
   /** Absolute project root used by the @ file picker. */
   projectPath: string;
+  /** Leave the context tray off. It is tucked in under the card everywhere
+   *  else; a surface where every slot on it is already settled — one agent, one
+   *  place, one conversation, none of them switchable — asks for it gone, since
+   *  the strip would only be restating what the surface itself already is.
+   *
+   *  Stated as the exception rather than as `contextTray: true`, because Vue
+   *  hands an absent boolean prop `false` rather than `undefined`: a
+   *  default-on flag reads as off at every call site that doesn't mention it,
+   *  which is most of them. */
+  hideContextTray?: boolean;
   /** Project display name for the context tray tucked under the card. */
   projectName?: string;
   /** The checked-out branch, shown in the tray. Omit it (a non-git folder) and
@@ -153,6 +163,7 @@ const { cue } = useSound();
 
 const threadLabel = computed(() => props.threadName?.trim() || "New thread");
 const canSwitchBranch = computed(() => props.branchSwitchable !== false);
+const showTray = computed(() => !props.hideContextTray);
 
 // ── agent (leading the context tray) ─────────────────────────────────────────
 // Who the turn goes to. It sits in the tray with the project and the branch
@@ -507,7 +518,10 @@ async function wake() {
     closeTimer = null;
   }
   closing.value = false;
-  if (open.value) return;
+  if (open.value) {
+    field.value?.focus();
+    return;
+  }
   open.value = true;
   opening.value = true;
   await nextTick();
@@ -673,7 +687,15 @@ async function setDraft(draft: string) {
   syncSoon();
 }
 
-defineExpose({ wake, setDraft });
+function focus() {
+  if (!open.value) {
+    void wake();
+    return;
+  }
+  field.value?.focus();
+}
+
+defineExpose({ wake, setDraft, focus });
 </script>
 
 <template>
@@ -1014,6 +1036,7 @@ defineExpose({ wake, setDraft });
          project. The thread name sits on the far right so the left stays who and
          where, and the right names the conversation. -->
     <div
+      v-if="showTray"
       class="tray"
       :class="{ 'is-shown': open, 'is-closing': closing }"
       :inert="!open"

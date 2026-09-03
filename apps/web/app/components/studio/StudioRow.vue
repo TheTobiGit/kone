@@ -786,18 +786,7 @@ async function syncComposerTarget(): Promise<void> {
     }
     if (!props.visible) return;
 
-    let blank = blankThreadPane.value;
-    // Same invariant as onSend: with nothing focused the send goes through the
-    // blank thread slot (or mints one if the row has none yet). Materialise it
-    // here so model picks aren't written to a boot session restore is about to
-    // evict.
-    if (!blank) {
-      const hasAnyThread = panes.value.some((p) => p.kind === "thread");
-      if (!hasAnyThread) {
-        await studio.open("thread", { focus: false });
-        blank = blankThreadPane.value;
-      }
-    }
+    const blank = blankThreadPane.value;
     if (!blank) return;
     if (!blank.session) await attach(blank.id);
     const sk = blankThreadPane.value?.session?.key;

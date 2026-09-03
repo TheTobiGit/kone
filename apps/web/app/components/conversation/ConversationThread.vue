@@ -20,6 +20,7 @@ import AgentActivity from "~/components/agent/AgentActivity.vue";
 import TurnWorkFold from "~/components/turn/TurnWorkFold.vue";
 import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
 import AgentFace from "~/components/agent/AgentFace.vue";
+import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
@@ -100,6 +101,12 @@ const props = defineProps<{
    *  there is nothing to read, and filling it with an invitation would be
    *  offering a gesture that is not on the table. */
   emptyArt?: boolean;
+  /** The replies here are kone's own rather than an agent's. The global
+   *  assistant is one agent for every conversation it ever has, so its turns
+   *  are spoken by the app's own face and name instead of an identity rolled
+   *  from the thread's id — a new face every chat would be reporting a change
+   *  of hands that never happened. */
+  house?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -121,8 +128,10 @@ const emit = defineEmits<{
 const { cue } = useSound();
 
 /** This thread's agent. A blank column has no id yet, so it falls back to the
- *  house name until its session has one. */
-const agent = computed(() => agentIdentity(props.agentSeed));
+ *  house name until its session has one — which is also the name kone answers
+ *  under on a surface that is kone itself, so the house case asks for it
+ *  outright by seeding nothing. */
+const agent = computed(() => agentIdentity(props.house ? null : props.agentSeed));
 
 // Warm the Markdown parser on mount: markdown-it is code-split behind a dynamic
 // import, so the very first streamed reply would otherwise flash raw source for a
@@ -935,7 +944,14 @@ watch(
                face would make the transcript a group chat instead of a
                document, and the asymmetry is what keeps it one. -->
           <div class="speaker">
-            <AgentFace :seed="agentSeed" :size="26" class="speaker__face" />
+            <SphereFace
+              v-if="house"
+              class="speaker__sphere"
+              :size="26"
+              :follow="false"
+              :still="block.state !== 'running'"
+            />
+            <AgentFace v-else :seed="agentSeed" :size="26" class="speaker__face" />
             <button
               v-if="block.state !== 'running' && viewOf(block).foldedGroups.length"
               type="button"
@@ -1291,6 +1307,14 @@ watch(
   z-index: 1;
   border-radius: 50%;
   background: var(--ground);
+}
+/* kone's own mark, in the slot an agent's tile would take. It is a silhouette
+   rather than a tile, so it gets the layer and the footprint without the disc
+   behind it — a circle under this face would read as a badge it is sitting in. */
+.speaker__sphere {
+  position: relative;
+  z-index: 1;
+  flex: none;
 }
 .speaker__head {
   display: inline-flex;

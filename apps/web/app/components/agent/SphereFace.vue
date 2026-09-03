@@ -19,8 +19,12 @@ const props = withDefaults(
     follow?: boolean;
     /** Something is covering it — hold the last frame instead of painting. */
     covered?: boolean;
+    /** Hold an awake pose and never paint again. For a face that is a label
+     *  rather than a presence: a settled turn in a transcript is a document,
+     *  and one clock per reply would be a page full of them. */
+    still?: boolean;
   }>(),
-  { size: 55, follow: true, covered: false },
+  { size: 55, follow: true, covered: false, still: false },
 );
 
 const root = ref<HTMLElement | null>(null);
@@ -91,6 +95,7 @@ function step(now: number) {
 
 function shouldRun() {
   if (reduced) return false;
+  if (props.still) return false;
   if (props.covered) return false;
   if ("document" in globalThis && document.hidden) return false;
   return true;
@@ -111,6 +116,7 @@ function sync() {
 }
 
 watch(() => props.covered, sync);
+watch(() => props.still, sync);
 watch(() => props.size, () => render(0));
 
 onMounted(() => {
