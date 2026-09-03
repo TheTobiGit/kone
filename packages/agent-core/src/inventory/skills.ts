@@ -11,13 +11,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { parseFrontmatter } from "./frontmatter.js";
-import type { InventoryError, SkillEntry } from "./types.js";
+import type { InventoryError, PluginEntry, SkillEntry } from "./types.js";
 
 export const MAX_FILE_BYTES = 256 * 1024;
 const MAX_ENTRIES_PER_DIR = 500;
-// t3-style stable v1: single-level scan, no namespaced vendor/app layout.
-// Restored to 2 when v2 adds plugin/vendor skills.
-const MAX_BFS_DEPTH = 1;
+const MAX_BFS_DEPTH = 4;
 const MAX_PROJECT_ANCESTORS = 1;
 // A pathological number of same-named copies must not make the payload
 // unbounded — eight is more than any real skill has ever had.
@@ -37,10 +35,10 @@ type SkillRoot = {
 export type SkillRootTarget = SkillRoot & { readonly exists: boolean };
 
 // The user/global roots kone scans across installed agent providers.
-// Per online docs 2026:
-// - Claude Code: ~/.claude/skills
-// - Codex CLI: ~/.codex/skills
-// - Cursor: ~/.cursor/skills (global) + project .cursor/skills (Cursor now supports global)
+// Per online docs 2026 + Synara parity:
+// - Claude Code: ~/.claude/skills (global) + plugin cache ~/.claude/plugins/cache
+// - Codex CLI: ~/.codex/skills (global, includes .system)
+// - Cursor: ~/.cursor/skills + legacy ~/.cursor/skills-cursor (global)
 // - OpenCode: ~/.config/opencode/skills (primary) plus compat ~/.claude/skills, ~/.agents/skills
 // - Shared: ~/.agents/skills
 // - Factory/Droid: ~/.factory/skills
@@ -49,6 +47,7 @@ function userSkillRoots(home: string): SkillRoot[] {
     { dir: path.join(home, ".claude", "skills"), origin: "claude", scope: "user" },
     { dir: path.join(home, ".codex", "skills"), origin: "codex", scope: "user" },
     { dir: path.join(home, ".cursor", "skills"), origin: "cursor", scope: "user" },
+    { dir: path.join(home, ".cursor", "skills-cursor"), origin: "cursor", scope: "user" },
     { dir: path.join(home, ".config", "opencode", "skills"), origin: "opencode", scope: "user" },
     { dir: path.join(home, ".agents", "skills"), origin: "agents", scope: "user" },
     { dir: path.join(home, ".factory", "skills"), origin: "factory", scope: "user" },
@@ -201,13 +200,17 @@ async function readSkillEntry(
   // boolean coercion happens here, and only "true" counts.
   const manualInvocation = readAliasField(frontmatter, ["disable-model-invocation", "disableModelInvocation"]);
 
+  // System-bundled skills live under a `.system` segment (e.g. ~/.codex/skills/.system/…)
+  // — mark them as system-owned regardless of which root they were found under.
+  const effectiveScope = skillMdPath.includes("/.system/") ? "system" as const : scope;
+
   return {
     name,
     description,
     path: skillMdPath,
     directory,
     origin,
-    scope,
+    scope: effectiveScope,
     displayName: readAliasField(frontmatter, ["display-name", "displayName", "title"]),
     shortDescription: readAliasField(frontmatter, ["short-description", "shortDescription", "summary"]),
     author: readSkillAuthor(frontmatter),
@@ -428,6 +431,205 @@ export async function readFactoryPluginSkills(home: string): Promise<SkillEntry[
   return perMarketplace.flat();
 }
 
+export async function discoverClaudePlugins(home: string): Promise<PluginEntry[]> {
+  const pluginsDir = path.join(home, ".claude", "plugins");
+  const manifestPath = path.join(pluginsDir, "installed_plugins.json");
+  let info;
+  try {
+    info = await stat(manifestPath);
+  } catch {
+    return [];
+  }
+  if (!info.isFile() || info.size > MAX_FILE_BYTES) return [];
+  let manifest: PluginManifestValue | undefined;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch {
+    return [];
+  }
+  const pluginsRealRoot = await realpath(pluginsDir).catch(() => pluginsDir);
+  const plugins = extractInstalledPlugins(manifest);
+  const entries = await Promise.all(
+    plugins.map(async (plugin) => {
+      if (!plugin.installPath) return null;
+      const skillsDir = path.join(plugin.installPath, "skills");
+      const resolvedSkillsDir = await realpath(skillsDir).catch(() => null);
+      if (!resolvedSkillsDir || !isContainedIn(resolvedSkillsDir, pluginsRealRoot)) return null;
+      const skillPaths = await collectSkillMarkdownPaths(skillsDir);
+      const skills = (
+        await Promise.all(skillPaths.map((p) => readSkillEntry(p, "claude", "plugin")))
+      ).filter((e): e is SkillEntry => e !== null);
+      if (skills.length === 0) return null;
+      const name = plugin.name ?? path.basename(plugin.installPath ?? "");
+      const entry: PluginEntry = {
+        name,
+        description: null,
+        path: plugin.installPath,
+        origin: "claude",
+        scope: "plugin",
+        skills,
+      };
+      return entry;
+    }),
+  );
+  return entries.filter((e): e is PluginEntry => e !== null);
+}
+
+export async function discoverFactoryPlugins(home: string): Promise<PluginEntry[]> {
+  const factoryDir = path.join(home, ".factory");
+  const marketplacesManifest = path.join(factoryDir, "plugins", "known_marketplaces.json");
+  let info;
+  try {
+    info = await stat(marketplacesManifest);
+  } catch {
+    return [];
+  }
+  if (!info.isFile() || info.size > MAX_FILE_BYTES) return [];
+  let known: PluginManifestValue | undefined;
+  try {
+    known = JSON.parse(await readFile(marketplacesManifest, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!isManifestRecord(known)) return [];
+  const factoryRealRoot = await realpath(factoryDir).catch(() => factoryDir);
+  const perMarketplace = await Promise.all(
+    Object.entries(known).map(async ([, reg]) => {
+      if (!isManifestRecord(reg)) return [];
+      const installLocation = manifestText(reg.installLocation)?.trim();
+      if (!installLocation) return [];
+      const marketplaceDir = path.resolve(factoryDir, installLocation.trim());
+      const marketplaceRealDir = await realpath(marketplaceDir).catch(() => null);
+      if (!marketplaceRealDir || !isContainedIn(marketplaceRealDir, factoryRealRoot)) return [];
+      const manifestPath = path.join(marketplaceRealDir, ".factory-plugin", "marketplace.json");
+      let manifestRaw: string;
+      try {
+        manifestRaw = await readFile(manifestPath, "utf8");
+      } catch {
+        return [];
+      }
+      let manifest: PluginManifestValue | undefined;
+      try {
+        manifest = JSON.parse(manifestRaw);
+      } catch {
+        return [];
+      }
+      if (!isManifestRecord(manifest) || !Array.isArray(manifest.plugins)) return [];
+      const plugins = manifest.plugins.filter((item): item is PluginManifestRecord => isManifestRecord(item));
+      const perPlugin = await Promise.all(
+        plugins.map(async (plugin) => {
+          const source = manifestText(plugin.source)?.trim() ?? null;
+          const pluginName = manifestText(plugin.name)?.trim() ?? null;
+          if (!source || !pluginName) return null;
+          const pluginDir = path.resolve(marketplaceRealDir, source);
+          const pluginRealDir = await realpath(pluginDir).catch(() => null);
+          if (!pluginRealDir || !isContainedIn(pluginRealDir, marketplaceRealDir)) return null;
+          const skillsDir = path.join(pluginRealDir, "skills");
+          const resolvedSkillsDir = await realpath(skillsDir).catch(() => null);
+          if (!resolvedSkillsDir || !isContainedIn(resolvedSkillsDir, marketplaceRealDir)) return null;
+          const skillPaths = await collectSkillMarkdownPaths(skillsDir);
+          const skills = (
+            await Promise.all(skillPaths.map((p) => readSkillEntry(p, "factory", "plugin")))
+          ).filter((e): e is SkillEntry => e !== null);
+          if (skills.length === 0) return null;
+          const entry: PluginEntry = {
+            name: pluginName,
+            description: manifestText(plugin.description) ?? null,
+            path: pluginRealDir,
+            origin: "factory",
+            scope: "plugin",
+            skills,
+          };
+          return entry;
+        }),
+      );
+      return perPlugin.filter((e): e is PluginEntry => e !== null);
+    }),
+  );
+  return perMarketplace.flat();
+}
+
+export async function discoverClaudeCachePlugins(home: string): Promise<PluginEntry[]> {
+  const cacheDir = path.join(home, ".claude", "plugins", "cache");
+  let entries: Dirent[];
+  try {
+    entries = await readdir(cacheDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const cacheReal = await realpath(cacheDir).catch(() => cacheDir);
+  const byName = new Map<string, PluginEntry>();
+  for (const entry of entries) {
+    const isDir = entry.isDirectory() || (entry.isSymbolicLink() && (await stat(path.join(cacheDir, entry.name)).then((s) => s.isDirectory()).catch(() => false)));
+    if (!isDir) continue;
+    const pluginGroupDir = path.join(cacheDir, entry.name);
+    let subEntries: Dirent[];
+    try {
+      subEntries = await readdir(pluginGroupDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sub of subEntries) {
+      const subIsDir = sub.isDirectory() || (sub.isSymbolicLink() && (await stat(path.join(pluginGroupDir, sub.name)).then((s) => s.isDirectory()).catch(() => false)));
+      if (!subIsDir) continue;
+      const pluginName = sub.name;
+      const pluginBase = path.join(pluginGroupDir, pluginName);
+      let versions: Dirent[];
+      try {
+        versions = await readdir(pluginBase, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      // keep only the latest version (lexicographically last) to avoid duplicate cards for same plugin
+      const versionDirs = versions.filter((v) => v.isDirectory() || v.isSymbolicLink());
+      if (versionDirs.length === 0) continue;
+      // pick last sorted by name (semver-ish)
+      versionDirs.sort((a, b) => a.name.localeCompare(b.name));
+      const latest = versionDirs[versionDirs.length - 1]!;
+      const versionDir = path.join(pluginBase, latest.name);
+      const skillsDir = path.join(versionDir, "skills");
+      const resolvedSkillsDir = await realpath(skillsDir).catch(() => null);
+      if (!resolvedSkillsDir || !isContainedIn(resolvedSkillsDir, cacheReal)) continue;
+      const skillPaths = await collectSkillMarkdownPaths(skillsDir);
+      const skills = (await Promise.all(skillPaths.map((p) => readSkillEntry(p, "claude", "plugin")))).filter((e): e is SkillEntry => e !== null);
+      if (skills.length === 0) continue;
+      // dedupe by plugin name — keep the one with more skills (latest version)
+      const existing = byName.get(pluginName);
+      if (!existing || skills.length > existing.skills.length) {
+        byName.set(pluginName, {
+          name: pluginName,
+          description: null,
+          path: versionDir,
+          origin: "claude",
+          scope: "plugin",
+          skills,
+        });
+      }
+    }
+  }
+  return [...byName.values()];
+}
+
+export async function discoverPlugins(home: string, errors: InventoryError[]): Promise<PluginEntry[]> {
+  const out: PluginEntry[] = [];
+  try {
+    out.push(...(await discoverClaudePlugins(home)));
+  } catch (error) {
+    errors.push({ source: "plugins:claude", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    out.push(...(await discoverFactoryPlugins(home)));
+  } catch (error) {
+    errors.push({ source: "plugins:factory", message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    out.push(...(await discoverClaudeCachePlugins(home)));
+  } catch (error) {
+    errors.push({ source: "plugins:cache", message: error instanceof Error ? error.message : String(error) });
+  }
+  return out;
+}
+
 /** Scans every known skills root — user/global plus the project's ancestor
  *  chain, plus plugin skills — and dedupes by lowercased name.
  *
@@ -443,9 +645,6 @@ export async function readFactoryPluginSkills(home: string): Promise<SkillEntry[
  *
  *  Every individual root's failure (missing dir, EACCES, ...) is caught into
  *  `errors` — this function never rejects. */
-// Keep deferred plugin scanners referenced so v1 lint stays clean — v2 restores them.
-void readClaudePluginSkills;
-void readFactoryPluginSkills;
 
 /** Where a new skill could be written. The scan reports what exists; this
  *  reports where something could be put, which is a different question and the
@@ -456,7 +655,7 @@ void readFactoryPluginSkills;
  *  creating it is what writing the first skill into it means. Never rejects. */
 function normalizeProjectPaths(input: string | string[] | null): string[] {
   if (!input) return [];
-  if (Array.isArray(input)) return input.filter((p) => typeof p === "string" && p.length > 0).map((p) => path.resolve(p));
+  if (Array.isArray(input)) return input.filter((p) => p.length > 0).map((p) => path.resolve(p));
   return [path.resolve(input)];
 }
 
@@ -467,8 +666,17 @@ export async function skillRootTargets(
   const targets: SkillRootTarget[] = [];
 
   const userRoots = userSkillRoots(home);
-
+  // Cursor has two differently-named global dirs (skills vs skills-cursor) — offer only one
+  const cursorRoots = userRoots.filter((r) => r.origin === "cursor");
+  let cursorPick = cursorRoots[0];
+  for (const r of cursorRoots) {
+    if (await directoryExists(r.dir)) {
+      cursorPick = r;
+      break;
+    }
+  }
   for (const root of userRoots) {
+    if (root.origin === "cursor" && root.dir !== cursorPick?.dir) continue;
     targets.push({ ...root, exists: await directoryExists(root.dir) });
   }
 
@@ -496,7 +704,7 @@ export async function discoverSkills(
 
   const [userSkills, projectSkills] = await Promise.all([
     scanRoots(userSkillRoots(home), errors),
-    projectRoots.length ? scanRoots(projectRoots, errors) : Promise.resolve([] as SkillEntry[]),
+    projectRoots.length ? scanRoots(projectRoots, errors) : Promise.resolve<SkillEntry[]>([]),
   ]);
 
   // v1 stable: no plugin scan. t3 parity is filesystem only.

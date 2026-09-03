@@ -9,8 +9,9 @@
 
 import { discoverInstructions } from "./instructions.js";
 import { discoverMcpServers } from "./mcp.js";
-import { discoverSkills } from "./skills.js";
-import type { AgentInventory, InventoryError } from "./types.js";
+import { discoverPlugins, discoverSkills } from "./skills.js";
+import { homedir } from "node:os";
+import type { AgentInventory, InventoryError, PluginEntry } from "./types.js";
 
 export * from "./onDemandDocs.js";
 
@@ -52,13 +53,21 @@ export async function scanAgentInventory(
 
     const firstPath = Array.isArray(projectPath) ? (projectPath[0] ?? null) : projectPath;
 
-    const [skillsResult, mcpResult, instructionsResult] = await Promise.all([
+    const [skillsResult, pluginsResult, mcpResult, instructionsResult] = await Promise.all([
       discoverSkills(projectPath).catch((error) => {
         errors.push({
           source: "skills",
           message: error instanceof Error ? error.message : String(error),
         });
         return { skills: [], errors: [] };
+      }),
+      discoverPlugins(homedir(), errors).catch((error) => {
+        errors.push({
+          source: "plugins",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        const empty: PluginEntry[] = [];
+        return empty;
       }),
       discoverMcpServers(firstPath).catch((error) => {
         errors.push({
@@ -75,11 +84,13 @@ export async function scanAgentInventory(
         return { instructions: [], errors: [] };
       }),
     ]);
+    const plugins = Array.isArray(pluginsResult) ? pluginsResult : [];
 
     const inventory: AgentInventory = {
       scannedAt: Date.now(),
       projectPath: firstPath,
       skills: skillsResult.skills,
+      plugins,
       mcpServers: mcpResult.servers,
       instructions: instructionsResult.instructions,
       errors: [...errors, ...skillsResult.errors, ...mcpResult.errors, ...instructionsResult.errors],
