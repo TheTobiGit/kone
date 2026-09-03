@@ -1,115 +1,82 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Add01Icon, PuzzleIcon, RefreshIcon } from "@hugeicons/core-free-icons";
-import type { SkillEntry } from "~/types/desktop";
+import { PuzzleIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import AgentSettingsSkills from "~/components/agent/AgentSettingsSkills.vue";
-import SkillDetailView from "~/components/skill/SkillDetailView.vue";
-import SkillAddSheet from "~/components/skill/SkillAddSheet.vue";
 import { useAgentSettings } from "~/composables/useAgentSettings";
+import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSkills } from "~/composables/useSkills";
 
 defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
 
-// The pane is two views on one page: the list, and one skill's own page. The
-// breadcrumb carries which — "Ecosystem / Skills" or "Ecosystem / Skills / <name>" —
-// and the shell's back glyph walks the same path, so the way out of a skill is
-// the way out of everything else.
+// v1 — list skills from every provider (claude/codex/cursor/opencode/agents/factory)
+// across global roots + every project added in the app (recent projects).
 
-const projectPath = () => null;
-const space = useAgentSettings(projectPath);
-const skills = useSkills(projectPath);
+const { recents } = useRecentProjects();
+const projectPaths = () => {
+  const paths = recents.value.map((p) => p.path);
+  return paths.length ? paths : null;
+};
+const space = useAgentSettings(projectPaths);
+const skills = useSkills(projectPaths);
 
-const selected = ref<SkillEntry | null>(null);
-const adding = ref(false);
 const rescanning = ref(false);
 
 onMounted(() => {
   void space.load();
 });
 
-function show(skill: SkillEntry) {
-  adding.value = false;
-  selected.value = skill;
-  void skills.openSkill(skill);
-}
-
-function close() {
-  selected.value = null;
-  adding.value = false;
-}
+// When the recent-projects list hydrates (localStorage → recents), re-scan so
+// project-scoped skills for every added project appear without a manual refresh.
+watch(
+  () => recents.value.map((p) => p.path).join("|"),
+  () => void space.refreshInventory(),
+);
 
 async function rescan() {
   rescanning.value = true;
   await space.refreshInventory();
   rescanning.value = false;
 }
-
-/** A skill that just landed on disk is not in the list yet, so arriving back at
- *  the list without rescanning would look like the write did nothing. */
-async function added() {
-  adding.value = false;
-  await rescan();
-}
-
-const breadcrumb = computed(() => {
-  if (adding.value) return "Ecosystem / Skills / New";
-  if (selected.value) return `Ecosystem / Skills / ${selected.value.displayName ?? selected.value.name}`;
-  return "Ecosystem / Skills";
-});
-
-const atList = computed(() => !selected.value && !adding.value);
 </script>
 
 <template>
   <SettingsPageShell
     :open="open"
-    :breadcrumb="breadcrumb"
+    breadcrumb="Ecosystem / Skills"
     :breadcrumb-icon="PuzzleIcon"
     label="Agent skills settings"
-    @back="atList ? $emit('back') : close()"
+    @back="$emit('back')"
   >
     <template #actions>
-      <template v-if="atList">
-        <button
-          type="button"
-          class="sp__btn"
-          :disabled="rescanning"
-          :tabindex="open ? 0 : -1"
-          @click="rescan"
-        >
-          <HugeiconsIcon
-            :icon="RefreshIcon"
-            :size="13"
-            :stroke-width="1.8"
-            :class="{ 'sp__spin': rescanning }"
-            aria-hidden="true"
-          />
-          {{ rescanning ? "Scanning…" : "Scan again" }}
-        </button>
-        <button type="button" class="sp__btn" :tabindex="open ? 0 : -1" @click="adding = true">
-          <HugeiconsIcon :icon="Add01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
-          Add a skill
-        </button>
-      </template>
+      <button
+        type="button"
+        class="sp__btn"
+        :disabled="rescanning"
+        :tabindex="open ? 0 : -1"
+        @click="rescan"
+      >
+        <HugeiconsIcon
+          :icon="RefreshIcon"
+          :size="13"
+          :stroke-width="1.8"
+          :class="{ 'sp__spin': rescanning }"
+          aria-hidden="true"
+        />
+        {{ rescanning ? "Scanning…" : "Scan again" }}
+      </button>
     </template>
 
-    <SkillAddSheet v-if="adding" :skills="skills" @done="added" />
-    <SkillDetailView
-      v-else-if="selected"
-      :skill="selected"
-      :skills="skills"
-      :project-path="null"
-      @removed="rescan"
-    />
-    <AgentSettingsSkills v-else :space="space" :skills="skills" @open="show" />
+    <AgentSettingsSkills :space="space" :skills="skills" />
 
     <template #foot>
-      Every skill found on this machine across Claude, Codex, OpenCode, Cursor, Factory, and Agents.
-      Turning one off writes the setting file its own CLI already reads — kone keeps no switch of its
-      own, so a CLI with no such setting is reported rather than faked.
+      Every skill found across global roots (<code>~/.claude</code> · <code>~/.codex</code> ·
+      <code>~/.cursor</code> · <code>~/.config/opencode</code> · <code>~/.agents</code> ·
+      <code>~/.factory</code>) and each project you’ve added (<code>.claude</code> ·
+      <code>.codex</code> · <code>.cursor</code> · <code>.opencode</code> · <code>.agents</code> ·
+      <code>.factory</code>).
     </template>
   </SettingsPageShell>
 </template>

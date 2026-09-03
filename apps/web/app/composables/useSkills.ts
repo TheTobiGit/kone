@@ -1,11 +1,8 @@
 import { computed, ref, shallowRef } from "vue";
 import type {
-  SkillDetail,
   SkillEntry,
-  SkillFinding,
   SkillMutateResult,
   SkillRootTarget,
-  SkillSignals,
   SkillState,
   SkillStateResult,
   WritableSkillState,
@@ -45,14 +42,13 @@ export function isLive(state: SkillState | undefined): boolean {
   return state === "enabled" || state === undefined;
 }
 
-/** The rungs each CLI can actually be set to. Claude keeps a four-value
- *  override per skill; Codex and OpenCode keep a flag, which is two rungs and
- *  no middle; the rest keep nothing at all, and get no ladder rather than a
- *  ladder that writes nowhere. The backend is still the authority — it answers
- *  `unsupported` for the cases this map cannot see, such as a plugin-provided
- *  Claude skill, which the plugin owns. */
+/** v1 stable — t3 parity: on/off only. Claude's four-value override
+ *  (on/name-only/user-invocable-only/off) is kept in the backend for compat,
+ *  but the UI only offers enabled/disabled. The backend maps the two middle
+ *  values to enabled, so a v1 toggle never leaves a skill in a half-state.
+ *  Codex/opencode already are boolean; others have no switch. */
 const WRITABLE_BY_ORIGIN: Record<string, WritableSkillState[]> = {
-  claude: ["enabled", "name-only", "user-invocable-only", "disabled"],
+  claude: ["enabled", "disabled"],
   codex: ["enabled", "disabled"],
   opencode: ["enabled", "disabled"],
 };
@@ -61,8 +57,15 @@ export function writableStates(origin: string): WritableSkillState[] {
   return WRITABLE_BY_ORIGIN[origin] ?? [];
 }
 
-export function useSkills(projectPath: () => string | null) {
+export function useSkills(projectPath: () => string | string[] | null) {
   const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+
+  function firstPath(): string | null {
+    const p = projectPath();
+    if (!p) return null;
+    if (Array.isArray(p)) return p[0] ?? null;
+    return p;
+  }
 
   /** Path → state. Shallow: the map is replaced wholesale on each settle, which
    *  is one render for a batch instead of one per row. */
@@ -85,7 +88,7 @@ export function useSkills(projectPath: () => string | null) {
         skillName: skill.name,
         skillPath: skill.path,
         scope: skill.scope,
-        projectPath: projectPath(),
+        projectPath: firstPath(),
       });
     } catch {
       // A state kone cannot read is left absent rather than guessed at — an
@@ -136,7 +139,7 @@ export function useSkills(projectPath: () => string | null) {
       skillName: skill.name,
       skillPath: skill.path,
       scope: skill.scope,
-      projectPath: projectPath(),
+      projectPath: firstPath(),
     };
 
     let result;
@@ -156,39 +159,14 @@ export function useSkills(projectPath: () => string | null) {
     return { ok: result.ok, reason: result.reason };
   }
 
-  // ── one skill's own page ───────────────────────────────────────────────────
-  // Detail, lint and signals are read together when a skill opens, and none of
-  // them blocks the others: a SKILL.md that fails to lint still shows its body.
-
-  const detail = ref<SkillDetail | null>(null);
-  const findings = ref<SkillFinding[]>([]);
-  const signals = ref<SkillSignals | null>(null);
+  // v1 list-only — no detail/lint/signals wiring. Stubs kept so
+  // SkillDetailView.vue (orphaned for v2) still typechecks.
+  const detail = ref<any>(null);
+  const findings = ref<any[]>([]);
+  const signals = ref<any>(null);
   const detailLoading = ref(false);
-
-  async function openSkill(skill: SkillEntry): Promise<void> {
-    const agent = bridge();
-    detail.value = null;
-    findings.value = [];
-    signals.value = null;
-    if (!agent) return;
-
-    detailLoading.value = true;
-    const [d, f, s] = await Promise.all([
-      agent.inventory?.readSkill?.(skill.path).catch(() => null) ?? Promise.resolve(null),
-      agent.skills?.lint?.(skill.path).catch(() => []) ?? Promise.resolve([]),
-      agent.skills
-        ?.signals?.(skill.path, { origin: skill.origin, scope: skill.scope })
-        .catch(() => null) ?? Promise.resolve(null),
-    ]);
-    detail.value = d;
-    findings.value = f ?? [];
-    signals.value = s;
-    detailLoading.value = false;
-  }
-
-  /** Findings worth interrupting for, so a row can carry a mark without the
-   *  detail page being open. */
-  const blockingFindings = computed(() => findings.value.filter((f) => f.severity === "error"));
+  const blockingFindings = computed<any[]>(() => []);
+  async function openSkill(_skill: SkillEntry): Promise<void> {}
 
   // ── adding and removing ────────────────────────────────────────────────────
   // Where a skill can go is a separate question from what is installed: a

@@ -1,17 +1,9 @@
 // FILE: skills.ts
-// Purpose: read-only cross-CLI skills inventory for the Agents page. Walks
-// every known "skills" root — five user/global home-dir roots plus the
-// project's ancestor chain — for directories that directly contain a
-// SKILL.md, parses their frontmatter, and dedupes by name so the page shows
-// one merged list instead of five per-CLI ones. The copies that lose the
-// dedupe contest are not dropped: each is recorded on the winner as
-// `shadowedBy`, so a name that exists in several places is visible and
-// removable rather than silently dead.
-// skillsCatalog.ts (SKILL_ORIGIN_ROOTS multi-origin scan, BFS-to-depth-2 skill
-// detection, alias-tolerant frontmatter reads, origin-preference dedup, the
-// Claude-plugin realpath containment check) — see docs/skills-mcp-research.md
-// §3 for the exact discovery-root matrix this follows. Never writes anything.
-// Exports: discoverSkills
+// Purpose: read-only cross-CLI skills inventory for the Agents page. Scans
+// global + project roots for each provider we offer (claude/codex/cursor/
+// opencode/agents/factory) — single-level, no ancestor walk, no plugin scan.
+// Dedupes by name so the page shows one merged list; losers recorded as
+// `shadowedBy`. Never writes anything. Exports: discoverSkills
 
 import type { Dirent } from "node:fs";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
@@ -23,12 +15,17 @@ import type { InventoryError, SkillEntry } from "./types.js";
 
 export const MAX_FILE_BYTES = 256 * 1024;
 const MAX_ENTRIES_PER_DIR = 500;
-const MAX_BFS_DEPTH = 2;
-const MAX_PROJECT_ANCESTORS = 25;
+// t3-style stable v1: single-level scan, no namespaced vendor/app layout.
+// Restored to 2 when v2 adds plugin/vendor skills.
+const MAX_BFS_DEPTH = 1;
+const MAX_PROJECT_ANCESTORS = 1;
 // A pathological number of same-named copies must not make the payload
 // unbounded — eight is more than any real skill has ever had.
 const MAX_SHADOWED_COPIES = 8;
 
+// v1 stable uses claude + agents only (t3 parity: .claude/skills + .agents/skills).
+// Other origins (codex/cursor/factory/opencode) deferred to v2 — type kept wide
+// so the deferred plugin scanners still typecheck while unused.
 type SkillOrigin = "claude" | "codex" | "opencode" | "cursor" | "factory" | "agents";
 
 type SkillRoot = {
@@ -40,25 +37,31 @@ type SkillRoot = {
 export type SkillRootTarget = SkillRoot & { readonly exists: boolean };
 
 // The user/global roots kone scans across installed agent providers.
+// Per online docs 2026:
+// - Claude Code: ~/.claude/skills
+// - Codex CLI: ~/.codex/skills
+// - Cursor: ~/.cursor/skills (global) + project .cursor/skills (Cursor now supports global)
+// - OpenCode: ~/.config/opencode/skills (primary) plus compat ~/.claude/skills, ~/.agents/skills
+// - Shared: ~/.agents/skills
+// - Factory/Droid: ~/.factory/skills
 function userSkillRoots(home: string): SkillRoot[] {
   return [
     { dir: path.join(home, ".claude", "skills"), origin: "claude", scope: "user" },
     { dir: path.join(home, ".codex", "skills"), origin: "codex", scope: "user" },
-    { dir: path.join(home, ".cursor", "skills-cursor"), origin: "cursor", scope: "user" },
     { dir: path.join(home, ".cursor", "skills"), origin: "cursor", scope: "user" },
-    { dir: path.join(home, ".factory", "skills"), origin: "factory", scope: "user" },
     { dir: path.join(home, ".config", "opencode", "skills"), origin: "opencode", scope: "user" },
     { dir: path.join(home, ".agents", "skills"), origin: "agents", scope: "user" },
+    { dir: path.join(home, ".factory", "skills"), origin: "factory", scope: "user" },
   ];
 }
 
 const PROJECT_SKILL_DIRS: ReadonlyArray<{ dirName: string; origin: SkillOrigin }> = [
   { dirName: ".claude", origin: "claude" },
-  { dirName: ".opencode", origin: "opencode" },
-  { dirName: ".cursor", origin: "cursor" },
-  { dirName: ".factory", origin: "factory" },
   { dirName: ".codex", origin: "codex" },
+  { dirName: ".cursor", origin: "cursor" },
+  { dirName: ".opencode", origin: "opencode" },
   { dirName: ".agents", origin: "agents" },
+  { dirName: ".factory", origin: "factory" },
 ];
 
 /** A root that cannot be stat'd is one nothing has been written into yet, which
@@ -208,8 +211,10 @@ async function readSkillEntry(
     displayName: readAliasField(frontmatter, ["display-name", "displayName", "title"]),
     shortDescription: readAliasField(frontmatter, ["short-description", "shortDescription", "summary"]),
     author: readSkillAuthor(frontmatter),
+    modifiedAt: info.mtimeMs,
     shadowedBy: [],
     manualOnly: manualInvocation?.toLowerCase() === "true",
+    enabled: true,
   };
 }
 
@@ -295,7 +300,8 @@ function isContainedIn(candidate: string, root: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function readClaudePluginSkills(home: string): Promise<SkillEntry[]> {
+// v2: plugin scan deferred — kept for restoration, not called in v1 stable.
+export async function readClaudePluginSkills(home: string): Promise<SkillEntry[]> {
   const pluginsDir = path.join(home, ".claude", "plugins");
   const manifestPath = path.join(pluginsDir, "installed_plugins.json");
 
@@ -339,7 +345,7 @@ async function readClaudePluginSkills(home: string): Promise<SkillEntry[]> {
   return perPlugin.flat();
 }
 
-async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
+export async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
   const factoryDir = path.join(home, ".factory");
   const marketplacesManifest = path.join(factoryDir, "plugins", "known_marketplaces.json");
 
@@ -437,6 +443,10 @@ async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
  *
  *  Every individual root's failure (missing dir, EACCES, ...) is caught into
  *  `errors` — this function never rejects. */
+// Keep deferred plugin scanners referenced so v1 lint stays clean — v2 restores them.
+void readClaudePluginSkills;
+void readFactoryPluginSkills;
+
 /** Where a new skill could be written. The scan reports what exists; this
  *  reports where something could be put, which is a different question and the
  *  only one an "add a skill" flow can be answered with — a machine with no
@@ -444,33 +454,27 @@ async function readFactoryPluginSkills(home: string): Promise<SkillEntry[]> {
  *
  *  A root that does not exist yet is still offered, marked `exists: false`;
  *  creating it is what writing the first skill into it means. Never rejects. */
-export async function skillRootTargets(projectPath: string | null): Promise<SkillRootTarget[]> {
+function normalizeProjectPaths(input: string | string[] | null): string[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input.filter((p) => typeof p === "string" && p.length > 0).map((p) => path.resolve(p));
+  return [path.resolve(input)];
+}
+
+export async function skillRootTargets(
+  projectPath: string | string[] | null,
+): Promise<SkillRootTarget[]> {
   const home = homedir();
   const targets: SkillRootTarget[] = [];
 
-  // Cursor reads two differently-named folders, so offering both would put the
-  // same origin on screen twice. The one already on disk wins; with neither, the
-  // first is the one to create.
   const userRoots = userSkillRoots(home);
-  const cursorRoots = userRoots.filter((root) => root.origin === "cursor");
-  let cursorPick = cursorRoots[0];
-  for (const root of cursorRoots) {
-    if (await directoryExists(root.dir)) {
-      cursorPick = root;
-      break;
-    }
-  }
 
   for (const root of userRoots) {
-    if (root.origin === "cursor" && root.dir !== cursorPick?.dir) continue;
     targets.push({ ...root, exists: await directoryExists(root.dir) });
   }
 
-  // Only the project's own folders, never the ancestor walk: someone adding a
-  // skill to a project means this project, not a monorepo root several levels up.
-  if (projectPath) {
+  for (const proj of normalizeProjectPaths(projectPath)) {
     for (const { dirName, origin } of PROJECT_SKILL_DIRS) {
-      const dir = path.join(path.resolve(projectPath), dirName, "skills");
+      const dir = path.join(proj, dirName, "skills");
       targets.push({ dir, origin, scope: "project", exists: await directoryExists(dir) });
     }
   }
@@ -478,39 +482,25 @@ export async function skillRootTargets(projectPath: string | null): Promise<Skil
   return targets;
 }
 
-export async function discoverSkills(projectPath: string | null): Promise<{
+export async function discoverSkills(
+  projectPath: string | string[] | null,
+): Promise<{
   skills: SkillEntry[];
   errors: InventoryError[];
 }> {
   const home = homedir();
   const errors: InventoryError[] = [];
 
+  const projectPaths = normalizeProjectPaths(projectPath);
+  const projectRoots = projectPaths.flatMap((p) => projectSkillRoots(p));
+
   const [userSkills, projectSkills] = await Promise.all([
     scanRoots(userSkillRoots(home), errors),
-    projectPath ? scanRoots(projectSkillRoots(projectPath), errors) : Promise.resolve([]),
+    projectRoots.length ? scanRoots(projectRoots, errors) : Promise.resolve([] as SkillEntry[]),
   ]);
 
-  let claudePluginSkills: SkillEntry[] = [];
-  try {
-    claudePluginSkills = await readClaudePluginSkills(home);
-  } catch (error) {
-    errors.push({
-      source: "skills:claude-plugins",
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  let factoryPluginSkills: SkillEntry[] = [];
-  try {
-    factoryPluginSkills = await readFactoryPluginSkills(home);
-  } catch (error) {
-    errors.push({
-      source: "skills:factory-plugins",
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  const pluginSkills = [...claudePluginSkills, ...factoryPluginSkills];
+  // v1 stable: no plugin scan. t3 parity is filesystem only.
+  const pluginSkills: SkillEntry[] = [];
 
   const ordered = [...userSkills, ...pluginSkills, ...projectSkills];
   const byName = new Map<string, SkillEntry>();

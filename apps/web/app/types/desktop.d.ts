@@ -1953,6 +1953,9 @@ export type SkillEntry = {
   shortDescription: string | null;
   /** Who the SKILL.md credits, from `author` (or nested `metadata.author`) frontmatter; null when unsigned. */
   author: string | null;
+  /** SKILL.md mtime, epoch ms — carried by the scan so the list can date a row
+   *  without reading the file again. */
+  modifiedAt: number;
   /** Copies of this same skill name that lost the precedence contest, nearest
    *  loser first. Empty for the overwhelming majority of skills. */
   shadowedBy: SkillCopy[];
@@ -1960,6 +1963,7 @@ export type SkillEntry = {
    *  (`disable-model-invocation: true`) — the skill is still there, but the
    *  model won't reach for it on its own. */
   manualOnly: boolean;
+  enabled: boolean;
 };
 
 /** Full per-skill detail for the skill detail view — what the list's
@@ -2032,9 +2036,9 @@ export type AgentInventory = {
 };
 
 export type KoneAgentInventoryApi = {
-  /** Scan every discovery root, plus the given project's own config. Never
-   *  throws: an unreadable root lands in `errors`. */
-  scan: (projectPath: string | null) => Promise<AgentInventory>;
+  /** Scan every discovery root, plus the given project's own config. Accepts a
+   *  single path or every project added in the app. Never throws. */
+  scan: (projectPath: string | string[] | null) => Promise<AgentInventory>;
   /** Read one SKILL.md's full detail for the detail view. Refuses anything
    *  that is not an absolute SKILL.md path, and never throws — an
    *  unresolvable path resolves to null. */
@@ -2161,7 +2165,7 @@ export type KoneAgentSkillsApi = {
   signals: (skillMdPath: string, context: SkillSignalsContext) => Promise<SkillSignals | null>;
   /** Every folder a new skill could be written into, whether or not it exists
    *  yet. The scan says what is installed; this says where something can go. */
-  roots: (projectPath: string | null) => Promise<SkillRootTarget[]>;
+  roots: (projectPath: string | string[] | null) => Promise<SkillRootTarget[]>;
   /** Create a new skill folder with a minimal SKILL.md under `root`. */
   scaffold: (root: string, name: string, description: string) => Promise<SkillMutateResult>;
   /** Edit frontmatter keys in place, leaving the body untouched. */
