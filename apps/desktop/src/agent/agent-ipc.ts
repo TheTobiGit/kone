@@ -22,13 +22,7 @@ import {
   currentStripSettings,
 } from "../modules/appState/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
-import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import { skillRootTargets } from "@kone/agent-core/inventory/skills.js";
-import {
-  lintSkillAt,
-  signalsForSkillAt,
-  type SkillSignalsContext,
-} from "@kone/agent-core/inventory/skillInspect.js";
 import {
   deleteSkillToTrash,
   editSkillFrontmatter,
@@ -510,12 +504,13 @@ export function registerAgentIpc(): void {
       }
     },
   );
-  ipcMain.handle("agent:inventory-scan", (_event, projectPath: string | null) =>
-    scanAgentInventory(projectPath),
+  ipcMain.handle(
+    "agent:inventory-scan",
+    (_event, projectPath: string | string[] | null) => scanAgentInventory(projectPath),
   );
-  ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
-  ipcMain.handle("agent:skill-roots", (_event, projectPath: string | null) =>
-    skillRootTargets(projectPath),
+  ipcMain.handle(
+    "agent:skill-roots",
+    (_event, projectPath: string | string[] | null) => skillRootTargets(projectPath),
   );
   ipcMain.handle("agent:skill-state-read", (_event, query: SkillStateQuery) =>
     readSkillState(stateContext(query)),
@@ -524,10 +519,6 @@ export function registerAgentIpc(): void {
     "agent:skill-state-write",
     (_event, query: SkillStateQuery, state: WritableSkillState) =>
       writeSkillState({ ...stateContext(query), state }),
-  );
-  ipcMain.handle("agent:skill-lint", (_event, skillMdPath: string) => lintSkillAt(skillMdPath));
-  ipcMain.handle("agent:skill-signals", (_event, skillMdPath: string, context: SkillSignalsContext) =>
-    signalsForSkillAt(skillMdPath, { origin: context.origin, scope: context.scope }),
   );
   ipcMain.handle("agent:skill-scaffold", (_event, root: string, name: string, description: string) =>
     scaffoldSkill(root, name, description),

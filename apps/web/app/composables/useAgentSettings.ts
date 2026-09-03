@@ -95,7 +95,7 @@ function writeConnected(set: ReadonlySet<QuotaProvider>): void {
   }
 }
 
-export function useAgentSettings(projectPath: () => string | null) {
+export function useAgentSettings(projectPath: () => string | string[] | null) {
   const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
 
   // ── usage ──────────────────────────────────────────────────────────────────
@@ -107,11 +107,18 @@ export function useAgentSettings(projectPath: () => string | null) {
    *  the agents spent" means *here* until the user widens it. */
   const usageScope = ref<"project" | "global">("project");
 
+  function firstPath(): string | null {
+    const p = projectPath();
+    if (!p) return null;
+    if (Array.isArray(p)) return p[0] ?? null;
+    return p;
+  }
+
   /** The cache key for a given range under the current scope — the exact triplet
    *  that changes the numbers, so 7d-project and 30d-global keep their own
    *  last-good copy. */
   function keyFor(forRange: UsageRange): string {
-    const scoped = usageScope.value === "project" ? projectPath() ?? "" : "";
+    const scoped = usageScope.value === "project" ? firstPath() ?? "" : "";
     return `${usageScope.value}:${forRange}:${scoped}`;
   }
   function usageKey(): string {
@@ -137,7 +144,7 @@ export function useAgentSettings(projectPath: () => string | null) {
     try {
       const fresh = await api.report({
         range: range.value,
-        projectPath: usageScope.value === "project" ? projectPath() : null,
+        projectPath: usageScope.value === "project" ? firstPath() : null,
         forceRefresh: options?.forceRefresh,
       });
       // Guard against a slow response for a key the user has since navigated
@@ -174,7 +181,7 @@ export function useAgentSettings(projectPath: () => string | null) {
       try {
         const report = await api.report({
           range: sibling,
-          projectPath: usageScope.value === "project" ? projectPath() : null,
+          projectPath: usageScope.value === "project" ? firstPath() : null,
         });
         usageReportCache.set(key, report);
       } catch {
@@ -311,13 +318,20 @@ export function useAgentSettings(projectPath: () => string | null) {
   const inventoryLoading = ref(false);
   const inventoryLoaded = ref(false);
 
+  function inventoryKey(): string {
+    const p = projectPath();
+    if (!p) return "";
+    if (Array.isArray(p)) return [...p].sort().join("|");
+    return p;
+  }
+
   async function loadInventory(): Promise<void> {
     const api = bridge()?.inventory;
     if (!api?.scan) {
       inventoryLoaded.value = true;
       return;
     }
-    const key = projectPath() ?? "";
+    const key = inventoryKey();
     const cached = inventoryCache.get(key);
     if (cached) {
       inventory.value = cached;
@@ -326,7 +340,7 @@ export function useAgentSettings(projectPath: () => string | null) {
     inventoryLoading.value = true;
     try {
       const fresh = await api.scan(projectPath());
-      if ((projectPath() ?? "") === key) inventory.value = fresh;
+      if (inventoryKey() === key) inventory.value = fresh;
       if (fresh) inventoryCache.set(key, fresh);
     } catch (err) {
       console.error("[useAgentSettings] inventory scan failed:", err);

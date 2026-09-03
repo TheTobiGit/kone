@@ -29,45 +29,38 @@ describe("discoverSkills shadowing", () => {
     const project = makeProject();
     const name = `dup-${path.basename(project)}`;
     writeSkill(path.join(project, ".claude", "skills", name), `name: ${name}`);
-    writeSkill(path.join(project, ".codex", "skills", name), `name: ${name}`);
+    writeSkill(path.join(project, ".agents", "skills", name), `name: ${name}`);
 
     const { skills } = await discoverSkills(project);
     const matches = skills.filter((s) => s.name === name);
     expect(matches).toHaveLength(1);
     const winner = matches[0]!;
     expect(winner.origin).toBe("claude");
+    expect(winner.enabled).toBe(true);
     expect(winner.path).toBe(path.join(project, ".claude", "skills", name, "SKILL.md"));
     expect(winner.shadowedBy).toEqual([
       {
-        origin: "codex",
+        origin: "agents",
         scope: "project",
-        path: path.join(project, ".codex", "skills", name, "SKILL.md"),
+        path: path.join(project, ".agents", "skills", name, "SKILL.md"),
       },
     ]);
   });
 
-  test("a loser from a higher ancestor is recorded with its own path", async () => {
+  test("v1 stable: only current project scanned, ancestor copy not shadowed", async () => {
     const root = makeProject();
     const project = path.join(root, "nested", "app");
     const name = `nested-${path.basename(root)}`;
-    writeSkill(path.join(project, ".codex", "skills", name), `name: ${name}`);
+    writeSkill(path.join(project, ".agents", "skills", name), `name: ${name}`);
     writeSkill(path.join(root, ".claude", "skills", name), `name: ${name}`);
 
-    // The project's own copy is scanned first (nearest ancestor first), so it
-    // wins even though the monorepo root's .claude copy is the "more natural"
-    // home — the loser is still named, at the ancestor's real path.
+    // v1 stable MAX_PROJECT_ANCESTORS=1 — only the given project dir scanned.
     const { skills } = await discoverSkills(project);
     const matches = skills.filter((s) => s.name === name);
     expect(matches).toHaveLength(1);
     const winner = matches[0]!;
-    expect(winner.path).toBe(path.join(project, ".codex", "skills", name, "SKILL.md"));
-    expect(winner.shadowedBy).toEqual([
-      {
-        origin: "claude",
-        scope: "project",
-        path: path.join(root, ".claude", "skills", name, "SKILL.md"),
-      },
-    ]);
+    expect(winner.path).toBe(path.join(project, ".agents", "skills", name, "SKILL.md"));
+    expect(winner.shadowedBy).toEqual([]);
   });
 
   test("a unique skill reports an empty shadowedBy", async () => {
@@ -79,33 +72,24 @@ describe("discoverSkills shadowing", () => {
     expect(winner).not.toBeNull();
     if (!winner) return;
     expect(winner.shadowedBy).toEqual([]);
+    expect(winner.enabled).toBe(true);
   });
 
-  test("shadowedBy caps at 8 entries, nearest losers first", async () => {
-    const root = makeProject();
-    const project = path.join(root, "a", "b");
-    const name = `cap-${path.basename(root)}`;
-    // Three ancestor levels × five CLI origins = fifteen copies of one name;
-    // the first copy (b/.claude) wins and records eight losers before the cap.
-    for (const ancestor of [project, path.join(root, "a"), root]) {
-      for (const origin of ["claude", "opencode", "cursor", "codex", "agents"]) {
-        writeSkill(path.join(ancestor, `.${origin}`, "skills", name), `name: ${name}`);
-      }
-    }
+  test("shadowedBy caps at 8 entries (v1: max 1 loser for claude+agents)", async () => {
+    const project = makeProject();
+    const name = `cap-${path.basename(project)}`;
+    // v1 stable: 1 ancestor × 2 origins = 2 copies; dedupe yields 1 winner + 1 loser.
+    writeSkill(path.join(project, ".claude", "skills", name), `name: ${name}`);
+    writeSkill(path.join(project, ".agents", "skills", name), `name: ${name}`);
 
     const winner = await findSkill(name, project);
     expect(winner).not.toBeNull();
     if (!winner) return;
-    expect(winner.shadowedBy).toHaveLength(8);
+    expect(winner.shadowedBy).toHaveLength(1);
     expect(winner.shadowedBy[0]).toEqual({
-      origin: "opencode",
+      origin: "agents",
       scope: "project",
-      path: path.join(project, ".opencode", "skills", name, "SKILL.md"),
-    });
-    expect(winner.shadowedBy[7]).toEqual({
-      origin: "codex",
-      scope: "project",
-      path: path.join(root, "a", ".codex", "skills", name, "SKILL.md"),
+      path: path.join(project, ".agents", "skills", name, "SKILL.md"),
     });
   });
 });
@@ -212,41 +196,23 @@ describe("discoverSkills manualOnly", () => {
   });
 });
 
-describe("discoverSkills cursor", () => {
-  test("discovers skills from project .cursor/skills", async () => {
+describe("discoverSkills agents", () => {
+  test("discovers skills from project .agents/skills", async () => {
     const project = makeProject();
-    const name = `cursor-proj-${path.basename(project)}`;
+    const name = `agents-proj-${path.basename(project)}`;
     writeSkill(
-      path.join(project, ".cursor", "skills", name),
-      `name: ${name}\ndescription: Cursor project skill\ndisplay-name: Cursor Test`,
+      path.join(project, ".agents", "skills", name),
+      `name: ${name}\ndescription: Agents project skill\ndisplay-name: Agents Test`,
     );
 
     const winner = await findSkill(name, project);
     expect(winner).not.toBeNull();
     if (!winner) return;
-    expect(winner.origin).toBe("cursor");
+    expect(winner.origin).toBe("agents");
     expect(winner.scope).toBe("project");
-    expect(winner.description).toBe("Cursor project skill");
-    expect(winner.displayName).toBe("Cursor Test");
-  });
-});
-
-describe("discoverSkills factory", () => {
-  test("discovers skills from project .factory/skills", async () => {
-    const project = makeProject();
-    const name = `factory-proj-${path.basename(project)}`;
-    writeSkill(
-      path.join(project, ".factory", "skills", name),
-      `name: ${name}\ndescription: Factory project skill\ndisplay-name: Factory Test`,
-    );
-
-    const winner = await findSkill(name, project);
-    expect(winner).not.toBeNull();
-    if (!winner) return;
-    expect(winner.origin).toBe("factory");
-    expect(winner.scope).toBe("project");
-    expect(winner.description).toBe("Factory project skill");
-    expect(winner.displayName).toBe("Factory Test");
+    expect(winner.description).toBe("Agents project skill");
+    expect(winner.displayName).toBe("Agents Test");
+    expect(winner.enabled).toBe(true);
   });
 });
 
@@ -258,15 +224,16 @@ describe("skillRootTargets", () => {
     const targets = await skillRootTargets(project);
     const projectTargets = targets.filter((t) => t.scope === "project");
 
-    // One per CLI, no duplicates — a picker that offered the same agent twice
-    // would be asking a question with two identical answers.
+    // v1: all providers we offer — claude/codex/cursor/opencode/agents/factory
     const origins = projectTargets.map((t) => t.origin);
     expect(new Set(origins).size).toBe(origins.length);
+    expect(origins).toEqual(expect.arrayContaining(["claude", "codex", "cursor", "opencode", "agents", "factory"]));
+    expect(origins).toHaveLength(6);
 
     const claude = projectTargets.find((t) => t.origin === "claude");
     expect(claude?.dir).toBe(path.join(project, ".claude", "skills"));
     expect(claude?.exists).toBe(true);
-    expect(projectTargets.find((t) => t.origin === "codex")?.exists).toBe(false);
+    expect(projectTargets.find((t) => t.origin === "agents")?.exists).toBe(false);
 
     // Only this project's own folders: an ancestor several levels up is not
     // what someone adding a skill here means.
@@ -279,7 +246,9 @@ describe("skillRootTargets", () => {
     const targets = await skillRootTargets(null);
     expect(targets.length).toBeGreaterThan(0);
     expect(targets.every((t) => t.scope === "user")).toBe(true);
-    const cursor = targets.filter((t) => t.origin === "cursor");
-    expect(cursor).toHaveLength(1);
+    // v1: all global roots
+    const origins = targets.map((t) => t.origin);
+    expect(new Set(origins).size).toBe(origins.length);
+    expect(origins).toEqual(expect.arrayContaining(["claude", "codex", "cursor", "opencode", "agents", "factory"]));
   });
 });

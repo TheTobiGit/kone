@@ -10,10 +10,6 @@ import type {
   ThreadAgentBinding,
 } from "@kone/agent-core/ConversationStore.js";
 import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
-import type { SkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
-import type { SkillSignalsContext } from "@kone/agent-core/inventory/skillInspect.js";
-import type { SkillFinding } from "@kone/agent-core/inventory/skillLint.js";
-import type { SkillSignals } from "@kone/agent-core/inventory/skillSignals.js";
 import type { FrontmatterEdit, MutateResult } from "@kone/agent-core/inventory/skillMutate.js";
 import type { SkillRootTarget } from "@kone/agent-core/inventory/skills.js";
 import type {
@@ -506,27 +502,17 @@ const api = {
         ipcRenderer.invoke("agent:quota-fetch", provider, options),
     },
     inventory: {
-      scan: (projectPath: string | null): Promise<AgentInventory> =>
+      scan: (projectPath: string | string[] | null): Promise<AgentInventory> =>
         ipcRenderer.invoke("agent:inventory-scan", projectPath),
-      readSkill: (skillMdPath: string): Promise<SkillDetail | null> =>
-        ipcRenderer.invoke("agent:skill-read", skillMdPath),
     },
-    // Managing a skill, as opposed to reporting one. Every call resolves to a
-    // result carrying its own sentence about what happened; none of them throw
-    // across the wire.
+    // Managing a skill — v1: state + scaffold/install only. Detail/lint/signals
+    // deferred.
     skills: {
       readState: (query: SkillStateQuery): Promise<SkillStateResult> =>
         ipcRenderer.invoke("agent:skill-state-read", query),
       writeState: (query: SkillStateQuery, state: WritableSkillState): Promise<StateWriteResult> =>
         ipcRenderer.invoke("agent:skill-state-write", query, state),
-      lint: (skillMdPath: string): Promise<SkillFinding[]> =>
-        ipcRenderer.invoke("agent:skill-lint", skillMdPath),
-      signals: (
-        skillMdPath: string,
-        context: SkillSignalsContext,
-      ): Promise<SkillSignals | null> =>
-        ipcRenderer.invoke("agent:skill-signals", skillMdPath, context),
-      roots: (projectPath: string | null): Promise<SkillRootTarget[]> =>
+      roots: (projectPath: string | string[] | null): Promise<SkillRootTarget[]> =>
         ipcRenderer.invoke("agent:skill-roots", projectPath),
       scaffold: (root: string, name: string, description: string): Promise<MutateResult> =>
         ipcRenderer.invoke("agent:skill-scaffold", root, name, description),

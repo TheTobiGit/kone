@@ -21,15 +21,22 @@ type CacheEntry = { at: number; inventory: AgentInventory };
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<AgentInventory>>();
 
-function cacheKey(projectPath: string | null): string {
-  return projectPath ?? "no-project";
+function cacheKey(projectPath: string | string[] | null): string {
+  if (!projectPath) return "no-project";
+  if (Array.isArray(projectPath)) return [...projectPath].sort().join("|") || "no-project";
+  return projectPath;
 }
 
 /** Scans skills, MCP servers, and instruction files for `projectPath` (or
- *  just the user-scope roots when null). Read-only, and NEVER rejects — every
+ *  just the user-scope roots when null). Accepts a single path or an array of
+ *  project paths — the pane now passes every project added in the app so its
+ *  list covers `~/.claude/skills` + each project's `.claude/.codex/.cursor/
+ *  .opencode/.agents/.factory/skills`. Read-only, and NEVER rejects — every
  *  scan step's own failures are caught and reported inline via
  *  `AgentInventory.errors` alongside whatever partial result it managed. */
-export async function scanAgentInventory(projectPath: string | null): Promise<AgentInventory> {
+export async function scanAgentInventory(
+  projectPath: string | string[] | null,
+): Promise<AgentInventory> {
   const key = cacheKey(projectPath);
 
   const cached = cache.get(key);
@@ -43,6 +50,8 @@ export async function scanAgentInventory(projectPath: string | null): Promise<Ag
   const scan = (async (): Promise<AgentInventory> => {
     const errors: InventoryError[] = [];
 
+    const firstPath = Array.isArray(projectPath) ? (projectPath[0] ?? null) : projectPath;
+
     const [skillsResult, mcpResult, instructionsResult] = await Promise.all([
       discoverSkills(projectPath).catch((error) => {
         errors.push({
@@ -51,14 +60,14 @@ export async function scanAgentInventory(projectPath: string | null): Promise<Ag
         });
         return { skills: [], errors: [] };
       }),
-      discoverMcpServers(projectPath).catch((error) => {
+      discoverMcpServers(firstPath).catch((error) => {
         errors.push({
           source: "mcp",
           message: error instanceof Error ? error.message : String(error),
         });
         return { servers: [], errors: [] };
       }),
-      discoverInstructions(projectPath).catch((error) => {
+      discoverInstructions(firstPath).catch((error) => {
         errors.push({
           source: "instructions",
           message: error instanceof Error ? error.message : String(error),
@@ -69,7 +78,7 @@ export async function scanAgentInventory(projectPath: string | null): Promise<Ag
 
     const inventory: AgentInventory = {
       scannedAt: Date.now(),
-      projectPath,
+      projectPath: firstPath,
       skills: skillsResult.skills,
       mcpServers: mcpResult.servers,
       instructions: instructionsResult.instructions,

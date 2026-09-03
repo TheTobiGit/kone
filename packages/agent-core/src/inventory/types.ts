@@ -26,6 +26,10 @@ export type SkillEntry = {
   shortDescription: string | null;
   /** Who the SKILL.md credits, from `author` (or nested `metadata.author`) frontmatter; null when unsigned. */
   author: string | null;
+  /** SKILL.md mtime, epoch ms. The scan already stats the file to size-check
+   *  it, so carrying the stamp costs nothing and saves the list a per-row read
+   *  just to say how stale a skill is. */
+  modifiedAt: number;
   /** Copies of this same skill name that lost the precedence contest, nearest
    *  loser first. Empty for the overwhelming majority of skills. */
   shadowedBy: SkillCopy[];
@@ -33,6 +37,9 @@ export type SkillEntry = {
    *  (`disable-model-invocation: true`) — the skill is still there, but the
    *  model won't reach for it on its own. */
   manualOnly: boolean;
+  /** Whether the skill is currently enabled. Mirrors t3's ServerProviderSkill.enabled.
+   *  v1 stable defaults to true at discovery; effective state is resolved via skillState. */
+  enabled: boolean;
 };
 
 /** How an MCP server is reached. `unknown` is a real, expected value — plenty
