@@ -80,6 +80,35 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 watch(blocks, () => void nextTick(measure));
 
+// Opening a thread should land at the latest message, not the top.
+// The child ConversationThread also attempts this, but the live session's
+// blocks arrive async after the thread is adopted — so pin the portal's own
+// scroller once the first window is in, and hold it per thread.
+function scrollLiveToBottom(): void {
+  const el = scroller.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+const liveInitialDoneFor = ref<string | null>(null);
+function tryLiveInitialScroll(): void {
+  if (!import.meta.client) return;
+  const key = props.row.threadId ?? "";
+  if (!key || liveInitialDoneFor.value === key) return;
+  if (blocks.value.length === 0) return;
+  liveInitialDoneFor.value = key;
+  void nextTick(() => {
+    void nextTick(() => {
+      if (!import.meta.client) return;
+      requestAnimationFrame(() => scrollLiveToBottom());
+    });
+  });
+}
+
+watch(() => props.row.threadId, () => void nextTick(() => tryLiveInitialScroll()));
+watch(blocks, () => tryLiveInitialScroll());
+onMounted(() => void nextTick(() => tryLiveInitialScroll()));
+
 async function onSend(text: string, files?: File[]): Promise<void> {
   const s = session.value;
   if (!s) return;
@@ -138,7 +167,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :has-older="session?.hasOlder.value"
         :loading-older="session?.loadingOlder.value"
         :older-error="session?.olderError.value"
-        :empty-art="false"
+        hide-empty-art
         @retry="onSend"
         @resend="onSend"
         @retry-load="session?.openStored(row.threadId)"

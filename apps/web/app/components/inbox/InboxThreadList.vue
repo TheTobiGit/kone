@@ -300,13 +300,15 @@ function removeRow(row: SessionSummary): void {
           >
             <span class="tl__lead">
               <AgentFace :seed="s.threadId" :size="32" />
-              <span class="tl__badge">
-                <ProviderLogo :brand="sessionBrand(s.provider, s.brand, s.model)" :size="16" />
-              </span>
             </span>
 
             <span class="tl__main">
               <span class="tl__header">
+                <ProviderLogo
+                  :brand="sessionBrand(s.provider, s.brand, s.model)"
+                  :size="14"
+                  class="tl__provider"
+                />
                 <span class="tl__agent">{{ agentIdentity(s.threadId).name }}</span>
                 <span v-if="s.projectName" class="tl__chip tl__chip--subtle" :title="s.projectPath">
                   {{ s.projectName }}
@@ -578,7 +580,6 @@ function removeRow(row: SessionSummary): void {
 }
 
 .tl__lead {
-  position: relative;
   flex: none;
   margin-top: 2px;
   line-height: 0;
@@ -607,17 +608,9 @@ function removeRow(row: SessionSummary): void {
   white-space: nowrap;
 }
 
-/* The vendor mark rides the corner of the face rather than taking a column of
-   its own — which thread it is and what runs it are one glance, not two. */
-.tl__badge {
-  position: absolute;
-  right: -3px;
-  bottom: -3px;
-  display: grid;
-  place-items: center;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--panel);
+.tl__provider {
+  flex: none;
+  display: block;
 }
 
 .tl__title {

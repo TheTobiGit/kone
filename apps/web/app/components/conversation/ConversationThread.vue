@@ -94,19 +94,28 @@ const props = defineProps<{
    *  agent works, then the answer). Defaults to the transcript; a surface that
    *  wants the quiet read has to ask for it. See utils/transcriptMode. */
   mode?: TranscriptMode;
-  /** Whether an empty thread is allowed to fill itself with the standing art.
-   *  On by default. The art is an invitation to type — it belongs where there
-   *  is a composer under it and the blankness is a beginning. Somewhere you can
-   *  only read, the same blankness means the transcript is still arriving or
-   *  there is nothing to read, and filling it with an invitation would be
-   *  offering a gesture that is not on the table. */
-  emptyArt?: boolean;
+  /** Keep an empty thread empty — no standing art. The art is an invitation to
+   *  type, so it belongs where there is a composer under it and the blankness
+   *  is a beginning. Somewhere you can only read, the same blankness means the
+   *  transcript is still arriving or there is nothing to read, and filling it
+   *  with an invitation would be offering a gesture that is not on the table.
+   *
+   *  Stated as the exception rather than as an `emptyArt: true` default,
+   *  because Vue hands an absent boolean prop `false` rather than `undefined`:
+   *  a default-on flag is off at every call site that doesn't mention it, which
+   *  is how the art went missing from the board it was written for. */
+  hideEmptyArt?: boolean;
   /** The replies here are kone's own rather than an agent's. The global
    *  assistant is one agent for every conversation it ever has, so its turns
    *  are spoken by the app's own face and name instead of an identity rolled
    *  from the thread's id — a new face every chat would be reporting a change
    *  of hands that never happened. */
   house?: boolean;
+  /** Whether turn hovers offer scratchpad capture actions. Scratchpads belong
+   *  to project studio rows, so threads not anchored to a specific project
+   *  (such as the global assistant modal) omit them. Defaults to true unless
+   *  explicitly false or when `house` is set. */
+  scratchpad?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -132,6 +141,7 @@ const { cue } = useSound();
  *  under on a surface that is kone itself, so the house case asks for it
  *  outright by seeding nothing. */
 const agent = computed(() => agentIdentity(props.house ? null : props.agentSeed));
+const allowScratchpad = computed(() => props.scratchpad ?? !props.house);
 
 // Warm the Markdown parser on mount: markdown-it is code-split behind a dynamic
 // import, so the very first streamed reply would otherwise flash raw source for a
@@ -329,7 +339,7 @@ async function copyUserRequest(block: Extract<ThreadBlock, { role: "user" }>) {
   }
 }
 function addUserRequestToScratchpad(block: Extract<ThreadBlock, { role: "user" }>) {
-  if (!block.text?.trim()) return;
+  if (!allowScratchpad.value || !block.text?.trim()) return;
   emit("to-scratchpad", block.text);
   cue("press");
 }
@@ -349,6 +359,7 @@ async function copy(block: AssistantBlock) {
 }
 
 function addToScratchpad(block: AssistantBlock) {
+  if (!allowScratchpad.value) return;
   const text = assistantText(block);
   if (!text.trim()) return;
   emit("to-scratchpad", text);
@@ -662,6 +673,33 @@ function followStreamingBottom(): void {
   }
 }
 
+function scrollToBottom(): void {
+  if (!import.meta.client) return;
+  const sc = scroller();
+  if (!sc) return;
+  sc.scrollTop = sc.scrollHeight;
+}
+
+const initialScrollDoneFor = ref<string | null>(null);
+
+function threadKey(): string {
+  return props.sourceKey ?? props.threadId ?? "__blank__";
+}
+
+function doInitialScroll(): void {
+  if (!import.meta.client) return;
+  const key = threadKey();
+  if (initialScrollDoneFor.value === key) return;
+  if (props.blocks.length === 0) return;
+  initialScrollDoneFor.value = key;
+  void nextTick(() => {
+    void nextTick(() => {
+      if (!import.meta.client) return;
+      requestAnimationFrame(() => scrollToBottom());
+    });
+  });
+}
+
 onMounted(() => {
   const sc = scroller();
   if (!sc) return;
@@ -670,7 +708,22 @@ onMounted(() => {
   };
   sc.addEventListener("scroll", handler, { passive: true });
   scrollCleanup = () => sc.removeEventListener("scroll", handler);
+  doInitialScroll();
 });
+
+watch(
+  () => threadKey(),
+  () => {
+    void nextTick(() => doInitialScroll());
+  },
+);
+
+watch(
+  () => props.blocks.length,
+  () => {
+    doInitialScroll();
+  },
+);
 
 onBeforeUnmount(() => {
   scrollCleanup?.();
@@ -753,9 +806,9 @@ watch(
     </div>
 
     <!-- Background generative art in the empty state -->
-    <CodeGolfArt v-if="!hasBlocks && emptyArt !== false" class="thread__art" />
+    <CodeGolfArt v-if="!hasBlocks && !hideEmptyArt" class="thread__art" />
 
-    <div v-if="!hasBlocks && emptyArt !== false" class="empty relative z-10 sr-only">
+    <div v-if="!hasBlocks && !hideEmptyArt" class="empty relative z-10 sr-only">
       <p>Nothing here yet — say something to begin.</p>
     </div>
 
@@ -925,6 +978,7 @@ watch(
               <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
             </button>
             <button
+              v-if="allowScratchpad"
               type="button"
               class="foot__copy"
               aria-label="Add request to scratchpad"
@@ -1088,7 +1142,7 @@ watch(
               <span>{{ copied === block.id ? "Copied" : "Copy" }}</span>
             </button>
             <button
-              v-if="block.state === 'completed' && assistantText(block)"
+              v-if="allowScratchpad && block.state === 'completed' && assistantText(block)"
               type="button"
               class="foot__copy"
               aria-label="Add to scratchpad"

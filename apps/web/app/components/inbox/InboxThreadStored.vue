@@ -97,6 +97,33 @@ const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
 
 watch(blocks, () => void nextTick(measure));
+
+// Same bottom-pin as the live portal: opening a stored thread should reveal the
+// newest message, with the transcript arriving async on mount.
+function scrollStoredToBottom(): void {
+  const el = scroller.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+const storedInitialDoneFor = ref<string | null>(null);
+function tryStoredInitialScroll(): void {
+  if (!import.meta.client) return;
+  const key = props.row.threadId ?? "";
+  if (!key || storedInitialDoneFor.value === key) return;
+  if (blocks.value.length === 0) return;
+  storedInitialDoneFor.value = key;
+  void nextTick(() => {
+    void nextTick(() => {
+      if (!import.meta.client) return;
+      requestAnimationFrame(() => scrollStoredToBottom());
+    });
+  });
+}
+
+watch(() => props.row.threadId, () => void nextTick(() => tryStoredInitialScroll()));
+watch(blocks, () => tryStoredInitialScroll());
+onMounted(() => void nextTick(() => tryStoredInitialScroll()));
 </script>
 
 <template>
@@ -125,7 +152,7 @@ watch(blocks, () => void nextTick(measure));
         :has-older="cursor !== null"
         :loading-older="loadingOlder"
         :older-error="olderError"
-        :empty-art="false"
+        hide-empty-art
         @load-older="loadOlder"
       />
     </div>
