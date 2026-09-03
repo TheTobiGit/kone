@@ -427,7 +427,6 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
               :loading="starting"
               :busy="busy"
               :queued="queued"
-              :picking="composer.pickerOpen.value"
               :has-older="session?.hasOlder.value"
               :loading-older="session?.loadingOlder.value"
               :older-error="session?.olderError.value"
