@@ -2809,6 +2809,19 @@ export type KoneStripSettings = {
   ladder: number[];
 };
 
+/** One project as the shell mirrors it: the folder the user opened and how the
+ *  app is holding it. No git state — the gateway reads that from disk when an
+ *  agent asks, so it is never a stale copy of a tile's last render. */
+export type KoneProjectEntry = {
+  path: string;
+  name: string;
+  /** The project the window is showing. At most one, and none on the home. */
+  active: boolean;
+  pinned: boolean;
+  /** Epoch ms of the last open, or null if it has never been opened. */
+  lastOpenedAt: number | null;
+};
+
 export type KoneDesktopApi = {
   platform: string;
   /** Hands the chosen appearance to the shell so native chrome follows it.
@@ -2828,12 +2841,13 @@ export type KoneDesktopApi = {
     },
   ) => Promise<void>;
   /** Mirrors what the renderer knows about itself and the shell cannot derive:
-   *  the resolved agent roster, and the thread strip's settings. The agent
-   *  gateway reads it back so its tools describe and change the surfaces the
-   *  user is actually looking at. */
+   *  the resolved agent roster, the thread strip's settings, and the projects
+   *  the user has opened. The agent gateway reads it back so its tools describe
+   *  and change the surfaces the user is actually looking at. */
   setAppState: (state: {
     agents?: KoneAgentRosterEntry[];
     strip?: KoneStripSettings;
+    projects?: KoneProjectEntry[];
   }) => Promise<void>;
   fs: KoneFsApi;
   git: KoneGitApi;

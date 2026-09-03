@@ -5,7 +5,7 @@
  * The gateway lives in the main process and the app the user is looking at lives
  * in the renderer, so an agent tool that wants to describe the interface has to
  * be told about it. The appearance mirror in `../system/system.ts` was the first
- * of these; this is the same arrangement for the two surfaces that came next:
+ * of these; this is the same arrangement for the surfaces that came after it:
  *
  * - the **agent roster** — who a thread can be handed to. The agents kone ships
  *   are prose in the renderer's bundle and a stored row is a delta against one,
@@ -13,6 +13,10 @@
  * - the **thread strip settings** — how the strip scrolls, and how wide a new
  *   pane opens. Per-install feel knobs the renderer holds in its own storage,
  *   which the main process has no way to read.
+ * - the **projects** — the folders the user has opened, which one is on screen,
+ *   and which are pinned. Also browser storage. Only the *list* is mirrored:
+ *   the branch and the diff behind each project are read from git at the moment
+ *   an agent asks, because a mirror of those would be wrong within seconds.
  *
  * Nothing here is authoritative: the renderer pushes, this remembers the last
  * push, and a write from an agent goes back the other way as a runtime event the
@@ -47,6 +51,23 @@ export type AgentRosterEntry = {
   teams: string[];
 };
 
+/** One project the app holds: the folder the user opened, and how the app is
+ *  holding it. Nothing here is derived from disk — the gateway reads git itself
+ *  when it is asked. */
+export type ProjectEntry = {
+  /** Absolute path of the project folder. Its identity everywhere. */
+  path: string;
+  /** What the app calls it. */
+  name: string;
+  /** The project the window is showing. At most one, and none on the home
+   *  screen. */
+  active: boolean;
+  /** Pinned to the front of the launcher grid. */
+  pinned: boolean;
+  /** Epoch ms the project was last opened, or null if it never has been. */
+  lastOpenedAt: number | null;
+};
+
 /** Where the strip lands when a column takes focus. */
 export type StripCentering = "never" | "on-overflow" | "always";
 
@@ -67,6 +88,7 @@ export type StripSettingsState = {
 export type AppStatePush = {
   agents?: AgentRosterEntry[];
   strip?: StripSettingsState;
+  projects?: ProjectEntry[];
 };
 
 const CENTERINGS = new Set<StripCentering>(["never", "on-overflow", "always"]);
@@ -74,6 +96,7 @@ const PANE_KINDS: readonly StripPaneKind[] = ["thread", "terminal", "scratchpad"
 
 let agentRoster: AgentRosterEntry[] | null = null;
 let stripSettings: StripSettingsState | null = null;
+let projects: ProjectEntry[] | null = null;
 
 /** The agent roster the renderer last reported, or null before its first push.
  *  Read by the agent gateway so `app_list_agents` names the agents this install
@@ -87,6 +110,15 @@ export function currentAgentRoster(): readonly AgentRosterEntry[] | null {
  *  the board the user is looking at. */
 export function currentStripSettings(): StripSettingsState | null {
   return stripSettings;
+}
+
+/** The projects the renderer last reported, or null before its first push. An
+ *  empty array is a real answer — a fresh install has opened nothing — and is
+ *  why this is not folded into the "keep the last good push" rule the roster
+ *  follows: a user who removed their last project has an empty launcher, and
+ *  reporting the one they just dropped would be the wrong kind of stale. */
+export function currentProjects(): readonly ProjectEntry[] | null {
+  return projects;
 }
 
 /** A present, non-blank string, or undefined. The push crosses IPC, so an empty
@@ -155,6 +187,24 @@ function readAgentEntry(
   };
 }
 
+/** One project, or null if the payload isn't one. A project with no path names
+ *  no folder, so there is nothing to report about it. */
+function readProjectEntry(value: Partial<ProjectEntry> | null | undefined): ProjectEntry | null {
+  if (!value || !(value instanceof Object)) return null;
+  const path = nonEmpty(value.path);
+  if (!path) return null;
+  const openedAt = Number.isFinite(value.lastOpenedAt) ? Number(value.lastOpenedAt) : null;
+  return {
+    path,
+    // A project the renderer sent with no label still exists and still opens,
+    // so it answers to its folder rather than being dropped.
+    name: nonEmpty(value.name) ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+    active: value.active === true,
+    pinned: value.pinned === true,
+    lastOpenedAt: openedAt,
+  };
+}
+
 /** A rung index, or null if the payload isn't one. Bounded by the ladder the
  *  same push carried: a rung past the end would have the gateway offer a width
  *  the board cannot lay out. */
@@ -212,6 +262,11 @@ export function setAppState(state: AppStatePush | undefined): void {
   }
   const strip = readStripSettings(state.strip);
   if (strip) stripSettings = strip;
+  if (Array.isArray(state.projects)) {
+    projects = state.projects
+      .map(readProjectEntry)
+      .filter((entry): entry is ProjectEntry => entry !== null);
+  }
 }
 
 /** Register the app:state handler. Call once, before creating the window. */

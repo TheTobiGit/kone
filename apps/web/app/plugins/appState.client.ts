@@ -4,15 +4,23 @@ import { agentRows, projectTeams, selectedAgentId } from "~/utils/agentStore";
 import { CENTER_MODES, LADDER_PX } from "~/utils/stripScroll";
 import { useStripPrefs } from "~/composables/useStripPrefs";
 import { usePaneWidthPrefs } from "~/composables/usePaneWidthPrefs";
-import type { KoneAgentRosterEntry, KoneStripSettings } from "~/types/desktop";
+import { useRecentProjects } from "~/composables/useRecentProjects";
+import { useProject } from "~/composables/useProject";
+import type { KoneAgentRosterEntry, KoneProjectEntry, KoneStripSettings } from "~/types/desktop";
 
-// The other half of the theme plugin's mirror. Two surfaces an agent can now
-// steer live entirely on this side — the agent roster and the thread strip's
-// settings — and the main process, where the agent gateway runs, has no way to
-// read either. The roster's shipped agents are prose in this bundle and a stored
-// row is a delta against one, so only here is the *resolved* roster knowable;
-// the strip's settings are per-install browser storage. So both are pushed, and
-// the gateway reads them back to describe and change what is actually on screen.
+// The other half of the theme plugin's mirror. Three surfaces an agent reaches
+// for live entirely on this side — the agent roster, the thread strip's settings
+// and the list of projects — and the main process, where the agent gateway runs,
+// has no way to read any of them. The roster's shipped agents are prose in this
+// bundle and a stored row is a delta against one, so only here is the *resolved*
+// roster knowable; the strip's settings and the recents list are per-install
+// browser storage. So all three are pushed, and the gateway reads them back to
+// describe and change what is actually on screen.
+//
+// The projects push carries the list and nothing about the repos behind it. A
+// branch and a diff change while the user types, and the launcher only watches
+// the tiles it can see — so the gateway reads git itself, at the moment an agent
+// asks, rather than answering from whatever a tile last rendered.
 //
 // Writes come the other way as runtime events, applied by `useAppSteering` —
 // which the theme plugin starts, so nothing here subscribes a second time.
@@ -52,6 +60,11 @@ export default defineNuxtPlugin(() => {
 
   const { centerMode } = useStripPrefs();
   const { paneWidths, defaultWidth } = usePaneWidthPrefs();
+  // `recents` is the launcher's own order (pins first, then newest), so the
+  // shell mirrors the list in the order the user sees it rather than one this
+  // plugin invented.
+  const { recents } = useRecentProjects();
+  const activeProject = useProject();
 
   const strip = (): KoneStripSettings => ({
     // The stored value is whatever an older build or a hand-edited storage key
@@ -68,11 +81,37 @@ export default defineNuxtPlugin(() => {
     ladder: [...LADDER_PX],
   });
 
+  const projects = (): KoneProjectEntry[] => {
+    const openPath = activeProject.value?.path ?? null;
+    const entries = recents.value.map((project) => ({
+      path: project.path,
+      name: project.name,
+      active: project.path === openPath,
+      pinned: project.pinned === true,
+      lastOpenedAt: project.lastOpenedAt,
+    }));
+    // The open project leads the list even before it lands in recents. Opening
+    // one records it and switches in the same tick, and a push that raced the
+    // record would otherwise report the app as sitting on the home screen while
+    // a project is plainly on it.
+    if (openPath && !entries.some((entry) => entry.path === openPath)) {
+      entries.unshift({
+        path: openPath,
+        name: activeProject.value?.name ?? openPath,
+        active: true,
+        pinned: false,
+        lastOpenedAt: Date.now(),
+      });
+    }
+    return entries;
+  };
+
   const push = () => {
     const activeId = selectedAgentId.value;
     void bridge.setAppState({
       agents: agentRoster().map((agent) => rosterEntry(agent, activeId)),
       strip: strip(),
+      projects: projects(),
     });
   };
 
@@ -82,7 +121,9 @@ export default defineNuxtPlugin(() => {
   // watching the derivation would miss a rename — the roster's shape doesn't
   // change, only a field inside it. Deep, because every one of these is a
   // collection edited in place.
-  watch([agentRows, selectedAgentId, projectTeams, centerMode, paneWidths], push, {
-    deep: true,
-  });
+  watch(
+    [agentRows, selectedAgentId, projectTeams, centerMode, paneWidths, recents, activeProject],
+    push,
+    { deep: true },
+  );
 });
