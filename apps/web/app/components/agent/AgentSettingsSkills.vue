@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { Folder01Icon, Globe02Icon } from "@hugeicons/core-free-icons";
-import type { SkillEntry } from "~/types/desktop";
+import { Folder01Icon, Globe02Icon, Package02Icon, PuzzleIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import type { PluginEntry, SkillEntry } from "~/types/desktop";
 import type { useAgentSettings } from "~/composables/useAgentSettings";
 import type { useSkills } from "~/composables/useSkills";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
+import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
+import { writableStates } from "~/composables/useSkills";
 import type { BrandKey } from "~/utils/modelCatalog";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 
@@ -17,6 +19,8 @@ const props = defineProps<{
   space: ReturnType<typeof useAgentSettings>;
   skills: ReturnType<typeof useSkills>;
 }>();
+
+const emit = defineEmits<{ open: [SkillEntry]; openPlugin: [PluginEntry] }>();
 
 const ORIGIN_TO_BRAND: Record<string, BrandKey> = {
   claude: "claude",
@@ -59,6 +63,7 @@ function projectsFor(skill: SkillEntry): string[] {
 }
 
 const all = computed(() => props.space.inventory.value?.skills ?? []);
+const plugins = computed(() => props.space.inventory.value?.plugins ?? []);
 
 function label(skill: SkillEntry): string {
   return skill.displayName ?? skill.name;
@@ -68,14 +73,109 @@ function describe(skill: SkillEntry): string | null {
   return skill.description ?? skill.shortDescription ?? null;
 }
 
+const query = ref("");
+const typeFilter = ref<"all" | "skill" | "plugin">("all");
+const providerFilter = ref<string | null>(null);
+
+const ORIGIN_LABEL: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  opencode: "OpenCode",
+  agents: "Shared",
+  factory: "Factory",
+};
+
+const PROVIDER_ORDER = ["agents", "claude", "codex", "cursor", "opencode", "factory"] as const;
+
+const providerOptions = computed(() => {
+  const counts = new Map<string, number>();
+  const includeSkills = typeFilter.value !== "plugin";
+  const includePlugins = typeFilter.value !== "skill";
+  if (includeSkills) {
+    for (const s of all.value) counts.set(s.origin, (counts.get(s.origin) ?? 0) + 1);
+  }
+  if (includePlugins) {
+    for (const p of plugins.value) counts.set(p.origin, (counts.get(p.origin) ?? 0) + 1);
+  }
+  const orderSet = new Set<string>(PROVIDER_ORDER);
+  const extras = [...counts.keys()].filter((k) => !orderSet.has(k));
+  const order: string[] = [...PROVIDER_ORDER, ...extras];
+  return order
+    .filter((o) => (counts.get(o) ?? 0) > 0 || o === providerFilter.value)
+    .map((origin) => ({ origin, label: ORIGIN_LABEL[origin] ?? origin, count: counts.get(origin) ?? 0 }));
+});
+
+function matchesProvider(origin: string): boolean {
+  return !providerFilter.value || origin === providerFilter.value;
+}
+
+const filteredSkills = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  return all.value.filter((s) => {
+    if (typeFilter.value === "plugin") return false;
+    if (!matchesProvider(s.origin)) return false;
+    if (!q) return true;
+    const hay = [s.name, s.displayName, s.description, s.shortDescription].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+});
+
+const filteredPlugins = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  return plugins.value.filter((p) => {
+    if (typeFilter.value === "skill") return false;
+    if (!matchesProvider(p.origin)) return false;
+    if (!q) return true;
+    const hay = [p.name, p.description, ...p.skills.map((s) => s.name)].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+});
+
 const loading = computed(
   () => props.space.inventoryLoading.value && !props.space.inventoryLoaded.value,
 );
-const empty = computed(() => props.space.inventoryLoaded.value && !loading.value && all.value.length === 0);
+const hasAny = computed(() => all.value.length + plugins.value.length > 0);
+const noMatch = computed(
+  () => !loading.value && hasAny.value && filteredSkills.value.length === 0 && filteredPlugins.value.length === 0,
+);
+const emptyAll = computed(
+  () => props.space.inventoryLoaded.value && !loading.value && !hasAny.value,
+);
 
 const errors = computed(
   () => props.space.inventory.value?.errors.filter((e) => /skill/i.test(e.source)) ?? [],
 );
+
+// enabled toggle — far right of name row
+watch(
+  all,
+  (skills) => {
+    if (skills.length) void props.skills.loadStates(skills);
+  },
+  { immediate: true },
+);
+
+function isEnabled(skill: SkillEntry): boolean {
+  const s = props.skills.stateOf(skill)?.state;
+  return s !== "disabled";
+}
+
+function isSwitchable(skill: SkillEntry): boolean {
+  const s = props.skills.stateOf(skill)?.state;
+  if (s === "unsupported") return false;
+  return writableStates(skill.origin).length > 0;
+}
+
+const busy = ref<string | null>(null);
+
+async function flip(skill: SkillEntry) {
+  if (busy.value) return;
+  busy.value = skill.path;
+  const on = isEnabled(skill);
+  await props.skills.setState(skill, on ? "disabled" : "enabled");
+  busy.value = null;
+}
 </script>
 
 <template>
@@ -84,10 +184,89 @@ const errors = computed(
       <span v-for="n in 6" :key="n" class="placeholder" :style="{ animationDelay: `${n * 90}ms` }" />
     </div>
 
-    <p v-else-if="empty" class="sk__empty">No skills found on this machine.</p>
+    <p v-else-if="emptyAll" class="sk__empty">No skills found on this machine.</p>
 
-    <ul v-else class="grid">
-      <li v-for="s in all" :key="s.path" class="card">
+    <template v-else>
+      <div class="bar">
+        <div class="filters">
+          <button type="button" class="chip" :class="{ on: typeFilter === 'all' }" @click="typeFilter = 'all'">All</button>
+          <button type="button" class="chip" :class="{ on: typeFilter === 'skill' }" @click="typeFilter = typeFilter === 'skill' ? 'all' : 'skill'">
+            <HugeiconsIcon :icon="PuzzleIcon" :size="12" :stroke-width="1.8" aria-hidden="true" /> Skills
+          </button>
+          <button type="button" class="chip" :class="{ on: typeFilter === 'plugin' }" @click="typeFilter = typeFilter === 'plugin' ? 'all' : 'plugin'">
+            <HugeiconsIcon :icon="Package02Icon" :size="12" :stroke-width="1.8" aria-hidden="true" /> Plugins
+          </button>
+        </div>
+        <label class="search">
+          <HugeiconsIcon :icon="Search01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+          <input v-model="query" type="search" placeholder="Search skills…" aria-label="Search skills" />
+        </label>
+      </div>
+
+      <div v-if="providerOptions.length > 1" class="providers" role="group" aria-label="Filter by provider">
+        <button
+          type="button"
+          class="chip chip--provider"
+          :class="{ on: !providerFilter }"
+          @click="providerFilter = null"
+        >
+          All providers
+        </button>
+        <button
+          v-for="opt in providerOptions"
+          :key="opt.origin"
+          type="button"
+          class="chip chip--provider"
+          :class="{ on: providerFilter === opt.origin }"
+          :aria-pressed="providerFilter === opt.origin"
+          @click="providerFilter = providerFilter === opt.origin ? null : opt.origin"
+        >
+          <span class="chip__logo" aria-hidden="true">
+            <HugeiconsIcon v-if="opt.origin === 'agents'" :icon="PuzzleIcon" :size="12" :stroke-width="1.8" />
+            <ProviderLogo v-else :brand="ORIGIN_TO_BRAND[opt.origin] ?? 'generic'" :size="13" />
+          </span>
+          {{ opt.label }}
+          <span class="chip__count">{{ opt.count }}</span>
+        </button>
+      </div>
+
+      <p v-if="noMatch" class="sk__empty">
+        <template v-if="providerFilter && query.trim()">
+          No {{ providerFilter ? ORIGIN_LABEL[providerFilter] ?? providerFilter : "" }} match for “{{ query }}”.
+        </template>
+        <template v-else-if="providerFilter"> No {{ ORIGIN_LABEL[providerFilter] ?? providerFilter }} skills found. </template>
+        <template v-else>No match for “{{ query }}”.</template>
+      </p>
+
+      <ul v-else class="grid">
+        <!-- plugins as folders — container of skills -->
+        <li v-for="p in filteredPlugins" :key="p.path" class="card card--plugin" @click="emit('openPlugin', p)">
+        <div class="card__top">
+          <div class="icons">
+            <span v-for="b in brandsFor({ origin: p.origin } as SkillEntry)" :key="b" class="icon">
+              <ProviderLogo :brand="b" :size="18" />
+            </span>
+          </div>
+          <div class="scopeRow">
+            <HugeiconsIcon :icon="Package02Icon" :size="11" :stroke-width="1.8" class="scopeIcon" aria-label="Plugin" />
+            <HugeiconsIcon
+              :icon="p.scope === 'project' ? Folder01Icon : Globe02Icon"
+              :size="11"
+              :stroke-width="1.8"
+              class="scopeIcon"
+              :aria-label="p.scope === 'project' ? 'Project' : 'Global'"
+            />
+            <span class="proj">{{ p.skills.length }} skill{{ p.skills.length === 1 ? "" : "s" }}</span>
+          </div>
+        </div>
+        <div class="card__body">
+          <span class="card__name">{{ p.name }}</span>
+          <span v-if="p.description" class="card__desc">{{ p.description }}</span>
+          <span v-else class="card__desc">Plugin — {{ p.skills.length }} bundled skill{{ p.skills.length === 1 ? "" : "s" }}</span>
+        </div>
+      </li>
+
+      <li v-for="s in filteredSkills" :key="s.path" class="card" @click="emit('open', s)">
         <div class="card__top">
           <div class="icons">
             <span v-for="b in brandsFor(s)" :key="b" class="icon">
@@ -95,12 +274,13 @@ const errors = computed(
             </span>
           </div>
           <div class="scopeRow">
+            <HugeiconsIcon :icon="PuzzleIcon" :size="11" :stroke-width="1.8" class="scopeIcon" aria-label="Skill" />
             <HugeiconsIcon
-              :icon="s.scope === 'user' ? Globe02Icon : Folder01Icon"
+              :icon="s.scope === 'project' ? Folder01Icon : Globe02Icon"
               :size="11"
               :stroke-width="1.8"
               class="scopeIcon"
-              :aria-label="s.scope === 'user' ? 'Global' : 'Project'"
+              :aria-label="s.scope === 'project' ? 'Project' : 'Global'"
             />
             <template v-if="s.scope === 'project'">
               <span v-for="proj in projectsFor(s)" :key="proj" class="proj">{{ proj }}</span>
@@ -108,11 +288,22 @@ const errors = computed(
           </div>
         </div>
         <div class="card__body">
-          <span class="card__name">{{ label(s) }}</span>
+          <div class="card__head">
+            <span class="card__name">{{ label(s) }}</span>
+            <ToggleSwitch
+              v-if="isSwitchable(s)"
+              :model-value="isEnabled(s)"
+              :disabled="busy === s.path"
+              :aria-label="`Turn ${s.name} ${isEnabled(s) ? 'off' : 'on'}`"
+              @update:model-value="flip(s)"
+              @click.stop
+            />
+          </div>
           <span v-if="describe(s)" class="card__desc">{{ describe(s) }}</span>
         </div>
       </li>
     </ul>
+    </template>
 
     <ul v-if="errors.length" class="sk__errors">
       <li v-for="e in errors" :key="e.source" class="sk__error">
@@ -136,6 +327,107 @@ const errors = computed(
   padding: 1.25rem 0;
 }
 
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.chip.on {
+  background: var(--ink);
+  color: var(--panel);
+  border-color: var(--ink);
+}
+
+.chip.on .scopeIcon { color: currentColor; }
+
+.providers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.chip--provider {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  gap: 6px;
+}
+
+.chip__logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.chip__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+}
+
+.chip.on .chip__count {
+  background: color-mix(in srgb, var(--panel) 18%, transparent);
+  color: var(--panel);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--faint);
+  flex: 1;
+  max-width: 260px;
+}
+
+.search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.search input::placeholder { color: var(--faint); }
+
 /* grid like the Discover reference: 2-col on desktop, 1 on narrow */
 .grid {
   list-style: none;
@@ -156,11 +448,35 @@ const errors = computed(
   border: 1px solid var(--line-soft);
   border-radius: 16px;
   background: var(--panel);
+  cursor: pointer;
   transition: border-color 160ms ease;
 }
 
 .card:hover {
   border-color: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+/* folder container — plugin is a folder of skills */
+.card--plugin {
+  border-color: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+.card--plugin .card__top {
+  background: color-mix(in srgb, var(--panel) 90%, var(--band) 10%);
+  /* subtle stacked edge */
+  box-shadow: inset 0 -1px 0 var(--line-soft);
+}
+.card--plugin .card__top::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 12px;
+  width: 28px;
+  height: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  opacity: 0.9;
 }
 
 /* inset top — own border + radius, flat band, no gradient, no icon boxes */
@@ -236,6 +552,14 @@ const errors = computed(
   flex-direction: column;
   gap: 6px;
   padding: 6px 10px 10px;
+  min-width: 0;
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   min-width: 0;
 }
 

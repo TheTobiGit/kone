@@ -2024,12 +2024,22 @@ export type InstructionFile = {
 /** One scan-step failure, carried alongside the partial result rather than
  *  failing the whole inventory — a short list for an unreadable reason is a
  *  lie, so the UI shows these. */
+export type PluginEntry = {
+  name: string;
+  description: string | null;
+  path: string;
+  origin: string;
+  scope: "user" | "project" | "plugin" | "system";
+  skills: SkillEntry[];
+};
+
 export type InventoryError = { source: string; message: string };
 
 export type AgentInventory = {
   scannedAt: number;
   projectPath: string | null;
   skills: SkillEntry[];
+  plugins: PluginEntry[];
   mcpServers: McpServerEntry[];
   instructions: InstructionFile[];
   errors: InventoryError[];
