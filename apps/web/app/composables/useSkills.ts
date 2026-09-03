@@ -1,5 +1,6 @@
 import { computed, ref, shallowRef } from "vue";
 import type {
+  SkillDetail,
   SkillEntry,
   SkillMutateResult,
   SkillRootTarget,
@@ -159,14 +160,27 @@ export function useSkills(projectPath: () => string | string[] | null) {
     return { ok: result.ok, reason: result.reason };
   }
 
-  // v1 list-only — no detail/lint/signals wiring. Stubs kept so
-  // SkillDetailView.vue (orphaned for v2) still typechecks.
-  const detail = ref<any>(null);
+  // Detail pane — table + file content
+  const detail = ref<SkillDetail | null>(null);
+  const detailLoading = ref(false);
+  // kept for compat with old detail view imports
   const findings = ref<any[]>([]);
   const signals = ref<any>(null);
-  const detailLoading = ref(false);
   const blockingFindings = computed<any[]>(() => []);
-  async function openSkill(_skill: SkillEntry): Promise<void> {}
+
+  async function openSkill(skill: SkillEntry): Promise<void> {
+    const api = bridge()?.inventory;
+    if (!api?.readSkill) return;
+    detail.value = null;
+    detailLoading.value = true;
+    try {
+      detail.value = await api.readSkill(skill.path);
+    } catch {
+      detail.value = null;
+    } finally {
+      detailLoading.value = false;
+    }
+  }
 
   // ── adding and removing ────────────────────────────────────────────────────
   // Where a skill can go is a separate question from what is installed: a
