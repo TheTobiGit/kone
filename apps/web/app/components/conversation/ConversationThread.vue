@@ -7,13 +7,14 @@ import {
   ArrowUp01Icon,
   Cancel01Icon,
   Copy01Icon,
+  Folder01Icon,
   Note01Icon,
   PencilEdit01Icon,
   RefreshIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { AssistantBlock, QueuedTurnEntry, ThreadBlock } from "~/composables/useAgent";
-import type { RuntimeItem } from "~/types/desktop";
+import type { ChatAttachment, RuntimeItem } from "~/types/desktop";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
 import AgentActivity from "~/components/agent/AgentActivity.vue";
@@ -310,6 +311,113 @@ watch(
   { immediate: true },
 );
 
+// ── attachments & lightbox ───────────────────────────────────────────────────
+const desktopAgent = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+  const mb = kb / 1024;
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}
+
+function isImageAttachment(att: ChatAttachment): boolean {
+  return att.type === "image" || att.mimeType.toLowerCase().startsWith("image/");
+}
+
+function isVideoAttachment(att: ChatAttachment): boolean {
+  return att.mimeType.toLowerCase().startsWith("video/");
+}
+
+function partitionAttachments(attachments?: ChatAttachment[]) {
+  const images: ChatAttachment[] = [];
+  const videos: ChatAttachment[] = [];
+  const files: ChatAttachment[] = [];
+  for (const att of attachments ?? []) {
+    if (isImageAttachment(att)) {
+      images.push(att);
+    } else if (isVideoAttachment(att)) {
+      videos.push(att);
+    } else {
+      files.push(att);
+    }
+  }
+  return { images, videos, files };
+}
+
+const copiedPathId = ref<string | null>(null);
+let copiedPathTimer: number | undefined;
+
+async function copyAttachmentPath(attachmentId: string) {
+  const path = await desktopAgent()?.getAttachmentPath(attachmentId);
+  if (path && navigator.clipboard) {
+    await navigator.clipboard.writeText(path);
+    copiedPathId.value = attachmentId;
+    window.clearTimeout(copiedPathTimer);
+    copiedPathTimer = window.setTimeout(() => (copiedPathId.value = null), 2000);
+  }
+}
+
+async function showInFolder(attachmentId: string) {
+  await desktopAgent()?.showAttachmentInFolder(attachmentId);
+}
+
+type LightboxState = {
+  open: boolean;
+  attachment: ChatAttachment;
+  allImages: ChatAttachment[];
+  index: number;
+} | null;
+
+const lightbox = ref<LightboxState>(null);
+
+function openLightbox(att: ChatAttachment, turnAttachments?: ChatAttachment[]) {
+  const images = (turnAttachments ?? []).filter(isImageAttachment);
+  const idx = images.findIndex((a) => a.id === att.id);
+  lightbox.value = {
+    open: true,
+    attachment: att,
+    allImages: images.length ? images : [att],
+    index: Math.max(0, idx),
+  };
+  cue("toggle");
+}
+
+function closeLightbox() {
+  lightbox.value = null;
+}
+
+function nextLightboxImage() {
+  if (!lightbox.value || lightbox.value.allImages.length <= 1) return;
+  const nextIdx = (lightbox.value.index + 1) % lightbox.value.allImages.length;
+  const nextAtt = lightbox.value.allImages[nextIdx];
+  if (nextAtt) {
+    lightbox.value.index = nextIdx;
+    lightbox.value.attachment = nextAtt;
+  }
+}
+
+function prevLightboxImage() {
+  if (!lightbox.value || lightbox.value.allImages.length <= 1) return;
+  const prevIdx = (lightbox.value.index - 1 + lightbox.value.allImages.length) % lightbox.value.allImages.length;
+  const prevAtt = lightbox.value.allImages[prevIdx];
+  if (prevAtt) {
+    lightbox.value.index = prevIdx;
+    lightbox.value.attachment = prevAtt;
+  }
+}
+
+function onLightboxKeydown(e: KeyboardEvent) {
+  if (!lightbox.value) return;
+  if (e.key === "Escape") {
+    closeLightbox();
+  } else if (e.key === "ArrowRight") {
+    nextLightboxImage();
+  } else if (e.key === "ArrowLeft") {
+    prevLightboxImage();
+  }
+}
 // ── copy ──────────────────────────────────────────────────────────────────────
 const copied = ref<string | null>(null);
 const USER_REQUEST_LIMIT = 900;
@@ -701,13 +809,21 @@ function doInitialScroll(): void {
 }
 
 onMounted(() => {
+  if (import.meta.client) {
+    window.addEventListener("keydown", onLightboxKeydown);
+  }
   const sc = scroller();
   if (!sc) return;
   const handler = () => {
     userScrolledAway.value = !isNearBottom(sc, 140);
   };
   sc.addEventListener("scroll", handler, { passive: true });
-  scrollCleanup = () => sc.removeEventListener("scroll", handler);
+  scrollCleanup = () => {
+    sc.removeEventListener("scroll", handler);
+    if (import.meta.client) {
+      window.removeEventListener("keydown", onLightboxKeydown);
+    }
+  };
   doInitialScroll();
 });
 
@@ -920,16 +1036,95 @@ watch(
              />
            </button>
          </div>
-        <!-- What was attached to this turn — the same file chips the agent uses
-             in prose. Metadata only (bytes live on disk), so images show their
-             file-type glyph rather than a thumbnail. -->
+        <!-- What was attached to this turn -->
         <div v-if="block.attachments?.length" class="you-attachments selectable">
-          <FileChip
-            v-for="att in block.attachments"
-            :key="att.id"
-            :path="att.name"
-            :title="`${att.name} · ${att.mimeType}`"
-          />
+          <!-- Images thumbnail grid -->
+          <div
+            v-if="partitionAttachments(block.attachments).images.length"
+            class="att-grid"
+            :class="{ 'att-grid--multi': partitionAttachments(block.attachments).images.length > 1 }"
+          >
+            <button
+              v-for="img in partitionAttachments(block.attachments).images"
+              :key="img.id"
+              type="button"
+              class="att-thumb-btn"
+              :title="`Preview ${img.name}`"
+              @click="openLightbox(img, block.attachments)"
+            >
+              <img
+                :src="`attachment://${img.id}`"
+                :alt="img.name"
+                class="att-thumb-img"
+                loading="lazy"
+              />
+              <div class="att-thumb-scrim">
+                <span class="att-thumb-title">{{ img.name }}</span>
+                <span class="att-thumb-size">{{ formatFileSize(img.sizeBytes) }}</span>
+              </div>
+            </button>
+          </div>
+
+          <!-- Videos -->
+          <div
+            v-if="partitionAttachments(block.attachments).videos.length"
+            class="att-videos"
+          >
+            <div
+              v-for="vid in partitionAttachments(block.attachments).videos"
+              :key="vid.id"
+              class="att-video-card"
+            >
+              <video
+                :src="`attachment://${vid.id}`"
+                controls
+                preload="metadata"
+                class="att-video-player"
+              />
+              <div class="att-video-meta">
+                <span class="att-video-name">{{ vid.name }}</span>
+                <span class="att-video-size">{{ formatFileSize(vid.sizeBytes) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Generic files with action chips -->
+          <div
+            v-if="partitionAttachments(block.attachments).files.length"
+            class="att-files-row"
+          >
+            <div
+              v-for="file in partitionAttachments(block.attachments).files"
+              :key="file.id"
+              class="att-file-pill"
+            >
+              <FileChip
+                :path="file.name"
+                :title="`${file.name} · ${file.mimeType} (${formatFileSize(file.sizeBytes)})`"
+              />
+              <span class="att-file-pill__size">{{ formatFileSize(file.sizeBytes) }}</span>
+              <button
+                type="button"
+                class="att-action-btn"
+                title="Copy path"
+                @click="copyAttachmentPath(file.id)"
+              >
+                <HugeiconsIcon
+                  :icon="copiedPathId === file.id ? Tick02Icon : Copy01Icon"
+                  :size="12"
+                  :stroke-width="2"
+                />
+              </button>
+              <button
+                type="button"
+                class="att-action-btn"
+                title="Show in Finder / File Explorer"
+                @click="showInFolder(file.id)"
+              >
+                <HugeiconsIcon :icon="Folder01Icon" :size="12" :stroke-width="2" />
+              </button>
+            </div>
+          </div>
         </div>
         <!-- Queued — this prompt is durably queued behind the running turn,
              not yet answered. The badge is driven by the host's queue state
@@ -1158,6 +1353,91 @@ watch(
     </div>
     </template>
   </div>
+    <!-- Image Lightbox Modal -->
+    <Teleport to="body">
+      <Transition name="lightbox-fade">
+        <div
+          v-if="lightbox"
+          class="lightbox-backdrop"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="lightbox.attachment.name"
+          @click.self="closeLightbox()"
+        >
+          <div class="lightbox-toolbar">
+            <div class="lightbox-meta">
+              <span class="lightbox-title">{{ lightbox.attachment.name }}</span>
+              <span class="lightbox-sub">
+                {{ formatFileSize(lightbox.attachment.sizeBytes) }}
+                <template v-if="lightbox.allImages.length > 1">
+                  · {{ lightbox.index + 1 }} of {{ lightbox.allImages.length }}
+                </template>
+              </span>
+            </div>
+            <div class="lightbox-actions">
+              <button
+                type="button"
+                class="lightbox-btn"
+                title="Copy absolute path"
+                @click="copyAttachmentPath(lightbox.attachment.id)"
+              >
+                <HugeiconsIcon
+                  :icon="copiedPathId === lightbox.attachment.id ? Tick02Icon : Copy01Icon"
+                  :size="14"
+                  :stroke-width="2"
+                />
+                <span>{{ copiedPathId === lightbox.attachment.id ? "Copied" : "Copy Path" }}</span>
+              </button>
+              <button
+                type="button"
+                class="lightbox-btn"
+                title="Show in Finder / File Explorer"
+                @click="showInFolder(lightbox.attachment.id)"
+              >
+                <HugeiconsIcon :icon="Folder01Icon" :size="14" :stroke-width="2" />
+                <span>Show in Folder</span>
+              </button>
+              <button
+                type="button"
+                class="lightbox-btn lightbox-btn--close"
+                title="Close (Esc)"
+                @click="closeLightbox()"
+              >
+                <HugeiconsIcon :icon="Cancel01Icon" :size="16" :stroke-width="2" />
+              </button>
+            </div>
+          </div>
+
+          <div class="lightbox-content" @click.self="closeLightbox()">
+            <button
+              v-if="lightbox.allImages.length > 1"
+              type="button"
+              class="lightbox-nav-btn lightbox-nav-btn--prev"
+              title="Previous (Left Arrow)"
+              @click="prevLightboxImage()"
+            >
+              <HugeiconsIcon :icon="ArrowUp01Icon" class="lightbox-arrow-left" :size="20" :stroke-width="2" />
+            </button>
+
+            <img
+              :src="`attachment://${lightbox.attachment.id}`"
+              :alt="lightbox.attachment.name"
+              class="lightbox-image"
+            />
+
+            <button
+              v-if="lightbox.allImages.length > 1"
+              type="button"
+              class="lightbox-nav-btn lightbox-nav-btn--next"
+              title="Next (Right Arrow)"
+              @click="nextLightboxImage()"
+            >
+              <HugeiconsIcon :icon="ArrowDown01Icon" class="lightbox-arrow-right" :size="20" :stroke-width="2" />
+            </button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
 </template>
 
 <style scoped>
@@ -1736,5 +2016,267 @@ watch(
   50% {
     transform: scale(1.14);
   }
+}
+/* ── Attachment rich previews ─────────────────────────────────────────────── */
+.att-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  max-width: 320px;
+  width: 100%;
+}
+.att-grid--multi {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 440px;
+}
+.att-thumb-btn {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  border-radius: 9px;
+  overflow: hidden;
+  border: 1px solid var(--btn-border);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  padding: 0;
+  margin: 0;
+  cursor: zoom-in;
+  display: block;
+}
+.att-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.att-thumb-btn:hover .att-thumb-img {
+  transform: scale(1.04);
+}
+.att-thumb-scrim {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 16px 8px 6px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), transparent);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  color: #fff;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+.att-thumb-btn:hover .att-thumb-scrim {
+  opacity: 1;
+}
+.att-thumb-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  max-width: 70%;
+}
+.att-thumb-size {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.att-videos {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+  width: 100%;
+}
+.att-video-card {
+  border-radius: 9px;
+  overflow: hidden;
+  border: 1px solid var(--btn-border);
+  background: #000;
+}
+.att-video-player {
+  width: 100%;
+  max-height: 240px;
+  display: block;
+}
+.att-video-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 8px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-size: 11px;
+  color: var(--muted);
+}
+.att-video-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.att-video-size {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.att-files-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 100%;
+}
+.att-file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 2px;
+  border-radius: 8px;
+  border: 1px solid var(--btn-border);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.att-file-pill__size {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  padding-right: 2px;
+}
+.att-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.att-action-btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* ── Lightbox modal ───────────────────────────────────────────────────────── */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(14px);
+  display: flex;
+  flex-direction: column;
+}
+.lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  color: #fff;
+  z-index: 10001;
+}
+.lightbox-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.lightbox-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lightbox-sub {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lightbox-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.lightbox-btn--close {
+  padding: 5px 7px;
+}
+.lightbox-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 16px 24px 32px;
+  min-height: 0;
+}
+.lightbox-image {
+  max-width: 90vw;
+  max-height: 84vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65);
+  user-select: none;
+}
+.lightbox-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  z-index: 10001;
+}
+.lightbox-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+.lightbox-nav-btn--prev {
+  left: 24px;
+}
+.lightbox-nav-btn--next {
+  right: 24px;
+}
+.lightbox-arrow-left {
+  transform: rotate(-90deg);
+}
+.lightbox-arrow-right {
+  transform: rotate(90deg);
+}
+
+.lightbox-fade-enter-active,
+.lightbox-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.lightbox-fade-enter-from,
+.lightbox-fade-leave-to {
+  opacity: 0;
 }
 </style>

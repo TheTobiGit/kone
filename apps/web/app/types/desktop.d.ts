@@ -2258,6 +2258,10 @@ export type KoneAgentApi = {
   /** Persist an attachment's bytes to disk; resolves to the bytes-free
    *  ChatAttachment the composer then carries on its next turn. */
   uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;
+  /** Return the verified absolute path on disk for an attachment ID. */
+  getAttachmentPath: (attachmentId: string) => Promise<string | null>;
+  /** Reveal an attachment in the host's file manager (Finder / Explorer). */
+  showAttachmentInFolder: (attachmentId: string) => Promise<boolean>;
   /** Send a turn; resolves when accepted — output flows through onEvent. */
   sendTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
   /** Fork a side chat off a source thread. The renderer mints the thread id;

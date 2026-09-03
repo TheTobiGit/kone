@@ -1267,6 +1267,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     const data = await fileToBase64(file);
     return api.uploadAttachment({ threadId: threadId.value, name, mimeType, data });
   }
+  async function getAttachmentPath(attachmentId: string): Promise<string | null> {
+    const api = bridge();
+    if (!api) return null;
+    return api.getAttachmentPath(attachmentId);
+  }
+
+  async function showAttachmentInFolder(attachmentId: string): Promise<boolean> {
+    const api = bridge();
+    if (!api) return false;
+    return api.showAttachmentInFolder(attachmentId);
+  }
 
   function base(_type: string) {
     return {
@@ -1601,6 +1612,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     steerTurn,
     cancelQueuedTurn,
     uploadAttachment,
+    getAttachmentPath,
+    showAttachmentInFolder,
     demo,
     interrupt,
     stopSubagent,
@@ -2055,6 +2068,16 @@ export function useAgent(options: UseAgentOptions) {
     if (!s) return Promise.reject(new Error("No thread column is open."));
     return s.uploadAttachment(file);
   };
+  const getAttachmentPath = (attachmentId: string): Promise<string | null> => {
+    const s = active.value;
+    if (!s) return Promise.resolve(null);
+    return s.getAttachmentPath(attachmentId);
+  };
+  const showAttachmentInFolder = (attachmentId: string): Promise<boolean> => {
+    const s = active.value;
+    if (!s) return Promise.resolve(false);
+    return s.showAttachmentInFolder(attachmentId);
+  };
   const interrupt = async () => { await active.value?.interrupt(); };
   const stopSubagent = async (toolUseId: string) => {
     await active.value?.stopSubagent(toolUseId);
@@ -2439,6 +2462,8 @@ export function useAgent(options: UseAgentOptions) {
     steerTurn,
     cancelQueuedTurn,
     uploadAttachment,
+    getAttachmentPath,
+    showAttachmentInFolder,
     demo,
     interrupt,
     stopSubagent,

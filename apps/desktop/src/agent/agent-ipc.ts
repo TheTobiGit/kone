@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, shell } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
@@ -338,6 +339,17 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:upload-attachment", (_event, input: UploadAttachmentInput) =>
     attachments.save(input),
   );
+  ipcMain.handle("agent:get-attachment-path", (_event, attachmentId: string) => {
+    return attachments.resolveAbsPath(attachmentId);
+  });
+  ipcMain.handle("agent:show-attachment-in-folder", (_event, attachmentId: string) => {
+    const absPath = attachments.resolveAbsPath(attachmentId);
+    if (absPath && existsSync(absPath)) {
+      shell.showItemInFolder(absPath);
+      return true;
+    }
+    return false;
+  });
 
   // Side chat creation (docs/side-chat-design.md). The renderer mints the
   // thread id + request id; a replay of the same id resolves "exists" instead

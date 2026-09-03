@@ -502,20 +502,17 @@ describe("Antigravity turn guards", () => {
 
   test("accepts image attachments in sendTurn and includes them in the prompt", async () => {
     const { getAttachmentStore, resetAttachmentStoreForTests } = await import("./AttachmentStore.js");
-    const { resetConversationStoreForTests } = await import("./ConversationStore.js");
+    const { getConversationStore, resetConversationStoreForTests } = await import("./ConversationStore.js");
     const { setUserDataDir } = await import("./userDataDir.js");
 
     const attTmpDir = mkdtempSync(path.join(tmpdir(), "kone-antigravity-att-"));
     setUserDataDir(attTmpDir);
     try {
-      const store = getAttachmentStore();
-      const img = await store.save({
+      getConversationStore().ensureThread({
         threadId: "t-image",
-        name: "screenshot.png",
-        mimeType: "image/png",
-        data: Buffer.from("png-bytes").toString("base64"),
+        projectPath: "/tmp",
+        provider: "antigravity",
       });
-
       const adapter = new AntigravityAdapter(noopEmit, undefined, {
         homeDir: TEST_HOME,
         // Use a dummy binary path so process spawning fails after prompt assembly
@@ -526,6 +523,14 @@ describe("Antigravity turn guards", () => {
         provider: "antigravity",
         cwd: "/tmp",
         mode: "full-access",
+      });
+
+      const store = getAttachmentStore();
+      const img = await store.save({
+        threadId: "t-image",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        data: Buffer.from("png-bytes").toString("base64"),
       });
 
       // Sending a turn with empty input but a valid image attachment must pass prompt validation

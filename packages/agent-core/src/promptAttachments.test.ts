@@ -27,9 +27,15 @@ import { setUserDataDir } from "./userDataDir.js";
 
 let tmpDir: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = mkdtempSync(path.join(tmpdir(), "kone-prompt-attachments-test-"));
   setUserDataDir(tmpDir);
+  const { getConversationStore } = await import("./ConversationStore.js");
+  getConversationStore().ensureThread({
+    threadId: "th_1",
+    projectPath: tmpDir,
+    provider: "claude",
+  });
 });
 
 afterEach(async () => {
