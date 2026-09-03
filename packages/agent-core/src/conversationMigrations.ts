@@ -2,31 +2,22 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 1;
 
-/** Whether `table` already has `column`. Every ALTER TABLE ADD COLUMN in the
- *  partially-applied migration — a crash between statements — re-runs
- *  idempotently instead of failing on a duplicate column. */
+/** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
   try {
     // SAFETY: the row shape is fixed by the SQL's single selected column.
     const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     return rows.some((r) => r.name === column);
   } catch {
-    // Unknown table / unreadable schema — assume present so the ladder fails
-    // loudly on a real problem rather than double-adding a column.
     return true;
   }
 }
 
-/** Whether `table` exists at all. The sibling of `hasColumn`, for a rung that
- *  has to read a table it did not create — a partially-applied ladder, or a
- *  database built by hand, can reach a rung without the table its predecessor
- *  was supposed to leave behind, and a throw inside a rung stops the whole
- *  upgrade rather than skipping one step. */
+/** Whether `table` exists in sqlite_master. */
 export function hasTable(db: DatabaseSync, table: string): boolean {
   try {
-    // SAFETY: the row shape is fixed by the SQL's single selected column.
     return (
       db
         .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
@@ -44,27 +35,23 @@ export function addColumn(db: DatabaseSync, table: string, column: string, ddl: 
   }
 }
 
-/** Open the transaction one rung of the migration ladder runs in. Pairs with
- *  `commitStep`; `migrate` rolls back whatever is open if a rung throws. */
+/** Open the transaction one rung of the migration ladder runs in. */
 export function beginStep(db: DatabaseSync): void {
   db.exec("BEGIN");
 }
 
-/** Record the rung and commit it, in that order and in one transaction, so the
- *  schema version and the writes it describes can never disagree: either the
- *  rung and its number both land, or neither does.
- *
- *  Stamping per rung is what makes a failed upgrade resumable. A ladder that
- *  stamps once at the end throws away every rung it did finish — a failure at
- *  rung 18 leaves the database carrying the work of 1-17 while still calling
- *  itself the version it started at, so the next open replays all of them over
- *  a database that has already moved past them. That only survives while every
- *  step happens to be re-runnable, which is a property nothing checks and a
- *  future step is free to break. */
-export function commitStep(db: DatabaseSync, target: number): number {
-  db.exec(`PRAGMA user_version = ${target}`);
+/** Record the migration rung and commit it atomically. Stamping per rung is what makes
+ *  a multi-rung upgrade resumable. Both the named tracking table and user_version are updated. */
+export function commitStep(db: DatabaseSync, migrationId: number, name: string): void {
+  db.prepare(
+    `INSERT INTO schema_migrations (migration_id, name, applied_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(migration_id) DO UPDATE SET
+       name = excluded.name,
+       applied_at = excluded.applied_at`,
+  ).run(migrationId, name, Date.now());
+  db.exec(`PRAGMA user_version = ${migrationId}`);
   db.exec("COMMIT");
-  return target;
 }
 
 /** Run `fn` inside a transaction, rolling back and rethrowing on failure. */
@@ -83,35 +70,27 @@ export function withTransaction(db: DatabaseSync, fn: () => void): void {
   }
 }
 
-/** How long a failed open is left alone before another attempt. Long enough that
- *  a streaming turn's thousands of writes cost one attempt between them, short
- *  enough that a lock held by a backup or a file-sync client clears well within
- *  a session. */
 export const REOPEN_COOLDOWN_MS = 30_000;
 
-/** A database this build must not touch, because a newer build wrote it. Unlike
- *  a busy file or a full disk, no amount of waiting makes this openable, so it's
- *  the one failure the store stops retrying entirely. */
+/** A database this build must not touch, because a newer build wrote it. */
 export class UnsupportedSchemaError extends Error {}
 
-/** Whether any conversation exists — the test for "this destructive step has
- *  something to lose". `!= null` rather than `!== undefined` because a driver
- *  that reports "no row" as null would otherwise read as a hit, and the step
- *  would snapshot an already-empty database instead of skipping the copy. */
+/** Failure thrown when recorded migration names diverge from the code manifest. */
+export class MigrationLineageError extends Error {}
+
+/** Whether any conversation exists — gates snapshots so an empty database is not snapshotted. */
 export function hasAnyThread(db: DatabaseSync): boolean {
-  return db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() != null;
+  if (!hasTable(db, "threads")) return false;
+  try {
+    return db.prepare(`SELECT 1 FROM threads LIMIT 1`).get() != null;
+  } catch {
+    return false;
+  }
 }
 
-/** How many `.bak-<millis>` snapshots to keep. Three spans enough upgrades to
- *  recover from a bad one without keeping a full copy of the database for every
- *  destructive step the app has ever shipped. */
 export const MIGRATION_BACKUP_RETENTION = 3;
 
-/** Delete all but the newest `MIGRATION_BACKUP_RETENTION` snapshots of `dbFile`.
- *  Age comes from the timestamp in the name rather than mtime, because copying
- *  or restoring a snapshot rewrites mtime and would make the newest one look
- *  like the oldest. A name whose suffix isn't a plain timestamp is left alone:
- *  not being able to date a file is no licence to delete it. */
+/** Delete all but the newest `MIGRATION_BACKUP_RETENTION` snapshots of `dbFile`. */
 export function pruneMigrationBackups(dbFile: string): void {
   const prefix = `${path.basename(dbFile)}.bak-`;
   const dir = path.dirname(dbFile);
@@ -128,27 +107,18 @@ export function pruneMigrationBackups(dbFile: string): void {
   }
 }
 
-/** Snapshot the database file before a destructive migration step (the v2/v5
-  *  transcript wipes) — never destroy data without leaving a restorable copy.
-  *  A snapshot that can't be taken logs and doesn't abort the upgrade, because
-  *  refusing to migrate would leave the app stuck on an old schema instead of
-  *  just degraded.
-  *
-  *  The checkpoint is part of taking the snapshot, not something the caller
-  *  remembers to do first: only the main file gets copied, so pages still living
-  *  in the WAL have to be folded into it or the "restorable copy" is whatever
-  *  state was last checkpointed. */
-export function backupBeforeDestructiveStep(db: DatabaseSync, dbFile: string): void {
+/** Snapshot the database file before a migration step. */
+export function backupBeforeStep(db: DatabaseSync, dbFile: string): void {
   try {
     try {
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch {
-      /* Best-effort: a snapshot of the main file alone still beats no snapshot. */
+      /* Best-effort checkpoint: a snapshot of the main file alone still beats none. */
     }
     copyFileSync(dbFile, `${dbFile}.bak-${Date.now()}`);
   } catch (err) {
     console.error(
-      "[conversation-store] could not back up the database before a destructive migration:",
+      "[conversation-store] could not back up the database before a migration:",
       err,
     );
     return;
@@ -156,1030 +126,360 @@ export function backupBeforeDestructiveStep(db: DatabaseSync, dbFile: string): v
   pruneMigrationBackups(dbFile);
 }
 
-/** Storage id for an assistant turn's block. `block_id` is globally UNIQUE, but
- *  a turn id is only unique *within* a thread — Claude numbers turns per session
- *  ("turn_1", "turn_2", …), so every thread's first turn shares the id "turn_1".
- *  Keying the block on the bare turn id let the first thread claim it and every
- *  later thread lose its assistant block to `ON CONFLICT DO NOTHING` (the reply
- *  items, keyed per-thread, survived with no block to render). Namespacing by
- *  thread restores global uniqueness. Codex's turn ids are already globally
- *  unique, so this is a no-op collision-wise for it — just a stable rename. */
+export const backupBeforeDestructiveStep = backupBeforeStep;
+
+/** Storage id for an assistant turn's block. Claude numbers turns per session
+ *  ("turn_1", "turn_2", ...), so every thread's first turn shares "turn_1".
+ *  Namespacing by thread restores global uniqueness across threads. */
 export function assistantBlockId(threadId: string, turnId: string): string {
   return `${threadId}::${turnId}`;
 }
 
-/** One-time recovery for threads whose assistant blocks were dropped by the
- *  block-id collision (see {@link assistantBlockId}). For every thread that has
- *  reply items under a turn with no matching assistant block, rebuild the block
- *  list — interleaving user prompts and assistant turns in arrival order — so
- *  the recovered replies render in place. Runs inside the v6 migration; guarded
- *  per-thread so one bad row can't abort the whole upgrade. */
-export function backfillOrphanedTurns(db: DatabaseSync): void {
-  // Threads with at least one item-turn that has no assistant block to render it.
-  // SAFETY: the row shape is fixed by the SQL's single selected column.
-  const affected = db
-    .prepare(
-      `SELECT DISTINCT i.thread_id AS thread_id
-         FROM items i
-         LEFT JOIN blocks b
-           ON b.thread_id = i.thread_id
-          AND b.turn_id   = i.turn_id
-          AND b.role      = 'assistant'
-        WHERE b.seq IS NULL`,
-    )
-    .all() as Array<{ thread_id: string }>;
-
-  for (const { thread_id: threadId } of affected) {
-    try {
-      // User prompts and any surviving assistant blocks, each in arrival order.
-      // SAFETY: the row shape is fixed by the SQL's selected columns.
-      const users = db
-        .prepare(
-          `SELECT block_id, text, at FROM blocks
-            WHERE thread_id = ? AND role = 'user' ORDER BY seq`,
-        )
-        .all(threadId) as Array<{ block_id: string; text: string | null; at: number }>;
-      // SAFETY: the row shape is fixed by the SQL's selected columns.
-      const survivingRows = db
-        .prepare(
-          `SELECT block_id, turn_id, state, error, at, ended_at FROM blocks
-            WHERE thread_id = ? AND role = 'assistant' ORDER BY seq`,
-        )
-        .all(threadId) as Array<{
-        block_id: string;
-        turn_id: string | null;
-        state: string | null;
-        error: string | null;
-        at: number;
-        ended_at: number | null;
-      }>;
-      const surviving = new Map<string, (typeof survivingRows)[number]>();
-      for (const r of survivingRows) {
-        if (r.turn_id) surviving.set(r.turn_id, r);
-      }
-
-      // Turns in the order their items first arrived — provider-agnostic (works
-      // whether the turn id is "turn_1" or a Codex uuid).
-      // SAFETY: the row shape is fixed by the SQL's selected columns.
-      const turns = db
-        .prepare(
-          `SELECT turn_id, MIN(seq) AS ms FROM items
-            WHERE thread_id = ? GROUP BY turn_id ORDER BY ms`,
-        )
-        .all(threadId) as Array<{ turn_id: string; ms: number }>;
-
-      // Interleave user[i] then turn[i] — Claude alternates one turn per prompt,
-      // so index-pairing reproduces the real order; any surplus on either side
-      // is appended rather than dropped.
-      const rows: Array<{ user?: (typeof users)[number]; turn?: string }> = [];
-      for (let i = 0; i < Math.max(users.length, turns.length); i++) {
-        const user = users[i];
-        const turn = turns[i];
-        if (user) rows.push({ user });
-        if (turn) rows.push({ turn: turn.turn_id });
-      }
-
-      const insertUser = db.prepare(
-        `INSERT INTO blocks (block_id, thread_id, role, text, at) VALUES (?, ?, 'user', ?, ?)`,
-      );
-      const insertAssistant = db.prepare(
-        `INSERT INTO blocks (block_id, thread_id, role, turn_id, state, error, at, ended_at)
-         VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)`,
-      );
-      // Rewrite the thread's blocks in the rebuilt order (fresh seq); items are
-      // untouched — they already key on (thread_id, turn_id).
-      db.prepare(`DELETE FROM blocks WHERE thread_id = ?`).run(threadId);
-      for (const row of rows) {
-        if (row.user) {
-          insertUser.run(row.user.block_id, threadId, row.user.text, row.user.at);
-        } else if (row.turn) {
-          const turnId = row.turn;
-          const prior = surviving.get(turnId);
-          insertAssistant.run(
-            prior?.block_id ?? assistantBlockId(threadId, turnId),
-            threadId,
-            turnId,
-            prior?.state ?? "completed",
-            prior?.error ?? null,
-            prior?.at ?? Date.now(),
-            prior?.ended_at ?? null,
-          );
-        }
-      }
-    } catch (err) {
-      console.error(`[conversation-store] backfill failed for ${threadId}:`, err);
-    }
-  }
+export interface MigrationEntry {
+  readonly id: number;
+  readonly name: string;
+  readonly run: (db: DatabaseSync, dbFile: string) => void;
 }
 
-/** Bring the database up to the current schema. A tiny migration ladder — each
- *  rung moves user_version forward by one, so future changes append a case
- *  rather than rewriting existing tables.
- *
- *  Each rung runs in its own transaction and records its own version, rather
- *  than the ladder running as one all-or-nothing unit: two rungs snapshot the
- *  file before they destroy anything, and a WAL checkpoint plus a file copy
- *  can't happen inside an open write transaction. A rung that throws unwinds
- *  out of here with its transaction still open; handle() rolls it back on the
- *  way out, leaving the database on the last rung that fully landed. */
-export function migrate(db: DatabaseSync, dbFile: string): void {
-  // SAFETY: the row shape is fixed by the SQL's single selected column.
-  const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
-  let version = row?.user_version ?? 0;
+function migration0001Baseline(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS threads (
+      thread_id                TEXT PRIMARY KEY,
+      project_path             TEXT NOT NULL,
+      provider                 TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'claudeAgent', 'opencode', 'cursor', 'antigravity', 'droid')),
+      model                    TEXT,
+      conversation_id          TEXT,
+      created_at               INTEGER NOT NULL,
+      last_activity_at         INTEGER NOT NULL,
+      branch                   TEXT,
+      added                    INTEGER,
+      removed                  INTEGER,
+      tokens                   INTEGER,
+      context_used             INTEGER,
+      context_window           INTEGER,
+      compacts_auto            INTEGER CHECK (compacts_auto IS NULL OR compacts_auto IN (0, 1)),
+      archived_at              INTEGER,
+      pinned_at                INTEGER,
+      title                    TEXT,
+      base_tree                TEXT,
+      source_thread_id         TEXT,
+      parent_thread_id         TEXT REFERENCES threads(thread_id) ON DELETE CASCADE,
+      relationship_to_parent   TEXT CHECK (relationship_to_parent IS NULL OR relationship_to_parent IN ('subagent', 'side_chat', 'delegation')),
+      fork_context_json        TEXT CHECK (fork_context_json IS NULL OR json_valid(fork_context_json)),
+      request_id               TEXT,
+      model_selection_json     TEXT CHECK (model_selection_json IS NULL OR json_valid(model_selection_json)),
+      resume_session_at        TEXT,
+      done_at                  INTEGER,
+      last_visited_at          INTEGER
+    );
 
-  // A database written by a NEWER app build must never be rewound: downgrading
-  // the schema would silently drop rows the older code doesn't know about.
-  // Refuse loudly instead — handle() catches this and gives up on persistence for
-  // the process (the app keeps running, just without disk history).
-  if (version > SCHEMA_VERSION) {
+    CREATE INDEX IF NOT EXISTS idx_threads_recency
+      ON threads (project_path, last_activity_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_threads_parent
+      ON threads (parent_thread_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_threads_source
+      ON threads (source_thread_id) WHERE source_thread_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_threads_request
+      ON threads (request_id) WHERE request_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS items (
+      seq                  INTEGER PRIMARY KEY,
+      item_id              TEXT NOT NULL,
+      thread_id            TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id              TEXT NOT NULL,
+      kind                 TEXT NOT NULL CHECK (kind IN ('assistant_text', 'reasoning_text', 'plan_text', 'tool_call')),
+      status               TEXT NOT NULL CHECK (status IN ('in-progress', 'completed', 'failed')),
+      text                 TEXT,
+      name                 TEXT,
+      detail               TEXT,
+      tasks_json           TEXT CHECK (tasks_json IS NULL OR json_valid(tasks_json)),
+      subagent_tool_use_id TEXT,
+      at                   INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+      UNIQUE (thread_id, turn_id, item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_items_turn
+      ON items (thread_id, turn_id, seq);
+
+    CREATE INDEX IF NOT EXISTS idx_items_thread_seq
+      ON items (thread_id, seq DESC);
+
+    CREATE TABLE IF NOT EXISTS blocks (
+      seq              INTEGER PRIMARY KEY,
+      block_id         TEXT NOT NULL UNIQUE,
+      thread_id        TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      role             TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      turn_id          TEXT,
+      text             TEXT,
+      state            TEXT CHECK (state IS NULL OR state IN ('running', 'completed', 'failed', 'interrupted')),
+      error            TEXT,
+      at               INTEGER NOT NULL,
+      ended_at         INTEGER,
+      attachments_json TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json)),
+      source           TEXT NOT NULL DEFAULT 'native' CHECK (source IN ('native', 'fork-import'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_blocks_keyset
+      ON blocks (thread_id, seq);
+
+    CREATE INDEX IF NOT EXISTS idx_blocks_user_probe
+      ON blocks (thread_id) WHERE role = 'user';
+
+    CREATE INDEX IF NOT EXISTS idx_blocks_running
+      ON blocks (thread_id) WHERE state = 'running';
+
+    CREATE TABLE IF NOT EXISTS attachments (
+      attachment_id TEXT PRIMARY KEY,
+      thread_id     TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      type          TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      mime_type     TEXT NOT NULL,
+      size_bytes    INTEGER NOT NULL,
+      rel_path      TEXT NOT NULL,
+      created_at    INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_attachments_thread
+      ON attachments (thread_id);
+
+    CREATE TABLE IF NOT EXISTS subagents (
+      seq             INTEGER PRIMARY KEY,
+      tool_use_id     TEXT NOT NULL,
+      thread_id       TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id         TEXT NOT NULL,
+      task_id         TEXT NOT NULL,
+      parent_item_id  TEXT NOT NULL,
+      agent_type      TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      prompt          TEXT NOT NULL,
+      model           TEXT NOT NULL,
+      effort          TEXT,
+      background      INTEGER,
+      status          TEXT NOT NULL CHECK (status IN ('starting', 'running', 'completed', 'failed', 'stopped')),
+      summary         TEXT,
+      last_tool_name  TEXT,
+      tokens          INTEGER NOT NULL DEFAULT 0,
+      tool_uses       INTEGER NOT NULL DEFAULT 0,
+      started_at      INTEGER NOT NULL,
+      ended_at        INTEGER,
+      UNIQUE (thread_id, turn_id, tool_use_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_subagents_thread
+      ON subagents (thread_id, turn_id);
+
+    CREATE INDEX IF NOT EXISTS idx_subagents_busy
+      ON subagents (thread_id) WHERE status IN ('starting', 'running');
+
+    CREATE TABLE IF NOT EXISTS turn_usage (
+      thread_id             TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id               TEXT NOT NULL,
+      input_tokens          INTEGER,
+      output_tokens         INTEGER,
+      total_tokens          INTEGER,
+      cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      reasoning_tokens      INTEGER NOT NULL DEFAULT 0,
+      provider              TEXT,
+      model                 TEXT,
+      at                    INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_turn_usage_at
+      ON turn_usage (at);
+
+    CREATE TABLE IF NOT EXISTS queued_turns (
+      queue_id         TEXT PRIMARY KEY,
+      thread_id        TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      user_block_id    TEXT NOT NULL,
+      dispatch_mode    TEXT NOT NULL CHECK (dispatch_mode IN ('followup', 'steer', 'direct', 'queue')),
+      state            TEXT NOT NULL CHECK (state IN ('queued', 'promoting', 'promoted', 'failed', 'cancelled')),
+      input            TEXT NOT NULL,
+      attachments_json TEXT CHECK (attachments_json IS NULL OR json_valid(attachments_json)),
+      model            TEXT,
+      mode             TEXT,
+      effort           TEXT,
+      service_tier     TEXT,
+      context_window   TEXT,
+      attempt_count    INTEGER NOT NULL DEFAULT 0,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      promoted_at      INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_queued_turns_pending
+      ON queued_turns (thread_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_queued_turns_thread_state
+      ON queued_turns (thread_id, state);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_turns_active_user_block
+      ON queued_turns (thread_id, user_block_id)
+      WHERE state IN ('queued', 'promoting');
+
+    CREATE TABLE IF NOT EXISTS scratchpads (
+      id           TEXT PRIMARY KEY,
+      project_path TEXT NOT NULL,
+      title        TEXT,
+      body         TEXT NOT NULL DEFAULT '',
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      sort_index   INTEGER NOT NULL,
+      revision     INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_scratchpads_project
+      ON scratchpads (project_path, sort_index ASC);
+
+    CREATE TABLE IF NOT EXISTS gateway_ops (
+      thread_id   TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id     TEXT NOT NULL,
+      request_id  TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      result_json TEXT,
+      status      TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved', 'dispatching', 'completed', 'failed')),
+      PRIMARY KEY (thread_id, turn_id, request_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_gateway_ops_status
+      ON gateway_ops (kind, status);
+
+    CREATE TABLE IF NOT EXISTS agents (
+      agent_id     TEXT PRIMARY KEY,
+      preset_id    TEXT,
+      name         TEXT,
+      role         TEXT,
+      instructions TEXT,
+      face_body    TEXT,
+      face_ink     TEXT,
+      skills       TEXT,
+      models       TEXT,
+      avatar       TEXT,
+      bot          TEXT,
+      sort_order   INTEGER NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      deleted_at   INTEGER,
+      CHECK (preset_id IS NOT NULL OR (name IS NOT NULL AND length(trim(name)) > 0))
+    );
+
+    CREATE TABLE IF NOT EXISTS project_agents (
+      project_path TEXT NOT NULL,
+      agent_id     TEXT NOT NULL,
+      sort_order   INTEGER NOT NULL,
+      added_at     INTEGER NOT NULL,
+      PRIMARY KEY (project_path, agent_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_agents_agent
+      ON project_agents (agent_id);
+
+    CREATE TABLE IF NOT EXISTS thread_agents (
+      thread_id  TEXT PRIMARY KEY,
+      agent_id   TEXT,
+      settled_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS subagent_presets (
+      preset_id    TEXT PRIMARY KEY,
+      name         TEXT NOT NULL,
+      instructions TEXT,
+      models       TEXT,
+      sort_order   INTEGER NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_state (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+}
+
+export const migrationEntries: readonly MigrationEntry[] = [
+  { id: 1, name: "Baseline", run: migration0001Baseline },
+];
+
+export interface MigrationOptions {
+  toMigrationInclusive?: number;
+}
+
+/** Run the migration ladder against `db`, bringing it up to `SCHEMA_VERSION`. */
+export function migrate(
+  db: DatabaseSync,
+  dbFile: string,
+  options?: MigrationOptions,
+): void {
+  // Ensure the named migration tracking table exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      migration_id INTEGER PRIMARY KEY,
+      name         TEXT NOT NULL,
+      applied_at   INTEGER NOT NULL
+    );
+  `);
+
+  // SAFETY: query matches schema_migrations definition above.
+  const recordedRows = db
+    .prepare("SELECT migration_id, name FROM schema_migrations ORDER BY migration_id ASC")
+    .all() as Array<{ migration_id: number; name: string }>;
+
+  // SAFETY: the user_version pragma returns a single object with the user_version number.
+  const userVersionRow = db.prepare("PRAGMA user_version").get() as
+    | { user_version: number }
+    | undefined;
+  const userVersion = userVersionRow?.user_version ?? 0;
+
+  const maxRecorded =
+    recordedRows.length > 0 ? (recordedRows[recordedRows.length - 1]?.migration_id ?? 0) : 0;
+  const highestVersion = Math.max(userVersion, maxRecorded);
+
+  if (highestVersion > SCHEMA_VERSION) {
     throw new UnsupportedSchemaError(
-      `[conversation-store] database schema v${version} is newer than this build supports ` +
+      `[conversation-store] database schema v${highestVersion} is newer than this build supports ` +
         `(v${SCHEMA_VERSION}); refusing to migrate. Upgrade the app, or remove the database ` +
         "to start fresh.",
     );
   }
 
-  if (version < 1) {
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS threads (
-        thread_id       TEXT PRIMARY KEY,
-        project_path    TEXT NOT NULL,
-        provider        TEXT NOT NULL,
-        model           TEXT,
-        conversation_id TEXT,
-        created_at      INTEGER NOT NULL,
-        updated_at      INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_threads_project
-        ON threads (project_path, updated_at DESC);
-
-      -- One row per rendered block, in arrival order (the autoincrement seq
-      -- interleaves user prompts and assistant turns exactly as they happened).
-      CREATE TABLE IF NOT EXISTS blocks (
-        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-        block_id  TEXT NOT NULL UNIQUE,
-        thread_id TEXT NOT NULL,
-        role      TEXT NOT NULL,   -- 'user' | 'assistant'
-        turn_id   TEXT,            -- assistant turns only
-        text      TEXT,            -- the user prompt, for user blocks
-        state     TEXT,            -- assistant lifecycle: running/completed/failed/interrupted
-        error     TEXT,
-        at        INTEGER NOT NULL,
-        ended_at  INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS idx_blocks_thread ON blocks (thread_id, seq);
-
-      -- The ordered parts inside a turn (assistant_text / reasoning_text /
-      -- plan_text / tool_call), kept in first-seen order via seq — kone's
-      -- "ordered-parts" model of the turn's thread activity.
-      CREATE TABLE IF NOT EXISTS items (
-        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-        item_id   TEXT NOT NULL,
-        thread_id TEXT NOT NULL,
-        turn_id   TEXT NOT NULL,
-        kind      TEXT NOT NULL,
-        status    TEXT NOT NULL,
-        text      TEXT NOT NULL,
-        name      TEXT,
-        detail    TEXT,
-        UNIQUE (thread_id, turn_id, item_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_items_turn ON items (thread_id, turn_id, seq);
-    `);
-    version = commitStep(db, 1);
-  }
-
-  if (version < 2) {
-    // v2 gives a thread the context the Project Home "recent conversations"
-    // block shows: the branch it ran on, its diffstat, and its token spend.
-    // Clear the old conversations on the way up — they predate these columns
-    // and would render as blank rows, so we start the richer history fresh.
-    // Destructive: snapshot the file first (only when there's actually data to
-    // lose), and run the wipe + column adds atomically so a crash mid-step
-    // can't leave a half-migrated DB.
-    if (hasAnyThread(db)) backupBeforeDestructiveStep(db, dbFile);
-    beginStep(db);
-    db.exec(`
-      DELETE FROM items;
-      DELETE FROM blocks;
-      DELETE FROM threads;
-    `);
-    addColumn(db, "threads", "branch", "TEXT");
-    addColumn(db, "threads", "added", "INTEGER");
-    addColumn(db, "threads", "removed", "INTEGER");
-    addColumn(db, "threads", "tokens", "INTEGER");
-    version = commitStep(db, 2);
-  }
-
-  if (version < 3) {
-    // v3 lets a thread be hidden from the "recent conversations" block without
-    // being destroyed — `archived` is a timestamp (NULL = active). Kept as a
-    // nullable column so existing rows read as active with no backfill.
-    beginStep(db);
-    addColumn(db, "threads", "archived", "INTEGER");
-    version = commitStep(db, 3);
-  }
-
-  if (version < 4) {
-    // v4 persists an agent-generated (or word-fallback) working title so the
-    // recent list doesn't have to reconstruct every transcript just to label
-    // a row. Title lives on the thread, not derived from the first user turn
-    // at read time. Backfill existing rows
-    // from their first user prompt (word-capped) so upgraded installs don't
-    // flash "Untitled session" for every prior conversation.
-    beginStep(db);
-    addColumn(db, "threads", "title", "TEXT");
-    db.exec(`
-      UPDATE threads
-      SET title = (
-        SELECT TRIM(SUBSTR(
-          REPLACE(REPLACE(b.text, CHAR(10), ' '), CHAR(13), ' '),
-          1, 60
-        ))
-        FROM blocks b
-        WHERE b.thread_id = threads.thread_id AND b.role = 'user'
-        ORDER BY b.seq
-        LIMIT 1
-      )
-      WHERE title IS NULL
-    `);
-    version = commitStep(db, 4);
-  }
-
-  if (version < 5) {
-    // v5 rebases the diffstat onto the conversation itself. Old rows recorded
-    // the whole working tree's uncommitted diff vs HEAD (the "general diff"),
-    // so every conversation showed the same repo-wide numbers instead of what
-    // *it* changed. There's no way to reconstruct a true baseline for those
-    // historical rows, so — like v2 — we clear all conversations (active and
-    // archived alike) and start the corrected, per-conversation history fresh.
-    // `base_tree` holds the working-tree snapshot taken when a thread starts;
-    // the settled diff is measured against it, not against HEAD.
-    //
-    // Upgrading through v2 empties the table, so this check fails and only one
-    // snapshot is taken per run. A step added between the two that repopulated
-    // `threads` would arm both, and two snapshots in the same millisecond share a
-    // filename — give the second one a distinct name if that ever happens.
-    if (hasAnyThread(db)) backupBeforeDestructiveStep(db, dbFile);
-    beginStep(db);
-    db.exec(`
-      DELETE FROM items;
-      DELETE FROM blocks;
-      DELETE FROM threads;
-    `);
-    addColumn(db, "threads", "base_tree", "TEXT");
-    version = commitStep(db, 5);
-  }
-
-  if (version < 6) {
-    // v6 recovers conversations broken by the block-id collision (see
-    // assistantBlockId). Assistant blocks were keyed on the bare turn id, which
-    // Claude reuses per thread ("turn_1", …) while block_id is globally UNIQUE,
-    // so every Claude thread after the first silently lost its assistant blocks
-    // — the reply *items* persisted (keyed per-thread) but had no block to hang
-    // on, so reopening a thread showed the prompts with no responses. Unlike v2
-    // and v5, the data is reconstructable (the items are still here, in arrival
-    // order), so we rebuild the affected threads in place rather than wiping.
-    beginStep(db);
-    backfillOrphanedTurns(db);
-    version = commitStep(db, 6);
-  }
-
-  if (version < 7) {
-    beginStep(db);
-    addColumn(db, "items", "tasks_json", "TEXT");
-    version = commitStep(db, 7);
-  }
-
-  if (version < 8) {
-    // v8 adds prompt attachments. Bytes live on disk under the attachments dir
-    // (AttachmentStore); this registry keeps the id → on-disk-path mapping the
-    // adapters resolve at dispatch, plus enough metadata for GC of orphaned
-    // files. The attachment *metadata* is also denormalized onto the owning
-    // user block (`attachments_json`) so a reloaded thread rebuilds its chips
-    // without a per-block join.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS attachments (
-        attachment_id TEXT PRIMARY KEY,
-        thread_id     TEXT NOT NULL,
-        type          TEXT NOT NULL,   -- 'image' | 'file'
-        name          TEXT NOT NULL,
-        mime_type     TEXT NOT NULL,
-        size_bytes    INTEGER NOT NULL,
-        rel_path      TEXT NOT NULL,   -- relative to the attachments dir
-        created_at    INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_attachments_thread ON attachments (thread_id);
-    `);
-    addColumn(db, "blocks", "attachments_json", "TEXT");
-    version = commitStep(db, 8);
-  }
-
-  if (version < 9) {
-    // v9 — per-project scratchpad documents (markdown source, one row per pad),
-    // as first-class rows so a project can hold several open pads with stable
-    // ids across reloads.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS scratchpads (
-        id          TEXT PRIMARY KEY,
-        project_path TEXT NOT NULL,
-        title       TEXT,
-        body        TEXT NOT NULL DEFAULT '',
-        created_at  INTEGER NOT NULL,
-        updated_at  INTEGER NOT NULL,
-        sort_index  INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_scratchpads_project
-        ON scratchpads (project_path, sort_index);
-    `);
-    version = commitStep(db, 9);
-  }
-
-  if (version < 10) {
-    // v10 — the project board layout, one JSON blob per project. The board is
-    // always read and written whole (§6.1), so a normalised panes table would
-    // only cost a migration each time a pane field is added — the blob doesn't.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS project_boards (
-        project_path TEXT PRIMARY KEY,
-        layout       TEXT NOT NULL,
-        updated_at   INTEGER NOT NULL
-      );
-    `);
-    version = commitStep(db, 10);
-  }
-
-  if (version < 11) {
-    // v11 persists the last context-window snapshot per thread so a reopened
-    // conversation restores its meter fill straight away, rather than showing an
-    // empty ring until the next turn re-reports usage. Unlike `tokens` (a spend
-    // tally), these are a live snapshot — overwritten each token-usage event.
-    beginStep(db);
-    addColumn(db, "threads", "context_used", "INTEGER");
-    addColumn(db, "threads", "context_window", "INTEGER");
-    addColumn(db, "threads", "compacts_auto", "INTEGER");
-    version = commitStep(db, 11);
-  }
-
-  if (version < 12) {
-    // v12 persists nested subagent runs. An item produced *inside* a run carries
-    // the spawning Task tool-use id so loadThread can re-nest it, and each run's
-    // own snapshot (status, agent type, token/tool counters, summary) lives in a
-    // sibling table keyed by that same id. Runs are per-turn, so the key is
-    // (thread_id, turn_id, tool_use_id) — the parent item id is stored rather
-    // than derived, because a streamed tool call's item id is positional
-    // (`turn:msg:index`) and isn't recoverable from the tool-use id.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS subagents (
-        seq            INTEGER PRIMARY KEY AUTOINCREMENT,
-        tool_use_id    TEXT NOT NULL,
-        thread_id      TEXT NOT NULL,
-        turn_id        TEXT NOT NULL,
-        task_id        TEXT,
-        parent_item_id TEXT,
-        agent_type     TEXT,
-        description    TEXT,
-        prompt         TEXT,
-        model          TEXT,
-        effort         TEXT,
-        background     INTEGER,
-        status         TEXT NOT NULL,
-        summary        TEXT,
-        last_tool_name TEXT,
-        tokens         INTEGER,
-        tool_uses      INTEGER,
-        started_at     INTEGER NOT NULL,
-        ended_at       INTEGER,
-        UNIQUE (thread_id, turn_id, tool_use_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_subagents_turn ON subagents (thread_id, turn_id, seq);
-    `);
-    addColumn(db, "items", "subagent_tool_use_id", "TEXT");
-    version = commitStep(db, 12);
-  }
-
-  if (version < 13) {
-    // v13 adds side chats. A side chat is a root thread with a fork pointer
-    // back at its source (docs/side-chat-design.md): threads gain the source
-    // pointer, the stored handoff context (ForkContext — bootstrap flag and
-    // fork point), the lineage block (relationship to the source — side chats
-    // are roots, so parentThreadId stays null), and the caller's idempotency
-    // key. Blocks gain a `source` column ('native' | 'fork-import') so
-    // imported rows render as history rather than activity: they keep their
-    // original `at` and never refresh a thread's updated_at.
-    beginStep(db);
-    addColumn(db, "threads", "source_thread_id", "TEXT");
-    addColumn(db, "threads", "fork_context_json", "TEXT");
-    addColumn(db, "threads", "lineage_json", "TEXT");
-    addColumn(db, "threads", "request_id", "TEXT");
-    addColumn(db, "blocks", "source", "TEXT NOT NULL DEFAULT 'native'");
-    version = commitStep(db, 13);
-  }
-
-  if (version < 14) {
-    // v14 enforces one side chat per source thread at the DB level, so a
-    // racing second fork can't slip past the app-level join check in
-    // createSidechatThread. A unique index on the (nullable) source pointer:
-    // NULL rows (every non-side-chat thread) are exempt, so each source can
-    // carry at most one fork. Guarded: installs that already hold duplicate
-    // side chats (from the pre-v14 lax round) keep the app-level join rule and
-    // log instead of failing the migration.
-    beginStep(db);
-    // SAFETY: the row shape is fixed by the SQL's single selected column.
-    const dupes = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM (
-           SELECT source_thread_id FROM threads
-            WHERE source_thread_id IS NOT NULL
-            GROUP BY source_thread_id HAVING COUNT(*) > 1
-         )`,
-      )
-      .get() as { n: number };
-    if (dupes.n === 0) {
-      db.exec(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_sidechat_source
-           ON threads (source_thread_id) WHERE source_thread_id IS NOT NULL`,
-      );
-    } else {
-      console.warn(
-        `[conversation-store] found ${dupes.n} source thread(s) with duplicate side chats; ` +
-          "skipping the v14 unique index — the app-level join rule still applies",
+  // Verify recorded names match the code manifest
+  for (const recorded of recordedRows) {
+    const manifestEntry = migrationEntries.find((e) => e.id === recorded.migration_id);
+    if (!manifestEntry || manifestEntry.name !== recorded.name) {
+      throw new MigrationLineageError(
+        `[conversation-store] migration lineage mismatch at rung ${recorded.migration_id}: ` +
+          `expected "${manifestEntry?.name ?? "<unknown>"}", found "${recorded.name}" in database.`,
       );
     }
-    version = commitStep(db, 14);
   }
 
-  if (version < 15) {
-    // v15 — the agent-facing MCP gateway (docs/mcp-gateway-design.md):
-    // `revision` on scratchpads gives the gateway's kone_scratchpad_write an
-    // optimistic concurrency guard against the web editor (the editor is the
-    // revision source of truth; agent writes carry the revision they were
-    // based on and conflict when it moved). Backfilled to 1 so upgraded pads
-    // read as already-written. `gateway_ops` is the idempotency reserve for
-    // all future gateway tools (kind = "scratchpad.write" today): agent-side
-    // write retries replay the stored result instead of re-applying.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS gateway_ops (
-        thread_id   TEXT NOT NULL,
-        turn_id     TEXT NOT NULL,
-        request_id  TEXT NOT NULL,
-        kind        TEXT NOT NULL,
-        fingerprint TEXT NOT NULL,
-        result_json TEXT NOT NULL,
-        created_at  INTEGER NOT NULL,
-        PRIMARY KEY (thread_id, turn_id, request_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_gateway_ops_kind
-        ON gateway_ops (kind, created_at);
-    `);
-    addColumn(db, "scratchpads", "revision", "INTEGER NOT NULL DEFAULT 1");
-    version = commitStep(db, 15);
-  }
+  const appliedIds = new Set<number>(recordedRows.map((r) => r.migration_id));
+  const targetMax = options?.toMigrationInclusive ?? SCHEMA_VERSION;
 
-  if (version < 16) {
-    // v16 — thread spawning (docs/thread-spawning-design.md): `parent_thread_id`
-    // is an indexed projection of lineage_json's parentThreadId — lineage_json
-    // stays the source of truth for the relationship, this column exists so
-    // "who are my children" and subtree walks are an indexed query instead of a
-    // JSON scan of every thread row. No backfill: no thread has ever carried a
-    // `subagent` lineage (side chats are roots, parentThreadId null), so the
-    // column ships empty, written only by the feature that owns it.
-    beginStep(db);
-    addColumn(db, "threads", "parent_thread_id", "TEXT");
-    db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_threads_parent
-        ON threads (parent_thread_id, created_at);
-    `);
-    version = commitStep(db, 16);
-  }
-
-  if (version < 17) {
-    // v17 — half-created spawn recovery (docs/thread-spawning-design.md, F8): a
-    // `dispatched` bit on gateway_ops marks a spawn.thread op whose startThread
-    // actually returned. A reserved op that was never marked dispatched is the
-    // durable trace of a crash between the store write and dispatch — at next
-    // boot sealUndispatchedSpawns turns the child into a failed thread so it
-    // reads terminal instead of projecting idle forever. No backfill: rows
-    // written before this migration predate the crash window's meaning, and
-    // sealing them would mislabel already-recovered children.
-    beginStep(db);
-    addColumn(db, "gateway_ops", "dispatched", "INTEGER NOT NULL DEFAULT 0");
-    db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_gateway_ops_undispatched
-        ON gateway_ops (kind, dispatched);
-    `);
-    version = commitStep(db, 17);
-  }
-
-  if (version < 18) {
-    // v18 — the persistence-findings sweep:
-    //  - `is_pinned` moves pins out of browser localStorage into the DB, so a
-    //    pinned thread follows the thread across browser profiles and shows in
-    //  - `model_selection_json` persists the user's per-thread picker knobs
-    //    (effort / serviceTier / contextWindow — the same axes SendTurnInput
-    //    carries; `model` rides the existing column), so a reopened thread
-    //    restores the picker instead of boot defaults.
-    //  - `resume_session_at` stores Claude's last assistant message uuid for
-    //    reliable resume, captured live like conversationId.
-    //  - `last_activity_at` separates "when the conversation was last active"
-    //    from `updated_at` — title renames and archive stamps also bump the
-    //    latter, so recency ordering previously reshuffled under a background
-    //    rename. Backfilled from updated_at; every turn event touches it
-    //  - `turn_usage` keeps a per-turn token audit trail (input/output/total)
-    //    that survives restart; the thread-level `tokens` scalar stays as the
-    //    rollup.
-    //  - a partial unique index on `threads.request_id` (the side chat's
-    //    GLOBAL idempotency key — threadIdForRequestId queries it with no
-    //    thread scope) closes the gap where a lax round could mint two
-    //    threads for one request key. Existing duplicates are deduped first,
-    //    keeping the OLDEST row (the idempotency authority) and nulling the
-    //    newer ones.
-    beginStep(db);
-    addColumn(db, "threads", "is_pinned", "INTEGER NOT NULL DEFAULT 0");
-    addColumn(db, "threads", "model_selection_json", "TEXT");
-    addColumn(db, "threads", "resume_session_at", "TEXT");
-    addColumn(db, "threads", "last_activity_at", "INTEGER");
-    db.exec(`
-      UPDATE threads SET last_activity_at = updated_at WHERE last_activity_at IS NULL;
-      CREATE INDEX IF NOT EXISTS idx_threads_recency
-        ON threads (project_path, last_activity_at DESC);
-      CREATE TABLE IF NOT EXISTS turn_usage (
-        thread_id     TEXT NOT NULL,
-        turn_id       TEXT NOT NULL,
-        input_tokens  INTEGER,
-        output_tokens INTEGER,
-        total_tokens  INTEGER,
-        at            INTEGER NOT NULL,
-        PRIMARY KEY (thread_id, turn_id)
-      );
-    `);
-    // Dedupe first: for every request_id, only the row that is oldest by
-    // (created_at, thread_id) keeps the key; newer duplicates lose it.
-    db.exec(`
-      UPDATE threads
-         SET request_id = NULL
-       WHERE request_id IS NOT NULL
-         AND thread_id NOT IN (
-           SELECT t.thread_id FROM threads t
-            WHERE t.request_id IS NOT NULL
-              AND NOT EXISTS (
-                SELECT 1 FROM threads t2
-                 WHERE t2.request_id = t.request_id
-                   AND (t2.created_at < t.created_at
-                     OR (t2.created_at = t.created_at AND t2.thread_id < t.thread_id))
-              )
-          )
-    `);
-    try {
-      db.exec(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_request_id
-           ON threads (request_id) WHERE request_id IS NOT NULL`,
-      );
-    } catch (err) {
-      // A duplicate that slipped past the dedupe must not brick the upgrade —
-      // the app-level join in createSidechatThread still applies, same
-      // posture as the v14 side chat index.
-      console.warn(
-        "[conversation-store] could not create the request_id unique index:",
-        err,
-      );
-    }
-    version = commitStep(db, 18);
-  }
-
-  if (version < 19) {
-    // behind loadThreadPage's user-anchored windows. Pagination orders blocks
-    // by the stable keyset (at, block_id); the pre-existing
-    // (thread_id, seq) index cannot serve that order, forcing a temp B-tree
-    // over all of a thread's blocks before the page LIMIT applies. With this
-    // index the candidates scan is genuinely bounded by the page size.
-    beginStep(db);
-    db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_blocks_keyset
-        ON blocks (thread_id, at, block_id);
-    `);
-    version = commitStep(db, 19);
-  }
-
-  if (version < 20) {
-    // while a turn runs is enqueued here instead of being dropped, promoted
-    // when the live turn settles, and cancelled when the thread goes away.
-    // `user_block_id` is the journaled user-prompt block UUID (recordUserBlock
-    // mints it), so the queued prompt is a pointer into the conversation —
-    // never a second copy that could diverge. `dispatch_mode` is the
-    // queue/steer axis ('steer' jumps the line, newest steer first, then FIFO);
-    // `attempt_count` survives release→reclaim so a poison turn's retries are
-    // visible; the nullable knobs (model/mode/effort/service_tier/
-    // context_window) are replayed onto the promoted send exactly as the user
-    // picked them. The partial unique index on (thread_id, user_block_id) over
-    // the ACTIVE states is the replay-safety guard: a replayed enqueue of the
-    // same prompt is a no-op, and a row that has settled (promoted/cancelled)
-    // no longer blocks anything.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS queued_turns (
-        queue_id         TEXT PRIMARY KEY,
-        thread_id        TEXT NOT NULL,
-        user_block_id    TEXT NOT NULL,
-        dispatch_mode    TEXT NOT NULL DEFAULT 'queue'
-                         CHECK (dispatch_mode IN ('queue', 'steer')),
-        state            TEXT NOT NULL
-                         CHECK (state IN ('queued', 'promoting', 'promoted', 'cancelled')),
-        input            TEXT NOT NULL,
-        attachments_json TEXT,
-        model            TEXT,
-        mode             TEXT,
-        effort           TEXT,
-        service_tier     TEXT,
-        context_window   TEXT,
-        attempt_count    INTEGER NOT NULL DEFAULT 0,
-        created_at       INTEGER NOT NULL,
-        updated_at       INTEGER NOT NULL,
-        promoted_at      INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS idx_queued_turns_thread_state
-        ON queued_turns (thread_id, state, created_at);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_queued_turns_active_user_block
-        ON queued_turns (thread_id, user_block_id)
-        WHERE state IN ('queued', 'promoting');
-    `);
-    version = commitStep(db, 20);
-  }
-
-  if (version < 21) {
-    // v21 — the cache/reasoning split of turn_usage's audit trail. Every
-    // provider adapter already parses `input`/`output`/`total` off a richer
-    // usage payload that also carries cache-read, cache-creation and
-    // reasoning token counts (Claude's `cache_read_input_tokens` /
-    // `cache_creation_input_tokens`, OpenCode's `tokens.cache.{read,write}` /
-    // `tokens.reasoning`, Codex's `cachedInputTokens` /
-    // `reasoningOutputTokens`), and until now those counts were folded into
-    // input/output and thrown away at the exact moment they reached this
-    // table. Cache reads dominate an agentic turn's real prompt cost, so
-    // losing that split made every cost figure derived from this table
-    // shallower than it needed to be. `ADD COLUMN ... DEFAULT 0` backfills
-    // every existing row with 0 for free (SQLite applies the default to
-    // history in place, no rewrite pass, no risk to rows already written) —
-    // those turns genuinely have no recorded split, so 0 is the honest value
-    // rather than NULL standing in for "unknown". Going forward every insert
-    // supplies a real count where the provider has one and an explicit 0
-    // (never a guess) where it doesn't.
-    beginStep(db);
-    addColumn(db, "turn_usage", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
-    addColumn(db, "turn_usage", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
-    addColumn(db, "turn_usage", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0");
-    version = commitStep(db, 21);
-  }
-
-  if (version < 22) {
-    // v22 — the roster gets rows. An agent is a persistent actor: an identity
-    // that outlives any one conversation, which is exactly the thing browser
-    // storage is the wrong home for. Two kinds of row share the table.
-    //
-    // A row WITH a `preset_id` overlays a built-in the app ships: every column
-    // it leaves NULL is inherited from that shipped definition at read time, so
-    // a later build's improved wording still reaches a user who never touched
-    // that field, and only what they did edit is frozen. A row WITHOUT one is a
-    // user-made agent and every column on it is authoritative — which is what
-    // the CHECK enforces: a row that inherits nothing must at least carry a
-    // name. NULL therefore means "inherit"; '' means "deliberately blank"; the
-    // two are different answers and nothing here may collapse them.
-    //
-    // The shipped definitions are deliberately NOT stored. They live in the
-    // renderer — the layer that renders them and the layer the user edits them
-    // through — so this table holds only the delta, and no rung ever has to
-    // rewrite a copy of prose that shipped in the binary.
-    //
-    // `deleted_at` is a soft delete because a transcript has to keep naming
-    // whoever wrote it. Deleting an agent takes them out of the roster; it can't
-    // retroactively orphan the threads they worked, so the row survives as the
-    // record of a name and a face that once did work. It also keeps a dismissed
-    // built-in dismissed: `ensurePresetAgents` re-seeds a missing row, never a
-    // deleted one.
-    //
-    // Team membership is its own table rather than a column, because an agent
-    // belongs to as many projects as you add them to. The join filters on
-    // `deleted_at`, so a deleted agent leaves every team without a cascade and
-    // comes back to all of them if the row is ever restored.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS agents (
-        agent_id     TEXT PRIMARY KEY,
-        preset_id    TEXT,
-        name         TEXT,
-        role         TEXT,
-        instructions TEXT,
-        face_body    TEXT,
-        face_ink     TEXT,
-        sort_order   INTEGER NOT NULL DEFAULT 0,
-        created_at   INTEGER NOT NULL,
-        updated_at   INTEGER NOT NULL,
-        deleted_at   INTEGER,
-        CHECK (preset_id IS NOT NULL OR name IS NOT NULL)
-      );
-      CREATE INDEX IF NOT EXISTS idx_agents_roster_order
-        ON agents (deleted_at, sort_order, created_at, agent_id);
-
-      CREATE TABLE IF NOT EXISTS project_agents (
-        project_path TEXT NOT NULL,
-        agent_id     TEXT NOT NULL,
-        sort_order   INTEGER NOT NULL DEFAULT 0,
-        added_at     INTEGER NOT NULL,
-        PRIMARY KEY (project_path, agent_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_project_agents_agent
-        ON project_agents (agent_id);
-    `);
-    version = commitStep(db, 22);
-  }
-
-  if (version < 23) {
-    // v23 — who worked a thread, and who the composer is pointing at.
-    //
-    // A binding is the record of a decision, not a setting: a thread is one
-    // agent's work end to end, so it is written once when the thread starts and
-    // never revised. Changing who you work with has to leave started
-    // conversations alone, or a transcript would rewrite itself to name whoever
-    // was picked last.
-    //
-    // Three states, and all three are needed. A row with an `agent_id` is that
-    // agent's thread. A row with NULL ran as a *guest*, which is a decision like
-    // any other — recording it is what stops a guest conversation being claimed
-    // later by an agent picked after the fact. No row at all means the thread
-    // hasn't started, which is also every thread from before any of this
-    // existed, and those correctly read as guests.
-    //
-    // Deliberately not a column on `threads` and deliberately no foreign key:
-    // the binding settles at the moment of the send, which can be ahead of the
-    // thread's own row, and it has to outlive the agent it names (an agent's row
-    // is soft-deleted precisely so a finished thread still has a name on it).
-    //
-    // The selection is a single row because it is a single answer: who the next
-    // turn goes to. NULL means a guest, and no row means nobody has chosen — the
-    // shipped default, which sends work to a guest, so the two behave alike
-    // without being written down as the same thing.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS thread_agents (
-        thread_id  TEXT PRIMARY KEY,
-        agent_id   TEXT,
-        settled_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_thread_agents_agent
-        ON thread_agents (agent_id);
-
-      CREATE TABLE IF NOT EXISTS roster_selection (
-        id         INTEGER PRIMARY KEY CHECK (id = 0),
-        agent_id   TEXT,
-        updated_at INTEGER NOT NULL
-      );
-    `);
-    version = commitStep(db, 23);
-  }
-
-  if (version < 24) {
-    // v24 — an agent's capabilities: the skills it is assigned, and the
-    // providers and models it is allowed to run on.
-    //
-    // All three are JSON arrays held as TEXT, and each is an overlay field like
-    // the prose beside it: NULL means "inherit whatever the shipped preset
-    // says", which the renderer resolves — the presets live on the web side.
-    // The three are shaped differently on purpose. Skills are additive: an
-    // agent is given the ones it needs, so an empty list is a real answer ("no
-    // skills"). Providers and models are the opposite — a list is a restriction
-    // to exactly those, and having none means no restriction at all, so an
-    // empty list reads the same as NULL. A one-entry model list is how "the
-    // specific model this agent must use" is written down: a menu of one.
-    //
-    // Added as columns rather than a table because a capability set is part of
-    // one agent's definition, not a relation between agents and skills — it
-    // overlays a preset exactly the way the prose does, and a fork copies it by
-    // value like everything else on the row.
-    beginStep(db);
-    addColumn(db, "agents", "skills", "TEXT");
-    addColumn(db, "agents", "providers", "TEXT");
-    addColumn(db, "agents", "models", "TEXT");
-    version = commitStep(db, 24);
-  }
-
-  if (version < 25) {
-    // v25 — an agent's policies: the things it is permanently forbidden to do,
-    // held as one JSON object in TEXT beside the capability columns.
-    //
-    // Policies are the opposite of capabilities: capabilities say what an agent
-    // has available, policies say what it may never do, whatever the thread's
-    // interaction mode allows. The object carries two lists today — command
-    // lines it may never run and file paths it may never touch — and grows new
-    // keys rather than new columns, so a later kind of restriction needs no
-    // migration.
-    //
-    // An overlay field like the rest: NULL means "inherit whatever the shipped
-    // preset says", which the renderer resolves. An object with empty lists is a
-    // real answer that forbids nothing, the way an empty provider list restricts
-    // nothing — and a fork copies the whole object by value like the prose.
-    //
-    // The policy feature has since been shelved: no code reads or writes this
-    // column (it is absent from AGENT_COLUMNS), but it stays on every table so
-    // old rows keep their data untouched.
-    beginStep(db);
-    addColumn(db, "agents", "policies", "TEXT");
-    version = commitStep(db, 25);
-  }
-
-  if (version < 26) {
-    // v26 — preset sub-agents: reusable, globally-available definitions an
-    // agent can hand a piece of work to. A preset is not a roster member and
-    // works no thread of its own — it is a saved shape (a name, a set of
-    // instructions, and a model preference) that a spawn is cut from.
-    //
-    // Its own table rather than columns on `agents` because it is a different
-    // kind of thing: an agent is someone work is bound to and who outlives the
-    // threads they worked; a preset is a template with no thread history to
-    // keep, so it hard-deletes and needs no tombstone.
-    //
-    // `models` is the ordered model preference held as JSON TEXT: the runtime
-    // walks it in order and takes the first model that is available, falling
-    // down the list rather than failing when one is unreachable or spent. An
-    // empty list is a real answer — no preference, let the runtime choose. It
-    // rides in one column as a list, not a relation, the way a capability does.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS subagent_presets (
-        preset_id    TEXT PRIMARY KEY,
-        name         TEXT NOT NULL,
-        instructions TEXT,
-        models       TEXT,
-        sort_order   INTEGER NOT NULL DEFAULT 0,
-        created_at   INTEGER NOT NULL,
-        updated_at   INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_subagent_presets_order
-        ON subagent_presets (sort_order, created_at, preset_id);
-    `);
-    version = commitStep(db, 26);
-  }
-
-  if (version < 27) {
-    // v27 — how an agent looks: a picture of them, and the bot they drive.
-    //
-    // Two marks rather than one because they answer different questions. An
-    // avatar says who is speaking and belongs beside a name in a transcript; a
-    // bot is a creature the agent drives and belongs where the agent is doing
-    // something rather than saying it. An agent can have either, both, or
-    // neither — with neither, the drawn face it has always had still stands.
-    //
-    // Both are JSON objects in TEXT, and both overlay like the prose beside
-    // them: NULL means "inherit whatever the shipped preset says". The store
-    // holds neither shape's meaning. An avatar's `src` is a string it never
-    // reads — a shipped asset path today, a data URL for a generated face — and
-    // a bot is three ids the renderer's own catalogue resolves, so a bot stored
-    // by a build offering a shape this one dropped still draws something.
-    //
-    // The avatar gets a far larger ceiling than any other field on the row
-    // (`AGENT_AVATAR_MAX`) precisely because a generated face is carried by
-    // value. It has to be: the source hands back a different face on every
-    // request, so storing the URL would give the agent a new face on every
-    // paint. A downscaled JPEG data URL is a few tens of kilobytes.
-    beginStep(db);
-    addColumn(db, "agents", "avatar", "TEXT");
-    addColumn(db, "agents", "bot", "TEXT");
-    version = commitStep(db, 27);
-  }
-
-  if (version < 28) {
-    // v28 — the studio. Panes used to be a per-project board, one blob per
-    // project path; they are now one plane whose rows are projects, so the
-    // layout is a single document and `project_boards` has nothing left to key.
-    //
-    // Every stored board becomes a row, most-recently-used first, and that
-    // order is the plane's vertical order — the project you touched last is the
-    // row you land on. A board with no panes becomes no row at all: a row
-    // exists only where work does, so an empty one would be a row you can
-    // travel to and find nothing in.
-    beginStep(db);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS studio (
-        id         INTEGER PRIMARY KEY CHECK (id = 1),
-        layout     TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-    `);
-    if (hasTable(db, "project_boards")) {
-      // SAFETY: the three selected columns are project_boards' whole shape.
-      const boards = db
-        .prepare(
-          `SELECT project_path, layout FROM project_boards ORDER BY updated_at DESC`,
-        )
-        .all() as Array<{ project_path: string; layout: string }>;
-      const rows: Array<{
-        projectPath: string;
-        panes: unknown[];
-        focusedId: string | null;
-      }> = [];
-      for (const b of boards) {
-        let parsed: unknown;
+  for (const entry of migrationEntries) {
+    if (entry.id <= targetMax && !appliedIds.has(entry.id)) {
+      if (hasAnyThread(db)) {
+        backupBeforeStep(db, dbFile);
+      }
+      beginStep(db);
+      try {
+        entry.run(db, dbFile);
+        commitStep(db, entry.id, entry.name);
+      } catch (err) {
         try {
-          // SAFETY: untrusted disk content — parsed to unknown and gated below.
-          parsed = JSON.parse(b.layout);
+          db.exec("ROLLBACK");
         } catch {
-          // An unparseable blob is a layout already lost; that project simply
-          // starts with no row rather than failing the whole upgrade.
-          continue;
+          /* noop */
         }
-        if (!parsed || !(parsed instanceof Object)) continue;
-        // SAFETY: reading fields off unknown needs the object view, and the
-        // checks below are themselves the gate — one view rather than an
-        // assertion per field.
-        const doc = parsed as { panes?: unknown; focusedId?: unknown };
-        // A board with no panes is no row.
-        if (!Array.isArray(doc.panes) || doc.panes.length === 0) continue;
-        rows.push({
-          projectPath: b.project_path,
-          panes: doc.panes,
-          focusedId: doc.focusedId && !(doc.focusedId instanceof Object) ? String(doc.focusedId) : null,
-        });
+        throw err;
       }
-      if (rows.length > 0) {
-        db.prepare(
-          `INSERT INTO studio (id, layout, updated_at) VALUES (1, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             layout = excluded.layout,
-             updated_at = excluded.updated_at`,
-        ).run(
-          JSON.stringify({
-            version: 2,
-            rows,
-            focusedRow: rows[0]?.projectPath ?? null,
-          }),
-          Date.now(),
-        );
-      }
-      db.exec(`DROP TABLE project_boards`);
     }
-    version = commitStep(db, 28);
-  }
-
-  if (version < 29) {
-    // v29 — `done_at` records that you are finished with a thread's claim on
-    // your attention. A judgment about you, not about the work: it stops the
-    // thread asking without stopping the agent, closing the thread, or
-    // archiving it.
-    //
-    // A timestamp rather than a flag, and that is what makes it self-clearing.
-    // A thread the agent has spoken in since you marked it done is asking
-    // again, and `done_at < last_activity_at` says so on its own — nothing has
-    // to reach in and unset anything when a turn lands, so there is no side
-    // write to be stranded by a crash between the turn and the clear.
-    //
-    // NULL is "not done", which every existing row already is, so there is
-    // nothing to backfill.
-    beginStep(db);
-    addColumn(db, "threads", "done_at", "INTEGER");
-    version = commitStep(db, 29);
-  }
-
-  if (version < 30) {
-    // v30 — `last_visited_at` records the last time you actually looked at a
-    // thread. Unread is the comparison `last_activity_at > last_visited_at`:
-    // the agent has spoken since you last had the thread in front of you.
-    //
-    // A stamp rather than an unread flag, for the same reason `done_at` is one.
-    // A flag has to be cleared by whoever shows the thread and set by whoever
-    // appends a turn, which is two writers racing over one bit and a crash
-    // between them leaving a thread permanently shouting or permanently quiet.
-    // A visit time has exactly one writer — the surface showing the thread —
-    // and every reader derives from it.
-    //
-    // Existing rows are backfilled to their last activity, i.e. read. Claiming
-    // otherwise would open the feature by declaring every thread in the
-    // database unread, and nothing in the database can say whether they were.
-    beginStep(db);
-    addColumn(db, "threads", "last_visited_at", "INTEGER");
-    db.exec(
-      `UPDATE threads SET last_visited_at = COALESCE(last_activity_at, updated_at)
-       WHERE last_visited_at IS NULL`,
-    );
-    version = commitStep(db, 30);
-  }
-
-  // Future migrations append here:
-  // `if (version < 31) { beginStep(db); …; version = commitStep(db, 31); }`
-
-  // Every rung stamps itself, so the ladder ending anywhere but the current
-  // version means a rung is missing for it — a bumped SCHEMA_VERSION that
-  // nobody wrote a step for. Harmless to the running app (the schema simply
-  // stays where the last real rung left it), but it silently disables the
-  // upgrade the bump was meant to ship, so say so.
-  if (version !== SCHEMA_VERSION) {
-    console.error(
-      `[conversation-store] migration ladder ended at v${version} but this build ` +
-        `declares v${SCHEMA_VERSION}; no step exists for the gap.`,
-    );
   }
 }

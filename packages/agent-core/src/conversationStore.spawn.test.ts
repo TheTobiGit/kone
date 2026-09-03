@@ -38,7 +38,7 @@ function freshStore(): ConversationStoreType {
 }
 
 function dbPath(): string {
-  return path.join(testUserDataDir, "conversations.sqlite");
+  return path.join(testUserDataDir, "kone.sqlite");
 }
 
 beforeAll(async () => {
@@ -88,68 +88,19 @@ function spawnedLineage(parentThreadId: string, rootThreadId: string): ThreadLin
   return { parentThreadId, relationshipToParent: "subagent", rootThreadId };
 }
 
-// The v15 schema exactly as the pre-v16 migration ladder leaves it: the
-// scratchpads `revision` column and the `gateway_ops` table included, so the
-// v15→v16 step is the only thing the migrated store must add.
-const V15_SCHEMA = `
-  PRAGMA user_version = 15;
-  CREATE TABLE threads (
-    thread_id TEXT PRIMARY KEY, project_path TEXT NOT NULL, provider TEXT NOT NULL,
-    model TEXT, conversation_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-    branch TEXT, added INTEGER, removed INTEGER, tokens INTEGER, archived INTEGER, title TEXT,
-    base_tree TEXT, source_thread_id TEXT, fork_context_json TEXT, lineage_json TEXT, request_id TEXT
-  );
-  CREATE TABLE blocks (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT, block_id TEXT NOT NULL UNIQUE, thread_id TEXT NOT NULL,
-    role TEXT NOT NULL, turn_id TEXT, text TEXT, state TEXT, error TEXT, at INTEGER NOT NULL,
-    ended_at INTEGER, attachments_json TEXT, source TEXT NOT NULL DEFAULT 'native'
-  );
-  CREATE TABLE items (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, thread_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, text TEXT NOT NULL,
-    name TEXT, detail TEXT, tasks_json TEXT, subagent_tool_use_id TEXT,
-    UNIQUE (thread_id, turn_id, item_id)
-  );
-  CREATE TABLE subagents (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT, tool_use_id TEXT NOT NULL, thread_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL, task_id TEXT, parent_item_id TEXT, agent_type TEXT,
-    description TEXT, prompt TEXT, model TEXT, effort TEXT, background INTEGER,
-    status TEXT NOT NULL, summary TEXT, last_tool_name TEXT, tokens INTEGER,
-    tool_uses INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER,
-    UNIQUE (thread_id, turn_id, tool_use_id)
-  );
-  CREATE TABLE attachments (
-    attachment_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, type TEXT NOT NULL,
-    name TEXT NOT NULL, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
-    rel_path TEXT NOT NULL, created_at INTEGER NOT NULL
-  );
-  CREATE TABLE project_boards (
-    project_path TEXT PRIMARY KEY, layout TEXT NOT NULL, updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE scratchpads (
-    id TEXT PRIMARY KEY, project_path TEXT NOT NULL, title TEXT, body TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, sort_index INTEGER NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1
-  );
-  CREATE TABLE gateway_ops (
-    thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, request_id TEXT NOT NULL,
-    kind TEXT NOT NULL, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL, PRIMARY KEY (thread_id, turn_id, request_id)
-  );
-  CREATE INDEX idx_gateway_ops_kind ON gateway_ops (kind, created_at);
-`;
 
 describe("spawn store surface (thread spawning, v16)", () => {
-  test("a v15 legacy DB migrates to v17 and gains parent_thread_id + the gateway_ops dispatched bit", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-migrate-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(V15_SCHEMA);
-    legacy.close();
-
-    // Old userData path → new store migrates it on open.
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
-
+  test("fresh database carries parent_thread_id and idx_threads_parent index", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "root-1", projectPath: "/tmp/proj", provider: "opencode" });
+    store.writeSpawnedThread({
+      threadId: "parent-1",
+      projectPath: "/tmp/proj",
+      provider: "opencode",
+      createdAt: 5,
+      title: "Parent",
+      lineage: spawnedLineage("root-1", "root-1"),
+    });
     const ok = store.writeSpawnedThread({
       threadId: "child-1",
       projectPath: "/tmp/proj",
@@ -162,9 +113,6 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.threadLineage("child-1")).toEqual(spawnedLineage("parent-1", "root-1"));
     expect(store.spawnedChildren("parent-1").map((t) => t.threadId)).toEqual(["child-1"]);
 
-    // The migration ran to completion: user_version bumped to the current
-    // schema, the parent index exists, and the gateway_ops dispatched bit (the
-    // spawn crash-recovery ledger) is in place.
     const raw = new Database(dbPath());
     // SAFETY: PRAGMA user_version projects exactly one column, named user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -176,18 +124,12 @@ describe("spawn store surface (thread spawning, v16)", () => {
       )
       .get();
     expect(idx).toBeDefined();
-    const dispatched = raw
-      .prepare(
-        `SELECT 1 FROM pragma_table_info('gateway_ops')
-          WHERE name = 'dispatched'`,
-      )
-      .get();
-    expect(dispatched).toBeDefined();
     raw.close();
   });
 
   test("writeSpawnedThread persists lineage + parent pointer and refuses duplicate ids", () => {
     const store = freshStore();
+    store.ensureThread({ threadId: "parent-1", projectPath: "/tmp/proj", provider: "opencode" });
     const input = {
       threadId: "child-1",
       projectPath: "/tmp/proj",
@@ -195,7 +137,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
       model: "deepseek-v4",
       createdAt: 10,
       title: "Fix the sidebar",
-      lineage: spawnedLineage("parent-1", "root-1"),
+      lineage: spawnedLineage("parent-1", "parent-1"),
     };
     expect(store.writeSpawnedThread(input)).toBe(true);
 
@@ -220,6 +162,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-spawn-seal-"));
     useUserDataDir(dir);
     const store = new ConversationStoreCtor();
+    store.ensureThread({ threadId: "parent-1", projectPath: "/tmp/proj", provider: "opencode" });
 
     // The exact half-created shape: the child row exists, its spawn op is
     // reserved with the result naming the child, but startThread never ran —
@@ -269,6 +212,7 @@ describe("spawn store surface (thread spawning, v16)", () => {
 
   test("writeSpawnedThread leaves request_id NULL — spawn idempotency rides gateway_ops", () => {
     const store = freshStore();
+    store.ensureThread({ threadId: "parent-1", projectPath: "/tmp/proj", provider: "opencode" });
     store.writeSpawnedThread({
       threadId: "child-1",
       projectPath: "/tmp/proj",
@@ -330,15 +274,20 @@ describe("spawn store surface (thread spawning, v16)", () => {
     expect(store.spawnDepth("child-1")).toBe(1);
     expect(store.spawnDepth("grandchild-1")).toBe(2);
 
-    // A missing parent terminates the walk (children survive deletion).
+    // A missing parent terminates the walk:
+    store.ensureThread({ threadId: "ghost-parent", projectPath: "/tmp/proj", provider: "opencode" });
     spawn("orphan-1", "ghost-parent", 30);
+    const rawFk = new Database(dbPath());
+    rawFk.exec("PRAGMA foreign_keys = OFF; DELETE FROM threads WHERE thread_id = 'ghost-parent'");
+    rawFk.close();
     expect(store.spawnDepth("orphan-1")).toBe(1);
 
     // A hand-crafted cycle must not hang: x → y → z → x.
     const raw = new Database(dbPath());
+    raw.exec("PRAGMA foreign_keys = OFF");
     const insert = raw.prepare(
-      `INSERT INTO threads (thread_id, project_path, provider, created_at, updated_at, title, lineage_json, parent_thread_id)
-       VALUES (?, '/tmp/proj', 'opencode', 1, 1, ?, '{}', ?)`,
+      `INSERT INTO threads (thread_id, project_path, provider, created_at, last_activity_at, title, parent_thread_id)
+       VALUES (?, '/tmp/proj', 'opencode', 1, 1, ?, ?)`,
     );
     insert.run("cycle-x", "x", "cycle-y");
     insert.run("cycle-y", "y", "cycle-z");

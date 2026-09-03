@@ -26,7 +26,7 @@ class InstrumentedDatabase {
   }
   prepare(sql: string) {
     const stmt = this.db.prepare(sql);
-    const isTouch = /^UPDATE threads SET updated_at\b/.test(sql.trim());
+    const isTouch = /^UPDATE threads SET (?:last_activity_at|updated_at)\b/.test(sql.trim());
     return {
       run: (...args: unknown[]) => {
         if (isTouch) touchRuns += 1;

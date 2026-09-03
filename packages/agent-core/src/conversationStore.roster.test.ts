@@ -36,7 +36,7 @@ function freshStore(): ConversationStoreType {
 }
 
 function rawDb(): Database {
-  return new Database(path.join(testUserDataDir, "conversations.sqlite"));
+  return new Database(path.join(testUserDataDir, "kone.sqlite"));
 }
 
 beforeAll(async () => {
@@ -909,7 +909,9 @@ describe("who is up next", () => {
     store.writeSelectedAgent("gideon");
     // SAFETY: a COUNT(*) aggregate, which SQLite answers as one integer row
     // under the name asked for.
-    const count = rawDb().prepare(`SELECT COUNT(*) AS n FROM roster_selection`).get() as {
+    const count = rawDb()
+      .prepare(`SELECT COUNT(*) AS n FROM app_state WHERE key = 'selected_agent'`)
+      .get() as {
       n: number;
     };
     expect(count.n).toBe(1);
@@ -933,37 +935,7 @@ describe("the schema", () => {
     expect(tables).toContain("agents");
     expect(tables).toContain("project_agents");
     expect(tables).toContain("thread_agents");
-    expect(tables).toContain("roster_selection");
+    expect(tables).toContain("app_state");
     expect(tables).toContain("subagent_presets");
-  });
-
-  test("a database from before the roster existed upgrades with its threads intact", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-roster-store-"));
-    useUserDataDir(dir);
-    const before = new ConversationStoreCtor();
-    before.ensureThread({
-      threadId: "thread-1",
-      projectPath: "/tmp/kone-project",
-      provider: "claudeAgent",
-      at: Date.now(),
-    });
-    before.setTitle("thread-1", "Before the roster");
-    before.close();
-
-    // Rewind to v21 and drop what the two rungs create, so the ladder has to
-    // run them both.
-    const raw = rawDb();
-    raw.exec(`DROP TABLE IF EXISTS agents`);
-    raw.exec(`DROP TABLE IF EXISTS project_agents`);
-    raw.exec(`DROP TABLE IF EXISTS thread_agents`);
-    raw.exec(`DROP TABLE IF EXISTS roster_selection`);
-    raw.exec(`PRAGMA user_version = 21`);
-    raw.close();
-
-    const after = new ConversationStoreCtor();
-    after.ensurePresetAgents(PRESETS);
-    expect(after.listAgents().map((agent) => agent.agentId)).toEqual(PRESETS);
-    expect(after.bindThreadAgent("thread-1", "kone")?.agentId).toBe("kone");
-    expect(after.getTitle("thread-1")).toBe("Before the roster");
   });
 });

@@ -142,8 +142,9 @@ export function summarizeSession(
   pinned: boolean,
   project?: SessionProjectTag,
 ): SessionSummary {
-  if (meta.forkContext?.sourceThreadId) {
-    rememberSideChatSource(meta.threadId, meta.forkContext.sourceThreadId);
+  const sourceThreadId = meta.sourceThreadId ?? meta.forkContext?.sourceThreadId;
+  if (sourceThreadId) {
+    rememberSideChatSource(meta.threadId, sourceThreadId);
   }
   return {
     threadId: meta.threadId,
@@ -161,8 +162,10 @@ export function summarizeSession(
     pinned,
     projectPath: project?.projectPath,
     projectName: project?.projectName,
-    // A side chat is a fork — forkContext presence is the discriminator.
-    sideChat: Boolean(meta.forkContext),
+    // A side chat is a fork — discriminator checks sourceThreadId, forkContext, or relationship.
+    sideChat: Boolean(
+      meta.forkContext || meta.sourceThreadId || meta.relationshipToParent === "side_chat",
+    ),
     done: isThreadDone(meta),
     unread: isThreadUnread(meta),
     lastVisitedAt: meta.lastVisitedAt ?? undefined,

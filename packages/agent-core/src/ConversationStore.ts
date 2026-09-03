@@ -87,7 +87,10 @@ import {
   type ThreadRow,
   type TurnPartRows,
   type TurnSpan,
+  GLOBAL_ASSISTANT_PROJECT_PATH,
 } from "./conversationStoreTypes.js";
+
+export { GLOBAL_ASSISTANT_PROJECT_PATH };
 
 export class ConversationStore {
   private db: DatabaseSync | null = null;
@@ -132,13 +135,13 @@ export class ConversationStore {
     if (this.unusable || Date.now() < this.retryOpenAfter) return null;
     let opened: DatabaseSync | null = null;
     try {
-      const file = path.join(this.userDataDir ?? getUserDataDir(), "conversations.sqlite");
+      const file = path.join(this.userDataDir ?? getUserDataDir(), "kone.sqlite");
       const db = new DatabaseSync(file);
       opened = db;
       // Timeout first: switching journal mode takes a lock, so it is the earliest
       // statement that can lose a race with another reader and the first that
       // wants the patience configured here.
-      db.exec("PRAGMA busy_timeout = 2000");
+      db.exec("PRAGMA busy_timeout = 5000");
       db.exec("PRAGMA journal_mode = WAL");
       // WAL's default `synchronous = NORMAL` doesn't fsync on commit: the file
       // stays consistent through a crash, but transactions committed since the
@@ -149,6 +152,7 @@ export class ConversationStore {
       // conversation can't be reconstructed without are committed through
       // `durably()` below, and the per-delta churn stays at NORMAL.
       db.exec("PRAGMA synchronous = NORMAL");
+      db.exec("PRAGMA foreign_keys = ON");
       migrate(db, file);
       this.db = db;
       // Recovery: this is the first DB open of a fresh process, so no session is
@@ -289,7 +293,7 @@ export class ConversationStore {
       const rows = db
         .prepare(
           `SELECT thread_id, turn_id, request_id, result_json FROM gateway_ops
-            WHERE kind = 'spawn.thread' AND dispatched = 0 AND result_json != ''`,
+            WHERE kind = 'spawn.thread' AND status = 'dispatching' AND result_json IS NOT NULL`,
         )
         .all() as Array<{
         thread_id: string;
@@ -297,7 +301,9 @@ export class ConversationStore {
         request_id: string;
         result_json: string;
       }>;
-      const childMeta = db.prepare(`SELECT lineage_json FROM threads WHERE thread_id = ?`);
+      const childMeta = db.prepare(
+        `SELECT relationship_to_parent FROM threads WHERE thread_id = ?`,
+      );
       const hasAssistantBlock = db.prepare(
         `SELECT 1 FROM blocks WHERE thread_id = ? AND role = 'assistant' LIMIT 1`,
       );
@@ -306,15 +312,15 @@ export class ConversationStore {
          VALUES (?, ?, 'assistant', '<undispatched>', 'failed', ?, ?, ?)
          ON CONFLICT(block_id) DO NOTHING`,
       );
-      const markDispatched = db.prepare(
-        `UPDATE gateway_ops SET dispatched = 1
+      const markFailed = db.prepare(
+        `UPDATE gateway_ops SET status = 'failed'
           WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
       );
       for (const row of rows) {
         let childId: string | undefined;
         try {
           // SAFETY: result_json here is only ever written by setGatewayOpResult
-          // from the spawn engine's own `{ threadId }` payload.
+          // from the spawn engine's own { threadId } payload.
           const parsed = JSON.parse(row.result_json) as { threadId?: string };
           if (parsed.threadId) {
             childId = String(parsed.threadId).trim() || undefined;
@@ -326,20 +332,11 @@ export class ConversationStore {
         // The child row must still exist with spawned lineage (an anonymous
         // subagent or a delegation to a named agent) and no real turns yet —
         // never clobber a child that actually ran.
-        // SAFETY: childMeta selects only threads.lineage_json.
-        const meta = childMeta.get(childId) as { lineage_json: string } | undefined;
-        if (!meta) continue;
-        try {
-          // SAFETY: lineage_json is serialized by writeForkThread /
-          // writeSpawnedThread from ThreadLineage; a foreign blob throws into
-          // the catch, which skips the row.
-          const lineage = JSON.parse(meta.lineage_json) as {
-            relationshipToParent?: RelationshipToParent | null;
-          };
-          if (!isSpawnedRelationship(lineage.relationshipToParent)) continue;
-        } catch {
-          continue;
-        }
+        // SAFETY: childMeta selects only threads.relationship_to_parent.
+        const meta = childMeta.get(childId) as
+          | { relationship_to_parent: RelationshipToParent | null }
+          | undefined;
+        if (!meta || !isSpawnedRelationship(meta.relationship_to_parent)) continue;
         if (hasAssistantBlock.get(childId)) continue;
         insertFailedTurn.run(
           assistantBlockId(childId, "<undispatched>"),
@@ -348,8 +345,7 @@ export class ConversationStore {
           now,
           now,
         );
-        // Mark the op dispatched so this is one-shot, not re-sealed every boot.
-        markDispatched.run(row.thread_id, row.turn_id, row.request_id);
+        markFailed.run(row.thread_id, row.turn_id, row.request_id);
       }
     } catch (err) {
       console.error("[conversation-store] could not seal undispatched spawns:", err);
@@ -441,21 +437,19 @@ export class ConversationStore {
       // and that is not a visit.
       db.prepare(
         `INSERT INTO threads (
-           thread_id, project_path, provider, model, created_at, updated_at, last_activity_at,
+           thread_id, project_path, provider, model, created_at, last_activity_at,
            last_visited_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(thread_id) DO UPDATE SET
            project_path = excluded.project_path,
            provider     = excluded.provider,
            model        = COALESCE(excluded.model, threads.model),
-           updated_at   = excluded.updated_at,
            last_activity_at = excluded.last_activity_at`,
       ).run(
         input.threadId,
         input.projectPath,
         input.provider,
         input.model ?? null,
-        now,
         now,
         now,
         now,
@@ -659,8 +653,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return;
     try {
-      db.prepare(`UPDATE threads SET is_pinned = ? WHERE thread_id = ?`).run(
-        pinned ? 1 : 0,
+      db.prepare(`UPDATE threads SET pinned_at = ? WHERE thread_id = ?`).run(
+        pinned ? Date.now() : null,
         threadId,
       );
     } catch (err) {
@@ -1179,8 +1173,8 @@ export class ConversationStore {
     // touches only the former — see renameThread).
     this.prepare(
       db,
-      `UPDATE threads SET updated_at = ?, last_activity_at = ? WHERE thread_id = ?`,
-    ).run(at, at, threadId);
+      `UPDATE threads SET last_activity_at = ? WHERE thread_id = ?`,
+    ).run(at, threadId);
   }
 
   /** Snapshot the project's branch + working-tree diffstat onto the thread.
@@ -1570,7 +1564,7 @@ export class ConversationStore {
       // keeps the store free of event emission, where it has no listeners.
       const stamp = archived ? Date.now() : null;
       const placeholders = ids.map(() => "?").join(",");
-      db.prepare(`UPDATE threads SET archived = ? WHERE thread_id IN (${placeholders})`).run(
+      db.prepare(`UPDATE threads SET archived_at = ? WHERE thread_id IN (${placeholders})`).run(
         stamp,
         ...ids,
       );
@@ -1592,21 +1586,21 @@ export class ConversationStore {
    *
    *  `last_visited_at` is one of those signals, and it has to be: the sweep is
    *  answering "has anyone touched this in a week", and reading a thread is
-   *  touching it. Activity alone only knows whether the AGENT has spoken, so a
-   *  reference thread somebody opens every few days — never replies in, never
-   *  pins — would be archived out from under them while they were still using
-   *  it. It is also the same clock unread is measured on, so the two agree
-   *  about what counts as attention. A subtree with anything live
-   *  (running assistant block, starting/running subagent) is excluded too —
-   *  the mark-done pass has no write-time guard to rely on, and skipping busy
-   *  work at query time spares the archive pass a refusal it would only hit
-   *  anyway (`setArchived` still re-checks at write time for the race between
-   *  this query and the write).
+   *  touching it. `done_at` is another: a thread you marked done is work you are
+   *  finished with, but only while the agent hasn't spoken since; done expired
+   *  by subsequent activity is a thread asking again, not an idle one.
+   *  `DONE_CLEARED` (the un-mark sentinel) is ignored — it is the user's
+   *  explicit "this is not done", and treating it as a timestamp would place it
+   *  at epoch zero and make the thread look older than everything.
    *
-   *  `undone: true` narrows this to threads not already done, for the
-   *  shorter-age mark-done pass: a thread whose done stamp is missing, or
-   *  older than its last activity (the mark self-clears when the agent
-   *  speaks), is a candidate — but `done_at = 0` (DONE_CLEARED) never is. Zero
+   *  Roots with children are tidied only when the whole subtree qualifies — a
+   *  parent whose child is still active is kept alive so the child has its
+   *  anchor. The recursive query gathers subtree ids and confirms every
+   *  descendant is quiet before the root is offered.
+   *
+   *  `options.undone`: restrict the sweep to threads that are EITHER never
+   *  marked done, OR marked done before their latest activity — in other words,
+   *  threads the user has NOT said they are finished with. Done = 0 (the sentinel)
    *  is the user's "not finished" answer, which outranks age for good; the
    *  sweep has no business overriding it. */
   staleThreadIds(options: {
@@ -1624,14 +1618,14 @@ export class ConversationStore {
           `WITH RECURSIVE subtree(root_id, id) AS (
              SELECT t.thread_id AS root_id, t.thread_id AS id FROM threads t
              WHERE t.parent_thread_id IS NULL
-               AND t.archived IS NULL
-               AND t.is_pinned = 0
-               AND MAX(COALESCE(t.last_activity_at, t.updated_at, t.created_at), COALESCE(t.last_visited_at, 0)) < ?
-               ${options.undone ? `AND (t.done_at IS NULL OR (t.done_at > 0 AND t.done_at < COALESCE(t.last_activity_at, t.updated_at, t.created_at)))` : ""}
+               AND t.archived_at IS NULL
+               AND t.pinned_at IS NULL
+               AND MAX(t.last_activity_at, COALESCE(t.last_visited_at, 0)) < ?
+               ${options.undone ? `AND (t.done_at IS NULL OR (t.done_at > 0 AND t.done_at < t.last_activity_at))` : ""}
              UNION ALL
              SELECT s.root_id, c.thread_id FROM threads c JOIN subtree s ON c.parent_thread_id = s.id
            )
-           SELECT t.thread_id, MAX(COALESCE(t.last_activity_at, t.updated_at, t.created_at), COALESCE(t.last_visited_at, 0)) AS activity
+           SELECT t.thread_id, MAX(t.last_activity_at, COALESCE(t.last_visited_at, 0)) AS activity
            FROM threads t
            WHERE t.thread_id IN (SELECT root_id FROM subtree)
              AND t.parent_thread_id IS NULL
@@ -1686,24 +1680,11 @@ export class ConversationStore {
       }
       const placeholders = ids.map(() => "?").join(",");
       withTransaction(db, () => {
-        db.prepare(`DELETE FROM items       WHERE thread_id IN (${placeholders})`).run(...ids);
-        db.prepare(`DELETE FROM blocks      WHERE thread_id IN (${placeholders})`).run(...ids);
-        db.prepare(`DELETE FROM attachments WHERE thread_id IN (${placeholders})`).run(...ids);
-        db.prepare(`DELETE FROM subagents   WHERE thread_id IN (${placeholders})`).run(...ids);
-        db.prepare(`DELETE FROM gateway_ops WHERE thread_id IN (${placeholders})`).run(...ids);
-        db.prepare(`DELETE FROM turn_usage  WHERE thread_id IN (${placeholders})`).run(...ids);
-        // Queued turns die with the thread: a deleted thread's follow-ups must
-        // never survive to resurrect (same contract as cancelQueuedTurnsForThread
-        // on the stop path — the rows are gone either way, so no in-flight
-        // release can bring them back).
-        db.prepare(`DELETE FROM queued_turns WHERE thread_id IN (${placeholders})`).run(...ids);
-        // Who worked the thread goes with it. The binding is kept past an
-        // agent's own departure so a transcript can still name them, but that
-        // reason dies with the transcript: with no conversation left there is
-        // nothing to caption, and a row that outlived its thread would be
-        // reported by listThreadAgents forever.
+        // thread_agents has no foreign key to threads (to allow bindings before thread creation),
+        // so it is cleared explicitly. All thread-scoped child tables (items, blocks, attachments,
+        // subagents, gateway_ops, turn_usage, queued_turns) cascade automatically from threads.
         db.prepare(`DELETE FROM thread_agents WHERE thread_id IN (${placeholders})`).run(...ids);
-        db.prepare(`DELETE FROM threads     WHERE thread_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM threads       WHERE thread_id IN (${placeholders})`).run(...ids);
       });
       for (const id of ids) this.knownConversationIds.delete(id);
       return { ok: true };
@@ -1759,6 +1740,16 @@ export class ConversationStore {
     }
   }
 
+  /** Whether a thread belongs to the global assistant rather than a project. */
+  isAssistantThread(threadId: string): boolean {
+    return this.threadProjectPath(threadId) === GLOBAL_ASSISTANT_PROJECT_PATH;
+  }
+
+  /** All non-archived assistant threads in recency order. */
+  listAssistantThreads(): StoredThreadMeta[] {
+    return this.listThreads(GLOBAL_ASSISTANT_PROJECT_PATH);
+  }
+
   /** Cheap metadata lookup by id — used when the live session isn't in memory
    *  (e.g. title naming right after send) but the store row already exists. */
   threadMeta(threadId: string): StoredThreadMeta | null {
@@ -1789,8 +1780,8 @@ export class ConversationStore {
       // schema creates.
       const row = db
         .prepare(
-          `SELECT * FROM threads WHERE project_path = ? AND archived IS NULL
-           ORDER BY COALESCE(last_activity_at, updated_at) DESC LIMIT 1`,
+          `SELECT * FROM threads WHERE project_path = ? AND archived_at IS NULL
+           ORDER BY last_activity_at DESC LIMIT 1`,
         )
         .get(projectPath) as ThreadRow | undefined;
       return row ? rowToMeta(row) : null;
@@ -2015,15 +2006,15 @@ export class ConversationStore {
       const rows = db
         .prepare(
           `SELECT t.*,
-            (SELECT text FROM items WHERE thread_id = t.thread_id AND kind IN ('assistant_text', 'text') AND text IS NOT NULL AND trim(text) != '' ORDER BY seq DESC LIMIT 1) AS snippet
+            (SELECT text FROM items WHERE thread_id = t.thread_id AND kind = 'assistant_text' AND text IS NOT NULL AND trim(text) != '' ORDER BY seq DESC LIMIT 1) AS snippet
           FROM threads t
             WHERE t.project_path = ?
-              AND t.archived IS ${archivedOnly ? "NOT NULL" : "NULL"}
+              AND t.archived_at IS ${archivedOnly ? "NOT NULL" : "NULL"}
               AND EXISTS (
                 SELECT 1 FROM blocks b
                 WHERE b.thread_id = t.thread_id AND b.role = 'user'
               )
-            ORDER BY COALESCE(t.last_activity_at, t.updated_at) DESC`,
+            ORDER BY ${archivedOnly ? "t.archived_at DESC" : "t.last_activity_at DESC"}`,
         )
         .all(projectPath) as ThreadRow[];
       return rows.map(rowToMeta);
@@ -2075,8 +2066,7 @@ export class ConversationStore {
         db.prepare(`SELECT COUNT(*) AS n FROM blocks WHERE role = 'user'`).get() as { n: number }
       ).n;
 
-      // Tokens: prefer the per-turn audit trail; fall back to the threads'
-      // cumulative scalar when no turn_usage rows exist yet (older stores).
+      // Tokens: aggregated from the per-turn audit trail.
       // SAFETY: three COALESCE'd SUM aggregates under the aliases read below.
       const usage = db
         .prepare(
@@ -2086,13 +2076,7 @@ export class ConversationStore {
             FROM turn_usage`,
         )
         .get() as { total: number; input: number; output: number };
-      let totalTokens = usage.total;
-      if (totalTokens === 0) {
-        totalTokens = (
-          // SAFETY: a COALESCE'd SUM aggregate aliased to n.
-          db.prepare(`SELECT COALESCE(SUM(tokens), 0) AS n FROM threads`).get() as { n: number }
-        ).n;
-      }
+      const totalTokens = usage.total;
 
       // Activity + hours by local calendar (user blocks carry the timestamp).
       // SAFETY: the GROUP BY returns exactly the aliased date/count pair.
@@ -2361,8 +2345,8 @@ export class ConversationStore {
     try {
       const insertThread = db.prepare(
         `INSERT INTO threads (
-           thread_id, project_path, provider, model, created_at, updated_at,
-           title, source_thread_id, fork_context_json, lineage_json, request_id)
+           thread_id, project_path, provider, model, created_at, last_activity_at,
+           title, source_thread_id, fork_context_json, relationship_to_parent, request_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const insertBlock = db.prepare(
@@ -2370,8 +2354,8 @@ export class ConversationStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'fork-import')`,
       );
       const insertNarrativeItem = db.prepare(
-        `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text)
-         VALUES (?, ?, ?, 'assistant_text', 'completed', ?)`,
+        `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, at)
+         VALUES (?, ?, ?, 'assistant_text', 'completed', ?, ?)`,
       );
       this.durably(db, () => {
         // One transaction: the thread row, every imported block and every
@@ -2389,7 +2373,7 @@ export class ConversationStore {
             input.title ?? null,
             input.sourceThreadId,
             JSON.stringify(input.forkContext),
-            JSON.stringify(input.lineage),
+            input.lineage.relationshipToParent ?? null,
             input.requestId ?? null,
           );
           for (const block of input.importedBlocks) {
@@ -2411,6 +2395,7 @@ export class ConversationStore {
                 input.threadId,
                 turnId,
                 block.text,
+                block.at,
               );
             }
           }
@@ -2484,9 +2469,9 @@ export class ConversationStore {
       this.durably(db, () => {
         db.prepare(
           `INSERT INTO threads (
-             thread_id, project_path, provider, model, created_at, updated_at,
-             last_activity_at, title, lineage_json, parent_thread_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             thread_id, project_path, provider, model, created_at,
+             last_activity_at, title, relationship_to_parent, parent_thread_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           input.threadId,
           input.projectPath,
@@ -2494,9 +2479,8 @@ export class ConversationStore {
           input.model ?? null,
           input.createdAt,
           input.createdAt,
-          input.createdAt,
           input.title,
-          JSON.stringify(input.lineage),
+          input.lineage.relationshipToParent ?? null,
           input.lineage.parentThreadId,
         );
       });
@@ -2528,18 +2512,47 @@ export class ConversationStore {
   }
 
   /** The thread's stored lineage block, or null when the thread has none (a
-   *  plain root, or a missing row). Reads `lineage_json` — the source of
-   *  truth; callers that walk the tree use the indexed parent pointer instead. */
+   *  plain root, or a missing row). Reconstructs lineage from parent_thread_id
+   *  and relationship_to_parent, walking parent pointers to derive the root. */
   threadLineage(threadId: string): ThreadLineage | null {
     const db = this.handle();
     if (!db) return null;
     try {
-      // SAFETY: the projection names only lineage_json, the nullable TEXT blob
-      // written via JSON.stringify(ThreadLineage).
+      // SAFETY: query selects only parent_thread_id and relationship_to_parent.
       const row = db
-        .prepare(`SELECT lineage_json FROM threads WHERE thread_id = ?`)
-        .get(threadId) as { lineage_json: string | null } | undefined;
-      return parseJsonObject<ThreadLineage>(row?.lineage_json ?? null) ?? null;
+        .prepare(
+          `SELECT parent_thread_id, relationship_to_parent FROM threads WHERE thread_id = ?`,
+        )
+        .get(threadId) as
+        | { parent_thread_id: string | null; relationship_to_parent: RelationshipToParent | null }
+        | undefined;
+      if (!row || (!row.parent_thread_id && !row.relationship_to_parent)) {
+        return null;
+      }
+      let rootThreadId = row.parent_thread_id ?? threadId;
+      if (row.parent_thread_id) {
+        const parentStmt = db.prepare(`SELECT parent_thread_id FROM threads WHERE thread_id = ?`);
+        const visited = new Set<string>([threadId, row.parent_thread_id]);
+        let current = row.parent_thread_id;
+        for (let hops = 0; hops < 64; hops++) {
+          // SAFETY: query selects only parent_thread_id.
+          const pRow = parentStmt.get(current) as
+            | { parent_thread_id: string | null }
+            | undefined;
+          const nextParent = pRow?.parent_thread_id;
+          if (!nextParent || visited.has(nextParent)) {
+            rootThreadId = current;
+            break;
+          }
+          visited.add(nextParent);
+          current = nextParent;
+        }
+      }
+      return {
+        parentThreadId: row.parent_thread_id,
+        relationshipToParent: row.relationship_to_parent,
+        rootThreadId,
+      };
     } catch (err) {
       console.error("[conversation-store] threadLineage failed:", err);
       return null;
@@ -2884,21 +2897,20 @@ export class ConversationStore {
     try {
       const inserted = db
         .prepare(
-          `INSERT INTO gateway_ops (thread_id, turn_id, request_id, kind, fingerprint, result_json, created_at)
-           VALUES (?, ?, ?, ?, ?, '', ?)
+          `INSERT INTO gateway_ops (thread_id, turn_id, request_id, kind, fingerprint, result_json, status)
+           VALUES (?, ?, ?, ?, ?, NULL, 'reserved')
            ON CONFLICT(thread_id, turn_id, request_id) DO NOTHING`,
         )
-        .run(input.threadId, input.turnId, input.requestId, input.kind, input.fingerprint, Date.now());
+        .run(input.threadId, input.turnId, input.requestId, input.kind, input.fingerprint);
       if (Number(inserted.changes) > 0) return { kind: "reserved" };
-      // SAFETY: the projection names the two TEXT columns written by
-      // reserveGatewayOp itself.
+      // SAFETY: the projection names the two columns written by reserveGatewayOp/setGatewayOpResult.
       const prior = db
         .prepare(
           `SELECT fingerprint, result_json FROM gateway_ops
             WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
         )
         .get(input.threadId, input.turnId, input.requestId) as
-        | { fingerprint: string; result_json: string }
+        | { fingerprint: string; result_json: string | null }
         | undefined;
       if (prior && prior.fingerprint === input.fingerprint && prior.result_json) {
         try {
@@ -2915,8 +2927,7 @@ export class ConversationStore {
   }
 
   /** Record a completed gateway operation's result so a retry with the same
-   *  key + fingerprint replays it. Best-effort: an op row without a result is
-   *  treated as never-completed by `reserveGatewayOp`. */
+   *  key + fingerprint replays it. Status transitions to 'dispatching'. */
   setGatewayOpResult(input: {
     threadId: string;
     turnId: string;
@@ -2927,7 +2938,7 @@ export class ConversationStore {
     if (!db) return;
     try {
       db.prepare(
-        `UPDATE gateway_ops SET result_json = ?
+        `UPDATE gateway_ops SET result_json = ?, status = 'dispatching'
           WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
       ).run(input.resultJson, input.threadId, input.turnId, input.requestId);
     } catch (err) {
@@ -2936,11 +2947,7 @@ export class ConversationStore {
   }
 
   /** Record that a reserved gateway operation's side effect was actually
-   *  dispatched. For spawn.thread this runs AFTER startThread returns; a row
-   *  reserved but never marked dispatched is the durable trace of a
-   *  half-created child, which sealUndispatchedSpawns turns into a failed
-   *  thread at next boot. Best-effort — a missed mark only means the child
-   *  would be re-sealed at a later boot, which is idempotent. */
+   *  dispatched. Status transitions to 'completed'. */
   markGatewayOpDispatched(input: {
     threadId: string;
     turnId: string;
@@ -2950,7 +2957,7 @@ export class ConversationStore {
     if (!db) return;
     try {
       db.prepare(
-        `UPDATE gateway_ops SET dispatched = 1
+        `UPDATE gateway_ops SET status = 'completed'
           WHERE thread_id = ? AND turn_id = ? AND request_id = ?`,
       ).run(input.threadId, input.turnId, input.requestId);
     } catch (err) {
@@ -3056,9 +3063,9 @@ export class ConversationStore {
       db.prepare(
         `INSERT INTO agents
            (agent_id, preset_id, name, role, instructions,
-            face_body, face_ink, skills, providers, models,
+            face_body, face_ink, skills, models,
             avatar, bot, sort_order, created_at, updated_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         agentId,
         name,
@@ -3067,9 +3074,6 @@ export class ConversationStore {
         clampAgentField(input.faceBody, AGENT_PAINT_MAX),
         clampAgentField(input.faceInk, AGENT_PAINT_MAX),
         serializeAgentList(input.skills, normalizeSkillRef),
-        // The `providers` column is dormant since the collapse to one model —
-        // provider comes from the model ref — so it is always written null.
-        null,
         serializeModelRef(input.model, input.modelFallbacks),
         serializeAgentAvatar(input.avatar),
         serializeAgentBot(input.bot),
@@ -3172,8 +3176,8 @@ export class ConversationStore {
         // its record.
         if (changes > 0) {
           db.prepare(
-            `UPDATE roster_selection SET agent_id = NULL, updated_at = ?
-              WHERE id = 0 AND agent_id = ?`,
+            `UPDATE app_state SET value = '', updated_at = ?
+              WHERE key = 'selected_agent' AND value = ?`,
           ).run(now, agentId);
         }
       });
@@ -3217,9 +3221,9 @@ export class ConversationStore {
         db.prepare(
           `INSERT INTO agents
              (agent_id, preset_id, name, role, instructions,
-              face_body, face_ink, skills, providers, models,
+              face_body, face_ink, skills, models,
               avatar, bot, sort_order, created_at, updated_at)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           agentId,
           name,
@@ -3228,8 +3232,6 @@ export class ConversationStore {
           clampAgentField(source.faceBody ?? inherited.faceBody, AGENT_PAINT_MAX),
           clampAgentField(source.faceInk ?? inherited.faceInk, AGENT_PAINT_MAX),
           serializeAgentList(source.skills ?? inherited.skills, normalizeSkillRef),
-          // Dormant since the collapse to one model — always null.
-          null,
           // Primary and fallbacks travel together: a fork that took its
           // primary from the shipped preset must take that preset's chain too,
           // not splice the source row's fallbacks under a different model.
@@ -3295,11 +3297,10 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     try {
-      // SAFETY: `a.*` is every column of `agents`, which is what `AgentRow`
-      // describes; the join adds no columns of its own.
+      // SAFETY: projecting AGENT_COLUMNS matches AgentRow.
       const rows = db
         .prepare(
-          `SELECT a.*
+          `SELECT ${AGENT_COLUMNS.split(", ").map((col) => `a.${col}`).join(", ")}
              FROM project_agents m
              JOIN agents a ON a.agent_id = m.agent_id
             WHERE m.project_path = ? AND a.deleted_at IS NULL
@@ -3565,12 +3566,11 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return null;
     try {
-      // SAFETY: one nullable TEXT column of a table whose primary key is pinned
-      // to a single value, so this is at most one row of exactly that shape.
-      const row = db.prepare(`SELECT agent_id FROM roster_selection WHERE id = 0`).get() as
-        | { agent_id: string | null }
-        | undefined;
-      return row?.agent_id ?? null;
+      // SAFETY: one TEXT column of app_state for key 'selected_agent'.
+      const row = db
+        .prepare(`SELECT value FROM app_state WHERE key = 'selected_agent'`)
+        .get() as { value: string } | undefined;
+      return row && row.value.length > 0 ? row.value : null;
     } catch (err) {
       console.error("[conversation-store] readSelectedAgent failed:", err);
       return null;
@@ -3583,12 +3583,12 @@ export class ConversationStore {
     if (!db) return;
     try {
       db.prepare(
-        `INSERT INTO roster_selection (id, agent_id, updated_at)
-         VALUES (0, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           agent_id = excluded.agent_id,
+        `INSERT INTO app_state (key, value, updated_at)
+         VALUES ('selected_agent', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
            updated_at = excluded.updated_at`,
-      ).run(agentId, Date.now());
+      ).run(agentId ?? "", Date.now());
     } catch (err) {
       console.error("[conversation-store] writeSelectedAgent failed:", err);
     }
@@ -3599,23 +3599,20 @@ export class ConversationStore {
   /** Read the studio plane. Never throws: a corrupt JSON blob or an
    *  unrecognised shape returns `null` so the app still opens on an empty
    *  plane. Hard structural validation of the rows and their panes is the
-   *  renderer's job (§6.4) — this checks only that the document is the shape
-   *  this build knows how to hand over.
-   *
-   *  One row, always id 1: the studio is a single plane spanning every project,
-   *  so there is nothing to key it by. */
+   *  renderer's job — this checks only that the document is the shape
+   *  this build knows how to hand over. */
   loadStudio(): StoredStudioLayout | null {
     const db = this.handle();
     if (!db) return null;
     try {
-      // SAFETY: studio holds at most one row, with one NOT NULL TEXT layout.
-      const row = db.prepare(`SELECT layout FROM studio WHERE id = 1`).get() as
-        | { layout: string }
-        | undefined;
-      if (!row?.layout) return null;
-      // SAFETY: layout is untrusted disk content — parse to unknown first and
+      // SAFETY: app_state holds at most one row for key 'studio_layout'.
+      const row = db
+        .prepare(`SELECT value FROM app_state WHERE key = 'studio_layout'`)
+        .get() as { value: string } | undefined;
+      if (!row?.value) return null;
+      // SAFETY: value is untrusted disk content — parse to unknown first and
       // let the checks below decide.
-      const parsed = JSON.parse(row.layout) as unknown;
+      const parsed = JSON.parse(row.value) as unknown;
       // SAFETY: probing two fields of unknown needs the object view; these
       // checks are themselves the validation gate.
       if (
@@ -3641,10 +3638,10 @@ export class ConversationStore {
     const savedAt = Date.now();
     try {
       db.prepare(
-        `INSERT INTO studio (id, layout, updated_at)
-         VALUES (1, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           layout = excluded.layout,
+        `INSERT INTO app_state (key, value, updated_at)
+         VALUES ('studio_layout', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
            updated_at = excluded.updated_at`,
       ).run(JSON.stringify(layout), savedAt);
       return { savedAt };

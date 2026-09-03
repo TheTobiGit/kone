@@ -1,8 +1,10 @@
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
 import type {
+  BlockSource,
   ChatAttachment,
   InteractionMode,
   ProviderKind,
+  RelationshipToParent,
   RuntimeItem,
   StoredBlock,
   StoredThreadMeta,
@@ -15,6 +17,10 @@ import type {
  *  without a second column — the distinction readers need in order to let age
  *  settle an untouched thread while leaving a deliberate un-mark alone. */
 export const DONE_CLEARED = 0;
+
+/** Virtual project path assigned to global assistant threads that are not
+ *  scoped to any repository on disk. */
+export const GLOBAL_ASSISTANT_PROJECT_PATH = "__kone_assistant__";
 
 /** One project's row of the studio — its panes, in left-to-right order, and
  *  which of them it was left focused on. `panes` stays `unknown[]` because the
@@ -86,7 +92,7 @@ export type ThreadRow = {
   model: string | null;
   conversation_id: string | null;
   created_at: number;
-  updated_at: number;
+  last_activity_at: number;
   branch: string | null;
   added: number | null;
   removed: number | null;
@@ -94,18 +100,17 @@ export type ThreadRow = {
   context_used: number | null;
   context_window: number | null;
   compacts_auto: number | null;
-  archived: number | null;
+  archived_at: number | null;
   title: string | null;
   base_tree: string | null;
   source_thread_id: string | null;
-  fork_context_json: string | null;
-  lineage_json: string | null;
-  request_id: string | null;
   parent_thread_id: string | null;
-  is_pinned: number;
+  relationship_to_parent: RelationshipToParent | null;
+  fork_context_json: string | null;
+  request_id: string | null;
+  pinned_at: number | null;
   model_selection_json: string | null;
   resume_session_at: string | null;
-  last_activity_at: number | null;
   done_at: number | null;
   last_visited_at: number | null;
   snippet?: string | null;
@@ -122,7 +127,7 @@ export type BlockRow = {
   at: number;
   ended_at: number | null;
   attachments_json: string | null;
-  source: string | null;
+  source: BlockSource;
 };
 
 /** An attachment's registry row — its metadata plus where the bytes live. */
@@ -342,7 +347,7 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
     mode?: InteractionMode;
   }>(row.model_selection_json);
   const forkContext = parseJsonObject<StoredThreadMeta["forkContext"]>(row.fork_context_json);
-  const lineage = parseJsonObject<StoredThreadMeta["lineage"]>(row.lineage_json);
+  const isPinned = row.pinned_at !== null && row.pinned_at > 0;
   const meta: StoredThreadMeta = {
     threadId: row.thread_id,
     projectPath: row.project_path,
@@ -351,21 +356,25 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
     model: row.model ?? undefined,
     conversationId: row.conversation_id ?? undefined,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    updatedAt: row.last_activity_at,
     branch: row.branch ?? null,
     added: row.added ?? undefined,
     removed: row.removed ?? undefined,
     tokens: row.tokens ?? undefined,
     contextUsed: row.context_used ?? undefined,
     contextWindow: row.context_window ?? undefined,
-    compactsAutomatically: row.compacts_auto === null ? undefined : row.compacts_auto === 1,
+    compactsAutomatically:
+      row.compacts_auto === null || row.compacts_auto === undefined ? undefined : row.compacts_auto === 1,
     title: row.title ?? undefined,
-    /** Pins live in the DB (v18) so they follow the thread across profiles. */
-    isPinned: row.is_pinned === 1,
-    /** Recency ordering key (v18): last conversation activity, distinct from
-     *  `updatedAt` which title/archive bookkeeping also bumps. Backfilled from
-     *  updated_at for pre-v18 rows. */
-    lastActivityAt: row.last_activity_at ?? row.updated_at,
+    /** Pins live in the DB as pinned_at (v1 baseline), or null when unpinned. */
+    isPinned,
+    pinnedAt: row.pinned_at ?? null,
+    archivedAt: row.archived_at ?? null,
+    /** Recency ordering key: last conversation activity. */
+    lastActivityAt: row.last_activity_at,
+    sourceThreadId: row.source_thread_id ?? undefined,
+    parentThreadId: row.parent_thread_id ?? undefined,
+    relationshipToParent: row.relationship_to_parent ?? null,
     resumeSessionAt: row.resume_session_at ?? undefined,
     /** When you marked the thread done (v29), or null. Compared against
      *  `lastActivityAt` rather than read alone: a thread the agent has spoken
@@ -378,7 +387,13 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
   };
   if (selection) meta.selection = selection;
   if (forkContext) meta.forkContext = forkContext;
-  if (lineage) meta.lineage = lineage;
+  if (row.parent_thread_id || row.relationship_to_parent) {
+    meta.lineage = {
+      parentThreadId: row.parent_thread_id,
+      relationshipToParent: row.relationship_to_parent,
+      rootThreadId: row.parent_thread_id ?? row.thread_id,
+    };
+  }
   if (row.snippet) {
     const s = cleanSnippet(row.snippet);
     if (s) meta.snippet = s;
