@@ -30,6 +30,7 @@ import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
+import { agentIdentity } from "~/utils/agentIdentity";
 import type { ChatAttachment } from "~/types/desktop";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import type { ThreadSession } from "~/composables/useAgent";
@@ -192,6 +193,12 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // Who is on the thread, settled on the turn that made it. Write-once, and
     // this is the only turn where the choice was still open.
     composer.settleThreadAgent(id, composer.agentId.value);
+    // Warm the avatar cache for the new thread id so the header and transcript
+    // that mount on the handover already have the SVG in hand — without this the
+    // first paint of those panes would generate the avatar on mount, which is
+    // where the list (which already had the row and its cached avatar) read as
+    // instant while the reading pane showed a blank frame.
+    void agentIdentity(id);
     handedOver.value = true;
     emit(
       "started",

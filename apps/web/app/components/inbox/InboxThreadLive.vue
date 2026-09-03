@@ -51,8 +51,17 @@ const agent = useAgent({
 
 // Adopting the thread is synchronous in the part that matters — the key comes
 // back immediately, and the transcript settles behind it.
-const handleKey = props.sessionKey ?? agent.openThreadHandle(props.row.threadId).key;
-const session = computed(() => agent.sessions.value.find((s) => s.key === handleKey) ?? null);
+// `handleKey` is computed so a handed session key that arrives after mount
+// (the inbox composer's handover) still wins over the fallback lookup — a plain
+// const would capture the initial undefined and leave the pane bound to a
+// duplicate empty session with no transcript, which is what left the thread
+// blank until the next reload.
+const handleKey = computed(
+  () => props.sessionKey ?? agent.openThreadHandle(props.row.threadId).key,
+);
+const session = computed(
+  () => agent.sessions.value.find((s) => s.key === handleKey.value) ?? null,
+);
 
 // Who may work here, what they may run, and where a pick has to land.
 const composer = useInboxComposer({
@@ -64,8 +73,12 @@ const composer = useInboxComposer({
 // The idle sweep evicts sessions it believes nobody is looking at. A pane
 // holding one is exactly the case it must not evict, and saying so is the
 // pane's job — the registry cannot see who is on screen.
-onMounted(() => agent.pinToPane(handleKey));
-onBeforeUnmount(() => agent.unpinFromPane(handleKey));
+onMounted(() => agent.pinToPane(handleKey.value));
+onBeforeUnmount(() => agent.unpinFromPane(handleKey.value));
+watch(handleKey, (next, prev) => {
+  if (prev) agent.unpinFromPane(prev);
+  if (next) agent.pinToPane(next);
+});
 
 const blocks = computed(() => session.value?.timelineBlocks.value ?? []);
 const busy = computed(() => session.value?.busy.value ?? false);
@@ -140,7 +153,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   <div class="live">
     <InboxThreadHeader
       :title="threadTitle"
-      :seed="row.threadId ?? session?.threadId.value"
+      :seed="row.threadId"
       :provider="session?.provider.value || agent.provider.value || row.provider"
       :brand="row.brand"
       :token-usage="session?.tokenUsage.value ?? undefined"
@@ -156,7 +169,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :blocks="blocks"
         :now="agent.now.value"
         :thread-id="row.threadId"
-        :agent-seed="row.threadId ?? session?.threadId.value"
+        :agent-seed="row.threadId"
         mode="reply"
         :session-error="session?.error.value"
         :load-failed="session?.transcriptLoadFailed.value"
