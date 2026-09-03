@@ -1299,11 +1299,18 @@ export class ConversationStore {
    *  a random UUID ordered them arbitrarily instead of by arrival. Returns the
    *  row now in 'promoting' (attempt_count already bumped), or null when the
    *  thread has nothing active to claim. */
-  claimNextQueuedTurn(threadId: string): QueuedTurnRow | null {
+  claimNextQueuedTurn(threadId: string, staleTimeoutMs = 120_000): QueuedTurnRow | null {
     const db = this.handle();
     if (!db) return null;
     try {
       const now = Date.now();
+      const cutoff = now - staleTimeoutMs;
+      db.prepare(
+        `UPDATE queued_turns
+            SET state = 'queued', updated_at = ?
+          WHERE thread_id = ? AND state = 'promoting' AND updated_at <= ?`,
+      ).run(now, threadId, cutoff);
+
       // SAFETY: RETURNING * of queued_turns is exactly QueuedTurnDbRow — the
       // columns this schema creates.
       const row = db
@@ -1330,6 +1337,28 @@ export class ConversationStore {
     } catch (err) {
       console.error("[conversation-store] claimNextQueuedTurn failed:", err);
       return null;
+    }
+  }
+
+  /** Release every queued turn stranded in 'promoting' whose claim has expired
+   *  (not updated within `staleTimeoutMs`). Returns the count of recovered rows. */
+  recoverStaleClaims(staleTimeoutMs = 120_000): number {
+    const db = this.handle();
+    if (!db) return 0;
+    try {
+      const now = Date.now();
+      const cutoff = now - staleTimeoutMs;
+      const result = db
+        .prepare(
+          `UPDATE queued_turns
+              SET state = 'queued', updated_at = ?
+            WHERE state = 'promoting' AND updated_at <= ?`,
+        )
+        .run(now, cutoff);
+      return Number(result.changes);
+    } catch (err) {
+      console.error("[conversation-store] recoverStaleClaims failed:", err);
+      return 0;
     }
   }
 

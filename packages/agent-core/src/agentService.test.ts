@@ -93,7 +93,10 @@ class FakeAdapter {
   }
   /** Optional per-adapter live-steer channel, exactly like the interface. */
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
-  async interruptTurn(): Promise<void> {}
+  static interrupted: string[] = [];
+  async interruptTurn(threadId?: string): Promise<void> {
+    if (threadId) FakeAdapter.interrupted.push(threadId);
+  }
   /** Every approval decision the service handed back. */
   static responded: Array<{ threadId: string; requestId: string; decision: string }> = [];
   async respondToRequest(threadId: string, requestId: string, decision: string): Promise<void> {
@@ -732,6 +735,7 @@ describe("AgentService durable turn queue + steering", () => {
       (e) => e.threadId === thread && e.type === "turn.queued",
     ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
     expect(queued?.dispatchMode).toBe("steer");
+    expect(FakeAdapter.interrupted).toContain(thread);
   });
 
   test("a second send landing before turn.started is queued, not dispatched", async () => {

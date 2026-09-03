@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { getAttachmentStore } from "./AttachmentStore.js";
 import { isQuotaOrRateLimitError } from "./adapters/errors.js";
 import {
   resolveModelWithFallback,
@@ -1172,7 +1174,15 @@ export class AgentService {
     }
     if (this.isBusy(threadId)) {
       const provider = this.routing.get(threadId);
-      if (provider) return this.enqueueTurn(input, "steer", provider);
+      if (provider) {
+        const enqueued = await this.enqueueTurn(input, "steer", provider);
+        if (liveTurnId) {
+          void this.interruptTurn(threadId).catch((err) => {
+            console.warn(`[agent] interrupt on fallback steer failed for ${threadId}:`, err);
+          });
+        }
+        return enqueued;
+      }
     }
     return this.sendTurn(input);
   }
@@ -1288,6 +1298,14 @@ export class AgentService {
   async sweepStaleThreads(): Promise<void> {
     const history = this.historyStore;
     if (!history) return;
+    const queue = this.queueStore;
+    if (queue?.recoverStaleClaims) {
+      try {
+        await queue.recoverStaleClaims();
+      } catch (err) {
+        console.warn("[agent] recoverStaleClaims failed during sweep:", err);
+      }
+    }
     const doneMs = this.options.retentionDoneMs ?? RETENTION_DONE_MS;
     if (doneMs > 0) {
       const doneCandidates = history.staleThreadIds({
@@ -1543,6 +1561,24 @@ export class AgentService {
       } catch {
         // Corrupt attachments JSON — send the prompt without attachments
         // rather than dropping the whole queued turn.
+      }
+    }
+    if (attachments?.length) {
+      try {
+        const store = getAttachmentStore();
+        const valid = attachments.filter((att) => {
+          const absPath = store.resolveAbsPath(att.id);
+          if (!absPath || !existsSync(absPath)) {
+            console.warn(
+              `[agent] queued turn attachment ${att.id} (${att.name}) missing on disk — dropped from dispatch`,
+            );
+            return false;
+          }
+          return true;
+        });
+        attachments = valid.length > 0 ? valid : undefined;
+      } catch {
+        // Attachment store lookup failed — proceed with parsed attachments
       }
     }
     const input: SendTurnInput = {

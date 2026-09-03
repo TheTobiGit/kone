@@ -436,6 +436,11 @@ interface CodexTurnStartParams extends CodexJsonObject {
   serviceTier?: string;
   collaborationMode?: CodexTurnCollaborationMode;
 }
+interface CodexTurnSteerParams extends CodexJsonObject {
+  threadId: string;
+  input: Array<{ type: "text"; text: string; text_elements: [] } | CodexImageItem>;
+  expectedTurnId: string;
+}
 
 // ── item type canonicalization ───────────────────────────────────────────────
 // Codex's raw item.type spellings vary (camelCase/kebab/etc.); normalize then
@@ -982,6 +987,53 @@ export class CodexAdapter implements ProviderAdapter {
     // now. Keep the active id; the queued turn's own `turn/started`
     // CodexSessionRuntime fix.
     session.activeTurnId = session.activeTurnId ?? turnId;
+    return { threadId: input.threadId, turnId };
+  }
+  /** Deliver a mid-turn prompt into the RUNNING turn via native turn/steer RPC.
+   *  The message is folded into the active turn by the app-server without
+   *  interrupting it. When no turn is active, falls back to a regular sendTurn. */
+  async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const session = this.sessions.get(input.threadId);
+    if (!session?.activeTurnId || !session.conversationId) {
+      return this.sendTurn(input);
+    }
+    const mode = input.mode ?? session.mode;
+    session.mode = mode;
+    if (input.model) session.model = input.model;
+
+    const text = input.input.trim();
+    const { imageItems, fileBlock } = await buildCodexAttachmentInput(input.attachments);
+    const promptText = composePromptText(text, fileBlock);
+    const inputItems: Array<
+      { type: "text"; text: string; text_elements: [] } | CodexImageItem
+    > = [];
+    if (promptText.length > 0) inputItems.push({ type: "text", text: promptText, text_elements: [] });
+    inputItems.push(...imageItems);
+    if (inputItems.length === 0) {
+      throw new Error("Turn input must include text or an attachment.");
+    }
+
+    const steerParams: CodexTurnSteerParams = {
+      threadId: session.conversationId,
+      input: inputItems,
+      expectedTurnId: session.activeTurnId,
+    };
+    const response = await session.rpc.call<CodexJsonObject>("turn/steer", steerParams);
+    const turnId = readString(response, "turn", "id") ?? readString(response, "turnId");
+    if (!turnId) throw new Error("turn/steer response did not include a turn id.");
+
+    session.activeTurnId = turnId;
+    session.liveTurnIds.add(turnId);
+
+    if (text) {
+      this.emit({
+        ...this.base(session),
+        type: "turn.steered",
+        turnId,
+        message: text,
+      });
+    }
+
     return { threadId: input.threadId, turnId };
   }
 
