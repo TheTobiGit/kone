@@ -30,6 +30,8 @@ const props = defineProps<{
   /** The project whose page is showing underneath, if any. It earns a row of its
    *  own even before it has any work on it — see `renderRows`. */
   activeProject: Project | null;
+  /** Whether the inbox portal is open over the app. */
+  inboxOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -406,6 +408,8 @@ function resolveTargetProjectPath(): string | null {
 }
 
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
+  if (props.inboxOpen || e.defaultPrevented) return;
+
   if (matchesShortcut("new-thread", e)) {
     const targetPath = resolveTargetProjectPath();
     if (!targetPath) return;

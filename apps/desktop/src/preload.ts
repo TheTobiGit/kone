@@ -343,6 +343,11 @@ const api = {
       ipcRenderer.on("window:state", listener);
       return () => ipcRenderer.removeListener("window:state", listener);
     },
+    onAssistantToggle: (cb: () => void): (() => void) => {
+      const listener = () => cb();
+      ipcRenderer.on("assistant:toggle", listener);
+      return () => ipcRenderer.removeListener("assistant:toggle", listener);
+    },
   },
   agent: {
     // The last known provider surface off the main process's disk cache — no

@@ -27,6 +27,14 @@ export const DEFAULT_PROVIDER_KEY = "kone:default-provider";
 export const DEFAULT_MODEL_KEY = "kone:default-model";
 export const DEFAULT_REASONING_KEY = "kone:default-reasoning";
 
+/** The assistant's own last-used model — isolated from the board's global
+ *  sticky choice so retuning the assistant doesn't retune the next project
+ *  thread and vice-versa. Falls back to the configured default when nothing
+ *  has been picked for the assistant yet. */
+export const ASSISTANT_PROVIDER_KEY = "kone:assistant:provider";
+export const ASSISTANT_MODEL_KEY = "kone:assistant:model";
+export const ASSISTANT_REASONING_KEY = "kone:assistant:reasoning";
+
 /** The permission mode stays PER PROJECT — it's a per-repo trust decision, not
  *  an app-wide preference. */
 export function modeKey(projectPath: string): string {
@@ -126,6 +134,77 @@ export function setLastUsedModel(pick: {
   }
   if (pick.tier !== undefined) {
     storage.setItem(REASONING_KEY, pick.tier);
+  }
+}
+
+/**
+ * Which provider the assistant's next fresh chat opens on.
+ *
+ * The assistant's own last used wins, falling back to the user's configured
+ * default — same order the board uses, but scoped to the assistant so the
+ * two surfaces don't step on each other's sticky choice.
+ */
+export function bootAssistantProvider(): ProviderKind {
+  const storage = getStorage();
+  if (!storage) return "codex";
+  const stored =
+    storage.getItem(ASSISTANT_PROVIDER_KEY) ??
+    storage.getItem(PROVIDER_KEY) ??
+    storage.getItem(DEFAULT_PROVIDER_KEY);
+  return stored !== null && stored in PROVIDER_VENDOR ? toProviderKind(stored) : "codex";
+}
+
+/**
+ * Which model the assistant's next fresh chat opens on.
+ *
+ * Reads the assistant's last used first, falling back to the configured default.
+ */
+export function bootAssistantModel(): string | undefined {
+  const storage = getStorage();
+  if (!storage) return undefined;
+  return (
+    storage.getItem(ASSISTANT_MODEL_KEY) ??
+    storage.getItem(MODEL_KEY) ??
+    storage.getItem(DEFAULT_MODEL_KEY) ??
+    undefined
+  );
+}
+
+/**
+ * Which reasoning effort the assistant's next fresh chat opens on.
+ *
+ * Reads the assistant's last used first, falling back to the configured default.
+ */
+export function bootAssistantReasoning(): EffortTier | undefined {
+  const storage = getStorage();
+  if (!storage) return undefined;
+  const stored =
+    storage.getItem(ASSISTANT_REASONING_KEY) ??
+    storage.getItem(REASONING_KEY) ??
+    storage.getItem(DEFAULT_REASONING_KEY);
+  if (stored === null || !(stored in EFFORT_META)) return undefined;
+  // SAFETY: EFFORT_META satisfies Record<EffortTier, EffortMeta>, so the `in`
+  // check above proves this is one of its keys.
+  return stored as EffortTier;
+}
+
+/**
+ * Record the assistant's own last-used model selection so subsequent assistant
+ * chats default to it without retuning the board's global sticky choice.
+ */
+export function setAssistantLastUsedModel(pick: {
+  provider: ProviderKind;
+  modelId?: string;
+  tier?: EffortTier;
+}): void {
+  const storage = getStorage();
+  if (!storage) return;
+  storage.setItem(ASSISTANT_PROVIDER_KEY, pick.provider);
+  if (pick.modelId !== undefined) {
+    storage.setItem(ASSISTANT_MODEL_KEY, pick.modelId);
+  }
+  if (pick.tier !== undefined) {
+    storage.setItem(ASSISTANT_REASONING_KEY, pick.tier);
   }
 }
 

@@ -23,14 +23,19 @@ import {
   type PickerProvider,
 } from "~/utils/modelCatalog";
 import {
+  bootAssistantModel,
+  bootAssistantProvider,
+  bootAssistantReasoning,
   bootModel,
   bootProvider,
   bootReasoning,
   modeKey,
   PROVIDER_BRAND,
   PROVIDER_VENDOR,
+  setAssistantLastUsedModel,
   setLastUsedModel,
 } from "~/utils/modelPicker";
+import { GLOBAL_ASSISTANT_PROJECT_PATH } from "~/composables/useGlobalAssistant";
 import { resolveProviderSendAvailability } from "~/utils/providerAvailability";
 import type { ModelPick } from "~/composables/useModelCommit";
 import type { ThreadDraft } from "~/composables/useThreadDraft";
@@ -200,7 +205,18 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     if (s) agent.focusThread(s.key);
   }
 
-  const commit = useModelCommit({ agent, catalogs, modelOptions, syncTarget });
+  const isAssistant = computed(() => toValue(o.projectPath) === GLOBAL_ASSISTANT_PROJECT_PATH);
+  const persistLastUsed = (pick: { provider: ProviderKind; modelId?: string; tier?: EffortTier }): void => {
+    if (isAssistant.value) setAssistantLastUsedModel(pick);
+    else setLastUsedModel(pick);
+  };
+  const commit = useModelCommit({
+    agent,
+    catalogs,
+    modelOptions,
+    syncTarget,
+    isAssistant: isAssistant.value,
+  });
 
   // A drafted model has to be a model this provider actually has. The draft is
   // seeded from storage before any catalog is loaded, so it can be carrying an
@@ -276,9 +292,15 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
       draft.provider.value = pinned.provider;
       draft.model.value = pinned.model;
     } else if (prevAgent?.capabilities?.model) {
-      draft.provider.value = bootProvider();
-      draft.model.value = bootModel();
-      draft.reasoning.value = bootReasoning();
+      if (isAssistant.value) {
+        draft.provider.value = bootAssistantProvider();
+        draft.model.value = bootAssistantModel();
+        draft.reasoning.value = bootAssistantReasoning();
+      } else {
+        draft.provider.value = bootProvider();
+        draft.model.value = bootModel();
+        draft.reasoning.value = bootReasoning();
+      }
     }
   });
 
@@ -295,7 +317,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     if (draft && !session.value) {
       draft.model.value = id;
       if (!capModel.value) {
-        setLastUsedModel({ provider: draft.provider.value, modelId: id, tier: draft.reasoning.value });
+        persistLastUsed({ provider: draft.provider.value, modelId: id, tier: draft.reasoning.value });
       }
       return;
     }
@@ -306,7 +328,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
     if (draft && !session.value) {
       draft.reasoning.value = tier;
       if (!capModel.value) {
-        setLastUsedModel({ provider: draft.provider.value, modelId: draft.model.value, tier });
+        persistLastUsed({ provider: draft.provider.value, modelId: draft.model.value, tier });
       }
       return;
     }
@@ -342,7 +364,7 @@ export function useInboxComposer(o: UseInboxComposerOptions) {
       draft.contextWindow.value =
         picked.contextWindow ?? fam?.contextWindows?.find((w) => w.isDefault)?.id;
       if (!capModel.value) {
-        setLastUsedModel({
+        persistLastUsed({
           provider: picked.provider,
           modelId: picked.modelId,
           tier: picked.tier,

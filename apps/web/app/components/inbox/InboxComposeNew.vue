@@ -228,6 +228,14 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
   const results = await Promise.allSettled(files.map((f) => agent.uploadAttachment(f)));
   return results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 }
+
+const composerRef = ref<InstanceType<typeof AgentComposer> | null>(null);
+
+function focus(): void {
+  composerRef.value?.focus();
+}
+
+defineExpose({ focus });
 </script>
 
 <template>
@@ -276,6 +284,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @recheck="composer.recheckProviders"
       />
       <AgentComposer
+        ref="composerRef"
         always-open
         :project-path="projectPath"
         :project-name="projectName"

@@ -16,7 +16,11 @@ import type { ComputedRef, Ref } from "vue";
 import type { InteractionMode, ProviderKind } from "~/types/desktop";
 import type { EffortTier, ModelOption } from "~/utils/modelCatalog";
 import { familyForId } from "~/utils/modelCatalog";
-import { RESTART_ON_MODEL_CHANGE, setLastUsedModel } from "~/utils/modelPicker";
+import {
+  RESTART_ON_MODEL_CHANGE,
+  setAssistantLastUsedModel,
+  setLastUsedModel,
+} from "~/utils/modelPicker";
 import type { useAgent } from "~/composables/useAgent";
 
 export type ModelPick = {
@@ -39,10 +43,17 @@ export interface UseModelCommitOptions {
    *  awaits this first: without it a pick can land on a background thread, or on
    *  a boot session the mount is about to evict. */
   syncTarget: () => Promise<void>;
+  /** When true, persist picks to the assistant's isolated last-used keys instead
+   *  of the global board keys. */
+  isAssistant?: boolean;
 }
 
 export function useModelCommit(o: UseModelCommitOptions) {
   const { agent, catalogs, modelOptions, syncTarget } = o;
+  const persistLastUsed = (pick: { provider: ProviderKind; modelId?: string; tier?: EffortTier }): void => {
+    if (o.isAssistant) setAssistantLastUsedModel(pick);
+    else setLastUsedModel(pick);
+  };
 
   /** Persist the active thread's committed selection — model, effort, service
    *  tier, context window — so a reopened thread restores exactly what the
@@ -87,9 +98,9 @@ export function useModelCommit(o: UseModelCommitOptions) {
       );
     }
 
-    // Persist the choice globally so subsequent sessions open with whatever ran last.
+    // Persist the choice so subsequent sessions open with whatever ran last.
     if (import.meta.client) {
-      setLastUsedModel({
+      persistLastUsed({
         provider: picked.provider,
         modelId: picked.modelId,
         tier: picked.tier,
@@ -124,7 +135,7 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => {
       agent.setModel(id);
       if (import.meta.client) {
-        setLastUsedModel({
+        persistLastUsed({
           provider: agent.provider.value,
           modelId: id,
           tier: agent.reasoning.value,
@@ -137,7 +148,7 @@ export function useModelCommit(o: UseModelCommitOptions) {
     void syncTarget().then(() => {
       agent.setReasoning(tier);
       if (import.meta.client) {
-        setLastUsedModel({
+        persistLastUsed({
           provider: agent.provider.value,
           modelId: agent.model.value,
           tier,
