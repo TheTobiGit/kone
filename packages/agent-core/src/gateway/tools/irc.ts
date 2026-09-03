@@ -186,16 +186,6 @@ export class IrcMailbox {
         }
       }
 
-      // From store
-      if (store?.listThreads) {
-        const stored = store.listThreads(sender.projectPath);
-        for (const meta of stored) {
-          if (meta.threadId !== sender.threadId) {
-            recipientSet.add(meta.threadId);
-          }
-        }
-      }
-
       return Array.from(recipientSet);
     }
 
@@ -456,18 +446,13 @@ export class IrcMailbox {
    * invent plausible names, the send fails, and the failure reads as "messaging
    * is broken" rather than "that agent does not exist".
    */
-  listPeers(sender: IrcPeerScope, store?: IrcToolStore): IrcPeer[] {
+  listPeers(sender: IrcPeerScope): IrcPeer[] {
     const ids = new Set<string>();
     for (const [id, reg] of this.threads.entries()) {
       if (id === sender.threadId) continue;
       const sameProject = reg.projectPath === sender.projectPath;
       const sameLineage = Boolean(sender.rootThreadId) && reg.rootThreadId === sender.rootThreadId;
       if (sameProject || sameLineage) ids.add(id);
-    }
-    if (store?.listThreads) {
-      for (const meta of store.listThreads(sender.projectPath)) {
-        if (meta.threadId !== sender.threadId) ids.add(meta.threadId);
-      }
     }
     return Array.from(ids).map((id) => {
       const reg = this.threads.get(id);
@@ -713,11 +698,8 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
     if (input.store?.threadLineage) {
       rootThreadId = input.store.threadLineage(ctx.threadId)?.rootThreadId;
     }
-    const sender: IrcPeerScope = { threadId: ctx.threadId, projectPath: ctx.cwd };
-    if (rootThreadId) sender.rootThreadId = rootThreadId;
-    const peers = input.store
-      ? mailbox.listPeers(sender, input.store)
-      : mailbox.listPeers(sender);
+    const sender: IrcPeerScope = { threadId: ctx.threadId, projectPath: ctx.cwd, rootThreadId };
+    const peers = mailbox.listPeers(sender);
     const rows = peers.map((peer) => ({
       ...peer,
       live: input.isThreadLive?.(peer.id) ?? false,
@@ -725,7 +707,7 @@ export function createIrcTools(input: IrcToolInput = {}): ToolEntry[] {
 
     const text =
       rows.length === 0
-        ? "No peers — you are the only agent in this project right now."
+        ? "No peers — you are the only active agent in this thread tree right now."
         : rows
             .map(
               (p) =>

@@ -1,5 +1,6 @@
 import { detect, diffStatBetween, snapshotWorkingTree } from "@kone/git-core/status.js";
 import type { AgentService } from "./AgentService.js";
+import { workingDirFor } from "./assistantWorkspace.js";
 import type { ConversationStore } from "./ConversationStore.js";
 import { buildResumeContext } from "./resumeContext.js";
 import {
@@ -192,7 +193,14 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
         mode: input.mode,
       });
     }
-    const session = await this.service.startSession(input);
+    // A CLI is a child process, so from here down the cwd has to be a real
+    // directory. The thread keeps the project path it was registered under —
+    // that is its identity, and the assistant's is a sentinel rather than a
+    // place — while the process gets somewhere it can actually run.
+    const workingDir = workingDirFor(input.cwd);
+    const session = await this.service.startSession(
+      workingDir === input.cwd ? input : { ...input, cwd: workingDir },
+    );
     // The provider conversation exists the moment startSession resolves.
     // Capture its id NOW — durably — rather than waiting for the session.started
     // fold (which also captures it): a crash in the window between the CLI
@@ -207,7 +215,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // Record where the repo stood as this conversation begins, so its settled
     // diffstat measures only what the conversation changes (no-op if the thread
     // already has a baseline — a resumed session keeps its original one).
-    this.captureBaseline(input.threadId, input.cwd);
+    this.captureBaseline(input.threadId, workingDir);
     // A session that adopted the provider's own conversation carries its context
     // with it and needs nothing from us. One that didn't, on a thread that has a
     // transcript, is the crash case: stage the replay for its next turn. Side
@@ -364,11 +372,13 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     });
     if (options?.generateTitle === false) return;
 
-    const cwd = this.store.threadProjectPath(input.threadId);
-    if (!cwd) return;
+    const projectPath = this.store.threadProjectPath(input.threadId);
+    if (!projectPath) return;
 
     void generateThreadTitle({
-      cwd,
+      // Another spawn, and the same reason the session's own cwd is resolved:
+      // the naming one-shot runs in a directory too.
+      cwd: workingDirFor(projectPath),
       message: input.message,
       provider: input.provider,
     })

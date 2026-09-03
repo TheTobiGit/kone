@@ -437,10 +437,8 @@ describe("IrcMailbox core engine", () => {
   test("Special recipient routing: 'all' and '*' broadcast", () => {
     const store = new FakeIrcStore();
     store.addThread({ threadId: "sender-thread", projectPath: PROJECT_A });
-    store.addThread({ threadId: "peer-1", projectPath: PROJECT_A });
-    store.addThread({ threadId: "peer-2", projectPath: PROJECT_A });
-    store.addThread({ threadId: "other-project-thread", projectPath: PROJECT_B });
-
+    mailbox.registerThread({ threadId: "peer-1", projectPath: PROJECT_A });
+    mailbox.registerThread({ threadId: "peer-2", projectPath: PROJECT_A });
     mailbox.registerThread({
       threadId: "reg-peer-3",
       projectPath: PROJECT_A,

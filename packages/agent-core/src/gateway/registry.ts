@@ -60,16 +60,29 @@ export interface GatewayApprovalRequest {
  */
 export type GatewayApprove = (request: GatewayApprovalRequest) => Promise<boolean>;
 
+export type GatewayToolScope = "worker" | "assistant";
+
+function matchesScope(tool: ToolEntry, scope?: GatewayToolScope): boolean {
+  if (!scope) return true;
+  const target = tool.target ?? "all";
+  return target === "all" || target === scope;
+}
+
 export interface GatewayRegistry {
   /** The tool definitions tools/list advertises (denied tools omitted). Each
    *  inputSchema is the tool's hand-written JSON Schema object. */
-  listTools(): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
+  listTools(scope?: GatewayToolScope): ReadonlyArray<{ name: string; description: string; inputSchema: GatewayRecord }>;
   /** What the host-context block says about the tools this gateway actually
    *  serves — the same `deny` filter tools/list applies, so the prose and the
    *  advertised surface cannot disagree. */
-  listToolPrompts(): ReadonlyArray<GatewayToolPrompt>;
+  listToolPrompts(scope?: GatewayToolScope): ReadonlyArray<GatewayToolPrompt>;
   /** Dispatch one tools/call through the full dispatch order. Never throws. */
-  call(ctx: GatewayToolContext, name: string, args: GatewayValue | undefined): Promise<GatewayToolResult>;
+  call(
+    ctx: GatewayToolContext,
+    name: string,
+    args: GatewayValue | undefined,
+    scope?: GatewayToolScope,
+  ): Promise<GatewayToolResult>;
 }
 
 export function createRegistry(
@@ -78,31 +91,38 @@ export function createRegistry(
 ): GatewayRegistry {
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const servable = tools.filter((tool) => tool.permission !== "deny");
-  const advertised = servable.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.jsonSchema,
-  }));
-  // A tool with no snippet is served but never announced in the host context.
-  // Silence is the safe default: a tool the block forgets still works when the
-  // agent finds it in tools/list, whereas a tool the block promises and the
-  // gateway does not serve is a lie the agent acts on.
-  const prompts: GatewayToolPrompt[] = [];
-  for (const tool of servable) {
-    const snippet = tool.promptSnippet;
-    if (!snippet) continue;
-    prompts.push({
-      name: tool.name,
-      snippet,
-      guidelines: tool.promptGuidelines ?? [],
-      needsApproval: tool.permission === "ask",
-    });
+
+  function listTools(scope?: GatewayToolScope) {
+    return servable
+      .filter((tool) => matchesScope(tool, scope))
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.jsonSchema,
+      }));
+  }
+
+  function listToolPrompts(scope?: GatewayToolScope): ReadonlyArray<GatewayToolPrompt> {
+    const list: GatewayToolPrompt[] = [];
+    for (const tool of servable) {
+      if (!matchesScope(tool, scope)) continue;
+      const snippet = tool.promptSnippet;
+      if (!snippet) continue;
+      list.push({
+        name: tool.name,
+        snippet,
+        guidelines: tool.promptGuidelines ?? [],
+        needsApproval: tool.permission === "ask",
+      });
+    }
+    return list;
   }
 
   async function call(
     ctx: GatewayToolContext,
     name: string,
     args: GatewayValue | undefined,
+    scope?: GatewayToolScope,
   ): Promise<GatewayToolResult> {
     const tool = toolsByName.get(name);
     if (!tool) {
@@ -113,6 +133,14 @@ export function createRegistry(
     if (tool.permission === "deny") {
       return gatewayToolErrorResult(
         new GatewayToolError("permission_denied", `Tool "${name}" is not permitted.`),
+      );
+    }
+    if (scope && !matchesScope(tool, scope)) {
+      return gatewayToolErrorResult(
+        new GatewayToolError(
+          "permission_denied",
+          `Tool "${name}" is not available for ${scope} sessions.`,
+        ),
       );
     }
     if (tool.requiresActiveTurn && !ctx.turnId) {
@@ -179,7 +207,7 @@ export function createRegistry(
     }
   }
 
-  return { listTools: () => advertised, listToolPrompts: () => prompts, call };
+  return { listTools, listToolPrompts, call };
 }
 
 export function isGatewayErrorCode(value: string): value is GatewayErrorCode {

@@ -84,6 +84,12 @@ export interface ToolEntry {
   permission: GatewayPermission;
   /** Write tools are only callable while the caller's bound turn is live. */
   requiresActiveTurn: boolean;
+  /** Which kind of session can see and call this tool:
+   *  - "worker": solo and team worker agents on a project codebase
+   *  - "assistant": the global app assistant
+   *  - "all": visible to both (default when omitted)
+   */
+  target?: "worker" | "assistant" | "all";
   /**
    * One line naming what this tool is for, in the host-context block the agent
    * reads before its first turn. A tool without one is not announced there —

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 
 import { renderKoneHostContext } from "./appContext.js";
 import { createRegistry } from "./registry.js";
@@ -83,5 +84,61 @@ describe("gateway tool prompts", () => {
     expect(renderKoneHostContext(registry.listToolPrompts())).toContain(
       "(stops for the user's approval)",
     );
+  });
+
+  test("worker scope returns only worker tools and omits app-steering tools", () => {
+    const workerTool: ToolEntry = {
+      name: "kone_scratchpad_read",
+      description: "Read scratchpad",
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object" },
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "Read scratchpad",
+      target: "worker",
+      handler: async () => ({ content: [] }),
+    };
+    const assistantTool: ToolEntry = {
+      name: "app_apply_theme",
+      description: "Apply theme",
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object" },
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet: "Apply theme",
+      target: "assistant",
+      handler: async () => ({ content: [] }),
+    };
+    const reg = createRegistry([workerTool, assistantTool]);
+    const workerTools = reg.listTools("worker");
+    expect(workerTools.map((t) => t.name)).toEqual(["kone_scratchpad_read"]);
+
+    const assistantTools = reg.listTools("assistant");
+    expect(assistantTools.map((t) => t.name)).toEqual(["app_apply_theme"]);
+  });
+
+  test("calling an assistant tool from worker scope returns permission_denied", async () => {
+    const assistantTool: ToolEntry = {
+      name: "app_apply_theme",
+      description: "Apply theme",
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object" },
+      permission: "allow",
+      requiresActiveTurn: false,
+      target: "assistant",
+      handler: async () => ({ content: [{ type: "text", text: "applied" }] }),
+    };
+    const reg = createRegistry([assistantTool]);
+    const ctx = {
+      threadId: "t1",
+      turnId: "turn-1",
+      provider: "claude" as const,
+      cwd: "/tmp",
+    };
+    const res = await reg.call(ctx, "app_apply_theme", {}, "worker");
+    expect(res.isError).toBe(true);
+    // SAFETY: content element text checked
+    const text = (res.content[0] as { text: string }).text;
+    expect(text).toContain("permission_denied");
   });
 });
