@@ -625,6 +625,7 @@ export type QueuedTurnStore = {
   listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]>;
   latestUserBlockId?(threadId: string): string | null;
   loadThread(threadId: string): StoredThread | null;
+  recoverStaleClaims?(staleTimeoutMs?: number): Promise<number> | number;
 };
 
 // ── thread lineage & fork context (side chats) ───────────────────────────────

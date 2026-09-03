@@ -208,3 +208,12 @@ describe("CodexAdapter permission ask normalization", () => {
     expect(helpers.describePermissionProfile(undefined)).toBeUndefined();
   });
 });
+describe("CodexAdapter steerTurn", () => {
+  test("steer with no session falls back to sendTurn, which rejects", async () => {
+    const events: unknown[] = [];
+    const adapter = new helpers.CodexAdapter((e) => events.push(e));
+    await expect(
+      adapter.steerTurn({ threadId: "missing-thread", input: "hello" }),
+    ).rejects.toThrow("No Codex session for thread missing-thread");
+  });
+});

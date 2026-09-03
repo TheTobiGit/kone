@@ -1581,6 +1581,26 @@ describe("queued turns schema", () => {
     expect(claimed?.queueId).toBe("q-1");
     expect(claimed?.attemptCount).toBe(2);
   });
+  test("a claim stranded in 'promoting' during runtime is recovered when staleTimeoutMs elapses", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.enqueueQueuedTurn({ queueId: "q-1", threadId: "t-1", userBlockId: "ub-1", input: "hi", at: 100 });
+    const claimed1 = store.claimNextQueuedTurn("t-1");
+    expect(claimed1?.queueId).toBe("q-1");
+    expect(claimed1?.state).toBe("promoting");
+
+    // Immediately claiming again returns null because the row is actively promoting
+    expect(store.claimNextQueuedTurn("t-1", 10_000)).toBeNull();
+
+    // Now test recoverStaleClaims with a timeout of 0 (everything past now recovers)
+    const recovered = store.recoverStaleClaims(0);
+    expect(recovered).toBe(1);
+
+    // After recovery, the row is claimable again!
+    const claimed2 = store.claimNextQueuedTurn("t-1");
+    expect(claimed2?.queueId).toBe("q-1");
+    expect(claimed2?.attemptCount).toBe(2);
+  });
 
   function enq(
     store: ConversationStoreType,

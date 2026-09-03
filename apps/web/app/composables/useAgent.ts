@@ -388,10 +388,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         break;
       case "turn.started":
         everRan.value = true;
-        // Every queue event for a send arrives before the turn it belongs to
-        // starts — anything still recorded is a stale ack (a direct send, a
-        // live steer); drop it so the map can't grow unboundedly.
-        pendingQueueAnchors.clear();
+        // Delete only the anchor matching this started turn id, leaving any
+        // subsequent queued follow-up anchors intact in the map.
+        pendingQueueAnchors.delete(event.turnId);
         blocks.value = [
           ...blocks.value,
           {
@@ -515,6 +514,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       case "turn.queued-cancelled":
         // A user drop removes one chip; a stop/delete clears the whole line
         // (the backend emits one cancellation per row on stop).
+        pendingQueueAnchors.delete(event.queueId);
         queuedTurnsRaw.value =
           event.reason === "stop" ||
           event.reason === "thread-deleted" ||
@@ -532,13 +532,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         queuedTurnsRaw.value = queuedTurnsRaw.value.filter(
           (q) => q.queueId !== event.queueId,
         );
+        pendingQueueAnchors.delete(event.queueId);
+        if (event.turnId) pendingQueueAnchors.delete(event.turnId);
         break;
       case "turn.steered":
         // The nudge was offered into the LIVE turn — no new boundary, no
         // state to fold beyond the user block already pushed optimistically
         // (a steer that fell back to the queue arrives as turn.queued
-        // instead). Keep the switch from erroring on the event.
-        pendingQueueAnchors.clear();
+        // instead). Prune the steered turn's anchor if tracked.
+        pendingQueueAnchors.delete(event.turnId);
         break;
       default:
         break;
