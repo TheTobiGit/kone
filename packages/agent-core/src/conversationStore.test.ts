@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { setUserDataDir } from "./userDataDir.js";
-import { SCHEMA_VERSION } from "./conversationMigrations.js";
+import { MigrationLineageError, SCHEMA_VERSION, backupBeforeStep, migrate } from "./conversationMigrations.js";
 
 import { Database } from "bun:sqlite";
 
@@ -55,7 +55,7 @@ function freshStore(): ConversationStoreType {
 }
 
 function dbPath(): string {
-  return path.join(testUserDataDir, "conversations.sqlite");
+  return path.join(testUserDataDir, "kone.sqlite");
 }
 
 function rawDb(): Database {
@@ -137,138 +137,91 @@ function spawnedLineage(parentThreadId: string, rootThreadId: string): ThreadLin
   };
 }
 
-// ── v17 legacy schema (the shape the v18 migration upgrades from) ────────────
-const V17_THREADS = `
-  CREATE TABLE threads (
-    thread_id       TEXT PRIMARY KEY,
-    project_path    TEXT NOT NULL,
-    provider        TEXT NOT NULL,
-    model           TEXT,
-    conversation_id TEXT,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
-    branch          TEXT,
-    added           INTEGER,
-    removed         INTEGER,
-    tokens          INTEGER,
-    context_used    INTEGER,
-    context_window  INTEGER,
-    compacts_auto   INTEGER,
-    archived        INTEGER,
-    title           TEXT,
-    base_tree       TEXT,
-    source_thread_id TEXT,
-    fork_context_json TEXT,
-    lineage_json    TEXT,
-    request_id      TEXT,
-    parent_thread_id TEXT
-  );
-  CREATE TABLE blocks (
-    seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-    block_id  TEXT NOT NULL UNIQUE,
-    thread_id TEXT NOT NULL,
-    role      TEXT NOT NULL,
-    turn_id   TEXT,
-    text      TEXT,
-    state     TEXT,
-    error     TEXT,
-    at        INTEGER NOT NULL,
-    ended_at  INTEGER,
-    attachments_json TEXT,
-    source    TEXT NOT NULL DEFAULT 'native'
-  );
-  CREATE TABLE items (
-    seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id   TEXT NOT NULL,
-    thread_id TEXT NOT NULL,
-    turn_id   TEXT NOT NULL,
-    kind      TEXT NOT NULL,
-    status    TEXT NOT NULL,
-    text      TEXT NOT NULL,
-    name      TEXT,
-    detail    TEXT,
-    tasks_json TEXT,
-    subagent_tool_use_id TEXT,
-    UNIQUE (thread_id, turn_id, item_id)
-  );
-  CREATE TABLE subagents (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_use_id TEXT NOT NULL,
-    thread_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL,
-    task_id TEXT,
-    parent_item_id TEXT,
-    agent_type TEXT,
-    description TEXT,
-    prompt TEXT,
-    model TEXT,
-    effort TEXT,
-    background INTEGER,
-    status TEXT NOT NULL,
-    summary TEXT,
-    last_tool_name TEXT,
-    tokens INTEGER,
-    tool_uses INTEGER,
-    started_at INTEGER NOT NULL,
-    ended_at INTEGER,
-    UNIQUE (thread_id, turn_id, tool_use_id)
-  );
-  CREATE TABLE attachments (
-    attachment_id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    name TEXT NOT NULL,
-    mime_type TEXT NOT NULL,
-    size_bytes INTEGER NOT NULL,
-    rel_path TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE gateway_ops (
-    thread_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL,
-    request_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    result_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    dispatched INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (thread_id, turn_id, request_id)
-  );
-  CREATE TABLE scratchpads (
-    id TEXT PRIMARY KEY,
-    project_path TEXT NOT NULL,
-    title TEXT,
-    body TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    sort_index INTEGER NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1
-  );
-  CREATE TABLE project_boards (
-    project_path TEXT PRIMARY KEY,
-    layout TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-`;
+function item(
+  threadId: string,
+  turnId: string,
+  itemId: string,
+  kind: "assistant_text" | "reasoning_text" | "plan_text" | "tool_call",
+  text: string,
+): RuntimeEvent {
+  return {
+    type: "item.updated",
+    threadId,
+    turnId,
+    provider: "opencode",
+    at: 10,
+    source: "kone.store",
+    item: {
+      itemId,
+      kind,
+      status: "completed",
+      text,
+    },
+  };
+}
 
-describe("v18 migration", () => {
-  test("fresh DB opens at the current schema with the new columns, table and indexes", () => {
+function tableNames(db: Database): string[] {
+  return (
+    // SAFETY: sqlite_master rows carry the object's name in `name`.
+    db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
+      name: string;
+    }>
+  ).map((r) => r.name);
+}
+
+describe("v1 baseline migration and schema", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 1 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
+    expect(version.user_version).toBe(1);
 
     const threads = columnNames(raw, "threads");
-    for (const col of ["is_pinned", "model_selection_json", "resume_session_at", "last_activity_at"]) {
+    for (const col of [
+      "pinned_at",
+      "archived_at",
+      "last_activity_at",
+      "model_selection_json",
+      "resume_session_at",
+      "parent_thread_id",
+      "relationship_to_parent",
+    ]) {
       expect(threads).toContain(col);
     }
-    // SAFETY: sqlite_master rows carry the object's name in `name`.
-    const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
-      name: string;
-    }>).map((r) => r.name);
-    expect(tables).toContain("turn_usage");
+    expect(threads).not.toContain("updated_at");
+    expect(threads).not.toContain("lineage_json");
+    expect(threads).not.toContain("is_pinned");
+
+    const tables = tableNames(raw);
+    for (const table of [
+      "threads",
+      "items",
+      "blocks",
+      "attachments",
+      "subagents",
+      "turn_usage",
+      "queued_turns",
+      "scratchpads",
+      "gateway_ops",
+      "agents",
+      "project_agents",
+      "thread_agents",
+      "subagent_presets",
+      "app_state",
+      "schema_migrations",
+    ]) {
+      expect(tables).toContain(table);
+    }
+
+    // SAFETY: schema_migrations stores migration_id, name, and applied_at.
+    const migrations = raw
+      .prepare(`SELECT migration_id, name FROM schema_migrations ORDER BY migration_id`)
+      .all() as Array<{ migration_id: number; name: string }>;
+    expect(migrations).toEqual([{ migration_id: 1, name: "Baseline" }]);
+
     const idx = raw
       .prepare(
         `SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_threads_request_id'`,
@@ -278,169 +231,123 @@ describe("v18 migration", () => {
     raw.close();
   });
 
-  test("a v17 legacy DB migrates: columns added, request_id deduped (oldest wins), unique index lands", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(V17_THREADS);
-    // Two threads sharing one request id — the lax pre-v18 shape that minted
-    // duplicate side chats for one idempotency key.
-    legacy
-      .prepare(
-        `INSERT INTO threads (thread_id, project_path, provider, created_at, updated_at, request_id)
-         VALUES ('old-1', '/p', 'opencode', 100, 100, 'req-dup'),
-                ('new-1', '/p', 'opencode', 200, 200, 'req-dup')`,
-      )
-      .run();
-    legacy.exec(`PRAGMA user_version = 17`);
-    legacy.close();
-
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
-
-    // Idempotency authority: the OLDEST row keeps the key, the newer one loses it.
-    expect(store.threadIdForRequestId("req-dup")).toBe("old-1");
-    const raw = rawDb();
-    // SAFETY: The SELECT names exactly these two columns.
-    const rows = raw
-      .prepare(`SELECT thread_id, request_id FROM threads ORDER BY created_at`)
-      .all() as Array<{ thread_id: string; request_id: string | null }>;
-    expect(rows).toEqual([
-      { thread_id: "old-1", request_id: "req-dup" },
-      { thread_id: "new-1", request_id: null },
-    ]);
-    const idx = raw
-      .prepare(
-        `SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_threads_request_id'`,
-      )
-      .get();
-    expect(idx).toBeDefined();
-    raw.close();
-  });
-
-  /** A v17-shape database carrying a table that squats on the name rung 20 wants
-   *  for its unique index. `CREATE UNIQUE INDEX IF NOT EXISTS` still fails on a
-   *  name collision, so rung 20 throws *after* its `CREATE TABLE queued_turns`
-   *  has already run — a rung that dies with some of its own work behind it,
-   *  two rungs above where the ladder started. */
-  function seedV17DbThatFailsAtRung20(dir: string): void {
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(V17_THREADS);
-    legacy.exec(`CREATE TABLE idx_queued_turns_active_user_block (x INTEGER)`);
-    legacy.exec(`PRAGMA user_version = 17`);
-    legacy.close();
-  }
-
-  function tableNames(db: Database): string[] {
-    return (
-      // SAFETY: sqlite_master rows carry the object's name in `name`.
-      db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
-        name: string;
-      }>
-    ).map((r) => r.name);
-  }
-
-  test("a rung that throws keeps the rungs below it and rolls back its own work", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-partial-"));
-    seedV17DbThatFailsAtRung20(dir);
-
-    useUserDataDir(dir);
-    // The migration fails, so this process gets no persistence at all — what's
-    // being asserted is the state the failed upgrade left on disk.
-    new ConversationStoreCtor().ensureThread({
-      threadId: "t-1",
+  test("PRAGMA foreign_keys = ON enforces cascade deletes and parent existence", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "p-1", projectPath: "/p", provider: "opencode" });
+    store.writeSpawnedThread({
+      threadId: "c-1",
       projectPath: "/p",
       provider: "opencode",
+      createdAt: 10,
+      title: "Child",
+      lineage: spawnedLineage("p-1", "p-1"),
     });
 
+    store.applyEvent(turnStarted("p-1", "turn-1", 100));
+    store.applyEvent(item("p-1", "turn-1", "i-1", "assistant_text", "hello"));
+    store.applyEvent(tokenUsage("p-1", 100, { input: 10, output: 20 }));
+    store.enqueueQueuedTurn({
+      threadId: "p-1",
+      queueId: "q-1",
+      userBlockId: "ub-1",
+      input: "test",
+      at: 100,
+    });
+    store.reserveGatewayOp({
+      threadId: "p-1",
+      turnId: "turn-1",
+      requestId: "req-1",
+      kind: "spawn.thread",
+      fingerprint: "fp",
+    });
+
+    store.applyEvent(turnCompleted("p-1", "turn-1", 150));
+
+    // Deleting the parent thread cascades to child thread and all child tables.
+    expect(store.deleteThread("p-1")).toEqual({ ok: true });
+
     const raw = rawDb();
-    // 18 and 19 each committed with their own stamp, so the file records the
-    // ladder standing at 19 — not rewound to the 17 it started from.
-    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
-    const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(19);
-    expect(columnNames(raw, "threads")).toContain("is_pinned");
-    expect(tableNames(raw)).toContain("turn_usage");
-    // Rung 20 created its table before it hit the collision; the stamp and the
-    // table go back together, so neither survives.
-    expect(tableNames(raw)).not.toContain("queued_turns");
+    // SAFETY: counting rows answers one row with count column.
+    const countThreads = raw.prepare(`SELECT COUNT(*) as n FROM threads`).get() as { n: number };
+    expect(countThreads.n).toBe(0);
+
+    // SAFETY: counting rows answers one row with count column.
+    const countBlocks = raw.prepare(`SELECT COUNT(*) as n FROM blocks`).get() as { n: number };
+    expect(countBlocks.n).toBe(0);
+
+    // SAFETY: counting rows answers one row with count column.
+    const countItems = raw.prepare(`SELECT COUNT(*) as n FROM items`).get() as { n: number };
+    expect(countItems.n).toBe(0);
+
+    // SAFETY: counting rows answers one row with count column.
+    const countUsage = raw.prepare(`SELECT COUNT(*) as n FROM turn_usage`).get() as { n: number };
+    expect(countUsage.n).toBe(0);
+
+    // SAFETY: counting rows answers one row with count column.
+    const countQueued = raw.prepare(`SELECT COUNT(*) as n FROM queued_turns`).get() as { n: number };
+    expect(countQueued.n).toBe(0);
+
+    // SAFETY: counting rows answers one row with count column.
+    const countOps = raw.prepare(`SELECT COUNT(*) as n FROM gateway_ops`).get() as { n: number };
+    expect(countOps.n).toBe(0);
+
     raw.close();
   });
 
-  test("the next open resumes at the rung that failed", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-resume-"));
-    seedV17DbThatFailsAtRung20(dir);
-
-    useUserDataDir(dir);
-    new ConversationStoreCtor().ensureThread({
-      threadId: "t-1",
-      projectPath: "/p",
-      provider: "opencode",
-    });
-
-    // Clear what rung 20 tripped over. A fresh handle reads the recorded 19, so
-    // only 20 and 21 are left to run — 1-19 are never touched again.
-    const fix = rawDb();
-    fix.exec(`DROP TABLE idx_queued_turns_active_user_block`);
-    fix.close();
-
-    const store = new ConversationStoreCtor();
-    store.ensureThread({ threadId: "t-2", projectPath: "/p", provider: "opencode" });
-
+  test("Foreign key rejects dangling parent_thread_id", () => {
+    freshStore();
     const raw = rawDb();
-    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
-    const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(columnNames(raw, "turn_usage")).toContain("cache_read_tokens");
+    raw.exec("PRAGMA foreign_keys = ON;");
+    expect(() => {
+      raw
+        .prepare(
+          `INSERT INTO threads (thread_id, project_path, provider, created_at, last_activity_at, parent_thread_id)
+           VALUES ('dangling-child', '/p', 'opencode', 1, 1, 'non-existent-parent')`,
+        )
+        .run();
+    }).toThrow();
     raw.close();
-    // Persistence is live again on the completed schema.
-    expect(store.threadMeta("t-2")?.threadId).toBe("t-2");
   });
 
-  /** A v1-shape database holding one thread — enough for the v2 wipe to have
-   *  something to lose, which is what arms the destructive-step backup. */
-  function seedV1DbWithRows(dir: string): void {
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(`
-      CREATE TABLE threads (
-        thread_id TEXT PRIMARY KEY, project_path TEXT NOT NULL, provider TEXT NOT NULL,
-        model TEXT, conversation_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  test("MigrationLineageError is thrown if recorded migration names diverge from manifest", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-lineage-"));
+    const file = path.join(dir, "kone.sqlite");
+    const raw = new Database(file);
+    raw.exec(`
+      CREATE TABLE schema_migrations (
+        migration_id INTEGER PRIMARY KEY,
+        name         TEXT NOT NULL,
+        applied_at   INTEGER NOT NULL
       );
-      CREATE TABLE blocks (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, block_id TEXT NOT NULL UNIQUE,
-        thread_id TEXT NOT NULL, role TEXT NOT NULL, turn_id TEXT, text TEXT,
-        state TEXT, error TEXT, at INTEGER NOT NULL, ended_at INTEGER
-      );
-      CREATE TABLE items (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, thread_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, text TEXT NOT NULL,
-        name TEXT, detail TEXT, UNIQUE (thread_id, turn_id, item_id)
-      );
+      INSERT INTO schema_migrations (migration_id, name, applied_at)
+        VALUES (1, 'DivergentBaseline', 12345);
+      PRAGMA user_version = 1;
     `);
-    legacy
-      .prepare(
-        `INSERT INTO threads (thread_id, project_path, provider, created_at, updated_at)
-         VALUES ('legacy-1', '/p', 'opencode', 1, 1)`,
-      )
-      .run();
-    legacy.exec(`PRAGMA user_version = 1`);
-    legacy.close();
-  }
 
-  test("a v1 DB with rows takes the destructive v2/v5 path and leaves a dated backup", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-backup-"));
-    seedV1DbWithRows(dir);
+    expect(() => {
+      migrate(raw, file);
+    }).toThrow(MigrationLineageError);
+    raw.close();
+  });
 
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
-    expect(store.listThreads("/p")).toEqual([]);
+  test("migrate supports toMigrationInclusive option", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-inclusive-"));
+    const file = path.join(dir, "kone.sqlite");
+    const raw = new Database(file);
 
-    const backups = readdirSync(dir).filter((f) => f.startsWith("conversations.sqlite.bak-"));
-    expect(backups.length).toBeGreaterThan(0);
+    migrate(raw, file, { toMigrationInclusive: 0 });
+
+    // SAFETY: PRAGMA user_version projects one column.
+    const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
+    expect(version.user_version).toBe(0);
+    expect(tableNames(raw)).toContain("schema_migrations");
+    expect(tableNames(raw)).not.toContain("threads");
+    raw.close();
   });
 
   test("a DB from a NEWER build is refused, not rewound", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-newer-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
+    const legacy = new Database(path.join(dir, "kone.sqlite"));
     legacy.exec(`PRAGMA user_version = 99`);
     legacy.close();
 
@@ -458,14 +365,11 @@ describe("v18 migration", () => {
 
   test("an unusable DB is opened once, not once per call", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-latch-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
+    const legacy = new Database(path.join(dir, "kone.sqlite"));
     legacy.exec(`PRAGMA user_version = 99`);
     legacy.close();
 
     useUserDataDir(dir);
-    // Swapped by hand rather than with spyOn: importing spyOn into this file
-    // stops mock.module from intercepting node:sqlite, and every test here loses
-    // its database stub.
     const logged: string[] = [];
     const realError = console.error;
     console.error = (...args: unknown[]) => void logged.push(String(args[0]));
@@ -491,14 +395,13 @@ describe("v18 migration", () => {
   type StoreInternals = { unusable: boolean; retryOpenAfter: number };
   // SAFETY: white-box seam — s really is the store instance; only private flags are read.
   const storeInternals = (s: InstanceType<typeof ConversationStoreCtor>): StoreInternals =>
-    // eslint-disable-next-line anti-slop/no-chained-type-assertions
-    s as unknown as StoreInternals;
+    s as StoreInternals;
 
   test("a failure that isn't the schema stays retryable after its cooldown", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-transient-"));
     // A file that isn't a database at all: opening it throws, but replacing it
     // later must not require restarting the app.
-    writeFileSync(path.join(dir, "conversations.sqlite"), "not a database");
+    writeFileSync(path.join(dir, "kone.sqlite"), "not a database");
 
     useUserDataDir(dir);
     const logged: string[] = [];
@@ -515,7 +418,7 @@ describe("v18 migration", () => {
 
       // Once the file is a real database and the cooldown has passed, the store
       // recovers on its own.
-      rmSync(path.join(dir, "conversations.sqlite"));
+      rmSync(path.join(dir, "kone.sqlite"));
       storeInternals(store).retryOpenAfter = 0;
       store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
       expect(store.threadMeta("t-1")?.provider).toBe("opencode");
@@ -525,30 +428,23 @@ describe("v18 migration", () => {
     }
   });
 
-  test("destructive-step backups are pruned to the newest few", () => {
+  test("backups before migration steps are pruned to 3", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "kone-store-prune-"));
-    seedV1DbWithRows(dir);
-
-    // Five snapshots from earlier upgrades, oldest first. An undated sibling
-    // stands in for a file we can't age — it must survive the sweep.
-    const stale = [1000, 2000, 3000, 4000, 5000].map((at) => `conversations.sqlite.bak-${at}`);
+    const stale = [1000, 2000, 3000, 4000, 5000].map((at) => `kone.sqlite.bak-${at}`);
     for (const name of stale) writeFileSync(path.join(dir, name), "old");
-    writeFileSync(path.join(dir, "conversations.sqlite.bak-manual"), "keep me");
+    writeFileSync(path.join(dir, "kone.sqlite.bak-manual"), "keep me");
 
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
-    expect(store.listThreads("/p")).toEqual([]);
+    const file = path.join(dir, "kone.sqlite");
+    const raw = new Database(file);
+    backupBeforeStep(raw, file);
+    raw.close();
 
     const dated = readdirSync(dir)
-      .filter((f) => /^conversations\.sqlite\.bak-\d+$/.test(f))
+      .filter((f) => /^kone\.sqlite\.bak-\d+$/.test(f))
       .sort();
-    // The migration's own snapshot plus the newest survivors, capped.
-    expect(dated.length).toBe(3);
-    expect(dated).toContain("conversations.sqlite.bak-5000");
-    expect(dated).not.toContain("conversations.sqlite.bak-3000");
-    expect(dated).not.toContain("conversations.sqlite.bak-2000");
-    expect(dated).not.toContain("conversations.sqlite.bak-1000");
-    expect(readdirSync(dir)).toContain("conversations.sqlite.bak-manual");
+    // Capped to retention = 3.
+    expect(dated.length).toBeLessThanOrEqual(3);
+    expect(readdirSync(dir)).toContain("kone.sqlite.bak-manual");
   });
 });
 
@@ -1051,11 +947,11 @@ describe("delete/archive subtree cascade with busy guard", () => {
       threadIds: ["parent-1", "child-1"],
     });
     const raw = rawDb();
-    // SAFETY: the SELECT projects exactly the archived column.
+    // SAFETY: the SELECT projects exactly the archived_at column.
     const archived = (id: string) =>
-      (raw.prepare(`SELECT archived FROM threads WHERE thread_id = ?`).get(id) as {
-        archived: number | null;
-      }).archived;
+      (raw.prepare(`SELECT archived_at FROM threads WHERE thread_id = ?`).get(id) as {
+        archived_at: number | null;
+      }).archived_at;
     expect(archived("parent-1")).not.toBeNull();
     expect(archived("child-1")).not.toBeNull(); // subtree archived with the parent
     // Restore un-archives the subtree too.
@@ -1262,28 +1158,6 @@ describe("v19 keyset index migration", () => {
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
       .get();
     expect(idx).toBeDefined();
-    raw.close();
-  });
-
-  test("a v17 legacy DB upgrades through v18-v20 to the current schema and gains the index", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-v19-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(V17_THREADS);
-    legacy.exec(`PRAGMA user_version = 17`);
-    legacy.close();
-
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
-    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
-    const raw = rawDb();
-    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
-    const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(version.user_version).toBe(SCHEMA_VERSION);
-    const idx = raw
-      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_keyset'`)
-      .get();
-    expect(idx).toBeDefined();
-    raw.close();
   });
 });
 
@@ -1548,10 +1422,8 @@ describe("IPC wire projection (tool-call payload slimming)", () => {
   });
 });
 
-// ── v20 durable turn queue ────────────────────────────────────────────────────
-
-describe("v28 studio migration", () => {
-  test("fresh DB opens with the studio table and no project_boards", () => {
+describe("studio plane in app_state", () => {
+  test("fresh DB opens with the app_state table and no project_boards or studio", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
@@ -1559,54 +1431,11 @@ describe("v28 studio migration", () => {
     const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
       name: string;
     }>).map((r) => r.name);
-    expect(tables).toContain("studio");
-    // The per-project blob the plane replaced is gone, not merely unused — a
-    // second writer for the same state is exactly how the two drift apart.
+    expect(tables).toContain("app_state");
+    // The legacy tables are gone, not merely unused.
     expect(tables).not.toContain("project_boards");
+    expect(tables).not.toContain("studio");
     expect(store.loadStudio()).toBeNull();
-    raw.close();
-  });
-
-  test("stored boards fold into the plane as rows, most-recent first", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-v28-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    // V17_THREADS already carries project_boards — the table this rung retires.
-    legacy.exec(V17_THREADS);
-    const pane = (id: string) => ({
-      id,
-      kind: "thread",
-      anchor: { kind: "thread", threadId: `${id}-thread` },
-      width: 0,
-    });
-    const insert = legacy.prepare(
-      `INSERT INTO project_boards (project_path, layout, updated_at) VALUES (?, ?, ?)`,
-    );
-    insert.run("/older", JSON.stringify({ version: 1, panes: [pane("a")], focusedId: "a" }), 100);
-    insert.run("/newer", JSON.stringify({ version: 1, panes: [pane("b")], focusedId: "b" }), 900);
-    // A board with no panes is no row: a row exists only where work does.
-    insert.run("/empty", JSON.stringify({ version: 1, panes: [], focusedId: null }), 500);
-    // An unparseable blob is a layout already lost — that project just gets no
-    // row, rather than failing the whole upgrade.
-    insert.run("/corrupt", "{not json", 700);
-    legacy.exec(`PRAGMA user_version = 17`);
-    legacy.close();
-
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
-    const plane = store.loadStudio();
-    expect(plane?.version).toBe(2);
-    expect(plane?.rows.map((r) => r.projectPath)).toEqual(["/newer", "/older"]);
-    // Most-recently-touched first, and that is the row you land on.
-    expect(plane?.focusedRow).toBe("/newer");
-    expect(plane?.rows[0]?.focusedId).toBe("b");
-    expect(plane?.rows[0]?.panes).toHaveLength(1);
-
-    const raw = rawDb();
-    // SAFETY: sqlite_master rows carry the object's name in `name`.
-    const tables = (raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{
-      name: string;
-    }>).map((r) => r.name);
-    expect(tables).not.toContain("project_boards");
     raw.close();
   });
 
@@ -1624,15 +1453,15 @@ describe("v28 studio migration", () => {
     // an unreadable plane is an empty one — never a half-applied layout.
     const raw = rawDb();
     raw
-      .prepare(`UPDATE studio SET layout = ? WHERE id = 1`)
+      .prepare(`UPDATE app_state SET value = ? WHERE key = 'studio_layout'`)
       .run(JSON.stringify({ version: 3, rows: [], focusedRow: null }));
     raw.close();
     expect(new ConversationStoreCtor().loadStudio()).toBeNull();
   });
 });
 
-describe("v20 queued turns migration", () => {
-  test("fresh DB opens at the current schema with the queued_turns table, thread index and active partial unique index", () => {
+describe("queued turns schema", () => {
+  test("fresh DB opens at the current schema with the queued_turns table and pending index", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
@@ -1644,12 +1473,11 @@ describe("v20 queued turns migration", () => {
       name: string;
     }>).map((r) => r.name);
     expect(tables).toContain("queued_turns");
-    for (const idx of ["idx_queued_turns_thread_state", "idx_queued_turns_active_user_block"]) {
-      const found = raw
-        .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`)
-        .get(idx);
-      expect(found, `index ${idx} should exist`).toBeDefined();
-    }
+    const found = raw
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_queued_turns_pending'`)
+      .get();
+    expect(found, `index idx_queued_turns_pending should exist`).toBeDefined();
+
     const cols = columnNames(raw, "queued_turns");
     for (const col of [
       "queue_id", "thread_id", "user_block_id", "dispatch_mode", "state", "input",
@@ -1661,21 +1489,14 @@ describe("v20 queued turns migration", () => {
     raw.close();
   });
 
-  test("a v17 legacy DB upgrades through v20 to the current schema and re-opening the ladder is idempotent", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-migrate-v20-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(V17_THREADS);
-    legacy.exec(`PRAGMA user_version = 17`);
-    legacy.close();
-
-    useUserDataDir(dir);
-    const store = new ConversationStoreCtor();
+  test("re-opening the store is idempotent and preserves SCHEMA_VERSION", () => {
+    const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    // A re-open (a second process) runs the ladder again — every step must be
+    // A re-open (a second process) runs the migrations again — every step must be
     // a no-op and the version must hold.
     const reopen = new ConversationStoreCtor();
     reopen.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
@@ -1687,6 +1508,7 @@ describe("v20 queued turns migration", () => {
 
   test("a claim stranded in 'promoting' by a crash is released to 'queued' at boot", () => {
     const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     store.enqueueQueuedTurn({ queueId: "q-1", threadId: "t-1", userBlockId: "ub-1", input: "hi", at: 1 });
     const raw = rawDb();
     // Simulate a process killed between claim and promote/release.
@@ -1702,11 +1524,9 @@ describe("v20 queued turns migration", () => {
     const rebooted = new ConversationStoreCtor();
     const claimed = rebooted.claimNextQueuedTurn("t-1");
     expect(claimed?.queueId).toBe("q-1");
-    expect(claimed?.attemptCount).toBe(2); // the retry ledger survived the reboot
+    expect(claimed?.attemptCount).toBe(2);
   });
-});
 
-describe("durable turn queue", () => {
   function enq(
     store: ConversationStoreType,
     queueId: string,
@@ -1716,6 +1536,7 @@ describe("durable turn queue", () => {
     at: number,
     opts: { dispatchMode?: "queue" | "steer"; attachments?: ChatAttachment[]; model?: string } = {},
   ): boolean {
+    store.ensureThread({ threadId, projectPath: "/p", provider: "opencode" });
     return store.enqueueQueuedTurn({ queueId, threadId, userBlockId, input, at, ...opts });
   }
 
@@ -1838,6 +1659,7 @@ describe("durable turn queue", () => {
       mimeType: "image/png",
       sizeBytes: 42,
     };
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     store.enqueueQueuedTurn({
       queueId: "q-1",
       threadId: "t-1",

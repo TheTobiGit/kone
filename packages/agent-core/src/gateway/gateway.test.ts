@@ -163,63 +163,25 @@ beforeAll(async () => {
 });
 
 describe("gateway integration (real store + HTTP)", () => {
-  test("migration lands v15: revision column + gateway_ops, legacy pads read revision 1", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "kone-gw-migrate-"));
-    const legacy = new Database(path.join(dir, "conversations.sqlite"));
-    legacy.exec(`
-      PRAGMA user_version = 14;
-      CREATE TABLE threads (
-        thread_id TEXT PRIMARY KEY, project_path TEXT NOT NULL, provider TEXT NOT NULL,
-        model TEXT, conversation_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        branch TEXT, added INTEGER, removed INTEGER, tokens INTEGER, archived INTEGER, title TEXT,
-        base_tree TEXT, source_thread_id TEXT, fork_context_json TEXT, lineage_json TEXT, request_id TEXT
-      );
-      CREATE TABLE blocks (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, block_id TEXT NOT NULL UNIQUE, thread_id TEXT NOT NULL,
-        role TEXT NOT NULL, turn_id TEXT, text TEXT, state TEXT, error TEXT, at INTEGER NOT NULL,
-        ended_at INTEGER, attachments_json TEXT, source TEXT NOT NULL DEFAULT 'native'
-      );
-      CREATE TABLE items (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, thread_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, text TEXT NOT NULL,
-        name TEXT, detail TEXT, tasks_json TEXT, subagent_tool_use_id TEXT,
-        UNIQUE (thread_id, turn_id, item_id)
-      );
-      CREATE TABLE subagents (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, tool_use_id TEXT NOT NULL, thread_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL, task_id TEXT, parent_item_id TEXT, agent_type TEXT,
-        description TEXT, prompt TEXT, model TEXT, effort TEXT, background INTEGER,
-        status TEXT NOT NULL, summary TEXT, last_tool_name TEXT, tokens INTEGER,
-        tool_uses INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER,
-        UNIQUE (thread_id, turn_id, tool_use_id)
-      );
-      CREATE TABLE attachments (
-        attachment_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, type TEXT NOT NULL,
-        name TEXT NOT NULL, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
-        rel_path TEXT NOT NULL, created_at INTEGER NOT NULL
-      );
-      CREATE TABLE project_boards (
-        project_path TEXT PRIMARY KEY, layout TEXT NOT NULL, updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE scratchpads (
-        id TEXT PRIMARY KEY, project_path TEXT NOT NULL, title TEXT, body TEXT NOT NULL DEFAULT '',
-        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, sort_index INTEGER NOT NULL
-      );
-      INSERT INTO scratchpads (id, project_path, title, body, created_at, updated_at, sort_index)
-        VALUES ('pad-legacy', '/tmp/proj', 'Scratchpad', 'legacy body', 1, 2, 0);
-    `);
-    legacy.close();
-
-    // Old userData path → new store migrates it on open.
+  test("scratchpads revision and gateway_ops persist in baseline schema", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-gw-baseline-"));
     useUserDataDir(dir);
     const store = new ConversationStoreCtor();
-    const pad = store.getScratchpad("pad-legacy");
+    store.ensureThread({ threadId: "t", projectPath: "/tmp/proj", provider: "opencode" });
+
+    store.saveScratchpad({
+      padId: "pad-1",
+      projectPath: "/tmp/proj",
+      title: "Scratchpad",
+      body: "initial body",
+    });
+    const pad = store.getScratchpad("pad-1");
     expect(pad).not.toBeNull();
-    expect(pad!.body).toBe("legacy body");
+    expect(pad!.body).toBe("initial body");
     expect(pad!.revision).toBe(1);
 
     const saved = store.saveScratchpad({
-      padId: "pad-legacy",
+      padId: "pad-1",
       projectPath: "/tmp/proj",
       title: "Scratchpad",
       body: "updated",
@@ -231,25 +193,29 @@ describe("gateway integration (real store + HTTP)", () => {
       threadId: "t",
       turnId: "turn-1",
       requestId: "r",
-      kind: "scratchpad.write",
+      kind: "spawn.thread",
       fingerprint: "fp",
     });
     expect(reserve).toEqual({ kind: "reserved" });
     store.setGatewayOpResult({ threadId: "t", turnId: "turn-1", requestId: "r", resultJson: '{"ok":true}' });
-    expect(store.reserveGatewayOp({
-      threadId: "t",
-      turnId: "turn-1",
-      requestId: "r",
-      kind: "scratchpad.write",
-      fingerprint: "fp",
-    })).toEqual({ kind: "replay", result: { ok: true } });
-    expect(store.reserveGatewayOp({
-      threadId: "t",
-      turnId: "turn-1",
-      requestId: "r",
-      kind: "scratchpad.write",
-      fingerprint: "other",
-    })).toEqual({ kind: "conflict" });
+    expect(
+      store.reserveGatewayOp({
+        threadId: "t",
+        turnId: "turn-1",
+        requestId: "r",
+        kind: "spawn.thread",
+        fingerprint: "fp",
+      }),
+    ).toEqual({ kind: "replay", result: { ok: true } });
+    expect(
+      store.reserveGatewayOp({
+        threadId: "t",
+        turnId: "turn-1",
+        requestId: "r",
+        kind: "spawn.thread",
+        fingerprint: "other",
+      }),
+    ).toEqual({ kind: "conflict" });
   });
 
   test("fresh install migrates to v15 and the full store still works", () => {
@@ -341,6 +307,9 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_continue_thread",
       "kone_wait_for_responses",
       "kone_read_response",
+      "kone_irc_send",
+      "kone_irc_list",
+      "kone_irc_inbox",
       "kone_launch",
       "app_get_theme_state",
       "app_list_available_themes",

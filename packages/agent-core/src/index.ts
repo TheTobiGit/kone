@@ -16,3 +16,9 @@ export * from "./compaction/index.js";
 export * from "./commandSafety.js";
 export * from "./conversationDAG.js";
 export * from "./inventory/index.js";
+export { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
+export {
+  assistantWorkingDir,
+  isAssistantProjectPath,
+  workingDirFor,
+} from "./assistantWorkspace.js";

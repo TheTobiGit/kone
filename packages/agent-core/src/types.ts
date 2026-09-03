@@ -450,10 +450,18 @@ export type StoredThreadMeta = {
   /** Pins live in the DB (v18), not browser localStorage — a pinned thread
    *  follows the thread across profiles. */
   isPinned?: boolean;
-  /** Recency ordering key (v18): last conversation activity, distinct from
-   *  `updatedAt` which title/archive bookkeeping also bumps. Backfilled from
-   *  updated_at for pre-v18 rows. */
+  /** Timestamp when the thread was pinned (v1 baseline), or null if unpinned. */
+  pinnedAt?: number | null;
+  /** Timestamp when the thread was archived (v1 baseline), or null if active. */
+  archivedAt?: number | null;
+  /** Recency ordering key: last conversation activity. */
   lastActivityAt?: number;
+  /** For side chats and forks: the thread this was forked from. */
+  sourceThreadId?: string;
+  /** For spawned threads: the parent thread id. */
+  parentThreadId?: string;
+  /** For child threads: kind of relationship to the parent. */
+  relationshipToParent?: RelationshipToParent | null;
   /** Your standing answer on whether this thread still has a claim on you
    *  (v29). Done is a fact about you, not about the work: it stops the thread
    *  asking without stopping the agent, closing the thread, or archiving it.
@@ -1014,6 +1022,8 @@ export type GatewayConnection = {
    *  what it can do and what the agent is told it can do have to travel
    *  together or they drift apart. */
   tools: readonly GatewayToolPrompt[];
+  /** Session scope: worker on a codebase or global app assistant. */
+  scope?: "worker" | "assistant";
 };
 
 /** Tags the transport an event came from — for debugging + provider-specific

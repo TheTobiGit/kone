@@ -154,7 +154,7 @@ export function usageReportFromStore(
          FROM turn_usage u JOIN threads t ON t.thread_id = u.thread_id
          WHERE 1 = 1 ${projectFilterT} ${providerFilter}
          ${startMs !== null ? "AND u.at >= ?" : ""}
-         GROUP BY date, model, provider`,
+         GROUP BY date, t.model, t.provider`,
       )
       .all(...usageArgs) as Array<Omit<StoreUsageDayRow, "cost_usd">>;
 

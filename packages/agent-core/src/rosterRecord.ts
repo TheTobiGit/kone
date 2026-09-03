@@ -219,7 +219,7 @@ export const AGENT_AVATAR_MAX = 512 * 1024;
 
 export const AGENT_COLUMNS =
   "agent_id, preset_id, name, role, instructions, " +
-  "face_body, face_ink, skills, providers, models, " +
+  "face_body, face_ink, skills, models, " +
   "avatar, bot, sort_order, created_at, updated_at, deleted_at";
 
 /** How long a stored capability list may get, and how long each string inside
@@ -504,7 +504,6 @@ export type AgentRow = {
   face_body: string | null;
   face_ink: string | null;
   skills: string | null;
-  providers: string | null;
   models: string | null;
   avatar: string | null;
   bot: string | null;
