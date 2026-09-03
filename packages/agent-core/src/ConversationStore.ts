@@ -1881,13 +1881,15 @@ export class ConversationStore {
    *  carrying its ordered items, plus the opaque cursor for the next older
    *  page (null when the thread has no older blocks).
    *
-   * The cursor deliberately encodes (at, block_id) — NOT `seq`, the row-id
-   * analog: seq is renumbered by the delete+reinsert of fork-import copying
-   * and any future compaction/rebuild, which would silently invalidate every
-   * persisted cursor. `at` and `block_id` are event-derived content, so
-   * cursors survive rewrites, and the thread id rides inside the cursor so it
-   * can never be replayed against a different thread (a foreign or malformed
-   * cursor degrades to a first-page request). */
+   * The walk itself is ordered by `seq` — arrival order — but the cursor
+   * deliberately encodes (at, block_id) rather than that seq: seq is
+   * renumbered by the delete+reinsert of fork-import copying and any future
+   * compaction/rebuild, which would silently invalidate every persisted
+   * cursor. `at` and `block_id` are event-derived content, so cursors survive
+   * rewrites; the boundary's seq is resolved from its block_id at query time,
+   * and the thread id rides inside the cursor so it can never be replayed
+   * against a different thread (a foreign or malformed cursor degrades to a
+   * first-page request). */
   loadThreadPage(
     threadId: string,
     options?: { limit?: number; maxRaw?: number; cursor?: string },
@@ -1910,22 +1912,52 @@ export class ConversationStore {
       // A cursor minted for a different thread must not walk this one — treat
       // it as a first-page request.
       const boundary = cursor && cursor.threadId === threadId ? cursor : null;
+      // The boundary's `seq`, resolved from the block id the cursor carries.
+      // Null when the cursor's block is gone (a fork-import rewrite, a delete),
+      // and the walk falls back to the `at` it also carries — still strictly
+      // older blocks, just with the millisecond as the boundary.
+      // SAFETY: the projection names only blocks.seq (INTEGER PRIMARY KEY), and
+      // the lookup is on the block_id UNIQUE index, so it is one row or none.
+      const boundaryRow = boundary
+        ? (this.prepare(
+            db,
+            `SELECT seq FROM blocks WHERE thread_id = ? AND block_id = ?`,
+          ).get(threadId, boundary.beforeBlockId) as { seq: number } | undefined)
+        : undefined;
+      const boundarySeq = boundaryRow?.seq ?? null;
 
-      // SAFETY: both branches are `SELECT *` of blocks — exactly BlockRow.
+      // Ordered by `seq` — arrival order, the only order in which a turn's
+      // assistant block is guaranteed to follow the prompt that started it.
+      // `at` cannot carry that: the user block's insert and the turn.started
+      // that opens the assistant block land in the same millisecond often
+      // enough, and the string tiebreak on block_id then puts the reply
+      // *before* its own prompt — which rendered the reply above the prompt,
+      // and dropped it from the page entirely whenever the inverted pair
+      // straddled the window boundary below (the walk stops on the limit-th
+      // user block, so an assistant block sorted after it never got kept).
+      // SAFETY: all three branches are `SELECT *` of blocks — exactly BlockRow.
       const candidates = (
-        boundary
+        boundarySeq !== null
           ? db
               .prepare(
                 `SELECT * FROM blocks
-                  WHERE thread_id = ?
-                    AND (at < ? OR (at = ? AND block_id < ?))
-                  ORDER BY at DESC, block_id DESC
+                  WHERE thread_id = ? AND seq < ?
+                  ORDER BY seq DESC
                   LIMIT ?`,
               )
-              .all(threadId, boundary.beforeAnchorAt, boundary.beforeAnchorAt, boundary.beforeBlockId, maxRaw)
-          : db
-              .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY at DESC, block_id DESC LIMIT ?`)
-              .all(threadId, maxRaw)
+              .all(threadId, boundarySeq, maxRaw)
+          : boundary
+            ? db
+                .prepare(
+                  `SELECT * FROM blocks
+                    WHERE thread_id = ? AND at < ?
+                    ORDER BY seq DESC
+                    LIMIT ?`,
+                )
+                .all(threadId, boundary.beforeAnchorAt, maxRaw)
+            : db
+                .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY seq DESC LIMIT ?`)
+                .all(threadId, maxRaw)
       ) as BlockRow[];
 
       // Walk newest → oldest until the limit-th user prompt is included (the
@@ -1955,18 +1987,14 @@ export class ConversationStore {
       const oldest = kept[kept.length - 1]!;
       const hasMore =
         db
-          .prepare(
-            `SELECT 1 FROM blocks
-              WHERE thread_id = ? AND (at < ? OR (at = ? AND block_id < ?))
-              LIMIT 1`,
-          )
-          .get(threadId, oldest.at, oldest.at, oldest.block_id) != null;
+          .prepare(`SELECT 1 FROM blocks WHERE thread_id = ? AND seq < ? LIMIT 1`)
+          .get(threadId, oldest.seq) != null;
 
       const turnIds = [...new Set(kept.map((b) => b.turn_id).filter((t): t is string => Boolean(t)))];
       const parts = this.loadTurnParts(db, threadId, turnIds);
       // Oldest-first, the renderer timeline order. Reversing the DESC walk is
-      // exactly (at, block_id) ASC — deterministic across pages, so a cursor
-      // walk can never skip or repeat a block.
+      // exactly `seq` ASC — the same order the full read uses, and total, so a
+      // cursor walk can never skip or repeat a block.
       const blocks = assembleBlocks(kept.reverse(), parts.itemRows, parts.subagentRows);
 
       return {
