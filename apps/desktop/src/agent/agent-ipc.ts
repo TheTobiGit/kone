@@ -22,6 +22,7 @@ import {
   currentStripSettings,
 } from "../modules/appState/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
+import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import { skillRootTargets } from "@kone/agent-core/inventory/skills.js";
 import {
   deleteSkillToTrash,
@@ -508,6 +509,7 @@ export function registerAgentIpc(): void {
     "agent:inventory-scan",
     (_event, projectPath: string | string[] | null) => scanAgentInventory(projectPath),
   );
+  ipcMain.handle("agent:skill-read", (_event, skillMdPath: string) => readSkillDetail(skillMdPath));
   ipcMain.handle(
     "agent:skill-roots",
     (_event, projectPath: string | string[] | null) => skillRootTargets(projectPath),

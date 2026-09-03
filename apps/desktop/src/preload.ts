@@ -10,6 +10,7 @@ import type {
   ThreadAgentBinding,
 } from "@kone/agent-core/ConversationStore.js";
 import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
+import type { SkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
 import type { FrontmatterEdit, MutateResult } from "@kone/agent-core/inventory/skillMutate.js";
 import type { SkillRootTarget } from "@kone/agent-core/inventory/skills.js";
 import type {
@@ -504,9 +505,10 @@ const api = {
     inventory: {
       scan: (projectPath: string | string[] | null): Promise<AgentInventory> =>
         ipcRenderer.invoke("agent:inventory-scan", projectPath),
+      readSkill: (skillMdPath: string): Promise<SkillDetail | null> =>
+        ipcRenderer.invoke("agent:skill-read", skillMdPath),
     },
-    // Managing a skill — v1: state + scaffold/install only. Detail/lint/signals
-    // deferred.
+    // Managing a skill — v1: state + scaffold/install + detail read.
     skills: {
       readState: (query: SkillStateQuery): Promise<SkillStateResult> =>
         ipcRenderer.invoke("agent:skill-state-read", query),

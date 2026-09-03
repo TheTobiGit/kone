@@ -80,6 +80,16 @@ export type InstructionFile = {
   excerpt: string;
 };
 
+/** One discovered plugin — a container that holds N skills. */
+export type PluginEntry = {
+  name: string;
+  description: string | null;
+  path: string;
+  origin: string;
+  scope: "user" | "project" | "plugin" | "system";
+  skills: SkillEntry[];
+};
+
 /** One scan-step failure, kept alongside a successful (partial) result rather
  *  than rejecting the whole inventory. */
 export type InventoryError = { source: string; message: string };
@@ -89,6 +99,7 @@ export type AgentInventory = {
   scannedAt: number;
   projectPath: string | null;
   skills: SkillEntry[];
+  plugins: PluginEntry[];
   mcpServers: McpServerEntry[];
   instructions: InstructionFile[];
   errors: InventoryError[];
