@@ -1,3 +1,4 @@
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
@@ -20,6 +21,7 @@ import {
   resolveClaudeExecutable,
   summarizeClaudeAccount,
 } from "../claudeHome.js";
+import { getUserDataDir } from "../userDataDir.js";
 import { describeScreenedCall, screenToolCall } from "../commandSafety.js";
 import { claudeSystemPromptAppend } from "../gateway/appContext.js";
 import { claudeMcpServers } from "../gateway/injection.js";
@@ -385,7 +387,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     // SAFETY: buildClaudeEnv returns the process-env shape the SDK widens to a string record.
     const options: ClaudeQueryOptions = {
       cwd: input.cwd,
-      additionalDirectories: [input.cwd],
+      additionalDirectories: [input.cwd, path.join(getUserDataDir(), "attachments")],
       env: env as Record<string, string | undefined>,
       abortController: abort,
       permissionMode,

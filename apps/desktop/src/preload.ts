@@ -392,6 +392,10 @@ const api = {
     // ChatAttachment the composer then carries on its next turn.
     uploadAttachment: (input: UploadAttachmentInput): Promise<ChatAttachment> =>
       ipcRenderer.invoke("agent:upload-attachment", input),
+    getAttachmentPath: (attachmentId: string): Promise<string | null> =>
+      ipcRenderer.invoke("agent:get-attachment-path", attachmentId),
+    showAttachmentInFolder: (attachmentId: string): Promise<boolean> =>
+      ipcRenderer.invoke("agent:show-attachment-in-folder", attachmentId),
     sendTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:send-turn", input),
     // Fork a side chat off a source thread (docs/side-chat-design.md). The

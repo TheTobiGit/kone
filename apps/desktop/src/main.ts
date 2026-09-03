@@ -6,6 +6,7 @@ import { app, BrowserWindow, globalShortcut, nativeTheme, net, protocol, shell }
 import { getAgentService, registerAgentIpc, shutdownAgents } from "./agent/agent-ipc.js";
 import { setUserDataDir } from "@kone/agent-core/userDataDir.js";
 import { resolveAppProtocolPath } from "./appProtocol.js";
+import { resolveAttachmentProtocolPath } from "./attachmentProtocol.js";
 import { isRendererOriginNavigation, parseSafeExternalUrl } from "./lib/safeExternalUrl.js";
 import { titleBarOptions } from "./chrome.js";
 import { registerFsIpc } from "./modules/fs/fs.js";
@@ -56,6 +57,16 @@ protocol.registerSchemesAsPrivileged([
       corsEnabled: true,
     },
   },
+  {
+    scheme: "attachment",
+    privileges: {
+      secure: true,
+      standard: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
 ]);
 
 function getResourcesPath(...segments: string[]) {
@@ -95,6 +106,17 @@ function registerAppProtocol() {
   });
 }
 
+function registerAttachmentProtocol() {
+  protocol.handle("attachment", async (request) => {
+    const filePath = await resolveAttachmentProtocolPath(request.url);
+
+    if (filePath === null) {
+      return new Response("Not found", { status: 404 });
+    }
+
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
+}
 // One kone at a time. A second launch must not open a fresh process: every
 // fresh process runs the conversation store's recovery pass on its first DB
 // open, which seals the first instance's live turns as orphaned
@@ -291,6 +313,7 @@ if (gotSingleInstanceLock) {
     if (!isDev) {
       registerAppProtocol();
     }
+    registerAttachmentProtocol();
 
     const devIcon = getDevIconPath();
     if (devIcon) {

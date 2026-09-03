@@ -93,6 +93,10 @@ export class AttachmentStore {
     return this.registry ?? getConversationStore();
   }
 
+  /** The attachments directory under the per-user state dir. */
+  get attachmentsDir(): string {
+    return this.dir();
+  }
   /** The attachments directory under the per-user state dir, created once. */
   private dir(): string {
     if (this.dirPath) return this.dirPath;
