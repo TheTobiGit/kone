@@ -15,7 +15,7 @@
 // `always-open` keeps it covered for the modal's whole life.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { motion } from "motion-v";
+import { motion, AnimatePresence } from "motion-v";
 import { onClickOutside } from "@vueuse/core";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import {
@@ -24,6 +24,8 @@ import {
   Clock01Icon,
   Delete02Icon,
   ArrowDown01Icon,
+  ArrowRight01Icon,
+  Message01Icon,
 } from "@hugeicons/core-free-icons";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
@@ -108,6 +110,13 @@ const cardSpring = {
   mass: 0.9,
 } as const;
 
+const popSpring = {
+  type: "spring",
+  stiffness: 340,
+  damping: 24,
+  mass: 0.85,
+} as const;
+
 /** Every dismissal — the button, the scrim, Escape, the hotkey, the tray icon —
  *  runs the same exit. The composable owns the open flag and is toggled from
  *  outside the card too, so it is handed the exit rather than asked to guess:
@@ -140,7 +149,13 @@ function onNewChat(): void {
 
 function onSelectChat(threadId: string): void {
   cue("select");
+  showHistoryDropdown.value = false;
   void selectChat(threadId);
+}
+
+function onNewChatFromHistory(): void {
+  showHistoryDropdown.value = false;
+  onNewChat();
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -270,40 +285,110 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
                 />
               </button>
 
-              <Transition name="drop">
-                <div v-if="showHistoryDropdown" class="drop picker-scroll" role="menu">
-                  <p v-if="isHistoryLoading" class="drop__note">Loading history…</p>
-                  <p v-else-if="threads.length === 0" class="drop__note">
-                    No previous chats yet
-                  </p>
-                  <template v-else>
-                    <div
-                      v-for="th in threads"
-                      :key="th.threadId"
-                      class="drop__row"
-                      :class="{ 'is-current': session?.threadId.value === th.threadId }"
-                      role="menuitem"
-                      tabindex="0"
-                      @click="onSelectChat(th.threadId)"
-                      @keydown.enter="onSelectChat(th.threadId)"
-                    >
-                      <span class="drop__body">
-                        <span class="drop__title">{{ th.title || "Untitled chat" }}</span>
-                        <span class="drop__when">{{ formatDayDivider(th.updatedAt) }}</span>
-                      </span>
+              <AnimatePresence>
+                <motion.div
+                  v-if="showHistoryDropdown"
+                  key="assistant-history-pop"
+                  class="history-shell"
+                  :initial="{ opacity: 0, y: -6, scale: 0.97 }"
+                  :animate="{ opacity: 1, y: 0, scale: 1 }"
+                  :exit="{ opacity: 0, y: -6, scale: 0.97 }"
+                  :transition="popSpring"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Chat history"
+                >
+                  <div class="history-shell__inner">
+                    <!-- Recessed header band with arc scoops -->
+                    <div class="history-shell__header">
+                      <span class="history-shell__title">Chat history</span>
                       <button
                         type="button"
-                        class="drop__remove"
-                        title="Delete chat"
-                        aria-label="Delete chat"
-                        @click.stop="deleteChat(th.threadId)"
+                        class="history-shell__action text-muted"
+                        @click="showHistoryDropdown = false"
                       >
-                        <HugeiconsIcon :icon="Delete02Icon" :size="13" :stroke-width="1.8" />
+                        Close
                       </button>
                     </div>
-                  </template>
-                </div>
-              </Transition>
+
+                    <!-- Tray containing the two inset cards with ultra-slim padding and distinct gap -->
+                    <div class="history-shell__tray">
+                      <!-- Section 1: Previous chats list card -->
+                      <section class="history-card history-card--list" aria-label="Previous chats">
+                        <p v-if="isHistoryLoading" class="history-note">Loading history…</p>
+                        <p v-else-if="threads.length === 0" class="history-note">
+                          No previous chats yet
+                        </p>
+                        <div v-else class="history-scroll">
+                          <div
+                            v-for="th in threads"
+                            :key="th.threadId"
+                            role="button"
+                            tabindex="0"
+                            class="history-row"
+                            :class="{ 'is-current': session?.threadId.value === th.threadId }"
+                            @click="onSelectChat(th.threadId)"
+                            @keydown.enter="onSelectChat(th.threadId)"
+                            @keydown.space.prevent="onSelectChat(th.threadId)"
+                          >
+                            <span class="history-row__lead">
+                              <HugeiconsIcon
+                                :icon="Message01Icon"
+                                :size="15"
+                                :stroke-width="1.7"
+                                class="history-row__icon"
+                                aria-hidden="true"
+                              />
+                            </span>
+
+                            <span class="history-row__body">
+                              <span class="history-row__name" :title="th.title || 'Untitled chat'">
+                                {{ th.title || "Untitled chat" }}
+                              </span>
+                              <span class="history-row__when">{{ formatDayDivider(th.updatedAt) }}</span>
+                            </span>
+
+                            <button
+                              type="button"
+                              class="history-row__remove"
+                              title="Delete chat"
+                              aria-label="Delete chat"
+                              @click.stop="deleteChat(th.threadId)"
+                            >
+                              <HugeiconsIcon :icon="Delete02Icon" :size="13" :stroke-width="1.8" />
+                            </button>
+                          </div>
+                        </div>
+                      </section>
+
+                      <!-- Section 2: New chat actions card -->
+                      <section class="history-card history-card--actions" aria-label="Chat actions">
+                        <button
+                          type="button"
+                          class="action-row"
+                          @click="onNewChatFromHistory"
+                        >
+                          <span class="action-row__icon">
+                            <HugeiconsIcon
+                              :icon="PencilEdit02Icon"
+                              :size="15"
+                              :stroke-width="1.8"
+                            />
+                          </span>
+                          <span class="action-row__label">Start a new chat</span>
+                          <HugeiconsIcon
+                            :icon="ArrowRight01Icon"
+                            :size="13"
+                            :stroke-width="2"
+                            class="action-row__arrow text-muted"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </section>
+                    </div>
+                  </div>
+                </motion.div>
+              </AnimatePresence>
             </div>
           </div>
 
@@ -332,6 +417,7 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
           >
             <ConversationThread
               house
+              :scratchpad="false"
               :blocks="blocks"
               :now="agent.now.value"
               :thread-id="session?.threadId.value"
@@ -535,24 +621,118 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
   transform: rotate(180deg);
 }
 
-/* ── history dropdown ───────────────────────────────────────────────────── */
-.drop {
+/* ── history dropdown (projects modal design / shell) ─────────────────────── */
+.history-shell {
+  --band-bg: var(--band);
+  --band-arc: 14px;
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  z-index: 40;
-  width: 260px;
-  max-height: 300px;
-  overflow-y: auto;
-  padding: 4px;
-  border-radius: 14px;
-  background: var(--panel);
+  z-index: 50;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  text-align: left;
+  background: var(--band-bg);
+  border-radius: 20px;
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 14px 34px -16px color-mix(in srgb, var(--ink) 45%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
+    0 16px 36px -8px rgb(0 0 0 / 0.36);
 }
 
-.drop__note {
+.history-shell__inner {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+/* Recessed header band with concave arc scoops */
+.history-shell__header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.8rem;
+  background-color: var(--band-bg);
+}
+
+.history-shell__header::before,
+.history-shell__header::after {
+  content: "";
+  position: absolute;
+  width: var(--band-arc);
+  height: var(--band-arc);
+  top: 100%;
+  pointer-events: none;
+}
+
+.history-shell__header::before {
+  left: 0;
+  background: radial-gradient(
+    circle at bottom right,
+    transparent var(--band-arc),
+    var(--band-bg) 0
+  );
+}
+
+.history-shell__header::after {
+  right: 0;
+  background: radial-gradient(
+    circle at bottom left,
+    transparent var(--band-arc),
+    var(--band-bg) 0
+  );
+}
+
+.history-shell__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink-soft);
+}
+
+.history-shell__action {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  transition: opacity 0.18s ease;
+}
+
+.history-shell__action:hover {
+  opacity: 0.7;
+}
+
+/* Tray framing the cards with ultra-slim concentric padding and distinct gap */
+.history-shell__tray {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0 1px 1px;
+}
+
+/* Elevated cards inside the shell */
+.history-card {
+  background: var(--panel);
+  border-radius: 18px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 6%, transparent),
+    0 1px 2px rgb(0 0 0 / 0.05);
+}
+
+.history-card--actions {
+  padding: 4px;
+}
+
+.history-note {
   margin: 0;
   padding: 0.75rem 0.65rem;
   text-align: center;
@@ -560,48 +740,113 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
   color: var(--muted);
 }
 
-.drop__row {
+.history-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 35vh;
+  overflow-y: auto;
+  padding: 4px;
+  scrollbar-gutter: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 16%, transparent) transparent;
+}
+
+.history-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.history-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.history-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: content-box;
+}
+
+.history-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+/* History Single-Line Row */
+.history-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-radius: 10px;
-  padding: 0.4rem 0.55rem;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.42rem 0.35rem 0.42rem 0.5rem;
+  border-radius: 9px;
+  border: 0;
+  background: transparent;
+  text-align: left;
   cursor: pointer;
-  transition: background-color 0.14s ease;
+  color: var(--ink);
+  transition: background-color 0.16s ease;
+  user-select: none;
 }
-.drop__row:hover,
-.drop__row:focus-visible,
-.drop__row.is-current {
+
+.history-row:hover,
+.history-row:focus-visible,
+.history-row.is-current {
   background-color: var(--hover);
   outline: none;
 }
 
-.drop__body {
+.history-row__lead {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.history-row__icon {
+  color: var(--muted);
+  transition: color 0.18s ease;
+}
+
+.history-row:hover .history-row__icon {
+  color: var(--ink-soft);
+}
+
+.history-row.is-current .history-row__icon {
+  color: var(--accent);
+}
+
+.history-row__body {
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
   flex: 1;
 }
-.drop__title {
+
+.history-row__name {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--ink);
 }
-.drop__when {
+
+.history-row.is-current .history-row__name {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.history-row__when {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted);
 }
-.drop__row.is-current .drop__title {
-  color: var(--accent);
-}
 
-.drop__remove {
+.history-row__remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -619,25 +864,72 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
     background-color 0.14s ease,
     color 0.14s ease;
 }
-.drop__row:hover .drop__remove,
-.drop__row:focus-within .drop__remove {
+
+.history-row:hover .history-row__remove,
+.history-row:focus-within .history-row__remove {
   opacity: 1;
 }
-.drop__remove:hover {
+
+.history-row__remove:hover {
   background-color: color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--ink);
 }
 
-.drop-enter-active,
-.drop-leave-active {
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+/* Action Rows */
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.42rem 0.55rem;
+  border-radius: 9px;
+  border: 0;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
 }
-.drop-enter-from,
-.drop-leave-to {
+
+.action-row:hover,
+.action-row:focus-visible {
+  background-color: var(--hover);
+  outline: none;
+}
+
+.action-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--ink-soft);
+  transition: color 0.16s ease;
+}
+
+.action-row:hover .action-row__icon {
+  color: var(--ink);
+}
+
+.action-row__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.action-row__arrow {
+  flex: none;
   opacity: 0;
-  transform: translateY(-4px) scale(0.98);
+  transform: translateX(-3px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.action-row:hover .action-row__arrow {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 /* ── the thread ─────────────────────────────────────────────────────────── */
@@ -689,31 +981,9 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
   margin-bottom: 8px;
 }
 
-.picker-scroll {
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ink) 16%, transparent) transparent;
-}
-.picker-scroll::-webkit-scrollbar {
-  width: 6px;
-}
-.picker-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.picker-scroll::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--ink) 16%, transparent);
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background-clip: content-box;
-}
-.picker-scroll:hover::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--ink) 30%, transparent);
-}
 
 @media (prefers-reduced-motion: reduce) {
-  .assistant__chev,
-  .drop-enter-active,
-  .drop-leave-active {
+  .assistant__chev {
     transition: none;
   }
 }
