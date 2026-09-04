@@ -126,6 +126,11 @@ export interface SpawnEngineProviders {
    *  a settled child must bring its session back up before dispatching; one to
    *  a child that never stopped goes straight to the turn. */
   hasLiveSession(threadId: string): boolean;
+  /** True when the Antigravity ACP server resolves on this machine, so the
+   *  spawn guard's print-mode floor doesn't refuse below-full-access
+   *  Antigravity children an ACP transport could serve. Optional — absentees
+   *  keep the conservative floor. */
+  isAntigravityAcpAvailable?(): boolean;
 }
 
 export interface SpawnEngineDeps {
@@ -499,6 +504,7 @@ class SpawnEngineImpl implements SpawnEngine {
       liveSpawnedTotal,
       providerStatus: providerStatusOf(surface.statuses, request.target.provider),
       catalog: catalogOf(surface.models, request.target.provider),
+      antigravityAcpAvailable: this.providers.isAntigravityAcpAvailable?.() ?? false,
     });
     if (!check.ok) {
       throw new SpawnError(check.code, check.message, check.details);

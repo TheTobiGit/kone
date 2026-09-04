@@ -266,6 +266,22 @@ describe("checkSpawn", () => {
     if (ok.ok) expect(ok.mode).toBe("full-access");
   });
 
+  test("an Antigravity child below full access is allowed when ACP serves it", () => {
+    // The print-mode floor doesn't apply to an ACP transport: approvals pause
+    // in-protocol at any rung, so an accept-edits child of an accept-edits
+    // parent spawns normally.
+    const result = checkSpawn(
+      base({
+        target: { provider: "antigravity" },
+        requestedMode: undefined,
+        parentMode: "accept-edits",
+        antigravityAcpAvailable: true,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.mode).toBe("accept-edits");
+  });
+
   test("depth wins over breadth in the check order", () => {
     const result = checkSpawn(
       base({

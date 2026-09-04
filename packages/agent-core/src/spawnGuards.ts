@@ -77,6 +77,11 @@ export type SpawnGuardInput = {
   /** The target provider's discovered model catalog, or undefined when kone has
    *  never successfully read one. */
   catalog?: ModelDescriptor[] | undefined;
+  /** True when the Antigravity ACP server resolves on this machine. The
+   *  provider mode floor (rung 9) only applies to print mode — an ACP-served
+   *  child pauses for approvals in-protocol at any rung. Absent means unknown,
+   *  which keeps the conservative print-mode floor. */
+  antigravityAcpAvailable?: boolean;
 };
 
 /** Detail payloads a refusal may carry — kone-owned data (never wire-parsed)
@@ -313,11 +318,16 @@ export function checkSpawn(input: SpawnGuardInput): SpawnGuardResult {
 
   // 9. Provider mode floor — a provider whose print mode cannot pause for
   //    interactive approvals (Antigravity) can only run a child at
-  //    full-access. The child's mode is capped at the parent's, so this is a
-  //    refusal rather than an adjustment: the parent must raise its own mode
-  //    first, and a silent promotion would escalate privilege across the
-  //    spawn (the exact thing rung 8 refuses to do).
-  if (input.target.provider === "antigravity" && mode !== "full-access") {
+  //    full-access. Skipped when the ACP server serves the child: approvals
+  //    pause in-protocol at any rung. The child's mode is capped at the
+  //    parent's, so this is a refusal rather than an adjustment: the parent
+  //    must raise its own mode first, and a silent promotion would escalate
+  //    privilege across the spawn (the exact thing rung 8 refuses to do).
+  if (
+    input.target.provider === "antigravity" &&
+    mode !== "full-access" &&
+    !input.antigravityAcpAvailable
+  ) {
     return {
       ok: false,
       code: "capability_denied",
