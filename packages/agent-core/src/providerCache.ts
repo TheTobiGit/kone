@@ -78,6 +78,7 @@ const READINESS = {
   "needs-login": "needs-login",
   "not-installed": "not-installed",
   error: "error",
+  disabled: "disabled",
 } as const satisfies Record<ProviderReadiness, ProviderReadiness>;
 
 const ProviderStatusWire = z.object({
@@ -86,6 +87,7 @@ const ProviderStatusWire = z.object({
   available: z.boolean(),
   authStatus: z.enum(AUTH_STATUSES),
   readiness: z.enum(READINESS),
+  enabled: z.boolean().optional(),
   message: z.string().optional(),
 }).passthrough();
 
@@ -103,15 +105,20 @@ function cacheFilePath(): string {
 }
 
 /** Keep only well-shaped entries so a hand-edited or version-skewed file can
- *  never feed junk ids into an adapter or the renderer's picker. */
+ *  never feed junk ids into an adapter or the renderer's picker. `enabled`
+ *  decodes to true when absent — snapshots written before the toggle existed
+ *  read as fully enabled, so downstream rows always carry a definite flag. */
 function sanitize(raw: JsonValue | null | undefined): ProviderSurfaceSnapshot {
   const out = emptySnapshot();
   const parsed = WireSnapshotSchema.safeParse(raw);
   if (!parsed.success || parsed.data.version !== VERSION) return out;
   if (parsed.data.savedAt !== undefined) out.savedAt = parsed.data.savedAt;
   if (parsed.data.statuses) {
-    // SAFETY: ProviderStatusWire validates the structure of each status entry.
-    out.statuses = parsed.data.statuses as ProviderStatus[];
+    out.statuses = parsed.data.statuses.map((status) => ({
+      // SAFETY: ProviderStatusWire validates the structure of each status entry.
+      ...(status as ProviderStatus),
+      enabled: status.enabled ?? true,
+    }));
   }
   if (parsed.data.models) {
     for (const [provider, list] of Object.entries(parsed.data.models)) {

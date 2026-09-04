@@ -286,6 +286,8 @@ function readinessLine(row: Row): ReadinessLine {
       return { text: "Installed, but not signed in", ready: false, bad: true };
     case "not-installed":
       return { text: "Not installed on this machine", ready: false, bad: false };
+    case "disabled":
+      return { text: "Disabled across the app", ready: false, bad: false };
     default:
       return { text: "Unavailable", ready: false, bad: true };
   }
@@ -385,9 +387,9 @@ const heroAction = computed<HeroAction>(() => {
       ? { kind: "docs", label: `Get ${row.meta.label}`, href: row.meta.docs.href }
       : { kind: "idle", label: "Not installed" };
   }
-  return row.enabled
-    ? { kind: "toggle", label: "Hide from picker" }
-    : { kind: "toggle", label: "Offer in picker" };
+  return row.enabled && row.status?.readiness !== "disabled"
+    ? { kind: "toggle", label: "Disable across app" }
+    : { kind: "toggle", label: "Enable provider" };
 });
 
 /** Whether an honest, knowable newer version is out for an install that's here. */
@@ -407,6 +409,9 @@ function spineSignal(
   m: ProviderMaintenance | null,
 ): SpineSignal | null {
   if (status) {
+    if (status.readiness === "disabled") {
+      return null;
+    }
     if (status.readiness === "needs-login") {
       return { tone: "attention", label: "not signed in" };
     }
@@ -422,7 +427,7 @@ function spineSignal(
  *  note when it's ready but the user has folded it out of the picker. */
 const heroStatus = computed(() => {
   const r = readinessLine(current.value);
-  if (r.ready && !current.value.enabled) return `${r.text} · hidden from the picker`;
+  if (r.ready && !current.value.enabled) return `${r.text} · disabled across app`;
   return r.text;
 });
 

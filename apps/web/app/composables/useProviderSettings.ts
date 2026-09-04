@@ -97,14 +97,22 @@ function fromSettingsMap(map: ProviderSettingsMap): Partial<Record<ProviderKind,
 }
 
 export function useProviderSettings() {
-  /** Load persisted binary paths once. Reads the desktop store when present,
+  /** Load persisted binary paths and enablement once. Reads the desktop store when present,
    *  else the dev localStorage fallback. Idempotent. */
   async function load(force = false): Promise<void> {
     if (loaded && !force) return;
     const api = bridge();
     if (api?.getSettings) {
       try {
-        binaryPaths.value = fromSettingsMap(await api.getSettings());
+        const settings = await api.getSettings();
+        binaryPaths.value = fromSettingsMap(settings);
+        const map: Partial<Record<ProviderKind, boolean>> = {};
+        for (const provider of KNOWN_PROVIDERS) {
+          if (settings[provider]?.enabled !== undefined) {
+            map[provider] = settings[provider]?.enabled !== false;
+          }
+        }
+        enabledMap.value = { ...enabledMap.value, ...map };
       } catch {
         binaryPaths.value = {};
       }
@@ -132,8 +140,9 @@ export function useProviderSettings() {
     const api = bridge();
     if (api?.setSettings) {
       try {
+        const current = (await api.getSettings())[provider] ?? {};
         binaryPaths.value = fromSettingsMap(
-          await api.setSettings(provider, { binaryPath: trimmed || undefined }),
+          await api.setSettings(provider, { ...current, binaryPath: trimmed || undefined }),
         );
       } catch {
         // Keep the optimistic in-memory value; the pane still reflects the edit.
@@ -148,8 +157,18 @@ export function useProviderSettings() {
     return enabledMap.value[provider] !== false;
   }
 
-  function setEnabled(provider: ProviderKind, on: boolean): void {
+  async function setEnabled(provider: ProviderKind, on: boolean): Promise<void> {
     enabledMap.value = { ...enabledMap.value, [provider]: on };
+
+    const api = bridge();
+    if (api?.setSettings) {
+      try {
+        const current = (await api.getSettings())[provider] ?? {};
+        await api.setSettings(provider, { ...current, enabled: on });
+      } catch {
+        // Keep optimistic in-memory value
+      }
+    }
   }
 
   /** Predicate for filtering a list of provider-tagged rows by the enabled map,

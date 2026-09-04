@@ -19,6 +19,7 @@ import type {
   StateWriteResult,
   WritableSkillState,
 } from "@kone/agent-core/inventory/skillState.js";
+import type { InternalSkillsSettings } from "@kone/agent-core/skillsSettings.js";
 import type { QuotaCapableProvider } from "@kone/agent-core/quota/index.js";
 import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
@@ -514,6 +515,22 @@ const api = {
         ipcRenderer.invoke("agent:skill-state-read", query),
       writeState: (query: SkillStateQuery, state: WritableSkillState): Promise<StateWriteResult> =>
         ipcRenderer.invoke("agent:skill-state-write", query, state),
+      readInternalSettings: (): Promise<InternalSkillsSettings> =>
+        ipcRenderer.invoke("agent:skill-internal-read"),
+      writeInternalSettings: (
+        patch: Partial<InternalSkillsSettings>,
+      ): Promise<InternalSkillsSettings> =>
+        ipcRenderer.invoke("agent:skill-internal-write", patch),
+      setSkillInternalState: (
+        skill: { path?: string; name: string },
+        enabled: boolean,
+      ): Promise<InternalSkillsSettings> =>
+        ipcRenderer.invoke("agent:skill-internal-set-skill", skill, enabled),
+      setPluginInternalState: (
+        pluginIdOrDir: string,
+        enabled: boolean,
+      ): Promise<InternalSkillsSettings> =>
+        ipcRenderer.invoke("agent:skill-internal-set-plugin", pluginIdOrDir, enabled),
       roots: (projectPath: string | string[] | null): Promise<SkillRootTarget[]> =>
         ipcRenderer.invoke("agent:skill-roots", projectPath),
       scaffold: (root: string, name: string, description: string): Promise<MutateResult> =>

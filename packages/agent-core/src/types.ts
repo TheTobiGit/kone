@@ -23,7 +23,7 @@ export type ProviderKind = "codex" | "claudeAgent" | "opencode" | "cursor" | "dr
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
 
 /** Rolled-up health for a provider row in the UI. */
-export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
+export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error" | "disabled";
 
 /** The result of probing one provider on the user's machine. kone never holds
  *  provider credentials — this only *detects* an already-installed, already
@@ -36,6 +36,8 @@ export type ProviderStatus = {
   available: boolean;
   authStatus: AuthStatus;
   readiness: ProviderReadiness;
+  /** Whether this provider is enabled in app settings (default: true). */
+  enabled?: boolean;
   /** CLI version string, when detected. */
   version?: string;
   /** How the CLI is authenticated, e.g. "ChatGPT Sign-In" / "API Key". */
@@ -1060,6 +1062,10 @@ export type RuntimeEventSource =
   | "antigravity.cli.event"
   | "antigravity.cli.stderr"
   | "antigravity.cli.lifecycle"
+  // Antigravity ACP (`agy_acp_server` stdio): `notification` = a
+  // `session/update` notification, `lifecycle` = process/session start+exit.
+  | "antigravity.acp.notification"
+  | "antigravity.acp.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
@@ -1410,6 +1416,14 @@ export type ProviderConfig = {
    *  falls back to the adapter's default (`codex` / `opencode`). Ignored by
    *  providers with no external binary (Claude). */
   binaryPath?: string;
+  /** Antigravity ACP sign-in method (`oauth-personal` / `oauth-business`).
+   *  Empty means the adapter default (personal Google account). */
+  antigravityAuthMethod?: string;
+  /** Gemini Enterprise license scope for the `oauth-business` method. */
+  antigravityGcpProject?: string;
+  antigravityGcpLocation?: string;
+  /** Whether the provider is enabled across the app (default: true). */
+  enabled?: boolean;
 };
 
 /** Persisted install settings for every provider, keyed by provider. */

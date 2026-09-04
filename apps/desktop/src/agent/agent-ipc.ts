@@ -39,6 +39,13 @@ import {
   type WritableSkillState,
 } from "@kone/agent-core/inventory/skillState.js";
 import {
+  readInternalSkillsSettings,
+  setPluginInternalState,
+  setSkillInternalState,
+  writeInternalSkillsSettings,
+  type InternalSkillsSettings,
+} from "@kone/agent-core/skillsSettings.js";
+import {
   detectProviderCredential,
   fetchProviderQuota,
   type QuotaCapableProvider,
@@ -166,6 +173,35 @@ export function registerAgentIpc(): void {
         available: status.available,
         models: (surface.models[status.provider] ?? []).map((model) => model.id),
       }));
+    },
+    providers: {
+      readSurface: () => svc.cachedSurface(),
+      discover: () => svc.discover(),
+      listModels: (provider) => svc.listModels(provider),
+      providerMaintenance: (options) => svc.providerMaintenance(options),
+      fetchQuota: async (provider, options) => {
+        const report = await fetchProviderQuota(provider, options ?? {});
+        if (report.connection !== "connected" || provider === "opencode") return report;
+        if (report.spend.length > 0 || report.trend.length > 0) return report;
+        try {
+          const { spend, trend } = await localSpendForProvider(store, provider, {
+            forceRefresh: options?.force,
+          });
+          if (spend.length === 0 && trend.length === 0) return report;
+          return { ...report, spend, trend };
+        } catch (error) {
+          console.warn(`Local spend enrichment failed for ${provider}: ${String(error)}`);
+          return report;
+        }
+      },
+      buildUsage: (options) => buildAgentUsageReport(store, options),
+      readProjects: () => currentProjects(),
+      getProviderSettings: () => svc.getProviderSettings(),
+      setProviderEnabled: (provider, enabled) => {
+        const current = svc.getProviderSettings()[provider] ?? {};
+        return svc.setProviderSettings(provider, { ...current, enabled });
+      },
+      updateProvider: (provider) => svc.updateProvider(provider),
     },
   });
   svc.attachGateway(gateway);
@@ -521,6 +557,24 @@ export function registerAgentIpc(): void {
     "agent:skill-state-write",
     (_event, query: SkillStateQuery, state: WritableSkillState) =>
       writeSkillState({ ...stateContext(query), state }),
+  );
+  ipcMain.handle("agent:skill-internal-read", () => readInternalSkillsSettings());
+  ipcMain.handle(
+    "agent:skill-internal-write",
+    (_event, patch: Partial<InternalSkillsSettings>) => writeInternalSkillsSettings(patch),
+  );
+  // Canonical internal-gate writes: the backend owns the disabled-list matching,
+  // so renderers pass intent ({ path, name }, on/off) and adopt the returned
+  // settings instead of reconstructing the list themselves.
+  ipcMain.handle(
+    "agent:skill-internal-set-skill",
+    (_event, skill: { path?: string; name: string }, enabled: boolean) =>
+      setSkillInternalState(skill, enabled),
+  );
+  ipcMain.handle(
+    "agent:skill-internal-set-plugin",
+    (_event, pluginIdOrDir: string, enabled: boolean) =>
+      setPluginInternalState(pluginIdOrDir, enabled),
   );
   ipcMain.handle("agent:skill-scaffold", (_event, root: string, name: string, description: string) =>
     scaffoldSkill(root, name, description),

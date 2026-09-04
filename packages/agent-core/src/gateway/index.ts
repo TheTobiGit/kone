@@ -52,6 +52,10 @@ import {
   type AppThreadsRunner,
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
+import {
+  createAppProviderTools,
+  type AppProvidersToolOptions,
+} from "./tools/appProviders.js";
 
 export type { GatewaySessionCredential } from "./credentials.js";
 export { GatewayCredentials } from "./credentials.js";
@@ -64,6 +68,8 @@ export { createAppProjectTools } from "./tools/appProjects.js";
 export type { ProjectRosterEntry } from "./tools/appProjects.js";
 export { createAppThreadTools } from "./tools/appThreads.js";
 export type { AppThreadsRunner } from "./tools/appThreads.js";
+export { createAppProviderTools } from "./tools/appProviders.js";
+export type { AppProvidersToolOptions } from "./tools/appProviders.js";
 export const GATEWAY_SERVER_VERSION = "0.1.0";
 
 /** The live-turn ledger the gateway learns by listening to the existing
@@ -137,6 +143,11 @@ export interface GatewayInput {
    *  on one this install cannot reach. Absent, the caller's own provider is
    *  taken at its word. */
   threadAvailability?: AppThreadsAvailability;
+  /** Provider status, quota, usage, and maintenance backing the app_* provider
+   *  tools. Passed straight through to `createAppProviderTools` — the gateway
+   *  adds no per-field mapping of its own, so the option names stay in one
+   *  place instead of drifting across two. */
+  providers?: AppProvidersToolOptions;
 }
 
 export function createGateway(input: GatewayInput): GatewayHandle {
@@ -168,6 +179,10 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.threads) appThreadOptions.runner = input.threads;
   if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
 
+  // The provider tools take their options as one object, passed straight
+  // through — no per-field mapping here to drift from AppProvidersToolOptions.
+  const appProviderOptions: AppProvidersToolOptions = input.providers ?? {};
+
   const credentials = new GatewayCredentials();
   const inFlight = makeInFlightRequestRegistry();
   const turnState = new Map<string, TurnState>();
@@ -190,6 +205,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppStripTools(appStripOptions),
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
+    ...createAppProviderTools(appProviderOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
 
   const tools = [...workerTools, ...assistantTools];
