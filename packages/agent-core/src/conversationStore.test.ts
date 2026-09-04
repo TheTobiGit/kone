@@ -1882,4 +1882,136 @@ describe("queued turns schema", () => {
     expect(store.setArchived("t-1", false)).toEqual({ ok: true, threadIds: ["t-1"] });
     expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-1"]);
   });
+
+  test("loadThread hides prompts with actively queued rows until the row settles", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ threadId: "t-1", text: "first", at: 1 });
+    const firstId = store.latestUserBlockId("t-1")!;
+    store.recordUserBlock({ threadId: "t-1", text: "queued follow-up", at: 2 });
+    const queuedId = store.latestUserBlockId("t-1")!;
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: queuedId,
+      input: "queued follow-up",
+      at: 2,
+    });
+
+    // The reload path shows only started turns — the queued prompt waits out
+    // its turn in the composer's strip, not in the transcript.
+    expect(store.loadThread("t-1")!.blocks.map((b) => b.id)).toEqual([firstId]);
+
+    // Promotion returns the prompt to the transcript.
+    store.claimNextQueuedTurn("t-1");
+    store.markQueuedTurnPromoted("q-1");
+    expect(store.loadThread("t-1")!.blocks.map((b) => b.id)).toEqual([firstId, queuedId]);
+  });
+
+  test("loadThreadPage excludes actively queued prompts from the window", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    const ids: string[] = [];
+    for (const [text, at] of [
+      ["a", 1],
+      ["b", 2],
+      ["c", 3],
+    ] as const) {
+      store.recordUserBlock({ threadId: "t-1", text, at });
+      ids.push(store.latestUserBlockId("t-1")!);
+    }
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: ids[2]!,
+      input: "c",
+      at: 3,
+    });
+
+    const page = store.loadThreadPage("t-1", { limit: 2 })!;
+    // The queued prompt neither appears nor consumes the user-anchored window:
+    // the page holds the two visible prompts with nothing older behind it.
+    expect(page.blocks.map((b) => b.id)).toEqual([ids[0], ids[1]]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  test("cancelQueuedTurn removes the never-started prompt's block with the row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ threadId: "t-1", text: "first", at: 1 });
+    const firstId = store.latestUserBlockId("t-1")!;
+    store.recordUserBlock({ threadId: "t-1", text: "queued follow-up", at: 2 });
+    const queuedId = store.latestUserBlockId("t-1")!;
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: queuedId,
+      input: "queued follow-up",
+      at: 2,
+    });
+
+    expect(store.cancelQueuedTurn("q-1")).toBe(true);
+    // The turn never started, so its prompt leaves with the row — no
+    // unanswered message is stranded in the transcript.
+    expect(store.loadThread("t-1")!.blocks.map((b) => b.id)).toEqual([firstId]);
+  });
+
+  test("cancelQueuedTurn on a claimed row fails and keeps the prompt", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ threadId: "t-1", text: "running", at: 1 });
+    const runningId = store.latestUserBlockId("t-1")!;
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: runningId,
+      input: "running",
+      at: 1,
+    });
+    store.claimNextQueuedTurn("t-1"); // promoting — the drain owns it now
+
+    expect(store.cancelQueuedTurn("q-1")).toBe(false);
+    // Untouched: the row is still active and its block intact.
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-1"]);
+    const raw = rawDb();
+    // SAFETY: the SELECT projects exactly block_id.
+    const blocks = raw
+      .prepare(`SELECT block_id FROM blocks WHERE thread_id = 't-1'`)
+      .all() as Array<{ block_id: string }>;
+    expect(blocks).toEqual([{ block_id: runningId }]);
+    raw.close();
+  });
+
+  test("cancelQueuedTurnsForThread removes never-started prompts but keeps a claimed row's", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ threadId: "t-1", text: "first", at: 1 });
+    const firstId = store.latestUserBlockId("t-1")!;
+    store.recordUserBlock({ threadId: "t-1", text: "claimed follow-up", at: 2 });
+    const claimedId = store.latestUserBlockId("t-1")!;
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: claimedId,
+      input: "claimed follow-up",
+      at: 2,
+    });
+    store.recordUserBlock({ threadId: "t-1", text: "queued follow-up", at: 3 });
+    const queuedId = store.latestUserBlockId("t-1")!;
+    store.enqueueQueuedTurn({
+      queueId: "q-2",
+      threadId: "t-1",
+      userBlockId: queuedId,
+      input: "queued follow-up",
+      at: 3,
+    });
+    store.claimNextQueuedTurn("t-1"); // q-1 → promoting; q-2 stays queued
+
+    expect(store.cancelQueuedTurnsForThread("t-1").sort()).toEqual(["q-1", "q-2"]);
+    expect(store.listQueuedTurns("t-1")).toEqual([]);
+    // The never-started prompt leaves with its row (no stranded unanswered
+    // message); the claimed row may own a live turn, so its prompt stays.
+    expect(store.loadThread("t-1")!.blocks.map((b) => b.id)).toEqual([firstId, claimedId]);
+  });
 });

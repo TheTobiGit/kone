@@ -92,6 +92,22 @@ import {
 
 export { GLOBAL_ASSISTANT_PROJECT_PATH };
 
+/** Transcript reads skip a user prompt its queued follow-up was journaled for
+ *  while the queue row is still active (`queued`/`promoting` — the same active
+ *  set listQueuedTurns reads). The prompt is already durable in `blocks`, but
+ *  it hasn't run yet: showing it would put an unanswered message in the thread
+ *  on every reload until the live queue re-seeds and hides it again. Settling
+ *  the row (promoted/cancelled) returns the block to reads — promotion means
+ *  the turn is running, cancellation of a never-started turn removes the block
+ *  outright (see cancelQueuedTurn / cancelQueuedTurnsForThread). Written against the `blocks` table, whose
+ *  own thread/block ids the subquery correlates on. */
+const WITHOUT_ACTIVE_QUEUE = `(role != 'user' OR NOT EXISTS (
+  SELECT 1 FROM queued_turns q
+  WHERE q.thread_id = blocks.thread_id
+    AND q.user_block_id = blocks.block_id
+    AND q.state IN ('queued', 'promoting')
+))`;
+
 export class ConversationStore {
   private db: DatabaseSync | null = null;
   /** Set when the database can never be opened by this build (see
@@ -1407,27 +1423,56 @@ export class ConversationStore {
     }
   }
 
+  /** Delete the journaled prompt a queue row was enqueued for. The one place
+   *  journaled-block removal lives: both cancel paths route through here, and
+   *  the renderer's turn.queued-cancelled only ever drops its own optimistic
+   *  blocks — never this id. User blocks journal without a turn_id, so this
+   *  only ever matches the prompt the enqueue itself journaled — never a
+   *  block a started turn later adopted. */
+  private deleteQueuedPromptBlock(db: DatabaseSync, threadId: string, userBlockId: string): void {
+    db.prepare(
+      `DELETE FROM blocks
+        WHERE thread_id = ? AND block_id = ? AND role = 'user' AND turn_id IS NULL`,
+    ).run(threadId, userBlockId);
+  }
+
   /** Cancel ONE queued turn (the UI's per-item cancel). Only a row still
    *  WAITING can flip: 'promoting' means a drain has already claimed it and
    *  handed it to the adapter, so flipping it would report a cancellation for
-   *  a turn that is running — the chip would vanish, turn.queued-cancelled
-   *  would go out with reason "user", and the agent would answer the message
-   *  anyway. Losing the race is the honest answer (false); the row promotes
-   *  and the chip is replaced by the running turn. The stop/delete path keeps
+   *  a turn that is running — the strip row would vanish,
+   *  turn.queued-cancelled would go out with reason "user", and the agent
+   *  would answer the message anyway. Losing the race is the honest answer
+   *  (false); the row promotes and the running turn replaces it in the strip. The stop/delete path keeps
    *  cancelling 'promoting' rows on purpose — see cancelQueuedTurnsForThread,
-   *  where the session is being torn down regardless. Returns whether a row
-   *  flipped. */
+   *  where the session is being torn down regardless. A successful flip also
+   *  removes the row's journaled prompt: only 'queued' flips here, so the turn
+   *  provably never started and its block has no reply and never will —
+   *  leaving it would strand an unanswered prompt in the transcript.
+   *  Returns whether a row flipped. */
   cancelQueuedTurn(queueId: string): boolean {
     const db = this.handle();
     if (!db) return false;
     try {
-      const result = db
-        .prepare(
-          `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
+      let cancelled = false;
+      this.durably(db, () => {
+        // SAFETY: the projection names only the row's thread + journaled block.
+        const row = db
+          .prepare(
+            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ? AND state = 'queued'`,
+          )
+          .get(queueId) as { thread_id: string; user_block_id: string } | undefined;
+        if (!row) return;
+        const result = db
+          .prepare(
+            `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
             WHERE queue_id = ? AND state = 'queued'`,
-        )
-        .run(Date.now(), queueId);
-      return Number(result.changes) > 0;
+          )
+          .run(Date.now(), queueId);
+        if (Number(result.changes) === 0) return;
+        this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
+        cancelled = true;
+      });
+      return cancelled;
     } catch (err) {
       console.error("[conversation-store] cancelQueuedTurn failed:", err);
       return false;
@@ -1435,23 +1480,47 @@ export class ConversationStore {
   }
 
   /** Cancel every active queued turn for a thread (stop/delete path). Flips
-   *  racing the cancellation may hold a row in 'promoting'; if only 'queued'
-   *  flipped, that drain's error path could `releaseQueuedTurn` the row back
-   *  to 'queued', resurrecting a turn the user cancelled. Returns the
+   *  BOTH active states: a drain racing the cancellation may hold a row in
+   *  'promoting'; if only 'queued' flipped, that drain's error path could
+   *  `releaseQueuedTurn` the row back to 'queued', resurrecting a turn the
+   *  user cancelled. Rows that never started ('queued') take their journaled
+   *  prompt with them, exactly like cancelQueuedTurn — a claimed row
+   *  ('promoting') may already have a running turn behind it, so its prompt
+   *  stays, the same way a single cancel refuses a claimed row. Returns the
    *  cancelled queue ids. */
   cancelQueuedTurnsForThread(threadId: string): string[] {
     const db = this.handle();
     if (!db) return [];
     try {
-      // SAFETY: RETURNING names only queue_id.
-      const rows = db
-        .prepare(
+      let queueIds: string[] = [];
+      this.durably(db, () => {
+        // SAFETY: the projection names only the row's queue id, thread, prior
+        // state, and journaled block.
+        const active = db
+          .prepare(
+            `SELECT queue_id, thread_id, user_block_id, state FROM queued_turns
+              WHERE thread_id = ? AND state IN ('queued', 'promoting')`,
+          )
+          .all(threadId) as Array<{
+          queue_id: string;
+          thread_id: string;
+          user_block_id: string;
+          state: string;
+        }>;
+        if (active.length === 0) return;
+        db.prepare(
           `UPDATE queued_turns SET state = 'cancelled', updated_at = ?
-            WHERE thread_id = ? AND state IN ('queued', 'promoting')
-           RETURNING queue_id`,
-        )
-        .all(Date.now(), threadId) as Array<{ queue_id: string }>;
-      return rows.map((r) => r.queue_id);
+            WHERE thread_id = ? AND state IN ('queued', 'promoting')`,
+        ).run(Date.now(), threadId);
+        for (const row of active) {
+          // Only 'queued' flips provably never started; a 'promoting' row was
+          // claimed by a drain and may own a live turn, so its prompt stays.
+          if (row.state !== "queued") continue;
+          this.deleteQueuedPromptBlock(db, row.thread_id, row.user_block_id);
+        }
+        queueIds = active.map((r) => r.queue_id);
+      });
+      return queueIds;
     } catch (err) {
       console.error("[conversation-store] cancelQueuedTurnsForThread failed:", err);
       return [];
@@ -1851,9 +1920,13 @@ export class ConversationStore {
         .get(threadId) as ThreadRow | undefined;
       if (!threadRow) return null;
 
-      // SAFETY: `SELECT *` of blocks in seq order is exactly BlockRow.
+      // SAFETY: `SELECT *` of blocks in seq order is exactly BlockRow. A
+      // prompt behind the running turn stays out until its queue row settles
+      // (see WITHOUT_ACTIVE_QUEUE).
       const blockRows = db
-        .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY seq`)
+        .prepare(
+          `SELECT * FROM blocks WHERE thread_id = ? AND ${WITHOUT_ACTIVE_QUEUE} ORDER BY seq`,
+        )
         .all(threadId) as BlockRow[];
       const items = this.loadTurnParts(db, threadId);
 
@@ -1965,12 +2038,15 @@ export class ConversationStore {
       // straddled the window boundary below (the walk stops on the limit-th
       // user block, so an assistant block sorted after it never got kept).
       // SAFETY: all three branches are `SELECT *` of blocks — exactly BlockRow.
+      // Prompts behind the running turn are excluded before the walk, so they
+      // neither appear nor consume the user-anchored window (see
+      // WITHOUT_ACTIVE_QUEUE).
       const candidates = (
         boundarySeq !== null
           ? db
               .prepare(
                 `SELECT * FROM blocks
-                  WHERE thread_id = ? AND seq < ?
+                  WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE}
                   ORDER BY seq DESC
                   LIMIT ?`,
               )
@@ -1979,13 +2055,15 @@ export class ConversationStore {
             ? db
                 .prepare(
                   `SELECT * FROM blocks
-                    WHERE thread_id = ? AND at < ?
+                    WHERE thread_id = ? AND at < ? AND ${WITHOUT_ACTIVE_QUEUE}
                     ORDER BY seq DESC
                     LIMIT ?`,
                 )
                 .all(threadId, boundary.beforeAnchorAt, maxRaw)
             : db
-                .prepare(`SELECT * FROM blocks WHERE thread_id = ? ORDER BY seq DESC LIMIT ?`)
+                .prepare(
+                  `SELECT * FROM blocks WHERE thread_id = ? AND ${WITHOUT_ACTIVE_QUEUE} ORDER BY seq DESC LIMIT ?`,
+                )
                 .all(threadId, maxRaw)
       ) as BlockRow[];
 
@@ -2016,7 +2094,9 @@ export class ConversationStore {
       const oldest = kept[kept.length - 1]!;
       const hasMore =
         db
-          .prepare(`SELECT 1 FROM blocks WHERE thread_id = ? AND seq < ? LIMIT 1`)
+          .prepare(
+            `SELECT 1 FROM blocks WHERE thread_id = ? AND seq < ? AND ${WITHOUT_ACTIVE_QUEUE} LIMIT 1`,
+          )
           .get(threadId, oldest.seq) != null;
 
       const turnIds = [...new Set(kept.map((b) => b.turn_id).filter((t): t is string => Boolean(t)))];

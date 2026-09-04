@@ -1247,24 +1247,8 @@ async function onSend(text: string, files?: File[]) {
   }
   void agent.send(text, attachments);
 }
-/** Steer the composer draft into the RUNNING turn — same shape as onSend
- *  (settle the composer target, persist picked files, hand the turn to the
- *  service), but routed through the steer channel: no new turn boundary, the
- *  provider consumes the nudge when it builds its next request. */
-async function onSteer(text: string, files?: File[]) {
-  await syncComposerTarget();
-  // No agent to settle here: a steer only exists inside a running turn, and the
-  // send that started that turn already settled the thread.
-  let attachments: ChatAttachment[] | undefined;
-  if (files?.length) {
-    const results = await Promise.allSettled(files.map((f) => agent.uploadAttachment(f)));
-    const ok = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
-    if (ok.length) attachments = ok;
-  }
-  void agent.steerTurn(text, attachments);
-}
-/** Drop one durably queued follow-up (the composer chips' ✕). The backend
- *  emits turn.queued-cancelled; the chip clears on that event. */
+/** Drop one durably queued follow-up (the composer strip's ✕). The backend
+ *  emits turn.queued-cancelled; the strip clears on that event. */
 function onRemoveQueued(queueId: string) {
   void agent.cancelQueuedTurn(queueId);
 }
@@ -1601,7 +1585,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :context-window="contextWindow"
           :blocked-reason="sendBlockedReason"
           @send="onSend"
-          @steer="onSteer"
           @remove-queued="onRemoveQueued"
           @interrupt="onInterrupt"
           @update:agent-id="onAgentPick"

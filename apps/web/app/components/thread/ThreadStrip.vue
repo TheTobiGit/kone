@@ -1256,7 +1256,6 @@ watch(
                     :agent-seed="c.session.threadId.value"
                     :loading="c.session.sessionState.value === 'starting'"
                     :busy="c.session.busy.value"
-                    :queued="c.session.queuedTurns.value"
                     :has-older="c.session.hasOlder.value"
                     :loading-older="c.session.loadingOlder.value"
                     :older-error="c.session.olderError.value"

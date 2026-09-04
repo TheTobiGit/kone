@@ -13,7 +13,7 @@ import {
   RefreshIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import type { AssistantBlock, QueuedTurnEntry, ThreadBlock } from "~/composables/useAgent";
+import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
 import type { ChatAttachment, RuntimeItem } from "~/types/desktop";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
@@ -78,10 +78,6 @@ const props = defineProps<{
   loading?: boolean;
   /** A turn is in flight — retry / resend are disabled while one is. */
   busy?: boolean;
-  /** Follow-ups durably queued behind the running turn (useAgent's
-   *  queuedTurns). User blocks whose id is in the queue get a small queued
-   *  badge so a parked follow-up reads as waiting, not delivered. */
-  queued?: QueuedTurnEntry[];
   /** A stored thread adopted windowed (keyset pagination): the store holds an
    *  older page beyond the window in hand. Absent for a full load / fresh
    *  thread. */
@@ -528,18 +524,6 @@ const editingUser = ref<string | null>(null);
 const editDraft = ref("");
 const editInput = ref<HTMLTextAreaElement | null>(null);
 const lastUserBlockId = computed(() => lastUserBlock()?.id ?? null);
-/** userBlockId/anchored blockId → queue entry. The queued badge reads this:
- *  a user block whose prompt is waiting behind the running turn (rather than
- *  answered) carries its queue entry, so the transcript shows what is queued
- *  and where it sits in line. */
-const queuedByBlockId = computed(() => {
-  const map = new Map<string, QueuedTurnEntry>();
-  for (const q of props.queued ?? []) {
-    if (q.blockId) map.set(q.blockId, q);
-    else map.set(q.userBlockId, q);
-  }
-  return map;
-});
 function startEditUser(block: Extract<ThreadBlock, { role: "user" }>): void {
   editingUser.value = block.id;
   editDraft.value = block.text;
@@ -1125,14 +1109,6 @@ watch(
               </button>
             </div>
           </div>
-        </div>
-        <!-- Queued — this prompt is durably queued behind the running turn,
-             not yet answered. The badge is driven by the host's queue state
-             (turn.queued / turn.promoted / turn.queued-cancelled); the number
-             is its place in line (the running turn is slot 1). -->
-        <div v-if="queuedByBlockId.get(block.id)" class="you-queued" role="status">
-          <span class="you-queued__dot" aria-hidden="true" />
-          <span>Queued · #{{ queuedByBlockId.get(block.id)?.position }}</span>
         </div>
         <div v-if="block.text" class="you-foot">
           <!-- While editing this turn the footer is the edit's controls; otherwise
@@ -1818,30 +1794,6 @@ watch(
     opacity: 1;
     transform: none;
   }
-}
-/* Queued badge — a follow-up parked behind the running turn. A quiet,
-   right-aligned pill in the same ink-tinted language as the footer actions:
-   the dot carries the "waiting" note, the number is the place in line. */
-.you-queued {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 3px 9px 3px 7px;
-  border: 1px solid var(--btn-border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-.you-queued__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 70%, var(--muted));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .body--error {
   color: var(--diff-del);

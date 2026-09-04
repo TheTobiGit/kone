@@ -4,7 +4,7 @@ import type { AgentBaseEvent, RuntimeEvent } from "~/types/desktop";
 
 // The durable turn-queue slice (AgentService): a send while a turn runs is
 // durably enqueued and announced on the runtime stream. These tests drive the
-// session reducer with the queue events and assert the chips/badges state the
+// session reducer with the queue events and assert the strip/timeline state the
 // composer and thread view read.
 
 let seq = 0;
@@ -40,7 +40,7 @@ function userBlock(id: string, text = "follow-up"): UserBlock {
 }
 
 describe("useAgent durable turn queue", () => {
-  test("turn.queued parks a chip anchored to the store block by userBlockId", () => {
+  test("turn.queued parks a row anchored to the store block by userBlockId", () => {
     const { session } = harness();
     const block = userBlock("store-block-1", "do the thing");
     session.blocks.value = [...session.blocks.value, block];
@@ -65,7 +65,7 @@ describe("useAgent durable turn queue", () => {
     });
   });
 
-  test("a live turn is slot 1 — queued chips read 2, 3 in arrival order", () => {
+  test("a live turn is slot 1 — queued rows read 2, 3 in arrival order", () => {
     const { session } = harness();
     session.sessionState.value = "running"; // busy
     session.blocks.value = [
@@ -97,7 +97,7 @@ describe("useAgent durable turn queue", () => {
     ]);
   });
 
-  test("an unanchored row (no matching block) still parks a chip, from its own input", () => {
+  test("an unanchored row (no matching block) still parks, from its own input", () => {
     const { session } = harness();
     session.reduce(
       queuedEvent(session.threadId.value, "turn.queued", {
@@ -115,7 +115,7 @@ describe("useAgent durable turn queue", () => {
     expect(entry.blockId).toBeUndefined();
   });
 
-  test("turn.queued-cancelled (user) removes one chip; (stop) clears the line", () => {
+  test("turn.queued-cancelled (user) removes one row; (stop) clears the line", () => {
     const { session } = harness();
     session.sessionState.value = "running";
     for (const [queueId, blockId] of [
@@ -153,7 +153,7 @@ describe("useAgent durable turn queue", () => {
     expect(session.queuedTurns.value).toHaveLength(0);
   });
 
-  test("turn.promoted consumes the chip by queueId", () => {
+  test("turn.promoted consumes the row by queueId and reveals its block", () => {
     const { session } = harness();
     session.sessionState.value = "running";
     for (const [queueId, blockId] of [
@@ -175,6 +175,57 @@ describe("useAgent durable turn queue", () => {
       queuedEvent(session.threadId.value, "turn.promoted", { queueId: "q-a", turnId: "t-1" }),
     );
     expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-b"]);
+    // The promoted prompt joins the visible timeline; the still-queued one stays out.
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-a"]);
+  });
+
+  test("a queued follow-up stays out of the timeline until it promotes", () => {
+    const { session } = harness();
+    session.sessionState.value = "running"; // busy
+    session.blocks.value = [...session.blocks.value, userBlock("b-live", "live turn")];
+    session.blocks.value = [...session.blocks.value, userBlock("b-q", "queued follow-up")];
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-1",
+        userBlockId: "b-q",
+        dispatchMode: "queue",
+        position: 2,
+      }),
+    );
+
+    // The strip owns the waiting state — the thread only shows started turns.
+    expect(session.blocks.value.map((b) => b.id)).toEqual(["b-live", "b-q"]);
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-live"]);
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", { queueId: "q-1", turnId: "t-1" }),
+    );
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-live", "b-q"]);
+  });
+
+  test("cancelling a queued follow-up drops its optimistic block with it", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    session.blocks.value = [...session.blocks.value, userBlock("b-live", "live turn")];
+    session.blocks.value = [...session.blocks.value, userBlock("b-q", "queued follow-up")];
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-1",
+        userBlockId: "b-q",
+        dispatchMode: "queue",
+        position: 2,
+      }),
+    );
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued-cancelled", {
+        queueId: "q-1",
+        reason: "user",
+      }),
+    );
+    // A prompt that never ran must not pop into the thread on cancel.
+    expect(session.blocks.value.map((b) => b.id)).toEqual(["b-live"]);
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-live"]);
   });
 
   test("turn.steered is a no-op for the queue (the live turn took the nudge)", () => {
@@ -186,7 +237,7 @@ describe("useAgent durable turn queue", () => {
     expect(session.error.value).toBeNull();
   });
 
-  test("a send while busy parks a chip anchored to the pushed user block (browser dev)", () => {
+  test("a send while busy parks a row anchored to the pushed user block (browser dev)", () => {
     const { session } = harness();
     session.sessionState.value = "running"; // busy
     const before = session.blocks.value.length;
@@ -196,7 +247,7 @@ describe("useAgent durable turn queue", () => {
     const block = session.blocks.value[session.blocks.value.length - 1]!;
     expect(block.role).toBe("user");
     // The mock queue hands the renderer's own block id back as userBlockId,
-    // so the chip anchors to the very block just pushed.
+    // so the row anchors to the very block just pushed.
     const entry = session.queuedTurns.value[0]!;
     expect(entry.userBlockId).toBe(block.id);
     expect(entry.blockId).toBe(block.id);
