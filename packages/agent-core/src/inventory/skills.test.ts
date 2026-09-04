@@ -47,6 +47,41 @@ describe("discoverSkills shadowing", () => {
     ]);
   });
 
+  test("shadowed copies are exposed separately from the winners-only list", async () => {
+    const project = makeProject();
+    const name = `dup-both-${path.basename(project)}`;
+    writeSkill(path.join(project, ".claude", "skills", name), `name: ${name}\ndescription: Claude copy`);
+    writeSkill(path.join(project, ".agents", "skills", name), `name: ${name}\ndescription: Agents copy`);
+
+    const { skills, shadowed } = await discoverSkills(project);
+    const winners = skills.filter((s) => s.name === name);
+    expect(winners).toHaveLength(1);
+
+    const winner = winners[0]!;
+    expect(winner.origin).toBe("claude");
+    expect(winner.path).toBe(path.join(project, ".claude", "skills", name, "SKILL.md"));
+    expect(winner.shadowed).toBeUndefined();
+    expect(winner.shadowedBy).toEqual([
+      {
+        origin: "agents",
+        scope: "project",
+        path: path.join(project, ".agents", "skills", name, "SKILL.md"),
+      },
+    ]);
+
+    const losers = shadowed.filter((s) => s.name === name);
+    expect(losers).toHaveLength(1);
+    const loser = losers[0]!;
+    expect(loser.origin).toBe("agents");
+    expect(loser.path).toBe(path.join(project, ".agents", "skills", name, "SKILL.md"));
+    expect(loser.shadowed).toBe(true);
+    expect(loser.shadowedByWinner).toEqual({
+      origin: "claude",
+      scope: "project",
+      path: path.join(project, ".claude", "skills", name, "SKILL.md"),
+    });
+  });
+
   test("v1 stable: only current project scanned, ancestor copy not shadowed", async () => {
     const root = makeProject();
     const project = path.join(root, "nested", "app");

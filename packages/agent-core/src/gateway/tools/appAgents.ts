@@ -34,6 +34,11 @@ import {
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { modelRefPayload, squash } from "../helpers.js";
+import {
+  isSkillInternallyEnabled,
+  readInternalSkillsSettings,
+  type InternalSkillsSettings,
+} from "../../skillsSettings.js";
 
 /**
  * One agent as the renderer reports it: resolved, so every field here is what
@@ -110,7 +115,8 @@ export function resolveAgent(
   );
 }
 
-function entryPayload(agent: AgentRosterEntry): GatewayRecord {
+function entryPayload(agent: AgentRosterEntry, settings: InternalSkillsSettings): GatewayRecord {
+  const activeSkills = agent.skills.filter((name) => isSkillInternallyEnabled({ name }, settings));
   const payload: GatewayRecord = {
     id: agent.id,
     name: agent.name,
@@ -119,7 +125,7 @@ function entryPayload(agent: AgentRosterEntry): GatewayRecord {
     face: { body: agent.face.body, ink: agent.face.ink },
     model: agent.model ? modelRefPayload(agent.model) : null,
     modelFallbacks: (agent.modelFallbacks ?? []).map(modelRefPayload),
-    skills: [...agent.skills],
+    skills: activeSkills,
     builtIn: agent.builtIn,
     active: agent.active,
     teams: [...agent.teams],
@@ -128,7 +134,8 @@ function entryPayload(agent: AgentRosterEntry): GatewayRecord {
 }
 
 /** One roster line, for the text half of a result. */
-function entryLine(agent: AgentRosterEntry): string {
+function entryLine(agent: AgentRosterEntry, settings: InternalSkillsSettings): string {
+  const activeSkills = agent.skills.filter((name) => isSkillInternallyEnabled({ name }, settings));
   const chain = agent.model
     ? [agent.model, ...(agent.modelFallbacks ?? [])]
         .map((ref) => `${ref.provider}/${ref.model}`)
@@ -138,7 +145,7 @@ function entryLine(agent: AgentRosterEntry): string {
     agent.builtIn ? "built-in" : "user-made",
     `model: ${chain}`,
   ];
-  if (agent.skills.length > 0) bits.push(`skills: ${agent.skills.join(", ")}`);
+  if (activeSkills.length > 0) bits.push(`skills: ${activeSkills.join(", ")}`);
   if (agent.teams.length > 0) bits.push(`teams: ${agent.teams.length}`);
   if (agent.active) bits.push("takes the next turn");
   return `- **${agent.name}** (\`${agent.id}\`)${agent.role ? ` — ${agent.role}` : ""} [${bits.join(", ")}]`;
@@ -228,6 +235,9 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
       ? agents.filter((a) => squash(a.id).includes(squash(query)) || searchText(a).includes(query))
       : [...agents];
     const active = agents.find((a) => a.active);
+    // One read per tool call: the row helpers below take it as a parameter
+    // rather than reading the file once per agent.
+    const skillSettings = readInternalSkillsSettings();
 
     return {
       content: [
@@ -235,7 +245,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
           type: "text",
           text:
             `${matches.length} agent${matches.length === 1 ? "" : "s"} in kone's roster:\n` +
-            matches.map(entryLine).join("\n") +
+            matches.map((agent) => entryLine(agent, skillSettings)).join("\n") +
             `\n\nThe next turn is handed to ${active ? `**${active.name}**` : "a guest (nobody in particular), which is the shipped default"}.`,
         },
       ],
@@ -243,7 +253,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
         known: true,
         total: matches.length,
         activeAgentId: active?.id ?? null,
-        agents: matches.map(entryPayload),
+        agents: matches.map((agent) => entryPayload(agent, skillSettings)),
       },
     };
   };
@@ -339,6 +349,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
       );
     }
     const summary = `Updated agent "${target.name}" (\`${target.id}\`): ${parts.join("; ")}.`;
+    const skillSettings = readInternalSkillsSettings();
 
     return {
       content: [{ type: "text", text: summary }],
@@ -348,7 +359,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
         agentId: target.id,
         set: changed,
         cleared: [...cleared],
-        previous: entryPayload(target),
+        previous: entryPayload(target, skillSettings),
       },
     };
   };
@@ -363,6 +374,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
     emitMutation(ctx, { op: "delete", agentId: target.id });
 
     const summary = `Removed agent "${target.name}" (\`${target.id}\`) from the roster.`;
+    const skillSettings = readInternalSkillsSettings();
 
     return {
       content: [
@@ -373,7 +385,7 @@ export function createAppAgentTools(options: AppAgentToolOptions): ToolEntry[] {
           }`,
         },
       ],
-      structuredContent: { ok: true, summary, agentId: target.id, agent: entryPayload(target) },
+      structuredContent: { ok: true, summary, agentId: target.id, agent: entryPayload(target, skillSettings) },
     };
   };
 

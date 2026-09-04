@@ -4,12 +4,12 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import { Folder01Icon, Globe02Icon, Package02Icon, PuzzleIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import type { PluginEntry, SkillEntry } from "~/types/desktop";
 import type { useAgentSettings } from "~/composables/useAgentSettings";
-import type { useSkills } from "~/composables/useSkills";
+import { isKonePluginEnabled, type useSkills } from "~/composables/useSkills";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
-import { writableStates } from "~/composables/useSkills";
 import type { BrandKey } from "~/utils/modelCatalog";
 import { useRecentProjects } from "~/composables/useRecentProjects";
+import { useEdgeFade } from "~/composables/useEdgeFade";
 
 // Cards like the Discover reference — flat top, no gradient, no byline.
 // Logos are the providers the skill is reachable from. `agents` = shared
@@ -42,24 +42,15 @@ const { recents } = useRecentProjects();
 
 function projectsFor(skill: SkillEntry): string[] {
   if (skill.scope !== "project") return [];
-  const paths = [skill.path, ...skill.shadowedBy.map((c) => c.path)];
-  const names: string[] = [];
-  const seen = new Set<string>();
-  for (const p of paths) {
-    // longest matching recent project that contains this SKILL.md path
-    let best: { path: string; name: string } | null = null;
-    for (const r of recents.value) {
-      if (p.startsWith(r.path + "/") && (!best || r.path.length > best.path.length)) {
-        best = { path: r.path, name: (r as unknown as { name?: string }).name ?? r.path.split("/").pop() ?? r.path };
-      }
-    }
-    const label = best ? best.name : p.split("/").slice(-3, -2)[0] ?? "project";
-    if (!seen.has(label)) {
-      seen.add(label);
-      names.push(label);
+  const p = skill.path;
+  let best: { path: string; name: string } | null = null;
+  for (const r of recents.value) {
+    if (p.startsWith(r.path + "/") && (!best || r.path.length > best.path.length)) {
+      best = { path: r.path, name: r.name ?? r.path.split("/").pop() ?? r.path };
     }
   }
-  return names;
+  const label = best ? best.name : p.split("/").slice(-3, -2)[0] ?? "project";
+  return [label];
 }
 
 const all = computed(() => props.space.inventory.value?.skills ?? []);
@@ -157,155 +148,189 @@ watch(
 );
 
 function isEnabled(skill: SkillEntry): boolean {
-  const s = props.skills.stateOf(skill)?.state;
-  return s !== "disabled";
+  return props.skills.isEffectiveEnabled(skill);
 }
 
-function isSwitchable(skill: SkillEntry): boolean {
-  const s = props.skills.stateOf(skill)?.state;
-  if (s === "unsupported") return false;
-  return writableStates(skill.origin).length > 0;
+async function flip(skill: SkillEntry): Promise<void> {
+  // One coordinated write — CLI restore plus kone gate, ordered inside the
+  // composable. Per-key busy there keeps parallel row toggles independent.
+  await props.skills.setEffectiveEnabled(skill, !isEnabled(skill));
 }
 
-const busy = ref<string | null>(null);
-
-async function flip(skill: SkillEntry) {
-  if (busy.value) return;
-  busy.value = skill.path;
-  const on = isEnabled(skill);
-  await props.skills.setState(skill, on ? "disabled" : "enabled");
-  busy.value = null;
+function isPluginEnabled(plugin: PluginEntry): boolean {
+  return isKonePluginEnabled(plugin);
 }
+
+async function flipPlugin(plugin: PluginEntry): Promise<void> {
+  await props.skills.setPluginEnabled(plugin, !isPluginEnabled(plugin));
+}
+
+const scroller = ref<HTMLElement>();
+const { measure, maskStyle } = useEdgeFade(scroller);
 </script>
 
 <template>
   <section class="sk" aria-label="Skills">
-    <div v-if="loading" class="sk__loading">
-      <span v-for="n in 6" :key="n" class="placeholder" :style="{ animationDelay: `${n * 90}ms` }" />
+    <div v-if="loading" class="sk__loadingWrap">
+      <div class="sk__loading">
+        <span v-for="n in 6" :key="n" class="placeholder" :style="{ animationDelay: `${n * 90}ms` }" />
+      </div>
     </div>
 
-    <p v-else-if="emptyAll" class="sk__empty">No skills found on this machine.</p>
+    <p v-else-if="emptyAll" class="sk__empty sk__empty--standalone">No skills found on this machine.</p>
 
     <template v-else>
-      <div class="bar">
-        <div class="filters">
-          <button type="button" class="chip" :class="{ on: typeFilter === 'all' }" @click="typeFilter = 'all'">All</button>
-          <button type="button" class="chip" :class="{ on: typeFilter === 'skill' }" @click="typeFilter = typeFilter === 'skill' ? 'all' : 'skill'">
-            <HugeiconsIcon :icon="PuzzleIcon" :size="12" :stroke-width="1.8" aria-hidden="true" /> Skills
+      <div class="sk__filters">
+        <div class="bar">
+          <div class="filters">
+            <button type="button" class="chip" :class="{ on: typeFilter === 'all' }" @click="typeFilter = 'all'">All</button>
+            <button type="button" class="chip" :class="{ on: typeFilter === 'skill' }" @click="typeFilter = typeFilter === 'skill' ? 'all' : 'skill'">
+              <HugeiconsIcon :icon="PuzzleIcon" :size="12" :stroke-width="1.8" aria-hidden="true" /> Skills
+            </button>
+            <button type="button" class="chip" :class="{ on: typeFilter === 'plugin' }" @click="typeFilter = typeFilter === 'plugin' ? 'all' : 'plugin'">
+              <HugeiconsIcon :icon="Package02Icon" :size="12" :stroke-width="1.8" aria-hidden="true" /> Plugins
+            </button>
+          </div>
+          <label class="search">
+            <HugeiconsIcon :icon="Search01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+            <input v-model="query" type="search" placeholder="Search skills…" aria-label="Search skills" />
+          </label>
+        </div>
+
+        <div v-if="providerOptions.length > 1" class="providers" role="group" aria-label="Filter by provider">
+          <button
+            type="button"
+            class="chip chip--provider"
+            :class="{ on: !providerFilter }"
+            @click="providerFilter = null"
+          >
+            All providers
           </button>
-          <button type="button" class="chip" :class="{ on: typeFilter === 'plugin' }" @click="typeFilter = typeFilter === 'plugin' ? 'all' : 'plugin'">
-            <HugeiconsIcon :icon="Package02Icon" :size="12" :stroke-width="1.8" aria-hidden="true" /> Plugins
+          <button
+            v-for="opt in providerOptions"
+            :key="opt.origin"
+            type="button"
+            class="chip chip--provider"
+            :class="{ on: providerFilter === opt.origin }"
+            :aria-pressed="providerFilter === opt.origin"
+            @click="providerFilter = providerFilter === opt.origin ? null : opt.origin"
+          >
+            <span class="chip__logo" aria-hidden="true">
+              <HugeiconsIcon v-if="opt.origin === 'agents'" :icon="PuzzleIcon" :size="12" :stroke-width="1.8" />
+              <ProviderLogo v-else :brand="ORIGIN_TO_BRAND[opt.origin] ?? 'generic'" :size="13" />
+            </span>
+            {{ opt.label }}
+            <span class="chip__count">{{ opt.count }}</span>
           </button>
         </div>
-        <label class="search">
-          <HugeiconsIcon :icon="Search01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-          <input v-model="query" type="search" placeholder="Search skills…" aria-label="Search skills" />
-        </label>
       </div>
 
-      <div v-if="providerOptions.length > 1" class="providers" role="group" aria-label="Filter by provider">
-        <button
-          type="button"
-          class="chip chip--provider"
-          :class="{ on: !providerFilter }"
-          @click="providerFilter = null"
-        >
-          All providers
-        </button>
-        <button
-          v-for="opt in providerOptions"
-          :key="opt.origin"
-          type="button"
-          class="chip chip--provider"
-          :class="{ on: providerFilter === opt.origin }"
-          :aria-pressed="providerFilter === opt.origin"
-          @click="providerFilter = providerFilter === opt.origin ? null : opt.origin"
-        >
-          <span class="chip__logo" aria-hidden="true">
-            <HugeiconsIcon v-if="opt.origin === 'agents'" :icon="PuzzleIcon" :size="12" :stroke-width="1.8" />
-            <ProviderLogo v-else :brand="ORIGIN_TO_BRAND[opt.origin] ?? 'generic'" :size="13" />
-          </span>
-          {{ opt.label }}
-          <span class="chip__count">{{ opt.count }}</span>
-        </button>
+      <div ref="scroller" class="sk__scroll" :style="maskStyle" @scroll.passive="measure">
+        <p v-if="noMatch" class="sk__empty">
+          <template v-if="providerFilter && query.trim()">
+            No {{ providerFilter ? ORIGIN_LABEL[providerFilter] ?? providerFilter : "" }} match for “{{ query }}”.
+          </template>
+          <template v-else-if="providerFilter"> No {{ ORIGIN_LABEL[providerFilter] ?? providerFilter }} skills found. </template>
+          <template v-else>No match for “{{ query }}”.</template>
+        </p>
+
+        <ul v-else class="grid">
+          <!-- plugins as folders — container of skills -->
+          <li
+            v-for="p in filteredPlugins"
+            :key="p.path"
+            class="card card--plugin"
+            :class="{ 'card--disabled': !isPluginEnabled(p) }"
+            @click="emit('openPlugin', p)"
+          >
+            <div class="card__top">
+              <div class="icons">
+                <!-- SAFETY: Plugin origin string conforms to SkillEntry origin type for brand resolution -->
+                <span v-for="b in brandsFor({ origin: p.origin } as SkillEntry)" :key="b" class="icon">
+                  <ProviderLogo :brand="b" :size="18" />
+                </span>
+              </div>
+              <div class="scopeRow">
+                <HugeiconsIcon :icon="Package02Icon" :size="11" :stroke-width="1.8" class="scopeIcon" aria-label="Plugin" />
+                <HugeiconsIcon
+                  :icon="p.scope === 'project' ? Folder01Icon : Globe02Icon"
+                  :size="11"
+                  :stroke-width="1.8"
+                  class="scopeIcon"
+                  :aria-label="p.scope === 'project' ? 'Project' : 'Global'"
+                />
+                <span class="proj">{{ p.skills.length }} skill{{ p.skills.length === 1 ? "" : "s" }}</span>
+              </div>
+            </div>
+            <div class="card__body">
+              <div class="card__head">
+                <span class="card__name">{{ p.name }}</span>
+                <ToggleSwitch
+                  :model-value="isPluginEnabled(p)"
+                  :disabled="props.skills.isPluginBusy(p)"
+                  :aria-label="`Turn plugin ${p.name} ${isPluginEnabled(p) ? 'off' : 'on'}`"
+                  @update:model-value="flipPlugin(p)"
+                  @click.stop
+                />
+              </div>
+              <span v-if="p.description" class="card__desc">{{ p.description }}</span>
+              <span v-else class="card__desc">Plugin — {{ p.skills.length }} bundled skill{{ p.skills.length === 1 ? "" : "s" }}</span>
+            </div>
+          </li>
+
+          <li
+            v-for="s in filteredSkills"
+            :key="s.path"
+            class="card"
+            :class="{ 'card--disabled': !isEnabled(s) }"
+            @click="emit('open', s)"
+          >
+            <div class="card__top">
+              <div class="icons">
+                <span v-for="b in brandsFor(s)" :key="b" class="icon">
+                  <ProviderLogo :brand="b" :size="18" />
+                </span>
+              </div>
+              <div class="scopeRow">
+                <HugeiconsIcon :icon="PuzzleIcon" :size="11" :stroke-width="1.8" class="scopeIcon" aria-label="Skill" />
+                <HugeiconsIcon
+                  :icon="s.scope === 'project' ? Folder01Icon : Globe02Icon"
+                  :size="11"
+                  :stroke-width="1.8"
+                  class="scopeIcon"
+                  :aria-label="s.scope === 'project' ? 'Project' : 'Global'"
+                />
+                <template v-if="s.scope === 'project'">
+                  <span v-for="proj in projectsFor(s)" :key="proj" class="proj">{{ proj }}</span>
+                </template>
+                <span v-if="s.shadowed" class="proj proj--shadowed" title="Shadowed by a higher-precedence copy">Shadowed</span>
+              </div>
+            </div>
+            <div class="card__body">
+              <div class="card__head">
+                <span class="card__name">{{ label(s) }}</span>
+                <ToggleSwitch
+                  :model-value="isEnabled(s)"
+                  :disabled="props.skills.isSkillBusy(s)"
+                  :aria-label="`Turn ${s.name} ${isEnabled(s) ? 'off' : 'on'}`"
+                  @update:model-value="flip(s)"
+                  @click.stop
+                />
+              </div>
+              <span v-if="describe(s)" class="card__desc">{{ describe(s) }}</span>
+            </div>
+          </li>
+        </ul>
+
+        <ul v-if="errors.length" class="sk__errors">
+          <li v-for="e in errors" :key="e.source" class="sk__error">
+            couldn't read {{ e.source }}: {{ e.message }}
+          </li>
+        </ul>
       </div>
-
-      <p v-if="noMatch" class="sk__empty">
-        <template v-if="providerFilter && query.trim()">
-          No {{ providerFilter ? ORIGIN_LABEL[providerFilter] ?? providerFilter : "" }} match for “{{ query }}”.
-        </template>
-        <template v-else-if="providerFilter"> No {{ ORIGIN_LABEL[providerFilter] ?? providerFilter }} skills found. </template>
-        <template v-else>No match for “{{ query }}”.</template>
-      </p>
-
-      <ul v-else class="grid">
-        <!-- plugins as folders — container of skills -->
-        <li v-for="p in filteredPlugins" :key="p.path" class="card card--plugin" @click="emit('openPlugin', p)">
-        <div class="card__top">
-          <div class="icons">
-            <span v-for="b in brandsFor({ origin: p.origin } as SkillEntry)" :key="b" class="icon">
-              <ProviderLogo :brand="b" :size="18" />
-            </span>
-          </div>
-          <div class="scopeRow">
-            <HugeiconsIcon :icon="Package02Icon" :size="11" :stroke-width="1.8" class="scopeIcon" aria-label="Plugin" />
-            <HugeiconsIcon
-              :icon="p.scope === 'project' ? Folder01Icon : Globe02Icon"
-              :size="11"
-              :stroke-width="1.8"
-              class="scopeIcon"
-              :aria-label="p.scope === 'project' ? 'Project' : 'Global'"
-            />
-            <span class="proj">{{ p.skills.length }} skill{{ p.skills.length === 1 ? "" : "s" }}</span>
-          </div>
-        </div>
-        <div class="card__body">
-          <span class="card__name">{{ p.name }}</span>
-          <span v-if="p.description" class="card__desc">{{ p.description }}</span>
-          <span v-else class="card__desc">Plugin — {{ p.skills.length }} bundled skill{{ p.skills.length === 1 ? "" : "s" }}</span>
-        </div>
-      </li>
-
-      <li v-for="s in filteredSkills" :key="s.path" class="card" @click="emit('open', s)">
-        <div class="card__top">
-          <div class="icons">
-            <span v-for="b in brandsFor(s)" :key="b" class="icon">
-              <ProviderLogo :brand="b" :size="18" />
-            </span>
-          </div>
-          <div class="scopeRow">
-            <HugeiconsIcon :icon="PuzzleIcon" :size="11" :stroke-width="1.8" class="scopeIcon" aria-label="Skill" />
-            <HugeiconsIcon
-              :icon="s.scope === 'project' ? Folder01Icon : Globe02Icon"
-              :size="11"
-              :stroke-width="1.8"
-              class="scopeIcon"
-              :aria-label="s.scope === 'project' ? 'Project' : 'Global'"
-            />
-            <template v-if="s.scope === 'project'">
-              <span v-for="proj in projectsFor(s)" :key="proj" class="proj">{{ proj }}</span>
-            </template>
-          </div>
-        </div>
-        <div class="card__body">
-          <div class="card__head">
-            <span class="card__name">{{ label(s) }}</span>
-            <ToggleSwitch
-              v-if="isSwitchable(s)"
-              :model-value="isEnabled(s)"
-              :disabled="busy === s.path"
-              :aria-label="`Turn ${s.name} ${isEnabled(s) ? 'off' : 'on'}`"
-              @update:model-value="flip(s)"
-              @click.stop
-            />
-          </div>
-          <span v-if="describe(s)" class="card__desc">{{ describe(s) }}</span>
-        </div>
-      </li>
-    </ul>
     </template>
 
-    <ul v-if="errors.length" class="sk__errors">
+    <ul v-if="(loading || emptyAll) && errors.length" class="sk__errors sk__errors--outside">
       <li v-for="e in errors" :key="e.source" class="sk__error">
         couldn't read {{ e.source }}: {{ e.message }}
       </li>
@@ -317,14 +342,45 @@ async function flip(skill: SkillEntry) {
 .sk {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sk__filters {
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-  padding-bottom: 2rem;
+  flex-shrink: 0;
+  padding: 0 1rem 0.75rem;
+}
+
+.sk__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 0 1rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.sk__scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.sk__loadingWrap {
+  padding: 0 1rem;
 }
 
 .sk__empty {
   font-size: 14px;
   color: var(--muted);
   padding: 1.25rem 0;
+}
+.sk__empty--standalone {
+  padding: 1.25rem 1rem;
 }
 
 .bar {
@@ -456,6 +512,14 @@ async function flip(skill: SkillEntry) {
   border-color: color-mix(in srgb, var(--ink) 12%, transparent);
 }
 
+.card--disabled {
+  opacity: 0.62;
+}
+
+.card--disabled:hover {
+  opacity: 0.88;
+}
+
 /* folder container — plugin is a folder of skills */
 .card--plugin {
   border-color: color-mix(in srgb, var(--ink) 16%, transparent);
@@ -527,6 +591,13 @@ async function flip(skill: SkillEntry) {
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   color: var(--muted);
   white-space: nowrap;
+}
+
+.proj--shadowed {
+  border-color: color-mix(in srgb, var(--ink) 18%, transparent);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  font-style: italic;
 }
 
 /* no box — just the mark, sized for the band */

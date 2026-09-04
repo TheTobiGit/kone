@@ -694,6 +694,7 @@ export async function discoverSkills(
   projectPath: string | string[] | null,
 ): Promise<{
   skills: SkillEntry[];
+  shadowed: SkillEntry[];
   errors: InventoryError[];
 }> {
   const home = homedir();
@@ -707,16 +708,21 @@ export async function discoverSkills(
     projectRoots.length ? scanRoots(projectRoots, errors) : Promise.resolve<SkillEntry[]>([]),
   ]);
 
-  // v1 stable: no plugin scan. t3 parity is filesystem only.
+  // v1 stable: no plugin scan.
   const pluginSkills: SkillEntry[] = [];
 
   const ordered = [...userSkills, ...pluginSkills, ...projectSkills];
-  const byName = new Map<string, SkillEntry>();
+  const byName = new Map<string, { winner: SkillEntry; shadowed: SkillEntry[] }>();
+  const seenPaths = new Set<string>();
+
   for (const skill of ordered) {
+    if (seenPaths.has(skill.path)) continue;
+    seenPaths.add(skill.path);
+
     const key = skill.name.toLowerCase();
-    const winner = byName.get(key);
-    if (!winner) {
-      byName.set(key, skill);
+    const group = byName.get(key);
+    if (!group) {
+      byName.set(key, { winner: skill, shadowed: [] });
       continue;
     }
     // The loser is recorded on the winner in encounter order — nearest loser
@@ -724,10 +730,23 @@ export async function discoverSkills(
     // point at exactly which copy lost. A copy at the winner's own path *is*
     // the winner (a root can legitimately resolve to it twice), so it never
     // shadows itself.
-    if (winner.shadowedBy.length < MAX_SHADOWED_COPIES && skill.path !== winner.path) {
-      winner.shadowedBy.push({ origin: skill.origin, scope: skill.scope, path: skill.path });
+    if (group.winner.shadowedBy.length < MAX_SHADOWED_COPIES && skill.path !== group.winner.path) {
+      group.winner.shadowedBy.push({ origin: skill.origin, scope: skill.scope, path: skill.path });
     }
+    skill.shadowed = true;
+    skill.shadowedByWinner = {
+      origin: group.winner.origin,
+      scope: group.winner.scope,
+      path: group.winner.path,
+    };
+    group.shadowed.push(skill);
   }
 
-  return { skills: [...byName.values()], errors };
+  // `skills` is always the winners-only list (stable cardinality); every
+  // losing copy is returned separately in `shadowed` so callers that render
+  // all copies can merge without a mode flag.
+  const skills = [...byName.values()].map((g) => g.winner);
+  const shadowed = [...byName.values()].flatMap((g) => g.shadowed);
+
+  return { skills, shadowed, errors };
 }
