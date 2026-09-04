@@ -19,6 +19,10 @@
     "./subagent-presets": {
       "types": "./src/subagentPresets.ts",
       "default": "./src/subagentPresets.ts"
+    },
+    "./usage-format": {
+      "types": "./src/usageFormat.ts",
+      "default": "./src/usageFormat.ts"
     }
   },
   "dependencies": {
