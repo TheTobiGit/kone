@@ -112,17 +112,37 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const isSideChat = computed(() => sideChat.value);
   /** The timeline the conversation view renders: a side chat hides its
    *  fork-imported transcript (reference-only context — the model sees it via
-   *  the one-shot bootstrap, the user sees only the side chat's own turns), a
-   *  normal thread renders everything. `blocks` stays the full source of
-   *  truth for busy/persistence/dock state. */
-  const timelineBlocks = computed<ThreadBlock[]>(() =>
-    isSideChat.value
-      ? blocks.value.filter(
-          // SAFETY: only fork imports carry a `source` tag; others read as undefined.
-          (b) => (b as ThreadBlock & { source?: string }).source !== "fork-import",
-        )
-      : blocks.value,
-  );
+   *  the one-shot bootstrap, the user sees only the side chat's own turns), and
+   *  a follow-up queued behind the running turn stays out until it promotes —
+   *  the queue strip above the composer owns the waiting state, so the thread
+   *  only ever shows turns that have actually started. `blocks` stays the full
+   *  source of truth for busy/persistence/dock state. */
+  const timelineBlocks = computed<ThreadBlock[]>(() => {
+    // The store owns hiding journaled queued prompts: transcript reads skip
+    // user blocks with an active queued/promoting row, which is the same
+    // active set listQueuedTurns reads — and the same set queuedTurnsRaw
+    // holds (live rows fold from turn.queued as queued; re-seeded rows come
+    // straight from listQueuedTurns) — so the two agree by construction and
+    // only the store hides by userBlockId. What the store can never see is the
+    // renderer's own optimistic block, pushed before the send was journaled:
+    // a live row anchors to it via the send-ack record (see
+    // pendingQueueAnchors), so entry.blockId is that remainder and the only
+    // id filtered here.
+    const optimisticQueuedIds = new Set<string>();
+    for (const q of queuedTurnsRaw.value) {
+      if (q.blockId) optimisticQueuedIds.add(q.blockId);
+    }
+    return blocks.value.filter((b) => {
+      if (b.role === "user" && optimisticQueuedIds.has(b.id)) return false;
+      if (
+        isSideChat.value &&
+        // SAFETY: only fork imports carry a `source` tag; others read as undefined.
+        (b as ThreadBlock & { source?: string }).source === "fork-import"
+      )
+        return false;
+      return true;
+    });
+  });
   /** Agent-named (or first-turn word-fallback) working title. Empty until the
    *  first user turn or a rehydrated/opened thread that already has one. */
   const title = ref("");
@@ -177,7 +197,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  mints internally), so a live optimistic block can't be matched by the
    *  turn.queued userBlockId until a reload reconciles the timeline. The
    *  send/steer ack carries the queue id (a busy enqueue acks with the queue
-   *  id as turnId), which is how the chip finds its own block: recorded here
+   *  id as turnId), which is how the row finds its own block: recorded here
    *  on ack, consumed by the matching turn.queued, pruned at the next turn
    *  boundary (no queue event can arrive after the turn it belongs to has
    *  started). */
@@ -193,7 +213,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  (rehydrated/persisted rows), else by the renderer-side block the send
    *  ack recorded (live optimistic rows — see pendingQueueAnchors). Returns
    *  the block id, or undefined when the row predates this renderer
-   *  (cross-window queue events) — the chip then renders from the row's own
+   *  (cross-window queue events) — the strip then renders from the row's own
    *  input text. */
   function anchorFor(userBlockId: string, queueId: string): string | undefined {
     const byId = blocks.value.find((b) => b.role === "user" && b.id === userBlockId);
@@ -484,7 +504,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         break;
       case "turn.queued": {
         // A follow-up was durably enqueued behind the running turn — park a
-        // chip. The display text comes from the anchored transcript block
+        // row. The display text comes from the anchored transcript block
         // (via userBlockId), or the send's own recorded block, or falls back
         // to the row input on the rehydrated path.
         const blockId = anchorFor(event.userBlockId, event.queueId);
@@ -511,24 +531,41 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         ].sort((a, b) => a.position - b.position);
         break;
       }
-      case "turn.queued-cancelled":
-        // A user drop removes one chip; a stop/delete clears the whole line
-        // (the backend emits one cancellation per row on stop).
-        pendingQueueAnchors.delete(event.queueId);
-        queuedTurnsRaw.value =
+      case "turn.queued-cancelled": {
+        // A user drop removes one row; a stop/delete clears the whole line
+        // (the backend emits one cancellation per row on stop). The dropped
+        // prompt never ran, so its optimistic block leaves with the row —
+        // otherwise cancelling would pop the message into the thread. The
+        // split with the store is strict: it deletes the journaled prompt it
+        // wrote at enqueue time, and only entry.blockId — the renderer's own
+        // optimistic block — is removed here, never userBlockId.
+        const clearingAll =
           event.reason === "stop" ||
           event.reason === "thread-deleted" ||
-          event.reason === "archive"
-            ? queuedTurnsRaw.value.filter((q) => q.threadId !== event.threadId)
-            : queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId);
+          event.reason === "archive";
+        const dropped = clearingAll
+          ? queuedTurnsRaw.value.filter((q) => q.threadId === event.threadId)
+          : queuedTurnsRaw.value.filter((q) => q.queueId === event.queueId);
+        pendingQueueAnchors.delete(event.queueId);
+        queuedTurnsRaw.value = clearingAll
+          ? queuedTurnsRaw.value.filter((q) => q.threadId !== event.threadId)
+          : queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId);
+        const droppedIds = new Set<string>();
+        for (const q of dropped) {
+          if (q.blockId) droppedIds.add(q.blockId);
+        }
+        if (droppedIds.size > 0) {
+          blocks.value = blocks.value.filter((b) => !droppedIds.has(b.id));
+        }
         break;
+      }
       case "turn.promoted":
-        // The backend handed the row to the adapter as a real turn — the chip
+        // The backend handed the row to the adapter as a real turn — the row
         // is consumed. (turn.promoted is the authoritative "row gone" signal:
         // it only fires after the adapter accepted the send and the store
         // marked the row promoted, so a failed promotion never clears the
-        // chip. The user block is already in the transcript; turn.started
-        // brings the reply.)
+        // row. Dropping the row unhides its optimistic block in the timeline;
+        // turn.started brings the reply.)
         queuedTurnsRaw.value = queuedTurnsRaw.value.filter(
           (q) => q.queueId !== event.queueId,
         );
@@ -696,10 +733,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   /** Re-seed this session's queued follow-ups from the bridge, for a thread
    *  that just adopted a stored identity (rehydrate / openStored) — the rows
    *  are durable (they survive crashes), but the queue events are not
-   *  journaled, so a reloaded renderer must rebuild the chips by an explicit
+   *  journaled, so a reloaded renderer must rebuild the strip by an explicit
    *  query. Best-effort all the way down, exactly like seedSpawnedChildren:
    *  a missing bridge method, a rejected query, or a thread id that moved on
-   *  while the query was in flight all leave the chips as they are. */
+   *  while the query was in flight all leave the strip as they are. */
   function seedQueuedTurns(api: NonNullable<ReturnType<typeof bridge>>): void {
     // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
     const query = (api as KoneAgentApi & QueueBridge).queuedTurns;
@@ -730,7 +767,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         queuedTurnsRaw.value = entries;
       })
       .catch(() => {
-        // Best-effort: live queue events will fill the chips in as they land.
+        // Best-effort: live queue events will fill the strip in as they land.
       });
   }
 
@@ -814,7 +851,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         title.value = meta.title?.trim() || title.value;
         adoptStoredThread(meta);
         seedSpawnedChildren();
-        // The queue rows survive crashes — rebuild the chips from the bridge.
+        // The queue rows survive crashes — rebuild the strip from the bridge.
         seedQueuedTurns(api);
       }
     } catch {
@@ -901,7 +938,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  draft, so there is nothing to recover, only something to explain.
    *
    *  Only ever called on the blocked path. The unblocked send must not await
-   *  anything before pushing the user block — the queued-chip anchoring reads
+   *  anything before pushing the user block — the queued-row anchoring reads
    *  that block in the same tick as the call. */
   async function recheckBeforeRefusing(): Promise<boolean> {
     await providers.refresh().catch(() => {});
@@ -1070,7 +1107,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     adoptStoredThread(meta); // also restores the persisted context-meter snapshot
     error.value = null;
     seedSpawnedChildren();
-    // The queue rows survive crashes — rebuild the chips from the bridge.
+     // The queue rows survive crashes — rebuild the strip from the bridge.
     seedQueuedTurns(api);
     deferStart();
   }
@@ -1082,7 +1119,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  There is NO busy early-return: a send while a turn runs is durably
    *  enqueued by the service (it emits turn.queued and acks with the queue id
    *  as turnId). The user block is already pushed before the call, so the
-   *  queued chip anchors to it — via the ack record below (the store journals
+   *  queued row anchors to it — via the ack record below (the store journals
    *  the block under its own id, which the turn.queued event carries). */
   async function send(text: string, attachments?: ChatAttachment[]): Promise<void> {
     const trimmed = text.trim();
@@ -1113,7 +1150,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (!api) {
       // Browser dev: with no live turn, stream the canned reply. While the
       // mock turn runs a send can't start a second concurrent turn — park a
-      // chip exactly like the real queue does (the mock consumes it when the
+      // row exactly like the real queue does (the mock consumes it when the
       // turn settles; see mockQueueFollowUp).
       if (busy.value) {
         mockQueueFollowUp(blockId, "queue");
@@ -1144,7 +1181,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (files.length) turn.attachments = files;
       const result = await api.sendTurn(turn);
       // A busy send was durably enqueued — the ack's turnId IS the queue id.
-      // Remember which local block it belongs to so the turn.queued chip can
+      // Remember which local block it belongs to so the turn.queued row can
       // anchor to it (the store journals the block under its own id).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
@@ -1224,7 +1261,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (files.length) turn.attachments = files;
       const result = await steer(turn);
       // A steer that fell back to the durable queue acks with the queue id —
-      // record the anchor so its chip finds this block (a live-steer ack is
+      // record the anchor so its row finds this block (a live-steer ack is
       // the adapter's turn id and never produces a queue event; it's pruned
       // at the next turn boundary).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
@@ -1235,8 +1272,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
   }
 
-  /** Cancel one queued follow-up (user-initiated drop from the chips). The
-   *  backend emits turn.queued-cancelled; the chip clears on that event. */
+  /** Cancel one queued follow-up (user-initiated drop from the strip). The
+   *  backend emits turn.queued-cancelled; the row clears on that event. */
   async function cancelQueuedTurn(queueId: string): Promise<void> {
     const api = bridge();
     // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
@@ -1586,9 +1623,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // on a multi-column board isn't necessarily the active one.
     spawnedChildren,
     // Durable follow-ups queued behind the running turn — the composer's
-    // chips and the thread view's per-block badges read these (the strip
-    // reads the focused session's own ref; the composer reads the manager's
-    // active projection).
+    // strip reads these (the strip reads the focused session's own ref; the
+    // composer reads the manager's active projection).
     queuedTurns,
     pendingUserInput,
     pendingApproval,
@@ -2011,7 +2047,7 @@ export function useAgent(options: UseAgentOptions) {
   );
   const busy = computed(() => active.value?.busy.value ?? false);
   /** The active thread's queued follow-ups (display positions) — what the
-   *  composer's chips read; matches the `busy` projection it sits beside. */
+   *  composer's strip reads; matches the `busy` projection it sits beside. */
   const queuedTurns = computed<QueuedTurnEntry[]>(() => active.value?.queuedTurns.value ?? []);
   const error = computed(() => active.value?.error.value ?? null);
   const warning = computed(() => active.value?.warning.value ?? null);
@@ -2061,7 +2097,7 @@ export function useAgent(options: UseAgentOptions) {
   const steerTurn = async (text: string, attachments?: ChatAttachment[]) => {
     await active.value?.steerTurn(text, attachments);
   };
-  /** Cancel one durably queued follow-up (the composer chips' ✕). */
+  /** Cancel one durably queued follow-up (the composer strip's ✕). */
   const cancelQueuedTurn = async (queueId: string) => {
     await active.value?.cancelQueuedTurn(queueId);
   };

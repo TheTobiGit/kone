@@ -133,12 +133,6 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   await s.send(text, await upload(files));
 }
 
-async function onSteer(text: string, files?: File[]): Promise<void> {
-  const s = session.value;
-  if (!s) return;
-  await s.steerTurn(text, await upload(files));
-}
-
 /** Attachments go up one at a time and a failed one is dropped rather than
  *  sinking the whole message — a picture that would not upload is not a reason
  *  to lose what you typed. */
@@ -175,7 +169,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :load-failed="session?.transcriptLoadFailed.value"
         :loading="starting"
         :busy="busy"
-        :queued="queued"
         :has-older="session?.hasOlder.value"
         :loading-older="session?.loadingOlder.value"
         :older-error="session?.olderError.value"
@@ -191,7 +184,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     <!-- Laid over the transcript rather than under it, the way it is on the
          board: the composer keeps its own footprint and the conversation
          scrolls behind it, so the thread does not resize every time the card
-         opens or a queued chip appears. -->
+         opens or a queued strip appears. -->
     <div class="live__dock">
       <ProviderHealthBanner
         class="live__banner"
@@ -222,7 +215,6 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :picking="composer.pickerOpen.value"
         :blocked-reason="composer.sendBlockedReason.value"
         @send="onSend"
-        @steer="onSteer"
         @remove-queued="session?.cancelQueuedTurn($event)"
         @interrupt="session?.interrupt()"
         @update:agent-id="composer.onAgentPick"

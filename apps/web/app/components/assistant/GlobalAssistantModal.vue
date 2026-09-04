@@ -215,12 +215,6 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   // (and its place in the order) can change.
   void refreshThreads();
 }
-
-async function onSteer(text: string, files?: File[]): Promise<void> {
-  const s = session.value;
-  if (!s) return;
-  await s.steerTurn(text, await upload(files));
-}
 </script>
 
 <template>
@@ -406,7 +400,7 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
         </div>
 
         <!-- The inbox thread, unchanged: transcript under a composer laid over
-             it, so the conversation does not resize every time a queued chip
+             it, so the conversation does not resize every time a queued strip
              appears or the card grows a line. -->
         <div class="live">
           <div
@@ -426,7 +420,6 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
               :load-failed="session?.transcriptLoadFailed.value"
               :loading="starting"
               :busy="busy"
-              :queued="queued"
               :has-older="session?.hasOlder.value"
               :loading-older="session?.loadingOlder.value"
               :older-error="session?.olderError.value"
@@ -465,7 +458,6 @@ async function onSteer(text: string, files?: File[]): Promise<void> {
               :picking="composer.pickerOpen.value"
               :blocked-reason="composer.sendBlockedReason.value"
               @send="onSend"
-              @steer="onSteer"
               @remove-queued="session?.cancelQueuedTurn($event)"
               @interrupt="session?.interrupt()"
               @update:model-id="composer.onModelId"

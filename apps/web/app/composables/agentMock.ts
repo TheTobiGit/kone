@@ -104,7 +104,7 @@ export function createMockTurnRunner(deps: {
     };
   }
 
-  /** Browser dev only: a send/steer while the mock turn runs parks a chip
+  /** Browser dev only: a send/steer while the mock turn runs parks a row
    *  exactly like the real durable queue (the mock can't run two concurrent
    *  turns). The chip anchors by the local block id — the mock hands the
    *  renderer's own id back as userBlockId, which the real store can't. */

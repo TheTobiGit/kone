@@ -5,7 +5,6 @@ import { HugeiconsIcon } from "@hugeicons/vue";
 import {
   AiBrain01Icon,
   BubbleChatTemporaryIcon,
-  CornerDownRightIcon,
   FlashIcon,
   Folder01Icon,
   GitBranchIcon,
@@ -43,7 +42,8 @@ import {
 // never swaps one element out for another.
 //
 // It's now wired: it sends the draft to the agent session (via @send), and the
-// seed turns into a stop button while a turn is in flight. Both model controls
+// seed is a stop button while a turn is in flight — until there is a draft,
+// when it becomes a send that queues behind the running turn. Both model controls
 // sit on the RIGHT of the field: the model picker (each family with its own
 // provider logomark) and — only when the chosen model exposes more than one —
 // The effort has no dropdown: clicking the brain CYCLES to the next real effort
@@ -80,8 +80,8 @@ const props = defineProps<{
   /** A turn is running — the send seed becomes a stop, Enter is inert. */
   busy?: boolean;
   /** Follow-ups durably queued behind the running turn (AgentService). The
-   *  chips render from these — the host owns the queue (send while busy
-   *  enqueues; cancel/steer round-trip through the bridge). */
+   *  strip above the card renders from these — the host owns the queue (send
+   *  while busy enqueues; cancel/steer round-trip through the bridge). */
   queued?: QueuedTurnEntry[];
   /** The full model picker is open (hosted by the parent, outside our dock).
    *  While it is, a click in it — or on its scrim — must NOT collapse us. */
@@ -135,11 +135,7 @@ const emit = defineEmits<{
   /** The draft, plus any picked files. The parent uploads the files (scoped to
    *  the final thread) and hands the resulting metadata to the agent turn. */
   send: [text: string, files?: File[]];
-  /** Steer the draft into the RUNNING turn — same turn, no new boundary. The
-   *  parent routes it to the provider's live-steer channel (or the queue
-   *  when the provider has none). */
-  steer: [text: string, files?: File[]];
-  /** Drop one durably queued follow-up (the chips' ✕). */
+  /** Drop one durably queued follow-up (the strip's ✕). */
   "remove-queued": [queueId: string];
   interrupt: [];
   /** null hands the turn to a guest — see `agentId`. */
@@ -622,8 +618,10 @@ function dispatchDraft() {
 }
 
 function send() {
-  // While a turn runs the seed is a stop button.
-  if (props.busy) {
+  // While a turn runs the seed is a stop — until there is a draft, when it
+  // becomes a send: typing arms it, and the send queues behind the running
+  // turn rather than interrupting it.
+  if (props.busy && !armed.value) {
     emit("interrupt");
     cue("press");
     return;
@@ -635,19 +633,6 @@ function send() {
  *  stop and never a local park. */
 function submitOrQueue() {
   dispatchDraft();
-}
-
-/** Steer the draft into the RUNNING turn (the seed's stop button stays a
- *  stop; this is the separate "send now" action beside it). */
-function steer() {
-  const draft = text.value.trim();
-  const files = attachments.value.map((a) => a.file);
-  if (!draft && !files.length) return;
-  emit("steer", draft, files.length ? files : undefined);
-  cue("send");
-  clearEditor();
-  clearAttachments();
-  syncSoon();
 }
 
 /** The chip label — the queued prompt's own words, or a compact attachment
@@ -733,13 +718,14 @@ defineExpose({ wake, setDraft, focus });
     </div>
 
     <!-- Queued follow-ups — while a turn runs, Enter sends and the host's
-         service durably queues the draft behind the running turn. The chips
-         render from the `queued` prop (the backend's turn.queued /
+         service durably queues the draft behind the running turn. The strip
+         renders from the `queued` prop (the backend's turn.queued /
          turn.promoted / turn.queued-cancelled events drive the list); the ✕
-         cancels one row (remove-queued → agent:queue-cancel). -->
+         cancels one row (remove-queued → agent:queue-cancel). It sits ABOVE
+         the card in the same strip language as the context tray below it —
+         the queued prompts live here until they promote, never in the thread. -->
     <Transition name="queue">
       <div v-if="queued?.length" class="queue" role="region" aria-label="Queued messages">
-        <span class="queue__head">Queued</span>
         <div
           v-for="item in queued"
           :key="item.queueId"
@@ -988,35 +974,21 @@ defineExpose({ wake, setDraft, focus });
               {{ currentWindow.label }}
             </button>
 
-            <!-- Steer — while a turn runs the seed is a stop and Enter queues;
-                 this is the third path: inject the draft into the LIVE turn (no
-                 new boundary). The provider's steer channel delivers it when it
-                 builds its next request; providers without one queue it first. -->
-            <button
-              v-if="busy && open"
-              type="button"
-              class="steer"
-              :class="{ 'steer--armed': armed }"
-              :disabled="!armed"
-              :aria-label="'Send now — steer the running turn'"
-              :title="'Send now — steer the running turn'"
-              :tabindex="open ? 0 : -1"
-              @mousedown.prevent
-              @click.stop="steer"
-            >
-              <HugeiconsIcon :icon="CornerDownRightIcon" :size="16" :stroke-width="2" />
-            </button>
+            <!-- The seed: a stop while a turn runs and the field is empty, a
+                 send the moment there is a draft (typing arms it — the send
+                 queues behind the running turn). -->
             <button
               type="button"
               class="seed"
-              :class="{ 'seed--armed': armed && !busy }"
-              :aria-label="busy ? 'Stop' : 'Send'"
+              :class="{ 'seed--armed': armed }"
+              :aria-label="busy && !armed ? 'Stop' : 'Send'"
               :tabindex="open ? 0 : -1"
               @mousedown.prevent
               @click.stop="send"
             >
-              <!-- Stop square while a turn runs; the send arrow otherwise. -->
-              <svg v-if="busy" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
+              <!-- Stop square while a turn runs with nothing to send; the send
+                   arrow otherwise. -->
+              <svg v-if="busy && !armed" class="seed__stop" viewBox="0 0 18 18" aria-hidden="true">
                 <rect x="5" y="5" width="8" height="8" rx="2" fill="var(--accent-ink)" />
               </svg>
               <svg v-else class="seed__arrow" viewBox="0 0 18 18" aria-hidden="true">
@@ -1156,34 +1128,41 @@ defineExpose({ wake, setDraft, focus });
   pointer-events: auto;
 }
 
-/* The queued-message panel — a small card riding above the dock while a turn
-   runs. Same surface language as the chips: quiet, rounded, ink-tinted. */
+/* The queued-message strip — follow-ups parked behind the running turn. The
+   mirror of the context tray below the card: the same sunken slab, the same
+   small type, tucked in behind the card's edge so it reads as ground the
+   composer is standing on. The tray tucks under the card's floor (rounded
+   bottom, pulled up); this tucks under its roof (rounded top, pulled down) —
+   the card's own layer covers the overlap, which is the whole tuck. */
 .queue {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 12px);
-  z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 260px;
-  max-width: 380px;
-  padding: 8px;
-  border-radius: 14px;
-  background: var(--raised);
-  box-shadow:
-    rgb(0 0 0 / 0.10) 0 8px 28px -6px,
-    rgb(0 0 0 / 0.06) 0 2px 8px -2px,
-    var(--line) 0 0 0 1px;
+  gap: 2px;
+  /* Narrower than the card, like the tray, so it reads as something the card
+     is standing under rather than a second bar bolted to its top. */
+  width: calc(100% - 26px);
+  /* No z-index of its own, on purpose — same reason as the tray. The card is
+     already lifted above by its own z-index, which is all the tuck needs. */
+  overflow: hidden;
+  margin-bottom: -14px;
+  padding: 6px 8px 20px;
+  border-radius: 18px 18px 0 0;
+  background: var(--sunken);
   pointer-events: auto;
 }
-.queue__head {
-  padding: 0 6px 2px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
+.queue__item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--faint);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 14px;
+  white-space: nowrap;
 }
 .queue__pos {
   display: inline-flex;
@@ -1201,22 +1180,14 @@ defineExpose({ wake, setDraft, focus });
   font-weight: 700;
   line-height: 1;
 }
-.queue__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
-}
 .queue__text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
   color: var(--ink);
+  opacity: 0.62;
 }
 .queue__remove {
   display: inline-flex;
@@ -1735,35 +1706,6 @@ html.dark .dock {
 .seed:hover { transform: scale(1.06); }
 .seed:active { transform: scale(0.94); }
 .seed__arrow { width: 15px; height: 15px; }
-
-/* Steer — the secondary "send now" beside the seed while a turn runs. A
-   quiet round sibling: same pill language, no sheen, ink-tinted; disabled
-   (empty field) it reads as part of the rail. */
-.steer {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  margin-right: 4px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
-  color: var(--muted);
-  cursor: pointer;
-  transition: box-shadow 0.3s ease, transform 0.2s ease, color 0.2s ease;
-}
-.steer--armed {
-  color: var(--ink);
-  box-shadow: rgb(var(--chrome-ring) / 0.12) 0 0 0 3px;
-}
-.steer:hover:not(:disabled) { transform: scale(1.06); }
-.steer:active:not(:disabled) { transform: scale(0.94); }
-.steer:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
 
 /* ── Chips ────────────────────────────────────────────────────────────────── */
 /* Attachment chips ride above the text, on the field's own left margin so the

@@ -220,14 +220,6 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   }
 }
 
-/** In the window between the first send and the handover there is a turn in
- *  flight, so there is something to steer. */
-async function onSteer(text: string, files?: File[]): Promise<void> {
-  const s = session.value;
-  if (!s) return;
-  await s.steerTurn(text, await upload(files));
-}
-
 /** A failed attachment is dropped rather than sinking the whole message — a
  *  picture that would not upload is not a reason to lose what you typed. */
 async function upload(files?: File[]): Promise<ChatAttachment[]> {
@@ -313,7 +305,6 @@ defineExpose({ focus });
         :context-window="composer.contextWindow.value"
         :blocked-reason="composer.sendBlockedReason.value"
         @send="onSend"
-        @steer="onSteer"
         @remove-queued="session?.cancelQueuedTurn($event)"
         @interrupt="session?.interrupt()"
         @update:agent-id="composer.onAgentPick"
