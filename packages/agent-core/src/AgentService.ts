@@ -24,9 +24,19 @@ import {
   readProviderCache,
   type ProviderSurfaceSnapshot,
 } from "./providerCache.js";
-import { providerStatusesEqual, stabilizeProviderStatuses } from "./providerHealth.js";
+import {
+  disabledProviderStatus,
+  providerStatusesEqual,
+  stabilizeProviderStatuses,
+  statusEnabled,
+} from "./providerHealth.js";
 import { resolveProviderMaintenance, runProviderUpdate } from "./providerMaintenance.js";
-import { readProviderSettings, writeProviderSettings } from "./providerSettings.js";
+import {
+  assertProviderEnabled,
+  isProviderEnabled,
+  readProviderSettings,
+  writeProviderSettings,
+} from "./providerSettings.js";
 import { sidechatBootstrapForTurn } from "./sidechat.js";
 import { subagentWakePrompt } from "./subagentWake.js";
 // Resolved at call time, not imported as a value binding: the dispatcher is
@@ -345,7 +355,14 @@ export class AgentService {
    *  a cold launch present a provider list that's actually usable rather than
    *  one that only *looks* populated. Empty on a first-ever run. */
   cachedSurface(): ProviderSurfaceSnapshot {
-    return readProviderCache();
+    const surface = readProviderCache();
+    const settings = readProviderSettings();
+    const statuses = surface.statuses.map((status) =>
+      isProviderEnabled(status.provider, settings)
+        ? { ...status, enabled: statusEnabled(status) }
+        : disabledProviderStatus(status.provider, status.label),
+    );
+    return { ...surface, statuses };
   }
 
   /** Probe every provider on the user's machine — what's installed + logged in.
@@ -360,8 +377,22 @@ export class AgentService {
     // otherwise pay for that twice and race each other to the disk snapshot.
     this.discovering ??= (async () => {
       try {
-        const probed = await Promise.all([...this.adapters.values()].map((a) => a.discover()));
-        const statuses = stabilizeProviderStatuses(readProviderCache().statuses, probed);
+        const settings = readProviderSettings();
+        const cached = readProviderCache().statuses;
+        const probed = await Promise.all(
+          [...this.adapters.values()].map(async (a) => {
+            if (!isProviderEnabled(a.provider, settings)) {
+              const prev = cached.find((s) => s.provider === a.provider);
+              return disabledProviderStatus(a.provider, prev?.label ?? a.provider);
+            }
+            const status = await a.discover();
+            return {
+              ...status,
+              enabled: statusEnabled(status),
+            };
+          }),
+        );
+        const statuses = stabilizeProviderStatuses(cached, probed);
         this.publishStatuses(statuses);
         return statuses;
       } finally {
@@ -453,8 +484,13 @@ export class AgentService {
    *  so the next discover / session picks up the change without a restart.
    *  Returns the full updated map. */
   setProviderSettings(provider: ProviderKind, config: ProviderConfig): ProviderSettingsMap {
+    const prevSettings = readProviderSettings();
+    const wasEnabled = isProviderEnabled(provider, prevSettings);
     const next = writeProviderSettings(provider, config);
     this.adapters.get(provider)?.setConfig?.(next[provider] ?? {});
+    if (wasEnabled !== isProviderEnabled(provider, next)) {
+      void this.discover();
+    }
     return next;
   }
 
@@ -597,6 +633,7 @@ export class AgentService {
   }
 
   async startSession(input: SessionStartInput): Promise<Session> {
+    assertProviderEnabled(readProviderSettings(), input.provider);
     this.sessionInputs.set(input.threadId, input);
     if (input.fallbacks && input.fallbacks.length > 0) {
       this.threadFallbacks.set(input.threadId, input.fallbacks);
@@ -635,6 +672,7 @@ export class AgentService {
     // sets `session.model = input.model`), so guarding startSession alone left
     // the desync fully live — every turn re-supplied the foreign id.
     const provider = this.routing.get(input.threadId);
+    if (provider) assertProviderEnabled(readProviderSettings(), provider);
     // A side chat's FIRST turn carries the one-shot `<sidechat_context>`
     // bootstrap (sidechat.ts): the imported transcript as reference-only
     // context, the boundary instruction, and the user's message wrapped in
@@ -687,6 +725,15 @@ export class AgentService {
    *  running turn or start one. */
   isThreadBusy(threadId: string): boolean {
     return this.isBusy(threadId);
+  }
+
+  /** Whether the Antigravity ACP server resolves on this machine — the spawn
+   *  guard's mode-floor input (an ACP-served child may run below full-access;
+   *  a print-served one may not). False for test doubles and non-facade
+   *  registrations. */
+  isAntigravityAcpAvailable(): boolean {
+    const adapter = this.adapters.get("antigravity");
+    return adapter instanceof AntigravityAdapter && adapter.acpAvailable();
   }
 
   /** Hand one turn to the thread's adapter, holding the in-flight marker for

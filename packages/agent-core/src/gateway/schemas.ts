@@ -1606,3 +1606,162 @@ export const START_APP_THREAD_JSON_SCHEMA = {
 export type ListAppThreadsInput = z.infer<typeof ListAppThreadsInputSchema>;
 export type ReadAppThreadInput = z.infer<typeof ReadAppThreadInputSchema>;
 export type StartAppThreadInput = z.infer<typeof StartAppThreadInputSchema>;
+
+// ── providers & usage ────────────────────────────────────────────────────────
+
+export const USAGE_RANGES = ["1d", "7d", "30d", "all"] as const;
+
+export const GetAppProviderStatusInputSchema = z.object({
+  provider: z
+    .enum(PROVIDER_KINDS)
+    .optional()
+    .describe(
+      "Filter status to a single provider. Omit to report all installed and supported providers.",
+    ),
+  checkLatest: z
+    .boolean()
+    .optional()
+    .describe(
+      "Check remote registries to see if CLI versions are up-to-date (default false). Setting true reaches the network; leave false for an instantaneous offline read.",
+    ),
+  includeModels: z
+    .boolean()
+    .optional()
+    .describe(
+      "Include the detailed model catalog, context windows, and reasoning effort tiers for each provider (default true).",
+    ),
+});
+
+export const GET_APP_PROVIDER_STATUS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    provider: {
+      type: "string",
+      enum: [...PROVIDER_KINDS],
+      description:
+        "Filter status to a single provider. Omit to report all installed and supported providers.",
+    },
+    checkLatest: {
+      type: "boolean",
+      description:
+        "Check remote registries to see if CLI versions are up-to-date (default false). Setting true reaches the network; leave false for an instantaneous offline read.",
+    },
+    includeModels: {
+      type: "boolean",
+      description:
+        "Include the detailed model catalog, context windows, and reasoning effort tiers for each provider (default true).",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const GetAppUsageReportInputSchema = z.object({
+  range: z
+    .enum(USAGE_RANGES)
+    .optional()
+    .describe(
+      "Time range for token spend totals and trends: '1d', '7d' (default), '30d', or 'all'.",
+    ),
+  project: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Scope spend to a specific project by absolute path or project name. Omit to report global spend across all projects.",
+    ),
+  includeQuota: z
+    .boolean()
+    .optional()
+    .describe(
+      "Query subscription rate limits and rolling quota windows for capable providers (default true). Reports used/limit numbers and reset countdowns.",
+    ),
+  provider: z
+    .enum(PROVIDER_KINDS)
+    .optional()
+    .describe(
+      "Filter usage and quota metrics to a single provider. Omit to report across all providers.",
+    ),
+});
+
+export const GET_APP_USAGE_REPORT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    range: {
+      type: "string",
+      enum: [...USAGE_RANGES],
+      description:
+        "Time range for token spend totals and trends: '1d', '7d' (default), '30d', or 'all'.",
+    },
+    project: {
+      type: "string",
+      description:
+        "Scope spend to a specific project by absolute path or project name. Omit to report global spend across all projects.",
+    },
+    includeQuota: {
+      type: "boolean",
+      description:
+        "Query subscription rate limits and rolling quota windows for capable providers (default true). Reports used/limit numbers and reset countdowns.",
+    },
+    provider: {
+      type: "string",
+      enum: [...PROVIDER_KINDS],
+      description:
+        "Filter usage and quota metrics to a single provider. Omit to report across all providers.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export type GetAppProviderStatusInput = z.infer<typeof GetAppProviderStatusInputSchema>;
+export type GetAppUsageReportInput = z.infer<typeof GetAppUsageReportInputSchema>;
+
+export const SetAppProviderEnabledInputSchema = z.object({
+  provider: z
+    .enum(PROVIDER_KINDS)
+    .describe("The provider to enable or disable across the app."),
+  enabled: z
+    .boolean()
+    .describe(
+      "true to enable the provider across the app; false to disable it entirely (stopping turn dispatches, subagent spawns, and warmup).",
+    ),
+});
+
+export const SET_APP_PROVIDER_ENABLED_JSON_SCHEMA = {
+  type: "object",
+  required: ["provider", "enabled"],
+  properties: {
+    provider: {
+      type: "string",
+      enum: [...PROVIDER_KINDS],
+      description: "The provider to enable or disable across the app.",
+    },
+    enabled: {
+      type: "boolean",
+      description:
+        "true to enable the provider across the app; false to disable it entirely (stopping turn dispatches, subagent spawns, and warmup).",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const UpdateAppProviderInputSchema = z.object({
+  provider: z
+    .enum(PROVIDER_KINDS)
+    .describe(
+      "The provider whose CLI should be updated via its detected package manager (npm, brew, etc.).",
+    ),
+});
+
+export const UPDATE_APP_PROVIDER_JSON_SCHEMA = {
+  type: "object",
+  required: ["provider"],
+  properties: {
+    provider: {
+      type: "string",
+      enum: [...PROVIDER_KINDS],
+      description:
+        "The provider whose CLI should be updated via its detected package manager (npm, brew, etc.).",
+    },
+  },
+} satisfies GatewayRecord;
+
+export type SetAppProviderEnabledInput = z.infer<typeof SetAppProviderEnabledInputSchema>;
+export type UpdateAppProviderInput = z.infer<typeof UpdateAppProviderInputSchema>;
+

@@ -21,6 +21,10 @@ const KNOWN_PROVIDERS: ProviderKind[] = ["codex", "claudeAgent", "opencode", "cu
 
 const ProviderConfigWire = z.object({
   binaryPath: z.string().trim().min(1).optional(),
+  antigravityAuthMethod: z.string().trim().min(1).optional(),
+  antigravityGcpProject: z.string().trim().min(1).optional(),
+  antigravityGcpLocation: z.string().trim().min(1).optional(),
+  enabled: z.boolean().optional(),
 });
 
 const ProviderSettingsWire = z.record(z.string(), ProviderConfigWire);
@@ -32,16 +36,29 @@ function settingsFilePath(): string {
 }
 
 /** Keep only the fields we recognise, dropping anything malformed on disk so a
- *  hand-edited or version-skewed file can never feed junk into an adapter. */
+ *  hand-edited or version-skewed file can never feed junk into an adapter.
+ *  `enabled` decodes to true when absent — being switched off is opt-in, so a
+ *  settings file from before the toggle existed (or one that only stores a
+ *  binary path) reads as fully enabled. */
 function sanitize(raw: JsonValue | null | undefined): ProviderSettingsMap {
   const parsed = ProviderSettingsWire.safeParse(raw);
   if (!parsed.success) return {};
   const out: ProviderSettingsMap = {};
   for (const provider of KNOWN_PROVIDERS) {
     const entry = parsed.data[provider];
-    if (entry?.binaryPath) {
-      out[provider] = { binaryPath: entry.binaryPath };
+    if (!entry) continue;
+    const clean: ProviderConfig = { enabled: entry.enabled ?? true };
+    if (entry.binaryPath) clean.binaryPath = entry.binaryPath;
+    // Auth-method fields only ever persist for Antigravity — other providers
+    // have no use for them and must not carry them.
+    if (provider === "antigravity") {
+      if (entry.antigravityAuthMethod) clean.antigravityAuthMethod = entry.antigravityAuthMethod;
+      if (entry.antigravityGcpProject) clean.antigravityGcpProject = entry.antigravityGcpProject;
+      if (entry.antigravityGcpLocation) clean.antigravityGcpLocation = entry.antigravityGcpLocation;
     }
+    // `enabled` is always set (decoded to true when absent), so every entry
+    // that reaches this point is worth keeping.
+    out[provider] = clean;
   }
   return out;
 }
@@ -71,7 +88,10 @@ export function writeProviderSettings(
 ): ProviderSettingsMap {
   const next = { ...readProviderSettings() };
   const clean = sanitize({ [provider]: config })[provider];
-  if (clean && Object.keys(clean).length) next[provider] = clean;
+  // `sanitize` always decodes a known provider to a definite entry (at minimum
+  // `{ enabled: true }`), so a write never deletes — clearing every field is
+  // the same as the default, and the entry says so explicitly.
+  if (clean) next[provider] = clean;
   else delete next[provider];
   cache = next;
   try {
@@ -80,4 +100,34 @@ export function writeProviderSettings(
     // Persisting is best-effort; never crash the app over a settings write.
   }
   return next;
+}
+
+/** Whether a provider is enabled in app settings (opt-out; default is true). */
+export function isProviderEnabled(
+  provider: ProviderKind,
+  settings: ProviderSettingsMap = readProviderSettings(),
+): boolean {
+  return settings[provider]?.enabled !== false;
+}
+
+/** Enable or disable a provider across the app and persist the change. */
+export function setProviderEnabled(
+  provider: ProviderKind,
+  enabled: boolean,
+): ProviderSettingsMap {
+  const current = readProviderSettings()[provider] ?? {};
+  return writeProviderSettings(provider, { ...current, enabled });
+}
+
+/** Throw the canonical "provider is disabled" error unless the provider is
+ *  enabled in the given settings. The single enforcement point for the send
+ *  path — startSession and follow-up turns share this message verbatim so a
+ *  disabled provider fails identically wherever the turn is gated. */
+export function assertProviderEnabled(
+  settings: ProviderSettingsMap,
+  provider: ProviderKind,
+): void {
+  if (!isProviderEnabled(provider, settings)) {
+    throw new Error(`Provider "${provider}" is disabled in app settings.`);
+  }
 }

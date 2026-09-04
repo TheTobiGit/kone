@@ -431,6 +431,10 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_list_threads",
       "app_read_thread",
       "app_start_thread",
+      "app_get_provider_status",
+      "app_get_usage_report",
+      "app_set_provider_enabled",
+      "app_update_provider",
     ]);
 
     // Every tool it was handed is one the host-context block will name — the

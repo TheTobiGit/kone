@@ -100,6 +100,32 @@ export function versionProbeUsable(
   return result.outcome === "nonzero" && version !== null && version !== undefined;
 }
 
+/** The definite enabled flag for a status row. Rows decoded from the disk cache
+ *  predate the toggle and carry no `enabled` field — absent reads as enabled,
+ *  the same opt-out default the settings decode applies. This is the only
+ *  place that interprets the optional wire field; everything else reads the
+ *  boolean this returns. */
+export function statusEnabled(status: Pick<ProviderStatus, "enabled">): boolean {
+  return status.enabled !== false;
+}
+
+/** The status row for a provider switched off in app settings. The single
+ *  factory behind cachedSurface and discover, so a disabled provider looks
+ *  identical whether the row came off disk or from a skipped probe: not
+ *  available, `disabled` readiness, and the settings message that
+ *  `providerUnavailableReason` would otherwise derive. */
+export function disabledProviderStatus(provider: ProviderKind, label: string): ProviderStatus {
+  return {
+    provider,
+    label,
+    available: false,
+    authStatus: "unknown",
+    readiness: "disabled",
+    enabled: false,
+    message: "Provider is disabled in app settings",
+  };
+}
+
 /** True when a row is one we'd let the user send a turn on. */
 function wasUsable(status: ProviderStatus): boolean {
   return status.available && status.readiness === "ready";
@@ -115,6 +141,7 @@ const COMPARED = {
   available: "available",
   authStatus: "authStatus",
   readiness: "readiness",
+  enabled: "enabled",
   version: "version",
   authLabel: "authLabel",
   message: "message",
@@ -211,6 +238,8 @@ export function providerUnavailableReason(status: ProviderStatus): string {
       return `${status.label} is installed but not signed in.`;
     case "error":
       return `${status.label} is not usable right now.`;
+    case "disabled":
+      return `${status.label} is disabled in app settings.`;
     case "ready":
       // `available: false` on an otherwise ready row — no probe writes this, but
       // the union permits it and a silent empty reason would be worse.
