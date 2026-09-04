@@ -652,7 +652,7 @@ export type KoneSystemApi = {
 
 export type ProviderKind = "codex" | "claudeAgent" | "cursor" | "opencode" | "droid" | "antigravity";
 export type AuthStatus = "authenticated" | "unauthenticated" | "unknown";
-export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error";
+export type ProviderReadiness = "ready" | "needs-login" | "not-installed" | "error" | "disabled";
 
 export type ProviderStatus = {
   provider: ProviderKind;
@@ -660,6 +660,7 @@ export type ProviderStatus = {
   available: boolean;
   authStatus: AuthStatus;
   readiness: ProviderReadiness;
+  enabled?: boolean;
   version?: string;
   authLabel?: string;
   message?: string;
@@ -673,6 +674,8 @@ export type ProviderConfig = {
    *  back to the adapter default (`codex` / `opencode`); ignored by providers
    *  with no external binary (Claude). */
   binaryPath?: string;
+  /** Whether the provider is enabled across the app (default: true). */
+  enabled?: boolean;
 };
 
 export type ProviderSettingsMap = Partial<Record<ProviderKind, ProviderConfig>>;
@@ -1144,6 +1147,10 @@ export type RuntimeEventSource =
   | "antigravity.cli.event"
   | "antigravity.cli.stderr"
   | "antigravity.cli.lifecycle"
+  // Antigravity ACP (`agy_acp_server` stdio): `notification` = a
+  // `session/update` notification, `lifecycle` = process/session start+exit.
+  | "antigravity.acp.notification"
+  | "antigravity.acp.lifecycle"
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store"
   // Renderer-synthesized mock traffic (agentMock) — browser-dev only, it
@@ -1964,6 +1971,12 @@ export type SkillEntry = {
    *  model won't reach for it on its own. */
   manualOnly: boolean;
   enabled: boolean;
+  /** Whether the skill is enabled under Kone's internal visibility and execution gate. */
+  internalEnabled?: boolean;
+  /** True when this copy is shadowed by a higher-precedence copy of the same name. */
+  shadowed?: boolean;
+  /** When shadowed, points to the winning copy that shadowed it. */
+  shadowedByWinner?: SkillCopy | null;
 };
 
 /** Full per-skill detail for the skill detail view — what the list's
@@ -2031,6 +2044,8 @@ export type PluginEntry = {
   origin: string;
   scope: "user" | "project" | "plugin" | "system";
   skills: SkillEntry[];
+  /** Whether the plugin is enabled under Kone's internal settings. */
+  internalEnabled?: boolean;
 };
 
 export type InventoryError = { source: string; message: string };
@@ -2161,12 +2176,34 @@ export type SkillMutateResult = {
   detail: string;
 };
 
+export type InternalSkillsSettings = {
+  disabled: string[];
+  disabledPlugins: string[];
+};
+
 export type KoneAgentSkillsApi = {
   /** Read a skill's effective state from whatever file its CLI keeps it in. */
   readState: (query: SkillStateQuery) => Promise<SkillStateResult>;
   /** Write the state into that same file, surgically — comments, key order and
    *  formatting in the user's config survive. */
   writeState: (query: SkillStateQuery, state: WritableSkillState) => Promise<StateWriteResult>;
+  /** Read internal skills settings from backend persistence. */
+  readInternalSettings?: () => Promise<InternalSkillsSettings>;
+  /** Write internal skills settings to backend persistence. */
+  writeInternalSettings?: (
+    patch: Partial<InternalSkillsSettings>,
+  ) => Promise<InternalSkillsSettings>;
+  /** Set one skill's internal gate; the backend owns the disabled-list
+   *  matching and returns the updated settings to adopt. */
+  setSkillInternalState?: (
+    skill: { path?: string; name: string },
+    enabled: boolean,
+  ) => Promise<InternalSkillsSettings>;
+  /** Set one plugin's internal gate; same ownership as the skill variant. */
+  setPluginInternalState?: (
+    pluginIdOrDir: string,
+    enabled: boolean,
+  ) => Promise<InternalSkillsSettings>;
   /** Check one SKILL.md against the authoring rules. An unreadable path yields
    *  no findings. */
   lint: (skillMdPath: string) => Promise<SkillFinding[]>;
