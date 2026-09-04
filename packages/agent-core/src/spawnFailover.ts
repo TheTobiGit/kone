@@ -68,6 +68,7 @@ export class SpawnFailoverRunner {
         liveSpawnedTotal: counts.liveSpawnedTotal,
         providerStatus: providerStatusOf(surface.statuses, candidate.provider),
         catalog: catalogOf(surface.models, candidate.provider),
+        antigravityAcpAvailable: this.deps.providers.isAntigravityAcpAvailable?.() ?? false,
       });
       if (!check.ok) continue;
       const next: SpawnAttempt = { provider: candidate.provider };

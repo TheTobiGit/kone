@@ -32,6 +32,7 @@ mock.module("./sqlite.js", () => ({ DatabaseSync: Database }));
 
 const THREAD = "t-dispatch";
 const CWD = "/tmp/kone-dispatch";
+let lastDataDir = "";
 
 /** Records what reached the provider, and whether a live-steer channel exists
  *  — Codex/Cursor/Droid/Antigravity have none, so their steers take the queue's
@@ -99,7 +100,8 @@ async function harness(): Promise<{
   emit: EmitEvent;
   service: import("./AgentService.js").AgentService;
 }> {
-  setUserDataDir(mkdtempSync(path.join(tmpdir(), "kone-dispatch-test-")));
+  lastDataDir = mkdtempSync(path.join(tmpdir(), "kone-dispatch-test-"));
+  setUserDataDir(lastDataDir);
   const store = new ConversationStoreCtor();
   let captured: EmitEvent | undefined;
   const service = new AgentServiceCtor({
@@ -120,23 +122,29 @@ async function harness(): Promise<{
   return { store, dispatcher, emit: captured, service };
 }
 
-/** The user-visible transcript: what reopening the thread would show. */
+/** Every prompt the dispatcher journaled, id and text — the raw journal,
+ *  including prompts still waiting behind the running turn. loadThread hides
+ *  those until their queue row settles (that filtering is
+ *  conversationStore.test.ts's to pin); these tests pin that the prompt was
+ *  journaled at all. */
 function userTexts(store: StoreType): string[] {
   return userBlocks(store).map((b) => b.text);
 }
 
 /** The thread's journaled user blocks, id and text. */
-function userBlocks(store: StoreType): Array<{ id: string; text: string }> {
-  const thread = store.loadThread(THREAD);
-  if (!thread) return [];
-  const out: Array<{ id: string; text: string }> = [];
-  for (const block of thread.blocks) {
-    if (block.role !== "user") continue;
-    // SAFETY: the store's user blocks carry the prompt text.
-    const text = (block as { text?: string }).text ?? "";
-    out.push({ id: block.id, text });
+function userBlocks(_store: StoreType): Array<{ id: string; text: string }> {
+  const db = new Database(path.join(lastDataDir, "kone.sqlite"), { readonly: true });
+  try {
+    // SAFETY: the SELECT projects exactly block_id and text.
+    const rows = db
+      .prepare(
+        `SELECT block_id, text FROM blocks WHERE thread_id = ? AND role = 'user' ORDER BY seq`,
+      )
+      .all(THREAD) as Array<{ block_id: string; text: string }>;
+    return rows.map((r) => ({ id: r.block_id, text: r.text }));
+  } finally {
+    db.close();
   }
-  return out;
 }
 
 function turnStarted(emit: EmitEvent, turnId: string): void {
@@ -198,8 +206,8 @@ describe("thread dispatcher: a steer is the user speaking", () => {
 
     const steerBlock = userBlocks(store).find((b) => b.text === "steer one");
     const [row] = await service.listQueuedTurns(THREAD);
-    // The renderer hangs the queued chip off this block — anchoring it to the
-    // previous send put the chip under the wrong message.
+    // The strip hangs the queued row off this block — anchoring it to the
+    // previous send put the row under the wrong message.
     expect(row?.userBlockId).toBe(steerBlock?.id);
   });
 
