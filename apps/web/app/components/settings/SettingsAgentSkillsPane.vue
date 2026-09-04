@@ -9,6 +9,7 @@ import SkillDetailView from "~/components/skill/SkillDetailView.vue";
 import { useAgentSettings } from "~/composables/useAgentSettings";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSkills } from "~/composables/useSkills";
+import { useEdgeFade } from "~/composables/useEdgeFade";
 import type { PluginEntry, SkillEntry } from "~/types/desktop";
 
 defineProps<{ open: boolean }>();
@@ -69,6 +70,9 @@ const breadcrumb = computed(() => {
 });
 const atDetail = computed(() => !!selected.value || !!selectedPlugin.value);
 
+const detailScroller = ref<HTMLElement>();
+const { measure: detailMeasure, maskStyle: detailMaskStyle } = useEdgeFade(detailScroller);
+
 async function rescan() {
   rescanning.value = true;
   await space.refreshInventory();
@@ -82,6 +86,7 @@ async function rescan() {
     :breadcrumb="breadcrumb"
     :breadcrumb-icon="PuzzleIcon"
     label="Agent skills settings"
+    :scroll="false"
     @back="atDetail ? close() : $emit('back')"
   >
     <template #actions>
@@ -104,14 +109,25 @@ async function rescan() {
       </button>
     </template>
 
-    <SkillDetailView v-if="selected" :skill="selected" :skills="skills" @back="close()" />
-    <PluginDetailView
-      v-else-if="selectedPlugin"
-      :plugin="selectedPlugin"
-      :on-open-skill="openSkillFromPlugin"
-      @back="close()"
-    />
-    <AgentSettingsSkills v-else :space="space" :skills="skills" @open="show" @open-plugin="showPlugin" />
+    <div class="skPane">
+      <div
+        v-if="atDetail"
+        ref="detailScroller"
+        class="skPane__scroll"
+        :style="detailMaskStyle"
+        @scroll.passive="detailMeasure"
+      >
+        <SkillDetailView v-if="selected" :skill="selected" :skills="skills" @back="close()" />
+        <PluginDetailView
+          v-else-if="selectedPlugin"
+          :plugin="selectedPlugin"
+          :skills="skills"
+          :on-open-skill="openSkillFromPlugin"
+          @back="close()"
+        />
+      </div>
+      <AgentSettingsSkills v-else :space="space" :skills="skills" @open="show" @open-plugin="showPlugin" />
+    </div>
 
     <template #foot>
       Every skill found across global roots (<code>~/.claude</code> · <code>~/.codex</code> ·
@@ -124,6 +140,25 @@ async function rescan() {
 </template>
 
 <style scoped>
+.skPane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.skPane__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 0 1rem 2rem;
+}
+.skPane__scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 .sp__btn {
   display: inline-flex;
   align-items: center;

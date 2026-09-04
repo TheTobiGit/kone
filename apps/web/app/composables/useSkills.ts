@@ -1,11 +1,14 @@
 import { computed, ref, shallowRef } from "vue";
 import type {
+  InternalSkillsSettings,
+  PluginEntry,
   SkillDetail,
   SkillEntry,
   SkillMutateResult,
   SkillRootTarget,
   SkillState,
   SkillStateResult,
+  StateWriteResult,
   WritableSkillState,
 } from "~/types/desktop";
 
@@ -43,6 +46,29 @@ export function isLive(state: SkillState | undefined): boolean {
   return state === "enabled" || state === undefined;
 }
 
+/** Kone's own visibility gate for a skill, exactly as the inventory scan
+ *  annotated it — no local matching against the disabled list, which the
+ *  backend already evaluated. Absent means an older scan payload, and the
+ *  discovery default is enabled. */
+export function isKoneEnabled(skill: Pick<SkillEntry, "internalEnabled">): boolean {
+  return skill.internalEnabled ?? true;
+}
+
+/** Same gate for a plugin container. */
+export function isKonePluginEnabled(plugin: Pick<PluginEntry, "internalEnabled">): boolean {
+  return plugin.internalEnabled ?? true;
+}
+
+/** Busy keys namespace skills vs plugins so a skill and a plugin sharing a
+ *  path-shaped string never guard each other. */
+export function skillBusyKey(skill: Pick<SkillEntry, "path">): string {
+  return `skill:${skill.path}`;
+}
+
+export function pluginBusyKey(plugin: Pick<PluginEntry, "name" | "path">): string {
+  return `plugin:${plugin.name || plugin.path}`;
+}
+
 /** v1 stable — t3 parity: on/off only. Claude's four-value override
  *  (on/name-only/user-invocable-only/off) is kept in the backend for compat,
  *  but the UI only offers enabled/disabled. The backend maps the two middle
@@ -72,6 +98,161 @@ export function useSkills(projectPath: () => string | string[] | null) {
    *  is one render for a batch instead of one per row. */
   const states = shallowRef<Map<string, SkillStateResult>>(new Map(stateCache));
   const reading = ref(false);
+
+  // Last settings object the backend returned from a write, adopted verbatim —
+  // the backend owns the disabled-list matching, so kone never reconstructs
+  // the list locally. Reads come from the inventory scan's per-entry
+  // `internalEnabled` annotation (see isKoneEnabled), not from here.
+  const internalSettings = ref<InternalSkillsSettings>({ disabled: [], disabledPlugins: [] });
+
+  // One in-flight toggle per skill/plugin, keyed so two rows never serialize
+  // behind each other. A Set (not a single string) is what lets parallel
+  // toggles proceed independently.
+  const busyKeys = ref<Set<string>>(new Set());
+
+  function isSkillBusy(skill: Pick<SkillEntry, "path">): boolean {
+    return busyKeys.value.has(skillBusyKey(skill));
+  }
+
+  function isPluginBusy(plugin: Pick<PluginEntry, "name" | "path">): boolean {
+    return busyKeys.value.has(pluginBusyKey(plugin));
+  }
+
+  /** Whether the skill is effectively on: reachable in its CLI *and* visible
+   *  in kone. The CLI half comes from the per-skill state reads; the kone
+   *  half from the scan annotation. Unknown CLI state falls back to the
+   *  discovery flag, matching the detail view's CLI row. */
+  function isEffectiveEnabled(skill: SkillEntry): boolean {
+    const cliState = states.value.get(skill.path)?.state;
+    const cliOn = cliState === undefined ? skill.enabled : cliState !== "disabled";
+    return cliOn && isKoneEnabled(skill);
+  }
+
+  /** Intent-only write of one skill's kone gate. The backend evaluates and
+   *  persists; kone adopts whatever comes back. Null when there is no bridge
+   *  or the write threw — never a guess. */
+  async function writeSkillInternal(
+    skill: Pick<SkillEntry, "path" | "name">,
+    enabled: boolean,
+  ): Promise<InternalSkillsSettings | null> {
+    const api = bridge()?.skills;
+    if (!api?.setSkillInternalState) return null;
+    try {
+      const updated = await api.setSkillInternalState(
+        { path: skill.path, name: skill.name },
+        enabled,
+      );
+      if (updated) internalSettings.value = updated;
+      return updated ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function writePluginInternal(
+    plugin: Pick<PluginEntry, "name" | "path">,
+    enabled: boolean,
+  ): Promise<InternalSkillsSettings | null> {
+    const api = bridge()?.skills;
+    if (!api?.setPluginInternalState) return null;
+    try {
+      const updated = await api.setPluginInternalState(plugin.name || plugin.path, enabled);
+      if (updated) internalSettings.value = updated;
+      return updated ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Re-read one skill's CLI state into the map. Success paths already do
+   *  this; failure paths call it so the row falls back to what the settings
+   *  file actually says instead of what the failed write hoped. */
+  async function refreshState(skill: SkillEntry): Promise<void> {
+    const fresh = await readOne(skill);
+    if (fresh) {
+      const next = new Map(states.value);
+      next.set(skill.path, fresh);
+      stateCache.set(skill.path, fresh);
+      states.value = next;
+    }
+  }
+
+  function toggleRefused(path: string | null, what: string): SkillMutateResult {
+    return { ok: false, action: "toggle", path, detail: `Already updating this ${what}.` };
+  }
+
+  /** The single coordinated toggle for a skill's effective state. Enabling
+   *  restores the CLI switch first (when writable and off) and only then
+   *  opens the kone gate; disabling closes the kone gate and leaves the
+   *  user's CLI config untouched. Either write failing aborts the sequence
+   *  and refreshes the CLI read, so the UI can never strand a row
+   *  half-toggled. The passed entry's annotation is patched on success — it
+   *  is the same object the inventory list renders, so the row settles
+   *  without waiting for a rescan. */
+  async function setEffectiveEnabled(skill: SkillEntry, on: boolean): Promise<SkillMutateResult> {
+    const key = skillBusyKey(skill);
+    if (busyKeys.value.has(key)) return toggleRefused(skill.path, "skill");
+    busyKeys.value.add(key);
+    try {
+      if (on) {
+        const cliState = states.value.get(skill.path)?.state;
+        if (cliState === "disabled" && writableStates(skill.origin).length > 0) {
+          const cli = await setState(skill, "enabled");
+          if (!cli.ok) {
+            await refreshState(skill);
+            return { ok: false, action: "toggle", path: skill.path, detail: cli.reason };
+          }
+        }
+      }
+      const updated = await writeSkillInternal(skill, on);
+      if (!updated) {
+        await refreshState(skill);
+        return {
+          ok: false,
+          action: "toggle",
+          path: skill.path,
+          detail: "Kone could not save the visibility setting.",
+        };
+      }
+      skill.internalEnabled = on;
+      return {
+        ok: true,
+        action: "toggle",
+        path: skill.path,
+        detail: on ? "The skill is visible in Kone." : "The skill is hidden in Kone.",
+      };
+    } finally {
+      busyKeys.value.delete(key);
+    }
+  }
+
+  /** Plugin containers have no CLI switch — one internal write, same per-key
+   *  guard and same optimistic annotation patch as the skill path. */
+  async function setPluginEnabled(plugin: PluginEntry, on: boolean): Promise<SkillMutateResult> {
+    const key = pluginBusyKey(plugin);
+    if (busyKeys.value.has(key)) return toggleRefused(plugin.path, "plugin");
+    busyKeys.value.add(key);
+    try {
+      const updated = await writePluginInternal(plugin, on);
+      if (!updated) {
+        return {
+          ok: false,
+          action: "toggle",
+          path: plugin.path,
+          detail: "Kone could not save the plugin setting.",
+        };
+      }
+      plugin.internalEnabled = on;
+      return {
+        ok: true,
+        action: "toggle",
+        path: plugin.path,
+        detail: on ? "The plugin is visible in Kone." : "The plugin is hidden in Kone.",
+      };
+    } finally {
+      busyKeys.value.delete(key);
+    }
+  }
 
   function stateOf(skill: SkillEntry): SkillStateResult | undefined {
     return states.value.get(skill.path);
@@ -127,13 +308,13 @@ export function useSkills(projectPath: () => string | string[] | null) {
   /** Write a state and adopt whatever kone reads back afterwards. The write's
    *  own result says only that a file changed; the row's truth is the re-read,
    *  so a settings file that ignored the write can never leave the UI claiming
-   *  a state the CLI will not honour. */
+   *  the skill is on. Returns the gateway result as-is — no translation. */
   async function setState(
     skill: SkillEntry,
     state: WritableSkillState,
-  ): Promise<{ ok: boolean; reason: string }> {
+  ): Promise<StateWriteResult> {
     const api = bridge()?.skills;
-    if (!api?.writeState) return { ok: false, reason: "No desktop bridge is available." };
+    if (!api?.writeState) return { ok: false, wrotePath: null, reason: "No desktop bridge is available." };
 
     const query = {
       origin: skill.origin,
@@ -143,21 +324,19 @@ export function useSkills(projectPath: () => string | string[] | null) {
       projectPath: firstPath(),
     };
 
-    let result;
+    let result: StateWriteResult;
     try {
       result = await api.writeState(query, state);
     } catch (error) {
-      return { ok: false, reason: error instanceof Error ? error.message : "The write failed." };
+      return { ok: false, wrotePath: null, reason: error instanceof Error ? error.message : "The write failed." };
     }
 
-    const fresh = await readOne(skill);
-    if (fresh) {
-      const next = new Map(states.value);
-      next.set(skill.path, fresh);
-      stateCache.set(skill.path, fresh);
-      states.value = next;
-    }
-    return { ok: result.ok, reason: result.reason };
+    // The CLI toggle owns the CLI switch only — kone-gate coordination lives
+    // in setEffectiveEnabled, so a CLI write never drags a second write
+    // along with it.
+    await refreshState(skill);
+
+    return result;
   }
 
   // Detail pane — table + file content
@@ -262,5 +441,12 @@ export function useSkills(projectPath: () => string | string[] | null) {
     signals,
     detailLoading,
     openSkill,
+    internalSettings,
+    busyKeys,
+    isSkillBusy,
+    isPluginBusy,
+    isEffectiveEnabled,
+    setEffectiveEnabled,
+    setPluginEnabled,
   };
 }

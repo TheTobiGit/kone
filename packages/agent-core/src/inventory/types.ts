@@ -37,9 +37,15 @@ export type SkillEntry = {
    *  (`disable-model-invocation: true`) — the skill is still there, but the
    *  model won't reach for it on its own. */
   manualOnly: boolean;
-  /** Whether the skill is currently enabled. Mirrors t3's ServerProviderSkill.enabled.
+  /** Whether the skill is currently enabled. Mirrors provider skill enabled state.
    *  v1 stable defaults to true at discovery; effective state is resolved via skillState. */
   enabled: boolean;
+  /** Whether the skill is enabled under Kone's internal visibility and execution gate. */
+  internalEnabled?: boolean;
+  /** True when this copy is shadowed by a higher-precedence copy of the same name. */
+  shadowed?: boolean;
+  /** When shadowed, points to the winning copy that shadowed it. */
+  shadowedByWinner?: SkillCopy | null;
 };
 
 /** How an MCP server is reached. `unknown` is a real, expected value — plenty
@@ -88,6 +94,8 @@ export type PluginEntry = {
   origin: string;
   scope: "user" | "project" | "plugin" | "system";
   skills: SkillEntry[];
+  /** Whether the plugin is enabled under Kone's internal settings. */
+  internalEnabled?: boolean;
 };
 
 /** One scan-step failure, kept alongside a successful (partial) result rather

@@ -11,6 +11,11 @@ import { discoverInstructions } from "./instructions.js";
 import { discoverMcpServers } from "./mcp.js";
 import { discoverPlugins, discoverSkills } from "./skills.js";
 import { homedir } from "node:os";
+import {
+  isPluginInternallyEnabled,
+  isSkillInternallyEnabled,
+  readInternalSkillsSettings,
+} from "../skillsSettings.js";
 import type { AgentInventory, InventoryError, PluginEntry } from "./types.js";
 
 export * from "./onDemandDocs.js";
@@ -59,7 +64,7 @@ export async function scanAgentInventory(
           source: "skills",
           message: error instanceof Error ? error.message : String(error),
         });
-        return { skills: [], errors: [] };
+        return { skills: [], shadowed: [], errors: [] };
       }),
       discoverPlugins(homedir(), errors).catch((error) => {
         errors.push({
@@ -86,10 +91,22 @@ export async function scanAgentInventory(
     ]);
     const plugins = Array.isArray(pluginsResult) ? pluginsResult : [];
 
+    const internalSettings = readInternalSkillsSettings();
+    const allSkills = [...skillsResult.skills, ...skillsResult.shadowed];
+    for (const skill of allSkills) {
+      skill.internalEnabled = isSkillInternallyEnabled(skill, internalSettings);
+    }
+    for (const plugin of plugins) {
+      plugin.internalEnabled = isPluginInternallyEnabled(plugin.name, internalSettings);
+      for (const s of plugin.skills) {
+        s.internalEnabled = isSkillInternallyEnabled(s, internalSettings);
+      }
+    }
+
     const inventory: AgentInventory = {
       scannedAt: Date.now(),
       projectPath: firstPath,
-      skills: skillsResult.skills,
+      skills: allSkills,
       plugins,
       mcpServers: mcpResult.servers,
       instructions: instructionsResult.instructions,
@@ -108,8 +125,10 @@ export async function scanAgentInventory(
   }
 }
 
-/** Test-only escape hatch — never called from product code. */
-export function clearAgentInventoryCacheForTests(): void {
+/** Invalidate the inventory cache so future scans re-evaluate on-disk and internal state.
+ *  Product code calls this after internal-settings writes; tests call the same
+ *  function to reset between cases — one function, no wrapper. */
+export function clearAgentInventoryCache(): void {
   cache.clear();
   inflight.clear();
 }
