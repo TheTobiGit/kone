@@ -13,6 +13,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import AgentBotBead from "~/components/agent/AgentBotBead.vue";
+import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
 import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
@@ -135,8 +136,12 @@ const emit = defineEmits<{
   /** The draft, plus any picked files. The parent uploads the files (scoped to
    *  the final thread) and hands the resulting metadata to the agent turn. */
   send: [text: string, files?: File[]];
-  /** Drop one durably queued follow-up (the strip's ✕). */
+  /** Drop one durably queued follow-up (the strip's Stop button). */
   "remove-queued": [queueId: string];
+  /** Dispatch a queued follow-up immediately (steer into running turn or send). */
+  "send-now": [entry: QueuedTurnEntry];
+  /** Reorder the queued follow-ups. */
+  "reorder-queued": [queueIds: string[]];
   interrupt: [];
   /** null hands the turn to a guest — see `agentId`. */
   "update:agentId": [id: string | null];
@@ -635,13 +640,12 @@ function submitOrQueue() {
   dispatchDraft();
 }
 
-/** The chip label — the queued prompt's own words, or a compact attachment
- *  note for attachment-only follow-ups. */
-function queuedLabel(entry: QueuedTurnEntry): string {
-  if (entry.input) return entry.input;
-  return "Queued message";
+// Edit arrives from the queue strip: drop the queued row, then park its text
+// back in the field so it can be reworked and sent fresh.
+async function onQueueEdit(entry: QueuedTurnEntry) {
+  emit("remove-queued", entry.queueId);
+  await setDraft(entry.input || "");
 }
-
 onMounted(() => {
   restoreDraft();
   sync();
@@ -717,37 +721,16 @@ defineExpose({ wake, setDraft, focus });
       />
     </div>
 
-    <!-- Queued follow-ups — while a turn runs, Enter sends and the host's
-         service durably queues the draft behind the running turn. The strip
-         renders from the `queued` prop (the backend's turn.queued /
-         turn.promoted / turn.queued-cancelled events drive the list); the ✕
-         cancels one row (remove-queued → agent:queue-cancel). It sits ABOVE
-         the card in the same strip language as the context tray below it —
-         the queued prompts live here until they promote, never in the thread. -->
-    <Transition name="queue">
-      <div v-if="queued?.length" class="queue" role="region" aria-label="Queued messages">
-        <div
-          v-for="item in queued"
-          :key="item.queueId"
-          class="queue__item"
-          :title="`Queued #${item.position} · ${queuedLabel(item)}`"
-        >
-          <span class="queue__pos">{{ item.position }}</span>
-          <span class="queue__text">{{ queuedLabel(item) }}</span>
-          <button
-            type="button"
-            class="queue__remove"
-            :aria-label="`Remove queued message`"
-            :title="`Remove queued message`"
-            @click.stop="emit('remove-queued', item.queueId)"
-          >
-            <svg class="queue__x" viewBox="0 0 12 12" aria-hidden="true">
-              <path d="M3.5 3.5L8.5 8.5M8.5 3.5L3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </Transition>
+    <!-- Queued follow-ups live in the strip above the card; the composer only
+         forwards its reports (cancel / send-now / reorder) and handles an
+         edit by parking the row's text back in the field. -->
+    <AgentQueueStrip
+      :queued="queued"
+      @remove-queued="emit('remove-queued', $event)"
+      @send-now="emit('send-now', $event)"
+      @edit="onQueueEdit"
+      @reorder-queued="emit('reorder-queued', $event)"
+    />
 
     <!-- One surface, morphing. Closed it's the orb; open it's the card. -->
     <div
@@ -1128,93 +1111,6 @@ defineExpose({ wake, setDraft, focus });
   pointer-events: auto;
 }
 
-/* The queued-message strip — follow-ups parked behind the running turn. The
-   mirror of the context tray below the card: the same sunken slab, the same
-   small type, tucked in behind the card's edge so it reads as ground the
-   composer is standing on. The tray tucks under the card's floor (rounded
-   bottom, pulled up); this tucks under its roof (rounded top, pulled down) —
-   the card's own layer covers the overlap, which is the whole tuck. */
-.queue {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  /* Narrower than the card, like the tray, so it reads as something the card
-     is standing under rather than a second bar bolted to its top. */
-  width: calc(100% - 26px);
-  /* No z-index of its own, on purpose — same reason as the tray. The card is
-     already lifted above by its own z-index, which is all the tuck needs. */
-  overflow: hidden;
-  margin-bottom: -14px;
-  padding: 6px 8px 20px;
-  border-radius: 18px 18px 0 0;
-  background: var(--sunken);
-  pointer-events: auto;
-}
-.queue__item {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--faint);
-  font-family: var(--font-sans);
-  font-size: 11.5px;
-  line-height: 14px;
-  white-space: nowrap;
-}
-.queue__pos {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ink) 8%, transparent);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-}
-.queue__text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
-  opacity: 0.62;
-}
-.queue__remove {
-  display: inline-flex;
-  flex: none;
-  padding: 2px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--faint);
-  cursor: pointer;
-}
-.queue__remove:hover {
-  background: color-mix(in srgb, var(--ink) 8%, transparent);
-  color: var(--ink);
-}
-.queue__x {
-  display: block;
-}
-.queue-enter-active,
-.queue-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.queue-enter-from,
-.queue-leave-to {
-  opacity: 0;
-  transform: translateY(6px);
-}
 @keyframes dock-rise {
   from {
     opacity: 0;

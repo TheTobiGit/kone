@@ -33,6 +33,7 @@ import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
 import type { ChatAttachment } from "~/types/desktop";
 import type { RecentProject } from "~/composables/useRecentProjects";
+import type { QueuedTurnEntry } from "~/composables/useAgent";
 import type { ThreadSession } from "~/composables/useAgent";
 import type { SessionSummary } from "~/types/session";
 
@@ -158,6 +159,12 @@ const sending = ref(false);
 const handedOver = ref(false);
 
 const provider = computed(() => session.value?.provider.value ?? agent.provider.value);
+
+async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
+  const s = session.value;
+  if (!s) return;
+  await s.sendQueuedEntryNow(entry);
+}
 
 async function onSend(text: string, files?: File[]): Promise<void> {
   if (sending.value) return;
@@ -306,6 +313,8 @@ defineExpose({ focus });
         :blocked-reason="composer.sendBlockedReason.value"
         @send="onSend"
         @remove-queued="session?.cancelQueuedTurn($event)"
+        @reorder-queued="session?.reorderQueuedTurns($event)"
+        @send-now="onSendNow"
         @interrupt="session?.interrupt()"
         @update:agent-id="composer.onAgentPick"
         @update:model-id="composer.onModelId"

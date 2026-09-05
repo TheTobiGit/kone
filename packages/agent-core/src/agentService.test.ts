@@ -602,8 +602,31 @@ describe("AgentService durable turn queue + steering", () => {
       queueId: row.queueId,
       userBlockId: "block-followup",
       dispatchMode: "queue",
-      position: 2, // the live turn is slot 1, this entry slot 2
+      position: 1, // first queued entry in line
+      input: "follow-up please",
     });
+  });
+
+  test("turn.queued carries attachmentsJson from the enqueued row", async () => {
+    const thread = "t-q-enqueue-attachments";
+    fakeStore.seedUserBlocks(thread, ["block-first", "block-followup"]);
+    await startBusyThread(thread, "live-1");
+
+    await service.sendTurn({
+      threadId: thread,
+      input: "with file",
+      attachments: [
+        { type: "file", id: "a1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 10 },
+      ],
+    });
+
+    const row = fakeStore.rows.find((r) => r.threadId === thread)!;
+    expect(row.attachmentsJson).toContain("a1");
+    // SAFETY: the predicate matches only turn.queued events.
+    const queued = received.find(
+      (e) => e.threadId === thread && e.type === "turn.queued",
+    ) as Extract<import("./types.js").RuntimeEvent, { type: "turn.queued" }> | undefined;
+    expect(queued?.attachmentsJson).toBe(row.attachmentsJson);
   });
 
   test("turn.completed promotes the queued turn with its original overrides", async () => {

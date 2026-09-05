@@ -251,6 +251,9 @@ export const CLAUDE_NATIVE_IMAGE_MIME_TYPES = new Set([
 
 export type SendTurnInput = {
   threadId: string;
+  /** The renderer-side user block id that triggered this turn, ensuring the
+   *  journaled prompt and any queued turn share the same identity. */
+  userBlockId?: string;
   /** The user's prompt text for this turn. Can be empty when `attachments`
    *  carries at least one file — an attachment-only turn is valid. */
   input: string;
@@ -625,6 +628,7 @@ export type QueuedTurnStore = {
   cancelQueuedTurn(queueId: string): Promise<boolean>;
   cancelQueuedTurnsForThread(threadId: string): Promise<string[]>;
   listQueuedTurns(threadId: string): Promise<QueuedTurnRow[]>;
+  reorderQueuedTurns?(threadId: string, queueIds: string[]): Promise<boolean> | boolean;
   latestUserBlockId?(threadId: string): string | null;
   loadThread(threadId: string): StoredThread | null;
   recoverStaleClaims?(staleTimeoutMs?: number): Promise<number> | number;
@@ -1211,6 +1215,22 @@ export type RuntimeEvent =
       centering?: "never" | "on-overflow" | "always";
       defaultWidths?: { thread?: number; terminal?: number; scratchpad?: number };
     })
+  // An agent tool call changed the typography prefs: the faces and sizes text
+  // wears. Per install rather than per project, and the renderer's alone to
+  // hold. A setting the event doesn't name is left alone.
+  | (BaseEvent & {
+      type: "app.typography_mutation";
+      sans?: string;
+      serif?: string;
+      mono?: string;
+      composer?: string;
+      sizeInterface?: number;
+      sizeComposer?: number;
+      sizeCode?: number;
+      lineHeightBody?: number;
+      measure?: number;
+      smoothing?: boolean;
+    })
   | (BaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
@@ -1220,15 +1240,18 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "turn.steered"; turnId: string; message: string })
   // The durable turn-queue slice (AgentService): a follow-up was durably
   // enqueued because the thread has a live turn. `position` is the turn's
-  // place in line, counting the live turn as slot 1 (so a fresh queue entry
-  // reads 2). `dispatchMode` distinguishes a plain follow-up from a steer
-  // request that fell back to the queue (steers claim first).
+  // place in line within the queue (the first queued follow-up is #1).
+  // `dispatchMode` distinguishes a plain follow-up from a steer request that
+  // fell back to the queue (steers claim first).
   | (BaseEvent & {
       type: "turn.queued";
       queueId: string;
       userBlockId: string;
       dispatchMode: "queue" | "steer";
       position: number;
+      input?: string;
+      /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
+      attachmentsJson?: string | null;
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -1246,6 +1269,10 @@ export type RuntimeEvent =
       type: "turn.promoted";
       queueId: string;
       turnId?: string;
+    })
+  | (BaseEvent & {
+      type: "turn.queued-reordered";
+      queueIds: string[];
     })
   | (BaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (BaseEvent & { type: "turn.aborted"; turnId: string; reason: TurnAbortReason; message?: string })

@@ -94,6 +94,7 @@ export type QueuedTurnRow = {
    *  an optimistic chip can render before a block is ever matched). */
   input: string;
   createdAt: number;
+  attachmentsJson?: string | null;
 };
 
 /** A queued follow-up as the UI presents it — the bridge row plus the local
@@ -117,6 +118,7 @@ export type QueuedTurnEntry = QueuedTurnRow & {
 export type QueueBridge = {
   queuedTurns?: (threadId: string) => Promise<QueuedTurnRow[]>;
   cancelQueuedTurn?: (threadId: string, queueId: string) => Promise<boolean>;
+  reorderQueuedTurns?: (threadId: string, queueIds: string[]) => Promise<boolean>;
   steerTurn?: (input: SendTurnInput) => Promise<TurnStartResult>;
 };
 

@@ -428,6 +428,8 @@ const api = {
       ipcRenderer.invoke("agent:queued-turns", threadId),
     cancelQueuedTurn: (threadId: string, queueId: string): Promise<boolean> =>
       ipcRenderer.invoke("agent:queue-cancel", threadId, queueId),
+    reorderQueuedTurns: (threadId: string, queueIds: string[]): Promise<boolean> =>
+      ipcRenderer.invoke("agent:queue-reorder", threadId, queueIds),
     steerTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:steer-turn", input),
     spawnChildren: (threadId: string): Promise<SpawnedThread[]> =>

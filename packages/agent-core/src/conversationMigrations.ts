@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -308,7 +308,8 @@ function migration0001Baseline(db: DatabaseSync): void {
       attempt_count    INTEGER NOT NULL DEFAULT 0,
       created_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
-      promoted_at      INTEGER
+      promoted_at      INTEGER,
+      sort_key         INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_queued_turns_pending
@@ -403,8 +404,19 @@ function migration0001Baseline(db: DatabaseSync): void {
   `);
 }
 
+/** Explicit queue position for queued_turns. Ordering used to overload
+ *  created_at, so a drag rewrote creation times and partial lists interleaved
+ *  with untouched rows. sort_key carries the user's order instead: NULL means
+ *  never reordered and falls back to the steer-first then FIFO order, while a
+ *  set key wins outright. Idempotent — fresh databases already carry the
+ *  column from the baseline. */
+function migration0002QueuedTurnSortKey(db: DatabaseSync): void {
+  addColumn(db, "queued_turns", "sort_key", "INTEGER");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
+  { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
 ];
 
 export interface MigrationOptions {
