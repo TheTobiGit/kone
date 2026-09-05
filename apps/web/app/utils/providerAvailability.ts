@@ -52,5 +52,7 @@ export function providerUnavailableReason(status: ProviderStatus): string {
       return `${status.label} is not usable right now.`;
     case "ready":
       return `${status.label} is not available right now.`;
+    case "disabled":
+      return `${status.label} is disabled.`;
   }
 }
