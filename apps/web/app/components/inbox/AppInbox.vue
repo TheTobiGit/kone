@@ -223,6 +223,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
     return;
   }
   if (e.key === "Escape") {
+    e.preventDefault();
     close();
     return;
   }
@@ -241,8 +242,8 @@ function close(): void {
        summoning it is a decision to stop looking at the work. -->
   <div
     ref="root"
-    class="inbox"
-    :class="{ 'inbox--hidden': !open, 'inbox--dragging': dragging }"
+    class="inbox portal-fade"
+    :class="{ 'portal-fade--hidden': !open, 'inbox--dragging': dragging }"
     :style="{
       '--inbox-list-w': `${listWidth}px`,
       '--inbox-gutter-w': `${GUTTER_WIDTH}px`,
@@ -310,7 +311,7 @@ function close(): void {
   z-index: 45;
   overflow: hidden;
   background: var(--ground);
-  transition: opacity 0.22s ease;
+  /* Hide/show timing lives with .portal-fade in assets/css/main.css. */
 
   display: grid;
   /* The list is sized by what a row needs to read rather than by a share of the
@@ -319,11 +320,6 @@ function close(): void {
   grid-template-columns: var(--inbox-rail-w) var(--inbox-list-w) minmax(0, 1fr);
   gap: var(--inbox-gutter-w);
   padding: 20px;
-}
-.inbox--hidden {
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* Surfaces rather than outlines: the panes are a step up off the ground, the
@@ -392,9 +388,9 @@ function close(): void {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inbox,
   .inbox__grip {
     transition-duration: 0.01s;
+    transition-delay: 0s;
   }
 }
 </style>

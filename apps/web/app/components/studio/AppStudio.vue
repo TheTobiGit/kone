@@ -30,8 +30,9 @@ const props = defineProps<{
   /** The project whose page is showing underneath, if any. It earns a row of its
    *  own even before it has any work on it — see `renderRows`. */
   activeProject: Project | null;
-  /** Whether the inbox portal is open over the app. */
-  inboxOpen?: boolean;
+  /** Another portal is over the plane. While set, Escape and plane shortcuts
+   *  belong to it, so the plane stays quiet underneath. */
+  suspended?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -324,7 +325,7 @@ const g = useProjectGit(focusedProject);
 
 // ── travel & 2D overview navigation ──────────────────────────────────────────
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!props.open) return;
+  if (!props.open || props.suspended || e.defaultPrevented) return;
 
   if (matchesShortcut("toggle-overview", e)) {
     e.preventDefault();
@@ -408,7 +409,7 @@ function resolveTargetProjectPath(): string | null {
 }
 
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (props.inboxOpen || e.defaultPrevented) return;
+  if (props.suspended || e.defaultPrevented) return;
 
   if (matchesShortcut("new-thread", e)) {
     const targetPath = resolveTargetProjectPath();
@@ -475,13 +476,13 @@ function refuse(): void {
   refusalTimer = setTimeout(() => (refusal.value = false), 2600);
 }
 
-// ── leaving ──────────────────────────────────────────────────────────────────
-// Escape closes the plane, but only when nothing inside a row owns it: a row's
-// approval sheet, its model picker and the strip's own overlays all answer
-// Escape first. They stop the event at their own handlers, so reaching here at
-// all means the plane itself is the frontmost thing.
+// Escape closes one layer at a time. Anything inside a row owns it first and
+// marks the event handled, so reaching here means the plane itself is the
+// frontmost thing — unless it is suspended, in which case the portal over it
+// owns Escape and one press must not dismiss both.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
   if (!props.open || e.key !== "Escape" || e.defaultPrevented) return;
+  if (props.suspended) return;
   if (studioOverview.value) {
     exitStudioOverview();
     return;
@@ -529,9 +530,14 @@ defineExpose({
        than `v-if`: every layout box below has to stay measurable while the plane
        is away, or a terminal's fit() and the strip's width maths read zero. -->
   <div
-    class="plane"
+    class="plane portal-fade"
     :class="{
-      'plane--hidden': !open || empty,
+      'portal-fade--hidden': !open || empty,
+      // Covered by the inbox: cut instead of fading (see .portal-fade--covered
+      // in main.css). The plane only ever opens under cover during a downward
+      // portal switch, where a fade would play out unseen and still be
+      // mid-flight when the inbox lifts.
+      'portal-fade--covered': suspended,
       'is-overview': studioOverview,
       'is-multi-row': studioOverview && displayRows.length > 1,
       'is-two-row': studioOverview && displayRows.length === 2,
@@ -591,17 +597,12 @@ defineExpose({
   z-index: 40;
   overflow: hidden;
   background: var(--ground);
-  transition: opacity 0.22s ease, background-color 0.22s ease;
+  /* Hide/show timing lives with .portal-fade in assets/css/main.css. */
+  --portal-fade-extra: background-color var(--portal-fade-ms, 220ms) ease;
 }
 .plane.is-overview {
   background: color-mix(in srgb, var(--ink) 3.5%, var(--ground));
 }
-.plane--hidden {
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-}
-
 /* The camera holds every row stacked vertically and moves in whole viewport heights. */
 .plane__camera {
   position: absolute;
@@ -708,11 +709,11 @@ defineExpose({
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plane,
   .plane__camera,
   .plane-refusal-enter-active,
   .plane-refusal-leave-active {
     transition-duration: 0.01s;
+    transition-delay: 0s;
   }
 }
 </style>
