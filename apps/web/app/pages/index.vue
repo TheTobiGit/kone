@@ -158,13 +158,55 @@ const studioOpen = ref(false);
 // file's diff, the branch picker) can be handed down to it.
 const pageRef = ref<{ openFile: (p: string, r: DOMRect | null) => void; openBranch: () => void } | null>(null);
 
+// Portal-to-portal handoff. The inbox paints over the plane, so the two
+// directions stage differently — but neither ever shows the page between them,
+// and both answer at once. Going up, the inbox fades in over the still-opaque
+// plane, and the plane only leaves once the inbox is opaque. Going down, the
+// plane appears instantly underneath (it drops its fade while covered) and the
+// inbox fades out over it on the next frame, so visible progress starts in one
+// frame rather than one fade.
+// PORTAL_FADE_MS is the fade itself and the only place its length is stated: it
+// drives the CSS fades through --portal-fade-ms, so the timer and the fade
+// cannot drift. The upward handoff waits a frame past the fade so the plane
+// only leaves once the inbox is fully opaque; waiting a shade long only
+// leaves an invisible layer briefly, while firing early would flash the page.
+const PORTAL_FADE_MS = 220;
+const PORTAL_HANDOFF_MS = PORTAL_FADE_MS + 10;
+let portalHandoff: ReturnType<typeof setTimeout> | null = null;
+let portalRaf: ReturnType<typeof requestAnimationFrame> | null = null;
+function cancelPortalHandoff() {
+  if (portalHandoff !== null) {
+    clearTimeout(portalHandoff);
+    portalHandoff = null;
+  }
+  if (portalRaf !== null) {
+    cancelAnimationFrame(portalRaf);
+    portalRaf = null;
+  }
+}
+// Any new portal intent abandons the previous switch, so its pending timer
+// cannot carry through to the page after the user has already moved on.
+function abandonPortalSwitch() {
+  cancelPortalHandoff();
+}
+onBeforeUnmount(cancelPortalHandoff);
+
 function summonStudio() {
-  if (studioOpen.value) return;
-  // The inbox sits over the plane, so leaving it open would summon the studio
-  // behind an opaque layer.
-  inboxOpen.value = false;
+  if (studioOpen.value && !inboxOpen.value) return;
+  abandonPortalSwitch();
   cue("expand");
-  studioOpen.value = true;
+  if (inboxOpen.value) {
+    // Instant underneath, fading inbox over it on the next frame: the plane
+    // paints opaque while still covered, so the inbox fade composites over
+    // work rather than over the page — and over a paint, not a timer.
+    studioOpen.value = true;
+    portalRaf = requestAnimationFrame(() => {
+      portalRaf = null;
+      inboxOpen.value = false;
+    });
+  } else {
+    studioOpen.value = true;
+  }
 }
 
 // A row asked for something the page owns. The plane has already stepped aside
@@ -183,8 +225,12 @@ function onStudioHotkey(e: KeyboardEvent) {
   // Not while a launcher modal owns the screen — the plane would cover it.
   if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
   e.preventDefault();
-  if (studioOpen.value) studioOpen.value = false;
-  else summonStudio();
+  // While the inbox is up it is the frontmost thing, so the studio key means
+  // "go to the studio" rather than toggling a plane nobody can see.
+  if (studioOpen.value && !inboxOpen.value) {
+    abandonPortalSwitch();
+    studioOpen.value = false;
+  } else summonStudio();
 }
 onMounted(() => window.addEventListener("keydown", onStudioHotkey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onStudioHotkey));
@@ -197,10 +243,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onStudioHotkey));
 const inboxOpen = ref(false);
 
 function summonInbox() {
-  if (inboxOpen.value) return;
-  studioOpen.value = false;
+  if (inboxOpen.value && !studioOpen.value) return;
+  abandonPortalSwitch();
   cue("expand");
-  inboxOpen.value = true;
+  if (studioOpen.value) {
+    // The inbox fades in over the still-opaque plane; sending the plane away
+    // once the inbox is opaque hides it underneath, out of sight.
+    inboxOpen.value = true;
+    portalHandoff = setTimeout(() => {
+      studioOpen.value = false;
+      portalHandoff = null;
+    }, PORTAL_HANDOFF_MS);
+  } else {
+    inboxOpen.value = true;
+  }
 }
 
 const { matchesShortcut: matchesInboxHotkey } = useShortcuts();
@@ -209,12 +265,30 @@ function onInboxHotkey(e: KeyboardEvent) {
   // Not while a launcher modal owns the screen — the inbox would cover it.
   if (pickerOpen.value || cloneOpen.value || createOpen.value) return;
   e.preventDefault();
-  if (inboxOpen.value) inboxOpen.value = false;
-  else summonInbox();
+  // Dismissing mid-handoff (both flags up) lands back on the still-open plane
+  // rather than letting the handoff carry through to the page.
+  if (inboxOpen.value) {
+    abandonPortalSwitch();
+    inboxOpen.value = false;
+  } else summonInbox();
 }
 onMounted(() => window.addEventListener("keydown", onInboxHotkey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onInboxHotkey));
 
+// Escape closes one layer: the inbox while it is open, otherwise the plane's
+// overview-then-close path answers. The plane is suspended while the inbox is
+// up so one press never dismisses both. Leaving a portal by hand (Escape,
+// close button) cancels the handoff first so dismissing the inbox mid-switch
+// reveals the plane underneath instead of letting the pending timer carry
+// through to the page.
+function closeStudio() {
+  abandonPortalSwitch();
+  studioOpen.value = false;
+}
+function closeInbox() {
+  abandonPortalSwitch();
+  inboxOpen.value = false;
+}
 // ⌘, — the macOS "Preferences" shortcut — toggles the settings drawer, so the
 // same keystroke opens and closes it (Escape also closes, via the drawer). The
 // binding lives in the shortcuts registry (see useShortcuts), so a rebind in
@@ -259,7 +333,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="relative h-full min-h-screen overflow-hidden bg-sunken">
+  <div
+    class="relative h-full min-h-screen overflow-hidden bg-sunken"
+    :style="{ '--portal-fade-ms': `${PORTAL_FADE_MS}ms` }"
+  >
     <!-- Settings panel, pinned to the left edge and revealed as the stage slides
          aside. It sits behind the stage (z-0) and shows through the gap. -->
     <SettingsDrawer :open="settingsOpen" @close="settingsOpen = false" />
@@ -307,9 +384,9 @@ onMounted(() => {
         <StudioAppStudio
           :open="studioOpen"
           :active-project="project"
-          :inbox-open="inboxOpen"
+          :suspended="inboxOpen"
           @summon="summonStudio"
-          @close="studioOpen = false"
+          @close="closeStudio"
           @open-file="onStudioOpenFile"
           @open-branch="onStudioOpenBranch"
         />
@@ -317,7 +394,7 @@ onMounted(() => {
         <!-- The inbox, over both the page and the plane. Mounted once alongside
              them for the same reason: whatever it comes to hold is not any one
              page's, and it has to survive a project switch. -->
-        <InboxAppInbox :open="inboxOpen" @close="inboxOpen = false" />
+        <InboxAppInbox :open="inboxOpen" @close="closeInbox" />
       </div>
 
       <!-- While open, tapping the shoved-aside stage closes the drawer (and

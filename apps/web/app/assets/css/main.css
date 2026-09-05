@@ -202,3 +202,46 @@ textarea,
   background-color: color-mix(in oklab, var(--accent) 24%, transparent);
   color: var(--ink);
 }
+
+/* ── portal hide/show ───────────────────────────────────────────────
+   One contract for every full-viewport portal (the studio plane, the inbox).
+   The layer fades through opacity, but visibility flips at once when opening
+   and only waits out the fade when closing — without the wait the outgoing
+   portal vanishes instantly and a portal-to-portal switch flashes the page
+   underneath mid-fade. The fade length is --portal-fade-ms, set on the page
+   wrapper to the same value as the handoff timer; the 220ms fallback only
+   covers rendering outside that wrapper. A portal whose fade carries more
+   than opacity sets --portal-fade-extra to that transition instead of
+   restating this one (unset it stays a zero-length color transition, which
+   changes nothing). Reduced motion collapses the fade and the visibility wait
+   together, or the layer would linger invisibly past its instant fade. */
+.portal-fade {
+  --portal-fade-extra: color 0s;
+  transition:
+    opacity var(--portal-fade-ms, 220ms) ease,
+    visibility 0s,
+    var(--portal-fade-extra);
+}
+.portal-fade--hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--portal-fade-ms, 220ms) ease,
+    visibility 0s linear var(--portal-fade-ms, 220ms),
+    var(--portal-fade-extra);
+}
+/* While covered by another portal the layer is invisible, so it appears or
+   vanishes at once instead of fading. A fade-in under cover would still be
+   mid-flight when the cover lifts and flash the page underneath; a fade-out
+   under cover plays out unseen. Stated after the hidden rule so it wins while
+   covered, whatever the open state. */
+.portal-fade--covered {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .portal-fade {
+    transition-duration: 0.01s;
+    transition-delay: 0s;
+  }
+}
