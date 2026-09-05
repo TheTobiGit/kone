@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { useAgent } from "./useAgent.js";
+import { useAgent } from "./useAgent";
 import type { ApprovalDecision } from "~/types/desktop";
 
 let seq = 0;
