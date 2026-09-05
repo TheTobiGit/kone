@@ -2519,6 +2519,6 @@ export function useAgent(options: UseAgentOptions) {
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
 
-export * from "./agentTypes.js";
-export * from "./agentPrefetch.js";
+export * from "./agentTypes";
+export * from "./agentPrefetch";
 
