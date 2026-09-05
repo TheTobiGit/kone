@@ -143,6 +143,15 @@ export interface GatewayInput {
    *  on one this install cannot reach. Absent, the caller's own provider is
    *  taken at its word. */
   threadAvailability?: AppThreadsAvailability;
+  /** Lifecycle controls (stop, archive, delete, rename) for threads — the
+   *  canonical lifecycle owner in production (service-backed; see
+   *  AppThreadsToolOptions). Passed through to `createAppThreadTools`; leave
+   *  it unwired only in service-less/test hosts, where the tools fall back to
+   *  the store adapter in degraded form. */
+  threadControls?: Pick<
+    AppThreadsToolOptions,
+    "stopThread" | "archiveThread" | "deleteThread" | "renameThread"
+  >;
   /** Provider status, quota, usage, and maintenance backing the app_* provider
    *  tools. Passed straight through to `createAppProviderTools` — the gateway
    *  adds no per-field mapping of its own, so the option names stay in one
@@ -173,11 +182,12 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   // The threads module reads the same project mirror (a project is named the
   // same way everywhere) and, unlike the rest of the family, also writes: its
   // runner is the dispatcher, absent in a gateway built without one.
-  const appThreadOptions: AppThreadsToolOptions = { store: input.store };
+  const appThreadOptions: AppThreadsToolOptions = { store: input.store, emit: input.emit };
   if (input.readProjects) appThreadOptions.readProjects = input.readProjects;
   if (input.isThreadLive) appThreadOptions.isThreadLive = input.isThreadLive;
   if (input.threads) appThreadOptions.runner = input.threads;
   if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
+  if (input.threadControls) Object.assign(appThreadOptions, input.threadControls);
 
   // The provider tools take their options as one object, passed straight
   // through — no per-field mapping here to drift from AppProvidersToolOptions.
