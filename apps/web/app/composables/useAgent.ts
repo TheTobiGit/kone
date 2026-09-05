@@ -72,6 +72,48 @@ export type ThreadSession = ReturnType<typeof createThreadSession>;
  *  pagination avoids); `hasMore` is the store's authoritative signal. */
 const PAGE_LIMIT = 10;
 
+/** Safe-parse a queued turn's attachments payload. Returns undefined when the
+ *  row carries none, or when the stored JSON is missing or malformed — every
+ *  send-now path and label read goes through here so the shape lives once. */
+export function parseQueuedAttachments(json?: string | null): ChatAttachment[] | undefined {
+  if (!json) return undefined;
+  try {
+    // SAFETY: attachmentsJson is stored as a JSON-encoded ChatAttachment array
+    const parsed = JSON.parse(json) as ChatAttachment[];
+    if (!Array.isArray(parsed)) return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The transcript ids a queued-turn row hides or orders around: its anchored
+ *  transcript block (entry.blockId, set when turn.queued matched a block
+ *  already in blocks.value) plus its stored userBlockId (the id promotion
+ *  rebuilds the block under, so a row whose anchor and stored id differ still
+ *  matches either copy). Timeline filtering and turn boundaries both read this
+ *  one set so they can never disagree. */
+function queuedBlockIdsOf(rows: QueuedTurnEntry[]): Set<string> {
+  const ids = new Set<string>();
+  for (const q of rows) {
+    if (q.blockId) ids.add(q.blockId);
+    if (q.userBlockId) ids.add(q.userBlockId);
+  }
+  return ids;
+}
+
+/** Order queued rows by an explicit id list (the optimistic reorder or the
+ *  backend's reordered event). Ids missing from the list sort behind every
+ *  listed row; Array.sort is stable, so unlisted rows keep their relative
+ *  order instead of swapping. Returns a new array. */
+function sortQueuedByIds(rows: QueuedTurnEntry[], ids: readonly string[]): QueuedTurnEntry[] {
+  const order = new Map(ids.map((id, index) => [id, index]));
+  const last = ids.length;
+  return [...rows].sort(
+    (a, b) => (order.get(a.queueId) ?? last) - (order.get(b.queueId) ?? last),
+  );
+}
+
 // ── one thread ────────────────────────────────────────────────────────────────
 
 /** One conversation thread: its own timeline, provider session, model/config,
@@ -118,22 +160,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  only ever shows turns that have actually started. `blocks` stays the full
    *  source of truth for busy/persistence/dock state. */
   const timelineBlocks = computed<ThreadBlock[]>(() => {
-    // The store owns hiding journaled queued prompts: transcript reads skip
-    // user blocks with an active queued/promoting row, which is the same
-    // active set listQueuedTurns reads — and the same set queuedTurnsRaw
-    // holds (live rows fold from turn.queued as queued; re-seeded rows come
-    // straight from listQueuedTurns) — so the two agree by construction and
-    // only the store hides by userBlockId. What the store can never see is the
-    // renderer's own optimistic block, pushed before the send was journaled:
-    // a live row anchors to it via the send-ack record (see
-    // pendingQueueAnchors), so entry.blockId is that remainder and the only
-    // id filtered here.
-    const optimisticQueuedIds = new Set<string>();
-    for (const q of queuedTurnsRaw.value) {
-      if (q.blockId) optimisticQueuedIds.add(q.blockId);
-    }
+    // Queued prompts live in queuedTurnsRaw, never in blocks — except the one
+    // race where send() pushed optimistically while idle and the backend then
+    // queued it: that block is already in blocks.value when turn.queued lands,
+    // so the row anchors to it via entry.blockId and it stays hidden here
+    // until promotion moves it to the tail.
+    const queuedBlockIds = queuedBlockIdsOf(queuedTurnsRaw.value);
     return blocks.value.filter((b) => {
-      if (b.role === "user" && optimisticQueuedIds.has(b.id)) return false;
+      if (b.role === "user" && queuedBlockIds.has(b.id)) return false;
       if (
         isSideChat.value &&
         // SAFETY: only fork imports carry a `source` tag; others read as undefined.
@@ -203,18 +237,16 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  started). */
   const pendingQueueAnchors = new Map<string, string>();
   /** The queue as the UI reads it — entries renumbered so a cancellation
-   *  leaves no gaps (the live turn is slot 1, so a queued entry reads 2, 3,
-   *  …; with no live turn the line starts at 1). */
+   *  leaves no gaps (1-based order within the queue of waiting follow-ups:
+   *  the first queued follow-up is #1, the second #2, …). */
   const queuedTurns = computed<QueuedTurnEntry[]>(() =>
-    queuedTurnsRaw.value.map((q, i) => ({ ...q, position: i + (busy.value ? 2 : 1) })),
+    queuedTurnsRaw.value.map((q, i) => ({ ...q, position: i + 1 })),
   );
 
-  /** Anchor a queue row to a transcript user block: by store id first
-   *  (rehydrated/persisted rows), else by the renderer-side block the send
-   *  ack recorded (live optimistic rows — see pendingQueueAnchors). Returns
-   *  the block id, or undefined when the row predates this renderer
-   *  (cross-window queue events) — the strip then renders from the row's own
-   *  input text. */
+  /** Anchor a queue row to a transcript user block by the store's userBlockId,
+   *  else by the send-ack record for this queueId. Returns undefined when the
+   *  row has no block here — a busy send never pushes, so a live row usually
+   *  anchors to nothing and promotion rebuilds it from the entry. */
   function anchorFor(userBlockId: string, queueId: string): string | undefined {
     const byId = blocks.value.find((b) => b.role === "user" && b.id === userBlockId);
     if (byId) return byId.id;
@@ -406,23 +438,41 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       case "thread.title.updated":
         title.value = event.title;
         break;
-      case "turn.started":
+      case "turn.started": {
         everRan.value = true;
         // Delete only the anchor matching this started turn id, leaving any
         // subsequent queued follow-up anchors intact in the map.
         pendingQueueAnchors.delete(event.turnId);
-        blocks.value = [
-          ...blocks.value,
-          {
-            id: event.turnId,
-            role: "assistant",
-            turnId: event.turnId,
-            items: [],
-            state: "running",
-            at: event.at,
-          },
-        ];
+        const assistantBlock: AssistantBlock = {
+          id: event.turnId,
+          role: "assistant",
+          turnId: event.turnId,
+          items: [],
+          state: "running",
+          at: event.at,
+        };
+        // A second send can push while idle in the gap after the first send's
+        // dispatch cleared but before its turn.started folded (busy reads idle
+        // there: no dispatch, no running state, no running assistant yet). When
+        // the backend then queues that second push behind the first turn, the
+        // queued user block is already in blocks.value when this started lands,
+        // so the assistant goes right before the first queued block — after its
+        // own prompt, never after a follow-up that has not run yet.
+        const queuedBlockIds = queuedBlockIdsOf(queuedTurnsRaw.value);
+        const firstQueuedIndex = blocks.value.findIndex(
+          (b) => b.role === "user" && queuedBlockIds.has(b.id),
+        );
+        if (firstQueuedIndex !== -1) {
+          blocks.value = [
+            ...blocks.value.slice(0, firstQueuedIndex),
+            assistantBlock,
+            ...blocks.value.slice(firstQueuedIndex),
+          ];
+        } else {
+          blocks.value = [...blocks.value, assistantBlock];
+        }
         break;
+      }
       case "item.started":
       case "item.updated":
       case "item.completed": {
@@ -504,9 +554,10 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         break;
       case "turn.queued": {
         // A follow-up was durably enqueued behind the running turn — park a
-        // row. The display text comes from the anchored transcript block
-        // (via userBlockId), or the send's own recorded block, or falls back
-        // to the row input on the rehydrated path.
+        // row. The display text comes from event.input, or the anchored transcript
+        // block (via userBlockId), or falls back to empty. The event carries
+        // the row's attachmentsJson so the live row is complete without a
+        // re-read.
         const blockId = anchorFor(event.userBlockId, event.queueId);
         const anchorText = blockId
           ? blocks.value.find(
@@ -519,26 +570,30 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           userBlockId: event.userBlockId,
           dispatchMode: event.dispatchMode,
           state: "queued",
-          input: anchorText,
+          input: event.input || anchorText,
+          attachmentsJson: event.attachmentsJson ?? null,
           createdAt: event.at,
           position: event.position,
         };
         if (blockId) entry.blockId = blockId;
         // A re-seed may already hold this queueId — replace, never duplicate.
+        // Arrival order wins: event.position goes stale after a cancellation
+        // or a reorder, so it is kept on the entry for compat only and never
+        // used to sort here. The display computed renumbers from array order.
         queuedTurnsRaw.value = [
           ...queuedTurnsRaw.value.filter((q) => q.queueId !== event.queueId),
           entry,
-        ].sort((a, b) => a.position - b.position);
+        ];
         break;
       }
       case "turn.queued-cancelled": {
         // A user drop removes one row; a stop/delete clears the whole line
         // (the backend emits one cancellation per row on stop). The dropped
-        // prompt never ran, so its optimistic block leaves with the row —
-        // otherwise cancelling would pop the message into the thread. The
-        // split with the store is strict: it deletes the journaled prompt it
-        // wrote at enqueue time, and only entry.blockId — the renderer's own
-        // optimistic block — is removed here, never userBlockId.
+        // prompt never ran, so its anchored block leaves with the row —
+        // otherwise cancelling would pop the message into the thread. Only
+        // entry.blockId — the transcript block the row hid — is removed here,
+        // never userBlockId on its own: a re-seeded row with no block here has
+        // nothing in blocks.value to drop.
         const clearingAll =
           event.reason === "stop" ||
           event.reason === "thread-deleted" ||
@@ -559,19 +614,45 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         }
         break;
       }
-      case "turn.promoted":
+      case "turn.promoted": {
         // The backend handed the row to the adapter as a real turn — the row
         // is consumed. (turn.promoted is the authoritative "row gone" signal:
         // it only fires after the adapter accepted the send and the store
         // marked the row promoted, so a failed promotion never clears the
-        // row. Dropping the row unhides its optimistic block in the timeline;
-        // turn.started brings the reply.)
+        // row.) The entry IS the prompt — rebuild the user block from its
+        // input + attachmentsJson every time, including re-seeded rows that
+        // never had a block here.
+        const promo = queuedTurnsRaw.value.find((q) => q.queueId === event.queueId);
+
+        let userBlock: UserBlock | undefined;
+        if (promo) {
+          const attachments = parseQueuedAttachments(promo.attachmentsJson);
+          userBlock = {
+            id: promo.userBlockId,
+            role: "user",
+            text: promo.input,
+            at: promo.createdAt,
+          };
+          if (attachments?.length) userBlock.attachments = attachments;
+        }
+
+        if (userBlock) {
+          // Re-place this user block at the current tail of blocks.value
+          // so its order precedes its assistant reply (turn.started),
+          // strictly following all settled turns.
+          blocks.value = [
+            ...blocks.value.filter((b) => b.id !== userBlock!.id),
+            userBlock,
+          ];
+        }
+
         queuedTurnsRaw.value = queuedTurnsRaw.value.filter(
           (q) => q.queueId !== event.queueId,
         );
         pendingQueueAnchors.delete(event.queueId);
         if (event.turnId) pendingQueueAnchors.delete(event.turnId);
         break;
+      }
       case "turn.steered":
         // The nudge was offered into the LIVE turn — no new boundary, no
         // state to fold beyond the user block already pushed optimistically
@@ -579,6 +660,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         // instead). Prune the steered turn's anchor if tracked.
         pendingQueueAnchors.delete(event.turnId);
         break;
+      case "turn.queued-reordered": {
+        if (event.threadId !== threadId.value) break;
+        queuedTurnsRaw.value = sortQueuedByIds(queuedTurnsRaw.value, event.queueIds);
+        break;
+      }
       default:
         break;
     }
@@ -1112,15 +1198,14 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     deferStart();
   }
 
-  /** Send a user turn. Pushes the user block immediately; the reply streams in.
-   *  `attachments` (already uploaded to disk via the bridge, so bytes-free) ride
-   *  the turn — a turn is valid with text, attachments, or both.
+  /** Send a user turn. Pushes the user block immediately when idle; the reply
+   *  streams in. `attachments` (already uploaded to disk via the bridge, so
+   *  bytes-free) ride the turn — a turn is valid with text, attachments, or both.
    *
    *  There is NO busy early-return: a send while a turn runs is durably
    *  enqueued by the service (it emits turn.queued and acks with the queue id
-   *  as turnId). The user block is already pushed before the call, so the
-   *  queued row anchors to it — via the ack record below (the store journals
-   *  the block under its own id, which the turn.queued event carries). */
+   *  as turnId). A busy send pushes nothing — the row in queuedTurnsRaw is the
+   *  only copy until turn.promoted rebuilds the block at the tail. */
   async function send(text: string, attachments?: ChatAttachment[]): Promise<void> {
     const trimmed = text.trim();
     const files = attachments ?? [];
@@ -1133,14 +1218,17 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     if (sendBlockedReason.value && !(await recheckBeforeRefusing())) return;
     touch();
     const blockId = uid();
-    const block: UserBlock = {
-      id: blockId,
-      role: "user",
-      text: trimmed,
-      at: Date.now(),
-    };
-    if (files.length) block.attachments = files;
-    blocks.value = [...blocks.value, block];
+    const wasBusy = busy.value;
+    if (!wasBusy) {
+      const block: UserBlock = {
+        id: blockId,
+        role: "user",
+        text: trimmed,
+        at: Date.now(),
+      };
+      if (files.length) block.attachments = files;
+      blocks.value = [...blocks.value, block];
+    }
     // Instant label for a brand-new thread; desktop may refine it via
     // thread.title.updated once the agent rename lands. An attachment-only turn
     // seeds the label from the first file name.
@@ -1153,7 +1241,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // row exactly like the real queue does (the mock consumes it when the
       // turn settles; see mockQueueFollowUp).
       if (busy.value) {
-        mockQueueFollowUp(blockId, "queue");
+        mockQueueFollowUp(blockId, "queue", trimmed, files.length ? files : undefined);
         return;
       }
       mockTurn(trimmed || files[0]?.name || "Attachment");
@@ -1171,6 +1259,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       if (wasDeferred && !session.value) return;
       const turn: SendTurnInput = {
         threadId: threadId.value,
+        userBlockId: blockId,
         input: trimmed,
         model: model.value,
         mode: mode.value,
@@ -1185,6 +1274,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // anchor to it (the store journals the block under its own id).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
+      blocks.value = blocks.value.filter((b) => b.id !== blockId);
       error.value = peelIpcError(e, "Could not send to the agent");
     } finally {
       dispatching.value = false;
@@ -1196,22 +1286,25 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  (emitting turn.steered), or — when the provider has none — durably
    *  queues it to run first (a steer row claims ahead of plain follow-ups).
    *  Without a live turn the backend treats a steer as a plain send. Mirrors
-   *  send(): pushes the user block immediately (the nudge is on screen the
-   *  moment it leaves the composer) and rides the same per-turn knobs. */
+   *  send(): pushes the user block immediately when idle and rides the same
+   *  per-turn knobs; a busy steer parks only the queue row. */
   async function steerTurn(text: string, attachments?: ChatAttachment[]): Promise<void> {
     const trimmed = text.trim();
     const files = attachments ?? [];
     if (!trimmed && files.length === 0) return;
     touch();
     const blockId = uid();
-    const block: UserBlock = {
-      id: blockId,
-      role: "user",
-      text: trimmed,
-      at: Date.now(),
-    };
-    if (files.length) block.attachments = files;
-    blocks.value = [...blocks.value, block];
+    const wasBusy = busy.value;
+    if (!wasBusy) {
+      const block: UserBlock = {
+        id: blockId,
+        role: "user",
+        text: trimmed,
+        at: Date.now(),
+      };
+      if (files.length) block.attachments = files;
+      blocks.value = [...blocks.value, block];
+    }
     if (!title.value) title.value = titleFromPrompt(trimmed || files[0]?.name || "");
 
     const api = bridge();
@@ -1220,7 +1313,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // mock has no live-steer channel), exactly like the real providers
       // without one.
       if (busy.value) {
-        mockQueueFollowUp(blockId, "steer");
+        mockQueueFollowUp(blockId, "steer", trimmed, files.length ? files : undefined);
         return;
       }
       mockTurn(trimmed || files[0]?.name || "Attachment");
@@ -1238,6 +1331,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         // (the backend's own steer-without-live-turn semantics).
         const turn: SendTurnInput = {
           threadId: threadId.value,
+          userBlockId: blockId,
           input: trimmed,
           model: model.value,
           mode: mode.value,
@@ -1251,6 +1345,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       }
       const turn: SendTurnInput = {
         threadId: threadId.value,
+        userBlockId: blockId,
         input: trimmed,
         model: model.value,
         mode: mode.value,
@@ -1266,6 +1361,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       // at the next turn boundary).
       if (result?.turnId) pendingQueueAnchors.set(result.turnId, blockId);
     } catch (e) {
+      blocks.value = blocks.value.filter((b) => b.id !== blockId);
       error.value = peelIpcError(e, "Could not steer the agent");
     } finally {
       dispatching.value = false;
@@ -1286,6 +1382,32 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
   }
 
+  /** Send a queued follow-up now: drop its row, then steer its prompt into
+   *  the live turn when one runs, else send it as a fresh turn. */
+  async function sendQueuedEntryNow(entry: QueuedTurnEntry): Promise<void> {
+    await cancelQueuedTurn(entry.queueId);
+    const attachments = parseQueuedAttachments(entry.attachmentsJson);
+    if (busy.value) {
+      void steerTurn(entry.input, attachments);
+    } else {
+      void send(entry.input, attachments);
+    }
+  }
+
+  /** Reorder the active queued turns. Optimistically re-sorts queuedTurnsRaw
+   *  and dispatches the new order to the backend. */
+  async function reorderQueuedTurns(queueIds: string[]): Promise<void> {
+    queuedTurnsRaw.value = sortQueuedByIds(queuedTurnsRaw.value, queueIds);
+    const api = bridge();
+    // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
+    const reorder = (api as KoneAgentApi & QueueBridge | undefined)?.reorderQueuedTurns;
+    if (!reorder) return;
+    try {
+      await reorder(threadId.value, queueIds);
+    } catch (e) {
+      console.warn("[agent] reorderQueuedTurns failed:", e);
+    }
+  }
   /** Upload one picked/dropped/pasted file's bytes to disk (scoped to this
    *  thread) and resolve to the bytes-free ChatAttachment the composer holds and
    *  later sends. In browser dev (no bridge) we synthesize metadata so the
@@ -1649,6 +1771,8 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     send,
     steerTurn,
     cancelQueuedTurn,
+    sendQueuedEntryNow,
+    reorderQueuedTurns,
     uploadAttachment,
     getAttachmentPath,
     showAttachmentInFolder,
@@ -2101,6 +2225,14 @@ export function useAgent(options: UseAgentOptions) {
   const cancelQueuedTurn = async (queueId: string) => {
     await active.value?.cancelQueuedTurn(queueId);
   };
+  /** Send one queued follow-up now on the active thread (drop + steer-or-send). */
+  const sendQueuedEntryNow = async (entry: QueuedTurnEntry) => {
+    await active.value?.sendQueuedEntryNow(entry);
+  };
+  /** Reorder the active queued follow-ups. */
+  const reorderQueuedTurns = async (queueIds: string[]) => {
+    await active.value?.reorderQueuedTurns(queueIds);
+  };
   const uploadAttachment = (file: File): Promise<ChatAttachment> => {
     const s = active.value;
     if (!s) return Promise.reject(new Error("No thread column is open."));
@@ -2499,6 +2631,8 @@ export function useAgent(options: UseAgentOptions) {
     send,
     steerTurn,
     cancelQueuedTurn,
+    sendQueuedEntryNow,
+    reorderQueuedTurns,
     uploadAttachment,
     getAttachmentPath,
     showAttachmentInFolder,

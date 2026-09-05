@@ -16,7 +16,12 @@ function harness() {
   return { agent, session };
 }
 
-type QueueEventType = "turn.queued" | "turn.queued-cancelled" | "turn.promoted" | "turn.steered";
+type QueueEventType =
+  | "turn.queued"
+  | "turn.queued-cancelled"
+  | "turn.promoted"
+  | "turn.steered"
+  | "turn.queued-reordered";
 
 function queuedEvent<T extends QueueEventType>(
   threadId: string,
@@ -65,7 +70,7 @@ describe("useAgent durable turn queue", () => {
     });
   });
 
-  test("a live turn is slot 1 — queued rows read 2, 3 in arrival order", () => {
+  test("queued rows read 1, 2 in arrival order", () => {
     const { session } = harness();
     session.sessionState.value = "running"; // busy
     session.blocks.value = [
@@ -92,9 +97,91 @@ describe("useAgent durable turn queue", () => {
     );
 
     expect(session.queuedTurns.value.map((q) => [q.queueId, q.position])).toEqual([
-      ["q-a", 2],
-      ["q-b", 3],
+      ["q-a", 1],
+      ["q-b", 2],
     ]);
+  });
+
+  test("reorderQueuedTurns updates order in queuedTurns", async () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-1",
+        userBlockId: "b-1",
+        dispatchMode: "queue",
+        position: 1,
+        input: "first",
+      }),
+    );
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-2",
+        userBlockId: "b-2",
+        dispatchMode: "queue",
+        position: 2,
+        input: "second",
+      }),
+    );
+
+    expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-1", "q-2"]);
+    expect(session.queuedTurns.value.map((q) => q.position)).toEqual([1, 2]);
+
+    await session.reorderQueuedTurns(["q-2", "q-1"]);
+
+    expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-2", "q-1"]);
+    expect(session.queuedTurns.value.map((q) => q.position)).toEqual([1, 2]);
+    expect(session.queuedTurns.value.map((q) => q.input)).toEqual(["second", "first"]);
+  });
+
+  test("a late turn.queued with a stale position appends after a reorder", async () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-1",
+        userBlockId: "b-1",
+        dispatchMode: "queue",
+        position: 1,
+        input: "first",
+      }),
+    );
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-2",
+        userBlockId: "b-2",
+        dispatchMode: "queue",
+        position: 2,
+        input: "second",
+      }),
+    );
+
+    await session.reorderQueuedTurns(["q-2", "q-1"]);
+    expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-2", "q-1"]);
+
+    // A late arrival carrying a stale backend position (1 — salvaged from
+    // before the reorder) must not jump ahead of the reordered line: arrival
+    // order wins, and the display computed renumbers from array order.
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-3",
+        userBlockId: "b-3",
+        dispatchMode: "queue",
+        position: 1,
+        input: "third",
+      }),
+    );
+    expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-2", "q-1", "q-3"]);
+    expect(session.queuedTurns.value.map((q) => q.position)).toEqual([1, 2, 3]);
+
+    // The shared order helper drives the backend's reordered event too: ids
+    // missing from the order list sort last and keep their relative order.
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued-reordered", {
+        queueIds: ["q-3", "q-1"],
+      }),
+    );
+    expect(session.queuedTurns.value.map((q) => q.queueId)).toEqual(["q-3", "q-1", "q-2"]);
   });
 
   test("an unanchored row (no matching block) still parks, from its own input", () => {
@@ -243,15 +330,211 @@ describe("useAgent durable turn queue", () => {
     const before = session.blocks.value.length;
     void session.send("do this next");
 
-    expect(session.blocks.value.length).toBe(before + 1);
-    const block = session.blocks.value[session.blocks.value.length - 1]!;
-    expect(block.role).toBe("user");
-    // The mock queue hands the renderer's own block id back as userBlockId,
-    // so the row anchors to the very block just pushed.
+    // A queued turn stays out of blocks.value until promoted, so it cannot interleave
+    // ahead of running or previous assistant turns.
+    expect(session.blocks.value.length).toBe(before);
     const entry = session.queuedTurns.value[0]!;
-    expect(entry.userBlockId).toBe(block.id);
-    expect(entry.blockId).toBe(block.id);
-    expect(entry.position).toBe(2);
+    expect(entry.input).toBe("do this next");
+    expect(entry.position).toBe(1);
+    expect(session.timelineBlocks.value.map((b) => b.id)).not.toContain(entry.userBlockId);
+
+    // On promotion, unhides in timeline
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", {
+        queueId: entry.queueId,
+        turnId: "t-promoted",
+      }),
+    );
+    expect(session.timelineBlocks.value.map((b) => b.id)).toContain(entry.userBlockId);
+    expect(session.queuedTurns.value).toHaveLength(0);
+  });
+
+  test("live turn.queued attachments survive promotion", () => {
+    const { session } = harness();
+    session.sessionState.value = "running";
+    const attachmentsJson = JSON.stringify([
+      { type: "file", id: "a1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 10 },
+    ]);
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-att",
+        userBlockId: "ub-att",
+        dispatchMode: "queue",
+        position: 1,
+        input: "with file",
+        attachmentsJson,
+      }),
+    );
+    const entry = session.queuedTurns.value[0]!;
+    expect(entry.attachmentsJson).toBe(attachmentsJson);
+    // Nothing was ever pushed to blocks — the row is the only copy.
+    expect(session.blocks.value.map((b) => b.id)).not.toContain("ub-att");
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", {
+        queueId: "q-att",
+        turnId: "t-1",
+      }),
+    );
+    const block = session.timelineBlocks.value.find((b) => b.id === "ub-att")!;
+    expect(block?.role).toBe("user");
+    if (block?.role === "user") {
+      expect(block.attachments?.map((a) => a.id)).toEqual(["a1"]);
+      expect(block.text).toBe("with file");
+    }
+  });
+
+  test("busy send with attachments parks them on the live row (browser dev)", () => {
+    const { session } = harness();
+    session.sessionState.value = "running"; // busy
+    void session.send("with file", [
+      { type: "file", id: "a2", name: "notes.txt", mimeType: "text/plain", sizeBytes: 10 },
+    ]);
+    const entry = session.queuedTurns.value[0]!;
+    expect(entry.input).toBe("with file");
+    expect(entry.attachmentsJson).toContain("a2");
+
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", {
+        queueId: entry.queueId,
+        turnId: "t-promoted",
+      }),
+    );
+    const block = session.timelineBlocks.value.find((b) => b.id === entry.userBlockId)!;
+    expect(block?.role).toBe("user");
+    if (block?.role === "user") {
+      expect(block.attachments?.map((a) => a.id)).toEqual(["a2"]);
+    }
+  });
+
+  test("spamming queued messages preserves strict turn-by-turn timeline order", () => {
+    const { session } = harness();
+    // Turn 1 is active
+    session.blocks.value = [userBlock("b-1", "prompt 1")];
+    session.sessionState.value = "running";
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.started",
+      turnId: "turn-1",
+    });
+
+    // While Turn 1 is running, user spams prompt 2 and prompt 3
+    void session.send("😂😂");
+    void session.send("😂");
+
+    expect(session.queuedTurns.value).toHaveLength(2);
+    expect(session.queuedTurns.value.map((q) => q.input)).toEqual(["😂😂", "😂"]);
+
+    // At this moment, blocks.value has only prompt 1 and turn-1 assistant
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual([
+      session.blocks.value[0]!.id,
+      "turn-1",
+    ]);
+
+    // Turn 1 completes
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.completed",
+      turnId: "turn-1",
+    });
+
+    // Prompt 2 promotes and starts
+    const q2 = session.queuedTurns.value[0]!;
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", {
+        queueId: q2.queueId,
+        turnId: "turn-2",
+      }),
+    );
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.started",
+      turnId: "turn-2",
+    });
+
+    // Turn 2 completes
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.completed",
+      turnId: "turn-2",
+    });
+
+    // Prompt 3 promotes and starts
+    const q3 = session.queuedTurns.value[0]!;
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.promoted", {
+        queueId: q3.queueId,
+        turnId: "turn-3",
+      }),
+    );
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.started",
+      turnId: "turn-3",
+    });
+
+    // Check alternating user/assistant sequence in both blocks and timelineBlocks
+    const roles = session.timelineBlocks.value.map((b) => b.role);
+    expect(roles).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+
+    const texts = session.timelineBlocks.value
+      .filter((b): b is Extract<typeof b, { role: "user" }> => b.role === "user")
+      .map((b) => b.text);
+    expect(texts).toEqual(["prompt 1", "😂😂", "😂"]);
+  });
+
+  test("idle-push race: turn.started lands before an already-queued follow-up", () => {
+    const { session } = harness();
+    // Two rapid idle sends: the second pushes before the first turn's
+    // turn.started folds (busy still reads idle — dispatch cleared, no running
+    // state yet). The backend queues the second push behind the first turn,
+    // then the first turn starts while the queued block is still in blocks.
+    session.blocks.value = [
+      ...session.blocks.value,
+      userBlock("b-first", "first"),
+      userBlock("b-second", "second"),
+    ];
+    session.reduce(
+      queuedEvent(session.threadId.value, "turn.queued", {
+        queueId: "q-second",
+        userBlockId: "b-second",
+        dispatchMode: "queue",
+        position: 2,
+        input: "second",
+      }),
+    );
+    // The follow-up hides until it promotes.
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-first"]);
+
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.started",
+      turnId: "turn-1",
+    });
+
+    // The running turn's assistant belongs to the active turn: after its own
+    // prompt, before the follow-up that has not run yet. A plain append would
+    // leave ["b-first", "b-second", "turn-1"].
+    expect(session.blocks.value.map((b) => b.id)).toEqual(["b-first", "turn-1", "b-second"]);
+    expect(session.timelineBlocks.value.map((b) => b.id)).toEqual(["b-first", "turn-1"]);
   });
 
   test("events for other threads are ignored", () => {

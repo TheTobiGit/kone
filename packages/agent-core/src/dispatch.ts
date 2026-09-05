@@ -267,6 +267,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       delivery.journal === null
         ? 0
         : this.store.recordUserBlock({
+            blockId: input.userBlockId,
             threadId: input.threadId,
             text: delivery.journal,
             attachments: input.attachments,

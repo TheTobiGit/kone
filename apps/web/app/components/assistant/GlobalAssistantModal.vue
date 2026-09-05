@@ -31,6 +31,8 @@ import ConversationThread from "~/components/conversation/ConversationThread.vue
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import ModelPickerModal from "~/components/model/ModelPickerModal.vue";
+import type { QueuedTurnEntry } from "~/composables/useAgent";
+import type { ChatAttachment } from "~/types/desktop";
 import {
   useGlobalAssistant,
   GLOBAL_ASSISTANT_PROJECT_PATH,
@@ -40,7 +42,6 @@ import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
 import { formatDayDivider } from "~/utils/threadDates";
-import type { ChatAttachment } from "~/types/desktop";
 
 const {
   close,
@@ -214,6 +215,12 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   // The list is titled from the conversation, so a send is when a row's name
   // (and its place in the order) can change.
   void refreshThreads();
+}
+
+async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
+  const s = session.value;
+  if (!s) return;
+  await s.sendQueuedEntryNow(entry);
 }
 </script>
 
@@ -459,6 +466,8 @@ async function onSend(text: string, files?: File[]): Promise<void> {
               :blocked-reason="composer.sendBlockedReason.value"
               @send="onSend"
               @remove-queued="session?.cancelQueuedTurn($event)"
+              @reorder-queued="session?.reorderQueuedTurns($event)"
+              @send-now="onSendNow"
               @interrupt="session?.interrupt()"
               @update:model-id="composer.onModelId"
               @update:reasoning="composer.onReasoning"

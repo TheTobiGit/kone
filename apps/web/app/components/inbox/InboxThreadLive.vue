@@ -22,6 +22,7 @@ import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import type { ChatAttachment } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
+import type { QueuedTurnEntry } from "~/composables/useAgent";
 
 const props = defineProps<{
   /** The row this pane is showing. Carries the project the thread lives in,
@@ -133,6 +134,12 @@ async function onSend(text: string, files?: File[]): Promise<void> {
   await s.send(text, await upload(files));
 }
 
+async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
+  const s = session.value;
+  if (!s) return;
+  await s.sendQueuedEntryNow(entry);
+}
+
 /** Attachments go up one at a time and a failed one is dropped rather than
  *  sinking the whole message — a picture that would not upload is not a reason
  *  to lose what you typed. */
@@ -216,6 +223,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :blocked-reason="composer.sendBlockedReason.value"
         @send="onSend"
         @remove-queued="session?.cancelQueuedTurn($event)"
+        @reorder-queued="session?.reorderQueuedTurns($event)"
+        @send-now="onSendNow"
         @interrupt="session?.interrupt()"
         @update:agent-id="composer.onAgentPick"
         @update:model-id="composer.onModelId"

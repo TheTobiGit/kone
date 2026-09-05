@@ -35,7 +35,7 @@ import {
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
 import { SESSION_BRAND } from "~/types/session";
-import { childApprovalsInbox, type ThreadAttentionKind } from "~/composables/useAgent";
+import { childApprovalsInbox, type ThreadAttentionKind, type QueuedTurnEntry } from "~/composables/useAgent";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
 import { deriveActiveSubagents, deriveDelegates, type DelegateRow } from "~/utils/subagentRuns";
@@ -1261,6 +1261,9 @@ async function onSend(text: string, files?: File[]) {
 function onRemoveQueued(queueId: string) {
   void agent.cancelQueuedTurn(queueId);
 }
+async function onSendNow(entry: QueuedTurnEntry) {
+  await agent.sendQueuedEntryNow(entry);
+}
 function onInterrupt() {
   void agent.interrupt();
 }
@@ -1595,6 +1598,8 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :blocked-reason="sendBlockedReason"
           @send="onSend"
           @remove-queued="onRemoveQueued"
+          @reorder-queued="agent.reorderQueuedTurns($event)"
+          @send-now="onSendNow"
           @interrupt="onInterrupt"
           @update:agent-id="onAgentPick"
           @update:model-id="onComposerModelId"

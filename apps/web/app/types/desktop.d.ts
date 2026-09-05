@@ -872,6 +872,7 @@ export type UploadAttachmentInput = {
 
 export type SendTurnInput = {
   threadId: string;
+  userBlockId?: string;
   input: string;
   /** Files/images attached to this turn (metadata only; bytes live on disk). */
   attachments?: ChatAttachment[];
@@ -1301,16 +1302,18 @@ export type RuntimeEvent =
   // then not emitted at all).
   | (AgentBaseEvent & { type: "turn.steered"; turnId: string; message: string })
   // A follow-up was durably enqueued because the thread has a live turn.
-  // `position` is the turn's place in line, counting the live turn as slot 1
-  // (a fresh queue entry reads 2). `dispatchMode` distinguishes a plain
-  // follow-up from a steer request that fell back to the queue (steers claim
-  // first).
+  // `position` is the turn's place in line within the queue (the first queued
+  // follow-up is #1). `dispatchMode` distinguishes a plain follow-up from a
+  // steer request that fell back to the queue (steers claim first).
   | (AgentBaseEvent & {
       type: "turn.queued";
       queueId: string;
       userBlockId: string;
       dispatchMode: "queue" | "steer";
       position: number;
+      input?: string;
+      /** JSON.stringify(ChatAttachment[]) — null when the turn has no attachments. */
+      attachmentsJson?: string | null;
     })
   // A queued follow-up was cancelled before it ran — the user dropped it
   // (`user`), the thread's session was stopped (`stop`), or the thread was
@@ -1325,6 +1328,7 @@ export type RuntimeEvent =
   // is gone). `turnId` is the adapter's turn id when sendTurn returned one —
   // omitted when the adapter doesn't name the turn until its turn.started.
   | (AgentBaseEvent & { type: "turn.promoted"; queueId: string; turnId?: string })
+  | (AgentBaseEvent & { type: "turn.queued-reordered"; queueIds: string[] })
   | (AgentBaseEvent & { type: "turn.completed"; turnId: string; conversationId?: string })
   | (AgentBaseEvent & {
       type: "turn.aborted";
@@ -2346,6 +2350,7 @@ export type KoneAgentApi = {
   /** Drop one queued follow-up (cancels with reason "user"). Resolves false
    *  when no such row exists. */
   cancelQueuedTurn: (threadId: string, queueId: string) => Promise<boolean>;
+  reorderQueuedTurns: (threadId: string, queueIds: string[]) => Promise<boolean>;
   /** Deliver a mid-turn message without starting a new turn boundary: routes
    *  to the live turn when the provider has a live-steer channel, else
    *  enqueues it as a steer (claiming first) — or sends normally when there

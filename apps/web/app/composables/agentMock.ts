@@ -108,14 +108,21 @@ export function createMockTurnRunner(deps: {
    *  exactly like the real durable queue (the mock can't run two concurrent
    *  turns). The chip anchors by the local block id — the mock hands the
    *  renderer's own id back as userBlockId, which the real store can't. */
-  function mockQueueFollowUp(blockId: string, dispatchMode: "queue" | "steer"): void {
+  function mockQueueFollowUp(
+    blockId: string,
+    dispatchMode: "queue" | "steer",
+    input?: string,
+    attachments?: { type: string; id: string; name: string; mimeType: string; sizeBytes: number }[],
+  ): void {
     reduce({
       ...base(),
       type: "turn.queued",
       queueId: uid(),
       userBlockId: blockId,
       dispatchMode,
-      position: queuedTurnsRaw.value.length + 2,
+      position: queuedTurnsRaw.value.length + 1,
+      input,
+      attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
     });
     sessionState.value = "running";
   }
@@ -683,6 +690,9 @@ export function createMockTurnRunner(deps: {
       reduce({ ...base(), type: "turn.completed", turnId });
       sessionState.value = "ready";
       stopMock();
+      if (nextQueued) {
+        mockTurn(nextQueued.input);
+      }
     })();
   }
 

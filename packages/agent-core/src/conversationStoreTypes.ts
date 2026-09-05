@@ -236,6 +236,10 @@ export type QueuedTurnRow = {
   createdAt: number;
   updatedAt: number;
   promotedAt?: number;
+  /** Explicit queue position from the last reorder (0-based). Absent means
+   *  never reordered — the row drains in the default steer-first then FIFO
+   *  order. A set key wins over dispatch mode and creation time. */
+  sortKey?: number;
 };
 
 export type QueuedTurnDbRow = {
@@ -255,6 +259,7 @@ export type QueuedTurnDbRow = {
   created_at: number;
   updated_at: number;
   promoted_at: number | null;
+  sort_key: number | null;
 };
 
 export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
@@ -277,6 +282,7 @@ export function rowToQueuedTurn(row: QueuedTurnDbRow): QueuedTurnRow {
   if (row.service_tier) queued.serviceTier = row.service_tier;
   if (row.context_window) queued.contextWindow = row.context_window;
   if (row.promoted_at !== null) queued.promotedAt = row.promoted_at;
+  if (row.sort_key !== null && row.sort_key !== undefined) queued.sortKey = row.sort_key;
   return queued;
 }
 

@@ -510,6 +510,9 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:queue-cancel", (_event, threadId: string, queueId: string) =>
     svc.cancelQueuedTurn(threadId, queueId),
   );
+  ipcMain.handle("agent:queue-reorder", (_event, threadId: string, queueIds: string[]) =>
+    svc.reorderQueuedTurns(threadId, queueIds),
+  );
   ipcMain.handle("agent:steer-turn", (_event, input: SendTurnInput) =>
     dispatcher.steerThreadTurn(input),
   );

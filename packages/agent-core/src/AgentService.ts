@@ -1267,6 +1267,28 @@ export class AgentService {
     return store.listQueuedTurns(threadId);
   }
 
+  /** Reorder the thread's active queued follow-ups. Emits
+   *  turn.queued-reordered on success. */
+  async reorderQueuedTurns(threadId: string, queueIds: string[]): Promise<boolean> {
+    const store = this.queueStore;
+    if (!store?.reorderQueuedTurns) return false;
+    const ok = await store.reorderQueuedTurns(threadId, queueIds);
+    if (ok) {
+      const provider = this.routing.get(threadId);
+      if (provider) {
+        this.dispatch({
+          type: "turn.queued-reordered",
+          threadId,
+          provider,
+          queueIds,
+          at: Date.now(),
+          source: "kone.store",
+        });
+      }
+    }
+    return ok;
+  }
+
   /** Archive (or restore) a thread and its spawned subtree — the one path the
    *  renderer's archive request and the retention sweep both walk. The store
    *  writes the stamp; this method owns the announcement side: cancelling the
@@ -1427,7 +1449,7 @@ export class AgentService {
     const store = this.queueStore;
     if (!store) return this.adapterForThread(input.threadId).sendTurn(input);
     const queueId = randomUUID();
-    const userBlockId = this.latestUserBlockId(input.threadId) ?? randomUUID();
+    const userBlockId = input.userBlockId ?? this.latestUserBlockId(input.threadId) ?? randomUUID();
     const now = Date.now();
     const row: QueuedTurnRow = {
       queueId,
@@ -1474,25 +1496,27 @@ export class AgentService {
       position: await this.queuePosition(input.threadId),
       at: Date.now(),
       source: "kone.store",
+      input: input.input,
+      attachmentsJson: row.attachmentsJson,
     });
     return { threadId: input.threadId, turnId: queueId };
   }
 
-  /** The new turn's place in line: the live turn is slot 1 and each already
-   *  queued row is another slot, so a fresh queue entry on an idle-but-busy
-   *  thread reads 2. Read from the store (positions then survive crash
-   *  recovery); the in-memory mirror is the fallback when the read fails. */
+  /** The new turn's place in line: 1-based order within the queue of waiting
+   *  follow-ups (the first queued turn is #1). Read from the store (positions
+   *  then survive crash recovery); the in-memory mirror is the fallback when
+   *  the read fails. */
   private async queuePosition(threadId: string): Promise<number> {
     const store = this.queueStore;
     if (store) {
       try {
         const queued = await store.listQueuedTurns(threadId);
-        return queued.length + 1;
+        return Math.max(1, queued.length);
       } catch {
         // fall through to the in-memory mirror
       }
     }
-    return (this.queuedByThread.get(threadId) ?? 0) + 1;
+    return Math.max(1, this.queuedByThread.get(threadId) ?? 1);
   }
 
   /** The store block id of the user prompt dispatch just journaled for this

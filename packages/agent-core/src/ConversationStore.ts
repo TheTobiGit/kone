@@ -108,6 +108,21 @@ const WITHOUT_ACTIVE_QUEUE = `(role != 'user' OR NOT EXISTS (
     AND q.state IN ('queued', 'promoting')
 ))`;
 
+/** Queue drain order, shared by claim and list so the UI shows exactly what
+ *  runs next. Rows with an explicit position (set by reorder) drain first in
+ *  that order regardless of dispatch mode; rows never reordered (sort_key
+ *  NULL) fall back to the default steer-first (newest steer first) then FIFO
+ *  order, with rowid as the final tiebreak for same-millisecond enqueues.
+ *  New arrivals after a reorder carry NULL and queue behind the explicit
+ *  sequence until the next reorder. */
+const QUEUED_TURN_ORDER = `CASE WHEN sort_key IS NULL THEN 1 ELSE 0 END ASC,
+                  sort_key ASC,
+                  CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
+                  CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
+                  CASE WHEN dispatch_mode = 'steer' THEN rowid END DESC,
+                  created_at ASC,
+                  rowid ASC`;
+
 export class ConversationStore {
   private db: DatabaseSync | null = null;
   /** Set when the database can never be opened by this build (see
@@ -480,6 +495,7 @@ export class ConversationStore {
    *  Returns the 1-based user-turn count after the insert (so IPC can detect
    *  the first turn and kick off title naming). `0` on failure. */
   recordUserBlock(input: {
+    blockId?: string;
     threadId: string;
     text: string;
     at?: number;
@@ -498,7 +514,7 @@ export class ConversationStore {
           `INSERT INTO blocks (block_id, thread_id, role, text, at, attachments_json)
            VALUES (?, ?, 'user', ?, ?, ?)`,
         ).run(
-          randomUUID(),
+          input.blockId ?? randomUUID(),
           input.threadId,
           input.text,
           at,
@@ -1308,13 +1324,15 @@ export class ConversationStore {
   /** Claim the next queued turn for `threadId` (atomically — one statement:
    *  the candidate subquery and the state flip share the statement's write
    *  lock, so two racing drains serialize and the loser sees no 'queued'
-   *  candidate). Steer rows jump the line, most recent steer first, then plain
-   *  FIFO by created_at, with the table's insertion order (rowid) as the final
-   *  tiebreak. rowid rather than queue_id: created_at is a millisecond clock,
-   *  so two rows enqueued in the same tick tie on it, and breaking that tie by
-   *  a random UUID ordered them arbitrarily instead of by arrival. Returns the
-   *  row now in 'promoting' (attempt_count already bumped), or null when the
-   *  thread has nothing active to claim. */
+   *  candidate). Drain order is QUEUED_TURN_ORDER: an explicit reorder wins
+   *  over dispatch mode, otherwise steer rows jump the line (most recent
+   *  steer first) then plain FIFO by created_at, with the table's insertion
+   *  order (rowid) as the final tiebreak. rowid rather than queue_id:
+   *  created_at is a millisecond clock, so two rows enqueued in the same tick
+   *  tie on it, and breaking that tie by a random UUID ordered them
+   *  arbitrarily instead of by arrival. Returns the row now in 'promoting'
+   *  (attempt_count already bumped), or null when the thread has nothing
+   *  active to claim. */
   claimNextQueuedTurn(threadId: string, staleTimeoutMs = 120_000): QueuedTurnRow | null {
     const db = this.handle();
     if (!db) return null;
@@ -1338,12 +1356,7 @@ export class ConversationStore {
             WHERE queue_id = (
               SELECT queue_id FROM queued_turns
                WHERE thread_id = ? AND state = 'queued'
-               ORDER BY
-                 CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
-                 CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
-                 CASE WHEN dispatch_mode = 'steer' THEN rowid END DESC,
-                 created_at ASC,
-                 rowid ASC
+               ORDER BY ${QUEUED_TURN_ORDER}
                LIMIT 1
             )
            RETURNING *`,
@@ -1387,14 +1400,39 @@ export class ConversationStore {
     if (!db) return false;
     try {
       const now = Date.now();
-      const result = db
-        .prepare(
-          `UPDATE queued_turns
-              SET state = 'promoted', promoted_at = ?, updated_at = ?
-            WHERE queue_id = ? AND state = 'promoting'`,
-        )
-        .run(now, now, queueId);
-      return Number(result.changes) > 0;
+      let promoted = false;
+      this.durably(db, () => {
+        // SAFETY: projecting thread_id and user_block_id from queued_turns
+        const row = db
+          .prepare(
+            `SELECT thread_id, user_block_id FROM queued_turns WHERE queue_id = ? AND state = 'promoting'`,
+          )
+          .get(queueId) as { thread_id: string; user_block_id: string } | undefined;
+        if (!row) return;
+
+        const result = db
+          .prepare(
+            `UPDATE queued_turns
+                SET state = 'promoted', promoted_at = ?, updated_at = ?
+              WHERE queue_id = ? AND state = 'promoting'`,
+          )
+          .run(now, now, queueId);
+        promoted = Number(result.changes) > 0;
+        if (promoted) {
+          // Re-sequence the user block to the current head of the thread's blocks
+          // so its arrival order in the transcript matches its promotion order.
+          // `at` stays the original send instant — it is the user-visible time.
+          // SAFETY: aggregate MAX returns a single number
+          const maxSeqRow = db
+            .prepare(`SELECT COALESCE(MAX(seq), 0) AS max_seq FROM blocks WHERE thread_id = ?`)
+            .get(row.thread_id) as { max_seq: number } | undefined;
+          const nextSeq = (maxSeqRow?.max_seq ?? 0) + 1;
+          db.prepare(
+            `UPDATE blocks SET seq = ? WHERE thread_id = ? AND block_id = ?`,
+          ).run(nextSeq, row.thread_id, row.user_block_id);
+        }
+      });
+      return promoted;
     } catch (err) {
       console.error("[conversation-store] markQueuedTurnPromoted failed:", err);
       return false;
@@ -1419,6 +1457,63 @@ export class ConversationStore {
       return Number(result.changes) > 0;
     } catch (err) {
       console.error("[conversation-store] releaseQueuedTurn failed:", err);
+      return false;
+    }
+  }
+
+  /** Reorder the active queued turns for `threadId`. Writes the caller's
+   *  explicit order into sort_key (0-based over the FULL active set), so
+   *  listings (`listQueuedTurns`) and claims (`claimNextQueuedTurn`) — which
+   *  share QUEUED_TURN_ORDER — drain in the updated order. An explicit order
+   *  wins over dispatch mode: dragging a plain row above a steer row runs the
+   *  plain row first, matching what the strip shows. A partial list still
+   *  re-keys every active row — listed ids first in the caller's order, then
+   *  unlisted rows in their current display order — so no row is left on a
+   *  stale key to interleave arbitrarily. created_at is never touched: it
+   *  keeps meaning when the turn arrived. Returns whether any rows were
+   *  updated. */
+  reorderQueuedTurns(threadId: string, queueIds: string[]): boolean {
+    const db = this.handle();
+    if (!db || queueIds.length === 0) return false;
+    try {
+      let updated = false;
+      this.durably(db, () => {
+        // SAFETY: selecting only the active queue ids in current display order.
+        const activeRows = db
+          .prepare(
+            `SELECT queue_id FROM queued_turns
+              WHERE thread_id = ? AND state IN ('queued', 'promoting')
+              ORDER BY ${QUEUED_TURN_ORDER}`,
+          )
+          .all(threadId) as Array<{ queue_id: string }>;
+        if (activeRows.length === 0) return;
+
+        const active = new Set(activeRows.map((r) => r.queue_id));
+        const seen = new Set<string>();
+        const head: string[] = [];
+        for (const qId of queueIds) {
+          if (!active.has(qId) || seen.has(qId)) continue;
+          seen.add(qId);
+          head.push(qId);
+        }
+        if (head.length === 0) return;
+        const tail = activeRows.map((r) => r.queue_id).filter((id) => !seen.has(id));
+        const finalOrder = [...head, ...tail];
+
+        const updateStmt = db.prepare(
+          `UPDATE queued_turns SET sort_key = ?, updated_at = ?
+            WHERE thread_id = ? AND queue_id = ? AND state IN ('queued', 'promoting')`,
+        );
+
+        const now = Date.now();
+        for (let i = 0; i < finalOrder.length; i++) {
+          const result = updateStmt.run(i, now, threadId, finalOrder[i]!);
+          if (Number(result.changes) > 0) updated = true;
+        }
+      });
+      return updated;
+    } catch (err) {
+      console.error("[conversation-store] reorderQueuedTurns failed:", err);
       return false;
     }
   }
@@ -1527,10 +1622,10 @@ export class ConversationStore {
     }
   }
 
-  /** Active queued turns for a thread, in execution order — the same steer-
-   *  first (newest steer first) then FIFO ordering claimNext uses, so the UI
-   *  shows exactly what will run next. Settled rows (promoted/cancelled) are
-   *  excluded: they are history, not queue. */
+  /** Active queued turns for a thread, in execution order — QUEUED_TURN_ORDER,
+   *  the same explicit-first then steer-first-then-FIFO ordering claimNext
+   *  uses, so the UI shows exactly what will run next. Settled rows
+   *  (promoted/cancelled) are excluded: they are history, not queue. */
   listQueuedTurns(threadId: string): QueuedTurnRow[] {
     const db = this.handle();
     if (!db) return [];
@@ -1541,12 +1636,7 @@ export class ConversationStore {
         .prepare(
           `SELECT * FROM queued_turns
             WHERE thread_id = ? AND state IN ('queued', 'promoting')
-            ORDER BY
-              CASE dispatch_mode WHEN 'steer' THEN 0 ELSE 1 END ASC,
-              CASE WHEN dispatch_mode = 'steer' THEN created_at END DESC,
-              CASE WHEN dispatch_mode = 'steer' THEN rowid END DESC,
-              created_at ASC,
-              rowid ASC`,
+            ORDER BY ${QUEUED_TURN_ORDER}`,
         )
         .all(threadId) as QueuedTurnDbRow[];
       return rows.map(rowToQueuedTurn);

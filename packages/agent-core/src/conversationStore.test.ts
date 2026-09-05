@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 1 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 2 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(1);
+    expect(version.user_version).toBe(2);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -220,7 +220,10 @@ describe("v1 baseline migration and schema", () => {
     const migrations = raw
       .prepare(`SELECT migration_id, name FROM schema_migrations ORDER BY migration_id`)
       .all() as Array<{ migration_id: number; name: string }>;
-    expect(migrations).toEqual([{ migration_id: 1, name: "Baseline" }]);
+    expect(migrations).toEqual([
+      { migration_id: 1, name: "Baseline" },
+      { migration_id: 2, name: "QueuedTurnSortKey" },
+    ]);
 
     const idx = raw
       .prepare(
@@ -1537,7 +1540,7 @@ describe("queued turns schema", () => {
     for (const col of [
       "queue_id", "thread_id", "user_block_id", "dispatch_mode", "state", "input",
       "attachments_json", "model", "mode", "effort", "service_tier", "context_window",
-      "attempt_count", "created_at", "updated_at", "promoted_at",
+      "attempt_count", "created_at", "updated_at", "promoted_at", "sort_key",
     ]) {
       expect(cols).toContain(col);
     }
@@ -1559,6 +1562,62 @@ describe("queued turns schema", () => {
     const version2 = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version2.user_version).toBe(SCHEMA_VERSION);
     raw.close();
+  });
+
+  test("a v1 database without sort_key gains the column on open with rows intact", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "kone-store-v1queue-"));
+    const file = path.join(dir, "kone.sqlite");
+    const legacy = new Database(file);
+    legacy.exec(`
+      CREATE TABLE threads (
+        thread_id TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_activity_at INTEGER NOT NULL
+      );
+      CREATE TABLE queued_turns (
+        queue_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+        user_block_id TEXT NOT NULL,
+        dispatch_mode TEXT NOT NULL CHECK (dispatch_mode IN ('followup', 'steer', 'direct', 'queue')),
+        state TEXT NOT NULL CHECK (state IN ('queued', 'promoting', 'promoted', 'failed', 'cancelled')),
+        input TEXT NOT NULL,
+        attachments_json TEXT,
+        model TEXT,
+        mode TEXT,
+        effort TEXT,
+        service_tier TEXT,
+        context_window TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        promoted_at INTEGER
+      );
+      CREATE TABLE schema_migrations (
+        migration_id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at INTEGER NOT NULL
+      );
+      INSERT INTO schema_migrations (migration_id, name, applied_at) VALUES (1, 'Baseline', 1);
+      INSERT INTO threads (thread_id, project_path, provider, created_at, last_activity_at)
+        VALUES ('t-1', '/p', 'opencode', 1, 1);
+      INSERT INTO queued_turns (queue_id, thread_id, user_block_id, dispatch_mode, state, input, attempt_count, created_at, updated_at)
+        VALUES ('q-1', 't-1', 'ub-1', 'queue', 'queued', 'legacy row', 0, 100, 100);
+      PRAGMA user_version = 1;
+    `);
+    legacy.close();
+
+    useUserDataDir(dir);
+    const store = new ConversationStoreCtor();
+    // The legacy row survives the upgrade and drains in the default order.
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-1"]);
+    const upgraded = new Database(file);
+    expect(columnNames(upgraded, "queued_turns")).toContain("sort_key");
+    // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
+    const version = upgraded.prepare("PRAGMA user_version").get() as { user_version: number };
+    expect(version.user_version).toBe(SCHEMA_VERSION);
+    upgraded.close();
   });
 
   test("a claim stranded in 'promoting' by a crash is released to 'queued' at boot", () => {
@@ -1649,6 +1708,109 @@ describe("queued turns schema", () => {
     ]);
     expect(store.claimNextQueuedTurn("t-1")?.input).toBe("first");
     expect(store.claimNextQueuedTurn("t-1")?.input).toBe("second");
+  });
+
+  test("reorderQueuedTurns updates order for listQueuedTurns and claimNextQueuedTurn", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "first", 100);
+    enq(store, "q-2", "t-1", "ub-2", "second", 200);
+    enq(store, "q-3", "t-1", "ub-3", "third", 300);
+
+    expect(store.listQueuedTurns("t-1").map((r) => r.input)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+
+    const ok = store.reorderQueuedTurns("t-1", ["q-3", "q-1", "q-2"]);
+    expect(ok).toBe(true);
+
+    expect(store.listQueuedTurns("t-1").map((r) => r.input)).toEqual([
+      "third",
+      "first",
+      "second",
+    ]);
+
+    expect(store.claimNextQueuedTurn("t-1")?.input).toBe("third");
+    expect(store.claimNextQueuedTurn("t-1")?.input).toBe("first");
+    expect(store.claimNextQueuedTurn("t-1")?.input).toBe("second");
+  });
+
+  test("reorderQueuedTurns leaves created_at alone and keys order via sort_key", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "first", 100);
+    enq(store, "q-2", "t-1", "ub-2", "second", 200);
+    enq(store, "q-3", "t-1", "ub-3", "third", 300);
+
+    expect(store.reorderQueuedTurns("t-1", ["q-3", "q-1", "q-2"])).toBe(true);
+
+    const raw = rawDb();
+    // SAFETY: the SELECT projects exactly the creation stamp and order key.
+    const rows = raw
+      .prepare(`SELECT queue_id, created_at, sort_key FROM queued_turns WHERE thread_id = 't-1'`)
+      .all() as Array<{ queue_id: string; created_at: number; sort_key: number | null }>;
+    const byId = new Map(rows.map((r) => [r.queue_id, r]));
+    expect(byId.get("q-1")?.created_at).toBe(100);
+    expect(byId.get("q-2")?.created_at).toBe(200);
+    expect(byId.get("q-3")?.created_at).toBe(300);
+    expect(byId.get("q-3")?.sort_key).toBe(0);
+    expect(byId.get("q-1")?.sort_key).toBe(1);
+    expect(byId.get("q-2")?.sort_key).toBe(2);
+    raw.close();
+
+    // The visible order and the drain order agree through the key, not the stamps.
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-3", "q-1", "q-2"]);
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-3");
+  });
+
+  test("a partial reorder pins the listed rows first and keeps unlisted rows in display order", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "first", 100);
+    enq(store, "q-2", "t-1", "ub-2", "second", 200);
+    enq(store, "q-3", "t-1", "ub-3", "third", 300);
+    enq(store, "q-4", "t-1", "ub-4", "fourth", 400);
+
+    // Only one row is dragged to the front — the rest must follow in their
+    // current order, not interleave on stale keys.
+    expect(store.reorderQueuedTurns("t-1", ["q-3"])).toBe(true);
+
+    const listed = store.listQueuedTurns("t-1").map((r) => r.queueId);
+    expect(listed).toEqual(["q-3", "q-1", "q-2", "q-4"]);
+    // The drain walks the same sequence the UI shows.
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-3");
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-1");
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-2");
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe("q-4");
+  });
+
+  test("an explicit order wins over steer priority so the strip and the drain agree", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "plain old", 100);
+    enq(store, "q-2", "t-1", "ub-2", "steer new", 200, { dispatchMode: "steer" });
+    enq(store, "q-3", "t-1", "ub-3", "plain new", 300);
+    // Default: the steer jumps the line.
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-2", "q-1", "q-3"]);
+
+    // The user drags a plain row above the steer — the strip shows that order,
+    // so the drain must run it too instead of still steering first.
+    expect(store.reorderQueuedTurns("t-1", ["q-3", "q-1", "q-2"])).toBe(true);
+    const visible = store.listQueuedTurns("t-1").map((r) => r.queueId);
+    expect(visible).toEqual(["q-3", "q-1", "q-2"]);
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe(visible[0]);
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe(visible[1]);
+    expect(store.claimNextQueuedTurn("t-1")?.queueId).toBe(visible[2]);
+  });
+
+  test("reorder ignores unknown ids and other threads' rows", () => {
+    const store = freshStore();
+    enq(store, "q-1", "t-1", "ub-1", "one", 100);
+    enq(store, "q-2", "t-1", "ub-2", "two", 200);
+    enq(store, "q-x", "t-2", "ub-x", "other", 150);
+
+    expect(store.reorderQueuedTurns("t-1", ["nope", "q-2", "q-1"])).toBe(true);
+    expect(store.listQueuedTurns("t-1").map((r) => r.queueId)).toEqual(["q-2", "q-1"]);
+    expect(store.listQueuedTurns("t-2").map((r) => r.queueId)).toEqual(["q-x"]);
+    expect(store.reorderQueuedTurns("t-1", ["nope"])).toBe(false);
   });
 
   test("steers enqueued in the same millisecond claim newest-first", () => {
@@ -1775,6 +1937,46 @@ describe("queued turns schema", () => {
     expect(row.state).toBe("promoted");
     expect(row.promoted_at).not.toBeNull();
     raw.close();
+  });
+
+  test("markQueuedTurnPromoted re-sequences the prompt but keeps its send time", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
+    store.recordUserBlock({ threadId: "t-1", text: "first", at: 1000 });
+    const firstId = store.latestUserBlockId("t-1")!;
+    store.recordUserBlock({ threadId: "t-1", text: "queued follow-up", at: 2000 });
+    const queuedId = store.latestUserBlockId("t-1")!;
+    store.enqueueQueuedTurn({
+      queueId: "q-1",
+      threadId: "t-1",
+      userBlockId: queuedId,
+      input: "queued follow-up",
+      at: 2000,
+    });
+    const raw = rawDb();
+    // SAFETY: the SELECT projects exactly the order key and send instant.
+    const before = raw
+      .prepare(`SELECT seq, at FROM blocks WHERE block_id = ?`)
+      .get(queuedId) as { seq: number; at: number };
+    store.claimNextQueuedTurn("t-1");
+    expect(store.markQueuedTurnPromoted("q-1")).toBe(true);
+    // SAFETY: same projection as above, re-read after promotion.
+    const after = raw
+      .prepare(`SELECT seq, at FROM blocks WHERE block_id = ?`)
+      .get(queuedId) as { seq: number; at: number };
+    // SAFETY: the aggregate names exactly the thread's head sequence.
+    const head = raw
+      .prepare(`SELECT COALESCE(MAX(seq), 0) AS max_seq FROM blocks WHERE thread_id = 't-1'`)
+      .get() as { max_seq: number };
+    raw.close();
+    // The send instant survives promotion; only the transcript order moves.
+    expect(after.at).toBe(before.at);
+    expect(after.at).toBe(2000);
+    expect(after.seq).toBe(head.max_seq);
+    expect(after.seq).toBeGreaterThan(before.seq);
+    const loaded = store.loadThread("t-1")!;
+    expect(loaded.blocks.map((b) => b.id)).toEqual([firstId, queuedId]);
+    expect(loaded.blocks.find((b) => b.id === queuedId)?.at).toBe(2000);
   });
 
   test("releaseQueuedTurn returns a failed claim to the queue; non-promoting rows can't release", () => {
