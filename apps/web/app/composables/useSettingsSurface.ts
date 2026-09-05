@@ -18,6 +18,7 @@ export type SettingsPane =
   | "shortcuts"
   | "motion"
   | "appearance"
+  | "typography"
   | "studio"
   | "providers"
   | "agentsUsage"
@@ -42,7 +43,7 @@ const COMPACT_MAX = 640;
 /** Pages that are a short list of one-line settings rather than a board. They
  *  take the compact measure, so the label and its value stay on speaking terms
  *  instead of sitting at opposite ends of a 1040px line. */
-const COMPACT_PANES: SettingsPane[] = ["studio"];
+const COMPACT_PANES: SettingsPane[] = ["studio", "typography"];
 
 const pane = ref<SettingsPane>("root");
 /** When true, the open page uses COMPACT_MAX instead of PAGE_MAX. The agent
@@ -57,6 +58,7 @@ const PAGE_PANES: SettingsPane[] = [
   "providers",
   "motion",
   "appearance",
+  "typography",
   "profile",
   "shortcuts",
   "agentsUsage",

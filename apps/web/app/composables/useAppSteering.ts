@@ -15,8 +15,10 @@ import {
 import { hydratePresets } from "~/utils/presetStore";
 import { useStripPrefs } from "./useStripPrefs";
 import { usePaneWidthPrefs } from "./usePaneWidthPrefs";
+import { useTypography } from "./useTypography";
+import type { TypographyPrefs } from "~/theme/typography";
 import { CENTER_MODES } from "~/utils/stripScroll";
-import type { AgentModelRef, ProviderKind, RuntimeEvent } from "~/types/desktop";
+import type { AgentModelRef, AgentBaseEvent, ProviderKind, RuntimeEvent } from "~/types/desktop";
 import type { PaneKind } from "~/types/studio";
 
 // The receiving end of the app gateway's steering tools. An agent's tool call
@@ -289,6 +291,61 @@ function applyStripMutation(
   }
 }
 
+/** Apply one typography mutation. A setting the event doesn't name is left
+ *  alone, the same contract the strip mutation follows. Validation lives in
+ *  the typography layer: patching resolves and clamps, so a size past the end
+ *  lands on the ladder rather than on a size nothing can lay out. */
+type TypographyMutation = Extract<RuntimeEvent, { type: "app.typography_mutation" }>;
+
+/** Every pref the renderer holds, named once. A new pref must be listed here:
+ *  the exclusions below stop being never and this file fails to compile until
+ *  it is — a silent drop in a user's session is not how a new knob is found. */
+const TYPOGRAPHY_PATCH_KEYS = [
+  "sans",
+  "serif",
+  "mono",
+  "composer",
+  "sizeInterface",
+  "sizeComposer",
+  "sizeCode",
+  "lineHeightBody",
+  "measure",
+  "smoothing",
+] as const satisfies readonly (keyof TypographyPrefs)[];
+
+type UnpatchedPref = Exclude<keyof TypographyPrefs, (typeof TYPOGRAPHY_PATCH_KEYS)[number]>;
+type AssertAllPrefsPatched = UnpatchedPref extends never ? true : never;
+type TypographyEventField = Exclude<keyof TypographyMutation, keyof AgentBaseEvent | "type">;
+type UnpatchedEventField = Exclude<TypographyEventField, (typeof TYPOGRAPHY_PATCH_KEYS)[number]>;
+type AssertAllEventFieldsPatched = UnpatchedEventField extends never ? true : never;
+
+function copyTypographyPatchKey(
+  event: TypographyMutation,
+  patch: Partial<TypographyPrefs>,
+  key: (typeof TYPOGRAPHY_PATCH_KEYS)[number],
+  // Adding a pref means listing it in TYPOGRAPHY_PATCH_KEYS: either default
+  // below stops accepting `true` and the build fails here rather than the new
+  // knob being silently dropped in a user's session.
+  _allPrefsPatched: AssertAllPrefsPatched = true,
+  _allEventFieldsPatched: AssertAllEventFieldsPatched = true,
+): void {
+  const value = event[key];
+  if (value === undefined) return;
+  // SAFETY: `key` names one pref on both the event and the patch, and the
+  // event carries that pref's own type — the union only looks unassignable
+  // because `key` is all ten keys at once rather than one at a time.
+  patch[key] = value as never;
+}
+
+function applyTypographyMutation(event: TypographyMutation): void {
+  const { patchTypography } = useTypography();
+  const patch: Partial<TypographyPrefs> = {};
+  for (const key of TYPOGRAPHY_PATCH_KEYS) {
+    copyTypographyPatchKey(event, patch, key);
+  }
+  patchTypography(patch);
+}
+
 /**
  * Initialize reactive steering handlers that connect runtime desktop events
  * (from the MCP gateway over IPC) to the web application's reactive state.
@@ -326,6 +383,10 @@ export function initAppSteering(): () => void {
     }
     if (event.type === "app.strip_mutation") {
       applyStripMutation(event);
+      return;
+    }
+    if (event.type === "app.typography_mutation") {
+      applyTypographyMutation(event);
     }
   });
 

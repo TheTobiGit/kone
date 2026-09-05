@@ -12,6 +12,21 @@
   /* Editorial display serif — deliberate contrast to Geist, used for the
      rotating wordmark. Variable weight + optical sizing; @nuxt/fonts serves it. */
   --font-serif: "Fraunces", ui-serif, Georgia, "Times New Roman", serif;
+  /* Composer input face. Falls back to the UI face so the input always reads
+     as interface, never as code, until the user points it elsewhere. */
+  --font-composer: var(--font-sans);
+}
+
+/* Typography preferences, painted at runtime by the typography layer onto
+   <html> as inline custom properties (which beat this block). Sizes stay in
+   absolute pixels so they do not scale twice when the interface size moves the
+   root font size; the body line-height and the reading measure are unitless
+   and character-based so they scale with the face. */
+:root {
+  --font-size-composer: 14px;
+  --font-size-code: 12px;
+  --line-height-body: 1.55;
+  --measure: 68ch;
 }
 
 /* Bind semantic color utilities (bg-ground, text-ink, …) to the
@@ -160,9 +175,29 @@ html::-webkit-scrollbar-thumb:hover {
 body {
   background-color: var(--ground);
   color: var(--ink);
+  font-family: var(--font-sans);
+  line-height: var(--line-height-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
+}
+
+/* Headings distribute evenly across lines; descriptions avoid orphans. Long
+   prose opts into the measure cap where it reads (`.prose` / `.selectable`)
+   rather than globally, so the board's fixed columns never inherit it. */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+  line-height: 1.2;
+}
+.prose,
+.selectable {
+  max-width: var(--measure);
+}
+.prose {
+  text-wrap: pretty;
+  line-height: var(--line-height-body);
 }
 
 /* Native-feel selection model: the interface itself isn't selectable, so

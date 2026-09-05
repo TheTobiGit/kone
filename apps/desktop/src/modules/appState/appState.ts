@@ -26,6 +26,10 @@
  * are not the ones on screen.
  */
 import { ipcMain } from "electron";
+import {
+  resolveTypographyPrefs,
+  type TypographyPrefs,
+} from "@kone/protocol/typography";
 
 /** One agent in the renderer's roster, resolved: every field is what the roster
  *  actually shows rather than a row's half-answer. Flatter than the renderer's
@@ -82,12 +86,20 @@ export type StripSettingsState = {
   ladder: number[];
 };
 
+/** The typography prefs as the renderer reports them. Strings are custom family
+ *  names; empty means the shipped default stack. Mirrored so future gateway
+ *  tools can describe and change the faces and sizes without guessing. The
+ *  shape is the renderer's own prefs type: one definition, so a bound the
+ *  renderer moves can never turn a valid push into a rejected one here. */
+export type TypographySettingsState = TypographyPrefs;
+
 /** What `app:state` carries. Each half is optional and independent: the roster
  *  and the strip change for unrelated reasons, and a push about one must not be
  *  read as "the other is now empty". */
 export type AppStatePush = {
   agents?: AgentRosterEntry[];
   strip?: StripSettingsState;
+  typography?: TypographySettingsState;
   projects?: ProjectEntry[];
 };
 
@@ -96,6 +108,7 @@ const PANE_KINDS: readonly StripPaneKind[] = ["thread", "terminal", "scratchpad"
 
 let agentRoster: AgentRosterEntry[] | null = null;
 let stripSettings: StripSettingsState | null = null;
+let typographySettings: TypographySettingsState | null = null;
 let projects: ProjectEntry[] | null = null;
 
 /** The agent roster the renderer last reported, or null before its first push.
@@ -110,6 +123,13 @@ export function currentAgentRoster(): readonly AgentRosterEntry[] | null {
  *  the board the user is looking at. */
 export function currentStripSettings(): StripSettingsState | null {
   return stripSettings;
+}
+
+/** The typography prefs the renderer last reported, or null before its first
+ *  push. No gateway tool reads it yet — it is mirrored now so the future
+ *  typography tools describe what is on screen instead of naming defaults. */
+export function currentTypographySettings(): TypographySettingsState | null {
+  return typographySettings;
 }
 
 /** The projects the renderer last reported, or null before its first push. An
@@ -244,6 +264,31 @@ function readStripSettings(
   return { centering, defaultWidths: widths, ladder };
 }
 
+/** The typography prefs, or null if the payload isn't a readable set. Partial
+ *  is not accepted for the same reason the strip refuses it: a mirror
+ *  half-filled from a malformed push would have a future tool report a family
+ *  next to sizes from an older one. Only the shape is checked here — every
+ *  size present and finite, smoothing a real boolean; families default to the
+ *  shipped stack downstream. The renderer already resolved and clamped before
+ *  pushing, so the ranges live in exactly one place and this normalizes with
+ *  the same function rather than carrying its own copy. */
+function readTypographySettings(
+  value: Partial<TypographySettingsState> | null | undefined,
+): TypographySettingsState | null {
+  if (!value || !(value instanceof Object)) return null;
+  if (
+    !Number.isFinite(value.sizeInterface) ||
+    !Number.isFinite(value.sizeComposer) ||
+    !Number.isFinite(value.sizeCode) ||
+    !Number.isFinite(value.lineHeightBody) ||
+    !Number.isFinite(value.measure) ||
+    (value.smoothing !== true && value.smoothing !== false)
+  ) {
+    return null;
+  }
+  return resolveTypographyPrefs(value);
+}
+
 /**
  * Take one push from the renderer.
  *
@@ -262,6 +307,8 @@ export function setAppState(state: AppStatePush | undefined): void {
   }
   const strip = readStripSettings(state.strip);
   if (strip) stripSettings = strip;
+  const typography = readTypographySettings(state.typography);
+  if (typography) typographySettings = typography;
   if (Array.isArray(state.projects)) {
     projects = state.projects
       .map(readProjectEntry)

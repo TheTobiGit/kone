@@ -8,6 +8,7 @@ import DistributeHorizontalCenter from "~/components/icons/animated/DistributeHo
 import Gauge from "~/components/icons/animated/Gauge.vue";
 import Keyboard from "~/components/icons/animated/Keyboard.vue";
 import ListView from "~/components/icons/animated/ListView.vue";
+import Paragraph from "~/components/icons/animated/Paragraph.vue";
 import Puzzle from "~/components/icons/animated/Puzzle.vue";
 import Swatch from "~/components/icons/animated/Swatch.vue";
 import User from "~/components/icons/animated/User.vue";
@@ -159,6 +160,11 @@ function openAppearance() {
   cue("press");
 }
 
+function openTypography() {
+  pane.value = "typography";
+  cue("press");
+}
+
 function openProfile() {
   pane.value = "profile";
   cue("press");
@@ -258,6 +264,8 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
     <SettingsShortcutsPane v-if="pane === 'shortcuts'" :open="open" @back="backToRoot" />
 
     <SettingsAppearancePane v-if="pane === 'appearance'" :open="open" @back="backToRoot" />
+
+    <SettingsTypographyPane v-if="pane === 'typography'" :open="open" @back="backToRoot" />
 
     <SettingsStudioPane v-if="pane === 'studio'" :open="open" @back="backToRoot" />
 
@@ -394,6 +402,29 @@ const paneOffset = computed(() => (reducedMotion.value === "reduce" ? 0 : 20));
               aria-hidden="true"
             />
             <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Appearance</span>
+          </button>
+
+          <!-- Typography — the faces and sizes text wears. Own page rather than
+               a section of Appearance: families, sizes and reading each need
+               room for a live preview, and Appearance already owns the theme
+               list. -->
+          <button
+            type="button"
+            class="group nav-row flex w-full cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+            :tabindex="open ? 0 : -1"
+            aria-label="Open typography settings"
+            @mouseenter="playNavIcon('typography')"
+            @click="openTypography"
+          >
+            <Paragraph
+              :ref="(el) => setNavIcon('typography', el)"
+              :size="17"
+              :stroke-width="1.7"
+              trigger="manual"
+              class="shrink-0 text-muted transition-colors group-hover:text-ink"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 text-[15px] leading-tight text-ink">Typography</span>
           </button>
         </div>
 

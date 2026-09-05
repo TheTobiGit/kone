@@ -1294,6 +1294,22 @@ export type RuntimeEvent =
       centering?: "never" | "on-overflow" | "always";
       defaultWidths?: { thread?: number; terminal?: number; scratchpad?: number };
     })
+  // An agent tool call changed the typography prefs: the faces and sizes text
+  // wears. Per install rather than per project, and the renderer's alone to
+  // hold. A setting the event doesn't name is left alone.
+  | (AgentBaseEvent & {
+      type: "app.typography_mutation";
+      sans?: string;
+      serif?: string;
+      mono?: string;
+      composer?: string;
+      sizeInterface?: number;
+      sizeComposer?: number;
+      sizeCode?: number;
+      lineHeightBody?: number;
+      measure?: number;
+      smoothing?: boolean;
+    })
   | (AgentBaseEvent & { type: "turn.started"; turnId: string })
   // A follow-up message offered into a RUNNING turn: same turn, no new
   // boundary — the provider consumes it when it builds its next request.
@@ -2869,6 +2885,21 @@ export type KoneStripSettings = {
   ladder: number[];
 };
 
+/** The typography prefs as the shell mirrors them. Strings are custom family
+ *  names; empty means the shipped default stack. */
+export type KoneTypographySettings = {
+  sans: string;
+  serif: string;
+  mono: string;
+  composer: string;
+  sizeInterface: number;
+  sizeComposer: number;
+  sizeCode: number;
+  lineHeightBody: number;
+  measure: number;
+  smoothing: boolean;
+};
+
 /** One project as the shell mirrors it: the folder the user opened and how the
  *  app is holding it. No git state — the gateway reads that from disk when an
  *  agent asks, so it is never a stale copy of a tile's last render. */
@@ -2901,12 +2932,14 @@ export type KoneDesktopApi = {
     },
   ) => Promise<void>;
   /** Mirrors what the renderer knows about itself and the shell cannot derive:
-   *  the resolved agent roster, the thread strip's settings, and the projects
-   *  the user has opened. The agent gateway reads it back so its tools describe
-   *  and change the surfaces the user is actually looking at. */
+   *  the resolved agent roster, the thread strip's settings, the typography
+   *  prefs, and the projects the user has opened. The agent gateway reads it
+   *  back so its tools describe and change the surfaces the user is actually
+   *  looking at. */
   setAppState: (state: {
     agents?: KoneAgentRosterEntry[];
     strip?: KoneStripSettings;
+    typography?: KoneTypographySettings;
     projects?: KoneProjectEntry[];
   }) => Promise<void>;
   fs: KoneFsApi;
