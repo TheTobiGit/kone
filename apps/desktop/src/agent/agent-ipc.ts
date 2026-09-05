@@ -348,13 +348,15 @@ export function registerAgentIpc(): void {
       event.type !== "thread.archived" &&
       event.type !== "thread.unarchived" &&
       // App steering is live instruction for the renderer, not transcript: the
-      // theme, the agent roster, the preset sub-agents and the thread strip are
-      // app state the user can see for themselves, and journaling the
-      // announcement would record derived state in the turn's transcript.
+      // theme, the agent roster, the preset sub-agents, the thread strip and
+      // the typography prefs are app state the user can see for themselves,
+      // and journaling the announcement would record derived state in the
+      // turn's transcript.
       event.type !== "app.theme_mutation" &&
       event.type !== "app.agent_mutation" &&
       event.type !== "app.subagent_presets_changed" &&
-      event.type !== "app.strip_mutation";
+      event.type !== "app.strip_mutation" &&
+      event.type !== "app.typography_mutation";
     broadcast(event, journal);
     // When a turn settles, snapshot the repo state it left behind (branch +
     // working-tree diffstat) onto the thread, so the Project Home "recent

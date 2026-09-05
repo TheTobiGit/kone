@@ -20,6 +20,10 @@
       "types": "./src/subagentPresets.ts",
       "default": "./src/subagentPresets.ts"
     },
+    "./typography": {
+      "types": "./src/typography.ts",
+      "default": "./src/typography.ts"
+    },
     "./usage-format": {
       "types": "./src/usageFormat.ts",
       "default": "./src/usageFormat.ts"
