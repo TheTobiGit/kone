@@ -46,7 +46,11 @@ function freshStore(): ConversationStoreType {
   return new ConversationStoreCtor();
 }
 
-function makeGateway(store: ConversationStoreType, approve: (() => Promise<boolean>) | undefined = async () => true) {
+function makeGateway(
+  store: ConversationStoreType,
+  approve: (() => Promise<boolean>) | undefined = async () => true,
+  overrides: Partial<GatewayInput> = {},
+) {
   const events: RuntimeEvent[] = [];
   let turnListener: ((event: RuntimeEvent) => void) | null = null;
   const gateway = createGateway({
@@ -61,6 +65,7 @@ function makeGateway(store: ConversationStoreType, approve: (() => Promise<boole
         turnListener = null;
       };
     },
+    ...overrides,
   });
   // SAFETY: these tests hand over complete event literals; the listener
   // consumes exactly the RuntimeEvent they spell out.
@@ -431,6 +436,10 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_list_threads",
       "app_read_thread",
       "app_start_thread",
+      "app_stop_thread",
+      "app_archive_thread",
+      "app_delete_thread",
+      "app_rename_thread",
       "app_get_provider_status",
       "app_get_usage_report",
       "app_set_provider_enabled",
@@ -911,5 +920,106 @@ describe("gateway integration (real store + HTTP)", () => {
 
     // Verify process is actually dead (kill with signal 0 throws ESRCH)
     expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  test("thread lifecycle steering tools: rename, archive, unarchive, stop, delete over MCP", async () => {
+    let stoppedId = "";
+    const store = freshStore();
+    store.ensureThread({
+      threadId: "target-thread-1",
+      projectPath: "/repo",
+      provider: "claudeAgent",
+      model: "sonnet",
+      title: "Initial Title",
+    });
+    store.ensureThread({
+      threadId: "assistant-thread",
+      projectPath: GLOBAL_ASSISTANT_PROJECT_PATH,
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+
+    const { gateway } = makeGateway(store, undefined, {
+      threadControls: {
+        stopThread: async (threadId) => {
+          stoppedId = threadId;
+          return { stopped: true, wasRunning: true };
+        },
+      },
+    });
+    await gateway.ready;
+    const url = gateway.mcpEndpointUrl();
+    const conn = gateway.connectionForThread("assistant-thread", "claudeAgent", "sonnet");
+
+    // 1. Rename
+    const renameRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "app_rename_thread",
+        arguments: { threadId: "target-thread-1", title: "Updated Thread Title" },
+      },
+    });
+    expect(rpcResult(renameRes).isError).toBeFalsy();
+    expect(rpcResult(renameRes).content?.[0]?.text).toContain("Renamed thread");
+    expect(store.threadMeta("target-thread-1")?.title).toBe("Updated Thread Title");
+
+    // 2. Archive
+    const archiveRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "app_archive_thread",
+        arguments: { threadId: "target-thread-1" },
+      },
+    });
+    expect(rpcResult(archiveRes).isError).toBeFalsy();
+    expect(rpcResult(archiveRes).content?.[0]?.text).toContain("Archived thread");
+    expect(store.threadMeta("target-thread-1")?.archivedAt).not.toBeNull();
+
+    // 3. Unarchive
+    const unarchiveRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "app_archive_thread",
+        arguments: { threadId: "target-thread-1", archived: false },
+      },
+    });
+    expect(rpcResult(unarchiveRes).isError).toBeFalsy();
+    expect(rpcResult(unarchiveRes).content?.[0]?.text).toContain("Unarchived thread");
+    expect(store.threadMeta("target-thread-1")?.archivedAt).toBeNull();
+
+    // 4. Stop
+    const stopRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "app_stop_thread",
+        arguments: { threadId: "target-thread-1" },
+      },
+    });
+    expect(rpcResult(stopRes).isError).toBeFalsy();
+    expect(stoppedId).toBe("target-thread-1");
+
+    // 5. Delete
+    const deleteRes = await mcpPost(url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: {
+        name: "app_delete_thread",
+        arguments: { threadId: "target-thread-1" },
+      },
+    });
+    expect(rpcResult(deleteRes).isError).toBeFalsy();
+    expect(rpcResult(deleteRes).content?.[0]?.text).toContain("Permanently deleted thread");
+    expect(store.threadMeta("target-thread-1")).toBeNull();
+
+    await gateway.shutdown();
   });
 });

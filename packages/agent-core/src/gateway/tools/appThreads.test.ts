@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentRecord } from "../../ConversationStore.js";
 import type { ProviderAvailability } from "../../agentModel.js";
 import type {
+  EmitEvent,
   SendTurnInput,
   Session,
   SessionStartInput,
@@ -140,11 +141,16 @@ const TRANSCRIPT: StoredThread = {
 interface StoreCalls {
   bound: Array<{ threadId: string; agentId: string | null }>;
   results: Array<{ requestId: string; resultJson: string }>;
+  archived?: Array<{ threadId: string; archived: boolean }>;
+  deleted?: string[];
+  titles?: Array<{ threadId: string; title: string }>;
+  renames?: Array<{ threadId: string; title: string }>;
+  cancelledQueues?: string[];
 }
 
 function makeStore(
   overrides: Partial<AppThreadsStore> = {},
-  calls: StoreCalls = { bound: [], results: [] },
+  calls: StoreCalls = { bound: [], results: [], archived: [], deleted: [], titles: [] },
 ): AppThreadsStore & { calls: StoreCalls } {
   const reserved = new Map<string, { fingerprint: string; result?: unknown }>();
   const base: AppThreadsStore = {
@@ -157,6 +163,10 @@ function makeStore(
       return [];
     },
     loadThread: (threadId) => (threadId === "t-newest" ? TRANSCRIPT : null),
+    threadMeta: (threadId) => {
+      const found = [...KONE_THREADS, ...SITE_THREADS].find((t) => t.threadId === threadId);
+      return found ?? null;
+    },
     listProjectAgents: (path) => (path === KONE ? [MAYA, REX] : []),
     getThreadAgent: (threadId) =>
       threadId === "t-newest" ? { agentId: "agent-maya" } : { agentId: null },
@@ -179,6 +189,35 @@ function makeStore(
       calls.results.push({ requestId, resultJson });
       const prior = reserved.get(requestId);
       if (prior) prior.result = JSON.parse(resultJson);
+    },
+    setTitle: (threadId, title) => {
+      calls.titles = calls.titles ?? [];
+      calls.titles.push({ threadId, title });
+      return true;
+    },
+    renameThread: (threadId, title) => {
+      calls.renames = calls.renames ?? [];
+      calls.renames.push({ threadId, title });
+      return true;
+    },
+    setArchived: (threadId, archived) => {
+      calls.archived = calls.archived ?? [];
+      calls.archived.push({ threadId, archived });
+      return { ok: true, threadIds: [threadId] };
+    },
+    canDeleteThread: (threadId) => {
+      const exists = threadId === "t-newest" || threadId === "t-done" || threadId === "t-site";
+      return exists ? { ok: true } : { ok: false, reason: "missing" };
+    },
+    deleteThread: (threadId) => {
+      calls.deleted = calls.deleted ?? [];
+      calls.deleted.push(threadId);
+      return { ok: true };
+    },
+    cancelQueuedTurnsForThread: (threadId) => {
+      calls.cancelledQueues = calls.cancelledQueues ?? [];
+      calls.cancelledQueues.push(threadId);
+      return [];
     },
     ...overrides,
   };
@@ -224,6 +263,17 @@ function tools(
     live?: string[];
     availability?: ProviderAvailability[];
     threadId?: string;
+    emit?: EmitEvent;
+    stopThread?: (threadId: string) => Promise<{ stopped: boolean; wasRunning: boolean; reason?: string }>;
+    archiveThread?: (
+      threadId: string,
+      archived: boolean,
+    ) => Promise<{ ok: boolean; reason?: string; threadIds?: string[] }>;
+    deleteThread?: (threadId: string) => Promise<{ ok: boolean; reason?: string }>;
+    renameThread?: (
+      threadId: string,
+      title: string,
+    ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
   } = {},
 ) {
   const live = new Set(options.live ?? []);
@@ -234,6 +284,11 @@ function tools(
     availability: async () => options.availability ?? AVAILABILITY,
     newThreadId: () => options.threadId ?? "thread-new",
   };
+  if (options.emit) toolOptions.emit = options.emit;
+  if (options.stopThread) toolOptions.stopThread = options.stopThread;
+  if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
+  if (options.deleteThread) toolOptions.deleteThread = options.deleteThread;
+  if (options.renameThread) toolOptions.renameThread = options.renameThread;
   // `runner: null` is the "no dispatcher behind the gateway" case, which is a
   // different thing from a runner nobody passed — the option has to be absent,
   // not undefined.
@@ -641,9 +696,273 @@ describe("the thread tools as the gateway serves them", () => {
     expect(byName.get("app_list_threads")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_read_thread")?.requiresActiveTurn).toBe(false);
     expect(byName.get("app_start_thread")?.requiresActiveTurn).toBe(true);
+    expect(byName.get("app_stop_thread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_archive_thread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_delete_thread")?.requiresActiveTurn).toBe(false);
+    expect(byName.get("app_rename_thread")?.requiresActiveTurn).toBe(false);
+
+    expect(entries).toHaveLength(7);
     for (const entry of entries) {
       expect(entry.promptSnippet).toBeTruthy();
       expect(entry.promptSnippet).not.toContain("\n");
     }
+  });
+});
+
+describe("app_stop_thread", () => {
+  it("stops a live thread via stopThread hook", async () => {
+    let stoppedId = "";
+    const result = await tools({
+      live: ["t-newest"],
+      stopThread: async (id) => {
+        stoppedId = id;
+        return { stopped: true, wasRunning: true };
+      },
+    }).call(makeCtx(), "app_stop_thread", { threadId: "t-newest" });
+
+    expect(result.isError).toBeUndefined();
+    expect(stoppedId).toBe("t-newest");
+    expect(text(result)).toContain("Stopped active session and turn for thread \"t-newest\"");
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+      stopped: true,
+      wasRunning: true,
+    });
+  });
+
+  it("reports an idle thread when no session is running", async () => {
+    const result = await tools({
+      live: [],
+    }).call(makeCtx(), "app_stop_thread", { threadId: "t-newest" });
+
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toContain("Thread \"t-newest\" was already idle");
+    // stopped stays true on idle: it confirms quiescence, not a teardown.
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+      stopped: true,
+      wasRunning: false,
+    });
+  });
+
+  it("refuses when thread does not exist", async () => {
+    const result = await tools().call(makeCtx(), "app_stop_thread", { threadId: "nonexistent" });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
+  });
+});
+
+describe("app_archive_thread", () => {
+  it("archives a thread by default", async () => {
+    const store = makeStore();
+    const result = await tools({ store }).call(makeCtx(), "app_archive_thread", {
+      threadId: "t-newest",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toContain("Archived thread \"t-newest\"");
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+      archived: true,
+      affectedThreadIds: ["t-newest"],
+    });
+    expect(store.calls.archived).toContainEqual({ threadId: "t-newest", archived: true });
+  });
+
+  it("unarchives a thread with archived: false", async () => {
+    const store = makeStore();
+    const result = await tools({ store }).call(makeCtx(), "app_archive_thread", {
+      threadId: "t-newest",
+      archived: false,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toContain("Unarchived thread \"t-newest\"");
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+      archived: false,
+      affectedThreadIds: ["t-newest"],
+    });
+    expect(store.calls.archived).toContainEqual({ threadId: "t-newest", archived: false });
+  });
+
+  it("refuses archiving when thread is busy mid-turn", async () => {
+    const store = makeStore({
+      setArchived: () => ({ ok: false, reason: "busy" }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_archive_thread", {
+      threadId: "t-newest",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("capability_denied");
+  });
+
+  it("refuses when thread does not exist", async () => {
+    const result = await tools().call(makeCtx(), "app_archive_thread", {
+      threadId: "nonexistent",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
+  });
+});
+
+describe("app_delete_thread", () => {
+  it("deletes a thread when safe", async () => {
+    const store = makeStore();
+    const result = await tools({ store }).call(makeCtx(), "app_delete_thread", {
+      threadId: "t-newest",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toContain("Permanently deleted thread \"t-newest\"");
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+      deleted: true,
+    });
+    expect(store.calls.deleted).toContain("t-newest");
+    // The fallback cancels the queue through the same store method the
+    // canonical path uses, before the row drop removes the queue rows.
+    expect(store.calls.cancelledQueues).toContain("t-newest");
+  });
+
+  it("still drops the rows when the store cannot cancel the queue", async () => {
+    const store = makeStore();
+    store.cancelQueuedTurnsForThread = undefined;
+    const result = await tools({ store }).call(makeCtx(), "app_delete_thread", {
+      threadId: "t-newest",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(store.calls.deleted).toContain("t-newest");
+  });
+
+  it("refuses deleting when thread is busy mid-turn", async () => {
+    const store = makeStore({
+      canDeleteThread: () => ({ ok: false, reason: "busy" }),
+    });
+    const result = await tools({ store }).call(makeCtx(), "app_delete_thread", {
+      threadId: "t-newest",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("capability_denied");
+  });
+
+  it("refuses deleting when thread does not exist", async () => {
+    const result = await tools().call(makeCtx(), "app_delete_thread", {
+      threadId: "nonexistent",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
+  });
+});
+
+describe("app_rename_thread", () => {
+  it("renames a thread and updates the store", async () => {
+    const store = makeStore();
+    const emitted: unknown[] = [];
+    const result = await tools({
+      store,
+      emit: (e) => emitted.push(e),
+    }).call(makeCtx(), "app_rename_thread", {
+      threadId: "t-newest",
+      title: "New Architectural Plan",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toContain("Renamed thread \"t-newest\" from \"Wire the projects module\" to \"New Architectural Plan\"");
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+      title: "New Architectural Plan",
+      previousTitle: "Wire the projects module",
+    });
+    expect(store.calls.renames).toContainEqual({
+      threadId: "t-newest",
+      title: "New Architectural Plan",
+    });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      type: "thread.title.updated",
+      threadId: "t-newest",
+      title: "New Architectural Plan",
+    });
+  });
+
+  it("writes through setTitle when renameThread is absent", async () => {
+    const store = makeStore();
+    store.renameThread = undefined;
+    const emitted: unknown[] = [];
+    const result = await tools({
+      store,
+      emit: (e) => emitted.push(e),
+    }).call(makeCtx(), "app_rename_thread", {
+      threadId: "t-newest",
+      title: "Legacy Store Title",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(store.calls.titles).toContainEqual({
+      threadId: "t-newest",
+      title: "Legacy Store Title",
+    });
+    expect(store.calls.renames ?? []).toHaveLength(0);
+    expect(emitted).toHaveLength(1);
+  });
+
+  it("stays silent when the title did not change", async () => {
+    const store = makeStore({ renameThread: () => false });
+    const emitted: unknown[] = [];
+    const result = await tools({
+      store,
+      emit: (e) => emitted.push(e),
+    }).call(makeCtx(), "app_rename_thread", {
+      threadId: "t-newest",
+      title: "Wire the projects module",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("truncates excessively long titles", async () => {
+    const store = makeStore();
+    const veryLongTitle = "a".repeat(150);
+    const result = await tools({ store }).call(makeCtx(), "app_rename_thread", {
+      threadId: "t-newest",
+      title: veryLongTitle,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      threadId: "t-newest",
+    });
+    // SAFETY: checking title string property
+    const finalTitle = (result.structuredContent as { title: string }).title;
+    expect(finalTitle.length).toBeLessThan(veryLongTitle.length);
+    expect(finalTitle.endsWith("...")).toBe(true);
+  });
+
+  it("refuses empty or whitespace-only title", async () => {
+    const result = await tools().call(makeCtx(), "app_rename_thread", {
+      threadId: "t-newest",
+      title: "   ",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("invalid_input");
+  });
+
+  it("refuses when thread does not exist", async () => {
+    const result = await tools().call(makeCtx(), "app_rename_thread", {
+      threadId: "nonexistent",
+      title: "Valid Title",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("not_found");
   });
 });

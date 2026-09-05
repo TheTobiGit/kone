@@ -27,6 +27,7 @@
 
 import { randomUUID } from "node:crypto";
 
+import { truncateThreadTitle } from "../../threadTitle.js";
 import {
   modelChainOf,
   planSpawnModel,
@@ -37,6 +38,8 @@ import { resolveDelegation } from "../../delegate.js";
 import { ago, compact, decodeCursor, encodeCursor, squash } from "../helpers.js";
 import type {
   AgentPersona,
+  EmitEvent,
+  RuntimeEvent,
   Session,
   SendTurnInput,
   SessionStartInput,
@@ -47,13 +50,21 @@ import type {
 } from "../../types.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import {
+  ArchiveAppThreadInputSchema,
+  ARCHIVE_APP_THREAD_JSON_SCHEMA,
+  DeleteAppThreadInputSchema,
+  DELETE_APP_THREAD_JSON_SCHEMA,
   GatewayToolError,
   ListAppThreadsInputSchema,
   LIST_APP_THREADS_JSON_SCHEMA,
   ReadAppThreadInputSchema,
   READ_APP_THREAD_JSON_SCHEMA,
+  RenameAppThreadInputSchema,
+  RENAME_APP_THREAD_JSON_SCHEMA,
   StartAppThreadInputSchema,
   START_APP_THREAD_JSON_SCHEMA,
+  StopAppThreadInputSchema,
+  STOP_APP_THREAD_JSON_SCHEMA,
   THREAD_LIST_DEFAULT_LIMIT,
   type GatewayRecord,
   type ListAppThreadsInput,
@@ -67,6 +78,7 @@ import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appP
 export interface AppThreadsStore {
   listThreads(projectPath: string, options?: { archived?: boolean }): StoredThreadMeta[];
   loadThread(threadId: string): StoredThread | null;
+  threadMeta?(threadId: string): StoredThreadMeta | null;
   /** The project's team, in roster order — the agents a thread here can be
    *  handed to. A thread is handed to a team member or to nobody: an agent the
    *  user has not put on the project is not on it. */
@@ -91,6 +103,26 @@ export interface AppThreadsStore {
     requestId: string;
     resultJson: string;
   }): void;
+  /** Blind title write — the first-turn fallback and agent-generated renames.
+   *  The rename op prefers `renameThread` below and only uses this on stores
+   *  that predate it. */
+  setTitle?(threadId: string, title: string): void;
+  /** Canonical user-initiated rename: same title-only write as setTitle
+   *  (recency untouched), but change-detecting — false when the row is missing
+   *  or the title is unchanged, so callers only announce real changes. */
+  renameThread?(threadId: string, title: string): boolean;
+  setArchived?(
+    threadId: string,
+    archived: boolean,
+  ): { ok: true; threadIds: string[] } | { ok: false; reason: "missing" | "busy" | "error" };
+  canDeleteThread?(threadId: string): { ok: true } | { ok: false; reason: "missing" | "busy" };
+  deleteThread?(
+    threadId: string,
+  ): { ok: true } | { ok: false; reason: "missing" | "busy" | "error" };
+  /** Flip a thread's queued + promoting rows to cancelled, returning their
+   *  ids. The delete fallback calls this when present so a dropped thread's
+   *  follow-ups cannot resurrect it. */
+  cancelQueuedTurnsForThread?(threadId: string): string[];
 }
 
 /** The thread-driving half of the dispatcher — the same two calls the renderer's
@@ -106,8 +138,17 @@ export interface AppThreadsRunner {
  *  is the honest answer when nothing can tell us otherwise. */
 export type AppThreadsAvailability = () => Promise<readonly ProviderAvailability[]>;
 
+/** Lifecycle ownership: in production the four `*Thread` controls below are the
+ *  only path — the desktop shell wires every one to a service-backed
+ *  implementation (queue-cancel + broadcast + attachment cleanup + dispatcher
+ *  forget composed in one place). The store-adapter branches inside the ops
+ *  are a degraded fallback for tests and service-less hosts: they guard and
+ *  write through the same store methods the canonical path uses, but they
+ *  cannot emit the queued-cancelled broadcasts, remove attachment bytes, or
+ *  forget dispatcher state. */
 export interface AppThreadsToolOptions {
   store: AppThreadsStore;
+  emit?: EmitEvent;
   /** The projects the renderer last reported — what a project name resolves
    *  against, and what an unscoped list walks. */
   readProjects?: () => readonly ProjectRosterEntry[] | null;
@@ -121,6 +162,31 @@ export interface AppThreadsToolOptions {
   /** Mints the new thread's id. Injected so a test can name the thread it is
    *  about to assert on. */
   newThreadId?: () => string;
+  /** Stop a live thread's turn and session. `stopped` is the idempotent
+   *  guarantee — true whenever the call leaves the thread with nothing
+   *  running, including when it was already idle — so read `wasRunning` to
+   *  tell whether a live session actually existed. Kept (rather than dropped)
+   *  so MCP clients can keep confirming quiescence off the one field. */
+  stopThread?: (threadId: string) => Promise<{ stopped: boolean; wasRunning: boolean; reason?: string }>;
+  /** Archive or unarchive a thread and its subtree. Canonical in production
+   *  (service-backed: cancels the subtree's queued turns and announces the
+   *  change); the store fallback writes the column only. */
+  archiveThread?: (
+    threadId: string,
+    archived: boolean,
+  ) => Promise<{ ok: boolean; reason?: string; threadIds?: string[] }>;
+  /** Permanently delete a thread. Canonical in production (service-backed:
+   *  queue-cancel + broadcast + attachment bytes + dispatcher forget); the
+   *  store fallback guards, cancels the queue when the adapter offers it, and
+   *  drops the rows. */
+  deleteThread?: (threadId: string) => Promise<{ ok: boolean; reason?: string }>;
+  /** Rename a thread. Canonical in production (change-detecting write +
+   *  broadcast); the store fallback writes through the same canonical store
+   *  method and emits the same event. */
+  renameThread?: (
+    threadId: string,
+    title: string,
+  ) => Promise<{ ok: boolean; title?: string; previousTitle?: string | null; reason?: string }>;
 }
 
 /** Tags this module's cursors, so one handed to another tool is refused rather
@@ -312,6 +378,126 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     agentName: agentNameFor(store, meta.threadId),
     running: isLive(meta.threadId),
   });
+
+  // -- lifecycle plumbing (one place, not five handlers) ----------------------
+  // Every lifecycle op resolves to a single async fn here: the injected control
+  // wins, the store adapter is the fallback, and absence is a no-op success.
+  // Handlers below only parse, guard, and narrate.
+  const notFound = (threadId: string): GatewayToolError =>
+    new GatewayToolError("not_found", `Unknown thread id: "${threadId}".`);
+
+  const requireThread = (threadId: string) => {
+    const meta = store.threadMeta?.(threadId) ?? null;
+    const thread = meta ? null : store.loadThread(threadId);
+    if (!meta && !thread) throw notFound(threadId);
+    return { meta, thread };
+  };
+
+  const busyRefusal = (threadId: string, verb: "archive" | "delete"): GatewayToolError =>
+    new GatewayToolError(
+      "capability_denied",
+      `Cannot ${verb} thread "${threadId}": a turn or subagent is currently running in this thread or its subtree.`,
+    );
+
+  const failInternal = (threadId: string, verb: string, reason?: string): GatewayToolError =>
+    new GatewayToolError(
+      "internal",
+      `Failed to ${verb} thread "${threadId}": ${reason ?? "unknown error"}.`,
+    );
+
+  const singleLine = (summary: string, payload: GatewayRecord): GatewayToolResult => ({
+    content: [{ type: "text", text: summary }],
+    structuredContent: payload,
+  });
+
+  const stopWasRunning = async (threadId: string): Promise<boolean> => {
+    if (options.stopThread) return (await options.stopThread(threadId)).wasRunning;
+    return options.isThreadLive?.(threadId) ?? false;
+  };
+
+  const archiveOp = async (threadId: string, archived: boolean): Promise<string[]> => {
+    const verb = archived ? "archive" : "unarchive";
+    if (options.archiveThread) {
+      const res = await options.archiveThread(threadId, archived);
+      if (!res.ok) {
+        if (res.reason === "busy") throw busyRefusal(threadId, "archive");
+        throw failInternal(threadId, verb, res.reason);
+      }
+      return res.threadIds && res.threadIds.length > 0 ? res.threadIds : [threadId];
+    }
+    if (store.setArchived) {
+      // Degraded fallback (see the ownership note on AppThreadsToolOptions):
+      // the column write only. Queue-cancel and the archived-event broadcast
+      // happen on the canonical path — this layer deliberately leaves queued
+      // turns alone, having no listeners to tell.
+      const res = store.setArchived(threadId, archived);
+      if (!res.ok) {
+        if (res.reason === "busy") throw busyRefusal(threadId, "archive");
+        throw failInternal(threadId, verb, res.reason);
+      }
+      return res.threadIds;
+    }
+    return [threadId];
+  };
+
+  const deleteOp = async (threadId: string): Promise<void> => {
+    if (options.deleteThread) {
+      const res = await options.deleteThread(threadId);
+      if (!res.ok) {
+        if (res.reason === "busy") throw busyRefusal(threadId, "delete");
+        throw failInternal(threadId, "delete", res.reason);
+      }
+      return;
+    }
+    // Degraded fallback (see the ownership note on AppThreadsToolOptions):
+    // guard + queue-cancel + row drop through the same store methods the
+    // canonical path uses, in the same order — cancelling first, because the
+    // row drop removes the queue rows outright. Attachment bytes, the
+    // turn.queued-cancelled broadcasts, and dispatcher forget happen only on
+    // the canonical path; a store adapter cannot reach them.
+    if (store.cancelQueuedTurnsForThread) {
+      store.cancelQueuedTurnsForThread(threadId);
+    }
+    if (store.deleteThread) {
+      const res = store.deleteThread(threadId);
+      if (!res.ok) {
+        if (res.reason === "busy") throw busyRefusal(threadId, "delete");
+        throw failInternal(threadId, "delete", res.reason);
+      }
+    }
+  };
+
+  const renameOp = async (threadId: string, title: string, provider?: string): Promise<void> => {
+    if (options.renameThread) {
+      const res = await options.renameThread(threadId, title);
+      if (!res.ok) throw failInternal(threadId, "rename", res.reason);
+      return;
+    }
+    // Degraded fallback: the same canonical store method the IPC rename path
+    // uses, falling back to the older blind write only on stores that predate
+    // it. Both are title-only (recency untouched). renameThread reports
+    // whether anything changed, like the canonical path (which only announces
+    // real changes); the blind write cannot, so it always announces.
+    let changed = true;
+    if (store.renameThread) {
+      changed = store.renameThread(threadId, title);
+    } else if (store.setTitle) {
+      store.setTitle(threadId, title);
+    } else {
+      return;
+    }
+    if (changed && options.emit && provider) {
+      // SAFETY: constructing runtime event for thread.title.updated
+      options.emit({
+        type: "thread.title.updated",
+        threadId,
+        provider,
+        title,
+        at: Date.now(),
+        source: "kone.store",
+      } as RuntimeEvent);
+    }
+  };
 
   // -- 1. app_list_threads --------------------------------------------------
   const listHandler = async (
@@ -613,6 +799,93 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     };
   };
 
+  const stopHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = StopAppThreadInputSchema.parse(rawInput);
+    requireThread(input.threadId);
+    const wasRunning = await stopWasRunning(input.threadId);
+    const summary = wasRunning
+      ? `Stopped active session and turn for thread "${input.threadId}".`
+      : `Thread "${input.threadId}" was already idle; no active turn was running.`;
+    return singleLine(summary, {
+      threadId: input.threadId,
+      // Constant by design, not by omission: stopping is idempotent, so an
+      // idle thread is left with nothing running exactly like a stopped live
+      // one. `wasRunning` says whether a session actually existed; clients
+      // confirm quiescence off `stopped` alone.
+      stopped: true,
+      wasRunning,
+      summary,
+    });
+  };
+
+  const archiveHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = ArchiveAppThreadInputSchema.parse(rawInput);
+    const targetArchived = input.archived ?? true;
+    requireThread(input.threadId);
+    const affectedIds = await archiveOp(input.threadId, targetArchived);
+    const action = targetArchived ? "Archived" : "Unarchived";
+    const summary = `${action} thread "${input.threadId}"${affectedIds.length > 1 ? ` and ${affectedIds.length - 1} child thread(s)` : ""}.`;
+    return singleLine(summary, {
+      threadId: input.threadId,
+      archived: targetArchived,
+      affectedThreadIds: affectedIds,
+      summary,
+    });
+  };
+
+  const deleteHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = DeleteAppThreadInputSchema.parse(rawInput);
+    if (store.canDeleteThread) {
+      const guard = store.canDeleteThread(input.threadId);
+      if (!guard.ok) {
+        if (guard.reason === "missing") throw notFound(input.threadId);
+        throw busyRefusal(input.threadId, "delete");
+      }
+    } else {
+      requireThread(input.threadId);
+    }
+    await deleteOp(input.threadId);
+    const summary = `Permanently deleted thread "${input.threadId}".`;
+    return singleLine(summary, {
+      threadId: input.threadId,
+      deleted: true,
+      summary,
+    });
+  };
+
+  const renameHandler = async (
+    _ctx: GatewayToolContext,
+    rawInput: GatewayRecord,
+  ): Promise<GatewayToolResult> => {
+    const input = RenameAppThreadInputSchema.parse(rawInput);
+    const cleaned = truncateThreadTitle(input.title.trim());
+    if (!cleaned) {
+      throw new GatewayToolError("invalid_input", "Thread title cannot be empty.");
+    }
+    const { meta, thread } = requireThread(input.threadId);
+    const previousTitle = meta?.title ?? thread?.title ?? null;
+    const provider = meta?.provider ?? thread?.provider;
+    await renameOp(input.threadId, cleaned, provider);
+    const summary = previousTitle
+      ? `Renamed thread "${input.threadId}" from "${previousTitle}" to "${cleaned}".`
+      : `Renamed thread "${input.threadId}" to "${cleaned}".`;
+    return singleLine(summary, {
+      threadId: input.threadId,
+      title: cleaned,
+      previousTitle,
+      summary,
+    });
+  };
+
   return [
     {
       name: "app_list_threads",
@@ -658,6 +931,66 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
         "Nobody is sitting in a thread you open: one that stops for permission stays stopped until the user notices it. Say what you started and where, so they can go and look.",
       ],
       handler: startHandler,
+    },
+    {
+      name: "app_stop_thread",
+      description:
+        "Halt any active turn, cancel queued follow-ups, and tear down the running provider session for a thread. Use when the user asks to stop, abort, or cancel work happening in a conversation.",
+      inputSchema: StopAppThreadInputSchema,
+      jsonSchema: STOP_APP_THREAD_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_stop_thread`: halt any active turn and stop the provider session on a thread.",
+      promptGuidelines: [
+        "Call `app_stop_thread` when the user asks to cancel, abort, or stop work currently running in a conversation.",
+      ],
+      handler: stopHandler,
+    },
+    {
+      name: "app_archive_thread",
+      description:
+        "Archive a conversation to put it away from the live list without destroying its history, or restore an archived conversation back to the live list with archived: false.",
+      inputSchema: ArchiveAppThreadInputSchema,
+      jsonSchema: ARCHIVE_APP_THREAD_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_archive_thread`: archive or unarchive a conversation in a project.",
+      promptGuidelines: [
+        "Archiving puts a thread away without destroying its history. To restore it, call `app_archive_thread` with archived: false.",
+      ],
+      handler: archiveHandler,
+    },
+    {
+      name: "app_delete_thread",
+      description:
+        "Permanently delete a conversation, its messages, subagents, and attachments from the project. Irreversible.",
+      inputSchema: DeleteAppThreadInputSchema,
+      jsonSchema: DELETE_APP_THREAD_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_delete_thread`: permanently delete a conversation and its attachments.",
+      promptGuidelines: [
+        "Deleting a thread is permanent and cannot be undone. Confirm with the user before deleting unless explicitly instructed.",
+      ],
+      handler: deleteHandler,
+    },
+    {
+      name: "app_rename_thread",
+      description:
+        "Change the title of any conversation in the app. Updates the title displayed on the project board, tabs, and sidebar.",
+      inputSchema: RenameAppThreadInputSchema,
+      jsonSchema: RENAME_APP_THREAD_JSON_SCHEMA,
+      permission: "allow",
+      requiresActiveTurn: false,
+      promptSnippet:
+        "`app_rename_thread`: change the title of any conversation in the app.",
+      promptGuidelines: [
+        "Use `app_rename_thread` to give a conversation a clear, descriptive title that reflects its topic.",
+      ],
+      handler: renameHandler,
     },
   ];
 }

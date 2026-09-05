@@ -164,6 +164,69 @@ export function registerAgentIpc(): void {
       startThread: (start) => dispatcher.startThread(start),
       sendThreadTurn: (turn, options) => dispatcher.sendThreadTurn(turn, options),
     },
+    threadControls: {
+      stopThread: async (threadId) => {
+        const wasRunning = svc.hasLiveSession(threadId);
+        await svc.stopSession(threadId);
+        // `stopped` is the idempotent guarantee, not a torn-something-down
+        // report: stopSession no-ops on an idle thread, which still leaves it
+        // with nothing running. `wasRunning` says whether a session existed.
+        return { stopped: true, wasRunning };
+      },
+      archiveThread: async (threadId, archived) => {
+        const res = await svc.setThreadArchived(threadId, archived);
+        if (res.ok) return { ok: true, threadIds: res.threadIds };
+        return { ok: false, reason: res.reason };
+      },
+      deleteThread: async (threadId) => {
+        const guard = store.canDeleteThread(threadId);
+        if (!guard.ok) {
+          return { ok: false, reason: guard.reason };
+        }
+        const meta = store.threadMeta(threadId);
+        const cancelledQueueIds = store.cancelQueuedTurnsForThread(threadId);
+        if (meta) {
+          for (const queueId of cancelledQueueIds) {
+            broadcast({
+              type: "turn.queued-cancelled",
+              threadId,
+              provider: meta.provider,
+              queueId,
+              reason: "thread-deleted",
+              at: Date.now(),
+              source: "kone.store",
+            });
+          }
+        }
+        await attachments.deleteThreadFiles(threadId);
+        const res = store.deleteThread(threadId);
+        dispatcher.forgetThread(threadId);
+        if (!res.ok) return { ok: false, reason: res.reason };
+        return { ok: true };
+      },
+      renameThread: async (threadId, title) => {
+        const rawTitle = title ? String(title).trim() : "";
+        const cleaned = truncateThreadTitle(rawTitle);
+        if (!cleaned) return { ok: false, reason: "empty_title" };
+        const meta = store.threadMeta(threadId);
+        const previousTitle = meta?.title ?? null;
+        const changed = store.renameThread(threadId, cleaned);
+        if (changed && meta) {
+          broadcast(
+            {
+              type: "thread.title.updated",
+              threadId,
+              provider: meta.provider,
+              at: Date.now(),
+              source: "kone.store",
+              title: cleaned,
+            },
+            false,
+          );
+        }
+        return { ok: true, title: cleaned, previousTitle };
+      },
+    },
     // And the provider surface the service already keeps warm, so a thread is
     // never started on a CLI this machine cannot run.
     threadAvailability: async () => {

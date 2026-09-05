@@ -1607,6 +1607,97 @@ export type ListAppThreadsInput = z.infer<typeof ListAppThreadsInputSchema>;
 export type ReadAppThreadInput = z.infer<typeof ReadAppThreadInputSchema>;
 export type StartAppThreadInput = z.infer<typeof StartAppThreadInputSchema>;
 
+/** One thread by id. Every lifecycle tool takes one of these, so the shape
+ *  lives here once: each tool re-states only its own description. */
+const threadIdField = (description: string) => z.string().min(1).describe(description);
+
+export const ThreadIdInputSchema = z.object({
+  threadId: threadIdField("The thread, as app_list_threads reports it."),
+});
+
+const threadIdProperty = (description: string) => ({ type: "string", description });
+
+export const THREAD_ID_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: threadIdProperty("The thread, as app_list_threads reports it."),
+  },
+  required: ["threadId"],
+} satisfies GatewayRecord;
+
+export const StopAppThreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to stop, as app_list_threads reports it."),
+});
+
+export const STOP_APP_THREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to stop, as app_list_threads reports it."),
+  },
+} satisfies GatewayRecord;
+
+export const ArchiveAppThreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to archive or unarchive, as app_list_threads reports it."),
+  archived: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether to archive the thread (true, default) or unarchive/restore it back to the live list (false).",
+    ),
+});
+
+export const ARCHIVE_APP_THREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to archive or unarchive, as app_list_threads reports it."),
+    archived: {
+      type: "boolean",
+      description:
+        "Whether to archive the thread (true, default) or unarchive/restore it back to the live list (false).",
+    },
+  },
+} satisfies GatewayRecord;
+
+export const DeleteAppThreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField(
+    "The thread to permanently delete. Irreversible: removes messages, turns, and attachments from the project.",
+  ),
+});
+
+export const DELETE_APP_THREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty(
+      "The thread to permanently delete. Irreversible: removes messages, turns, and attachments from the project.",
+    ),
+  },
+} satisfies GatewayRecord;
+
+export const RenameAppThreadInputSchema = ThreadIdInputSchema.extend({
+  threadId: threadIdField("The thread to rename, as app_list_threads reports it."),
+  title: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe("The new title for the thread. Leading and trailing whitespace will be trimmed."),
+});
+
+export const RENAME_APP_THREAD_JSON_SCHEMA = {
+  ...THREAD_ID_JSON_SCHEMA,
+  properties: {
+    threadId: threadIdProperty("The thread to rename, as app_list_threads reports it."),
+    title: {
+      type: "string",
+      description: "The new title for the thread. Leading and trailing whitespace will be trimmed.",
+    },
+  },
+} satisfies GatewayRecord;
+
+export type StopAppThreadInput = z.infer<typeof StopAppThreadInputSchema>;
+export type ArchiveAppThreadInput = z.infer<typeof ArchiveAppThreadInputSchema>;
+export type DeleteAppThreadInput = z.infer<typeof DeleteAppThreadInputSchema>;
+export type RenameAppThreadInput = z.infer<typeof RenameAppThreadInputSchema>;
+
 // ── providers & usage ────────────────────────────────────────────────────────
 
 export const USAGE_RANGES = ["1d", "7d", "30d", "all"] as const;
