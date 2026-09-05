@@ -84,6 +84,17 @@ describe("no row mounted", () => {
     expect(threadIdsOn(A)).toEqual(["t-1"]);
   });
 
+  test("concurrent adopts of one thread persist one pane", async () => {
+    // A double-fired start (or a start racing a pick) reads the cold plane in
+    // the same tick: without serialization both reads miss and both append —
+    // one conversation, two panes.
+    await Promise.all([
+      useStudioIntake().adoptThread(A, "t-1"),
+      useStudioIntake().adoptThread(A, "t-1"),
+    ]);
+    expect(threadIdsOn(A)).toEqual(["t-1"]);
+  });
+
   test("the thread lands on its own project's row, not another's", async () => {
     const intake = useStudioIntake();
     await intake.adoptThread(A, "t-a");

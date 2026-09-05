@@ -320,12 +320,10 @@ async function archivePane(threadId: string, id: string): Promise<void> {
     );
     return;
   }
-  // Only once the store has taken it. archiveSession already closes the pane
-  // hosting the thread, so this second close is for the column the header was
-  // clicked in when the two are not the same pane — and on a refusal neither
-  // happens, which is what leaves the column standing to be explained.
-  if (!(await archiveSession(threadId))) return;
-  void studio.close(id);
+  // Single close path: archiveSession closes the named pane once the store has
+  // taken the archive, and closes nothing on a refusal — which is what leaves
+  // the column standing to be explained.
+  await archiveSession(threadId, { onlyId: id });
 }
 // The per-host-thread side-chat creator (the thread column's "add panel"
 // button): fork a side chat off the source thread and open it as a column
@@ -492,8 +490,19 @@ function flashArchiveNotice(message: string): void {
  *  conversation, and forgetting the session behind a pane would otherwise
  *  leave the column lingering dormant pointing at a hidden row (reconcile
  *  keeps entries whose session vanished). Works for both an attached pane
- *  (live session) and a dormant one (anchor remembers the id). */
-function closePaneHosting(threadId: string): void {
+ *  (live session) and a dormant one (anchor remembers the id). When the caller
+ *  names the exact pane (archiving from its own column header), only that pane
+ *  is closed while it is still mounted — a missing named pane closes nothing,
+ *  never the first match for the thread. The first match is only for callers
+ *  that did not name a pane. */
+function closePaneHosting(threadId: string, options?: { onlyId?: string }): void {
+  const onlyId = options?.onlyId;
+  if (onlyId !== undefined) {
+    if (panes.value.some((p) => p.id === onlyId)) {
+      void studio.close(onlyId);
+    }
+    return;
+  }
   const pane = panes.value.find(
     (p) =>
       p.kind === "thread" &&
@@ -512,7 +521,7 @@ function closePaneHosting(threadId: string): void {
  *  session and closing the pane ahead of the answer would spend the refusal on
  *  the column anyway: a thread still very much alive, with nothing left on
  *  screen pointing at it. */
-async function archiveSession(threadId: string): Promise<boolean> {
+async function archiveSession(threadId: string, options?: { onlyId?: string }): Promise<boolean> {
   if (sessionBusy(threadId)) {
     flashArchiveNotice(
       "This thread is still working — let it finish (or stop it) before archiving.",
@@ -527,7 +536,7 @@ async function archiveSession(threadId: string): Promise<boolean> {
     return false;
   }
   void agent.forgetThread(threadId);
-  closePaneHosting(threadId);
+  closePaneHosting(threadId, options);
   return true;
 }
 function removeSession(threadId: string): void {

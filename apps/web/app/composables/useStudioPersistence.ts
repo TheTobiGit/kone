@@ -15,6 +15,7 @@
 import { shallowRef } from "vue";
 import type { ShallowRef } from "vue";
 import type { StudioLayout, StudioRow } from "~/types/studio";
+import { foldThreadPanes } from "~/utils/panes";
 
 const STORAGE_KEY = "kone:studio";
 
@@ -135,30 +136,38 @@ export function useStudioPersistence(projectPath: string | (() => string)) {
    *  A row with no panes is *removed* rather than stored empty: a row exists
    *  only where work does, so persisting an empty one would bring back a row you
    *  can travel to and find nothing in. Saving a row is also what focuses it —
-   *  the row being written is the one being worked in. */
+   *  the row being written is the one being worked in.
+   *
+   *  One conversation is hosted by exactly one pane, and this is the choke
+   *  point every persisted row passes through — so a row carrying two panes
+   *  for the same thread id is folded here (keep the leftmost), whatever race
+   *  produced it. Without this a duplicate would resurrect as twin columns on
+   *  every relaunch. */
   function saveRow(row: StudioRow): void {
+    const panes = foldThreadPanes(row.panes);
+    const folded: StudioRow = panes.length === row.panes.length ? row : { ...row, panes };
     const plane = planeRef.value ?? emptyPlane();
-    const at = plane.rows.findIndex((r) => r.projectPath === row.projectPath);
+    const at = plane.rows.findIndex((r) => r.projectPath === folded.projectPath);
     const rows = [...plane.rows];
-    if (row.panes.length === 0) {
+    if (folded.panes.length === 0) {
       // Its last pane closed, so the row goes with it.
       if (at >= 0) rows.splice(at, 1);
     } else if (at >= 0) {
       // An existing row keeps its place on the vertical axis. Dropping it and
       // pushing it back would reorder the plane every time a row saved — and
       // two rows restoring on boot would race for the bottom.
-      rows[at] = row;
+      rows[at] = folded;
     } else {
       // A newly-born row joins at the bottom, where the eye last was.
-      rows.push(row);
+      rows.push(folded);
     }
     // A newly-born row is where work just started, so it takes focus; an
     // existing one keeps whatever the plane was already looking at, because a
     // background row's teardown flush must not drag the camera onto it.
-    const isNew = !plane.rows.some((r) => r.projectPath === row.projectPath);
+    const isNew = !plane.rows.some((r) => r.projectPath === folded.projectPath);
     const focusedRow =
-      row.panes.length > 0 && (isNew || plane.focusedRow === null)
-        ? row.projectPath
+      folded.panes.length > 0 && (isNew || plane.focusedRow === null)
+        ? folded.projectPath
         : plane.focusedRow;
     writeThrough({ version: 2, rows, focusedRow });
   }
