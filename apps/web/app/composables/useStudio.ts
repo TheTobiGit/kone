@@ -19,12 +19,16 @@
 //
 // Every pane attaches immediately on open, exactly as the old four-watch
 // reconciliation did; dormancy layers on top without changing this contract.
+//
+// This file is the orchestrator: options, refs, watchers and the public API.
+// The row mechanics live beside it — studioAnchors + studioCluster (pure reads),
+// studioReconcile (the adopt/dormant/fold pass), studioAttach (spawn + bind),
+// studioPersistenceRow (serialize/sanitize/restore) — wired here over these refs.
 
 import { computed, nextTick, ref, watch } from "vue";
 import type { ComputedRef, Ref } from "vue";
 import type {
   Pane,
-  PaneAnchor,
   PaneEntry,
   PaneId,
   PaneKind,
@@ -33,6 +37,20 @@ import type {
 } from "~/types/studio";
 import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
+import { anchorFor, anchorId, liveAnchor, sessionMatchesKind } from "~/utils/studioAnchors";
+import { clusterRangeFor as clusterRangeForResolved } from "~/utils/studioCluster";
+import type { ClusterRange } from "~/utils/studioCluster";
+import { createStudioAttach } from "~/composables/studioAttach";
+import {
+  entrySideChatSource as entrySideChatSourceResolved,
+  entryThreadId as entryThreadIdResolved,
+  reconcileRow,
+} from "~/composables/studioReconcile";
+import {
+  restoreRow,
+  serializeRow,
+  studioSaveSignature,
+} from "~/composables/studioPersistenceRow";
 import { rememberSideChatSource } from "~/composables/sideChats";
 import { usePaneWidthPrefs } from "~/composables/usePaneWidthPrefs";
 import type { ThreadSession, useAgent } from "~/composables/useAgent";
@@ -154,58 +172,11 @@ export interface UseStudioReturn {
   ) => Promise<boolean>;
 }
 
-/** The strip's practical column limit — also the cap on how many panes a
- *  restored row may bring back, which bounds restore cost (each pane past the
- *  focused one attaches on demand, but they still cost DOM + a join entry). */
-const MAX_RESTORED_PANES = 8;
-
 let paneSeq = 0;
 function mintPaneId(): PaneId {
   paneSeq += 1;
   return `pane-${Date.now().toString(36)}-${paneSeq.toString(36)}`;
 }
-
-/** Does a live session's runtime shape agree with the entry's declared kind?
- *  The join assumes "the adapter that made the entry made the session", which
- *  holds today — but a restore path with dormant panes and re-attach is exactly
- *  where a mismatched pairing could slip in, and a mistyped pane is a crash
- *  (a dormant one is a state we handle). Cheap insurance: the three session
- *  types carry disjoint id fields. */
-function sessionMatchesKind(
-  kind: PaneKind,
-  session: ThreadSession | TerminalSession | ScratchpadSession,
-): boolean {
-  switch (kind) {
-    case "thread":
-      return "blocks" in session;
-    case "terminal":
-      return "terminalId" in session;
-    case "scratchpad":
-      return "scratchpadId" in session;
-  }
-}
-
-/** The threadId worth *persisting* for a thread session. Every ThreadSession
- *  mints a client id at construction (useAgent), so even a blank slate that was
- *  never sent carries a truthy `threadId.value` — but there's no conversation in
- *  storage behind it. Persisting that phantom id is what let empty columns pile
- *  up on every relaunch: the "no threadId → nothing to restore" guards in
- *  reconcile/sanitizeRow never fired. Return null for a blank thread (no
- *  transcript, not running) so those guards drop it; a real one keeps its id. */
-function persistableThreadId(s: ThreadSession): string | null {
-  return s.blocks.value.length === 0 && !s.busy.value ? null : s.threadId.value;
-}
-
-  function anchorFor(kind: PaneKind): PaneAnchor {
-    switch (kind) {
-      case "thread":
-        return { kind: "thread", threadId: null };
-      case "terminal":
-        return { kind: "terminal", terminalId: null };
-      case "scratchpad":
-        return { kind: "scratchpad", scratchpadId: null };
-    }
-  }
 
 export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   const { agent, terminal, scratchpad } = opts;
@@ -221,6 +192,23 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   // Runtime-only: PaneId → the live session's stable key. Reassigned (not
   // mutated in place) so `panes` recomputes. Never persisted.
   const sessionKeyById = ref<Record<PaneId, string>>({});
+
+  // ── close-detaches contract ──────────────────────────────────────────────
+  // close() DETACHES a thread pane: the entry and its mapping go, the session
+  // stays resident for the inbox. forget (archive/delete, sweep eviction)
+  // DESTROYS: the session leaves the registry, and the entry — if one still
+  // claims it — goes dormant and re-attaches on demand. Adopt NEVER resurrects
+  // a detached key on its own; only an explicit open() re-binds it (clearing
+  // the mark through record()).
+  //
+  // closedThreadKeys is the tombstone set backing that contract. It is
+  // deliberately a plain (non-reactive) Set: every write funnels through
+  // mutate()'s trailing reconcile (close() adds, record() clears on bind) or
+  // runs inside reconcile itself (prune below), and every read happens inside
+  // reconcile's adopt pass — which the session watchers and mutate's trailing
+  // call already re-trigger. No template or computed reads it, so making it
+  // reactive would schedule nothing extra.
+  const closedThreadKeys = new Set<string>();
 
   // Suspend the reconcile watcher while the row mutates its own state, so a
   // session it just created (which fires the watcher as it lands in a
@@ -241,6 +229,9 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   }
 
   function record(id: PaneId, sessionKey: string): void {
+    // A bind is a deliberate hosting — it cancels any earlier close of the
+    // same session, so the adopt pass can't treat it as put-away.
+    closedThreadKeys.delete(sessionKey);
     sessionKeyById.value = { ...sessionKeyById.value, [id]: sessionKey };
   }
   function drop(id: PaneId): void {
@@ -294,74 +285,28 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     return sessionKeyById.value[id];
   }
 
-  /** The thread id an *entry* currently resolves to: its live session's id
-   *  (via the runtime mapping) when attached, else its anchor's remembered id
-   *  while dormant. Works on raw entries, so reconcile and open()'s in-lock
-   *  dedup can read it where the panes join may not be computed yet. */
-  function entryThreadId(e: PaneEntry): string | null {
-    if (e.kind !== "thread") return null;
-    const sk = sessionKeyById.value[e.id];
-    if (sk) {
-      const s = agent.sessions.value.find((x) => x.key === sk);
-      if (s) return s.threadId.value;
-    }
-    return e.anchor.kind === "thread" ? e.anchor.threadId : null;
+  // Live-state bindings over the pure entry/cluster cores: the default mapping
+  // is the current join and sessions come from the registry, so open()'s dedup,
+  // move() and insertIndexFor() read what the strip shows. Reconcile passes its
+  // staged mapping to the core directly instead (see studioReconcile).
+  function entryThreadId(
+    e: PaneEntry,
+    mapping: Record<PaneId, string> = sessionKeyById.value,
+  ): string | null {
+    return entryThreadIdResolved(e, agent.sessions.value, mapping);
   }
 
-  /** The source thread id a side-chat entry was forked from, or null if it is
-   *  a root thread / non-thread pane. */
   function entrySideChatSource(e: PaneEntry): string | null {
-    if (e.kind !== "thread") return null;
-    const sk = sessionKeyById.value[e.id];
-    if (sk) {
-      const s = agent.sessions.value.find((x) => x.key === sk);
-      if (s?.isSideChat?.value) return s.sideChatSource?.value ?? null;
-    }
-    return e.anchor.kind === "thread" ? e.anchor.sideChatSource ?? null : null;
+    return entrySideChatSourceResolved(e, agent.sessions.value, sessionKeyById.value);
   }
 
-  /** A contiguous run of strip positions, inclusive at both ends. */
-  type ClusterRange = { start: number; end: number };
-
-  /** The contiguous strip index range `[start, end]` of a thread and all its
-   *  attached side chats. If `index` points at a standalone pane, returns
-   *  `{ start: index, end: index }`. */
   function clusterRangeFor(index: number, list: PaneEntry[]): ClusterRange {
-    if (index < 0 || index >= list.length) return { start: index, end: index };
-    const current = list[index]!;
-    if (current.kind !== "thread") return { start: index, end: index };
-
-    const currentSource = entrySideChatSource(current);
-    const rootId = currentSource ?? entryThreadId(current);
-    if (!rootId) return { start: index, end: index };
-
-    let start = index;
-    while (start > 0) {
-      const prev = list[start - 1]!;
-      if (prev.kind !== "thread") break;
-      const prevId = entryThreadId(prev);
-      const prevSource = entrySideChatSource(prev);
-      if (prevId === rootId || (prevSource && prevSource === rootId)) {
-        start -= 1;
-      } else {
-        break;
-      }
-    }
-
-    let end = index;
-    while (end < list.length - 1) {
-      const next = list[end + 1]!;
-      if (next.kind !== "thread") break;
-      const nextId = entryThreadId(next);
-      const nextSource = entrySideChatSource(next);
-      if (nextId === rootId || (nextSource && nextSource === rootId)) {
-        end += 1;
-      } else {
-        break;
-      }
-    }
-
-    return { start, end };
+    return clusterRangeForResolved(
+      index,
+      list,
+      (e) => entryThreadId(e),
+      (e) => entrySideChatSource(e),
+    );
   }
 
   // ── anchor sync ───────────────────────────────────────────────────────────
@@ -391,157 +336,35 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   );
 
   // ── reconcile ───────────────────────────────────────────────────────────────
-  // The row owns entries, but sessions also come and go outside studio.open():
-  // useAgent spawns its first thread at construction, opens a stored thread when
-  // a pill is clicked, and evicts idle background threads past MAX_RESIDENT. This
-  // keeps the two in sync.
-  //
-  //   · ADOPT — a live session no entry claims: if a thread entry already
-  //     anchors its thread id (a dormant pane whose session was evicted, or a
-  //     restored pane for a thread opened outside the studio), re-attach that
-  //     pane in place — one pane per conversation, however the session arrives.
-  //     Otherwise append an entry for it. This is how the boot thread and
-  //     pill-opened threads get into the row.
-  //   · DORMANT — an entry whose mapped session vanished. A session disappears
-  //     for two reasons and only one is a close: a studio close() already removed
-  //     the entry (so this never sees it), while a useAgent eviction leaves the
-  //     conversation alive in SQLite. So drop the *mapping* only and keep the
-  //     entry — the pane goes dormant and re-attaches on focus. The one entry we
-  //     do remove is a blank thread (anchor with no threadId): it never sent, so
-  //     there is nothing to re-attach to.
+  // (What it syncs and why lives with the pure core in studioReconcile.) The
+  // session watcher below and mutate()'s trailing call funnel through here:
+  // snapshot the live registries, run the adopt/dormant/fold pass, commit only
+  // when it changed. Focus fixup always applies — assigning the same id back
+  // is a ref no-op.
   function reconcile(): void {
-    const allLive = new Set<string>([
-      ...agent.sessions.value.map((s) => s.key),
-      ...terminal.sessions.value.map((s) => s.key),
-      ...scratchpad.sessions.value.map((s) => s.key),
-    ]);
-
-    const next = [...entries.value];
-    const mapping = { ...sessionKeyById.value };
-    let changed = false;
-
-    // DORMANT / DROP — entries whose mapped session no longer exists. Run first
-    // so dead mappings are cleared before the adopt pass checks for unmapped hosts.
-    for (let i = next.length - 1; i >= 0; i--) {
-      const entry = next[i]!;
-      const sk = mapping[entry.id];
-      if (!sk || allLive.has(sk)) continue;
-      // The session is gone. Un-claim it either way.
-      delete mapping[entry.id];
-      changed = true;
-      // The join this key held is gone too — drop the pin so a key whose
-      // session was closed elsewhere (forgetThread, a dispose) can't sit in
-      // the sweep's untouchable set forever.
-      if (entry.kind === "thread") agent.unpinFromPane(sk);
-      // A blank thread has nothing to re-attach to → remove it. Everything else
-      // survives dormant (its anchor was kept fresh by syncAnchors).
-      if (entry.anchor.kind === "thread" && !entry.anchor.threadId) {
-        next.splice(i, 1);
-      }
+    const result = reconcileRow(
+      {
+        entries: entries.value,
+        mapping: sessionKeyById.value,
+        focusedId: focusedId.value,
+        agentSessions: agent.sessions.value,
+        terminalSessions: terminal.sessions.value,
+        scratchpadSessions: scratchpad.sessions.value,
+        closedThreadKeys,
+      },
+      {
+        mintPaneId,
+        defaultWidth,
+        insertIndexFor,
+        pinToPane: (key) => agent.pinToPane(key),
+        unpinFromPane: (key) => agent.unpinFromPane(key),
+      },
+    );
+    if (result.changed) {
+      entries.value = result.entries;
+      sessionKeyById.value = result.mapping;
     }
-
-    const claimed = new Set(Object.values(mapping));
-
-    // ADOPT — unclaimed live sessions land to the right of the focused column,
-    // same rule as open(). Several may arrive in one reconcile pass (pill opens,
-    // resume); insert them in order after the focus point so they don't stack at
-    // the same index and reverse.
-    const toAdopt: Array<{ kind: PaneKind; key: string; anchor: PaneAnchor }> = [];
-    const queueAdopt = (kind: PaneKind, key: string, anchor: PaneAnchor): void => {
-      toAdopt.push({ kind, key, anchor });
-    };
-    for (const s of agent.sessions.value) {
-      if (claimed.has(s.key)) continue;
-      const tid = persistableThreadId(s);
-      if (tid) {
-        // A thread pane is the one host of its conversation. If an entry
-        // already anchors this id — a dormant pane whose session was evicted,
-        // or a restored pane for a thread opened outside the studio (launcher
-        // resume, recent click, shell reveal) — re-attach it in place instead
-        // of minting a second column for the same thread.
-        const host = next.find((e) => entryThreadId(e) === tid);
-        if (host) {
-          if (!mapping[host.id]) {
-            mapping[host.id] = s.key;
-            changed = true;
-            // Re-attaching a dormant pane to the thread it already hosts is
-            // still a join landing — pin it the same as a fresh attach does.
-            agent.pinToPane(s.key);
-          }
-          // A live host (or one claimed earlier in this pass) means a duplicate
-          // session for an id the row already hosts — never a second pane;
-          // the stray session just stays unclaimed.
-          continue;
-        }
-      } else {
-        // A blank thread session (no persistable id). If there is already a dormant
-        // unmapped blank thread pane in the row (e.g. restored from persisted layout),
-        // re-attach to that entry so its position and width are preserved.
-        const host = next.find(
-          (e) => e.kind === "thread" && entryThreadId(e) === null && !mapping[e.id],
-        );
-        if (host) {
-          mapping[host.id] = s.key;
-          changed = true;
-          agent.pinToPane(s.key);
-          continue;
-        }
-      }
-      const isSide = Boolean(s.isSideChat?.value);
-      const sideSrc = isSide ? s.sideChatSource?.value ?? null : null;
-      const anchor: PaneAnchor = { kind: "thread", threadId: tid };
-      if (sideSrc) anchor.sideChatSource = sideSrc;
-      queueAdopt("thread", s.key, anchor);
-    }
-    for (const s of terminal.sessions.value) {
-      if (claimed.has(s.key)) continue;
-      const host = next.find((e) => e.kind === "terminal" && !mapping[e.id]);
-      if (host) {
-        mapping[host.id] = s.key;
-        changed = true;
-        continue;
-      }
-      queueAdopt("terminal", s.key, { kind: "terminal", terminalId: s.terminalId });
-    }
-    for (const s of scratchpad.sessions.value) {
-      if (claimed.has(s.key)) continue;
-      const host = next.find((e) => e.kind === "scratchpad" && !mapping[e.id]);
-      if (host) {
-        mapping[host.id] = s.key;
-        changed = true;
-        continue;
-      }
-      queueAdopt("scratchpad", s.key, { kind: "scratchpad", scratchpadId: s.scratchpadId });
-    }
-    if (toAdopt.length) {
-      let insertAt = insertIndexFor({}, next);
-      for (const item of toAdopt) {
-        const id = mintPaneId();
-        next.splice(insertAt, 0, {
-          id,
-          kind: item.kind,
-          anchor: item.anchor,
-          width: defaultWidth(item.kind),
-        });
-        mapping[id] = item.key;
-        insertAt += 1;
-        changed = true;
-        // Only a thread session is tracked by the agent registry's sweep, so
-        // only a thread join is worth reporting up — a terminal/scratchpad
-        // key would just sit unused in a set the sweep never reads it from.
-        if (item.kind === "thread") agent.pinToPane(item.key);
-      }
-    }
-
-    if (changed) {
-      entries.value = next;
-      sessionKeyById.value = mapping;
-    }
-
-    // Focus never points at a gone pane; and the first pane to appear takes it.
-    if (!entries.value.some((e) => e.id === focusedId.value)) {
-      focusedId.value = entries.value[0]?.id ?? null;
-    }
+    focusedId.value = result.focusedId;
   }
 
   // Adopt the boot thread immediately, then track every subsequent session
@@ -560,104 +383,20 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   );
 
   // ── attach — bind an entry to a live session ────────────────────────────────
-  // De-duped: two focuses landing on the same dormant pane in the same tick
-  // (restore's eager pass + a user click, say) must share ONE spawn, or the pane
-  // ends up with two backend sessions and the loser leaks. The in-flight promise
-  // is the lock; every caller awaits the same one.
-  //
-  // It also has to run *inside* `mutate`, and that is not decoration. Every backend
-  // spawn pushes its session into the registry before its own await resolves, so the
-  // reconcile watcher fires while doAttach is still mid-flight and `record()` hasn't
-  // happened yet. To reconcile, that live session belongs to no pane — so it adopts
-  // it, and you get a second column for the session the first column was in the
-  // middle of claiming. `open()` never showed this because it already wrapped attach;
-  // `focus()` on a dormant pane (click a restored terminal, or the neighbour focus
-  // that `close()` hands out) did not, which is why closing one terminal and clicking
-  // another conjured a third. mutate's depth counter is re-entrant, so wrapping here
-  // is safe under open() too, and the trailing reconcile still runs once the mapping
-  // exists.
-  const inFlight = new Map<PaneId, Promise<void>>();
-  function attach(id: PaneId): Promise<void> {
-    if (sessionKeyOf(id)) return Promise.resolve(); // already attached
-    const pending = inFlight.get(id);
-    if (pending) return pending;
-    const p = mutate(() => doAttach(id)).finally(() => inFlight.delete(id));
-    inFlight.set(id, p);
-    return p;
-  }
-
-  async function wakeThreadPanes(): Promise<void> {
-    const focused = focusedId.value;
-    const ids = entries.value
-      .filter((e) => e.kind === "thread" && !sessionKeyOf(e.id))
-      .map((e) => e.id);
-    const ordered =
-      focused && ids.includes(focused) ? [focused, ...ids.filter((id) => id !== focused)] : ids;
-    for (const id of ordered) await attach(id);
-  }
-
-  async function doAttach(id: PaneId): Promise<void> {
-    const entry = entries.value.find((e) => e.id === id);
-    if (!entry) return;
-    switch (entry.kind) {
-      case "thread": {
-        // Hoist the id before the await: `entry.anchor` is a live object and a
-        // concurrent syncAnchors could rewrite it mid-flight; the local is stable.
-        const threadId = entry.anchor.kind === "thread" ? entry.anchor.threadId : null;
-        try {
-          if (threadId) {
-            // Bind the pane to its column *before* the transcript loads. The
-            // handle hands back the session key synchronously; awaiting the open
-            // first is what kept a reopened conversation dormant — and so showing
-            // ThreadStrip's "Opening…" — for the whole history round-trip.
-            const { key, ready } = agent.openThreadHandle(threadId);
-            // A rival attach may already have recorded for this pane; leave its
-            // binding alone, but still see the open through.
-            if (!sessionKeyOf(id)) {
-              record(id, key);
-              // The join now exists — report it up so the sweep never reaps a
-              // session sitting in a visible column.
-              agent.pinToPane(key);
-            }
-            await ready;
-          } else {
-            // A fresh blank thread. newThreadAt always spawns (no empty-guard)
-            // and hands back the column it made, so there's no set-diff to get
-            // wrong when a concurrent open moves activeKey out from under us.
-            const sk = await agent.newThreadAt(agent.sessions.value.length);
-            if (sessionKeyOf(id)) return;
-            record(id, sk);
-            agent.pinToPane(sk);
-          }
-        } catch (err) {
-          // The thread wouldn't open (deleted underneath us, adapter error). Don't
-          // strand a dormant pane that can never attach — close it.
-          console.warn(`[studio] failed to attach thread pane ${id}; closing`, err);
-          void close(id);
-          return;
-        }
-        break;
-      }
-      case "terminal": {
-        const sk = await terminal.spawn();
-        if (sessionKeyOf(id)) return;
-        record(id, sk);
-        break;
-      }
-      case "scratchpad": {
-        const sk = await scratchpad.open();
-        if (sessionKeyOf(id)) return;
-        record(id, sk);
-        break;
-      }
-    }
-    // A dormant thread that just attached under focus: push the projection down
-    // now that its key exists (focus() couldn't, there was no session yet).
-    if (entry.kind === "thread" && focusedId.value === id) {
-      const sk = sessionKeyOf(id);
-      if (sk) agent.focusThread(sk);
-    }
-  }
+  // (Why it runs inside `mutate` lives with the controller in studioAttach.)
+  // The in-flight map there de-dupes concurrent callers for one pane into a
+  // single spawn; the trailing reconcile still runs once the mapping exists.
+  const { attach, wakeThreadPanes } = createStudioAttach({
+    agent,
+    terminal,
+    scratchpad,
+    getEntries: () => entries.value,
+    getFocusedId: () => focusedId.value,
+    sessionKeyOf,
+    record,
+    closePane: (id) => close(id),
+    mutate,
+  });
 
   // ── open ─────────────────────────────────────────────────────────────────────
   async function open(kind: PaneKind, o: OpenOptions = {}): Promise<PaneId> {
@@ -764,15 +503,24 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
     await mutate(async () => {
       entries.value = entries.value.filter((e) => e.id !== id);
       drop(id);
-      // The pane→session join ends here — unpin before the session itself is
-      // torn down, so a pane closed mid-sweep-tick can't leave a stale key
-      // behind in the untouchable set.
-      if (entry.kind === "thread" && sk) agent.unpinFromPane(sk);
-      // Teardown. Closing the last pane leaves the row empty — nothing is
-      // respawned to fill it, and an empty row is not a row: the studio shows
-      // the chooser over it, which is the way back.
       if (entry.kind === "thread") {
-        if (sk) await agent.closeThread(sk);
+        // Detach, don't destroy. The session stays resident: the same thread
+        // may still be read in the inbox (both surfaces share the registry),
+        // and tearing it down here is what killed the surviving twin — whose
+        // re-attach then read as a spawned "new" pane. Teardown is forget's
+        // job (archive/delete), which evicts explicitly. The tombstone keeps
+        // the adopt pass from resurrecting the column; an explicit open()
+        // re-binds it. Unpin only when no surviving pane is still bound to the
+        // key, so a twin that stays on screen keeps its sweep protection.
+        // Closing the last pane leaves the row empty — nothing is respawned to
+        // fill it, and an empty row is not a row: the studio shows the chooser
+        // over it, which is the way back.
+        if (sk) {
+          closedThreadKeys.add(sk);
+          if (!entries.value.some((e) => sessionKeyOf(e.id) === sk)) {
+            agent.unpinFromPane(sk);
+          }
+        }
       } else if (entry.kind === "terminal") {
         if (sk) await terminal.close(sk);
       } else {
@@ -939,248 +687,29 @@ export function useStudio(opts: UseStudioOptions): UseStudioReturn {
   }
 
   // ── persistence: serialize + restore ─────────────────────────────────────────
-  // The entry's anchor is stamped at adopt/open time; a thread adopted blank
-  // carries `threadId: null` even after its first turn mints a real id. So the
-  // persisted anchor is read from the *live session* when the pane is attached,
-  // falling back to the entry's stored anchor when it's dormant.
-  function liveAnchor(p: Pane): PaneAnchor {
-    switch (p.kind) {
-      case "thread": {
-        const sideSrc =
-          p.session?.sideChatSource?.value ??
-          (p.entry.anchor.kind === "thread" ? p.entry.anchor.sideChatSource ?? null : null);
-        const anchor: PaneAnchor = {
-          kind: "thread",
-          // Attached → the live emptiness check (blank slates persist as null so
-          // they don't resurrect); dormant → fall back to the stored anchor id.
-          // A stored anchor whose kind disagrees with the pane reads as blank —
-          // the same null a missing field would produce below.
-          threadId:
-            p.session
-              ? persistableThreadId(p.session)
-              : p.entry.anchor.kind === "thread"
-                ? p.entry.anchor.threadId
-                : null,
-        };
-        if (sideSrc) anchor.sideChatSource = sideSrc;
-        return anchor;
-      }
-      case "terminal":
-        // A terminal anchor is a slot marker only — the live terminalId lets a
-        // dormant pane re-attach within this session, but persisting it would
-        // point at a PTY that no longer exists after relaunch (L6/W6).
-        return {
-          kind: "terminal",
-          terminalId: null,
-        };
-      case "scratchpad":
-        return {
-          kind: "scratchpad",
-          scratchpadId:
-            p.session?.scratchpadId ??
-            (p.entry.anchor.kind === "scratchpad" ? p.entry.anchor.scratchpadId : null),
-        };
-    }
-  }
-
-  function anchorId(a: PaneAnchor): string {
-    switch (a.kind) {
-      case "thread":
-        return `${a.threadId ?? ""}${a.sideChatSource ? `:${a.sideChatSource}` : ""}`;
-      case "terminal":
-        return a.terminalId ?? "";
-      case "scratchpad":
-        return a.scratchpadId ?? "";
-    }
-  }
-
+  // (The anchor reads and row sanitising live in studioPersistenceRow; this
+  // keeps the refs they run against.)
   function serialize(): StudioRow {
-    return {
-      projectPath: resolveProjectPath(),
-      panes: panes.value.map((p) => {
-        const paneRecord: PaneEntry = {
-          id: p.id,
-          kind: p.kind,
-          anchor: liveAnchor(p),
-          width: p.entry.width,
-        };
-        if (p.entry.zen) {
-          paneRecord.zen = true;
-        }
-        return paneRecord;
-      }),
-      focusedId: focusedId.value,
-    };
+    return serializeRow(panes.value, focusedId.value, resolveProjectPath());
   }
 
-  const saveSignature = computed(() =>
-    panes.value
-      .map((p) => `${p.kind}:${anchorId(liveAnchor(p))}:${p.entry.width}:${p.entry.zen ? "z" : ""}`)
-      .join("|") + `#${focusedId.value ?? ""}`,
-  );
+  const saveSignature = computed(() => studioSaveSignature(panes.value, focusedId.value));
 
-  /** Trim a persisted row to what can be safely restored: known kinds only; a
-   *  thread must remember its id (or be the one preserved blank slot); one
-   *  singleton max; leftmost MAX_RESTORED_PANES. Pane ids are *carried through*
-   *  (validated + de-duped) rather than re-minted, so focus and any id-keyed UI
-   *  state survive a relaunch (G1) — an invalid or duplicate id falls back to a
-   *  fresh mint.
-   *
-   *  No version check here: the version belongs to the plane, not to one row of
-   *  it, and the loader gates on it before any row is handed over. */
-  function sanitizeRow(
-    row: StudioRow | null,
-    knownThreadIds?: ReadonlySet<string>,
-  ): PaneEntry[] {
-    if (!row || !Array.isArray(row.panes)) return [];
-    const seenSingleton = new Set<PaneKind>();
-    const seenIds = new Set<string>();
-    const seenThreadIds = new Set<string>();
-    let keptBlankThread = false;
-    const kept: PaneEntry[] = [];
-    for (const raw of row.panes) {
-      if (!raw || !(raw instanceof Object)) continue;
-      const kind = raw.kind;
-      if (kind !== "thread" && kind !== "terminal" && kind !== "scratchpad") continue;
-      const rawAnchor = raw.anchor;
-      if (!rawAnchor || rawAnchor.kind !== kind) continue;
-      // Branch on the ANCHOR's own discriminant, not on `kind`: the two are
-      // proven equal a line above, but `kind` is a variable, so comparing
-      // against it narrows nothing and every field read below is off the whole
-      // union. Reading rawAnchor.kind directly narrows it to the thread arm.
-      let anchor: PaneAnchor = rawAnchor;
-      if (rawAnchor.kind === "thread") {
-        const rawThreadId = rawAnchor.threadId;
-        const threadId = rawThreadId ? String(rawThreadId).trim() || null : null;
-        anchor = {
-          kind: "thread",
-          threadId,
-        };
-        const rawSource = rawAnchor.sideChatSource;
-        if (rawSource) {
-          const sideChatSource = String(rawSource).trim();
-          if (sideChatSource) anchor.sideChatSource = sideChatSource;
-        }
-      }
-      if (anchor.kind === "thread" && anchor.threadId && anchor.sideChatSource) {
-        rememberSideChatSource(anchor.threadId, anchor.sideChatSource);
-      }
-      // A blank thread slot (no remembered id) is preserved at most once — it
-      // restores as an empty column with a composer, not a phantom conversation.
-      // Positioned after the phantom filter so an unknown id is dropped, not
-      // laundered into a blank slot.
-      if (anchor.kind === "thread" && !anchor.threadId) {
-        if (keptBlankThread) continue;
-        keptBlankThread = true;
-      }
-      // …and a remembered id that no longer maps to a stored conversation is a
-      // phantom (a blank thread persisted before this guard existed, or a thread
-      // since deleted). Drop it so it can't come back as an empty column. Only
-      // filter when we actually have the stored set — no bridge (nuxt dev) means
-      // no list, so fall back to keeping the id rather than wiping the row.
-      if (
-        anchor.kind === "thread" &&
-        knownThreadIds &&
-        anchor.threadId &&
-        !knownThreadIds.has(anchor.threadId)
-      ) {
-        continue;
-      }
-      // One conversation is hosted by exactly one pane; a layout written before
-      // that law held (the duplicate-pane bug) can carry two panes for the same
-      // thread id. Keep the leftmost, drop the rest — they would otherwise
-      // resurrect as twin columns on every relaunch. Runs after the phantom
-      // filter so a dropped phantom never consumes the slot of the real pane.
-      if (anchor.kind === "thread" && anchor.threadId) {
-        if (seenThreadIds.has(anchor.threadId)) continue;
-        seenThreadIds.add(anchor.threadId);
-      }
-      const meta = paneKindMeta(kind);
-      if (meta.singleton) {
-        if (seenSingleton.has(kind)) continue;
-        seenSingleton.add(kind);
-      }
-      const rawId = raw.id;
-      const id = rawId && !seenIds.has(String(rawId)) ? String(rawId) : mintPaneId();
-      seenIds.add(id);
-      const width =
-        raw.width !== undefined && raw.width !== null && Number.isFinite(raw.width)
-          ? Number(raw.width)
-          : defaultWidth(kind);
-      const paneEntry: PaneEntry = { id, kind, anchor, width };
-      if (raw.zen) {
-        paneEntry.zen = true;
-      }
-      kept.push(paneEntry);
-      if (kept.length >= MAX_RESTORED_PANES) break;
-    }
-    return kept;
-  }
-
-  // Returns whether a persisted row was applied. An intentionally EMPTY row
-  // counts as true: closing every pane is a layout the user chose. A row whose
-  // panes all failed sanitising (every stored thread a phantom) returns false —
-  // the row keeps whatever reconcile already adopted.
   async function restore(
     row: StudioRow | null,
     knownThreadIds?: ReadonlySet<string>,
     opts?: RestoreOptions,
   ): Promise<boolean> {
-    if (!row || !Array.isArray(row.panes)) return false;
-    const sanitized = sanitizeRow(row, knownThreadIds);
-    if (!sanitized.length && row.panes.length > 0) return false;
-    const deferHeavy = opts?.deferHeavyAttach ?? false;
-
-    await mutate(async () => {
-      // A restore wipes the whole mapping in one shot rather than closing each
-      // pane through close() — unpin whatever it held first, or a row restored
-      // a second time (or over live state) leaks the old bindings into the
-      // sweep's untouchable set for good.
-      for (const [paneId, sk] of Object.entries(sessionKeyById.value)) {
-        const prevEntry = entries.value.find((e) => e.id === paneId);
-        if (prevEntry?.kind === "thread") agent.unpinFromPane(sk);
-      }
-      entries.value = sanitized;
-      sessionKeyById.value = {};
-      focusedId.value = sanitized.some((e) => e.id === row.focusedId)
-        ? row.focusedId
-        : sanitized[0]?.id ?? null;
-
-      // Attach eagerly only what's cheap or needed to land on content:
-      //   · every eagerAttach kind (the scratchpad — text, no process),
-      //   · the focused pane, whatever its kind (you should see content, not a
-      //     dormant placeholder, on the pane you left focused) — unless
-      //     `deferHeavyAttach` (project-home open: thread/terminal spawn later),
-      //   · every stored thread when we're not deferring. Opening one used to
-      //     evict the previous restored session (it looked like a throwaway
-      //     because it hadn't sent a turn *this* session), so restore kept
-      //     threads to one; that's fixed, and a saved strip should come back
-      //     with every conversation already readable.
-      // Other terminals stay dormant until focused — a PTY is a process, and
-      // the column already invites the click that starts it.
-      const toAttach = new Set<PaneId>();
-      for (const e of sanitized) if (paneKindMeta(e.kind).eagerAttach) toAttach.add(e.id);
-      const focusedEntry = sanitized.find((e) => e.id === focusedId.value);
-      if (focusedEntry && !deferHeavy) toAttach.add(focusedEntry.id);
-      if (!deferHeavy) {
-        for (const e of sanitized) if (e.kind === "thread") toAttach.add(e.id);
-      }
-      for (const id of toAttach) await attach(id);
-
-      // G6 — dispose stray idle blank threads. useAgent still spawns one session at
-      // construction; if restore attached a stored thread, openThread should have
-      // evicted that idle boot, but no primitive lets us *reuse* it. Also catches
-      // sessions that appear from outside the studio (launcher resume, away-pill open)
-      // when they weren't claimed by a pane. Only ever a blank, idle, unclaimed
-      // session — never one we just bound or that carries a turn.
-      const claimed = new Set(Object.values(sessionKeyById.value));
-      for (const s of agent.sessions.value) {
-        if (claimed.has(s.key)) continue;
-        if (s.blocks.value.length === 0 && !s.busy.value) await agent.closeThread(s.key);
-      }
+    return restoreRow(row, knownThreadIds, opts, {
+      entries,
+      mapping: sessionKeyById,
+      focusedId,
+      agent,
+      attach,
+      defaultWidth,
+      mintPaneId,
+      mutate,
     });
-    // A layout was applied — the caller must not run start() on top of it.
-    return true;
   }
 
   function indexOf(id: PaneId): number {

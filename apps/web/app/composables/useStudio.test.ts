@@ -378,13 +378,16 @@ describe("useStudio — a threadless studio stays threadless", () => {
     await settle();
 
     // Just the terminal. The old useAgent "strip is never empty" respawn is what
-    // used to put a blank thread column straight back.
-    expect(agentSessions.value.length).toBe(0);
+    // used to put a blank thread column straight back. Closing detaches the
+    // session rather than destroying it (the inbox may still be reading it),
+    // and the tombstone keeps the adopt pass from resurrecting the column —
+    // so the session stays resident while the pane stays gone.
+    expect(agentSessions.value.length).toBe(1);
     expect(studio.entries.value.map((e) => e.kind)).toEqual(["terminal"]);
   });
 
   test("closing every window leaves a bare desktop", async () => {
-    const { studio, agentSessions } = harness();
+    const { studio, agentSessions, termSessions } = harness();
 
     agentSessions.value = [makeThread("boot")];
     await settle();
@@ -394,10 +397,12 @@ describe("useStudio — a threadless studio stays threadless", () => {
     for (const id of studio.entries.value.map((e) => e.id)) await studio.close(id);
     await settle();
 
-    // Zero panes, and nothing respawns to fill the gap.
+    // Zero panes, and nothing respawns to fill the gap. The thread session
+    // stays resident but detached (a terminal close still tears its PTY down).
     expect(studio.entries.value.length).toBe(0);
     expect(studio.focusedId.value).toBeNull();
-    expect(agentSessions.value.length).toBe(0);
+    expect(agentSessions.value.length).toBe(1);
+    expect(termSessions.value.length).toBe(0);
   });
 
   test("a saved empty desktop restores empty rather than booting a thread", async () => {
@@ -1012,6 +1017,117 @@ describe("useStudio — one pane per thread, however it arrives", () => {
     await settle();
 
     expect(studio.entries.value.length).toBe(1);
+  });
+
+  test("two panes resolving to one thread converge to a single live column", async () => {
+    const { studio, agentSessions, termSessions, pinnedKeys } = harness();
+
+    // Two blank slates arrive together (an inbox compose racing the row's own
+    // boot): each is adopted as its own pane, since neither carries an id yet.
+    const s1 = makeThread("k1");
+    const s2 = makeThread("k2");
+    agentSessions.value = [s1, s2];
+    await settle();
+    expect(studio.entries.value.length).toBe(2);
+
+    // Both turn out to be the same conversation. The next reconcile must fold
+    // them: the leftmost pane survives, live, and the dropped key is unpinned.
+    s1.threadId.value = "twin-1";
+    s1.blocks.value = [{ role: "user" }];
+    s2.threadId.value = "twin-1";
+    s2.blocks.value = [{ role: "user" }];
+    termSessions.value = [...termSessions.value, { key: "x", terminalId: "x" }];
+    await settle();
+
+    const threads = studio.panes.value.filter((p) => p.kind === "thread");
+    expect(threads.length).toBe(1);
+    expect(threads[0]!.entry.anchor).toEqual({ kind: "thread", threadId: "twin-1" });
+    expect(threads[0]!.session?.key).toBe("k1");
+    expect(pinnedKeys.has("k1")).toBe(true);
+    expect(pinnedKeys.has("k2")).toBe(false);
+    // The dropped pane's session is unbound, never destroyed.
+    expect(agentSessions.value.some((s) => s.key === "k2")).toBe(true);
+  });
+
+  test("closing a thread pane detaches its session and never resurrects the column", async () => {
+    const { studio, agentSessions } = harness();
+
+    const id = await studio.open("thread", { threadId: "gone-away" });
+    await settle();
+    const key = studio.panes.value.find((p) => p.id === id)!.session!.key;
+
+    await studio.close(id);
+    await settle();
+
+    // The pane is gone but the session stays resident — the inbox may still be
+    // reading it — and it must not come back as a column on the next tick.
+    expect(studio.entries.value.length).toBe(0);
+    expect(agentSessions.value.some((s) => s.key === key)).toBe(true);
+
+    // Any later session arrival reconciles without resurrecting the closed one.
+    const other = makeThread("other", "other-1");
+    other.blocks.value = [{ role: "user" }];
+    agentSessions.value = [...agentSessions.value, other];
+    await settle();
+
+    expect(studio.entries.value.length).toBe(1);
+    expect(studio.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "other-1" });
+  });
+
+  test("an evicted detached session releases its tombstone — the same key can be adopted again", async () => {
+    const { studio, agentSessions } = harness();
+
+    const id = await studio.open("thread", { threadId: "evict-me" });
+    await settle();
+    const key = studio.panes.value.find((p) => p.id === id)!.session!.key;
+
+    await studio.close(id);
+    await settle();
+
+    // Detach still holds: pane gone, session resident, no resurrection on settle.
+    expect(studio.entries.value.length).toBe(0);
+    expect(agentSessions.value.some((s) => s.key === key)).toBe(true);
+    await settle();
+    expect(studio.entries.value.length).toBe(0);
+
+    // Forget/sweep evicts the detached session from the registry.
+    agentSessions.value = [];
+    await settle();
+    expect(agentSessions.value.length).toBe(0);
+    expect(studio.entries.value.length).toBe(0);
+
+    // Tombstone pruned: a future session reusing the same key is adopted, not
+    // vetoed forever.
+    const revived = makeThread(key, "evict-me");
+    revived.blocks.value = [{ role: "user" }];
+    agentSessions.value = [revived];
+    await settle();
+
+    expect(studio.entries.value.length).toBe(1);
+    expect(studio.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "evict-me" });
+    expect(studio.panes.value[0]!.session).toMatchObject({ key });
+  });
+
+  test("reopening a closed thread reuses its resident session in one column", async () => {
+    const { studio, agentSessions } = harness();
+
+    const first = await studio.open("thread", { threadId: "back-again" });
+    await settle();
+    const key = studio.panes.value.find((p) => p.id === first)!.session!.key;
+
+    await studio.close(first);
+    await settle();
+    expect(studio.entries.value.length).toBe(0);
+
+    const again = await studio.open("thread", { threadId: "back-again" });
+    await settle();
+
+    expect(again).not.toBe(first);
+    expect(studio.entries.value.length).toBe(1);
+    expect(studio.entries.value[0]!.anchor).toEqual({ kind: "thread", threadId: "back-again" });
+    // No second session was minted for the same conversation.
+    expect(agentSessions.value.filter((s) => s.threadId.value === "back-again").length).toBe(1);
+    expect(studio.panes.value[0]?.session?.key).toBe(key);
   });
 
   test("concurrent open(thread, { threadId }) calls fold into one pane", async () => {

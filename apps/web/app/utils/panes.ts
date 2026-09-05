@@ -1,4 +1,4 @@
-import type { Pane } from "~/types/studio";
+import type { Pane, PaneEntry } from "~/types/studio";
 import type { ThreadSession } from "~/composables/useAgent";
 
 /** A thread session with no transcript yet and no turn in flight — the blank
@@ -23,4 +23,36 @@ export function isBlankThread(pane: Pane | null): boolean {
   if (!pane || pane.kind !== "thread") return false;
   if (pane.session) return isThreadSessionBlank(pane.session);
   return pane.entry.anchor.kind === "thread" && pane.entry.anchor.threadId === null;
+}
+
+/** One conversation lives in exactly one pane. Fold a list of entries so no
+ *  two thread panes resolve to the same thread id: keep the leftmost, drop the
+ *  rest. Panes with no resolved id are blank slots, not conversations, and are
+ *  always kept. Non-thread panes never participate.
+ *
+ *  Pure: operates on entries only, no refs, no sessions. Callers that resolve
+ *  ids through live state pass `resolveTid`; persisted lists use the default,
+ *  which reads the entry's remembered anchor id. */
+export function foldThreadPanes(
+  panes: PaneEntry[],
+  resolveTid: (e: PaneEntry) => string | null = (e) =>
+    e.anchor.kind === "thread" ? e.anchor.threadId : null,
+): PaneEntry[] {
+  const seen = new Set<string>();
+  const kept: PaneEntry[] = [];
+  for (const entry of panes) {
+    if (entry.kind !== "thread") {
+      kept.push(entry);
+      continue;
+    }
+    const tid = resolveTid(entry);
+    if (tid === null || tid === "") {
+      kept.push(entry);
+      continue;
+    }
+    if (seen.has(tid)) continue;
+    seen.add(tid);
+    kept.push(entry);
+  }
+  return kept;
 }

@@ -27,9 +27,37 @@
 import { usePaneWidthPrefs } from "~/composables/usePaneWidthPrefs";
 import { useStudioPersistence } from "~/composables/useStudioPersistence";
 import { useStudioRowRegistry } from "~/composables/useStudioRowRegistry";
+import { foldThreadPanes } from "~/utils/panes";
 import type { PaneEntry, StudioRow } from "~/types/studio";
 
 let intakeSeq = 0;
+
+// Reads-modify-writes against the stored plane must not interleave: two
+// concurrent adopts (a double-fired start, a start racing a pick) would both
+// read the row before either writes, and both append — one conversation, two
+// panes. A per-project promise chain serializes them; scopes are independent,
+// so unrelated projects never wait on each other.
+//
+// Writes must all execute, so the latest-wins helpers are the wrong tool here:
+// adopting t-1 then t-2 are two distinct writes, and even two adopts of t-1
+// must both run so the second observes the first's write (dedupe is
+// read-after-write, not joining). Latest-wins coalescing would skip or merge
+// queued work — correct for reads, lost panes here. This chain runs every
+// queued write in call order instead.
+const intakeChains = new Map<string, Promise<void>>();
+function serialized<T>(scope: string, fn: () => Promise<T>): Promise<T> {
+  const prev = intakeChains.get(scope) ?? Promise.resolve();
+  const task = prev.then(fn);
+  const tail: Promise<void> = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  intakeChains.set(scope, tail);
+  void tail.then(() => {
+    if (intakeChains.get(scope) === tail) intakeChains.delete(scope);
+  });
+  return task;
+}
 
 /** A pane id in the studio's own shape, minted from a counter of its own. The
  *  studio's minter is private to useStudio and this path never runs inside one —
@@ -50,43 +78,57 @@ export function useStudioIntake() {
   async function adoptThread(projectPath: string, threadId: string): Promise<void> {
     if (!projectPath || !threadId) return;
 
-    const mounted = rowRegistry.rowFor(projectPath);
-    if (mounted) {
-      mounted.adoptThread(threadId);
-      return;
-    }
+    // Both paths run inside the per-project chain, including the mounted
+    // fast-path: a mounted handoff is synchronous but a cold write for the
+    // same project may already hold the chain, and running around it would
+    // let the two interleave (mounted write landing while the cold read is
+    // still in flight). Serializing keeps call order per project.
+    return serialized(projectPath, async () => {
+      const mounted = rowRegistry.rowFor(projectPath);
+      if (mounted) {
+        mounted.adoptThread(threadId);
+        return;
+      }
 
-    const store = useStudioPersistence(projectPath);
-    const existing = await store.loadRow();
+      const store = useStudioPersistence(projectPath);
+      const existing = await store.loadRow();
 
-    // Reading a cold plane is a round trip, and a row can mount inside it — the
-    // studio being summoned, the project's page opening. From that moment the
-    // row owns its layout, so hand the thread over rather than write underneath
-    // it and have its first save drop the pane.
-    const arrived = rowRegistry.rowFor(projectPath);
-    if (arrived) {
-      arrived.adoptThread(threadId);
-      return;
-    }
+      // Reading a cold plane is a round trip, and a row can mount inside it — the
+      // studio being summoned, the project's page opening. From that moment the
+      // row owns its layout, so hand the thread over rather than write underneath
+      // it and have its first save drop the pane.
+      const arrived = rowRegistry.rowFor(projectPath);
+      if (arrived) {
+        arrived.adoptThread(threadId);
+        return;
+      }
 
-    const panes = existing?.panes ?? [];
-    if (panes.some((p) => p.anchor.kind === "thread" && p.anchor.threadId === threadId)) return;
+      const panes = existing?.panes ?? [];
+      const entry: PaneEntry = {
+        id: mintPaneId(),
+        kind: "thread",
+        anchor: { kind: "thread", threadId },
+        width: defaultWidth("thread"),
+      };
 
-    const entry: PaneEntry = {
-      id: mintPaneId(),
-      kind: "thread",
-      anchor: { kind: "thread", threadId },
-      width: defaultWidth("thread"),
-    };
+      // One conversation lives in exactly one pane: fold the row with the
+      // newcomer appended and keep the leftmost. When the fold drops the
+      // newcomer its length matches the folded base, so there is nothing new
+      // to write. Persisted panes resolve by anchor id, which is the helper's
+      // default.
+      const base = foldThreadPanes(panes);
+      const folded = foldThreadPanes([...base, entry]);
+      if (folded.length === base.length) return;
 
-    // At the right edge. A thread that arrived from somewhere else joins the end
-    // of the row rather than splitting the cluster you were last working in.
-    const next: StudioRow = {
-      projectPath,
-      panes: [...panes, entry],
-      focusedId: existing?.focusedId ?? null,
-    };
-    store.saveRow(next);
+      // At the right edge. A thread that arrived from somewhere else joins the end
+      // of the row rather than splitting the cluster you were last working in.
+      const next: StudioRow = {
+        projectPath,
+        panes: folded,
+        focusedId: existing?.focusedId ?? null,
+      };
+      store.saveRow(next);
+    });
   }
 
   /** Remove a thread from its project's studio row. Safe to call for a thread that is
@@ -94,40 +136,44 @@ export function useStudioIntake() {
   async function dismissThread(projectPath: string, threadId: string): Promise<void> {
     if (!projectPath || !threadId) return;
 
-    const mounted = rowRegistry.rowFor(projectPath);
-    if (mounted) {
-      mounted.dismissThread(threadId);
-      return;
-    }
+    // Same chain as adopt: a mounted dismissal racing a cold adopt for the
+    // same project must land in call order, not interleave with its read.
+    return serialized(projectPath, async () => {
+      const mounted = rowRegistry.rowFor(projectPath);
+      if (mounted) {
+        mounted.dismissThread(threadId);
+        return;
+      }
 
-    const store = useStudioPersistence(projectPath);
-    const existing = await store.loadRow();
+      const store = useStudioPersistence(projectPath);
+      const existing = await store.loadRow();
 
-    // Hand over if the row mounted while reading the cold plane.
-    const arrived = rowRegistry.rowFor(projectPath);
-    if (arrived) {
-      arrived.dismissThread(threadId);
-      return;
-    }
+      // Hand over if the row mounted while reading the cold plane.
+      const arrived = rowRegistry.rowFor(projectPath);
+      if (arrived) {
+        arrived.dismissThread(threadId);
+        return;
+      }
 
-    const panes = existing?.panes ?? [];
-    const nextPanes = panes.filter(
-      (p) => !(p.anchor.kind === "thread" && p.anchor.threadId === threadId),
-    );
-    if (nextPanes.length === panes.length) return;
+      const panes = existing?.panes ?? [];
+      const nextPanes = panes.filter(
+        (p) => !(p.anchor.kind === "thread" && p.anchor.threadId === threadId),
+      );
+      if (nextPanes.length === panes.length) return;
 
-    const removed = panes.find(
-      (p) => p.anchor.kind === "thread" && p.anchor.threadId === threadId,
-    );
-    const focusedId =
-      existing?.focusedId === removed?.id ? null : (existing?.focusedId ?? null);
+      const removed = panes.find(
+        (p) => p.anchor.kind === "thread" && p.anchor.threadId === threadId,
+      );
+      const focusedId =
+        existing?.focusedId === removed?.id ? null : (existing?.focusedId ?? null);
 
-    const next: StudioRow = {
-      projectPath,
-      panes: nextPanes,
-      focusedId,
-    };
-    store.saveRow(next);
+      const next: StudioRow = {
+        projectPath,
+        panes: nextPanes,
+        focusedId,
+      };
+      store.saveRow(next);
+    });
   }
 
   /** Drop a thread's pane wherever it is, without being told which project it
@@ -148,7 +194,9 @@ export function useStudioIntake() {
         row.panes.some((p) => p.anchor.kind === "thread" && p.anchor.threadId === threadId),
       )
       .map((row) => row.projectPath);
-    for (const path of paths) await dismissThread(path, threadId);
+    // Paths are distinct projects, so their per-project chains are
+    // independent — dismiss in parallel rather than one row at a time.
+    await Promise.all(paths.map((path) => dismissThread(path, threadId)));
   }
 
   return { adoptThread, dismissThread, dismissThreadAnywhere };
