@@ -1,6 +1,8 @@
 import { computed, ref, shallowRef } from "vue";
 import type {
   InternalSkillsSettings,
+  KoneAgentInventoryApi,
+  KoneAgentSkillsApi,
   PluginEntry,
   SkillDetail,
   SkillEntry,
@@ -69,6 +71,18 @@ export function pluginBusyKey(plugin: Pick<PluginEntry, "name" | "path">): strin
   return `plugin:${plugin.name || plugin.path}`;
 }
 
+/** The slice of the desktop bridge this composable reaches for. Partial so a
+ *  caller can hand over only the surface its test exercises; the default is
+ *  the full agent bridge and every read still guards for an absent method. */
+export type UseSkillsBridge = {
+  skills?: Partial<KoneAgentSkillsApi>;
+  inventory?: Partial<KoneAgentInventoryApi>;
+};
+
+export type UseSkillsOptions = {
+  bridge?: () => UseSkillsBridge | undefined;
+};
+
 /** v1 stable — t3 parity: on/off only. Claude's four-value override
  *  (on/name-only/user-invocable-only/off) is kept in the backend for compat,
  *  but the UI only offers enabled/disabled. The backend maps the two middle
@@ -84,8 +98,13 @@ export function writableStates(origin: string): WritableSkillState[] {
   return WRITABLE_BY_ORIGIN[origin] ?? [];
 }
 
-export function useSkills(projectPath: () => string | string[] | null) {
-  const bridge = () => (import.meta.client ? window.koneDesktop?.agent : undefined);
+export function useSkills(
+  projectPath: () => string | string[] | null,
+  options?: UseSkillsOptions,
+) {
+  const defaultBridge = (): UseSkillsBridge | undefined =>
+    import.meta.client ? window.koneDesktop?.agent : undefined;
+  const bridge: () => UseSkillsBridge | undefined = options?.bridge ?? defaultBridge;
 
   function firstPath(): string | null {
     const p = projectPath();
