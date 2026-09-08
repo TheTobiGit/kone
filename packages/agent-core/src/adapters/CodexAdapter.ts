@@ -40,6 +40,7 @@ import {
   isNonFatalCodexError,
   isRecoverableCodexResumeError,
 } from "./errors.js";
+import { emitCompacted } from "./emitCompacted.js";
 import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from "../gateway/appContext.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "@kone/protocol/plan-tasks";
 import {
@@ -683,6 +684,9 @@ export class CodexAdapter implements ProviderAdapter {
     // Codex has no nested-agent surface of its own (no Task/Agent tool), so a
     // turn never fans out into runs kone could project.
     supportsSubagents: false,
+    // The app-server compacts the thread's context on `thread/compact/start`
+    // and announces the settled boundary as `thread/compacted`.
+    compaction: { kind: "native" },
   };
 
   private readonly emit: EmitEvent;
@@ -1037,6 +1041,21 @@ export class CodexAdapter implements ProviderAdapter {
     return { threadId: input.threadId, turnId };
   }
 
+  /** Trigger provider-native context compaction for the thread. The app-server
+   *  compacts the thread server-side and announces the settled boundary as a
+   *  `thread/compacted` notification (see wireNotifications), which becomes
+   *  the `thread.state.changed` "compacted" event. Resolves once the call is
+   *  accepted — settlement is the boundary event, which lands after and is
+   *  awaited by the caller. */
+  async compactThread(threadId: string): Promise<void> {
+    const session = this.requireSession(threadId);
+    const conversationId = session.conversationId;
+    if (!conversationId) throw new Error(`No Codex conversation for thread ${threadId}`);
+    // No call timeout: the service owns the compaction budget and bounds this
+    // from the outside, so the transport runs on its default.
+    await session.rpc.call("thread/compact/start", { threadId: conversationId });
+  }
+
   async interruptTurn(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (!session?.activeTurnId || !session.conversationId) return;
@@ -1261,6 +1280,15 @@ export class CodexAdapter implements ProviderAdapter {
     rpc.onNotification("item/started", (params) => this.handleItemLifecycle(session, params, "started"));
     rpc.onNotification("item/completed", (params) => this.handleItemLifecycle(session, params, "completed"));
 
+    // The app-server announces a settled context compaction as
+    // `thread/compacted` — the boundary the store invalidates its usage
+    // snapshot on. Older builds instead complete a `context_compaction` item;
+    // that path is caught in handleItemLifecycle. Both collapse into the one
+    // count-less boundary below (see emitCompactedBoundary).
+    rpc.onNotification("thread/compacted", () => {
+      this.emitCompactedBoundary(session);
+    });
+
     const deltaMethods = [
       "item/agentMessage/delta",
       "item/reasoning/textDelta",
@@ -1465,6 +1493,15 @@ export class CodexAdapter implements ProviderAdapter {
     const itemId = readString(raw, "id") ?? readString(raw, "itemId");
     if (!itemId) return;
 
+    // Older app-server builds settle a compaction as a `context_compaction`
+    // item rather than a `thread/compacted` notification — either way the
+    // boundary is the same `thread.state.changed` "compacted" event. The item
+    // itself carries no transcript content, so only the boundary is emitted.
+    if (lifecycle === "completed" && normalizeItemType(raw.type).includes("compact")) {
+      this.emitCompactedBoundary(session);
+      return;
+    }
+
     const mapped = toRuntimeItemKind(raw.type);
 
     if (lifecycle === "started") {
@@ -1555,6 +1592,16 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   // ── shared helpers ───────────────────────────────────────────────────────
+
+  /** The settled-compaction boundary both wire shapes collapse into: the
+   *  `thread/compacted` notification and the legacy `context_compaction` item
+   *  completion. Neither carries counts — the notification's params are
+   *  routing-only (`threadId`/`turnId`), the item carries no transcript
+   *  content — so the boundary is always count-less and the store reads the
+   *  window as fresh until the next usage event. */
+  private emitCompactedBoundary(session: CodexSession): void {
+    emitCompacted(this.emit, this.base(session));
+  }
 
   private base(session: CodexSession) {
     const envelope = {

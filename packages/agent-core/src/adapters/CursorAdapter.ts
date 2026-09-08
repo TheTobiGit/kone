@@ -768,6 +768,9 @@ export class CursorAdapter implements ProviderAdapter {
     // Cursor's ACP surface reports one flat stream of tool calls — a delegated
     // sub-agent, if it spawns one, isn't distinguishable as a nested run.
     supportsSubagents: false,
+    // No native compaction call — manual compaction runs as a `/compress`
+    // command turn, which the agent understands.
+    compaction: { kind: "command", command: "/compress" },
   };
 
   private readonly emit: EmitEvent;

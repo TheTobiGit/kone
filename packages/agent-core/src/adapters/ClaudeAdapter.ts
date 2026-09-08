@@ -64,6 +64,7 @@ import {
 } from "../claudeTaskTracker.js";
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
 import { isResumeRefusalError } from "./errors.js";
+import { emitCompacted } from "./emitCompacted.js";
 import {
   buildClaudeAttachmentContent,
   composePromptText,
@@ -178,6 +179,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     supportsResume: true,
     supportsModelList: true,
     supportsSubagents: true,
+    // No native compaction call — Claude compacts itself at the auto-compact
+    // window — but a `/compact` command turn drives the SDK into its
+    // `compact_boundary` path, which is observed below. Manual compaction is
+    // therefore supported through the command fallback.
+    compaction: { kind: "command", command: "/compact" },
   };
 
   private readonly emit: EmitEvent;
@@ -999,6 +1005,13 @@ export class ClaudeAdapter implements ProviderAdapter {
           this.handleModelRefusalFallback(session, message);
           return;
         }
+        // The SDK compacted the transcript at the auto-compact window (or for
+        // a `/compact` command turn) — the settled boundary the store
+        // invalidates its usage snapshot on.
+        if (readString(message, "subtype") === "compact_boundary") {
+          this.handleCompactBoundary(session, message);
+          return;
+        }
         this.handleTaskMessage(session, message);
         return;
       case "stream_event":
@@ -1051,6 +1064,22 @@ export class ClaudeAdapter implements ProviderAdapter {
     };
     if (content) rerouted.reason = content;
     this.emit(rerouted);
+  }
+
+  /** A `compact_boundary` system message: the SDK compacted the transcript.
+   *  `compact_metadata` carries the window fill on either side (`pre_tokens`
+   *  / `post_tokens`) — the boundary event carries them, and the store
+   *  restarts the meter from the post-compaction fill on it. No usage event
+   *  rides along: a context-only usage payload would still upsert the
+   *  per-turn audit row for whatever turn ran last (with null splits,
+   *  clobbering that turn's real numbers), and the boundary already restarts
+   *  the meter — the extra event is redundant. */
+  private handleCompactBoundary(session: ClaudeSession, message: SDKMessage): void {
+    const metadata = asRecord(asRecord(message)?.compact_metadata);
+    emitCompacted(this.emit, this.base(session), {
+      beforeTokens: metadata ? readNumber(metadata, "pre_tokens") : undefined,
+      afterTokens: metadata ? readNumber(metadata, "post_tokens") : undefined,
+    });
   }
 
   private handleStreamEvent(session: ClaudeSession, scope: ClaudeScope, rawEvent: ClaudeStreamEvent): void {

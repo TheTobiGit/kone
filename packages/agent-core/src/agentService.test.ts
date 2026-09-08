@@ -10,6 +10,7 @@ import type {
   QueuedTurnRow,
   QueuedTurnStore,
   SendTurnInput,
+  ThreadCompactionCapability,
   TurnStartResult,
 } from "./types.js";
 
@@ -1112,6 +1113,422 @@ describe("AgentService thread archive + retention", () => {
     expect(historyNoDone.doneStamps.get("idle-1")).toBeNull();
     expect(historyNoDone.archivedStamp.get("idle-1")).toBeNull();
     expect(noDoneEvents).toHaveLength(0);
+  });
+});
+
+/** A FakeAdapter with a compaction story: native when `native` is true (the
+ *  test drives the boundary through the captured emit), command-fallback
+ *  otherwise. Command turns record per-instance (never the shared static),
+ *  so these tests can't disturb the queue suite's turn assertions. */
+class CompactFakeAdapter extends FakeAdapter {
+  override capabilities = {
+    sessionModelSwitch: "unsupported" as const,
+    streamsText: false,
+    supportsToolEvents: false,
+    supportsResume: false,
+    supportsModelList: false,
+    supportsSubagents: false,
+    // SAFETY: pins the widened literal to the compaction union so the
+    // constructor can swap in the per-instance mechanism below.
+    compaction: { kind: "unsupported" } as ThreadCompactionCapability,
+  };
+  compactCalls: string[] = [];
+  failCompact = false;
+  compactError = new Error("compact failed");
+  /** When true the native call parks until the test calls releaseCompact. */
+  parkCompact = false;
+  releaseCompact: (() => void) | null = null;
+  sentCommands: Array<{ threadId: string; input: string; turnId: string }> = [];
+  compactThread?: (threadId: string) => Promise<void>;
+
+  constructor(
+    emit: EmitEvent,
+    provider: string,
+    readonly native: boolean,
+  ) {
+    super(emit, provider);
+    if (native) {
+      this.capabilities.compaction = { kind: "native" };
+      this.compactThread = async (threadId: string): Promise<void> => {
+        this.compactCalls.push(threadId);
+        if (this.failCompact) throw this.compactError;
+        if (this.parkCompact) {
+          await new Promise<void>((resolve) => {
+            this.releaseCompact = resolve;
+          });
+        }
+      };
+    } else {
+      this.capabilities.compaction = {
+        kind: "command",
+        command: provider === "claudeAgent" ? "/compact" : "/compress",
+      };
+    }
+  }
+
+  override async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
+    const turnId = `compact-turn-${++FakeAdapter.turnCounter}`;
+    this.sentCommands.push({ threadId: input.threadId, input: input.input, turnId });
+    return { threadId: input.threadId, turnId };
+  }
+}
+
+describe("AgentService context compaction", () => {
+  let svc: AgentServiceType;
+  let fakes: CompactFakeAdapter[];
+  let events: import("./types.js").RuntimeEvent[];
+  let threadCounter = 0;
+
+  const fakeFor = (provider: string): CompactFakeAdapter => {
+    const fake = fakes.find((f) => f.provider === provider);
+    if (!fake) throw new Error(`no ${provider} fake`);
+    return fake;
+  };
+
+  const compactedEvent = (
+    threadId: string,
+    provider: "codex" | "claudeAgent" | "cursor" | "droid",
+  ): import("./types.js").RuntimeEvent => ({
+    threadId,
+    provider,
+    at: Date.now(),
+    source: "kone.store",
+    type: "thread.state.changed",
+    state: "compacted",
+  });
+
+  beforeAll(() => {
+    fakes = [];
+    events = [];
+    svc = new AgentServiceCtor({
+      compactNativeTimeoutMs: 500,
+      compactFallbackTimeoutMs: 500,
+      // SAFETY: fakeStore implements the queued-turn slice this service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: fakeStore as unknown as QueuedTurnStore,
+      adapters: (emit) =>
+        // SAFETY: four compaction fakes are the whole provider roster here.
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        [
+          new CompactFakeAdapter(emit, "codex", true),
+          new CompactFakeAdapter(emit, "claudeAgent", false),
+          new CompactFakeAdapter(emit, "cursor", false),
+          new CompactFakeAdapter(emit, "droid", false),
+        ].map((fake) => {
+          fakes.push(fake);
+          return fake;
+        }) as unknown as ProviderAdapter[],
+    });
+    svc.onEvent((e) => events.push(e));
+  });
+
+  beforeEach(() => {
+    for (const fake of fakes) {
+      fake.compactCalls.length = 0;
+      fake.sentCommands.length = 0;
+      fake.failCompact = false;
+      fake.parkCompact = false;
+      fake.releaseCompact = null;
+    }
+    events.length = 0;
+    fakeStore.reset();
+  });
+
+  afterAll(async () => {
+    await svc.stopAll();
+  });
+
+  async function startThread(provider: "codex" | "claudeAgent" | "cursor" | "droid"): Promise<string> {
+    threadCounter += 1;
+    const threadId = `compact-t-${threadCounter}`;
+    await svc.startSession({ threadId, provider, cwd: "/tmp", mode: "ask" });
+    return threadId;
+  }
+
+  function compactedCount(threadId: string): number {
+    return events.filter(
+      (e) => e.threadId === threadId && e.type === "thread.state.changed" && e.state === "compacted",
+    ).length;
+  }
+
+  /** Flush microtasks so the service's one-shot watchers subscribe before the
+   *  test drives the event stream (real adapters always settle after their
+   *  sendTurn ack resolves; the fake would otherwise emit into nobody). */
+  async function tick(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  /** Poll until `done` reads true — the queue drain runs fire-and-forget, so
+   *  promotion lands a few ticks after the trigger, never synchronously. */
+  async function waitFor(done: () => boolean, ms = 2000): Promise<void> {
+    const start = Date.now();
+    while (!done()) {
+      if (Date.now() - start > ms) throw new Error("timed out waiting for promotion");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  test("rejects with no live session", async () => {
+    await expect(svc.compactThread("compact-missing")).rejects.toThrow("No agent session");
+  });
+
+  test("rejects when the provider supports no manual compaction", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    const saved = fake.capabilities.compaction;
+    fake.capabilities.compaction = { kind: "unsupported" };
+    try {
+      await expect(svc.compactThread(threadId)).rejects.toThrow("not supported");
+    } finally {
+      fake.capabilities.compaction = saved;
+    }
+  });
+
+  test("rejects while a turn is running", async () => {
+    const threadId = await startThread("codex");
+    fakeFor("codex").emit({
+      threadId,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.started",
+      turnId: "turn-live",
+    });
+    await expect(svc.compactThread(threadId)).rejects.toThrow(
+      "unavailable while a provider turn is running",
+    );
+    fakeFor("codex").emit({
+      threadId,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.completed",
+      turnId: "turn-live",
+    });
+  });
+
+  test("native success resolves once the announced boundary lands", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    const pending = svc.compactThread(threadId);
+    // The provider announces the boundary while the native call is in flight.
+    fake.emit(compactedEvent(threadId, "codex"));
+    const result = await pending;
+    expect(result).toEqual({ threadId, provider: "codex", native: true });
+    expect(fake.compactCalls).toEqual([threadId]);
+    // Observed, not synthesized: exactly the one announced boundary.
+    expect(compactedCount(threadId)).toBe(1);
+  });
+
+  test("native timeout synthesizes the boundary and rejects", async () => {
+    const threadId = await startThread("codex");
+    await expect(svc.compactThread(threadId)).rejects.toThrow("did not complete within 10 minutes");
+    // The quiet provider gets one synthesized boundary, then the claim releases.
+    expect(compactedCount(threadId)).toBe(1);
+    expect(svc.isCompacting(threadId)).toBe(false);
+  });
+
+  test("native waits for the real boundary and holds the claim until it lands", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    const pending = svc.compactThread(threadId);
+    // The native call resolves on acceptance — let it settle into the boundary
+    // wait with no announcement yet.
+    await tick();
+    await tick();
+    expect(svc.isCompacting(threadId)).toBe(true);
+    expect(compactedCount(threadId)).toBe(0);
+    // A send arriving mid-compaction queues behind it instead of dispatching.
+    const userBlockId = fakeStore.journalUserBlock(threadId, "hello after");
+    const ack = await svc.sendTurn({ threadId, input: "hello after" });
+    const queued = fakeStore.rows.find((r) => r.threadId === threadId);
+    expect(queued).toMatchObject({ input: "hello after", userBlockId });
+    expect(ack.turnId).toBe(queued?.queueId);
+    expect(fake.sentCommands).toHaveLength(0);
+    // Still settling with no announcement: nothing synthesized, nothing released.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(svc.isCompacting(threadId)).toBe(true);
+    expect(compactedCount(threadId)).toBe(0);
+    expect(fake.sentCommands).toHaveLength(0);
+    expect(fakeStore.rows.filter((r) => r.threadId === threadId)).toHaveLength(1);
+
+    fake.emit(compactedEvent(threadId, "codex"));
+    await expect(pending).resolves.toMatchObject({ threadId, native: true });
+    // Exactly the announced boundary — no synthesis alongside it.
+    expect(compactedCount(threadId)).toBe(1);
+    await waitFor(() => fake.sentCommands.some((s) => s.input === "hello after"));
+    await waitFor(() => fakeStore.rows.filter((r) => r.threadId === threadId).length === 0);
+    expect(svc.isCompacting(threadId)).toBe(false);
+  });
+
+  test("late real boundary after call resolution journals exactly one compaction", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    const pending = svc.compactThread(threadId);
+    // Let the native call resolve with no boundary yet — resolution alone must
+    // journal nothing.
+    await tick();
+    await tick();
+    expect(compactedCount(threadId)).toBe(0);
+    // The real announcement lands late, after the call settled.
+    fake.emit(compactedEvent(threadId, "codex"));
+    await expect(pending).resolves.toMatchObject({ threadId, native: true });
+    expect(compactedCount(threadId)).toBe(1);
+    expect(svc.isCompacting(threadId)).toBe(false);
+  });
+
+  test("a boundary that lands despite a failed call still wins", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    fake.failCompact = true;
+    const pending = svc.compactThread(threadId);
+    fake.emit(compactedEvent(threadId, "codex"));
+    await expect(pending).resolves.toMatchObject({ threadId, native: true });
+  });
+
+  test("a failed call with no boundary surfaces the failure", async () => {
+    const threadId = await startThread("codex");
+    fakeFor("codex").failCompact = true;
+    await expect(svc.compactThread(threadId)).rejects.toThrow("compact failed");
+    expect(compactedCount(threadId)).toBe(0);
+  });
+
+  test("a second compaction while one runs is rejected (single flight)", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    fake.parkCompact = true;
+    const first = svc.compactThread(threadId);
+    await expect(svc.compactThread(threadId)).rejects.toThrow("already in progress");
+    fake.releaseCompact?.();
+    fake.emit(compactedEvent(threadId, "codex"));
+    await expect(first).resolves.toMatchObject({ native: true });
+    expect(svc.isCompacting(threadId)).toBe(false);
+  });
+
+  test("sends during compaction queue and run against the compacted context", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    fake.parkCompact = true;
+    const pending = svc.compactThread(threadId);
+    // The dispatcher journals the prompt before sending; the test stands in
+    // for it so the queue row anchors to a real user block.
+    const userBlockId = fakeStore.journalUserBlock(threadId, "hello after");
+    const ack = await svc.sendTurn({ threadId, input: "hello after" });
+    // Queued, not refused: the ack carries the queue id like a busy send.
+    const queued = fakeStore.rows.find((r) => r.threadId === threadId);
+    expect(queued).toMatchObject({ input: "hello after", userBlockId });
+    expect(ack.turnId).toBe(queued?.queueId);
+    expect(fake.sentCommands).toHaveLength(0);
+
+    fake.releaseCompact?.();
+    fake.emit(compactedEvent(threadId, "codex"));
+    await pending;
+    // The boundary promotes the row, which dispatches as the next turn. Both
+    // halves are async fire-and-forget, so wait for dispatch AND drain
+    // completion — the send lands a few ticks before its row is reaped.
+    await waitFor(() => fake.sentCommands.some((s) => s.input === "hello after"));
+    await waitFor(() => fakeStore.rows.filter((r) => r.threadId === threadId).length === 0);
+    expect(svc.isCompacting(threadId)).toBe(false);
+  });
+
+  test("steers still refuse while compacting", async () => {
+    const threadId = await startThread("codex");
+    const fake = fakeFor("codex");
+    fake.parkCompact = true;
+    const pending = svc.compactThread(threadId);
+    await expect(svc.steerTurn({ threadId, input: "nudge" })).rejects.toThrow(
+      "Wait for context compaction",
+    );
+    fake.releaseCompact?.();
+    fake.emit(compactedEvent(threadId, "codex"));
+    await pending;
+  });
+
+  test("fallback sends /compact and synthesizes the boundary on settle", async () => {
+    const threadId = await startThread("claudeAgent");
+    const fake = fakeFor("claudeAgent");
+    const pending = svc.compactThread(threadId);
+    await tick();
+    // The command turn was handed straight to the adapter (never queued, never
+    // journaled by the service).
+    expect(fake.sentCommands).toHaveLength(1);
+    expect(fake.sentCommands[0]).toMatchObject({ threadId, input: "/compact" });
+    const turnId = fake.sentCommands[0]?.turnId ?? "";
+    fake.emit({
+      threadId,
+      provider: "claudeAgent",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.completed",
+      turnId,
+    });
+    await expect(pending).resolves.toMatchObject({ threadId, native: false });
+    expect(compactedCount(threadId)).toBe(1);
+  });
+
+  test("fallback resolves on the announced boundary without synthesizing", async () => {
+    const threadId = await startThread("claudeAgent");
+    const fake = fakeFor("claudeAgent");
+    const pending = svc.compactThread(threadId);
+    await tick();
+    const turnId = fake.sentCommands[0]?.turnId ?? "";
+    // Claude announces compact_boundary mid-turn; the turn settles after.
+    fake.emit(compactedEvent(threadId, "claudeAgent"));
+    fake.emit({
+      threadId,
+      provider: "claudeAgent",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.completed",
+      turnId,
+    });
+    await pending;
+    expect(compactedCount(threadId)).toBe(1);
+  });
+
+  test("fallback sends /compress for cursor", async () => {
+    const threadId = await startThread("cursor");
+    const fake = fakeFor("cursor");
+    const pending = svc.compactThread(threadId);
+    await tick();
+    expect(fake.sentCommands[0]?.input).toBe("/compress");
+    fake.emit(compactedEvent(threadId, "cursor"));
+    await pending;
+  });
+
+  test("fallback sends /compress for droid", async () => {
+    const threadId = await startThread("droid");
+    const fake = fakeFor("droid");
+    const pending = svc.compactThread(threadId);
+    await tick();
+    expect(fake.sentCommands[0]?.input).toBe("/compress");
+    fake.emit(compactedEvent(threadId, "droid"));
+    await expect(pending).resolves.toMatchObject({ threadId, provider: "droid", native: false });
+  });
+
+  test("an interrupted fallback turn throws without synthesizing", async () => {
+    const threadId = await startThread("claudeAgent");
+    const fake = fakeFor("claudeAgent");
+    const pending = svc.compactThread(threadId);
+    await tick();
+    const turnId = fake.sentCommands[0]?.turnId ?? "";
+    fake.emit({
+      threadId,
+      provider: "claudeAgent",
+      at: Date.now(),
+      source: "kone.store",
+      type: "turn.aborted",
+      turnId,
+      reason: "interrupted",
+    });
+    await expect(pending).rejects.toThrow("interrupted before it could settle");
+    expect(compactedCount(threadId)).toBe(0);
+  });
+
+  test("supportsThreadCompaction mirrors the capability", () => {
+    expect(svc.supportsThreadCompaction("codex")).toBe(true);
+    expect(svc.supportsThreadCompaction("cursor")).toBe(true);
+    expect(svc.supportsThreadCompaction("droid")).toBe(true);
   });
 });
 

@@ -7,6 +7,8 @@ import {
   type ModelCandidate,
   type ProviderAvailability,
 } from "./agentModel.js";
+import { isCompactionSupported } from "./types.js";
+import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
 import { ClaudeAdapter } from "./adapters/ClaudeAdapter.js";
 import { CodexAdapter } from "./adapters/CodexAdapter.js";
@@ -47,6 +49,7 @@ import type { GatewayHandle } from "./gateway/index.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
+  CompactThreadResult,
   EmitEvent,
   ModelDescriptor,
   ProviderAdapter,
@@ -63,6 +66,7 @@ import type {
   SendTurnInput,
   SessionStartInput,
   ThreadArchiveResult,
+  ThreadCompactionCapability,
   TurnStartResult,
   UserInputAnswers,
 } from "./types.js";
@@ -122,6 +126,23 @@ const SUBAGENT_WAKE_MAX = 5;
 const RETENTION_BATCH_SIZE = 25;
 const RETENTION_BATCH_PAUSE_MS = 50;
 
+/** A native compaction call gets this long before the service calls it failed
+ *  — server-side compaction on a large thread takes minutes, not seconds. */
+const NATIVE_COMPACT_TIMEOUT_MS = 10 * 60_000;
+/** A `/compact` command turn (the fallback for providers without a native
+ *  call) is an ordinary turn, but it still must settle eventually — this long. */
+const FALLBACK_COMPACT_TIMEOUT_MS = 10 * 60_000;
+
+/** What a command-turn compaction wait observed: the provider's announced
+ *  boundary wins; otherwise the turn's own settlement decides — a completed
+ *  turn compacted silently, an aborted one compacted nothing — and the
+ *  service's fallback budget bounds the wait. */
+type CompactionBoundaryOutcome =
+  | { outcome: "compacted" }
+  | { outcome: "turn-completed" }
+  | { outcome: "turn-aborted" }
+  | { outcome: "timeout" };
+
 /** A parked provider ask (tool approval / user-input question) that a renderer
  *  reload would otherwise lose: approvals and user-input questions are live
  *  round-trips and are deliberately never journaled, so a re-subscribing
@@ -151,6 +172,10 @@ export type AgentServiceOptions = {
   retentionUnusedMs?: number;
   retentionDoneMs?: number;
   retentionInitialDelayMs?: number;
+  /** Context-compaction tuning (see NATIVE/FALLBACK_COMPACT_TIMEOUT_MS above).
+   *  Tests shrink these to exercise the orchestration without waiting minutes. */
+  compactNativeTimeoutMs?: number;
+  compactFallbackTimeoutMs?: number;
   /** The conversation store's queue surface, injected by tests. Defaults to
    *  the app-wide store (getConversationStore) when absent. */
   store?: QueuedTurnStore;
@@ -216,6 +241,12 @@ export class AgentService {
    *  without this a burst of sends walks straight past the busy-intercept and
    *  starts concurrent turns on one session. See `isBusy`. */
   private readonly dispatchingTurns = new Set<string>();
+  /** Threads with a manual context compaction in flight. One at a time per
+   *  thread (the check-then-add in compactThread is synchronous, so two
+   *  callers can't both claim it), and no turn may start while one runs — a
+   *  turn racing the compaction would read a half-compacted context. Cleared
+   *  when the compaction settles or the session goes away. */
+  private readonly compactingThreads = new Set<string>();
   /** itemIds currently in-progress per thread (item.started without a matching
    *  item.completed yet) — the wedge sweep's "is this thread legitimately busy"
    *  signal. */
@@ -357,11 +388,17 @@ export class AgentService {
   cachedSurface(): ProviderSurfaceSnapshot {
     const surface = readProviderCache();
     const settings = readProviderSettings();
-    const statuses = surface.statuses.map((status) =>
-      isProviderEnabled(status.provider, settings)
-        ? { ...status, enabled: statusEnabled(status) }
-        : disabledProviderStatus(status.provider, status.label),
-    );
+    // Manual-compaction support derives at read time from the live adapter
+    // union — the disk snapshot carries no copy (see providerCache.ts), so a
+    // stale flag can never linger past the adapter that owns it.
+    const statuses = surface.statuses.map((status) => {
+      const supportsThreadCompaction = isCompactionSupported(
+        this.adapters.get(status.provider)?.capabilities.compaction,
+      );
+      return isProviderEnabled(status.provider, settings)
+        ? { ...status, enabled: statusEnabled(status), supportsThreadCompaction }
+        : { ...disabledProviderStatus(status.provider, status.label), supportsThreadCompaction };
+    });
     return { ...surface, statuses };
   }
 
@@ -381,14 +418,21 @@ export class AgentService {
         const cached = readProviderCache().statuses;
         const probed = await Promise.all(
           [...this.adapters.values()].map(async (a) => {
+            // Manual-compaction support is adapter code truth — derived from
+            // the adapter's compaction union here, never probed or persisted.
+            const supportsThreadCompaction = isCompactionSupported(a.capabilities.compaction);
             if (!isProviderEnabled(a.provider, settings)) {
               const prev = cached.find((s) => s.provider === a.provider);
-              return disabledProviderStatus(a.provider, prev?.label ?? a.provider);
+              return {
+                ...disabledProviderStatus(a.provider, prev?.label ?? a.provider),
+                supportsThreadCompaction,
+              };
             }
             const status = await a.discover();
             return {
               ...status,
               enabled: statusEnabled(status),
+              supportsThreadCompaction,
             };
           }),
         );
@@ -687,6 +731,18 @@ export class AgentService {
     const model = this.validModelFor(provider, next.model);
     const effort = this.validEffortFor(provider, model, next.effort);
     const routed = { ...next, model, effort };
+    // A compaction in flight owns the session until its boundary lands — but
+    // the user's words still belong in the transcript's future, not in an
+    // error. Queue behind it exactly like a busy send: the row promotes when
+    // the compaction settles (see compactThread) and runs against the
+    // compacted context. Without a queue store there is nowhere to park it —
+    // refuse rather than dispatch straight at the adapter mid-compaction.
+    if (this.isCompacting(input.threadId)) {
+      if (!this.queueStore) {
+        throw new Error("Wait for context compaction to finish before sending another message.");
+      }
+      return this.enqueueTurn(routed, dispatchMode ?? "queue", provider);
+    }
     // Busy-intercept: a live turn means this follow-up is durably enqueued
     // rather than racing the live turn (sending straight to the adapter would
     // start a second concurrent turn on the same session). `steer` requests
@@ -840,6 +896,214 @@ export class AgentService {
 
   async interruptTurn(threadId: string): Promise<void> {
     return this.adapterForThread(threadId).interruptTurn(threadId);
+  }
+
+  // ── context compaction ────────────────────────────────────────────────────
+  // Manual compaction runs provider-native where the adapter names a native
+  // mechanism (Codex `thread/compact/start`, OpenCode `POST
+  // /session/:id/summarize`) and as a command turn carrying the provider's
+  // own documented slash command everywhere else (`/compact`, `/compress`).
+  // Either way the settled boundary is the same `thread.state.changed`
+  // "compacted" event — observed from the provider when it announces one,
+  // synthesized when it compacts silently — which is what the store
+  // invalidates its usage snapshot on. Resolves once that boundary has been
+  // observed or synthesized, so the caller reads fresh state after.
+
+  /** Whether the thread has a manual compaction in flight. */
+  isCompacting(threadId: string): boolean {
+    return this.compactingThreads.has(threadId);
+  }
+
+  /** Whether manual compaction can be triggered for this provider — natively
+   *  or through the command fallback. Derived from the adapter's compaction
+   *  union: false means the thread only ever compacts on the provider's own
+   *  initiative. */
+  supportsThreadCompaction(provider: ProviderKind): boolean {
+    return isCompactionSupported(this.adapter(provider).capabilities.compaction);
+  }
+
+  /** Trigger context compaction for the thread's session. Rejects when there
+   *  is no live session, when a compaction is already running, when a turn is
+   *  running, or when the provider supports no manual compaction.
+   *
+   *  The single-flight claim lands first, synchronously — before the first
+   *  await — so two callers can't both enter. `ensureSession` (the
+   *  dispatcher's session-adopt preamble) runs inside the claim, which is
+   *  what closes the orphaned-session race the dispatcher's own set used to
+   *  cover: the claim covers the preamble and the compaction alike. */
+  async compactThread(threadId: string, ensureSession?: () => Promise<void>): Promise<CompactThreadResult> {
+    if (this.compactingThreads.has(threadId)) {
+      throw new Error(`Context compaction is already in progress for thread ${threadId}.`);
+    }
+    this.compactingThreads.add(threadId);
+    let result: CompactThreadResult;
+    try {
+      // Skipped (not merely awaited) when absent: the watch below must
+      // subscribe synchronously with the claim, so a boundary announced on
+      // this tick still lands in it.
+      if (ensureSession) await ensureSession();
+      const provider = this.routing.get(threadId);
+      if (!provider) throw new Error(`No agent session for thread ${threadId}`);
+      if (this.isBusy(threadId)) {
+        throw new Error("Context compaction is unavailable while a provider turn is running.");
+      }
+      const adapter = this.adapter(provider);
+      const capability = adapter.capabilities.compaction;
+      if (!isCompactionSupported(capability)) {
+        throw new Error(`Context compaction is not supported for provider ${provider}.`);
+      }
+      const native = await this.runCompaction(threadId, adapter, provider, capability);
+      result = { threadId, provider, native };
+    } finally {
+      this.compactingThreads.delete(threadId);
+    }
+    // Follow-ups queued behind the compaction run now, against the compacted
+    // context. (Fallback turns already promoted on settlement, so for them
+    // this finds nothing and returns.)
+    this.promoteQueuedTurns(threadId);
+    return result;
+  }
+
+  /** Run the adapter-named compaction mechanism and report which ran: the
+   *  native call where the adapter has one, otherwise a command turn carrying
+   *  the provider's own documented slash command. Either way the settled
+   *  boundary is the same `thread.state.changed` "compacted" event — the
+   *  native path waits for the provider's announcement (synthesizing only
+   *  when the wait times out), the command path synthesizes when its turn
+   *  settles without one. */
+  private async runCompaction(
+    threadId: string,
+    adapter: ProviderAdapter,
+    provider: ProviderKind,
+    capability: Extract<ThreadCompactionCapability, { kind: "native" | "command" }>,
+  ): Promise<boolean> {
+    // Watch before triggering: the boundary may land while the call or the
+    // command turn is still in flight.
+    const boundary = onceEvent(
+      (listener) => this.onEvent(listener),
+      (event): true | undefined =>
+        event.threadId === threadId &&
+        event.type === "thread.state.changed" &&
+        event.state === "compacted"
+          ? true
+          : undefined,
+    );
+    try {
+      if (capability.kind === "native") {
+        const compact = adapter.compactThread;
+        if (!compact) {
+          throw new Error(`Context compaction is not supported for provider ${provider}.`);
+        }
+        const nativeTimeoutMs = this.options.compactNativeTimeoutMs ?? NATIVE_COMPACT_TIMEOUT_MS;
+        try {
+          await withTimeout(
+            compact.call(adapter, threadId),
+            nativeTimeoutMs,
+            "Context compaction did not complete within 10 minutes.",
+          );
+        } catch (error) {
+          // A boundary that landed despite a failed call still means the
+          // context IS compacted, so it wins over the error.
+          if (boundary.arrived()) return true;
+          throw error;
+        }
+        // Call resolution is acceptance, not settlement: both native providers
+        // announce the settled boundary, so wait for it within the same native
+        // budget. The claim stays held across the wait, so queued turns cannot
+        // dispatch mid-compaction. Synthesize only when the wait times out and
+        // the provider went quiet.
+        try {
+          await withTimeout(
+            boundary.settled,
+            nativeTimeoutMs,
+            "Context compaction did not complete within 10 minutes.",
+          );
+        } catch (error) {
+          if (boundary.arrived()) return true;
+          this.synthesizeCompactedBoundary(threadId, provider);
+          throw error;
+        }
+        return true;
+      }
+      // The fallback IS a turn: hold the in-flight marker across the handoff
+      // so a concurrent send queues behind it instead of starting a second
+      // turn on the same session.
+      this.dispatchingTurns.add(threadId);
+      let turnId: string;
+      try {
+        ({ turnId } = await adapter.sendTurn({ threadId, input: capability.command }));
+      } finally {
+        this.dispatchingTurns.delete(threadId);
+      }
+      const outcome = await this.awaitCompactionBoundary(
+        threadId,
+        turnId,
+        boundary,
+        this.options.compactFallbackTimeoutMs ?? FALLBACK_COMPACT_TIMEOUT_MS,
+      );
+      switch (outcome.outcome) {
+        case "compacted":
+          return false;
+        case "turn-completed":
+          this.synthesizeCompactedBoundary(threadId, provider);
+          return false;
+        case "turn-aborted":
+          throw new Error("Context compaction was interrupted before it could settle.");
+        case "timeout":
+          throw new Error("Context compaction did not complete within 10 minutes.");
+      }
+    } finally {
+      boundary.cancel();
+    }
+  }
+
+  /** Wait for a command-turn compaction to settle: the announced boundary
+   *  wins; otherwise the turn's own settlement decides; the service's
+   *  fallback budget bounds the wait. One flow, one discriminated outcome. */
+  private async awaitCompactionBoundary(
+    threadId: string,
+    turnId: string,
+    boundary: EventWait<boolean>,
+    timeoutMs: number,
+  ): Promise<CompactionBoundaryOutcome> {
+    const settlement = onceEvent(
+      (listener) => this.onEvent(listener),
+      (event): "completed" | "aborted" | undefined => {
+        if (event.threadId !== threadId) return undefined;
+        if (event.type === "turn.completed" && event.turnId === turnId) return "completed";
+        if (event.type === "turn.aborted" && event.turnId === turnId) return "aborted";
+        return undefined;
+      },
+      { timeoutMs },
+    );
+    try {
+      return await Promise.race([
+        boundary.settled.then(
+          (arrived): CompactionBoundaryOutcome =>
+            arrived ? { outcome: "compacted" } : { outcome: "timeout" },
+        ),
+        settlement.settled.then((settled): CompactionBoundaryOutcome => {
+          if (settled === "completed") return { outcome: "turn-completed" };
+          if (settled === "aborted") return { outcome: "turn-aborted" };
+          return { outcome: "timeout" };
+        }),
+      ]);
+    } finally {
+      settlement.cancel();
+    }
+  }
+
+  /** Announce a compaction the provider performed silently, so the stored
+   *  usage snapshot invalidates exactly as if it had announced one. */
+  private synthesizeCompactedBoundary(threadId: string, provider: ProviderKind): void {
+    this.dispatch({
+      type: "thread.state.changed",
+      threadId,
+      provider,
+      at: Date.now(),
+      source: "kone.store",
+      state: "compacted",
+    });
   }
 
   async stopSession(threadId: string): Promise<void> {
@@ -1035,6 +1299,7 @@ export class AgentService {
     this.subagentWakes.delete(threadId);
     this.pendingSubagentWakes.delete(threadId);
     this.dispatchingTurns.delete(threadId);
+    this.compactingThreads.delete(threadId);
     this.openItems.delete(threadId);
     this.lastActivity.delete(threadId);
   }
@@ -1199,6 +1464,13 @@ export class AgentService {
    *  plain follow-up. */
   async steerTurn(input: SendTurnInput): Promise<TurnStartResult> {
     const threadId = input.threadId;
+    // A steer needs a live turn to land in. There is none during a native
+    // compaction — and during a fallback the live turn IS the compaction
+    // command, which a nudge would corrupt. Plain sends queue behind the
+    // compaction instead (see sendTurn); steers refuse outright.
+    if (this.isCompacting(threadId)) {
+      throw new Error("Wait for context compaction to finish before sending another message.");
+    }
     const liveTurnId = this.activeTurns.get(threadId);
     if (liveTurnId) {
       const adapter = this.adapterForThread(threadId);
@@ -1569,7 +1841,10 @@ export class AgentService {
   private async drainQueuedTurns(threadId: string, store: QueuedTurnStore): Promise<void> {
     const provider = this.routing.get(threadId);
     try {
-      if (this.isBusy(threadId)) return;
+      // A compaction in flight owns the session until its boundary lands, and
+      // so does the queue drain — a row must never promote into a session
+      // mid-compaction and read a half-compacted context.
+      if (this.isBusy(threadId) || this.isCompacting(threadId)) return;
       const row = await store.claimNextQueuedTurn(threadId);
       if (!row) return;
       try {
