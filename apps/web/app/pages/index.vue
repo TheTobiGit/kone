@@ -330,6 +330,23 @@ onMounted(() => {
   const unsub = onToggle(() => toggleAssistant());
   onBeforeUnmount(unsub);
 });
+
+// ── global attention bots ────────────────────────────────────────────────────
+// Every parked thread in the app, one bot each, top-right over any surface.
+// Picking one abandons whatever flow is up (a parked thread outranks picking a
+// folder) and lands the inbox on that thread, where its ask answers inline.
+const inboxRef = ref<{
+  openProjectThread: (projectPath: string, threadId: string) => Promise<void>;
+} | null>(null);
+function onAttentionOpen(projectPath: string, threadId: string) {
+  pickerOpen.value = false;
+  cloneOpen.value = false;
+  createOpen.value = false;
+  pending.value = null;
+  if (assistantOpen.value) toggleAssistant();
+  if (!inboxOpen.value) summonInbox();
+  void inboxRef.value?.openProjectThread(projectPath, threadId);
+}
 </script>
 
 <template>
@@ -394,7 +411,10 @@ onMounted(() => {
         <!-- The inbox, over both the page and the plane. Mounted once alongside
              them for the same reason: whatever it comes to hold is not any one
              page's, and it has to survive a project switch. -->
-        <InboxAppInbox :open="inboxOpen" @close="closeInbox" />
+        <InboxAppInbox ref="inboxRef" :open="inboxOpen" @close="closeInbox" />
+
+        <!-- Every parked thread's bot, top-right over whatever is showing. -->
+        <AttentionGlobalBots @open="onAttentionOpen" />
       </div>
 
       <!-- While open, tapping the shoved-aside stage closes the drawer (and

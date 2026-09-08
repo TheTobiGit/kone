@@ -37,6 +37,7 @@ import {
   type PendingUserInput,
   type PendingApproval,
   type ThreadAttention,
+  type LiveAttentionItem,
   type QueuedTurnEntry,
   type QueueBridge,
   type ReasoningTier,
@@ -616,7 +617,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
           approval: event.approval,
         };
         if (origin) entry.originToolUseId = origin;
-        pendingApprovals.value = [...pendingApprovals.value, entry];
+        // A replayed ask replaces its earlier copy — without this the reload
+        // replay stacks a second modal entry for the same gate.
+        pendingApprovals.value = [
+          ...pendingApprovals.value.filter((a) => a.requestId !== event.requestId),
+          entry,
+        ];
         break;
       }
       case "approval.resolved":
@@ -987,6 +993,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         seedCompactions();
         // The queue rows survive crashes — rebuild the strip from the bridge.
         seedQueuedTurns(api);
+        // A question replayed before this adopt was stashed orphan-side — fold
+        // it now that the id is findable, so the modal survives the reload.
+        for (const evt of takeOrphanUserInputs(meta.threadId)) reduce(evt);
+        // Same race for tool approvals — fold stashed gates so the approval
+        // modal survives the reload like the question modal above.
+        for (const evt of takeOrphanApprovals(meta.threadId)) reduce(evt);
       }
     } catch {
       // History is a convenience — never block starting a session over it.
@@ -1166,6 +1178,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
       sideChat.value = true;
       sideChatSource.value = source;
     }
+    // The replay may have landed before the board claimed this id — fold any
+    // stashed question now, so the modal is up by the time the column paints.
+    for (const evt of takeOrphanUserInputs(id)) reduce(evt);
+    // Same race for tool approvals (see the orphan-approval pen): fold stashed
+    // gates so pendingApprovals populates and the approval modal renders
+    // instead of the ask sitting answered-nowhere.
+    for (const evt of takeOrphanApprovals(id)) reduce(evt);
   }
 
   /** Bring a specific stored thread on-screen and continue it: adopt the
@@ -1897,6 +1916,132 @@ type ProjectRegistry = {
 };
 const registries = new Map<string, ProjectRegistry>();
 
+/** Holding pen for mid-turn questions that arrive before their thread is
+ *  on screen. A reload wipes the renderer's sessions, then the main process
+ *  replays its parked asks on subscribe — before rehydrate/openStored has
+ *  adopted the stored id, so the fan-out below finds nobody and the modal is
+ *  lost. Stashed here by thread id until a session claims it, instead of
+ *  being dropped. Keyed globally: thread ids are unique across projects. */
+const orphanedUserInputs = new Map<string, RuntimeEvent[]>();
+
+function isUserInputRequested(
+  event: RuntimeEvent,
+): event is Extract<RuntimeEvent, { type: "user-input.requested" }> {
+  return event.type === "user-input.requested";
+}
+
+/** Park a question whose thread has no resident session yet. Replays send the
+ *  same ask twice (immediate + delayed pass), so a repeat requestId replaces
+ *  rather than stacks. */
+export function stashOrphanUserInput(
+  event: Extract<RuntimeEvent, { type: "user-input.requested" }>,
+): void {
+  const list = orphanedUserInputs.get(event.threadId) ?? [];
+  const next = list.filter((e) => {
+    if (!isUserInputRequested(e)) return true;
+    return e.requestId !== event.requestId;
+  });
+  next.push(event);
+  orphanedUserInputs.set(event.threadId, next);
+}
+
+/** Take (and clear) every stashed question for a thread being claimed. */
+export function takeOrphanUserInputs(threadId: string): RuntimeEvent[] {
+  const list = orphanedUserInputs.get(threadId) ?? [];
+  orphanedUserInputs.delete(threadId);
+  return list;
+}
+
+/** Drop one stashed question — its resolve landed before the thread opened. */
+export function dropOrphanUserInput(threadId: string, requestId: string): void {
+  const list = orphanedUserInputs.get(threadId);
+  if (!list) return;
+  const next = list.filter((e) => {
+    if (!isUserInputRequested(e)) return true;
+    return e.requestId !== requestId;
+  });
+  if (next.length === 0) orphanedUserInputs.delete(threadId);
+  else orphanedUserInputs.set(threadId, next);
+}
+
+/** Drop every stashed question for a thread whose turn settled unanswered. */
+export function clearOrphanUserInputs(threadId: string): void {
+  orphanedUserInputs.delete(threadId);
+}
+
+/** Holding pen for tool approvals that arrive before their thread is on
+ *  screen — the same reload race as the questions above: the main process
+ *  replays its parked gates on subscribe, before rehydrate/openStored has
+ *  adopted the stored id, so the fan-out below finds nobody and the in-thread
+ *  modal never renders. Stashed here by thread id until a session claims it.
+ *  Top-level threads land here; a genuine spawned child (known via a resident
+ *  parent's spawnedChildren) goes to the registry inbox in agentPrefetch
+ *  instead, so the two pens never hold the same ask and the global feed never
+ *  mislabels a top-level thread as spawned. Keyed globally, like the
+ *  questions above: thread ids are unique across projects. */
+const orphanedApprovals = new Map<string, RuntimeEvent[]>();
+
+function isApprovalRequested(
+  event: RuntimeEvent,
+): event is Extract<RuntimeEvent, { type: "approval.requested" }> {
+  return event.type === "approval.requested";
+}
+
+/** Park an approval whose thread has no resident session yet. Replays send the
+ *  same ask twice (immediate + delayed pass), so a repeat requestId replaces
+ *  rather than stacks. */
+export function stashOrphanApproval(
+  event: Extract<RuntimeEvent, { type: "approval.requested" }>,
+): void {
+  const list = orphanedApprovals.get(event.threadId) ?? [];
+  const next = list.filter((e) => {
+    if (!isApprovalRequested(e)) return true;
+    return e.requestId !== event.requestId;
+  });
+  next.push(event);
+  orphanedApprovals.set(event.threadId, next);
+}
+
+/** Take (and clear) every stashed approval for a thread being claimed. */
+export function takeOrphanApprovals(threadId: string): RuntimeEvent[] {
+  const list = orphanedApprovals.get(threadId) ?? [];
+  orphanedApprovals.delete(threadId);
+  return list;
+}
+
+/** Drop one stashed approval — its resolve landed before the thread opened. */
+export function dropOrphanApproval(threadId: string, requestId: string): void {
+  const list = orphanedApprovals.get(threadId);
+  if (!list) return;
+  const next = list.filter((e) => {
+    if (!isApprovalRequested(e)) return true;
+    return e.requestId !== requestId;
+  });
+  if (next.length === 0) orphanedApprovals.delete(threadId);
+  else orphanedApprovals.set(threadId, next);
+}
+
+/** Drop every stashed approval for a thread whose turn settled unanswered. */
+export function clearOrphanApprovals(threadId: string): void {
+  orphanedApprovals.delete(threadId);
+}
+
+/** True when the id belongs to a spawned child of any resident parent session.
+ *  The event router uses this to tell a genuine headless child's ask (which
+ *  belongs in the registry inbox the parent's dock reads) apart from a
+ *  top-level thread that simply has no session yet (which belongs in the
+ *  orphan pen above until claimed). */
+function isKnownSpawnedChild(threadId: string): boolean {
+  for (const r of registries.values()) {
+    for (const s of r.sessions.value) {
+      for (const k of s.spawnedChildren.value) {
+        if (k.threadId === threadId) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** Bumped whenever the *set* of registries changes. The Map itself is plain —
  *  the sessions inside it are refs, so a computed that walks it tracks their
  *  contents, but not a project appearing or going away. Anything reading across
@@ -1940,6 +2085,67 @@ export const liveTurns = computed<Map<string, AssistantBlock>>(() => {
       const block = latestAssistant(s.timelineBlocks.value);
       if (block?.state === "running") out.set(threadId, block);
     }
+  }
+  return out;
+});
+
+/** Every thread parked on a person anywhere in the app — the feed the inbox
+ *  bot row reads.
+ *
+ *  Same join as `liveTurns`, one surface over: a surface that owns a session
+ *  knows its own thread's asks from that session, but the inbox reading pane
+ *  only owns the thread it is showing — a parked ask in any other thread, in
+ *  any project, would be invisible there. The registries are module-scope and
+ *  outlive any one view, so walking them is how a session-less surface sees
+ *  every live claim. Read-only by design: answering still goes through the
+ *  owning session (the inbox jumps you into the thread for that).
+ *
+ *  Derived from the same per-session `attention` the studio beacon reads, so
+ *  the two surfaces never disagree about what is waiting — only about which
+ *  thread is in front of you (each host filters out the one it is showing). */
+export const liveAttention = computed<LiveAttentionItem[]>(() => {
+  void registryVersion.value;
+  const out: LiveAttentionItem[] = [];
+  for (const [projectPath, r] of registries.entries()) {
+    for (const s of r.sessions.value) {
+      const attention = s.attention.value;
+      if (!attention) continue;
+      const threadId = s.threadId.value;
+      if (!threadId) continue;
+      out.push({
+        key: s.key,
+        threadId,
+        title: s.title.value,
+        provider: s.provider.value,
+        model: s.model.value,
+        projectPath,
+        kind: attention.kind,
+        detail: attention.detail,
+      });
+    }
+  }
+  return out;
+});
+
+/** Threads whose ask is currently answered inline on a visible surface, keyed
+ *  by the surface reporting them (one studio row per project, plus the inbox).
+ *  Scoped rather than single so concurrent surfaces never clobber each other —
+ *  each writer owns its key and only ever clears its own.
+ *
+ *  The global bots read this as their skip list: a thread in front of the user
+ *  needs no bot, its ask is right there. Reporting is "shown", not "parked" —
+ *  a shown thread without an ask is simply absent from the feed, so the rule
+ *  costs nothing when nothing waits. */
+const inlineByScope = ref<Record<string, string | null>>({});
+export function setInlineThread(scope: string, threadId: string | null): void {
+  if (inlineByScope.value[scope] === threadId) return;
+  inlineByScope.value = { ...inlineByScope.value, [scope]: threadId };
+}
+/** The thread ids currently shown inline, across every surface. */
+export const inlineThreadIds = computed<ReadonlySet<string>>(() => {
+  const out = new Set<string>();
+  for (const id of Object.values(inlineByScope.value)) {
+    if (id) out.add(id);
   }
   return out;
 });
@@ -2169,27 +2375,91 @@ export function useAgent(options: UseAgentOptions) {
           // approval.resolved — clear the inbox so a stale decide can't linger.
           if (event.spawned.status !== "waiting-for-approval") {
             clearChildApprovalFor(event.spawned.threadId);
+            // An ask stashed before the spawn event identified the child dies
+            // with the turn too — otherwise claiming the id later pops a modal
+            // for a gate that already settled.
+            clearOrphanApprovals(event.spawned.threadId);
           }
           return;
         }
-        // A spawned child's approval events also carry the CHILD's id. A child
-        // resident in the registry (opened/revealed) folds them as a normal
-        // session; one that is not would see the ask dropped by the fan-out
-        // below, leaving a surfaced gate that cannot be answered. Route those
-        // into the registry-level inbox the dock's decide action reads.
-        if (event.type === "approval.requested" || event.type === "approval.resolved") {
-          const resident = sessions.value.some((x) => x.threadId.value === event.threadId);
-          if (!resident) {
-            if (event.type === "approval.requested") {
-              setChildApproval(event.threadId, {
+        // A headless spawned child's approval events carry the CHILD's id. A
+        // child resident in the registry (opened/revealed) folds them as a
+        // normal session. One that is not is a genuine parked gate the parent
+        // dock must still answer, so it goes to the registry-level inbox — but
+        // ONLY when the id is a known child of a resident parent (see
+        // isKnownSpawnedChild). A merely non-resident top-level thread is the
+        // reload race, not a spawn: its ask waits in the orphan-approval pen
+        // until a session claims the id, so the in-thread modal renders and
+        // the global feed never mislabels it as spawned.
+        if (event.type === "approval.requested") {
+          const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+          if (s) s.reduce(event);
+          else if (isKnownSpawnedChild(event.threadId)) {
+            setChildApproval(
+              event.threadId,
+              {
                 requestId: event.requestId,
                 approval: event.approval,
-              });
-            } else {
-              clearChildApproval(event.threadId, event.requestId);
-            }
-            return;
-          }
+              },
+              ctx.resolveCwd(),
+            );
+          } else stashOrphanApproval(event);
+          return;
+        }
+        if (event.type === "approval.resolved") {
+          // Settle every pen that could hold the ask: the session folds it,
+          // and both holding pens drop it, so answering on one surface never
+          // leaves a stale copy on another.
+          dropOrphanApproval(event.threadId, event.requestId);
+          clearChildApproval(event.threadId, event.requestId);
+          const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+          s?.reduce(event);
+          return;
+        }
+        // A mid-turn question for a thread with no resident session yet — the
+        // reload race: the replay lands before rehydrate/openStored adopts the
+        // stored id, so the fan-out below would drop it and the modal never
+        // comes back. Stash it until a session claims the id (claimStoredId /
+        // rehydrate drain it); a resolve or an aborted turn clears the stash
+        // so a settled ask can't pop back up later.
+        if (event.type === "user-input.requested") {
+          const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+          if (s) s.reduce(event);
+          else stashOrphanUserInput(event);
+          return;
+        }
+        if (event.type === "user-input.resolved") {
+          dropOrphanUserInput(event.threadId, event.requestId);
+          const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+          s?.reduce(event);
+          return;
+        }
+        if (event.type === "turn.aborted") {
+          clearOrphanUserInputs(event.threadId);
+          clearOrphanApprovals(event.threadId);
+          clearChildApprovalFor(event.threadId);
+          const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+          s?.reduce(event);
+          return;
+        }
+        // The backend drops its parked snapshot when a session goes away — a
+        // stashed replay for it must go too, or claiming the thread later pops
+        // a modal for a turn that is already dead.
+        if (event.type === "session.exited") {
+          clearOrphanUserInputs(event.threadId);
+          clearOrphanApprovals(event.threadId);
+          clearChildApprovalFor(event.threadId);
+          const s = sessions.value.find((x) => x.threadId.value === event.threadId);
+          s?.reduce(event);
+          return;
+        }
+        if (
+          event.type === "session.state.changed" &&
+          (event.state === "stopped" || event.state === "error")
+        ) {
+          clearOrphanUserInputs(event.threadId);
+          clearOrphanApprovals(event.threadId);
+          clearChildApprovalFor(event.threadId);
         }
         const s = sessions.value.find((x) => x.threadId.value === event.threadId);
         s?.reduce(event);

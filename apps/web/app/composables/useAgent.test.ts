@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { useAgent, type UserBlock } from "./useAgent";
+import {
+  clearOrphanApprovals,
+  clearOrphanUserInputs,
+  dropOrphanApproval,
+  dropOrphanUserInput,
+  stashOrphanApproval,
+  stashOrphanUserInput,
+  takeOrphanApprovals,
+  takeOrphanUserInputs,
+  useAgent,
+  type UserBlock,
+} from "./useAgent";
 import type { AgentBaseEvent, RuntimeEvent } from "~/types/desktop";
 
 // The durable turn-queue slice (AgentService): a send while a turn runs is
@@ -691,6 +702,101 @@ describe("useAgent token usage reducer", () => {
         afterTokens: 8000,
       },
     ]);
+  });
+});
+
+describe("orphaned user-input recovery (reload race)", () => {
+  function asked(
+    threadId: string,
+    requestId: string,
+  ): Extract<RuntimeEvent, { type: "user-input.requested" }> {
+    return {
+      threadId,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "user-input.requested",
+      requestId,
+      questions: [],
+    };
+  }
+
+  test("a replayed ask stashed before its thread is claimed drains on take", () => {
+    stashOrphanUserInput(asked("thread-reload-1", "r1"));
+    // The delayed second replay pass re-sends the same ask — it replaces.
+    stashOrphanUserInput(asked("thread-reload-1", "r1"));
+    const drained = takeOrphanUserInputs("thread-reload-1");
+    expect(drained).toHaveLength(1);
+    expect(takeOrphanUserInputs("thread-reload-1")).toHaveLength(0);
+  });
+
+  test("a resolve arriving before the claim drops the stashed ask", () => {
+    stashOrphanUserInput(asked("thread-reload-2", "r1"));
+    dropOrphanUserInput("thread-reload-2", "r1");
+    expect(takeOrphanUserInputs("thread-reload-2")).toHaveLength(0);
+  });
+
+  test("an aborted turn clears the stashed ask", () => {
+    stashOrphanUserInput(asked("thread-reload-3", "r1"));
+    clearOrphanUserInputs("thread-reload-3");
+    expect(takeOrphanUserInputs("thread-reload-3")).toHaveLength(0);
+  });
+});
+
+describe("orphaned approval recovery (reload race)", () => {
+  function gate(
+    threadId: string,
+    requestId: string,
+  ): Extract<RuntimeEvent, { type: "approval.requested" }> {
+    return {
+      threadId,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "approval.requested",
+      requestId,
+      approval: { kind: "command", title: "rm -rf /tmp/stale" },
+    };
+  }
+
+  test("a replayed gate stashed before its thread is claimed drains on take", () => {
+    stashOrphanApproval(gate("thread-gate-1", "g1"));
+    // The delayed second replay pass re-sends the same ask — it replaces.
+    stashOrphanApproval(gate("thread-gate-1", "g1"));
+    const drained = takeOrphanApprovals("thread-gate-1");
+    expect(drained).toHaveLength(1);
+    expect(takeOrphanApprovals("thread-gate-1")).toHaveLength(0);
+  });
+
+  test("a resolve arriving before the claim drops the stashed gate", () => {
+    stashOrphanApproval(gate("thread-gate-2", "g1"));
+    dropOrphanApproval("thread-gate-2", "g1");
+    expect(takeOrphanApprovals("thread-gate-2")).toHaveLength(0);
+  });
+
+  test("an aborted turn clears the stashed gate", () => {
+    stashOrphanApproval(gate("thread-gate-3", "g1"));
+    clearOrphanApprovals("thread-gate-3");
+    expect(takeOrphanApprovals("thread-gate-3")).toHaveLength(0);
+  });
+
+  test("claiming a stored thread folds stashed gates into pendingApprovals", async () => {
+    const { session } = harness();
+    stashOrphanApproval(gate("thread-gate-claim", "g1"));
+    await session.openStored("thread-gate-claim");
+    expect(session.threadId.value).toBe("thread-gate-claim");
+    expect(session.pendingApprovals.value).toHaveLength(1);
+    expect(session.pendingApprovals.value[0]?.requestId).toBe("g1");
+    // Drained exactly once — nothing left behind to re-fold on a later claim.
+    expect(takeOrphanApprovals("thread-gate-claim")).toHaveLength(0);
+  });
+
+  test("folding the same gate twice replaces instead of stacking", () => {
+    const { session } = harness();
+    const evt = gate(session.threadId.value, "g1");
+    session.reduce(evt);
+    session.reduce(evt);
+    expect(session.pendingApprovals.value).toHaveLength(1);
   });
 });
 

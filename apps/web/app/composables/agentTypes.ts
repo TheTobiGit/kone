@@ -61,6 +61,23 @@ export type PendingApproval = {
   originToolUseId?: string;
 };
 
+/** A parked approval held outside any resident session, with the project
+ *  whose registry saw the ask — how a surface that owns no session routes the
+ *  jump back into the waiting thread. This covers both headless spawned
+ *  children (answered from the parent's dock) and top-level threads whose
+ *  replayed ask arrived before any session claimed their id — the name says
+ *  "routed" because the ask was filed by thread id at the registry level,
+ *  not because a child spawn was involved. */
+export type RoutedPendingApproval = PendingApproval & {
+  /** The project whose registry recorded the ask. Absent for entries recorded
+   *  before the route was kept — those answer in place only. */
+  projectPath?: string;
+};
+
+/** Deprecated alias of {@link RoutedPendingApproval} — kept so existing
+ *  importers keep compiling. New code should use the canonical name. */
+export type SpawnedApproval = RoutedPendingApproval;
+
 /** Why a thread is parked on a person. A permission gate outranks a question
  *  when somehow both are up — you can't answer a question the turn is blocked
  *  behind. `parked-spawn` is a spawned child waiting on its own gate. */
@@ -74,6 +91,29 @@ export type ThreadAttention = {
   kind: ThreadAttentionKind;
   /** The headline of what's being asked — the tool/command for a permission,
    *  the question's header — so the indicator can name it, not just flag it. */
+  detail?: string;
+};
+
+/** One parked-on-you thread, anywhere in the app — the cross-project feed the
+ *  inbox bot row reads. Same derivation as the per-session `attention`, lifted
+ *  to module scope so a surface that owns no session (the inbox list owns
+ *  none) can still see every live claim. Read-only: answering still happens
+ *  through the owning session. */
+export type LiveAttentionItem = {
+  /** Stable registry id (survives provider threadId changes). */
+  key: string;
+  /** The provider-native thread id (used to reopen / route). */
+  threadId: string;
+  title: string;
+  provider: ProviderKind;
+  /** The raw model id the thread last ran on, if known. */
+  model?: string;
+  /** Which project's registry owns the live session — how the host routes the
+   *  jump back into the thread. */
+  projectPath: string;
+  kind: ThreadAttentionKind;
+  /** The headline of what's being asked — the tool/command for a permission,
+   *  the question's header. */
   detail?: string;
 };
 

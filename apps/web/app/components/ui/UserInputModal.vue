@@ -17,6 +17,10 @@ import { useModalExit } from "~/composables/useModalExit";
 const props = defineProps<{
   requestId: string;
   questions: UserInputQuestion[];
+  /** Contain the shell to the host pane (absolute) instead of the viewport
+   *  (fixed), so the scrim dims only the thread and the card lands in its
+   *  bottom-centre over the composer's spot. */
+  contained?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -160,7 +164,10 @@ const cardSpring = {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex items-end justify-center overflow-hidden p-6 pb-8">
+  <div
+    :class="props.contained ? 'absolute' : 'fixed'"
+    class="inset-0 z-40 flex items-end justify-center overflow-hidden p-6 pb-8"
+  >
     <!-- Scrim: a soft dim + blur, matching the pickers. A question is waiting on
          the turn, so the scrim is inert — the only way forward is to answer. -->
     <motion.div

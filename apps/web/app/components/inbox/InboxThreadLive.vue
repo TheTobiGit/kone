@@ -340,26 +340,18 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       />
     </div>
 
-    <!-- Mid-turn question: raises over the composer in the picker-family
-         shell, the way it does on the studio. Answering resolves the parked
-         tool call and the turn continues. -->
-    <UiUserInputModal
-      v-if="pendingUserInput"
-      :request-id="pendingUserInput.requestId"
-      :questions="pendingUserInput.questions"
+    <!-- Mid-turn question + tool approval, over the composer in the
+         picker-family shells, the way they sit on the studio. Contained to
+         this thread pane so the scrim dims only the thread. While the
+         subagent shell already shows the same approval inline, the approval
+         modal stays down. -->
+    <ThreadInteractionOverlay
+      :user-input="pendingUserInput"
+      :approval="pendingApproval"
+      :approval-queue="session?.pendingApprovals.value"
+      :shell-suppresses-approval="shellSuppressesApproval"
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
-      />
-
-    <!-- Tool approval: the turn is parked on the agent wanting to run
-         something. The subagent shell, when it is already showing this same
-         ask inline, is the answer spot instead — and then this modal stays
-         down. -->
-    <AgentApprovalModal
-      v-if="pendingApproval && !shellSuppressesApproval"
-      :request-id="pendingApproval.requestId"
-      :approval="pendingApproval.approval"
-      :queue="session?.pendingApprovals.value"
       @decide="onRespondApproval"
     />
 

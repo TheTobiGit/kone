@@ -30,6 +30,7 @@ import {
 } from "~/utils/inboxLayout";
 import InboxNewThread from "~/components/inbox/InboxNewThread.vue";
 import { useShortcuts } from "~/composables/useShortcuts";
+import { setInlineThread } from "~/composables/useAgent";
 import { resolveThreadSummary, summarizeSession } from "~/utils/sessionList";
 import type { InboxViewId } from "~/types/inbox";
 import type { SessionSummary } from "~/types/session";
@@ -136,7 +137,19 @@ async function onOpenThread(threadId: string): Promise<void> {
   const parent = selected.value;
   const projectPath = parent?.projectPath;
   if (!projectPath) return;
-  const summary = await resolveThreadSummary(projectPath, threadId, parent?.projectName);
+  await onOpenProjectThread(projectPath, threadId, parent?.projectName);
+}
+
+/** A parked thread the bots row names, possibly in another project. Resolved
+ *  out of that project's stored threads and selected the ordinary way — the
+ *  pane remounts onto it and its ask answers inline there. Joins its
+ *  project's studio row as well, the way a picked row does. */
+async function onOpenProjectThread(
+  projectPath: string,
+  threadId: string,
+  projectName?: string,
+): Promise<void> {
+  const summary = await resolveThreadSummary(projectPath, threadId, projectName);
   if (!summary) return;
   cue("select");
   composing.value = false;
@@ -155,6 +168,20 @@ const selected = ref<SessionSummary | null>(null);
 // set by the handover, and dropped as soon as you read something else — every
 // other thread is opened the ordinary way.
 const handedKey = ref<string | null>(null);
+
+// Report the thread on screen, so the global bots skip what is already in
+// front of the user: its ask answers inline in the reading pane. `reading`
+// already excludes the dismissed portal, the composer, and the empty state —
+// the report is just the thread it names, or null the moment nothing is shown.
+watch(
+  () => (reading.value ? (selected.value?.threadId ?? null) : null),
+  (threadId) => setInlineThread("inbox", threadId),
+  { immediate: true },
+);
+
+// What the global bots row calls: open a parked thread (any project) the
+// ordinary way, so its ask answers inline here.
+defineExpose({ openProjectThread: onOpenProjectThread });
 
 // ── the gutter ───────────────────────────────────────────────────────────────
 // How wide the list is, in pixels, remembered across restarts. Stored raw and
