@@ -20,6 +20,10 @@ const props = defineProps<{
    *  it. Enables the "1/N" position readout and the 1–9 digit shortcuts to jump
    *  to a queued ask. Absent → the single-ask behaviour, unchanged. */
   queue?: PendingApproval[];
+  /** Contain the shell to the host pane (absolute) instead of the viewport
+   *  (fixed), so the scrim dims only the thread and the card lands in its
+   *  bottom-centre over the composer's spot. */
+  contained?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -144,7 +148,10 @@ const cardSpring = {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex items-end justify-center overflow-hidden p-6 pb-8">
+  <div
+    :class="props.contained ? 'absolute' : 'fixed'"
+    class="inset-0 z-40 flex items-end justify-center overflow-hidden p-6 pb-8"
+  >
     <!-- Scrim: a soft dim + blur, matching the pickers. The turn is parked on
          this decision, so the scrim is inert — the only way forward is to pick. -->
     <motion.div

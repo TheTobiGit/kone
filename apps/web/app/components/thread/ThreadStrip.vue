@@ -1320,6 +1320,18 @@ watch(
                 </template>
               </div>
 
+              <!-- Focused-column overlay: the host's ask (mid-turn question /
+                   tool approval) rendered inside the focused thread column, so
+                   its scrim dims only that thread and its card lands
+                   bottom-centre in it — the same contained shell the inbox
+                   thread wears. Suppressed in overview, where a column is a
+                   map card, not a document. -->
+              <slot
+                v-if="c.id === focusedId && !overview"
+                name="focused-overlay"
+                :pane="c"
+              />
+
               <!-- The card's true-size caption. Card content scaled to k is illegible
                    mush; a crisp label under each card is what makes the zoom read as a
                    designed overview and not a broken shrink. It lives *inside* the scaled

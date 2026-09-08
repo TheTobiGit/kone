@@ -14,8 +14,8 @@ import type {
 } from "~/types/desktop";
 import type { Project } from "~/composables/useProject";
 import type { GitRemote } from "~/types/desktop";
-import { buildModelCatalog, effortForTier, familyForId, sessionBrand, EFFORT_META } from "~/utils/modelCatalog";
-import type { BrandKey, EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
+import { buildModelCatalog, effortForTier, familyForId, EFFORT_META } from "~/utils/modelCatalog";
+import type { EffortTier, ModelOption, PickerProvider } from "~/utils/modelCatalog";
 import {
   bootMode,
   bootModel,
@@ -34,8 +34,7 @@ import {
   setLastUsedModel,
 } from "~/utils/modelPicker";
 import type { ModelPick } from "~/composables/useModelCommit";
-import { SESSION_BRAND } from "~/types/session";
-import { childApprovalsInbox, type ThreadAttentionKind, type QueuedTurnEntry } from "~/composables/useAgent";
+import { setInlineThread, type QueuedTurnEntry } from "~/composables/useAgent";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import SubagentShell from "~/components/conversation/SubagentShell.vue";
@@ -1275,113 +1274,20 @@ useEventListener(document, "visibilitychange", () => {
 // a bare empty-blocks check) so closing the orb on an empty thread stays closed.
 // (composerRef itself is declared up by the studio so studio.dispatch can pre-fill
 // so they are decided in one place.
-// ── blocked-thread attention ─────────────────────────────────────────────────
-// The one signal that overrides the surface gate above: a thread parked on a
-// person. Two sources feed it — resident threads waiting on a permission or a
-// question, and spawned children parked on their own gate (headless here, so
-// they never had a summary). A blocked thread is never dismissed and, unlike the
-// completion pills, never hidden by the surface you're on — the moment you stop
-// staring at it is exactly when an unanswered prompt would otherwise vanish.
-const attentionThreads = computed<
-  { key: string; threadId: string; title: string; brand: BrandKey; kind: ThreadAttentionKind; detail?: string }[]
->(() => {
-  if (props.blocked) return []; // the file overlay owns the whole screen
-  const out: { key: string; threadId: string; title: string; brand: BrandKey; kind: ThreadAttentionKind; detail?: string }[] = [];
-  for (const t of agent.threads.value) {
-    if (!t.attention) continue;
-    // On the studio the focused thread shows its gate inline in the composer, so
-    // a corner pill would only echo it. Anywhere else — the working tree, the
-    // repository surface — no conversation is on screen, so even the active
-    // thread's gate has to be surfaced here or it's invisible.
-    if (props.visible && t.isActive) continue;
-    out.push({
-      key: t.key,
-      threadId: t.threadId,
-      title: t.title,
-      brand: sessionBrand(t.provider, SESSION_BRAND[t.provider] ?? "generic", t.model),
-      kind: t.attention.kind,
-      detail: t.attention.detail,
-    });
-  }
-  for (const [childId, pending] of childApprovalsInbox.value) {
-    out.push({
-      key: `spawn:${childId}`,
-      threadId: childId,
-      title: "Spawned thread",
-      brand: "generic",
-      kind: "parked-spawn",
-      detail: pending.approval.title,
-    });
-  }
-  return out;
-});
-
-// When each wait was first seen — a fresh one wears the pastille (`notify`); once
-// it's sat unanswered past this, the orb escalates to the "!" (`exclaim`). A
-// view-side freshness timer (the same shape as seenTurns): seeded when a key
-// appears, dropped when it clears, never persisted.
-const STALE_AFTER_MS = 30_000;
-const attentionSince = ref<Record<string, number>>({});
+// ── on-screen thread reporting ─────────────────────────────────────────────
+// The global bots skip whatever is already in front of the user: this row's
+// focused thread answers its ask inline in its column. Report it while this
+// row is the visible surface (not overview, no overlay); null the moment it
+// stops being shown — the parked ask stays live in the registry, so its bot
+// appears top-right.
 watch(
-  () => attentionThreads.value.map((a) => a.key).join("|"),
-  () => {
-    const now = Date.now();
-    const live = new Set(attentionThreads.value.map((a) => a.key));
-    const next = { ...attentionSince.value };
-    let touched = false;
-    for (const key of live) {
-      if (next[key] === undefined) {
-        next[key] = now;
-        touched = true;
-      }
-    }
-    for (const key of Object.keys(next)) {
-      if (!live.has(key)) {
-        delete next[key];
-        touched = true;
-      }
-    }
-    if (touched) attentionSince.value = next;
-  },
+  () =>
+    props.visible && !props.overview && !props.blocked
+      ? (focusedThread.value?.threadId.value || null)
+      : null,
+  (threadId) => setInlineThread(props.project.path, threadId),
   { immediate: true },
 );
-function attentionOrb(key: string): "notify" | "exclaim" {
-  const since = attentionSince.value[key];
-  if (since === undefined) return "notify";
-  return agentNow.value - since > STALE_AFTER_MS ? "exclaim" : "notify";
-}
-
-// The beacon's items — the away-thread asks, each with its own freshness orb
-// folded in so the beacon can escalate as a whole and each bloomed row can show
-// its own state.
-// The centre-bottom is already spoken for — by the composer, or by the focused
-// thread's own ask cue — whenever a thread column is focused and the row is the
-// surface on screen. There the beacon lifts to float just above that dock;
-// elsewhere it takes the true bottom-centre.
-const centerDockActive = computed(
-  () => props.visible && activePaneIsThread.value && !props.overview,
-);
-
-// The focused thread's own ask answers in place — it raises its shell (the
-// question / approval modal) straight over the composer, the way it always has.
-// The bloub is NOT for the thread you're looking at; it's the away-signal below,
-// for the threads that park while your eyes are elsewhere. When a modal owns the
-// centre-bottom the beacon steps aside for it. Only the row's own modals can be
-// there now: the plane is opaque and above every page, so a page's sheet can
-// never be on screen at the same time as this row.
-const centerModalOpen = computed(
-  () =>
-    !!focusedPendingUserInput.value ||
-    (!!focusedPendingApproval.value && !shellSuppressesApproval.value) ||
-    modelPickerOpen.value,
-);
-
-const attentionBeaconItems = computed(() =>
-  attentionThreads.value.map((a) => ({ ...a, orbState: attentionOrb(a.key) })),
-);
-// The centre-bottom is already spoken for — by the composer, or by the focused
-// thread's own ask cue — whenever a thread column is focused on the studio. There
-// the beacon lifts to float just above that dock; elsewhere (overview, repo
 
 function onOpenThread(threadId: string) {
   cue("press");
@@ -1507,7 +1413,25 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @zen="setPaneZen"
         @toggle-overview="emit('toggleOverview')"
         @select-column="(id) => emit('selectPane', id)"
-      />
+      >
+        <!-- Focused thread's ask, inside its own column: the scrim dims only
+             that thread and the card lands bottom-centre over the composer's
+             spot (pb-8 matches the dock). Answering resolves the parked tool
+             call and the turn continues. This is the in-thread path — the away
+             signal is the centre-bottom beacon, not this. -->
+        <template #focused-overlay>
+          <ThreadInteractionOverlay
+            :user-input="focusedPendingUserInput"
+            :approval="focusedPendingApproval"
+            :approval-queue="focusedThread?.pendingApprovals.value"
+            :shell-suppresses-approval="shellSuppressesApproval"
+            :suppressed="isOverview"
+            @answer="onAnswerUserInput"
+            @cancel="onCancelUserInput"
+            @decide="onRespondApproval"
+          />
+        </template>
+      </ThreadStrip>
     </div>
     <ConversationSelectionActions
       v-if="visible && !blocked && focusedThread && !isOverview"
@@ -1601,30 +1525,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       </div>
     </Transition>
 
-    <!-- Mid-turn question on the focused thread: it raises straight over the
-         composer in the picker-family shell. Answering resolves the parked tool
-         call and the turn continues. This is the in-thread path — the away
-         signal is the centre-bottom beacon, not this. -->
-    <UiUserInputModal
-      v-if="focusedPendingUserInput && !isOverview"
-      :request-id="focusedPendingUserInput.requestId"
-      :questions="focusedPendingUserInput.questions"
-      @answer="onAnswerUserInput"
-      @cancel="onCancelUserInput"
-    />
-
-    <!-- Tool approval on the focused thread: the turn is parked on the agent
-         wanting to run something in a restrictive mode. The subagent shell, when
-         it's already showing this same ask inline, is the answer spot instead —
-         and then this modal stays down. -->
-    <AgentApprovalModal
-      v-if="focusedPendingApproval && !shellSuppressesApproval && !isOverview"
-      :request-id="focusedPendingApproval.requestId"
-      :approval="focusedPendingApproval.approval"
-      :queue="focusedThread?.pendingApprovals.value"
-      @decide="onRespondApproval"
-    />
-
     <!-- Subagents dock — the nested runs the agent delegated to this turn. It's
          a taller, wider panel than the Changes/Tasks cards, so it lives in the
          bottom-LEFT corner (free on the studio — the folder only perches there on
@@ -1653,24 +1553,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         </AnimatePresence>
       </div>
     </Transition>
-
-    <!-- Needs-a-human beacon: a big bloub at the bottom-centre for every OTHER
-         thread parked on you. It lifts above the composer/cue when a thread
-         column is focused, and takes the true centre elsewhere. Hover or click
-         blooms the parked threads; picking one jumps to it. -->
-    <div
-      v-if="!isOverview"
-      class="attn-beacon"
-      :class="{ 'attn-beacon--lifted': centerDockActive }"
-    >
-      <AnimatePresence :initial="true">
-        <AttentionBeacon
-          v-if="attentionBeaconItems.length && !centerModalOpen"
-          :items="attentionBeaconItems"
-          @open="onOpenThread"
-        />
-      </AnimatePresence>
-    </div>
 
     <!-- A subagent's expanded shell: clicked from the Subagents dock (or the
          activity feed's subagent step), the shell rises over the studio — the
@@ -1742,27 +1624,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
   transition:
     opacity 0.15s ease,
     transform 0.15s ease;
-}
-
-
-/* The attention beacon rides the bottom-centre — the app's action locus. It's
-   pointer-transparent across its gaps; the orb/pills re-enable their own hits.
-   When a thread column owns the composer/cue at the very bottom, the beacon
-   lifts clear of it. */
-.attn-beacon {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 2rem;
-  z-index: 46;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-  transition: bottom 0.42s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.attn-beacon--lifted {
-  bottom: 7.5rem;
 }
 
 

@@ -1,6 +1,6 @@
 import { computed, shallowRef } from "vue";
 import type { ApprovalDecision, StoredThread } from "~/types/desktop";
-import type { AssistantBlock, PendingApproval, ThreadBlock } from "./agentTypes";
+import type { AssistantBlock, PendingApproval, RoutedPendingApproval, ThreadBlock } from "./agentTypes";
 
 // ── transcript prefetch ───────────────────────────────────────────────────────
 // A thread's transcript read is the one unavoidable round-trip left on the open
@@ -83,14 +83,28 @@ export function latestAssistant(blocks: ThreadBlock[]): AssistantBlock | null {
   return null;
 }
 
-// ── spawned children's approvals (the registry-level inbox) ──────────────────
-const childApprovals = shallowRef(new Map<string, PendingApproval>());
+// ── headless spawned children's approvals (the registry-level inbox) ────────
+// A genuine spawned child's asks carry the child's id, and the child never has
+// a resident session here — only its parent does — so without this inbox the
+// fan-out would drop them and a surfaced gate could never be answered. Top-
+// level threads with no resident session do NOT land here: their replayed asks
+// wait in the orphan-approval pen in useAgent until a session claims the id,
+// so the in-thread modal renders on open. Anything in this map is therefore a
+// known child of a resident parent session, never a misfiled top-level thread.
+const childApprovals = shallowRef(new Map<string, RoutedPendingApproval>());
 /** The inbox as a read-only computed — the dock/panel bind to it so a child's
  *  parked ask appears (and its decide buttons work) without a resident session. */
 export const childApprovalsInbox = computed(() => childApprovals.value);
 
-export function setChildApproval(childThreadId: string, pending: PendingApproval): void {
-  childApprovals.value = new Map(childApprovals.value).set(childThreadId, pending);
+export function setChildApproval(
+  childThreadId: string,
+  pending: PendingApproval,
+  projectPath?: string,
+): void {
+  childApprovals.value = new Map(childApprovals.value).set(childThreadId, {
+    ...pending,
+    projectPath,
+  });
 }
 
 /** Clear the inbox entry for a child — a resolved request, or a newer request
