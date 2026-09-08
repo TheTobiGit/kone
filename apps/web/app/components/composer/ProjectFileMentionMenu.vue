@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import type { GitProjectFile } from "~/types/desktop";
+import { computed } from "vue";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { Folder01Icon } from "@hugeicons/core-free-icons";
+import type { MentionItem } from "~/utils/composerMentions";
 import FileIcon from "~/components/file/FileIcon.vue";
 
 // The @ file picker's popover. It wears kone's house popover chrome (the same
@@ -7,9 +10,13 @@ import FileIcon from "~/components/file/FileIcon.vue";
 // no hard border and no heavy shadow, a soft band across the top, and rows that
 // warm to var(--hover) — the keyboard-active row taking the accent tint the app
 // uses for a selected list row.
+//
+// In the global assistant there is no project on disk, so a Projects section
+// leads the list: naming one drops its absolute path into the turn, which is
+// how the assistant learns which project an instruction is for.
 
 const props = defineProps<{
-  files: GitProjectFile[];
+  items: MentionItem[];
   query: string;
   activeIndex: number;
   pending?: boolean;
@@ -17,9 +24,24 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  select: [file: GitProjectFile];
+  select: [item: MentionItem];
   highlight: [index: number];
 }>();
+
+// The header names only what is actually listed: the assistant's picker is
+// projects alone, everywhere else it is files alone, and only a surface
+// offering both reads as both.
+const title = computed(() => {
+  const hasProjects = props.items.some((i) => i.kind === "project");
+  const hasFiles = props.items.some((i) => i.kind === "file") || props.pending;
+  if (hasProjects && hasFiles) return "Projects & files";
+  if (hasProjects) return "Projects";
+  return "Project files";
+});
+// The first file row after the leading projects wears the boundary into this
+// project's own files — the same hairline the two-section list drew, located
+// by kind rather than by adding a section length to a local index.
+const fileBoundaryIndex = computed(() => props.items.findIndex((i) => i.kind === "file"));
 </script>
 
 <template>
@@ -27,27 +49,37 @@ const emit = defineEmits<{
     <div class="mention-menu__shell">
       <div class="mention-menu__head">
         <span class="mention-menu__at">@</span>
-        <span class="mention-menu__title">Project files</span>
+        <span class="mention-menu__title">{{ title }}</span>
         <span v-if="query" class="mention-menu__query">{{ query }}</span>
       </div>
 
-      <div v-if="files.length" class="mention-menu__list">
+      <div v-if="items.length" class="mention-menu__list">
         <button
-          v-for="(file, index) in files"
-          :key="file.path"
+          v-for="(item, index) in items"
+          :key="item.kind + ':' + item.path"
           type="button"
           class="mention-menu__row"
-          :class="{ 'mention-menu__row--active': index === activeIndex }"
+          :class="{
+            'mention-menu__row--active': index === activeIndex,
+            'mention-menu__row--boundary': index === fileBoundaryIndex && fileBoundaryIndex > 0,
+          }"
           role="option"
           :aria-selected="index === activeIndex"
           @mousedown.prevent
           @mouseenter="emit('highlight', index)"
-          @click="emit('select', file)"
+          @click="emit('select', item)"
         >
-          <FileIcon class="mention-menu__icon" :path="file.path" :size="15" />
+          <HugeiconsIcon
+            v-if="item.kind === 'project'"
+            class="mention-menu__icon mention-menu__folder"
+            :icon="Folder01Icon"
+            :size="15"
+            :stroke-width="1.8"
+          />
+          <FileIcon v-else class="mention-menu__icon" :path="item.path" :size="15" />
           <span class="mention-menu__file">
-            <span class="mention-menu__name">{{ file.name }}</span>
-            <span v-if="file.parent" class="mention-menu__parent">{{ file.parent }}</span>
+            <span class="mention-menu__name">{{ item.name }}</span>
+            <span v-if="item.detail" class="mention-menu__parent">{{ item.detail }}</span>
           </span>
         </button>
       </div>
@@ -67,7 +99,7 @@ const emit = defineEmits<{
    no drop shadow. It rises a few px on open, anchored to its bottom-left corner
    since it floats above the field. */
 .mention-menu {
-  width: min(520px, calc(100vw - 32px));
+  width: 100%;
   overflow: hidden;
   border-radius: 18px;
   background: var(--panel);
@@ -149,6 +181,22 @@ const emit = defineEmits<{
   overflow-y: auto;
 }
 
+/* Projects lead the picker with the same row treatment; the hairline below
+   them reads as the boundary into this project's own files. */
+.mention-menu__section {
+  padding: 6px 6px 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.mention-menu__section--lone {
+  padding-bottom: 6px;
+  border-bottom: 0;
+}
+
+.mention-menu__folder {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
 .mention-menu__row {
   display: flex;
   align-items: center;
@@ -174,6 +222,15 @@ const emit = defineEmits<{
 .mention-menu__row--active:hover {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--ink);
+}
+/* The first file row after the leading projects keeps the hairline boundary
+   the two-section list drew — located by kind, not by section lengths. */
+.mention-menu__row--boundary {
+  border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  margin-top: 2px;
+  padding-top: 7px;
 }
 
 .mention-menu__icon {

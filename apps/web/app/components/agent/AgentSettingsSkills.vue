@@ -171,9 +171,45 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 <template>
   <section class="sk" aria-label="Skills">
-    <div v-if="loading" class="sk__loadingWrap">
-      <div class="sk__loading">
-        <span v-for="n in 6" :key="n" class="placeholder" :style="{ animationDelay: `${n * 90}ms` }" />
+    <!-- Loading mirrors the loaded structure (filters bar + card grid) with the
+      same layout classes, so resolving the scan swaps backgrounds, not boxes:
+      invisible text locks the metrics, shimmer blocks stand in for glyphs and
+      toggles. Anything structural here must stay identical to the branch below
+      or the open transition shifts. -->
+    <div v-if="loading" class="sk__loadingWrap" aria-hidden="true">
+      <div class="sk__filters">
+        <div class="bar">
+          <div class="filters">
+            <span class="chip"><span class="skel-text">All</span></span>
+            <span class="chip"><span class="skel-glyph" /><span class="skel-text">Skills</span></span>
+            <span class="chip"><span class="skel-glyph" /><span class="skel-text">Plugins</span></span>
+          </div>
+          <span class="search"><span class="skel-glyph skel-glyph--lg" /><span class="skel-text">Search skills…</span></span>
+        </div>
+        <div class="providers">
+          <span class="chip chip--provider"><span class="skel-text">All providers</span></span>
+          <span v-for="n in 3" :key="n" class="chip chip--provider"><span class="skel-glyph" /><span class="skel-text">Provider</span></span>
+        </div>
+      </div>
+
+      <div class="sk__scroll sk__scroll--skel">
+        <ul class="grid">
+          <li
+            v-for="n in 6"
+            :key="n"
+            class="card card--skel"
+            :style="{ animationDelay: `${n * 90}ms` }"
+          >
+            <div class="card__top card__top--skel" />
+            <div class="card__body">
+              <div class="card__head">
+                <span class="card__name"><span class="skel-text">Skill name</span></span>
+                <span class="skel-toggle" />
+              </div>
+              <span class="card__desc"><span class="skel-text">A description shape holding the row height.</span></span>
+            </div>
+          </li>
+        </ul>
       </div>
     </div>
 
@@ -371,7 +407,55 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 }
 
 .sk__loadingWrap {
-  padding: 0 1rem;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Skeleton stand-ins: same boxes as the real rows, only the fill differs.
+   Invisible text keeps the exact font metrics; the glyph/toggle blocks match
+   the icon and switch sizes they cover for. */
+.skel-text {
+  display: inline-block;
+  color: transparent;
+  background-color: color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: 5px;
+  user-select: none;
+}
+.skel-glyph {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.skel-glyph--lg {
+  width: 14px;
+  height: 14px;
+}
+.skel-toggle {
+  width: 40px;
+  height: 24px;
+  flex: none;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.sk__loadingWrap .chip,
+.sk__loadingWrap .search {
+  pointer-events: none;
+}
+.card--skel {
+  pointer-events: none;
+  cursor: default;
+  animation: sk-breathe 1700ms ease-in-out infinite;
+}
+.card__top--skel {
+  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.sk__scroll--skel {
+  overflow: hidden;
 }
 
 .sk__empty {
@@ -506,6 +590,12 @@ const { measure, maskStyle } = useEdgeFade(scroller);
   background: var(--panel);
   cursor: pointer;
   transition: border-color 160ms ease;
+  /* Offscreen cards skip layout and paint until scrolled near: mounting a
+     forty-skill inventory resolves in one tick, and without this every card's
+     SVG and toggle lays out synchronously inside the open transition's frame.
+     The estimate keeps the scrollbar steady before first render. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 182px;
 }
 
 .card:hover {
@@ -669,21 +759,6 @@ const { measure, maskStyle } = useEdgeFade(scroller);
   color: var(--muted);
 }
 
-.sk__loading {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
-  padding: 8px 0;
-}
-
-.sk__loading .placeholder {
-  display: block;
-  height: 182px;
-  border-radius: 18px;
-  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
-  animation: sk-breathe 1700ms ease-in-out infinite;
-}
-
 @keyframes sk-breathe {
   0%,
   100% {
@@ -695,7 +770,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .placeholder {
+  .card--skel {
     animation: none;
     opacity: 0.75;
   }

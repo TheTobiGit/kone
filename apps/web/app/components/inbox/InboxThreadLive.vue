@@ -20,6 +20,8 @@ import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
+import { useAgentProviders } from "~/composables/useAgentProviders";
+import { compactPropsForSession } from "~/utils/compactAvailability";
 import type { ChatAttachment } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
@@ -86,6 +88,12 @@ const busy = computed(() => session.value?.busy.value ?? false);
 const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const starting = computed(() => session.value?.sessionState.value === "starting");
 const threadTitle = computed(() => session.value?.title.value || props.row.title);
+
+// The header meter's Compact control — the same shared rule as the strip, so
+// both surfaces agree. Null session (or an unsupported provider) hides the
+// actions card.
+const agentProviders = useAgentProviders();
+const compact = computed(() => compactPropsForSession(session.value, agentProviders.statuses.value));
 
 // No visible scrollbar — the thread content smokes its top/bottom edges over whatever
 // content runs past the cutoff, easing in over the first ~28px of scroll.
@@ -158,6 +166,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :provider="session?.provider.value || agent.provider.value || row.provider"
       :brand="row.brand"
       :token-usage="session?.tokenUsage.value ?? undefined"
+      :compact="compact"
     />
 
     <div
@@ -168,6 +177,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     >
       <ConversationThread
         :blocks="blocks"
+        :compactions="session?.compactions.value ?? []"
         :now="agent.now.value"
         :thread-id="row.threadId"
         :agent-seed="row.threadId"

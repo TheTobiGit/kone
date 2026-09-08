@@ -315,6 +315,10 @@ const crumb = computed(() => {
   padding-inline: 1rem;
   overflow-y: auto;
   scrollbar-width: none;
+  /* The masthead already enters on sps-in; without this the body snaps in
+     beneath it and the open reads as a flicker. Same curve, a touch behind,
+     so the pane arrives as one movement. */
+  animation: sps-in var(--sps-t-enter) var(--sps-ease) 40ms backwards;
 }
 .sps__scroll::-webkit-scrollbar {
   width: 0;
@@ -329,6 +333,7 @@ const crumb = computed(() => {
   flex: 1;
   min-height: 0;
   margin-top: 1.5rem;
+  animation: sps-in var(--sps-t-enter) var(--sps-ease) 40ms backwards;
 }
 
 /* ── note ─────────────────────────────────────────────────────────────────── */
@@ -395,7 +400,9 @@ const crumb = computed(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sps__mast {
+  .sps__mast,
+  .sps__scroll,
+  .sps__body {
     animation: none;
   }
   .sps-note-enter-active,

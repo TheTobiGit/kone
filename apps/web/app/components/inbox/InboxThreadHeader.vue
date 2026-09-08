@@ -10,6 +10,7 @@ import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { sessionBrand, type BrandKey } from "~/utils/modelCatalog";
+import type { MeterCompactProps } from "~/utils/compactAvailability";
 import type { ProviderKind, TokenUsage } from "~/types/desktop";
 
 const props = defineProps<{
@@ -23,6 +24,9 @@ const props = defineProps<{
   brand?: BrandKey;
   /** Context window token consumption breakdown when available. */
   tokenUsage?: TokenUsage;
+  /** The meter's Compact control — absent hides the actions card (stored
+   *  threads have no live session to compact). */
+  compact?: MeterCompactProps;
 }>();
 
 const identity = computed(() => agentIdentity(props.seed));
@@ -60,6 +64,7 @@ const effectiveBrand = computed(() =>
       <ContextWindowMeter
         v-if="tokenUsage"
         :usage="tokenUsage"
+        v-bind="compact"
         class="ith__meter"
       />
     </div>

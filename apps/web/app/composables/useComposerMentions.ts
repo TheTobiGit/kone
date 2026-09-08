@@ -7,16 +7,23 @@ import {
   type Ref,
 } from "vue";
 import MentionChip from "~/components/composer/MentionChip.vue";
-import type { GitProjectFile } from "~/types/desktop";
 import {
+  buildMentionItems,
   detectFileMentionTrigger,
   formatFileMention,
   splitComposerMentionSegments,
   type FileMentionTrigger,
+  type MentionItem,
+  type MentionKind,
+  type MentionProject,
 } from "~/utils/composerMentions";
 import { useProjectFiles } from "./useProjectFiles";
 
 export type DomTrigger = { node: Text; start: number; end: number };
+
+/** How many project rows one @ query may offer. The list is recents, already
+ *  short and already ordered, so this only trims a long tail. */
+const MAX_PROJECT_MENTIONS = 6;
 
 export function useComposerMentions(deps: {
   field: Ref<HTMLElement | null>;
@@ -26,6 +33,15 @@ export function useComposerMentions(deps: {
   isBusy: () => boolean;
   onSync: () => void;
   onSubmitOrQueue: () => void;
+  /** Projects the @ picker offers above files. Empty everywhere except the
+   *  global assistant, which has no project of its own. */
+  projects?: () => MentionProject[];
+  /** File search needs a real project on disk; the assistant modal has none. */
+  fileMentionsEnabled?: () => boolean;
+  /** Which kind a restored @path chip is. Drafts persist as text, so a path
+   *  re-entering the field would otherwise always come back a file chip —
+   *  the assistant answers "project" for paths it offered as projects. */
+  resolveMentionKind?: (path: string) => MentionKind;
 }) {
   const { field, text, projectPath, isOpen, isBusy, onSync, onSubmitOrQueue } = deps;
 
@@ -39,16 +55,40 @@ export function useComposerMentions(deps: {
   const projectFiles = useProjectFiles(
     () => projectPath(),
     () => mentionQuery.value,
+    () => deps.fileMentionsEnabled?.() ?? true,
   );
   const mentionFiles = computed(() => projectFiles.entries.value);
   const mentionPending = computed(() => projectFiles.pending.value);
   const mentionError = computed(() => projectFiles.error.value);
 
+  // Projects whose name or path contains the query, recents order kept. An
+  // empty query offers the head of recents, so a bare @ already names
+  // somewhere to point the turn at.
+  const mentionProjects = computed<MentionProject[]>(() => {
+    const all = deps.projects?.() ?? [];
+    if (all.length === 0) return [];
+    const q = mentionQuery.value.trim().toLowerCase();
+    if (!q) return all.slice(0, MAX_PROJECT_MENTIONS);
+    return all
+      .filter(
+        (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q),
+      )
+      .slice(0, MAX_PROJECT_MENTIONS);
+  });
+
+  /** One keyboard list across both sections, built once — the menu renders it
+   *  verbatim so no offset arithmetic lives here or in the template. */
+  const mentionItems = computed<MentionItem[]>(() =>
+    buildMentionItems(mentionProjects.value, mentionFiles.value),
+  );
+
+  const mentionCount = computed(() => mentionItems.value.length);
+
   const chipHosts = new Set<HTMLElement>();
 
-  function makeChipEl(path: string): HTMLElement {
+  function makeChipEl(path: string, kind: MentionKind = "file"): HTMLElement {
     const host = document.createElement("div");
-    render(h(MentionChip, { path }), host);
+    render(h(MentionChip, { path, kind }), host);
     const mounted = host.firstElementChild;
     const chip = mounted instanceof HTMLElement ? mounted : null;
     if (!chip) {
@@ -57,10 +97,12 @@ export function useComposerMentions(deps: {
       span.textContent = path;
       span.setAttribute("contenteditable", "false");
       span.dataset.mentionPath = path;
+      span.dataset.mentionKind = kind;
       return span;
     }
     chip.setAttribute("contenteditable", "false");
     chip.dataset.mentionPath = path;
+    chip.dataset.mentionKind = kind;
     chipHosts.add(host);
     return chip;
   }
@@ -124,7 +166,7 @@ export function useComposerMentions(deps: {
     sel.addRange(range);
   }
 
-  function selectMention(file: GitProjectFile): void {
+  function selectMention(entry: { path: string; kind?: MentionKind }): void {
     const trig = domTrigger;
     const root = field.value;
     if (!trig || !root) return;
@@ -136,7 +178,7 @@ export function useComposerMentions(deps: {
     if (!parent || !queryNode) return;
     parent.removeChild(queryNode);
 
-    const chip = makeChipEl(file.path);
+    const chip = makeChipEl(entry.path, entry.kind ?? "file");
     parent.insertBefore(chip, after);
 
     let caretNode: Node;
@@ -157,6 +199,13 @@ export function useComposerMentions(deps: {
     onEditorChanged();
   }
 
+  function selectMentionAt(index: number): boolean {
+    const item = mentionItems.value[index];
+    if (!item) return false;
+    selectMention({ path: item.path, kind: item.kind });
+    return true;
+  }
+
   function onFieldInput(): void {
     onEditorChanged();
   }
@@ -171,7 +220,7 @@ export function useComposerMentions(deps: {
 
   function onFieldKeydown(e: KeyboardEvent): void {
     if (mentionOpen.value) {
-      const count = projectFiles.entries.value.length;
+      const count = mentionCount.value;
       if (e.key === "ArrowDown") {
         e.preventDefault();
         if (count) mentionActiveIndex.value = (mentionActiveIndex.value + 1) % count;
@@ -183,10 +232,8 @@ export function useComposerMentions(deps: {
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
-        const file = projectFiles.entries.value[mentionActiveIndex.value];
-        if (file) {
+        if (selectMentionAt(mentionActiveIndex.value)) {
           e.preventDefault();
-          selectMention(file);
           return;
         }
       }
@@ -209,8 +256,9 @@ export function useComposerMentions(deps: {
     el.replaceChildren();
     disposeChips();
     for (const segment of splitComposerMentionSegments(value)) {
-      if (segment.type === "mention") el.appendChild(makeChipEl(segment.path));
-      else if (segment.text) el.appendChild(document.createTextNode(segment.text));
+      if (segment.type === "mention") {
+        el.appendChild(makeChipEl(segment.path, deps.resolveMentionKind?.(segment.path) ?? "file"));
+      } else if (segment.text) el.appendChild(document.createTextNode(segment.text));
     }
     text.value = serializeEditor();
   }
@@ -262,7 +310,10 @@ export function useComposerMentions(deps: {
     mentionActiveIndex,
     mentionQuery,
     mentionOpen,
+    mentionCount,
+    mentionItems,
     projectFiles,
+    mentionProjects,
     mentionFiles,
     mentionPending,
     mentionError,
@@ -273,6 +324,7 @@ export function useComposerMentions(deps: {
     onEditorChanged,
     refreshTrigger,
     selectMention,
+    selectMentionAt,
     onFieldInput,
     onFieldClick,
     onFieldKeyup,

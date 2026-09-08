@@ -12,6 +12,7 @@ import {
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { describeModelId, EFFORT_META, type BrandKey, type EffortTier } from "~/utils/modelCatalog";
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
+import { formatContextTokens as fmt } from "~/utils/formatContextTokens";
 import { brainStack } from "~/utils/subagentRuns";
 import type { ThreadSession } from "~/composables/useAgent";
 import type { GitRemote, ProviderKind } from "~/types/desktop";
@@ -198,13 +199,6 @@ async function copyId(): Promise<void> {
 // Every row renders only when its number is real: a fresh thread that has not
 // run yet reports nothing, so the section says so rather than drawing an empty
 // ring that would read as "nothing consumed".
-function fmt(v: number | undefined): string {
-  if (v === undefined || !Number.isFinite(v)) return "0";
-  if (v < 1_000) return String(Math.round(v));
-  if (v < 10_000) return `${(v / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  if (v < 1_000_000) return `${Math.round(v / 1_000)}k`;
-  return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
-}
 const usage = computed(() => s.tokenUsage.value);
 const ctxUsed = computed(() => {
   const u = usage.value;

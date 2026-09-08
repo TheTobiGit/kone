@@ -7,6 +7,7 @@ const SEARCH_DEBOUNCE_MS = 90;
 export function useProjectFiles(
   projectPath: MaybeRefOrGetter<string>,
   query: MaybeRefOrGetter<string>,
+  enabled: MaybeRefOrGetter<boolean> = true,
 ) {
   const entries = ref<GitProjectFile[]>([]);
   const pending = ref(false);
@@ -15,10 +16,18 @@ export function useProjectFiles(
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   watch(
-    [() => toValue(projectPath), () => toValue(query)],
-    ([nextPath, nextQuery]) => {
+    [() => toValue(projectPath), () => toValue(query), () => toValue(enabled)],
+    ([nextPath, nextQuery, nextEnabled]) => {
       if (timer) clearTimeout(timer);
       const id = ++requestId;
+      // Some surfaces have no project on disk to search — the global assistant
+      // names projects instead of files — so there is nothing to query.
+      if (!nextEnabled) {
+        entries.value = [];
+        pending.value = false;
+        error.value = null;
+        return;
+      }
       pending.value = true;
       error.value = null;
       timer = setTimeout(async () => {

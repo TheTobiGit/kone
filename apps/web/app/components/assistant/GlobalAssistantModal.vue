@@ -41,6 +41,7 @@ import { useInboxComposer } from "~/composables/useInboxComposer";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
+import { dedupeMentionProjects } from "~/utils/composerMentions";
 import { formatDayDivider } from "~/utils/threadDates";
 
 const {
@@ -57,6 +58,19 @@ const {
 } = useGlobalAssistant();
 
 const { cue } = useSound();
+
+// @ names projects here — the assistant has no project of its own, so a
+// mention is how a turn gets pointed at somewhere real. Recents lead (they
+// are the added projects), with the currently open one first when it is not
+// already among them.
+const { recents } = useRecentProjects();
+const activeProject = useProject();
+const mentionProjects = computed(() => {
+  const active = activeProject.value;
+  const leading = active ? [{ path: active.path, name: active.name }] : [];
+  const rest = recents.value.map((r) => ({ path: r.path, name: r.name }));
+  return dedupeMentionProjects([...leading, ...rest]);
+});
 
 const session = computed(
   () =>
@@ -450,6 +464,8 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
               always-open
               hide-context-tray
               :project-path="GLOBAL_ASSISTANT_PROJECT_PATH"
+              :mention-projects="mentionProjects"
+              disable-file-mentions
               :branch-switchable="false"
               :thread-id="session?.threadId.value"
               :busy="busy"

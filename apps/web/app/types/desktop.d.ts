@@ -664,6 +664,10 @@ export type ProviderStatus = {
   version?: string;
   authLabel?: string;
   message?: string;
+  /** Whether manual context compaction can be triggered on this provider.
+   *  Derived live from the adapter's compaction union on every row the
+   *  service returns — never probed, never persisted. Gate on `=== true`. */
+  supportsThreadCompaction?: boolean;
 };
 
 /** The user's persisted per-provider install settings (mirrors
@@ -891,6 +895,17 @@ export type SendTurnInput = {
 };
 
 export type TurnStartResult = { threadId: string; turnId: string };
+
+/** Outcome of a manual context-compaction request. Resolves once the provider
+ *  has compacted and the `thread.state.changed` "compacted" boundary has been
+ *  observed (or synthesized). */
+export type CompactThreadResult = {
+  threadId: string;
+  provider: ProviderKind;
+  /** True when the provider ran its native compaction call; false when the
+   *  service fell back to a `/compact` command turn. */
+  native: boolean;
+};
 
 // ── durable turn queue (mirror packages/agent-core/src/ConversationStore.ts) ─
 /** A follow-up durably enqueued while the thread's turn ran (survives
@@ -1185,6 +1200,17 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "session.exited"; code: number | null })
   | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (AgentBaseEvent & { type: "thread.title.updated"; title: string })
+  // The provider compacted the thread's context window — natively or
+  // synthesized after a manual `/compact` turn. Consumers invalidate any
+  // pre-compaction usage snapshot on this and wait for the next
+  // `thread.token-usage.updated`. Counts are the window fill on either side
+  // when the provider reported them; null means unknown.
+  | (AgentBaseEvent & {
+      type: "thread.state.changed";
+      state: "compacted";
+      beforeTokens?: number | null;
+      afterTokens?: number | null;
+    })
   // A thread (and its spawned subtree) was stamped archived — hidden from
   // every live list, recoverable from the archive. One event per affected
   // thread: the root and each spawned descendant put away with it.
@@ -1666,6 +1692,19 @@ export type ThreadArchiveResult =
   | { ok: true; threadIds: string[] }
   | { ok: false; reason: "missing" | "busy" | "error" };
 
+/** One settled context compaction on a thread — the durable "when/where" the
+ *  timeline renders. Counts are whatever the provider reported, so either
+ *  side may be unknown. */
+export type CompactionRecord = {
+  threadId: string;
+  /** Epoch millis the boundary landed. */
+  at: number;
+  /** Window fill before compaction, when reported. */
+  beforeTokens: number | null;
+  /** Window fill after compaction, when reported. */
+  afterTokens: number | null;
+};
+
 export type KoneAgentHistoryApi = {
   /** The project's most recently active thread, metadata only (no transcript) —
    *  or null. Resolve the transcript separately via `threadPage`/`thread`. */
@@ -1690,6 +1729,9 @@ export type KoneAgentHistoryApi = {
   archive: (threadId: string, archived: boolean) => Promise<ThreadArchiveResult>;
   /** Permanently delete a thread and its transcript. Irreversible. */
   remove: (threadId: string) => Promise<void>;
+  /** Every settled compaction boundary on a thread, oldest first — what the
+   *  timeline renders its "when/where compacted" markers from. */
+  compactions: (threadId: string) => Promise<CompactionRecord[]>;
   /** Pin (or unpin) a thread — pins live in the DB so they follow the thread
    *  across browser profiles. */
   setPinned: (threadId: string, pinned: boolean) => Promise<void>;
@@ -2335,6 +2377,10 @@ export type KoneAgentApi = {
   showAttachmentInFolder: (attachmentId: string) => Promise<boolean>;
   /** Send a turn; resolves when accepted — output flows through onEvent. */
   sendTurn: (input: SendTurnInput) => Promise<TurnStartResult>;
+  /** Trigger context compaction for a thread; resolves once the provider has
+   *  compacted and the "compacted" boundary has been observed (or
+   *  synthesized) — output flows through onEvent. */
+  compactThread: (threadId: string) => Promise<CompactThreadResult>;
   /** Fork a side chat off a source thread. The renderer mints the thread id;
    *  a replayed id resolves "exists". The created fork streams as
    *  `thread.sidechat-created`; its first send carries the imported-transcript

@@ -1,8 +1,36 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
+import { onClickOutside } from "@vueuse/core";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { ArrowRight01Icon, ArrowShrink01Icon } from "@hugeicons/core-free-icons";
+import PickerShell from "~/components/ui/PickerShell.vue";
+import { useContextMeter } from "~/composables/useContextMeter";
 import type { TokenUsage } from "~/types/desktop";
+import type { MeterCompactProps } from "~/utils/compactAvailability";
 
-const props = defineProps<{ usage: TokenUsage }>();
+const props = defineProps<
+  {
+    usage: TokenUsage;
+  } & MeterCompactProps
+>();
+
+// The ring is a thin view: every number it reads comes from the composable,
+// so this file owns only geometry, mount motion and the popover itself.
+const {
+  showRing,
+  percentage,
+  level,
+  usageLabel,
+  tooltip,
+  rows,
+  note,
+  compactReady,
+  compactBusy,
+  pressCompact,
+} = useContextMeter({
+  usage: () => props.usage,
+  compact: () => props,
+});
 
 // Geometry. A 20×20 viewBox rendered at 15px so the ring sits level with the
 // 15px provider logo and title beside it. r/stroke chosen so the arc reads as a
@@ -29,122 +57,64 @@ onMounted(() => {
   requestAnimationFrame(() => requestAnimationFrame(() => (drawn.value = true)));
 });
 
-function formatTokens(value: number | undefined): string {
-  if (value === undefined || !Number.isFinite(value)) return "0";
-  if (value < 1_000) return String(Math.round(value));
-  if (value < 10_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
-  return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
-}
-
-// A usable numerator: a concrete reported fill — an explicit 0 counts, since
-// "nothing consumed yet" is a real answer. Absent both contextUsed and total we
-// don't know how much sits in the window, and a fallback of 0 would read as
-// "nothing consumed", which is false.
-const usedKnown = computed(() => {
-  const n = props.usage.contextUsed ?? props.usage.total;
-  return n !== undefined && n !== null && Number.isFinite(n) ? n : undefined;
-});
-const max = computed(() => props.usage.contextWindow);
-const hasWindow = computed(() => max.value !== undefined && max.value !== null && Number.isFinite(max.value) && max.value > 0);
-// A ring is a fraction — "x of a window" — so it needs BOTH halves. A window
-// with no reported fill (Cursor derives the window from the selected model but
-// its ACP transport never reports usage) would otherwise sit forever on an
-// empty 0% arc that claims "nothing consumed" when we simply don't know.
-const showRing = computed(() => hasWindow.value && usedKnown.value !== undefined);
-const used = computed(() => usedKnown.value ?? 0);
-const percentage = computed(() =>
-  max.value && max.value > 0 ? Math.min(100, Math.max(0, (used.value / max.value) * 100)) : 0,
-);
-
-// Calm terracotta while there's room, leaning to full accent as it fills, then
-// the delete-red only once the window is genuinely near-capacity. Graded, not a
-// binary alarm — the colour cross-fades as the arc grows.
-const level = computed<"calm" | "warm" | "full">(() =>
-  percentage.value >= 90 ? "full" : percentage.value >= 70 ? "warm" : "calm",
-);
-
 const dashOffset = computed(() =>
   drawn.value ? CIRCUMFERENCE - (percentage.value / 100) * CIRCUMFERENCE : CIRCUMFERENCE,
 );
 
-const usageLabel = computed(() => {
-  const usedText = formatTokens(used.value);
-  if (!max.value || max.value <= 0) return `${usedText} tokens used`;
-  return `${Math.round(percentage.value)}% used · ${usedText} of ${formatTokens(max.value)} tokens`;
-});
-const tooltip = computed(() =>
-  props.usage.compactsAutomatically
-    ? `${usageLabel.value}. Automatically compacts when needed.`
-    : usageLabel.value,
-);
-
-// ── the expanded readout ──────────────────────────────────────────────────────
-// The ring is a fraction; the popover is the whole story — used %, remaining,
-// the input/output/total split the events already carry but the ring never
-// showed, and the window. Every row renders only when its number is real:
-// Cursor derives the window but its ACP transport reports no usage at all, so
-// half-empty data must not read as "nothing consumed".
+// ── the popover ─────────────────────────────────────────────────────────────
+// Click toggles, outside-click or Escape cancels, split into a data card (the
+// numbers) and an actions card (Compact). Hover never opens it — a hover card
+// can't host a working control.
 const open = ref(false);
-const popoverId = useId();
-function openPopover(): void {
-  open.value = true;
-}
-function closePopover(): void {
-  open.value = false;
-}
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") closePopover();
-}
-onMounted(() => {
-  document.addEventListener("keydown", onKeydown);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("keydown", onKeydown);
-});
+const shown = ref(false);
+const wrapEl = ref<HTMLElement | null>(null);
 
-const rows = computed(() => {
-  const u = props.usage;
-  const out: { label: string; value: string }[] = [];
-  const m = max.value;
-  if (usedKnown.value !== undefined && m !== undefined && m > 0) {
-    out.push({ label: "Used", value: `${Math.round(percentage.value)}% · ${formatTokens(used.value)}` });
-    const remaining = m - used.value;
-    if (remaining > 0) out.push({ label: "Remaining", value: formatTokens(remaining) });
+function close(): void {
+  if (!open.value) return;
+  open.value = false;
+  shown.value = false;
+}
+
+function toggle(): void {
+  if (open.value) {
+    close();
+    return;
   }
-  if (u.input !== undefined && u.input !== null && Number.isFinite(u.input)) {
-    out.push({ label: "Input", value: formatTokens(u.input) });
+  open.value = true;
+  shown.value = false;
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      shown.value = true;
+    });
+  });
+}
+
+function onRingKeydown(e: KeyboardEvent): void {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    toggle();
+    return;
   }
-  if (u.output !== undefined && u.output !== null && Number.isFinite(u.output)) {
-    out.push({ label: "Output", value: formatTokens(u.output) });
-  }
-  if (u.total !== undefined && u.total !== null && Number.isFinite(u.total)) {
-    out.push({ label: "Total", value: formatTokens(u.total) });
-  }
-  if (m !== undefined && m > 0) out.push({ label: "Window", value: formatTokens(m) });
-  return out;
-});
-const note = computed(() =>
-  props.usage.compactsAutomatically ? "Auto-compacts when full." : "",
-);
+  if (e.key === "Escape") close();
+}
+
+onClickOutside(wrapEl, () => close());
 </script>
 
 <template>
-  <!-- Hover or focus opens the popover (touch: tapping the ring focuses it);
-       Esc closes. The wrapper owns hover so moving from the ring onto the
-       popover doesn't close it mid-read. -->
-  <span class="meter-wrap" @mouseenter="openPopover" @mouseleave="closePopover">
-    <span
+  <!-- Click toggles the popover; outside-click or Escape cancels. The wrapper
+       owns the outside detector so ring clicks don't dismiss it mid-toggle. -->
+  <span ref="wrapEl" class="meter-wrap">
+    <button
       v-if="showRing"
+      type="button"
       class="context-meter"
       :class="`is-${level}`"
-      role="img"
-      tabindex="0"
       :aria-label="`Context window: ${usageLabel}`"
-      :aria-describedby="popoverId"
+      :aria-expanded="open"
       :title="tooltip"
-      @focus="openPopover"
-      @blur="closePopover"
+      @click.stop="toggle"
+      @keydown="onRingKeydown"
     >
       <svg viewBox="0 0 20 20" aria-hidden="true">
         <circle class="context-meter__track" cx="10" cy="10" :r="RADIUS" :stroke-width="STROKE" />
@@ -159,17 +129,51 @@ const note = computed(() =>
           :stroke-dashoffset="dashOffset"
         />
       </svg>
-    </span>
+    </button>
 
-    <Transition name="meter-pop">
-      <div v-if="open" :id="popoverId" class="meter-pop" role="tooltip">
-        <div v-for="row in rows" :key="row.label" class="meter-pop__row">
-          <span class="meter-pop__label">{{ row.label }}</span>
-          <span class="meter-pop__value">{{ row.value }}</span>
+    <PickerShell
+      v-if="open"
+      class="meter-card"
+      title="Context window"
+      :shown="shown"
+      @close="close"
+    >
+      <!-- Section 1: the numbers -->
+      <section class="picker-card meter-data" aria-label="Usage">
+        <div v-for="row in rows" :key="row.label" class="meter-data__row">
+          <span class="meter-data__label">{{ row.label }}</span>
+          <span class="meter-data__value">{{ row.value }}</span>
         </div>
-        <p v-if="note" class="meter-pop__note">{{ note }}</p>
-      </div>
-    </Transition>
+        <p v-if="note" class="meter-data__note">{{ note }}</p>
+      </section>
+
+      <!-- Section 2: the action -->
+      <section v-if="onCompact" class="picker-card meter-actions" aria-label="Actions">
+        <button
+          type="button"
+          class="action-row"
+          :disabled="!compactReady"
+          :title="!compactReady && !compactBusy ? (compactReason ?? undefined) : undefined"
+          @click="pressCompact"
+        >
+          <span class="action-row__icon">
+            <HugeiconsIcon :icon="ArrowShrink01Icon" :size="16" :stroke-width="1.7" aria-hidden="true" />
+          </span>
+          <span class="action-row__label">{{
+            compactBusy ? "Compacting…" : "Compact context"
+          }}</span>
+          <HugeiconsIcon
+            v-if="compactReady"
+            :icon="ArrowRight01Icon"
+            :size="13"
+            :stroke-width="2"
+            class="action-row__arrow text-muted"
+            aria-hidden="true"
+          />
+        </button>
+        <p v-if="compactError" class="action-error" role="alert">{{ compactError }}</p>
+      </section>
+    </PickerShell>
   </span>
 </template>
 
@@ -185,6 +189,10 @@ const note = computed(() =>
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
   vertical-align: middle;
   /* Whole-meter arrival: scale + fade in once, each time it mounts (new thread,
      or a reopened one). Pairs with the arc sweep for a single settle-in. */
@@ -233,56 +241,56 @@ const note = computed(() =>
   --meter-color: var(--diff-del);
 }
 
-/* The expanded readout — a quiet card under the ring, right-aligned so it can
-   never clip against the column's left edge. Hairline ring + one soft shadow,
-   the same family as the pickers. */
-.meter-pop {
+/* The expanded readout — the shared picker shell, right-aligned so it can
+   never clip against the column's left edge. Shell/header/card/row styles
+   live in PickerShell; only the popover's position and the meter's own data
+   rows stay here. */
+.meter-card {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
   z-index: 40;
-  min-width: 196px;
+  width: 260px;
+}
+
+/* Section 1: the numbers — the old readout rows, kept verbatim in voice. */
+.meter-data {
   padding: 9px 12px;
-  border-radius: 12px;
-  background: var(--panel);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent),
-    0 6px 24px rgba(0, 0, 0, 0.12);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.7;
-  pointer-events: none;
 }
-.meter-pop__row {
+.meter-data__row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
 }
-.meter-pop__label {
+.meter-data__label {
   color: var(--muted);
 }
-.meter-pop__value {
+.meter-data__value {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
-.meter-pop__note {
+.meter-data__note {
   margin: 6px 0 0;
   padding-top: 6px;
   border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
   color: var(--muted);
   line-height: 1.5;
 }
-.meter-pop-enter-active,
-.meter-pop-leave-active {
-  transition:
-    opacity 0.18s ease,
-    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+
+/* Section 2: the action card's inset. The row itself is the shared shell's. */
+.meter-actions {
+  padding: 4px;
 }
-.meter-pop-enter-from,
-.meter-pop-leave-to {
-  opacity: 0;
-  transform: translateY(-3px);
+.action-error {
+  margin: 0;
+  padding: 2px 10px 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--diff-del);
 }
 
 @keyframes context-meter-in {
