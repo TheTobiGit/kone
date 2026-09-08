@@ -478,7 +478,6 @@ const cardSpring = {
 
 /* Scrollbar */
 .picker-scroll {
-  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--ink) 16%, transparent) transparent;
 }

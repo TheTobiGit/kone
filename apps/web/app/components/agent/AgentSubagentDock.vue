@@ -204,6 +204,7 @@ function rowBrand(row: DelegateRow): BrandKey {
 <template>
   <motion.div
     class="sub-dock"
+    data-agent-dock
     :style="{ transformOrigin: '0% 100%' }"
     :initial="{ opacity: 0, y: 16, scale: 0.94 }"
     :animate="{ opacity: 1, y: 0, scale: 1 }"
@@ -515,6 +516,7 @@ function rowBrand(row: DelegateRow): BrandKey {
 .sub-title {
   font-size: 13px;
   font-weight: 600;
+  line-height: 20px;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
 }
@@ -524,7 +526,7 @@ function rowBrand(row: DelegateRow): BrandKey {
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
-  padding-right: 0.75rem;
+  height: 20px;
 }
 
 .sub-peek {
@@ -535,6 +537,7 @@ function rowBrand(row: DelegateRow): BrandKey {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+  line-height: 20px;
   font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
@@ -542,7 +545,9 @@ function rowBrand(row: DelegateRow): BrandKey {
 
 .sub-meta-wrap {
   display: inline-flex;
+  align-items: center;
   min-width: 1.75rem;
+  height: 20px;
   justify-content: flex-end;
 }
 
@@ -550,6 +555,7 @@ function rowBrand(row: DelegateRow): BrandKey {
   display: block;
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   color: var(--muted);
