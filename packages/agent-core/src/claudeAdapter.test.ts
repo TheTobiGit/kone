@@ -231,6 +231,42 @@ describe("Claude result handler", () => {
     const completed = events.filter((e) => e.type === "turn.completed" && e.turnId === turnId);
     expect(completed).toHaveLength(1);
   });
+
+  test("compact_boundary announces the boundary; the meter restarts from its afterTokens", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    state.feed!.push({
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { pre_tokens: 180000, post_tokens: 20000 },
+    });
+    await flush();
+
+    // No usage event rides along: the boundary itself restarts the meter
+    // from the post-compaction fill, and a context-only usage payload would
+    // upsert the per-turn audit row for the last turn with null splits.
+    expect(ofType(events, "thread.token-usage.updated")).toHaveLength(0);
+    // And the settled boundary carries the fill on either side.
+    const compacted = ofType(events, "thread.state.changed");
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0].state).toBe("compacted");
+    expect(compacted[0].beforeTokens).toBe(180000);
+    expect(compacted[0].afterTokens).toBe(20000);
+  });
+
+  test("compact_boundary without metadata still announces the boundary", async () => {
+    const { adapter, events } = setup();
+    await start(adapter);
+    state.feed!.push({ type: "system", subtype: "compact_boundary" });
+    await flush();
+
+    expect(ofType(events, "thread.token-usage.updated")).toHaveLength(0);
+    const compacted = ofType(events, "thread.state.changed");
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0].state).toBe("compacted");
+    expect(compacted[0].beforeTokens).toBeNull();
+    expect(compacted[0].afterTokens).toBeNull();
+  });
 });
 
 describe("Claude background subagents", () => {

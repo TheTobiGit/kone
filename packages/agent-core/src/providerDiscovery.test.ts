@@ -252,3 +252,29 @@ describe("OpenCode discovery", () => {
     expect(status.transient).toBeUndefined();
   });
 });
+
+describe("discovery derives manual-compaction support", () => {
+  /** A scripted adapter with a compaction story — the union the service
+   *  derives its surface row from. */
+  class CompactCapableAdapter extends ScriptedAdapter {
+    override readonly capabilities = {
+      ...super.capabilities,
+      compaction: { kind: "native" as const },
+    };
+  }
+
+  test("capable adapters read true, the rest read false", async () => {
+    const capable = new CompactCapableAdapter("opencode");
+    const plain = new ScriptedAdapter("droid");
+    const stamping = new AgentService({
+      adapters: (_emit: EmitEvent) => [capable, plain],
+    });
+    capable.rows = [ready("opencode", "OpenCode")];
+    plain.rows = [ready("droid", "Droid")];
+
+    const statuses = await stamping.discover();
+
+    expect(statuses.find((row) => row.provider === "opencode")?.supportsThreadCompaction).toBe(true);
+    expect(statuses.find((row) => row.provider === "droid")?.supportsThreadCompaction).toBe(false);
+  });
+});

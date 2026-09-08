@@ -132,9 +132,11 @@ function wasUsable(status: ProviderStatus): boolean {
 }
 
 // The fields a change is judged on, keyed by themselves so the set is exactly
-// ProviderStatus minus the internal marker — add a field to the row and this
-// stops compiling rather than letting a real change compare equal and never
-// reach the UI.
+// ProviderStatus minus the internal marker and the derived-at-read-time flag
+// (manual-compaction support is re-derived from live adapters on every read,
+// so comparing it would republish an unchanged surface) — add a field to the
+// row and this stops compiling rather than letting a real change compare
+// equal and never reach the UI.
 const COMPARED = {
   provider: "provider",
   label: "label",
@@ -145,7 +147,10 @@ const COMPARED = {
   version: "version",
   authLabel: "authLabel",
   message: "message",
-} as const satisfies Record<keyof Omit<ProviderStatus, "transient">, keyof ProviderStatus>;
+} as const satisfies Record<
+  keyof Omit<ProviderStatus, "transient" | "supportsThreadCompaction">,
+  keyof ProviderStatus
+>;
 
 /** Whether two discovery rounds say the same thing. Matched by provider, not by
  *  position, so a reordered adapter map doesn't republish an unchanged surface —

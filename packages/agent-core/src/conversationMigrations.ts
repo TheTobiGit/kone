@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -414,9 +414,31 @@ function migration0002QueuedTurnSortKey(db: DatabaseSync): void {
   addColumn(db, "queued_turns", "sort_key", "INTEGER");
 }
 
+/** Durable compaction markers: one row per settled `thread.state.changed`
+ *  "compacted" boundary, so the timeline can show when/where the context was
+ *  compacted long after the live event is gone. Counts are whatever the
+ *  provider reported (either side may be NULL); rows die with their thread.
+ *  Idempotent — fresh databases could carry it from a newer baseline, but it
+ *  lives here so existing databases gain it without a rebuild. */
+function migration0003Compactions(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS compactions (
+      seq           INTEGER PRIMARY KEY,
+      thread_id     TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      at            INTEGER NOT NULL,
+      before_tokens INTEGER,
+      after_tokens  INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_compactions_thread
+      ON compactions (thread_id, at);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
+  { id: 3, name: "Compactions", run: migration0003Compactions },
 ];
 
 export interface MigrationOptions {

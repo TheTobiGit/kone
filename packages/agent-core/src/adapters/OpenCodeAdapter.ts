@@ -17,6 +17,7 @@ import {
   type DangerousPatternRule,
 } from "../commandSafety.js";
 import type { JsonValue } from "../lib-jsonValue.js";
+import { emitCompacted } from "./emitCompacted.js";
 import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
@@ -583,7 +584,7 @@ class OpenCodeModelProbeError extends Error {
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly provider = "opencode" as const;
-  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true };
+  readonly capabilities = { sessionModelSwitch: "restart-session" as const, streamsText: true, supportsToolEvents: true, supportsResume: true, supportsModelList: true, supportsSubagents: true, compaction: { kind: "native" as const } };
   private readonly emit: EmitEvent; private readonly sessions = new Map<string, OpenCodeSession>(); private modelsCache: Promise<ModelDescriptor[]> | null = null; private readonly modelContextWindows = new Map<string, number>();
   /** The CLI executable to spawn — the user's override or the `opencode` default. */
   private binary = OPENCODE_BINARY;
@@ -780,6 +781,17 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   async interruptTurn(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session?.activeTurnId) return; this.drain(session); session.interrupting = true; await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); }
+  /** Trigger provider-native context compaction for the session (`POST
+   *  /session/:id/summarize`). The server announces the settled boundary as a
+   *  `session.compacted` event (see handleEvent), which becomes the
+   *  `thread.state.changed` "compacted" event. */
+  async compactThread(threadId: string): Promise<void> {
+    const session = this.require(threadId);
+    if (session.activeTurnId) throw new Error("OpenCode cannot compact while a turn is running.");
+    const model = modelSlug(session.model);
+    if (!model) throw new Error("OpenCode compaction requires an active 'provider/model' selection.");
+    await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/summarize`, model);
+  }
   // Deliberate stop = the one stop-lifecycle contract every adapter shares: a
   // terminal `session.exited` with code null (the sibling ACP/JSON-RPC
   // adapters emit it on their kill paths; Claude now emits it explicitly too).
@@ -892,6 +904,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
         break;
       }
       case "session.idle": this.complete(session); break;
+      case "session.compacted": {
+        // The server settled a context compaction (manual summarize or its own
+        // auto-compaction) — the boundary the store invalidates its usage
+        // snapshot on. No turn is necessarily live, so this is thread-level.
+        // The event carries no counts; the window reads fresh until the next
+        // usage event.
+        emitCompacted(this.emit, base(session));
+        break;
+      }
       case "session.status": if (record(p.status)?.type === "idle") this.complete(session); break;
        case "session.error": if (active) { session.activeTurnId = undefined; this.emit({ ...base(session), type: "turn.aborted", turnId: active, reason: "failed", message: errorMessage(p.error) }); } this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message: errorMessage(p.error) }); break;
        case "permission.asked":

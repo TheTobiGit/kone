@@ -44,6 +44,13 @@ export type ProviderStatus = {
   authLabel?: string;
   /** Human message — a hint to fix a not-ready provider (e.g. run `codex login`). */
   message?: string;
+  /** Whether manual context compaction can be triggered on this provider
+   *  (natively or through a provider-understood command fallback). Derived at
+   *  read time from the adapter's compaction union — never probed, never
+   *  persisted: every row the service returns carries a definite boolean,
+   *  while rows built by adapters or decoded off disk may omit it and read
+   *  as unsupported. The Compact control gates on `=== true`. */
+  supportsThreadCompaction?: boolean;
   /** Set by an adapter when this row came from a probe that never reached a
    *  verdict (a timed-out CLI, not an answer). Internal to the discovery fold in
    *  providerHealth.ts, which consumes it and strips it — nothing downstream of
@@ -289,6 +296,40 @@ export type TurnStartResult = {
   /** kone-owned id for the turn just accepted. */
   turnId: string;
 };
+
+/** Outcome of a manual context-compaction request. Resolves once the provider
+ *  has compacted and the `thread.state.changed` "compacted" boundary has been
+ *  observed (or synthesized) — by the time this resolves the stored usage
+ *  snapshot is already invalidated, so callers can read fresh state. */
+export type CompactThreadResult = {
+  threadId: string;
+  provider: ProviderKind;
+  /** True when the provider ran its native compaction call; false when the
+   *  service fell back to a provider command turn. */
+  native: boolean;
+};
+
+/** One settled context compaction on a thread — the durable "when/where" the
+ *  timeline renders. Written on every `thread.state.changed` "compacted"
+ *  event (manual or automatic); counts are whatever the provider reported, so
+ *  either side may be unknown. */
+export type CompactionRecord = {
+  threadId: string;
+  /** Epoch millis the boundary landed. */
+  at: number;
+  /** Window fill before compaction, when reported. */
+  beforeTokens: number | null;
+  /** Window fill after compaction, when reported. */
+  afterTokens: number | null;
+};
+
+/** Clean one provider-reported token count: finite numbers round to whole
+ *  tokens; anything else (absent, null, non-finite) is unknown. Single site
+ *  for both the adapter emission boundary and the store decode boundary, so
+ *  the two can never drift on what counts as a known count. */
+export function cleanCompactedCount(value: number | null | undefined): number | null {
+  return value !== undefined && value !== null && Number.isFinite(value) ? Math.round(value) : null;
+}
 
 // ── side chat creation (agent:create-side-chat) ─────────────────────────────
 // A side chat is a root thread with a fork pointer back at its source: the
@@ -812,6 +853,31 @@ export type SpawnedThreadStatus =
   | "failed"
   | "interrupted";
 
+/** A top-level thread's rolled-up state, as the assistant sees it. Derived at
+ *  read time from the parked gate, the newest assistant block and whether a
+ *  live session still backs the thread — never stored, so a crash cannot leave
+ *  a dead thread labelled "working". Same precedence as the spawned-child
+ *  projection: a parked gate outranks a running turn, and a running turn
+ *  without a live session reads interrupted. Unlike a spawned child, a
+ *  top-level thread never settles terminally: `idle` is the ordinary "nothing
+ *  happening, ready for you" state, and `failed` / `interrupted` invite a
+ *  retry rather than closing the thread. */
+export type ThreadStatus =
+  | "starting"
+  | "working"
+  | "waiting-for-approval"
+  | "waiting-for-user-input"
+  | "idle"
+  | "failed"
+  | "interrupted";
+
+/** What can park a thread: an approval the user must decide, or a question
+ *  for the user. One vocabulary for the top-level and spawned-child status
+ *  projections and the pending-gate index — a parked thread is the single
+ *  state where nothing moves until a human acts, so every reader must agree
+ *  on what "parked" means. */
+export type ThreadGateKind = "approval" | "user-input";
+
 /** One spawned child, projected for both the wait tool and the UI. The single
  *  shape both consume — no second view model (trap #10). */
 export type SpawnedThread = {
@@ -1101,6 +1167,23 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "session.exited"; code: number | null })
   | (BaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (BaseEvent & { type: "thread.title.updated"; title: string })
+  // The provider compacted the thread's context window — natively (Codex
+  // `thread/compacted`, OpenCode `session.compacted`, Claude's
+  // `compact_boundary`) or synthesized after a manual `/compact` turn settled
+  // without one. `beforeTokens`/`afterTokens` are the window fill on either
+  // side when the provider reported them; null means unknown — the window
+  // reads as fresh until the next `thread.token-usage.updated`. Every
+  // compacting provider emits this one dialect through emitCompacted
+  // (adapters/emitCompacted.ts): counts or explicit nulls, nothing else.
+  // Consumers invalidate any pre-compaction usage snapshot on this and wait
+  // for the next `thread.token-usage.updated` — a meter left showing the old
+  // fill would claim a full window that no longer exists.
+  | (BaseEvent & {
+      type: "thread.state.changed";
+      state: "compacted";
+      beforeTokens?: number | null;
+      afterTokens?: number | null;
+    })
   // A thread (and its spawned subtree) was stamped archived in the store —
   // hidden from every live list, recoverable. `archivedAt` is the stamp the
   // store wrote, so consumers agree with the row on when the put-away
@@ -1359,6 +1442,27 @@ export type ThreadArchiveResult =
 
 // ── Adapter interface ────────────────────────────────────────────────────────
 
+/** How manual context compaction runs on this provider. Owned by the adapter
+ *  (it names the mechanism), run by the service (it owns the single-flight
+ *  guard, the budget, and the settled boundary). `native` compacts through
+ *  the adapter's `compactThread` call; `command` compacts as an ordinary turn
+ *  carrying the provider's own documented slash command; `unsupported` means
+ *  the thread only ever compacts on the provider's own initiative. Absent
+ *  reads as `unsupported`, so test doubles and providers without a compaction
+ *  story omit it rather than claiming one. */
+export type ThreadCompactionCapability =
+  | { kind: "native" }
+  | { kind: "command"; command: "/compact" | "/compress" }
+  | { kind: "unsupported" };
+
+/** Whether the adapter's compaction union names a runnable mechanism — the
+ *  single read of manual-compaction support. Absent reads as unsupported. */
+export function isCompactionSupported(
+  capability: ThreadCompactionCapability | undefined,
+): capability is Extract<ThreadCompactionCapability, { kind: "native" | "command" }> {
+  return capability?.kind === "native" || capability?.kind === "command";
+}
+
 /** Static feature flags so the facade/UI can pick fallbacks per provider. */
 export type AdapterCapabilities = {
   /** How switching model mid-thread behaves. */
@@ -1373,6 +1477,12 @@ export type AdapterCapabilities = {
   /** Spawns provider-native subagents inside a turn and reports their nested
    *  transcripts (`subagent.*` events + items tagged with a run). */
   supportsSubagents: boolean;
+  /** How manual context compaction runs on this provider (see
+   *  ThreadCompactionCapability). The service derives support from the union's
+   *  kind and runs the named mechanism — support is never a separate boolean
+   *  that can drift from the mechanism, and surface rows derive the flag at
+   *  read time instead of persisting it. */
+  compaction?: ThreadCompactionCapability;
 };
 
 /** Every provider implements this. Methods return once the request is accepted;
@@ -1393,6 +1503,14 @@ export interface ProviderAdapter {
   interruptTurn(threadId: string): Promise<void>;
   stopSession(threadId: string): Promise<void>;
   stopAll(): Promise<void>;
+
+  /** Trigger provider-native context compaction for the thread's session.
+   *  Resolves once the provider accepts (Codex) or finishes (OpenCode) the
+   *  compaction — the `thread.state.changed` "compacted" event announces the
+   *  settled boundary either way. Optional: providers without a native
+   *  compaction call omit it and the service falls back to a `/compact`
+   *  command turn where the provider understands one. */
+  compactThread?(threadId: string): Promise<void>;
 
   // interactivity (no-ops on providers that don't prompt inline)
   respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void>;

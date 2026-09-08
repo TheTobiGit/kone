@@ -545,6 +545,10 @@ export class DroidAdapter implements ProviderAdapter {
     // droid's `Task` tool spawns nested agents, but ACP reports one flat tool
     // stream — a delegated run isn't distinguishable as a nested one.
     supportsSubagents: false,
+    // No native compaction call — manual compaction runs as a `/compress`
+    // command turn, the word droid's own CLI reference documents for
+    // compressing the session.
+    compaction: { kind: "command", command: "/compress" },
   };
 
   private readonly emit: EmitEvent;

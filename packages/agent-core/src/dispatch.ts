@@ -9,6 +9,7 @@ import {
   generateThreadTitle,
 } from "./threadTitle.js";
 import type {
+  CompactThreadResult,
   ProviderKind,
   RuntimeEvent,
   SendTurnInput,
@@ -76,6 +77,12 @@ export interface ThreadDispatcher {
     input: SendTurnInput,
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult>;
+  /** Trigger context compaction for a thread. Rejects when the thread is
+   *  unknown, has no conversation to compact yet, or the provider supports no
+   *  manual compaction — the service owns the busy / single-flight guards.
+   *  Nothing is journaled: the settled `thread.state.changed` "compacted"
+   *  boundary is the record, not a user message. */
+  compactThread(threadId: string): Promise<CompactThreadResult>;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -240,6 +247,42 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
     return this.dispatchTurn(input, "steer", options);
+  }
+
+  /** Manual context compaction for a thread: the service runs the provider's
+   *  native call or its `/compact` command fallback and resolves once the
+   *  "compacted" boundary has been observed or synthesized. Guarded here on
+   *  compactability — an empty thread has no context worth compacting — while
+   *  the service guards the live-turn and single-flight races. */
+  async compactThread(threadId: string): Promise<CompactThreadResult> {
+    const meta = this.store.threadMeta(threadId);
+    if (!meta) {
+      throw new Error(`Unknown thread ${threadId}`);
+    }
+    if (!this.store.hasUserTurn(threadId)) {
+      throw new Error("Context compaction requires an existing conversation.");
+    }
+    // Compaction runs on the live provider session. A thread whose session
+    // went away (fresh launch, idle reap, opened where it never started)
+    // adopts one first — resuming its own conversation — rather than
+    // refusing work the user explicitly asked for. The preamble runs inside
+    // the service's single-flight claim, so two concurrent compactions can't
+    // each start a session and orphan the first.
+    return this.service.compactThread(threadId, async () => {
+      if (!this.service.hasLiveSession(threadId)) {
+        const start: SessionStartInput = {
+          threadId,
+          provider: meta.provider,
+          cwd: meta.projectPath,
+        };
+        if (meta.model) start.model = meta.model;
+        if (meta.conversationId) start.resume = meta.conversationId;
+        if (meta.resumeSessionAt) start.resumeSessionAt = meta.resumeSessionAt;
+        if (meta.selection?.mode) start.mode = meta.selection.mode;
+        if (meta.selection?.effort) start.effort = meta.selection.effort;
+        await this.startThread(start);
+      }
+    });
   }
 
   /** The shared body of sendThreadTurn and steerThreadTurn. A steer is the same

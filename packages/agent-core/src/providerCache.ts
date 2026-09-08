@@ -114,11 +114,15 @@ function sanitize(raw: JsonValue | null | undefined): ProviderSurfaceSnapshot {
   if (!parsed.success || parsed.data.version !== VERSION) return out;
   if (parsed.data.savedAt !== undefined) out.savedAt = parsed.data.savedAt;
   if (parsed.data.statuses) {
-    out.statuses = parsed.data.statuses.map((status) => ({
+    out.statuses = parsed.data.statuses.map((status) => {
       // SAFETY: ProviderStatusWire validates the structure of each status entry.
-      ...(status as ProviderStatus),
-      enabled: status.enabled ?? true,
-    }));
+      const row = { ...(status as ProviderStatus), enabled: status.enabled ?? true };
+      // Manual-compaction support derives at read time from the live adapter
+      // union — never persisted — so drop any copy an older snapshot carried
+      // rather than serve a stale flag.
+      delete row.supportsThreadCompaction;
+      return row;
+    });
   }
   if (parsed.data.models) {
     for (const [provider, list] of Object.entries(parsed.data.models)) {
@@ -157,10 +161,20 @@ function persist(next: ProviderSurfaceSnapshot): ProviderSurfaceSnapshot {
   return next;
 }
 
-/** Record a fresh discovery result. */
+/** Record a fresh discovery result. Derived-at-read-time fields (manual
+ *  compaction support) are stripped — the snapshot carries only what the
+ *  probe found, and the service re-derives the rest from live adapters. */
 export function cacheStatuses(statuses: ProviderStatus[]): void {
   const current = readProviderCache();
-  persist({ ...current, savedAt: Date.now(), statuses });
+  persist({
+    ...current,
+    savedAt: Date.now(),
+    statuses: statuses.map((status) => {
+      const row = { ...status };
+      delete row.supportsThreadCompaction;
+      return row;
+    }),
+  });
 }
 
 /** Record a fresh model catalog. An empty list is ignored — it means the probe

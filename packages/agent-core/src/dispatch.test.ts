@@ -321,3 +321,110 @@ describe("thread dispatcher: where a session is spawned", () => {
     expect(FakeAdapter.startedCwds).toEqual([CWD]);
   });
 });
+
+// Manual compaction through the dispatcher: guards on compactability here, the
+// service owns the busy / single-flight guards, and nothing is journaled —
+// the settled boundary is the record, not a user message.
+describe("thread dispatcher: compactThread", () => {
+  /** The harness fake with a native compaction call that announces its own
+   *  boundary, the way Codex/OpenCode do. */
+  class CompactAdapter extends FakeAdapter {
+    override capabilities = {
+      sessionModelSwitch: "unsupported" as const,
+      streamsText: false,
+      supportsToolEvents: false,
+      supportsResume: false,
+      supportsModelList: false,
+      supportsSubagents: false,
+      compaction: { kind: "native" as const },
+    };
+    static compactCalls: string[] = [];
+
+    override async compactThread(threadId: string): Promise<void> {
+      CompactAdapter.compactCalls.push(threadId);
+      this.emit({
+        threadId,
+        provider: "codex",
+        at: Date.now(),
+        source: "kone.store",
+        type: "thread.state.changed",
+        state: "compacted",
+      });
+    }
+  }
+
+  async function compactHarness(): Promise<{
+    store: StoreType;
+    dispatcher: import("./dispatch.js").ThreadDispatcher;
+    service: import("./AgentService.js").AgentService;
+  }> {
+    lastDataDir = mkdtempSync(path.join(tmpdir(), "kone-dispatch-test-"));
+    setUserDataDir(lastDataDir);
+    const store = new ConversationStoreCtor();
+    const service = new AgentServiceCtor({
+      // SAFETY: the real store satisfies the queue slice the service reads.
+      // eslint-disable-next-line anti-slop/no-chained-type-assertions
+      store: store as unknown as QueuedTurnStore,
+      adapters: (emit) => {
+        // SAFETY: one fake adapter is the whole provider roster here.
+        // eslint-disable-next-line anti-slop/no-chained-type-assertions
+        return [new CompactAdapter(emit) as unknown as ProviderAdapter];
+      },
+    });
+    const dispatcher = initThreadDispatcher({ service, store, broadcast: () => {} });
+    store.ensureThread({ threadId: THREAD, projectPath: CWD, provider: "codex" });
+    await dispatcher.startThread({ threadId: THREAD, provider: "codex", cwd: CWD });
+    return { store, dispatcher, service };
+  }
+
+  beforeEach(() => {
+    CompactAdapter.compactCalls.length = 0;
+  });
+
+  test("rejects an unknown thread", async () => {
+    const { dispatcher } = await harness();
+    await expect(dispatcher.compactThread("t-missing")).rejects.toThrow("Unknown thread");
+  });
+
+  test("rejects a thread with no conversation yet", async () => {
+    const { dispatcher } = await harness();
+    await expect(dispatcher.compactThread(THREAD)).rejects.toThrow(
+      "requires an existing conversation",
+    );
+  });
+
+  test("rejects when the provider supports no manual compaction", async () => {
+    const { store, dispatcher } = await harness();
+    store.recordUserBlock({ threadId: THREAD, text: "hello" });
+    await expect(dispatcher.compactThread(THREAD)).rejects.toThrow("not supported");
+  });
+
+  test("compacts without journaling anything", async () => {
+    const { store, dispatcher } = await compactHarness();
+    store.recordUserBlock({ threadId: THREAD, text: "hello" });
+    const before = store.loadThread(THREAD)?.blocks.length ?? 0;
+
+    const result = await dispatcher.compactThread(THREAD);
+
+    expect(result).toEqual({ threadId: THREAD, provider: "codex", native: true });
+    expect(CompactAdapter.compactCalls).toEqual([THREAD]);
+    // No user block, no assistant block: the boundary event is the record.
+    expect(store.loadThread(THREAD)?.blocks.length).toBe(before);
+  });
+
+  test("adopts a live session when the thread has history but none", async () => {
+    const { store, dispatcher, service } = await compactHarness();
+    // History without a session: a thread opened where it never started (fresh
+    // launch, reaped idle session, inbox opening another surface's thread).
+    const idle = "t-idle";
+    store.ensureThread({ threadId: idle, projectPath: CWD, provider: "codex" });
+    store.recordUserBlock({ threadId: idle, text: "hello" });
+    expect(service.hasLiveSession(idle)).toBe(false);
+
+    const result = await dispatcher.compactThread(idle);
+
+    expect(result).toEqual({ threadId: idle, provider: "codex", native: true });
+    expect(service.hasLiveSession(idle)).toBe(true);
+    expect(CompactAdapter.compactCalls).toEqual([idle]);
+  });
+});
