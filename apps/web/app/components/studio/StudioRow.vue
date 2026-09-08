@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { useDebounceFn, useEventListener, watchDebounced } from "@vueuse/core";
+import { useDebounceFn, useEventListener } from "@vueuse/core";
 import { AnimatePresence, motion } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { InformationSquareIcon } from "@hugeicons/core-free-icons";
@@ -36,9 +36,8 @@ import {
 import type { ModelPick } from "~/composables/useModelCommit";
 import { SESSION_BRAND } from "~/types/session";
 import { childApprovalsInbox, type ThreadAttentionKind, type QueuedTurnEntry } from "~/composables/useAgent";
-import { deriveActivePlan } from "~/utils/planTasks";
-import { deriveChangedFiles } from "~/utils/changedFiles";
-import { deriveActiveSubagents, deriveDelegates, type DelegateRow } from "~/utils/subagentRuns";
+import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
+import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import SubagentShell from "~/components/conversation/SubagentShell.vue";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
@@ -147,10 +146,6 @@ const scratchpad = useScratchpad({ projectPath: () => props.project.path });
 // The composer, ref'd here (ahead of its template mount) so studio.dispatch can
 // pre-fill it for the draft-thread intent. Its wake watcher lives further down.
 const composerRef = ref<{ wake: () => Promise<void>; setDraft: (text: string) => Promise<void> } | null>(null);
-// Whether the composer is expanded into its input. A narrow window leaves the
-// centred card and the corner docks sharing the same strip of screen, so an open
-// composer rides above them — while the resting orb stays under them, where the
-// docks are the thing you're reading.
 const composerOpen = ref(false);
 
 // A pad pane briefly pulses its index dash after a thread → pad append.
@@ -382,37 +377,17 @@ function captureToScratchpad(text: string, sourceKey: string): void {
   void studio.dispatch({ type: "capture-text", text, from: sourceKey });
 }
 
-// The two corner docks (Tasks + Changes) plus the Subagents dock derive from the
-// whole block list, so they'd otherwise re-run their derive on every streamed
-// token of a live turn. Nothing here is time-critical, so the docks read a
-// snapshot that we refresh at most ~10×/s rather than the live computed. (E2)
-const activePlanRaw = computed(() =>
-  deriveActivePlan(focusedThread.value?.blocks.value ?? []),
+// Derives and snapshot for active plan, touched files, and subagent delegates.
+const {
+  subagentsRaw: activeSubagentsRaw,
+  activePlan,
+  activeChanges,
+  activeDelegates,
+  sync: syncDockSnapshot,
+} = useDockSnapshot(
+  computed(() => focusedThread.value?.blocks.value ?? []),
+  computed(() => focusedThread.value?.spawnedChildren.value ?? []),
 );
-const activeChangesRaw = computed(() =>
-  deriveChangedFiles(focusedThread.value?.blocks.value ?? []),
-);
-const activeSubagentsRaw = computed(() =>
-  deriveActiveSubagents(focusedThread.value?.blocks.value ?? []),
-);
-const activeDelegatesRaw = computed(() =>
-  deriveDelegates(
-    focusedThread.value?.blocks.value ?? [],
-    focusedThread.value?.spawnedChildren.value ?? [],
-  ),
-);
-
-// What the docks actually render — a debounced snapshot of the four derives.
-const activePlan = shallowRef(activePlanRaw.value);
-const activeChanges = shallowRef(activeChangesRaw.value);
-const activeSubagents = shallowRef(activeSubagentsRaw.value);
-const activeDelegates = shallowRef(activeDelegatesRaw.value);
-function syncDockSnapshot(): void {
-  activePlan.value = activePlanRaw.value;
-  activeChanges.value = activeChangesRaw.value;
-  activeSubagents.value = activeSubagentsRaw.value;
-  activeDelegates.value = activeDelegatesRaw.value;
-}
 
 // Switching threads used to morph one thread's docks into another's *in place* —
 // file rows and card height reflowed mid-flight under a flat container fade, and
@@ -423,12 +398,6 @@ function syncDockSnapshot(): void {
 // the right data from their first frame. Streaming *within* a thread keeps the
 // same key, so a live turn's docks tick along in place (no remount).
 const focusedKey = computed(() => focusedThread.value?.key ?? null);
-
-watchDebounced(
-  [activePlanRaw, activeChangesRaw, activeSubagentsRaw, activeDelegatesRaw],
-  () => syncDockSnapshot(),
-  { debounce: 100, maxWait: 200 },
-);
 
 watch(focusedKey, () => syncDockSnapshot());
 
@@ -1574,6 +1543,24 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :checking="recheckingProviders"
           @recheck="recheckProviders"
         />
+        <!-- Corner / above-composer dock stack (Tasks + Changes) -->
+        <Transition
+          enter-active-class="transition-opacity duration-150 ease-out"
+          enter-from-class="opacity-0"
+          leave-active-class="transition-opacity duration-150 ease-in"
+          leave-to-class="opacity-0"
+        >
+          <ThreadDockStack
+            v-if="visible && !blocked && focusedThread"
+            :composer-open="composerOpen"
+            :changes="activeChanges"
+            :plan="activePlan"
+            :project-path="project.path"
+            :thread-key="focusedKey"
+            position-mode="fixed"
+            @open-file="(path, rect) => emit('openFile', path, rect)"
+          />
+        </Transition>
         <AgentComposer
           ref="composerRef"
           :project-path="project.path"
@@ -1651,6 +1638,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
     >
       <div
         v-if="visible && !blocked && focusedThread && !activeShell && !isOverview"
+        data-agent-dock
         class="sub-dock-corner"
       >
         <AnimatePresence :initial="false" mode="wait">
@@ -1661,40 +1649,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
             :streaming="activeDelegates.streaming"
             @open="onOpenDelegate"
             @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
-          />
-        </AnimatePresence>
-      </div>
-    </Transition>
-
-    <!-- Corner dock stack — the agent's live side-panels in the folder-picker
-         shell, bottom-right while a turn runs. Changes (files touched this
-         thread) rides above Tasks (the model's TodoWrite checklist); the column
-         lifts clear of the away-from-thread pill when one is perched below. -->
-    <Transition
-      enter-active-class="transition-opacity duration-150 ease-out"
-      enter-from-class="opacity-0"
-      leave-active-class="transition-opacity duration-150 ease-in"
-      leave-to-class="opacity-0"
-    >
-      <div v-if="visible && !blocked && focusedThread && !isOverview" class="dock-stack">
-        <AnimatePresence :initial="false" mode="wait">
-          <GitSpaceChangedFilesList
-            v-if="activeChanges.files.length"
-            :key="`agent-changes-dock-${focusedKey}`"
-            :files="activeChanges.files"
-            :total-added="activeChanges.totalAdded"
-            :total-removed="activeChanges.totalRemoved"
-            :streaming="activeChanges.streaming"
-            :repo-path="project.path"
-            @open-file="(path: string, rect: DOMRect | null) => emit('openFile', path, rect)"
-          />
-        </AnimatePresence>
-        <AnimatePresence :initial="false" mode="wait">
-          <PlanTaskList
-            v-if="activePlan"
-            :key="`agent-plan-dock-${focusedKey}`"
-            :tasks="activePlan.tasks"
-            :streaming="activePlan.streaming"
           />
         </AnimatePresence>
       </div>
@@ -1762,34 +1716,11 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
    stop competing for the same strip once the window is too narrow to hold both
    side by side. Stays under a file detail (50), which covers the studio whole. */
 .composer-dock {
-  z-index: 30;
+  z-index: 40;
 }
 
 .composer-dock--open {
   z-index: 46;
-}
-
-
-/* ── Corner dock stack ────────────────────────────────────────────────────── */
-/* Fixed to the bottom-right corner, holding the agent's live side-panels
-   (Changes above Tasks) as a single column so the two folder-picker cards stack
-   cleanly instead of fighting for the corner. The container ignores pointer
-   events; each card re-enables them for itself. Lifts to clear the pill when an
-   away-from-thread pill is perched below. */
-.dock-stack {
-  position: fixed;
-  right: 2rem;
-  bottom: 2rem;
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 12px;
-  pointer-events: none;
-  transform-origin: 100% 100%;
-  transition:
-    opacity 0.15s ease,
-    transform 0.15s ease;
 }
 
 
