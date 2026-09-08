@@ -475,6 +475,7 @@ function isEmptyNew(file: ChangedFile): boolean {
 .plan-title {
   font-size: 13px;
   font-weight: 600;
+  line-height: 20px;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
 }
@@ -484,7 +485,7 @@ function isEmptyNew(file: ChangedFile): boolean {
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
-  padding-right: 0.75rem;
+  height: 20px;
 }
 
 .plan-peek {
@@ -495,6 +496,7 @@ function isEmptyNew(file: ChangedFile): boolean {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+  line-height: 20px;
   font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--ink-soft);

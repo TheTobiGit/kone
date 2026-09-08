@@ -172,7 +172,7 @@ function rowDelay(index: number): number {
             >
               <HugeiconsIcon
                 :icon="copied ? CheckmarkCircle01Icon : Copy01Icon"
-                :size="14"
+                :size="13"
                 :stroke-width="2"
               />
             </span>
@@ -334,6 +334,7 @@ function rowDelay(index: number): number {
 .plan-title {
   font-size: 13px;
   font-weight: 600;
+  line-height: 20px;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
 }
@@ -343,7 +344,7 @@ function rowDelay(index: number): number {
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
-  padding-right: 0.75rem;
+  height: 20px;
 }
 
 .plan-peek {
@@ -354,6 +355,7 @@ function rowDelay(index: number): number {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+  line-height: 20px;
   font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
@@ -361,7 +363,9 @@ function rowDelay(index: number): number {
 
 .plan-meta-wrap {
   display: inline-flex;
+  align-items: center;
   min-width: 1.75rem;
+  height: 20px;
   justify-content: flex-end;
 }
 
@@ -369,6 +373,7 @@ function rowDelay(index: number): number {
   display: block;
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   color: var(--muted);
@@ -390,9 +395,9 @@ function rowDelay(index: number): number {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   color: var(--muted);
   opacity: 0.55;
   cursor: pointer;
