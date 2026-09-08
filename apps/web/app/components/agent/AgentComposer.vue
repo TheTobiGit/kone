@@ -567,12 +567,22 @@ function close() {
     closeTimer = null;
   }, 200);
 }
-onClickOutside(dock, () => {
-  // The picker lives outside our dock, so its clicks read as "outside" — but it
-  // is our own surface, one step removed. Don't collapse while it's up.
-  if (props.picking || agentPickerOpen.value) return;
-  close();
-});
+onClickOutside(
+  dock,
+  (event) => {
+    // The picker lives outside our dock, so its clicks read as "outside" — but it
+    // is our own surface, one step removed. Don't collapse while it's up.
+    if (props.picking || agentPickerOpen.value) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-agent-dock]")) {
+      return;
+    }
+    close();
+  },
+  {
+    ignore: ["[data-agent-dock]"],
+  },
+);
 onKeyStroke("Escape", () => {
   // Escape walks out one layer at a time: a modal/picker over the bar goes first, so
   // dismissing the picker doesn't also throw away the draft behind it.
