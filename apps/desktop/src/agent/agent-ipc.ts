@@ -11,6 +11,7 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
 import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
 import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
 import { EventSubscriptions } from "@kone/agent-core/eventSubscriptions.js";
@@ -138,6 +139,15 @@ export function registerAgentIpc(): void {
     emit: (event) => broadcast(event),
     onEvents: (listener) => svc.onEvent(listener),
     isThreadLive: (threadId) => svc.hasLiveSession(threadId),
+    // What a thread is parked on, if anything — approvals and user-input
+    // questions are live round-trips the store never journals, so the
+    // service's parked snapshot is the only place the thread list can read
+    // them from. The list reads one indexed snapshot per list call; a
+    // single-thread read answers off a fresh snapshot per call. The
+    // approval-outranks-question precedence is owned by the shared projector.
+    pendingGates: () => indexThreadGates(svc.pendingInteractions()),
+    pendingThreadGate: (threadId) =>
+      threadGateFor(indexThreadGates(svc.pendingInteractions()), threadId),
     // The renderer owns the appearance and pushes it to the shell; reading it
     // back here is what lets app_get_theme_state describe the actual window
     // instead of the last theme an agent asked for.
@@ -472,6 +482,13 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) =>
     dispatcher.sendThreadTurn(input),
   );
+  // Manual context compaction (the service runs the provider's native call or
+  // its `/compact` command fallback). Resolves once the "compacted" boundary
+  // has been observed or synthesized — the boundary event itself streams on
+  // agent:event like every other runtime event.
+  ipcMain.handle("agent:compact-thread", (_event, threadId: string) =>
+    dispatcher.compactThread(threadId),
+  );
   ipcMain.handle("agent:interrupt", (_event, threadId: string) =>
     svc.interruptTurn(threadId),
   );
@@ -541,6 +558,12 @@ export function registerAgentIpc(): void {
     const thread = store.loadThread(threadId);
     return thread ? projectStoredThreadForIpc(thread) : null;
   });
+  // Settled compaction boundaries for a thread, oldest first — the timeline's
+  // "when/where compacted" markers. Few rows ever (one per boundary event),
+  // so this is always the full list, never a page.
+  ipcMain.handle("agent:history-compactions", (_event, threadId: string) =>
+    store.listCompactions(threadId),
+  );
   // Windowed thread read (user-anchored keyset pages): first page when no
   // cursor is given, then the next strictly older page per cursor. The
   // renderer treats `nextCursor` as opaque and echoes it back — this is
