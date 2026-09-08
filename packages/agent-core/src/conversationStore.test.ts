@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 2 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 3 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(2);
+    expect(version.user_version).toBe(3);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -212,6 +212,7 @@ describe("v1 baseline migration and schema", () => {
       "subagent_presets",
       "app_state",
       "schema_migrations",
+      "compactions",
     ]) {
       expect(tables).toContain(table);
     }
@@ -223,6 +224,7 @@ describe("v1 baseline migration and schema", () => {
     expect(migrations).toEqual([
       { migration_id: 1, name: "Baseline" },
       { migration_id: 2, name: "QueuedTurnSortKey" },
+      { migration_id: 3, name: "Compactions" },
     ]);
 
     const idx = raw
@@ -830,6 +832,89 @@ describe("staleThreadIds (retention candidates)", () => {
   });
 });
 
+describe("threadTurnSpans batch read", () => {
+  test("one query answers many threads, matching the single-thread read", () => {
+    const store = freshStore();
+    for (const threadId of ["t-running", "t-settled", "t-quiet"]) {
+      store.ensureThread({ threadId, projectPath: "/p", provider: "opencode" });
+    }
+    store.applyEvent(turnStarted("t-running", "turn-1", 10));
+    store.applyEvent(turnStarted("t-settled", "turn-1", 10));
+    store.applyEvent(turnCompleted("t-settled", "turn-1", 20));
+
+    const spans = store.threadTurnSpans(["t-running", "t-settled", "t-quiet", "t-ghost"]);
+
+    expect(spans.size).toBe(2);
+    expect(spans.get("t-running")).toEqual(store.threadTurnSpan("t-running"));
+    expect(spans.get("t-settled")).toEqual(store.threadTurnSpan("t-settled"));
+    expect(spans.get("t-running")).toMatchObject({ runningTurns: 1, lastState: "running" });
+    expect(spans.get("t-settled")).toMatchObject({ runningTurns: 0, lastState: "completed" });
+    // No assistant history (t-quiet) and no thread at all (t-ghost) are both
+    // misses — the caller reads them as null, like the single-thread answer.
+    expect(spans.has("t-quiet")).toBe(false);
+    expect(spans.has("t-ghost")).toBe(false);
+  });
+
+  test("empty input answers empty without touching the database", () => {
+    const store = freshStore();
+
+    expect(store.threadTurnSpans([])).toEqual(new Map());
+  });
+
+  test("the newest block's state and error ride together, matching the single-thread read", () => {
+    const store = freshStore();
+    for (const threadId of ["t-failed", "t-multi"]) {
+      store.ensureThread({ threadId, projectPath: "/p", provider: "opencode" });
+    }
+    // A failed turn carries its reason on the newest block only.
+    store.applyEvent(turnStarted("t-failed", "turn-1", 10));
+    store.applyEvent({
+      type: "turn.aborted",
+      threadId: "t-failed",
+      provider: "opencode",
+      at: 20,
+      source: "kone.store",
+      turnId: "turn-1",
+      reason: "failed",
+      message: "boom",
+    });
+    // Two turns: the newest (failed) block's state+error win, while the
+    // rollup still spans both turns.
+    store.applyEvent(turnStarted("t-multi", "turn-1", 10));
+    store.applyEvent(turnCompleted("t-multi", "turn-1", 20));
+    store.applyEvent(turnStarted("t-multi", "turn-2", 30));
+    store.applyEvent({
+      type: "turn.aborted",
+      threadId: "t-multi",
+      provider: "opencode",
+      at: 40,
+      source: "kone.store",
+      turnId: "turn-2",
+      reason: "failed",
+      message: "late boom",
+    });
+
+    const spans = store.threadTurnSpans(["t-failed", "t-multi"]);
+    expect(spans.size).toBe(2);
+    expect(spans.get("t-failed")).toEqual(store.threadTurnSpan("t-failed"));
+    expect(spans.get("t-multi")).toEqual(store.threadTurnSpan("t-multi"));
+    expect(spans.get("t-failed")).toEqual({
+      startedAt: 10,
+      endedAt: 20,
+      runningTurns: 0,
+      lastState: "failed",
+      lastError: "boom",
+    });
+    expect(spans.get("t-multi")).toEqual({
+      startedAt: 10,
+      endedAt: 40,
+      runningTurns: 0,
+      lastState: "failed",
+      lastError: "late boom",
+    });
+  });
+});
+
 describe("delete/archive subtree cascade with busy guard", () => {
   test("deleteThread cascades to spawned children and every row kind, and refuses while busy", () => {
     const store = freshStore();
@@ -1056,6 +1141,99 @@ describe("live capture contracts", () => {
       usage: { contextWindow: 200000, contextUsed: 120000, compactsAutomatically: true },
     } as RuntimeEvent);
     expect(store.threadMeta("t-1")?.compactsAutomatically).toBe(true);
+  });
+
+  test("a compacted boundary invalidates the stored window fill", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex" });
+    // SAFETY: the literal carries every field read back; only the usage snapshot matters.
+    store.applyEvent({
+      type: "thread.token-usage.updated",
+      threadId: "t-1",
+      provider: "codex",
+      at: 15,
+      source: "kone.store",
+      usage: { contextWindow: 200000, contextUsed: 180000, compactsAutomatically: true },
+    } as RuntimeEvent);
+    expect(store.threadMeta("t-1")?.contextUsed).toBe(180000);
+    // The provider reports the shrunken fill on the boundary (Claude's
+    // post_tokens) — the meter restarts from it, not from the old fill.
+    // SAFETY: the literal is the compacted boundary shape under test.
+    store.applyEvent({
+      type: "thread.state.changed",
+      threadId: "t-1",
+      provider: "codex",
+      at: 16,
+      source: "kone.store",
+      state: "compacted",
+      beforeTokens: 180000,
+      afterTokens: 20000,
+    } as RuntimeEvent);
+    expect(store.threadMeta("t-1")?.contextUsed).toBe(20000);
+    // The window itself and the cumulative spend rollup are untouched — only
+    // the fill is invalidated.
+    expect(store.threadMeta("t-1")?.contextWindow).toBe(200000);
+  });
+
+  test("a compacted boundary without token counts leaves the window fill unknown", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex" });
+    // SAFETY: the literal carries every field read back; only the usage snapshot matters.
+    store.applyEvent({
+      type: "thread.token-usage.updated",
+      threadId: "t-1",
+      provider: "codex",
+      at: 15,
+      source: "kone.store",
+      usage: { contextWindow: 200000, contextUsed: 180000, compactsAutomatically: true },
+    } as RuntimeEvent);
+    // A silent provider (native Codex compaction, synthesized fallback)
+    // announces no counts — the fill reads unknown (NULL) until the next
+    // usage event, instead of claiming the pre-compaction fill or a fresh
+    // window it cannot see.
+    // SAFETY: the literal is the compacted boundary shape under test.
+    store.applyEvent({
+      type: "thread.state.changed",
+      threadId: "t-1",
+      provider: "codex",
+      at: 16,
+      source: "kone.store",
+      state: "compacted",
+    } as RuntimeEvent);
+    expect(store.threadMeta("t-1")?.contextUsed).toBeUndefined();
+    expect(store.threadMeta("t-1")?.contextWindow).toBe(200000);
+  });
+
+  test("compacted boundaries are recorded for the timeline, oldest first", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "codex" });
+    expect(store.listCompactions("t-1")).toEqual([]);
+    // SAFETY: each literal is the compacted boundary shape under test.
+    store.applyEvent({
+      type: "thread.state.changed",
+      threadId: "t-1",
+      provider: "codex",
+      at: 16,
+      source: "kone.store",
+      state: "compacted",
+      beforeTokens: 180000,
+      afterTokens: 20000,
+    } as RuntimeEvent);
+    // SAFETY: this literal is also the compacted boundary shape under test.
+    store.applyEvent({
+      type: "thread.state.changed",
+      threadId: "t-1",
+      provider: "codex",
+      at: 30,
+      source: "kone.store",
+      state: "compacted",
+    } as RuntimeEvent);
+    expect(store.listCompactions("t-1")).toEqual([
+      { threadId: "t-1", at: 16, beforeTokens: 180000, afterTokens: 20000 },
+      { threadId: "t-1", at: 30, beforeTokens: null, afterTokens: null },
+    ]);
+    // Other threads read back only their own markers.
+    expect(store.listCompactions("t-missing")).toEqual([]);
   });
 
   test("token-usage for antigravity keeps the max running total across turns", () => {

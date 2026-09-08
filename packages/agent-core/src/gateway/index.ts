@@ -52,6 +52,7 @@ import {
   type AppThreadsRunner,
   type AppThreadsToolOptions,
 } from "./tools/appThreads.js";
+import type { ThreadGateKind } from "../types.js";
 import {
   createAppProviderTools,
   type AppProvidersToolOptions,
@@ -110,6 +111,15 @@ export interface GatewayInput {
    *  to tell a sender whether a message interrupts a peer or waits for it.
    *  Absent, every peer reads as away, which is the safe way to be wrong. */
   isThreadLive?: (threadId: string) => boolean;
+  /** What a thread is parked on, if anything — what the thread list reads to
+   *  tell a parked thread (waiting-for-approval / waiting-for-user-input)
+   *  from one that is merely idle. Absent, no thread reads as parked, which
+   *  is the safe way to be wrong. */
+  pendingThreadGate?: (threadId: string) => ThreadGateKind | null;
+  /** Every parked gate in one indexed snapshot, built once per thread list —
+   *  the list's batched read. Wins over `pendingThreadGate` for lists;
+   *  `pendingThreadGate` stays the single-thread read. */
+  pendingGates?: () => ReadonlyMap<string, ThreadGateKind>;
   /** The appearance the renderer last reported, for `app_get_theme_state`.
    *  Absent, the tool reports that the current theme is unknown rather than
    *  naming a default that may not be the one on screen. */
@@ -185,6 +195,8 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const appThreadOptions: AppThreadsToolOptions = { store: input.store, emit: input.emit };
   if (input.readProjects) appThreadOptions.readProjects = input.readProjects;
   if (input.isThreadLive) appThreadOptions.isThreadLive = input.isThreadLive;
+  if (input.pendingThreadGate) appThreadOptions.pendingGateFor = input.pendingThreadGate;
+  if (input.pendingGates) appThreadOptions.pendingGates = input.pendingGates;
   if (input.threads) appThreadOptions.runner = input.threads;
   if (input.threadAvailability) appThreadOptions.availability = input.threadAvailability;
   if (input.threadControls) Object.assign(appThreadOptions, input.threadControls);

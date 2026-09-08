@@ -28,6 +28,7 @@
 import { randomUUID } from "node:crypto";
 
 import { truncateThreadTitle } from "../../threadTitle.js";
+import { projectThreadStatus } from "../../spawnProjection.js";
 import {
   modelChainOf,
   planSpawnModel,
@@ -35,7 +36,7 @@ import {
   type ProviderAvailability,
 } from "../../agentModel.js";
 import { resolveDelegation } from "../../delegate.js";
-import { ago, compact, decodeCursor, encodeCursor, squash } from "../helpers.js";
+import { compact, decodeCursor, encodeCursor, squash } from "../helpers.js";
 import type {
   AgentPersona,
   EmitEvent,
@@ -43,11 +44,13 @@ import type {
   Session,
   SendTurnInput,
   SessionStartInput,
-  StoredBlock,
   StoredThread,
   StoredThreadMeta,
+  ThreadGateKind,
+  ThreadStatus,
   TurnStartResult,
 } from "../../types.js";
+import type { TurnSpan } from "../../conversationStoreTypes.js";
 import type { AgentModelRef, AgentRecord } from "../../ConversationStore.js";
 import {
   ArchiveAppThreadInputSchema,
@@ -73,6 +76,14 @@ import {
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { requireProjects, resolveProject, type ProjectRosterEntry } from "./appProjects.js";
+import {
+  blockText,
+  iso,
+  threadLine,
+  threadPayload,
+  truncateTo,
+  type ThreadReading,
+} from "./appThreadsFormatting.js";
 
 /** The store slice these tools read and write through. */
 export interface AppThreadsStore {
@@ -83,6 +94,17 @@ export interface AppThreadsStore {
    *  handed to. A thread is handed to a team member or to nobody: an agent the
    *  user has not put on the project is not on it. */
   listProjectAgents(projectPath: string): AgentRecord[];
+  /** The thread's turn readout — when its turns ran, how many are still
+   *  running, how the newest assistant block settled. One cheap aggregate
+   *  query per thread; what the list's `status` is derived from. Absent, every
+   *  thread reads as idle-or-live (the degraded answer for test stores). */
+  threadTurnSpan?(threadId: string): TurnSpan | null;
+  /** The batch version of threadTurnSpan: the same readout for many threads
+   *  in one round trip. The list reads the whole page through this when the
+   *  store offers it, falling back to one threadTurnSpan per row otherwise.
+   *  A miss reads as null, like the single-thread answer for a thread with
+   *  no assistant history. */
+  threadTurnSpans?(threadIds: readonly string[]): ReadonlyMap<string, TurnSpan>;
   /** The agent a thread runs as, when it has one — what makes a list entry say
    *  whose thread it is. */
   getThreadAgent(threadId: string): { agentId: string | null } | null;
@@ -155,6 +177,16 @@ export interface AppThreadsToolOptions {
   /** Whether a thread has a live provider session, so a list can say which
    *  threads are running rather than only when they last spoke. */
   isThreadLive?: (threadId: string) => boolean;
+  /** What a thread is parked on, if anything — an approval the user must
+   *  decide, or a question for the user. Outranks the turn readout when
+   *  deriving `status`: a parked thread is the one state where nothing moves
+   *  until a human acts. Absent, no thread reads as parked. */
+  pendingGateFor?: (threadId: string) => ThreadGateKind | null;
+  /** Every parked gate in one indexed snapshot, built once per list — rows
+   *  read from the returned map instead of one per-thread call each. Wins
+   *  over `pendingGateFor` for lists; `pendingGateFor` stays the fallback
+   *  for single-thread reads and hosts without a supplier. */
+  pendingGates?: () => ReadonlyMap<string, ThreadGateKind>;
   /** Starts threads. Absent, `app_start_thread` refuses rather than pretending:
    *  there is no dispatcher in this process to drive one. */
   runner?: AppThreadsRunner;
@@ -193,26 +225,6 @@ export interface AppThreadsToolOptions {
  *  than read as a boundary in a list it does not describe. */
 const THREAD_CURSOR = "threads";
 
-const TRUNCATION_MARKER = "\n...[truncated]";
-
-function truncateTo(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const budget = Math.max(0, maxChars - TRUNCATION_MARKER.length);
-  return `${text.slice(0, budget).trimEnd()}${TRUNCATION_MARKER}`;
-}
-
-/** A block's model-readable narrative: the prompt for user blocks, the ordered
- *  assistant text for assistant blocks. Tool calls stay out — the thread's raw
- *  tool traffic belongs to the thread, and a reader asking what was said is not
- *  asking for it. */
-function blockText(block: StoredBlock): string {
-  if (block.role === "user") return block.text;
-  return block.items
-    .filter((item) => item.kind === "assistant_text")
-    .map((item) => item.text)
-    .join("\n");
-}
-
 /** Stable FNV-1a hex over the canonicalized start — the idempotency
  *  fingerprint, not a security boundary. Same construction as the scratchpad
  *  write's, for the same reason: a retry of the *same* start replays, and a
@@ -226,71 +238,6 @@ function fingerprintOf(parts: Array<string | undefined>): string {
     hash = (hash * 0x01000193) >>> 0;
   }
   return hash.toString(16);
-}
-
-/** An epoch stamp as a date a model can reason about, or null. */
-function iso(at: number | null | undefined): string | null {
-  return at === null || at === undefined ? null : new Date(at).toISOString();
-}
-
-/** One thread as a list entry. */
-interface ThreadReading {
-  meta: StoredThreadMeta;
-  project: ProjectRosterEntry | null;
-  agentName: string | null;
-  running: boolean;
-}
-
-/**
- * One thread as a row.
- *
- * `withProject` names which project the thread is on, and is only set on a list
- * that spans several — a list scoped to one project says so once at the top
- * instead of repeating an absolute path on every row. It is the project's NAME
- * rather than its path because every tool here takes a project by name, so the
- * row already reads back as a valid argument.
- *
- * The flags are omitted when false rather than sent as `false`. On a list of
- * twenty that is most of the payload, and "not running, not unread, not done,
- * not archived" is the ordinary case a reader can assume.
- */
-function threadPayload(reading: ThreadReading, withProject: boolean): GatewayRecord {
-  const meta = reading.meta;
-  const lastActivityAt = meta.lastActivityAt ?? meta.updatedAt;
-  // Unread and done are both comparisons against the last activity rather than
-  // flags, which is why they are computed here instead of read: a thread the
-  // agent has spoken in since you marked it done is asking again.
-  const unread = (meta.lastVisitedAt ?? 0) < lastActivityAt;
-  const done = meta.doneAt !== null && (meta.doneAt ?? 0) >= lastActivityAt;
-  const row: GatewayRecord = {
-    threadId: meta.threadId,
-    title: meta.title ?? null,
-    model: meta.model ?? meta.provider,
-    agent: reading.agentName,
-    branch: meta.branch ?? null,
-    lastActivityAt: iso(lastActivityAt),
-  };
-  if (withProject) row.project = reading.project?.name ?? meta.projectPath;
-  if (reading.running) row.running = true;
-  if (unread) row.unread = true;
-  if (done) row.done = true;
-  if (meta.archivedAt !== null) row.archived = true;
-  return compact(row);
-}
-
-/** One thread as a single prose line. One, not two: on a twenty-row answer the
- *  second line was costing more than everything it carried. */
-function threadLine(reading: ThreadReading, withProject: boolean): string {
-  const meta = reading.meta;
-  const marks = [
-    meta.threadId,
-    reading.agentName,
-    meta.model ?? meta.provider,
-    withProject ? (reading.project?.name ?? meta.projectPath) : null,
-    ago(meta.lastActivityAt ?? meta.updatedAt),
-    reading.running ? "running" : null,
-  ].filter((mark): mark is string => mark !== null);
-  return `- ${meta.title ?? "(untitled)"} — ${marks.join(" · ")}`;
 }
 
 /** The agent a thread runs as, by name, or null. */
@@ -369,15 +316,38 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
   const mintThreadId = options.newThreadId ?? (() => randomUUID());
   const isLive = (threadId: string): boolean => options.isThreadLive?.(threadId) ?? false;
 
+  /** The facts one row's status is derived from, resolved up front so a list
+   *  page costs one batch span read plus one gate snapshot pass instead of
+   *  one store aggregate per row. */
+  interface ReadingFacts {
+    span: TurnSpan | null;
+    gate: ThreadGateKind | null;
+    live: boolean;
+  }
+
   const readingFor = (
     meta: StoredThreadMeta,
     projects: Map<string, ProjectRosterEntry>,
+    facts: ReadingFacts,
   ): ThreadReading => ({
     meta,
     project: projects.get(meta.projectPath) ?? null,
     agentName: agentNameFor(store, meta.threadId),
-    running: isLive(meta.threadId),
+    status: statusFor(facts),
   });
+
+  /** One thread's rolled-up status, derived at read time — never stored, so a
+   *  crash cannot leave a dead thread labelled "working". A parked gate
+   *  outranks the turn readout; a running turn without a live session reads
+   *  interrupted. The span is decomposed into primitives at this boundary so
+   *  the projection only ever sees plain facts, never a store row. */
+  const statusFor = (facts: ReadingFacts): ThreadStatus =>
+    projectThreadStatus({
+      gate: facts.gate,
+      running: (facts.span?.runningTurns ?? 0) > 0,
+      lastState: facts.span?.lastState ?? null,
+      hasLiveSession: facts.live,
+    });
 
   // -- lifecycle plumbing (one place, not five handlers) ----------------------
   // Every lifecycle op resolves to a single async fn here: the injected control
@@ -531,7 +501,28 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           return meta.threadId > (after.id ?? "");
         })
       : metas;
-    const listed = page.slice(0, limit).map((meta) => readingFor(meta, byPath));
+    // One batch span read for the whole page plus one gate snapshot, so
+    // a twenty-row list is one SQL aggregate — not one per row — and every
+    // row's gate is read from the same snapshot. Stores without the batch
+    // read fall back to one aggregate per row; hosts without the snapshot
+    // supplier fall back to one gate lookup per row.
+    const listedMetas = page.slice(0, limit);
+    const listedIds = listedMetas.map((meta) => meta.threadId);
+    const spanMap = store.threadTurnSpans?.(listedIds) ?? null;
+    const gateIndex = options.pendingGates?.() ?? null;
+    const gateSnapshot = new Map<string, ThreadGateKind | null>();
+    if (gateIndex) {
+      for (const threadId of listedIds) gateSnapshot.set(threadId, gateIndex.get(threadId) ?? null);
+    } else if (options.pendingGateFor) {
+      for (const threadId of listedIds) gateSnapshot.set(threadId, options.pendingGateFor(threadId));
+    }
+    const listed = listedMetas.map((meta) =>
+      readingFor(meta, byPath, {
+        span: spanMap ? (spanMap.get(meta.threadId) ?? null) : (store.threadTurnSpan?.(meta.threadId) ?? null),
+        gate: gateSnapshot.get(meta.threadId) ?? null,
+        live: isLive(meta.threadId),
+      }),
+    );
     const last = listed[listed.length - 1]?.meta;
     const remaining = page.length - listed.length;
     // A scoped list names its project once, at the top; only a list that spans
@@ -623,7 +614,11 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
           provider: thread.provider,
           model: thread.model ?? null,
           agent: agentNameFor(store, thread.threadId),
-          running: isLive(thread.threadId),
+          status: statusFor({
+            span: store.threadTurnSpan?.(thread.threadId) ?? null,
+            gate: options.pendingGateFor?.(thread.threadId) ?? null,
+            live: isLive(thread.threadId),
+          }),
         }),
         messages,
         totalMessages: thread.blocks.length,
@@ -890,7 +885,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_list_threads",
       description:
-        "List the conversations in a project - or across every project the app holds: title, thread id, the agent and model it runs on, whether it is running right now, whether it is unread or done, and when it was last active. The running / unread / done / archived flags are only present when they are true. Pass archived: true to look in the archive instead, which is a separate place from the live list.",
+        "List the conversations in a project - or across every project the app holds: title, thread id, the agent and model it runs on, its status (working, waiting-for-approval, waiting-for-user-input, idle, failed, interrupted, starting), whether it is unread or done, and when it was last active. The unread / done / archived flags are only present when they are true; status is always present. Pass archived: true to look in the archive instead, which is a separate place from the live list.",
       inputSchema: ListAppThreadsInputSchema,
       jsonSchema: LIST_APP_THREADS_JSON_SCHEMA,
       permission: "allow",
@@ -905,7 +900,7 @@ export function createAppThreadTools(options: AppThreadsToolOptions): ToolEntry[
     {
       name: "app_read_thread",
       description:
-        "Read what was said in one of the app's threads, newest messages last. Returns the user's prompts and the agent's replies as prose; tool calls and their payloads stay in the thread. Use it to catch up on a conversation before answering about it or continuing it.",
+        "Read what was said in one of the app's threads, newest messages last. Returns the user's prompts and the agent's replies as prose; tool calls and their payloads stay in the thread. Also reports the thread's status (working, waiting-for-approval, waiting-for-user-input, idle, failed, interrupted, starting). Use it to catch up on a conversation before answering about it or continuing it.",
       inputSchema: ReadAppThreadInputSchema,
       jsonSchema: READ_APP_THREAD_JSON_SCHEMA,
       permission: "allow",
