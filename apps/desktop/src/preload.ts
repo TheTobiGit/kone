@@ -27,6 +27,8 @@ import type { StudioSaveInput } from "./modules/studio/index.js";
 import type {
   ApprovalDecision,
   ChatAttachment,
+  CompactThreadResult,
+  CompactionRecord,
   CreateSideChatInput,
   CreateSideChatResult,
   InteractionMode,
@@ -126,7 +128,6 @@ import type {
   GitHubStatus,
   GitHubUser,
 } from "./modules/git/index.js";
-
 
 const api = {
   platform: process.platform,
@@ -396,6 +397,11 @@ const api = {
       ipcRenderer.invoke("agent:show-attachment-in-folder", attachmentId),
     sendTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:send-turn", input),
+    // Trigger context compaction for a thread; resolves once the provider has
+    // compacted and the "compacted" boundary has been observed (or
+    // synthesized) — output flows through onEvent.
+    compactThread: (threadId: string): Promise<CompactThreadResult> =>
+      ipcRenderer.invoke("agent:compact-thread", threadId),
     // Fork a side chat off a source thread (docs/side-chat-design.md). The
     // renderer mints the thread id; a replayed id resolves "exists".
     createSideChat: (input: CreateSideChatInput): Promise<CreateSideChatResult> =>
@@ -441,6 +447,8 @@ const api = {
         ipcRenderer.invoke("agent:history-latest", projectPath),
       thread: (threadId: string): Promise<StoredThread | null> =>
         ipcRenderer.invoke("agent:history-thread", threadId),
+      compactions: (threadId: string): Promise<CompactionRecord[]> =>
+        ipcRenderer.invoke("agent:history-compactions", threadId),
       // Windowed thread read (user-anchored keyset pages): first page when no
       // cursor is given; pass `nextCursor` back verbatim for the next strictly
       // older page. Null when the thread is missing. The renderer treats the
