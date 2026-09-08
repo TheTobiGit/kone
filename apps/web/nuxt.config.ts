@@ -82,6 +82,10 @@ export default defineNuxtConfig({
   devServer: {
     port: 3001,
   },
+  // Desktop-only SPA: the packaged renderer loads over app:// with no Nitro
+  // server, so it prerenders static (see the nitro preset below). Web keeps
+  // the Nuxt default SSR served by `nuxt build` — do not flatten this to
+  // `false` without also taking web static (baseURL, preset, server routes).
   ssr: isDesktop ? false : undefined,
   app: appConfig,
   runtimeConfig: {
