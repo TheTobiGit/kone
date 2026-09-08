@@ -28,6 +28,13 @@ const props = defineProps<{
   sessionKey?: string;
 }>();
 
+const emit = defineEmits<{
+  /** Reveal another thread's own conversation — the live pane's subagent
+   *  shell asking to open a spawned child's thread. The portal owns selection,
+   *  so it arrives here rather than being answered in the pane. */
+  "open-thread": [threadId: string];
+}>();
+
 const projectPath = computed(() => props.row.projectPath ?? null);
 </script>
 
@@ -38,6 +45,7 @@ const projectPath = computed(() => props.row.projectPath ?? null);
     :row="row"
     :project-path="projectPath"
     :session-key="sessionKey"
+    @open-thread="emit('open-thread', $event)"
   />
 
   <InboxThreadStored v-else :key="row.threadId" :row="row" />

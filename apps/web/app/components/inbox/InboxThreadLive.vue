@@ -16,13 +16,16 @@
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
+import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
+import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useAgentProviders } from "~/composables/useAgentProviders";
+import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import { compactPropsForSession } from "~/utils/compactAvailability";
-import type { ChatAttachment } from "~/types/desktop";
+import type { ApprovalDecision, ChatAttachment, UserInputAnswers } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 
@@ -38,6 +41,15 @@ const props = defineProps<{
    *  race with everything else the registry is doing; a key is the session. */
   sessionKey?: string;
 }>();
+
+const emit = defineEmits<{
+  /** Reveal a spawned child thread's own conversation — the shell's open-thread
+   *  action. The pane shows one thread, so reaching another one is the portal's
+   *  call, not this pane's. */
+  "open-thread": [threadId: string];
+}>();
+
+const { cue } = useSound();
 
 // Resolved once, at setup: the registry is picked from this value eagerly, so
 // this component is keyed on the project and thread by its host rather than
@@ -73,6 +85,35 @@ const composer = useInboxComposer({
   projectPath: props.projectPath,
 });
 
+// Whether the composer is expanded into its input. When open, the docks leave
+// the bottom-right corner and show directly above the composer card.
+const composerOpen = ref(false);
+
+// The thread's live asks — the same two gates the studio answers in place, so
+// the inbox answers them in place too rather than leaving a parked turn with
+// nowhere to go.
+const pendingUserInput = computed(() => session.value?.pendingUserInput.value ?? null);
+const pendingApproval = computed(() => session.value?.pendingApproval.value ?? null);
+
+// Answer the agent's live question — hands the picked answers back so the
+// parked tool call resolves and the turn continues.
+function onAnswerUserInput(requestId: string, answers: UserInputAnswers): void {
+  void session.value?.respondUserInput(requestId, answers);
+}
+// Dismiss the question — an empty answer, which the adapter treats as declined.
+function onCancelUserInput(requestId: string): void {
+  void session.value?.respondUserInput(requestId, {});
+}
+// Decide a parked tool approval — resolves the parked request and lets the
+// turn continue.
+function onRespondApproval(requestId: string, decision: ApprovalDecision): void {
+  void session.value?.respondApproval(requestId, decision);
+}
+// Stop a live provider-native nested run, leaving the parent turn running.
+function onStopSubagent(toolUseId: string): void {
+  void agent.stopSubagent(toolUseId);
+}
+
 // The idle sweep evicts sessions it believes nobody is looking at. A pane
 // holding one is exactly the case it must not evict, and saying so is the
 // pane's job — the registry cannot see who is on screen.
@@ -88,6 +129,47 @@ const busy = computed(() => session.value?.busy.value ?? false);
 const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const starting = computed(() => session.value?.sessionState.value === "starting");
 const threadTitle = computed(() => session.value?.title.value || props.row.title);
+
+// Derives and snapshot for active plan, touched files, and subagent delegates.
+const {
+  subagentsRaw,
+  activePlan,
+  activeChanges,
+  activeDelegates,
+} = useDockSnapshot(
+  blocks,
+  computed(() => session.value?.spawnedChildren.value ?? []),
+);
+
+// Which delegate's expanded transcript is on screen. Approvals still go
+// through this pane's one approval path, and revealing a spawned thread is the
+// portal's call — the shell only asks.
+const focusedKey = computed(() => session.value?.key ?? null);
+const {
+  activeShell,
+  activeShellRun,
+  activeShellThread,
+  shellApprovals,
+  shellSuppressesApproval,
+  onCloseShell,
+  onDecideShellApproval,
+  onShellOpenThread,
+  onOpenDelegate,
+} = useSubagentShell({
+  subagents: subagentsRaw,
+  focusedThread: session,
+  focusedPendingApproval: pendingApproval,
+  focusedKey,
+  respondApproval: (requestId, decision) => onRespondApproval(requestId, decision),
+  revealThread: (threadId) => emit("open-thread", threadId),
+  cue,
+});
+
+// While an ask owns the centre-bottom the composer steps aside for it — the
+// modal sits in the composer's spot, the way it does on the studio.
+const modalOpen = computed(
+  () => Boolean(pendingUserInput.value) || (Boolean(pendingApproval.value) && !shellSuppressesApproval.value),
+);
 
 // The header meter's Compact control — the same shared rule as the strip, so
 // both surfaces agree. Null session (or an unsupported provider) hides the
@@ -201,8 +283,9 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     <!-- Laid over the transcript rather than under it, the way it is on the
          board: the composer keeps its own footprint and the conversation
          scrolls behind it, so the thread does not resize every time the card
-         opens or a queued strip appears. -->
-    <div class="live__dock">
+         opens or a queued strip appears. While an ask owns the centre-bottom
+         the composer steps aside for it. -->
+    <div v-if="!modalOpen" class="live__dock">
       <ProviderHealthBanner
         class="live__banner"
         :status="composer.sendBlockedStatus.value"
@@ -210,6 +293,16 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :checking="composer.recheckingProviders.value"
         @recheck="composer.recheckProviders"
       />
+
+      <ThreadDockStack
+        :composer-open="composerOpen"
+        :changes="activeChanges"
+        :plan="activePlan"
+        :project-path="projectPath"
+        :thread-key="row.threadId"
+        position-mode="absolute-dock"
+      />
+
       <AgentComposer
         :project-path="projectPath"
         :project-name="row.projectName"
@@ -243,8 +336,48 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @update:fast-mode="composer.onFastMode"
         @update:context-window="composer.onContextWindow"
         @open-models="composer.openPicker"
+        @update:open="composerOpen = $event"
       />
     </div>
+
+    <!-- Mid-turn question: raises over the composer in the picker-family
+         shell, the way it does on the studio. Answering resolves the parked
+         tool call and the turn continues. -->
+    <UiUserInputModal
+      v-if="pendingUserInput"
+      :request-id="pendingUserInput.requestId"
+      :questions="pendingUserInput.questions"
+      @answer="onAnswerUserInput"
+      @cancel="onCancelUserInput"
+      />
+
+    <!-- Tool approval: the turn is parked on the agent wanting to run
+         something. The subagent shell, when it is already showing this same
+         ask inline, is the answer spot instead — and then this modal stays
+         down. -->
+    <AgentApprovalModal
+      v-if="pendingApproval && !shellSuppressesApproval"
+      :request-id="pendingApproval.requestId"
+      :approval="pendingApproval.approval"
+      :queue="session?.pendingApprovals.value"
+      @decide="onRespondApproval"
+    />
+
+    <!-- The subagent corner — delegated runs bottom-left with their expanded
+         shell. Steps aside while the shell is open. -->
+    <ThreadSubagentDock
+      :rows="activeDelegates.rows"
+      :streaming="activeDelegates.streaming"
+      :shell="activeShell"
+      :shell-run="activeShellRun"
+      :shell-thread="activeShellThread"
+      :shell-approvals="shellApprovals"
+      @open="onOpenDelegate"
+      @stop-subagent="onStopSubagent"
+      @close="onCloseShell"
+      @open-thread="onShellOpenThread"
+      @decide-approval="onDecideShellApproval"
+    />
 
     <!-- The full providers → models → effort picker. It is the surface's to
          host, not the composer's: it lands outside the composer's dock, which

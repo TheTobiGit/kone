@@ -30,6 +30,7 @@ import {
 } from "~/utils/inboxLayout";
 import InboxNewThread from "~/components/inbox/InboxNewThread.vue";
 import { useShortcuts } from "~/composables/useShortcuts";
+import { resolveThreadSummary, summarizeSession } from "~/utils/sessionList";
 import type { InboxViewId } from "~/types/inbox";
 import type { SessionSummary } from "~/types/session";
 
@@ -124,6 +125,24 @@ function onPickThread(): void {
   if (row?.projectPath && !row.done && view.value === "inbox") {
     void intake.adoptThread(row.projectPath, row.threadId);
   }
+}
+
+/** A spawned child's own conversation, asked for from the reading pane's
+ *  subagent shell. The child lives in the same project as the thread that
+ *  spawned it, so its row is resolved out of that project's stored threads and
+ *  selected the ordinary way — the pane remounts onto it. A child the store
+ *  cannot name yet leaves you where you are. */
+async function onOpenThread(threadId: string): Promise<void> {
+  const parent = selected.value;
+  const projectPath = parent?.projectPath;
+  if (!projectPath) return;
+  const summary = await resolveThreadSummary(projectPath, threadId, parent?.projectName);
+  if (!summary) return;
+  cue("select");
+  composing.value = false;
+  handedKey.value = null;
+  selected.value = summary;
+  if (view.value === "inbox") void intake.adoptThread(projectPath, threadId);
 }
 
 // Which thread the reading pane is showing. Portal-level rather than per-view,
@@ -299,6 +318,7 @@ function close(): void {
         v-else-if="selected"
         :row="selected"
         :session-key="handedKey ?? undefined"
+        @open-thread="onOpenThread"
       />
     </section>
   </div>
