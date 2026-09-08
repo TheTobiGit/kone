@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import type { AgentRecord } from "../../ConversationStore.js";
 import type { ProviderAvailability } from "../../agentModel.js";
+import type { TurnSpan } from "../../conversationStoreTypes.js";
+import type { ThreadGateKind } from "../../types.js";
 import type {
   EmitEvent,
   SendTurnInput,
@@ -168,6 +170,7 @@ function makeStore(
       return found ?? null;
     },
     listProjectAgents: (path) => (path === KONE ? [MAYA, REX] : []),
+    threadTurnSpan: () => null,
     getThreadAgent: (threadId) =>
       threadId === "t-newest" ? { agentId: "agent-maya" } : { agentId: null },
     getAgent: (agentId) => (agentId === "agent-maya" ? MAYA : agentId === "agent-rex" ? REX : null),
@@ -261,6 +264,9 @@ function tools(
     projects?: readonly ProjectRosterEntry[] | null;
     runner?: AppThreadsRunner | null;
     live?: string[];
+    spans?: Record<string, TurnSpan | null>;
+    gates?: Record<string, ThreadGateKind>;
+    pendingGates?: () => ReadonlyMap<string, ThreadGateKind>;
     availability?: ProviderAvailability[];
     threadId?: string;
     emit?: EmitEvent;
@@ -277,13 +283,24 @@ function tools(
   } = {},
 ) {
   const live = new Set(options.live ?? []);
+  const gates = options.gates ?? {};
+  const baseStore = options.store ?? makeStore();
+  const storeWithSpans: AppThreadsStore =
+    options.spans === undefined
+      ? baseStore
+      : {
+          ...baseStore,
+          threadTurnSpan: (threadId) => options.spans?.[threadId] ?? null,
+        };
   const toolOptions: AppThreadsToolOptions = {
-    store: options.store ?? makeStore(),
+    store: storeWithSpans,
     readProjects: () => (options.projects === undefined ? PROJECTS : options.projects),
     isThreadLive: (threadId) => live.has(threadId),
+    pendingGateFor: (threadId) => gates[threadId] ?? null,
     availability: async () => options.availability ?? AVAILABILITY,
     newThreadId: () => options.threadId ?? "thread-new",
   };
+  if (options.pendingGates) toolOptions.pendingGates = options.pendingGates;
   if (options.emit) toolOptions.emit = options.emit;
   if (options.stopThread) toolOptions.stopThread = options.stopThread;
   if (options.archiveThread) toolOptions.archiveThread = options.archiveThread;
@@ -323,20 +340,42 @@ describe("app_list_threads", () => {
     expect(threads.map((row) => row.threadId)).toEqual(["t-newest", "t-site", "t-done"]);
   });
 
-  it("says which threads are running and whose they are", async () => {
+  it("says which threads are live and whose they are, off status alone", async () => {
     const result = await tools({ live: ["t-newest"] }).call(makeCtx(), "app_list_threads", {
       project: "kone",
     });
     // SAFETY: as above.
     const threads = result.structuredContent?.threads as GatewayRecord[];
 
-    expect(threads[0]?.running).toBe(true);
+    // No live turn yet and no assistant history: a live-backed thread with no
+    // turns reads starting, which is how a reader tells live from idle — no
+    // separate running flag rides the row.
+    expect(threads[0]?.status).toBe("starting");
     expect(threads[0]?.agent).toBe("Maya");
     // Absent, not false: a flag only appears on a row it is true of, which is
     // most of what keeps a twenty-row answer small.
+    expect(threads[0]).not.toHaveProperty("running");
+    expect(threads[1]?.status).toBe("idle");
     expect(threads[1]).not.toHaveProperty("running");
     expect(text(result)).toContain("Maya");
-    expect(text(result)).toContain("running");
+    expect(text(result)).toContain("starting");
+  });
+
+  it("reads liveness off status: working and starting are live, idle is not", async () => {
+    const result = await tools({
+      live: ["t-newest"],
+      spans: {
+        "t-newest": { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" },
+        "t-done": { startedAt: 1, endedAt: 2, runningTurns: 0, lastState: "completed" },
+      },
+    }).call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    const isLive = (row: GatewayRecord): boolean =>
+      row.status === "working" || row.status === "starting";
+    expect(isLive(threads[0] ?? {})).toBe(true);
+    expect(isLive(threads[1] ?? {})).toBe(false);
   });
 
   it("reads done and unread as comparisons against the last activity", async () => {
@@ -350,6 +389,161 @@ describe("app_list_threads", () => {
     // Marked done after its last activity, and visited since.
     expect(threads[1]?.done).toBe(true);
     expect(threads[1]).not.toHaveProperty("unread");
+  });
+
+  it("reports a status on every row", async () => {
+    const result = await tools({
+      live: ["t-newest"],
+      spans: {
+        "t-newest": { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" },
+        "t-done": { startedAt: 1, endedAt: 2, runningTurns: 0, lastState: "completed" },
+      },
+    }).call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(threads[0]?.status).toBe("working");
+    expect(threads[1]?.status).toBe("idle");
+    expect(text(result)).toContain("working");
+  });
+
+  it("a parked gate outranks the turn readout", async () => {
+    const result = await tools({
+      live: ["t-newest"],
+      spans: {
+        "t-newest": { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" },
+      },
+      gates: { "t-newest": "approval" },
+    }).call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(threads[0]?.status).toBe("waiting-for-approval");
+  });
+
+  it("reads list gates off one supplier call, not one per row", async () => {
+    let supplierCalls = 0;
+    const result = await tools({
+      pendingGates: () => {
+        supplierCalls += 1;
+        return new Map([["t-newest", "approval"]]);
+      },
+    }).call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(supplierCalls).toBe(1);
+    expect(threads[0]?.status).toBe("waiting-for-approval");
+    expect(threads[1]?.status).toBe("idle");
+  });
+
+  it("prefers the gate snapshot supplier over the per-thread fallback for lists", async () => {
+    let fallbackCalls = 0;
+    const store = makeStore();
+    const registry = createRegistry(
+      createAppThreadTools({
+        store,
+        readProjects: () => PROJECTS,
+        isThreadLive: () => false,
+        pendingGateFor: (threadId) => {
+          fallbackCalls += 1;
+          return threadId === "t-newest" ? "user-input" : null;
+        },
+        pendingGates: () => new Map([["t-newest", "approval"]]),
+      }),
+    );
+    const result = await registry.call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(threads[0]?.status).toBe("waiting-for-approval");
+    expect(fallbackCalls).toBe(0);
+  });
+
+  it("falls back to one gate read per row without the supplier", async () => {
+    let fallbackCalls = 0;
+    const store = makeStore();
+    const registry = createRegistry(
+      createAppThreadTools({
+        store,
+        readProjects: () => PROJECTS,
+        isThreadLive: () => false,
+        pendingGateFor: (threadId) => {
+          fallbackCalls += 1;
+          return threadId === "t-newest" ? "approval" : null;
+        },
+      }),
+    );
+    const result = await registry.call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(fallbackCalls).toBe(2);
+    expect(threads[0]?.status).toBe("waiting-for-approval");
+    expect(threads[1]?.status).toBe("idle");
+  });
+
+  it("a running turn without a session reads interrupted, never working", async () => {
+    const result = await tools({
+      spans: {
+        "t-newest": { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" },
+        "t-done": { startedAt: 1, endedAt: 2, runningTurns: 0, lastState: "failed" },
+      },
+    }).call(makeCtx(), "app_list_threads", { project: "kone" });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(threads[0]?.status).toBe("interrupted");
+    expect(threads[1]?.status).toBe("failed");
+  });
+
+  it("reads the whole page's spans in one batch call when the store offers it", async () => {
+    const batchCalls: string[][] = [];
+    const store = makeStore({
+      threadTurnSpan: () => {
+        throw new Error("a batch-capable store must not take the per-row span path");
+      },
+      threadTurnSpans: (threadIds) => {
+        batchCalls.push([...threadIds]);
+        const spans: Map<string, TurnSpan> = new Map([
+          ["t-newest", { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" }],
+        ]);
+        return spans;
+      },
+    });
+    const result = await tools({ store, live: ["t-newest"] }).call(makeCtx(), "app_list_threads", {
+      project: "kone",
+    });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    // One call naming every row on the page — not one aggregate per row — and
+    // the miss (t-done, no assistant history) reads as idle, not as an error.
+    expect(batchCalls).toEqual([["t-newest", "t-done"]]);
+    expect(threads[0]?.status).toBe("working");
+    expect(threads[1]?.status).toBe("idle");
+  });
+
+  it("falls back to one span read per row without the batch method", async () => {
+    const singleCalls: string[] = [];
+    const store = makeStore({
+      threadTurnSpan: (threadId) => {
+        singleCalls.push(threadId);
+        return threadId === "t-newest"
+          ? { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" }
+          : null;
+      },
+    });
+    expect(store.threadTurnSpans).toBeUndefined();
+    const result = await tools({ store, live: ["t-newest"] }).call(makeCtx(), "app_list_threads", {
+      project: "kone",
+    });
+    // SAFETY: as above.
+    const threads = result.structuredContent?.threads as GatewayRecord[];
+
+    expect(singleCalls).toEqual(["t-newest", "t-done"]);
+    expect(threads[0]?.status).toBe("working");
+    expect(threads[1]?.status).toBe("idle");
   });
 
   it("caps the list and says how many it did not name", async () => {
@@ -544,6 +738,19 @@ describe("app_read_thread", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent?.thread).toMatchObject({ threadId: "t-newest" });
+  });
+
+  it("reports the thread's status alongside its messages", async () => {
+    const idle = await tools().call(makeCtx(), "app_read_thread", { threadId: "t-newest" });
+    expect(idle.structuredContent?.thread).toMatchObject({ threadId: "t-newest", status: "idle" });
+
+    const working = await tools({
+      live: ["t-newest"],
+      spans: {
+        "t-newest": { startedAt: 1, endedAt: null, runningTurns: 1, lastState: "running" },
+      },
+    }).call(makeCtx(), "app_read_thread", { threadId: "t-newest" });
+    expect(working.structuredContent?.thread).toMatchObject({ status: "working" });
   });
 
   it("refuses a thread the store does not hold", async () => {

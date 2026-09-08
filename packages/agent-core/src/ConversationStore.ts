@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "./sqlite.js";
 
-import { isSpawnedRelationship } from "./types.js";
+import { cleanCompactedCount, isSpawnedRelationship } from "./types.js";
 import type {
   ChatAttachment,
+  CompactionRecord,
   ForkContext,
   InteractionMode,
   ProfileStats,
@@ -91,6 +92,24 @@ import {
 } from "./conversationStoreTypes.js";
 
 export { GLOBAL_ASSISTANT_PROJECT_PATH };
+
+/** Decode one settled-compaction boundary into its durable record, parsing
+ *  and validating once here so the two writes below share one validated
+ *  value instead of each re-probing the event. Counts are cleaned numbers
+ *  or explicit null — never optional — matching CompactionRecord. */
+function decodeCompactionRecord(
+  threadId: string,
+  at: number,
+  beforeTokens: number | null | undefined,
+  afterTokens: number | null | undefined,
+): CompactionRecord {
+  return {
+    threadId,
+    at,
+    beforeTokens: cleanCompactedCount(beforeTokens),
+    afterTokens: cleanCompactedCount(afterTokens),
+  };
+}
 
 /** Transcript reads skip a user prompt its queued follow-up was journaled for
  *  while the queue row is still active (`queued`/`promoting` — the same active
@@ -1142,12 +1161,60 @@ export class ConversationStore {
           ).run(event.at, event.threadId);
           break;
         }
+        case "thread.state.changed": {
+          // A settled context compaction does two things: it invalidates the
+          // stored window fill (the pre-compaction number describes a
+          // transcript that no longer exists), and it records the boundary
+          // itself so the timeline can show when/where the context was
+          // compacted. The fill restarts at the reported post-compaction
+          // count; unknown stays NULL — "Compacted" with no counts reads
+          // differently from "→ 0", and the meter must not claim a fresh
+          // window it cannot see. The cumulative `tokens` rollup is spend,
+          // not window fill, so it stays either way.
+          if (event.state !== "compacted") break;
+          const record = decodeCompactionRecord(
+            event.threadId,
+            event.at,
+            event.beforeTokens,
+            event.afterTokens,
+          );
+          withTransaction(db, () => {
+            this.invalidateUsageSnapshot(db, record.threadId, record.afterTokens);
+            this.recordCompaction(db, record);
+          });
+          this.touch(db, event.threadId, event.at);
+          break;
+        }
         default:
           break;
       }
     } catch (err) {
       console.error("[conversation-store] applyEvent failed:", err);
     }
+  }
+
+  /** Invalidate the stored window fill after a settled compaction: the meter
+   *  restarts at the reported post-compaction count, or NULL when the
+   *  provider reported none — unknown, not zero. */
+  private invalidateUsageSnapshot(
+    db: DatabaseSync,
+    threadId: string,
+    afterTokens: number | null,
+  ): void {
+    this.prepare(db, `UPDATE threads SET context_used = ? WHERE thread_id = ?`).run(
+      afterTokens === null ? null : Math.max(0, afterTokens),
+      threadId,
+    );
+  }
+
+  /** Journal one settled-compaction boundary for the timeline's when/where
+   *  markers. Counts keep NULLs as unknown. */
+  private recordCompaction(db: DatabaseSync, record: CompactionRecord): void {
+    this.prepare(
+      db,
+      `INSERT INTO compactions (thread_id, at, before_tokens, after_tokens)
+       VALUES (?, ?, ?, ?)`,
+    ).run(record.threadId, record.at, record.beforeTokens, record.afterTokens);
   }
 
   /** Upsert one turn's usage audit row (v18's input/output/total, v21's
@@ -1642,6 +1709,42 @@ export class ConversationStore {
       return rows.map(rowToQueuedTurn);
     } catch (err) {
       console.error("[conversation-store] listQueuedTurns failed:", err);
+      return [];
+    }
+  }
+
+  /** Every settled compaction boundary on a thread, oldest first — what the
+   *  timeline renders its "when/where" markers from. Compactions are few (one
+   *  per event, manual or automatic), so this is always the full list, never
+   *  a page. */
+  listCompactions(threadId: string): CompactionRecord[] {
+    const db = this.handle();
+    if (!db) return [];
+    try {
+      // SAFETY: the selected columns are exactly the compactions table shape.
+      const rows = db
+        .prepare(
+          `SELECT thread_id, at, before_tokens, after_tokens FROM compactions
+           WHERE thread_id = ?
+           ORDER BY at ASC, seq ASC`,
+        )
+        .all(threadId) as Array<{
+        thread_id: string;
+        at: number;
+        before_tokens: number | null;
+        after_tokens: number | null;
+      }>;
+      return rows.map((row) => {
+        const record: CompactionRecord = {
+          threadId: row.thread_id,
+          at: row.at,
+          beforeTokens: row.before_tokens,
+          afterTokens: row.after_tokens,
+        };
+        return record;
+      });
+    } catch (err) {
+      console.error("[conversation-store] listCompactions failed:", err);
       return [];
     }
   }
@@ -2426,7 +2529,9 @@ export class ConversationStore {
       const row = db
         .prepare(`SELECT 1 FROM blocks WHERE thread_id = ? AND role = 'user' LIMIT 1`)
         .get(threadId);
-      return row !== undefined;
+      // Both drivers' "no row" shape: node:sqlite yields undefined, bun:sqlite
+      // yields null. Either means no user turn yet.
+      return row !== undefined && row !== null;
     } catch (err) {
       console.error("[conversation-store] hasUserTurn failed:", err);
       return false;
@@ -2964,6 +3069,68 @@ export class ConversationStore {
     } catch (err) {
       console.error("[conversation-store] threadTurnSpan failed:", err);
       return null;
+    }
+  }
+
+  /** Batch version of threadTurnSpan: the same per-thread readout for many
+   *  threads in one aggregate query, so a twenty-row list costs one round
+   *  trip instead of twenty. Threads with no assistant blocks are absent
+   *  from the map — callers read a miss as null, the same answer the
+   *  single-thread read gives. Empty input answers empty without touching
+   *  the database, because an empty IN list is a syntax error, not a query. */
+  threadTurnSpans(threadIds: readonly string[]): Map<string, TurnSpan> {
+    const spans = new Map<string, TurnSpan>();
+    if (threadIds.length === 0) return spans;
+    const db = this.handle();
+    if (!db) return spans;
+    try {
+      const placeholders = threadIds.map(() => "?").join(",");
+      // SAFETY: every selected value is an aliased aggregate grouped by
+      // thread_id, plus the newest row's settle columns: MAX(seq) over the
+      // same assistant-only filter names the newest block once per thread,
+      // and the PK join reads its state and error together — one aggregate
+      // pass instead of two per-group sorts for the same block.
+      const rows = db
+        .prepare(
+          `SELECT agg.thread_id,
+                  agg.started_at,
+                  agg.ended_at,
+                  agg.running,
+                  newest.state AS last_state,
+                  newest.error AS last_error
+             FROM (SELECT thread_id,
+                          MIN(at) AS started_at,
+                          MAX(ended_at) AS ended_at,
+                          COUNT(CASE WHEN state = 'running' THEN 1 END) AS running,
+                          MAX(seq) AS newest_seq
+                     FROM blocks
+                    WHERE thread_id IN (${placeholders}) AND role = 'assistant'
+                    GROUP BY thread_id) AS agg
+             LEFT JOIN blocks AS newest ON newest.seq = agg.newest_seq`,
+        )
+        .all(...threadIds) as Array<{
+        thread_id: string;
+        started_at: number | null;
+        ended_at: number | null;
+        running: number;
+        last_state: "running" | "interrupted" | "failed" | "completed" | null;
+        last_error: string | null;
+      }>;
+      for (const row of rows) {
+        if (row.started_at === null) continue;
+        const span: TurnSpan = {
+          startedAt: row.started_at,
+          endedAt: row.running > 0 ? null : row.ended_at,
+          runningTurns: row.running,
+          lastState: row.last_state,
+        };
+        if (row.last_error) span.lastError = row.last_error;
+        spans.set(row.thread_id, span);
+      }
+      return spans;
+    } catch (err) {
+      console.error("[conversation-store] threadTurnSpans failed:", err);
+      return spans;
     }
   }
 
