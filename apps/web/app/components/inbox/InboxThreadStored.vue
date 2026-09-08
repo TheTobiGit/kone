@@ -13,12 +13,16 @@
 // of blocks. The host keys this pane on the thread, so the read happens once,
 // at setup, and a new thread is a new pane.
 
-import { nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
+import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { markHistorical } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
+import { deriveActivePlan } from "~/utils/planTasks";
+import { deriveChangedFiles } from "~/utils/changedFiles";
+import { deriveActiveSubagents, deriveDelegates } from "~/utils/subagentRuns";
 import type { ThreadBlock } from "~/composables/agentTypes";
 import type { CompactionRecord } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
@@ -40,6 +44,27 @@ const olderError = ref<string | null>(null);
 // whatever elapsed reading it had at that moment, which is the honest figure —
 // this pane is not watching it.
 const now = ref(Date.now());
+
+// The corner docks read the same derives as the live surfaces — tasks,
+// touched files, and delegated runs — straight off the stored blocks. Nothing
+// here streams, so the derives are read directly rather than through a
+// debounced snapshot. No project root is named on this pane, so the changes
+// rows stay inert (there is nothing to read a diff from); the list itself
+// still reads.
+const storedPlan = computed(() => deriveActivePlan(blocks.value));
+const storedChanges = computed(() => deriveChangedFiles(blocks.value));
+const storedSubagents = computed(() => deriveActiveSubagents(blocks.value));
+const storedDelegates = computed(() => deriveDelegates(blocks.value, []));
+
+// The expanded shell for a dock row's run transcript. There is no session
+// behind this pane, so there is nothing to answer or stop from in here — the
+// shell is the read path only, and spawned-thread rows cannot occur without a
+// live spawn list.
+const { cue } = useSound();
+const { activeShell, activeShellRun, onCloseShell, onOpenDelegate } = useSubagentShell({
+  subagents: storedSubagents,
+  cue,
+});
 
 onMounted(async () => {
   const api = history();
@@ -166,20 +191,37 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
         @load-older="loadOlder"
       />
     </div>
+
+    <!-- The subagent corner — delegated runs bottom-left with their read-only
+         transcript shell. -->
+    <ThreadSubagentDock
+      :rows="storedDelegates.rows"
+      :shell="activeShell"
+      :shell-run="activeShellRun"
+      @open="onOpenDelegate"
+      @close="onCloseShell"
+    />
+
+    <!-- Corner dock stack — Changes above Tasks, bottom-right. -->
+    <ThreadDockStack
+      :changes="storedChanges"
+      :plan="storedPlan"
+      :thread-key="row.threadId"
+      position-mode="absolute-pane"
+    />
   </div>
 </template>
 
 <style scoped>
 .rd {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
 }
 
-/* The scroll host. The transcript renders as a plain column and finds its
-   scroller by walking up from itself, so this element has to be the one that
-   overflows — not an ancestor, and not the transcript. */
+/* The scroll host — matches the live pane's scroll layout. */
 .rd__body {
   flex: 1;
   min-height: 0;
