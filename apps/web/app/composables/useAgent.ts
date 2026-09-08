@@ -2,6 +2,7 @@ import { computed, getCurrentInstance, onBeforeUnmount, ref, shallowRef, watch, 
 import type {
   ApprovalDecision,
   ChatAttachment,
+  CompactionRecord,
   ForkContext,
   InteractionMode,
   KoneAgentApi,
@@ -59,6 +60,7 @@ import {
 
 import { createMockTurnRunner } from "./agentMock";
 import { getSideChatSource, rememberSideChatSource } from "./sideChats";
+import { seedFromBridge, useCompaction } from "./useCompaction";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
@@ -112,6 +114,35 @@ function sortQueuedByIds(rows: QueuedTurnEntry[], ids: readonly string[]): Queue
   return [...rows].sort(
     (a, b) => (order.get(a.queueId) ?? last) - (order.get(b.queueId) ?? last),
   );
+}
+
+/** Providers whose `total` is a running thread tally (keep the max) versus
+ *  per-turn reporters whose `total` is one turn's spend (accumulate onto the
+ *  seeded lifetime). Mirrors the store's rollup so the live meter and a
+ *  reload never disagree about what `total` means. */
+function isRunningTotalProvider(provider: ProviderKind): boolean {
+  return (
+    provider === "codex" ||
+    provider === "cursor" ||
+    provider === "opencode" ||
+    provider === "antigravity"
+  );
+}
+
+/** Merge one `total` report onto the lifetime spend. Partial reports leave
+ *  the lifetime standing; running totals advance by max, per-turn reports
+ *  accumulate — never a silent max that papers over the two semantics. */
+function mergeTokenTotal(
+  prev: number | undefined,
+  next: number | undefined,
+  provider: ProviderKind,
+): number | undefined {
+  const prevFinite = prev !== undefined && Number.isFinite(prev) ? prev : undefined;
+  const nextFinite = next !== undefined && Number.isFinite(next) ? next : undefined;
+  if (prevFinite === undefined) return nextFinite;
+  if (nextFinite === undefined) return prevFinite;
+  if (isRunningTotalProvider(provider)) return Math.max(prevFinite, nextFinite);
+  return prevFinite + nextFinite;
 }
 
 // ── one thread ────────────────────────────────────────────────────────────────
@@ -189,6 +220,15 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
    *  turn. Never flips the session into the error state. */
   const warning = ref<string | null>(null);
   const tokenUsage = ref<TokenUsage | null>(null);
+  // Compaction state lives in the unit — the flat aliases below keep this
+  // session's CompactSessionLike shape for compactPropsForSession.
+  const compaction = useCompaction({ threadId, bridge: ctx.bridge });
+  const compactions = compaction.compactions;
+  const compacting = compaction.compacting;
+  const compactError = compaction.compactError;
+  const seedCompactions = compaction.seedCompactions;
+  const noteCompactedBoundary = compaction.noteCompactedBoundary;
+  const compactThread = compaction.compactThread;
   // A live question the agent is asking (AskUserQuestion / Codex requestUserInput).
   // Non-null while the modal is up; cleared once answered or resolved/aborted.
   const pendingUserInput = ref<PendingUserInput | null>(null);
@@ -428,12 +468,46 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         );
         break;
       }
-      case "thread.token-usage.updated":
+      case "thread.token-usage.updated": {
         // Providers report usage as they have it; a later event may carry only
         // part of the picture (a fresh contextUsed with no window). Merge, so a
         // partial report refreshes what it knows and leaves the rest standing —
         // the last known contextWindow in particular — instead of clobbering it.
-        tokenUsage.value = { ...tokenUsage.value, ...event.usage };
+        // `total` is lifetime spend and `contextUsed` is window fill: running
+        // totals advance by max while per-turn reports accumulate (see
+        // mergeTokenTotal), so neither semantic silently overwrites the other.
+        const merged: TokenUsage = { ...tokenUsage.value, ...event.usage };
+        const lifetime = mergeTokenTotal(tokenUsage.value?.total, event.usage.total, event.provider);
+        if (lifetime === undefined) delete merged.total;
+        else merged.total = lifetime;
+        tokenUsage.value = merged;
+        break;
+      }
+      case "thread.state.changed":
+        // Compaction resets the live window: the store's snapshot already moved
+        // to afterTokens, so the live meter must match or a reload visibly
+        // jumps. Only the window occupancy resets — the budget and the
+        // auto-compact flag carry over. (Filtered to the open thread by the
+        // threadId guard above the switch.)
+        if (event.state === "compacted") {
+          // Unknown stays unknown: the store reports an uncounted compaction
+          // as NULL, and the meter hides its ring then instead of lying 0%.
+          const after = event.afterTokens;
+          const next: TokenUsage = { ...tokenUsage.value };
+          if (after === undefined || after === null) delete next.contextUsed;
+          else next.contextUsed = after;
+          tokenUsage.value = next;
+          // The boundary is also journaled as a row — mirror it into the
+          // timeline markers so the "when/where" shows without a re-read.
+          // (Filtered to the open thread by the threadId guard above.)
+          const marker: CompactionRecord = {
+            threadId: event.threadId,
+            at: event.at,
+            beforeTokens: event.beforeTokens ?? null,
+            afterTokens: event.afterTokens ?? null,
+          };
+          noteCompactedBoundary(marker);
+        }
         break;
       case "thread.title.updated":
         title.value = event.title;
@@ -790,71 +864,44 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   /** Re-seed this session's spawned children from the bridge, for a thread that
    *  just adopted a stored identity (rehydrate / openStored) — the spawn events
    *  are deliberately not journaled, so the dock's live-only state must be
-   *  rebuilt by an explicit query to survive a reload. Best-effort, all the way
-   *  down: a missing bridge or method, a rejected query, or a thread id that
-   *  moved on while the query was in flight all leave the dock as it is — never
-   *  a surfaced error, never a stale thread's children clobbering newer state. */
+   *  rebuilt by an explicit query to survive a reload. Best-effort via
+   *  seedFromBridge. */
   function seedSpawnedChildren(): void {
-    const api = bridge();
     // Declared on the bridge, but still checked at runtime: browser dev runs
     // against a partial mock, and a dock that can't seed is a missing
     // convenience, not a broken thread.
-    const query = api?.spawnChildren;
-    if (!query) return;
-    const id = threadId.value;
-    void query(id)
-      .then((kids) => {
-        // The session may have been re-homed onto another thread (a restart, or
-        // a newer open) while the query was out — drop the result rather than
-        // dump one thread's children into another's dock.
-        if (threadId.value !== id) return;
-        spawnedChildren.value = [...kids].sort((a, b) => a.createdAt - b.createdAt);
-      })
-      .catch(() => {
-        // The dock is a convenience — a failed seed is never worth an error;
-        // live spawn events will fill it in as the children run.
-      });
+    seedFromBridge(bridge()?.spawnChildren, threadId, (kids) => {
+      spawnedChildren.value = [...kids].sort((a, b) => a.createdAt - b.createdAt);
+    });
   }
 
   /** Re-seed this session's queued follow-ups from the bridge, for a thread
    *  that just adopted a stored identity (rehydrate / openStored) — the rows
    *  are durable (they survive crashes), but the queue events are not
    *  journaled, so a reloaded renderer must rebuild the strip by an explicit
-   *  query. Best-effort all the way down, exactly like seedSpawnedChildren:
-   *  a missing bridge method, a rejected query, or a thread id that moved on
-   *  while the query was in flight all leave the strip as they are. */
+   *  query. Best-effort via seedFromBridge, like every other seed. */
   function seedQueuedTurns(api: NonNullable<ReturnType<typeof bridge>>): void {
     // SAFETY: QueueBridge is the optional queued-turns slice of the bridge.
     const query = (api as KoneAgentApi & QueueBridge).queuedTurns;
-    if (!query) return;
-    const id = threadId.value;
-    void query(id)
-      .then((rows) => {
-        // The session may have been re-homed onto another thread while the
-        // read was out — drop the rows rather than dump another thread's
-        // queue into this timeline.
-        if (threadId.value !== id) return;
-        if (!rows || rows.length === 0) {
-          queuedTurnsRaw.value = [];
-          return;
-        }
-        const anchored = new Set(queuedTurnsRaw.value.map((q) => q.blockId).filter(Boolean));
-        const entries: QueuedTurnEntry[] = rows
-          .slice()
-          .sort((a, b) => a.createdAt - b.createdAt)
-          .map((row, i) => {
-            const byId = blocks.value.find(
-              (b) => b.role === "user" && b.id === row.userBlockId,
-            );
-            const entry: QueuedTurnEntry = { ...row, position: i + 1 };
-            if (byId && !anchored.has(byId.id)) entry.blockId = byId.id;
-            return entry;
-          });
-        queuedTurnsRaw.value = entries;
-      })
-      .catch(() => {
-        // Best-effort: live queue events will fill the strip in as they land.
-      });
+    seedFromBridge(query, threadId, (rows) => {
+      if (!rows || rows.length === 0) {
+        queuedTurnsRaw.value = [];
+        return;
+      }
+      const anchored = new Set(queuedTurnsRaw.value.map((q) => q.blockId).filter(Boolean));
+      const entries: QueuedTurnEntry[] = rows
+        .slice()
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((row, i) => {
+          const byId = blocks.value.find(
+            (b) => b.role === "user" && b.id === row.userBlockId,
+          );
+          const entry: QueuedTurnEntry = { ...row, position: i + 1 };
+          if (byId && !anchored.has(byId.id)) entry.blockId = byId.id;
+          return entry;
+        });
+      queuedTurnsRaw.value = entries;
+    });
   }
 
   /** Load the next strictly older page of a windowed stored thread and prepend
@@ -937,6 +984,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         title.value = meta.title?.trim() || title.value;
         adoptStoredThread(meta);
         seedSpawnedChildren();
+        seedCompactions();
         // The queue rows survive crashes — rebuild the strip from the bridge.
         seedQueuedTurns(api);
       }
@@ -1728,6 +1776,13 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // keep the draft instead of dispatching into a provider that can't run it.
     sendBlockedReason,
     tokenUsage,
+    // Manual-compaction tracking for the meter's Compact control (see
+    // compactThread below): pending flag + last failure, both live-only.
+    compacting,
+    compactError,
+    // Settled compaction boundaries for the timeline markers (see
+    // seedCompactions and the compacted reducer case).
+    compactions,
     // The stored-transcript read came back empty-handed — what the thread's
     // "didn't load" banner is allowed to key off.
     transcriptLoadFailed,
@@ -1778,6 +1833,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     showAttachmentInFolder,
     demo,
     interrupt,
+    compactThread,
     stopSubagent,
     steerSubagent,
     respondUserInput,

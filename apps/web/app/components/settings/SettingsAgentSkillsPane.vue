@@ -31,7 +31,12 @@ const selectedPlugin = ref<PluginEntry | null>(null);
 const rescanning = ref(false);
 
 onMounted(() => {
-  void space.load();
+  // Inventory only: this pane never reads usage or quotas, so skip load()'s
+  // fan-out (usage report + credential probe + quota reads). Those are disk and
+  // IPC walks that would compete with the inventory scan the open transition is
+  // waiting on. The module-level inventory cache still paints last-good data
+  // instantly; this just revalidates it underneath.
+  void space.refreshInventory();
 });
 
 // When the recent-projects list hydrates (localStorage → recents), re-scan so

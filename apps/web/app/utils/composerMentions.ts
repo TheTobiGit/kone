@@ -1,8 +1,64 @@
+import type { GitProjectFile } from "~/types/desktop";
+
 export type FileMentionTrigger = {
   query: string;
   rangeStart: number;
   rangeEnd: number;
 };
+
+/** What a chip names: a document in the project, or a project itself. */
+export type MentionKind = "file" | "project";
+
+/** A project the @ picker may name — recents in the assistant modal, where
+ *  there is no project on disk to search for files. */
+export type MentionProject = { path: string; name: string };
+
+/** One @ picker row. Projects lead files — the ordering lives in
+ *  buildMentionItems below and nowhere else, so the composable and the menu
+ *  never do index arithmetic to bridge two lists. */
+export type MentionItem =
+  | { kind: "project"; path: string; name: string; detail: string }
+  | { kind: "file"; path: string; name: string; detail: string };
+
+/** Dedupe project rows by path, first wins, order kept. The assistant offers
+ *  the open project plus recents, which overlap — without this the picker
+ *  would list the same project twice and the kind resolver would still agree
+ *  with itself, just noisily. */
+export function dedupeMentionProjects(projects: readonly MentionProject[]): MentionProject[] {
+  const seen = new Set<string>();
+  const out: MentionProject[] = [];
+  for (const p of projects) {
+    if (seen.has(p.path)) continue;
+    seen.add(p.path);
+    out.push(p);
+  }
+  return out;
+}
+
+/** Set-backed kind lookup for restored @path chips. Drafts persist as text,
+ *  so a path re-entering the field would otherwise always come back a file
+ *  chip — paths offered as projects answer "project". Built once per project
+ *  list so restores stay O(1) instead of scanning on every chip. */
+export function createMentionKindResolver(
+  projects: readonly MentionProject[],
+): (path: string) => MentionKind {
+  const paths = new Set<string>();
+  for (const p of projects) paths.add(p.path);
+  return (path: string): MentionKind => (paths.has(path) ? "project" : "file");
+}
+
+/** One keyboard list across both sections: projects first, then files. The
+ *  menu renders this array verbatim — index N in the list is index N on the
+ *  keyboard, with no offset to add or subtract on either side. */
+export function buildMentionItems(
+  projects: readonly MentionProject[],
+  files: readonly GitProjectFile[],
+): MentionItem[] {
+  const items: MentionItem[] = [];
+  for (const p of projects) items.push({ kind: "project", path: p.path, name: p.name, detail: p.path });
+  for (const f of files) items.push({ kind: "file", path: f.path, name: f.name, detail: f.parent });
+  return items;
+}
 
 export type ComposerMentionSegment =
   | { type: "text"; text: string }

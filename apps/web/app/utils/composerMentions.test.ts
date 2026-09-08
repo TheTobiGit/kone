@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildMentionItems,
+  createMentionKindResolver,
+  dedupeMentionProjects,
   detectFileMentionTrigger,
   formatFileMention,
   replaceComposerTextRange,
@@ -41,8 +44,7 @@ test("replaces a trigger and returns the next cursor", () => {
   });
 });
 
-describe("splitComposerMentionSegments", () => {
-  test("formats completed path tokens while leaving surrounding text intact", () => {
+describe("splitComposerMentionSegments", () => {  test("formats completed path tokens while leaving surrounding text intact", () => {
     expect(splitComposerMentionSegments("Read @src/App.vue before editing")).toEqual([
       { type: "text", text: "Read " },
       { type: "mention", path: "src/App.vue", source: "@src/App.vue" },
@@ -88,5 +90,43 @@ describe("splitComposerMentionSegments", () => {
       { type: "text", text: " @\"aaa".repeat(20_000) },
     ]);
     expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe("unified mention list", () => {
+  test("builds projects-first, files-second in one array", () => {
+    const items = buildMentionItems(
+      [{ path: "/b", name: "b" }],
+      [
+        { path: "/b/a.ts", name: "a.ts", parent: "src" },
+        { path: "/b/c.ts", name: "c.ts", parent: "src" },
+      ],
+    );
+    expect(items.map((i) => [i.kind, i.path])).toEqual([
+      ["project", "/b"],
+      ["file", "/b/a.ts"],
+      ["file", "/b/c.ts"],
+    ]);
+    expect(items[0]).toMatchObject({ name: "b", detail: "/b" });
+    expect(items[1]).toMatchObject({ name: "a.ts", detail: "src" });
+  });
+
+  test("dedupes projects by path, first wins", () => {
+    expect(
+      dedupeMentionProjects([
+        { path: "/a", name: "a" },
+        { path: "/b", name: "b" },
+        { path: "/a", name: "a-dup" },
+      ]),
+    ).toEqual([
+      { path: "/a", name: "a" },
+      { path: "/b", name: "b" },
+    ]);
+  });
+
+  test("resolves restored chip kinds from the project set", () => {
+    const resolve = createMentionKindResolver([{ path: "/a", name: "a" }]);
+    expect(resolve("/a")).toBe("project");
+    expect(resolve("/a/file.ts")).toBe("file");
   });
 });

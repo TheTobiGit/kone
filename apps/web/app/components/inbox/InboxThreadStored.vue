@@ -20,6 +20,7 @@ import { useEdgeFade } from "~/composables/useEdgeFade";
 import { markHistorical } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
 import type { ThreadBlock } from "~/composables/agentTypes";
+import type { CompactionRecord } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 
 const props = defineProps<{ row: SessionSummary }>();
@@ -27,6 +28,7 @@ const props = defineProps<{ row: SessionSummary }>();
 const history = () => (import.meta.client ? window.koneDesktop?.agent?.history : undefined);
 
 const blocks = ref<ThreadBlock[]>([]);
+const compactions = ref<CompactionRecord[]>([]);
 const cursor = ref<string | null>(null);
 const loading = ref(true);
 const loadFailed = ref(false);
@@ -56,6 +58,13 @@ onMounted(async () => {
     blocks.value = markHistorical(page.blocks as ThreadBlock[]);
     cursor.value = page.nextCursor;
     now.value = Date.now();
+    // Markers ride a separate read — few rows ever, so no paging — and a miss
+    // only drops annotation, never the transcript.
+    try {
+      compactions.value = (await api.compactions?.(props.row.threadId)) ?? [];
+    } catch {
+      compactions.value = [];
+    }
   } catch {
     loadFailed.value = true;
   } finally {
@@ -143,6 +152,7 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
     >
       <ConversationThread
         :blocks="blocks"
+        :compactions="compactions"
         :now="now"
         :thread-id="row.threadId"
         :agent-seed="row.threadId"

@@ -14,7 +14,8 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import type { AssistantBlock, ThreadBlock } from "~/composables/useAgent";
-import type { ChatAttachment, RuntimeItem } from "~/types/desktop";
+import type { ChatAttachment, CompactionRecord, RuntimeItem } from "~/types/desktop";
+import { groupCompactionMarkers } from "~/utils/compactionMarkers";
 import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
 import AgentActivity from "~/components/agent/AgentActivity.vue";
@@ -23,6 +24,7 @@ import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
+import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
@@ -55,6 +57,10 @@ import CodeGolfArt from "~/components/ui/CodeGolfArt.vue";
 
 const props = defineProps<{
   blocks: ThreadBlock[];
+  /** Settled compaction boundaries, oldest first — rendered as quiet centered
+   *  markers where the context was compacted. Absent on surfaces that don't
+   *  read them (history readers predate the markers table). */
+  compactions?: CompactionRecord[];
   /** Ticking clock from useAgent, so "working · Xs" counts up live. */
   now: number;
   /** A session-level error (start failure, crashed process) — shown as a
@@ -642,6 +648,21 @@ const exchanges = computed(() =>
   earlierCount.value > 0 ? allExchanges.value.slice(earlierCount.value) : allExchanges.value,
 );
 
+/** Compaction markers grouped onto the exchange they precede: a marker belongs
+ *  above the first exchange starting at or after it. Markers newer than every
+ *  exchange trail the thread instead. Computed over the full grouping so a
+ *  marker above the open window reappears with its exchange on reveal. */
+const groupedMarkers = computed(() =>
+  groupCompactionMarkers(
+    props.compactions ?? [],
+    allExchanges.value.map((ex) => ({ key: ex.key, firstAt: ex.blocks[0]?.at })),
+  ),
+);
+const trailingMarkers = computed(() => groupedMarkers.value.trailing);
+function markersFor(key: string): CompactionRecord[] {
+  return groupedMarkers.value.byExchange.get(key) ?? [];
+}
+
 /** Show a centered date divider on the first visible exchange, and whenever
  *  consecutive exchanges cross midnight into a new calendar day. */
 function shouldShowDayDivider(index: number): boolean {
@@ -956,6 +977,14 @@ watch(
       <div v-if="shouldShowDayDivider(index)" class="thread-date">
         <span class="thread-date__text">{{ dayDividerLabel(ex) }}</span>
       </div>
+
+      <!-- Centered compaction markers settled since the previous exchange -->
+      <CompactionMarker
+        v-for="(m, mi) in markersFor(ex.key)"
+        :key="`compact-${ex.key}-${mi}`"
+        :marker="m"
+        :format-time="clock"
+      />
 
       <div
         class="exchange"
@@ -1328,6 +1357,13 @@ watch(
     </motion.div>
     </div>
     </template>
+    <!-- Compaction markers newer than every exchange trail the thread. -->
+    <CompactionMarker
+      v-for="(m, mi) in trailingMarkers"
+      :key="`compact-trailing-${mi}`"
+      :marker="m"
+      :format-time="clock"
+    />
   </div>
     <!-- Image Lightbox Modal -->
     <Teleport to="body">

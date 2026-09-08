@@ -22,6 +22,8 @@ import type { QueuedTurnEntry } from "~/composables/useAgent";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
+import type { MentionProject } from "~/utils/composerMentions";
+import { createMentionKindResolver } from "~/utils/composerMentions";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
 import { botMark } from "~/utils/bot";
@@ -130,6 +132,14 @@ const props = defineProps<{
    *  about what was written. The sentence itself belongs on the host's banner,
    *  not in here; this only gates. */
   blockedReason?: string | null;
+  /** Projects the @ picker offers above files. Set by surfaces with no project
+   *  of their own — the global assistant — so a mention can still point the
+   *  turn at somewhere real. Everywhere else this stays empty and @ means
+   *  files in the current project. */
+  mentionProjects?: MentionProject[];
+  /** File search needs a real project on disk. The global assistant has none,
+   *  so it turns this off and its @ picker names projects only. */
+  disableFileMentions?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -385,13 +395,18 @@ const {
   setEditorFromText: (val) => setEditorFromText(val),
 });
 
+const mentionKindResolver = computed(() =>
+  createMentionKindResolver(props.mentionProjects ?? []),
+);
+
 const {
   mentionTrigger,
   mentionActiveIndex,
   mentionQuery,
   mentionOpen,
+  mentionCount,
+  mentionItems,
   projectFiles,
-  mentionFiles,
   mentionPending,
   mentionError,
   makeChipEl,
@@ -417,6 +432,9 @@ const {
   isBusy: () => props.busy,
   onSync: sync,
   onSubmitOrQueue: () => submitOrQueue(),
+  projects: () => props.mentionProjects ?? [],
+  fileMentionsEnabled: () => !props.disableFileMentions,
+  resolveMentionKind: (path) => mentionKindResolver.value(path),
 });
 
 const isEmpty = computed(() => text.value.trim().length === 0);
@@ -659,11 +677,11 @@ onUnmounted(() => {
 });
 watch(text, scheduleDraftSave);
 watch(
-  [mentionQuery, () => projectFiles.entries.value.length],
+  [mentionQuery, mentionCount],
   () => {
     mentionActiveIndex.value = Math.min(
       mentionActiveIndex.value,
-      Math.max(0, projectFiles.entries.value.length - 1),
+      Math.max(0, mentionCount.value - 1),
     );
   },
 );
@@ -711,7 +729,7 @@ defineExpose({ wake, setDraft, focus });
 
     <div v-if="mentionOpen" class="mention-picker" @mousedown.stop>
       <ProjectFileMentionMenu
-        :files="mentionFiles"
+        :items="mentionItems"
         :query="mentionQuery"
         :active-index="mentionActiveIndex"
         :pending="mentionPending"
@@ -1106,9 +1124,13 @@ defineExpose({ wake, setDraft, focus });
 .mention-picker {
   position: absolute;
   z-index: 30;
-  left: 200px;
+  left: 0;
+  right: 0;
   bottom: calc(100% + 12px);
   pointer-events: auto;
+}
+.mention-picker > :deep(*) {
+  width: 100%;
 }
 
 @keyframes dock-rise {

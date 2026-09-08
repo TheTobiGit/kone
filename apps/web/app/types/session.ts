@@ -64,3 +64,13 @@ export type SessionSummary = {
   /** Short text excerpt or preview of the latest turn/prompt. */
   snippet?: string;
 };
+
+/** The context meter's Compact control for one thread — every field optional
+ *  so an empty object hides the actions card entirely. Built by the
+ *  compaction-availability adapter, read by the meter. */
+export type MeterCompactProps = {
+  compactState?: "available" | "compacting" | "unavailable";
+  compactReason?: string;
+  compactError?: string | null;
+  onCompact?: () => void;
+};

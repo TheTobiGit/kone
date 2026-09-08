@@ -551,6 +551,158 @@ describe("useAgent durable turn queue", () => {
   });
 });
 
+describe("useAgent token usage reducer", () => {
+  test("compacted boundary resets contextUsed to afterTokens, preserving window and total", () => {
+    const { session } = harness();
+    session.tokenUsage.value = {
+      total: 120000,
+      contextUsed: 95000,
+      contextWindow: 200000,
+      compactsAutomatically: true,
+    };
+
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "thread.state.changed",
+      state: "compacted",
+      beforeTokens: 95000,
+      afterTokens: 8000,
+    });
+
+    expect(session.tokenUsage.value).toMatchObject({
+      total: 120000,
+      contextUsed: 8000,
+      contextWindow: 200000,
+      compactsAutomatically: true,
+    });
+  });
+
+  test("compacted boundary without counts leaves contextUsed unknown with window preserved", () => {
+    const { session } = harness();
+    session.tokenUsage.value = {
+      total: 50000,
+      contextUsed: 60000,
+      contextWindow: 128000,
+    };
+
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "thread.state.changed",
+      state: "compacted",
+    });
+
+    // Unknown stays unknown — the store reports an uncounted compaction as
+    // NULL, and the meter hides its ring then instead of lying 0%.
+    expect(session.tokenUsage.value).toMatchObject({
+      total: 50000,
+      contextWindow: 128000,
+    });
+    expect(session.tokenUsage.value?.contextUsed).toBeUndefined();
+  });
+
+  test("total keeps the seeded lifetime across a smaller per-turn update", () => {
+    const { session } = harness();
+    session.tokenUsage.value = {
+      total: 120000,
+      contextUsed: 40000,
+      contextWindow: 200000,
+    };
+
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "thread.token-usage.updated",
+      usage: { total: 900, contextUsed: 41000 },
+    });
+
+    // The per-turn tally merges its fields but must not pull the lifetime down.
+    expect(session.tokenUsage.value).toMatchObject({
+      total: 120000,
+      contextUsed: 41000,
+      contextWindow: 200000,
+    });
+
+    // A growing running total still advances.
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: Date.now(),
+      source: "kone.store",
+      type: "thread.token-usage.updated",
+      usage: { total: 130000 },
+    });
+    expect(session.tokenUsage.value?.total).toBe(130000);
+  });
+
+  test("per-turn reporters accumulate onto the seeded lifetime", () => {
+    const { session } = harness();
+    session.tokenUsage.value = {
+      total: 120000,
+      contextUsed: 40000,
+      contextWindow: 200000,
+    };
+
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "claudeAgent",
+      at: Date.now(),
+      source: "kone.store",
+      type: "thread.token-usage.updated",
+      usage: { total: 900, contextUsed: 41000 },
+    });
+
+    // Claude reports one turn's spend — the lifetime grows by it instead of
+    // taking the max, which would pin the total at the seeded value forever.
+    expect(session.tokenUsage.value).toMatchObject({
+      total: 120900,
+      contextUsed: 41000,
+      contextWindow: 200000,
+    });
+  });
+
+  test("compacted boundary appends a timeline marker", () => {
+    const { session } = harness();
+    expect(session.compactions.value).toEqual([]);
+
+    session.reduce({
+      threadId: session.threadId.value,
+      provider: "codex",
+      at: 1710000000000,
+      source: "kone.store",
+      type: "thread.state.changed",
+      state: "compacted",
+      beforeTokens: 95000,
+      afterTokens: 8000,
+    });
+
+    expect(session.compactions.value).toEqual([
+      {
+        threadId: session.threadId.value,
+        at: 1710000000000,
+        beforeTokens: 95000,
+        afterTokens: 8000,
+      },
+    ]);
+  });
+});
+
+describe("useAgent compactThread", () => {
+  test("without a bridge it reports unavailable instead of throwing", async () => {
+    const { session } = harness();
+    await session.compactThread();
+    expect(session.compacting.value).toBe(false);
+    expect(session.compactError.value).toBe("Compaction isn't available here.");
+  });
+});
+
 describe("useAgent single blank thread invariant", () => {
   test("newThread twice in a row leaves exactly one blank session", async () => {
     const { agent, session: initialBlank } = harness();

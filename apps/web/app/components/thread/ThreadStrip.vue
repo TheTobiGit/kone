@@ -48,6 +48,8 @@ import { SESSION_BRAND } from "~/types/session";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import { latestAssistant, type ThreadSession } from "~/composables/useAgent";
+import { useAgentProviders } from "~/composables/useAgentProviders";
+import { compactPropsForSession, type MeterCompactProps } from "~/utils/compactAvailability";
 import { markThreadVisited } from "~/utils/sessionList";
 import { useStripOverview } from "~/composables/useStripOverview";
 import { useStripPresets } from "~/composables/useStripPresets";
@@ -134,6 +136,9 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+// Provider surface rows (capabilities included) — the meter's Compact control
+// gates on the thread's provider advertising manual compaction.
+const agentProviders = useAgentProviders();
 // niri's `center-focused-column`, shared with the settings drawer through a
 // module-scope ref (see useStripPrefs) so flipping it there steers the scroll
 // maths below live, with no prop threaded in and no reload.
@@ -896,6 +901,25 @@ function brandOf(c: Pane) {
   return SESSION_BRAND[c.session.provider.value] ?? "generic";
 }
 
+/** The meter's Compact control per live session, memoized by session key — one
+ *  shared rule decides, the session runs the call. A computed map (the inbox
+ *  live pane's pattern, fanned out) so a re-render reuses the props object
+ *  instead of minting a fresh one per column per frame. */
+const compactBySession = computed(() => {
+  const statuses = agentProviders.statuses.value;
+  const map = new Map<string, MeterCompactProps>();
+  for (const pane of props.panes) {
+    if (pane.kind !== "thread" || !pane.session) continue;
+    if (!map.has(pane.session.key)) map.set(pane.session.key, compactPropsForSession(pane.session, statuses));
+  }
+  return map;
+});
+
+/** Spread onto ContextWindowMeter with v-bind. */
+function compactProps(s: ThreadSession): MeterCompactProps {
+  return compactBySession.value.get(s.key) ?? {};
+}
+
 /** Is a pane of this kind already on the strip? Drives the seam menu's greying
  *  of singleton kinds (the scratchpad, today). */
 function hasKind(kind: PaneKind): boolean {
@@ -1146,6 +1170,7 @@ watch(
                     <ContextWindowMeter
                       v-if="c.session.tokenUsage.value"
                       :usage="c.session.tokenUsage.value"
+                      v-bind="compactProps(c.session)"
                     />
                   </template>
                   <template v-else>
@@ -1248,6 +1273,7 @@ watch(
                 <template v-if="c.kind === 'thread' && c.session">
                   <ConversationThread
                     :blocks="c.session.timelineBlocks.value"
+                    :compactions="c.session.compactions.value"
                     :now="now"
                     :session-error="c.session.error.value"
                     :source-key="c.id"
