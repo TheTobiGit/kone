@@ -32,17 +32,17 @@ export interface UseSubagentShellOptions {
    *  keep streaming while the dock ticks at its own rate. */
   subagents: ComputedRef<ActiveSubagentsState>;
   /** The thread the shell hangs off. A shell belongs to one thread. */
-  focusedThread: ComputedRef<ThreadSession | null>;
+  focusedThread?: ComputedRef<ThreadSession | null>;
   /** The ask the main modal is showing, so the shell can take it over. */
-  focusedPendingApproval: ComputedRef<{ requestId: string } | null>;
+  focusedPendingApproval?: ComputedRef<{ requestId: string } | null>;
   /** Identity of the focused thread — a change closes the shell. */
-  focusedKey: ComputedRef<string | null>;
+  focusedKey?: ComputedRef<string | null>;
   /** Answer an approval. The shell renders it inline; the decision still goes
    *  through the host's one approval path. */
-  respondApproval: (requestId: string, decision: ApprovalDecision) => void;
+  respondApproval?: (requestId: string, decision: ApprovalDecision) => void;
   /** Reveal a spawned thread as a real conversation (loads its stored
    *  transcript and brings its column forward). */
-  revealThread: (threadId: string) => void;
+  revealThread?: (threadId: string) => void;
   cue: (name: Cue) => void;
 }
 
@@ -61,7 +61,7 @@ export function useSubagentShell(o: UseSubagentShellOptions) {
     const t = activeShell.value;
     if (t?.kind === "thread") {
       return (
-        o.focusedThread.value?.spawnedChildren.value.find((c) => c.threadId === t.threadId) ??
+        o.focusedThread?.value?.spawnedChildren.value.find((c) => c.threadId === t.threadId) ??
         null
       );
     }
@@ -83,7 +83,7 @@ export function useSubagentShell(o: UseSubagentShellOptions) {
   const shellApprovals = computed(() => {
     const run = activeShellRun.value;
     if (!run) return [];
-    return (o.focusedThread.value?.pendingApprovals.value ?? []).filter(
+    return (o.focusedThread?.value?.pendingApprovals.value ?? []).filter(
       (a) => a.originToolUseId === run.toolUseId,
     );
   });
@@ -91,19 +91,19 @@ export function useSubagentShell(o: UseSubagentShellOptions) {
   // When the shell renders the pending approval inline, the main modal steps
   // aside for that request — one ask, one place to answer it.
   const shellSuppressesApproval = computed(() => {
-    const p = o.focusedPendingApproval.value;
+    const p = o.focusedPendingApproval?.value;
     return !!p && shellApprovals.value.some((a) => a.requestId === p.requestId);
   });
 
   function onDecideShellApproval(requestId: string, decision: ApprovalDecision): void {
-    o.respondApproval(requestId, decision);
+    o.respondApproval?.(requestId, decision);
   }
 
   function onShellOpenThread(): void {
     const t = activeShell.value;
     if (t?.kind !== "thread") return;
     activeShell.value = null;
-    o.revealThread(t.threadId);
+    o.revealThread?.(t.threadId);
   }
 
   // Clicking a delegate row opens what that kind of delegate IS: a provider-native
@@ -120,9 +120,11 @@ export function useSubagentShell(o: UseSubagentShellOptions) {
 
   // A shell belongs to one thread; switching the focused column (or leaving the
   // surface) takes it away with the dock that opened it.
-  watch(o.focusedKey, () => {
-    activeShell.value = null;
-  });
+  if (o.focusedKey) {
+    watch(o.focusedKey, () => {
+      activeShell.value = null;
+    });
+  }
 
   // A spawned thread that vanishes from the live list (never spawned, archived,
   // swept) takes its shell with it.

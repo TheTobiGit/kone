@@ -192,3 +192,30 @@ export async function liftLegacyPins(
   );
   return results.every(Boolean);
 }
+
+/**
+ * Look up a stored thread in a project and return its SessionSummary, or null if
+ * missing or on error.
+ */
+export async function resolveThreadSummary(
+  projectPath: string,
+  threadId: string,
+  projectName?: string,
+): Promise<SessionSummary | null> {
+  if (!import.meta.client) return null;
+  const api = window.koneDesktop?.agent?.history;
+  if (!api) return null;
+  try {
+    const metas = await api.list(projectPath);
+    const meta = metas.find((m) => m.threadId === threadId);
+    if (!meta) return null;
+    return summarizeSession(meta, meta.isPinned ?? false, {
+      projectPath,
+      projectName,
+    });
+  } catch (err) {
+    console.error("Failed to resolve thread summary", err);
+    return null;
+  }
+}
+
