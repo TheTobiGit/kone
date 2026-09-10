@@ -44,6 +44,7 @@ import type {
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
@@ -1162,9 +1163,10 @@ export class CursorAdapter implements ProviderAdapter {
     if (decision === "reject-and-stop") void this.interruptTurn(threadId);
   }
 
-  async respondToUserInput(_threadId: string, _requestId: string, _answers: UserInputAnswers): Promise<void> {
+  async respondToUserInput(_threadId: string, _requestId: string, _answers: UserInputAnswers): Promise<UserInputRespondResult> {
     // Cursor's mid-turn question extension (`cursor/ask_question`) isn't wired
     // in kone v1 — nothing parks a question, so there's nothing to resolve.
+    return { owned: false };
   }
 
   async listSessions(): Promise<Session[]> {

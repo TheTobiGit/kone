@@ -18,7 +18,7 @@ import {
 } from "../commandSafety.js";
 import type { JsonValue } from "../lib-jsonValue.js";
 import { emitCompacted } from "./emitCompacted.js";
-import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption } from "../types.js";
+import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption, UserInputRespondResult } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
 /** One decoded JSON value from opencode's HTTP/SSE surface — message infos,
@@ -803,7 +803,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
   async stopSession(threadId: string): Promise<void> { const session = this.sessions.get(threadId); if (!session) return; session.disposed = true; this.drain(session); this.settleLiveSubagents(session, "stopped"); this.abortLiveTurn(session); session.eventsAbort.abort(); try { await session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/abort`); } catch { /* best effort */ } await session.server.dispose(); this.sessions.delete(threadId); this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.exited", code: null }); }
   async stopAll(): Promise<void> { await Promise.all([...this.sessions.keys()].map((threadId) => this.stopSession(threadId))); }
   async respondToRequest(threadId: string, requestId: string, decision: ApprovalDecision): Promise<void> { const session = this.require(threadId); this.resolveApproval(session, requestId, decision); /* "Reject and stop" — the permission already gets its `reject` reply (toOpenCodeReply), and aborting the session turns that into an interrupted turn instead of a continued one. */ if (decision === "reject-and-stop") void this.interruptTurn(threadId); }
-  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> { const session = this.require(threadId); const pending = session.pendingUserInputs.get(requestId); if (!pending) return; session.pendingUserInputs.delete(requestId); pending.resolve(answers); }
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> { const session = this.sessions.get(threadId); if (!session) return { owned: false }; const pending = session.pendingUserInputs.get(requestId); if (!pending) return { owned: false }; session.pendingUserInputs.delete(requestId); pending.resolve(answers); return { owned: true }; }
   async listSessions(): Promise<Session[]> { return [...this.sessions.values()].map((session) => this.toSession(session)); }
   async hasSession(threadId: string): Promise<boolean> { return this.sessions.has(threadId); }
 

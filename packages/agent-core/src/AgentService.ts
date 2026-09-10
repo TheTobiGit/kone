@@ -69,6 +69,7 @@ import type {
   ThreadCompactionCapability,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "./types.js";
 
 /** How often the wedge watchdog sweeps live sessions (module constants so the
@@ -1441,7 +1442,7 @@ export class AgentService {
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
-  ): Promise<void> {
+  ): Promise<UserInputRespondResult> {
     return this.adapterForThread(threadId).respondToUserInput(threadId, requestId, answers);
   }
 

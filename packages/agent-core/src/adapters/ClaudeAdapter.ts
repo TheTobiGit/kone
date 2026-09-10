@@ -48,6 +48,7 @@ import type {
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 import {
@@ -674,12 +675,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     return { behavior: "allow", updatedInput: { ...input, answers } };
   }
 
-  /** Settle one parked AskUserQuestion (idempotent — a no-op once drained). */
-  private resolveUserInput(session: ClaudeSession, requestId: string, answers: UserInputAnswers): void {
+  /** Settle one parked AskUserQuestion. True when a pending question was
+   *  owned and resolved here; false once drained (idempotent re-answer). */
+  private resolveUserInput(session: ClaudeSession, requestId: string, answers: UserInputAnswers): boolean {
     const pending = session.pendingUserInputs.get(requestId);
-    if (!pending) return;
+    if (!pending) return false;
     session.pendingUserInputs.delete(requestId);
     pending.resolve(answers);
+    return true;
   }
 
   /** Resolve every parked question empty — on interrupt/stop so no canUseTool
@@ -824,8 +827,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     const session = this.sessions.get(threadId);
     if (!session?.activeTurnId) return;
     session.interrupting = true;
-    // Unblock any parked AskUserQuestion so the interrupt can land cleanly.
+    // Unblock any parked AskUserQuestion or approval so the interrupt can land
+    // cleanly — stop drains both, and an interrupt must too, or a parked
+    // approval whose abort signal never fires keeps its modal open while the
+    // SDK callback hangs.
     this.drainUserInputs(session);
+    this.drainApprovals(session);
     // interrupt() alone only ends the parent turn — live subagent tasks keep
     // "users reach for Stop precisely when a fleet ran away"). Stop each live
     // task best-effort, bounded per task so one wedged child can't block the
@@ -922,10 +929,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.resolveApproval(session, requestId, decision);
   }
 
-  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> {
     const session = this.sessions.get(threadId);
-    if (!session) return;
-    this.resolveUserInput(session, requestId, answers);
+    if (!session) return { owned: false };
+    return { owned: this.resolveUserInput(session, requestId, answers) };
   }
 
   async listSessions(): Promise<Session[]> {

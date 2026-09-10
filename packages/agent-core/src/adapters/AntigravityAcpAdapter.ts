@@ -72,6 +72,7 @@ import type {
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
   UserInputQuestion,
 } from "../types.js";
 
@@ -781,13 +782,14 @@ export class AntigravityAcpAdapter implements ProviderAdapter {
     if (decision === "reject-and-stop") void this.interruptTurn(threadId);
   }
 
-  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> {
     const session = this.sessions.get(threadId);
-    if (!session) return;
+    if (!session) return { owned: false };
     const pending = session.pendingQuestions.get(requestId);
-    if (!pending) return;
+    if (!pending) return { owned: false };
     session.pendingQuestions.delete(requestId);
     pending.resolve(answers);
+    return { owned: true };
   }
 
   async listSessions(): Promise<Session[]> {

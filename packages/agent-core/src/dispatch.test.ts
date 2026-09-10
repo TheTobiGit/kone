@@ -14,6 +14,7 @@ import type {
   SendTurnInput,
   SessionStartInput,
   TurnStartResult,
+  UserInputRespondResult,
 } from "./types.js";
 import { assistantWorkingDir } from "./assistantWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
@@ -72,7 +73,9 @@ class FakeAdapter {
   async stopSession(): Promise<void> {}
   async stopAll(): Promise<void> {}
   async respondToRequest(): Promise<void> {}
-  async respondToUserInput(): Promise<void> {}
+  async respondToUserInput(): Promise<UserInputRespondResult> {
+    return { owned: true };
+  }
   async listSessions(): Promise<never[]> {
     return [];
   }

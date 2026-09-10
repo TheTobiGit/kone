@@ -32,6 +32,7 @@ import type {
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
   UserInputQuestion,
   UserInputQuestionOption,
 } from "../types.js";
@@ -1113,10 +1114,10 @@ export class CodexAdapter implements ProviderAdapter {
     this.resolveApproval(session, requestId, decision);
   }
 
-  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> {
     const session = this.sessions.get(threadId);
-    if (!session) return;
-    this.resolveUserInput(session, requestId, answers);
+    if (!session) return { owned: false };
+    return { owned: this.resolveUserInput(session, requestId, answers) };
   }
 
   async listSessions(): Promise<Session[]> {
@@ -1470,12 +1471,14 @@ export class CodexAdapter implements ProviderAdapter {
     return { answers: reply };
   }
 
-  /** Settle one parked user-input request (idempotent — a no-op once drained). */
-  private resolveUserInput(session: CodexSession, requestId: string, answers: UserInputAnswers): void {
+  /** Settle one parked user-input request. True when a pending request was
+   *  owned and resolved here; false once drained (idempotent re-answer). */
+  private resolveUserInput(session: CodexSession, requestId: string, answers: UserInputAnswers): boolean {
     const pending = session.pendingUserInputs.get(requestId);
-    if (!pending) return;
+    if (!pending) return false;
     session.pendingUserInputs.delete(requestId);
     pending.resolve(answers);
+    return true;
   }
 
   /** Resolve every parked question empty — on interrupt/stop so no RPC handler

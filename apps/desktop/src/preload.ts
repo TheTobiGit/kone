@@ -52,6 +52,7 @@ import type {
   TurnStartResult,
   UploadAttachmentInput,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "@kone/agent-core/index.js";
 import type {
   TerminalAckInput,
@@ -419,7 +420,7 @@ const api = {
       threadId: string,
       requestId: string,
       answers: UserInputAnswers,
-    ): Promise<void> =>
+    ): Promise<UserInputRespondResult> =>
       ipcRenderer.invoke("agent:respond-user-input", threadId, requestId, answers),
     stopSubagent: (threadId: string, toolUseId: string): Promise<void> =>
       ipcRenderer.invoke("agent:stop-subagent", threadId, toolUseId),
