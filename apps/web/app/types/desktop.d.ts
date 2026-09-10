@@ -1029,6 +1029,16 @@ export type UserInputQuestion = {
  *  (multi-select), or null when skipped. */
 export type UserInputAnswers = Record<string, string | string[] | null>;
 
+/** What answering a parked question settled (mirror packages/agent-core/src/types.ts).
+ *  `owned` tells whether the backend still owned the request — false when it
+ *  was already gone (stale or superseded), in which case the caller sends
+ *  nothing. `followUp` carries the follow-up turn text only for a print-mode
+ *  aftermath ask; absent for every live-question answer and for a dismissal. */
+export type UserInputRespondResult = {
+  owned: boolean;
+  followUp?: string;
+};
+
 export type RuntimeTurnState = "completed" | "failed" | "interrupted";
 
 /** How a turn settled when it didn't run to completion. `turn.aborted` covers
@@ -1417,6 +1427,9 @@ export type RuntimeEvent =
       requestId: string;
       turnId?: string;
       questions: UserInputQuestion[];
+      /** Print-mode aftermath ask: the turn already settled, so answering
+       *  delivers the answers as a follow-up turn. */
+      postTurn?: boolean;
     })
   | (AgentBaseEvent & { type: "user-input.resolved"; requestId: string; answers: UserInputAnswers })
   // The provider is asking for the user's go-ahead before the agent runs
@@ -2394,12 +2407,16 @@ export type KoneAgentApi = {
     decision: ApprovalDecision,
   ) => Promise<void>;
   /** Answer a pending mid-turn question (AskUserQuestion / requestUserInput),
-   *  unblocking the parked turn. */
+   *  unblocking the parked turn. Resolves the ownership handoff: `owned`
+   *  tells whether the backend still owned the request, and `followUp`
+   *  carries the follow-up turn text for a print-mode aftermath ask — the
+   *  caller sends it as an ordinary turn, and sends nothing when unowned or
+   *  when there is no follow-up. */
   respondUserInput: (
     threadId: string,
     requestId: string,
     answers: UserInputAnswers,
-  ) => Promise<void>;
+  ) => Promise<UserInputRespondResult>;
   /** Stop one nested subagent run without ending the parent turn. No-op on
    *  providers without a nested-agent surface. */
   stopSubagent: (threadId: string, toolUseId: string) => Promise<void>;

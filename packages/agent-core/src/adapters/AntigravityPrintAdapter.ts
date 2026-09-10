@@ -20,6 +20,8 @@ import {
   type AntigravityJsonValue,
   type AntigravitySubagentSpec,
 } from "../antigravitySubagents.js";
+import { isPrintAskQuestion, collectPostTurnQuestions } from "../antigravityPrintQuestions.js";
+import { formatPostTurnAskFollowUp } from "../postTurnAnswers.js";
 import { koneHostContextForFirstRun } from "../gateway/appContext.js";
 import { STDIO_PROXY_PATH } from "../gateway/injection.js";
 import { killTree, probeResult } from "../spawn.js";
@@ -54,6 +56,9 @@ import type {
   SubagentStatus,
   TokenUsage,
   TurnStartResult,
+  UserInputAnswers,
+  UserInputQuestion,
+  UserInputRespondResult,
 } from "../types.js";
 
 // Antigravity adapter — drives Google's `agy` CLI in print mode: one fresh
@@ -195,6 +200,14 @@ type AntigravitySession = {
   processedTranscriptPath?: string;
   processedSteps: Set<number>;
   pendingTools: PendingTool[];
+  /** ask_question invocations this turn reported (print mode auto-skips them,
+   *  so every one is unanswered by construction) — re-surfaced as one
+   *  post-turn question modal when the turn completes. Reset per turn. */
+  turnAsks: { args?: AntigravityJsonRecord }[];
+  /** The post-turn ask modal parked after a completed turn, if any — answered
+   *  through respondToUserInput, which hands the answers to the renderer for
+   *  delivery as a follow-up turn (no live provider call survives the turn). */
+  pendingPostTurnAsk?: { requestId: string; questions: UserInputQuestion[] };
   /** Every tool item this turn opened, kept past its completion and keyed by
    *  the step it reported — an `invoke_subagent` run has to hang off its
    *  spawning item, and the result step that names the children arrives after
@@ -581,6 +594,10 @@ export function summarizeAntigravityTool(
 
   return { text, detail };
 }
+
+// The pure ask_question parsers live in antigravityPrintQuestions; this
+// re-export keeps their earlier import path working.
+export { isPrintAskQuestion, parsePrintAskQuestions } from "../antigravityPrintQuestions.js";
 
 /** The shell wrapper for one hook point. Inactive when
  *  KONE_ANTIGRAVITY_EVENTS is unset (a session outside kone): drain stdin and
@@ -1146,6 +1163,7 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
       processedTranscriptBytes: 0,
       processedSteps: new Set(),
       pendingTools: [],
+      turnAsks: [],
       toolItemsByStep: new Map(),
       nextToolSequence: 0,
       pendingSubagentSpecs: [],
@@ -1247,6 +1265,10 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     session.processedHookBytes = 0;
     session.processedSteps.clear();
     session.pendingTools = [];
+    session.turnAsks = [];
+    // A fresh turn supersedes the previous turn's aftermath ask, if its modal
+    // is still open (gateway/API sends bypass the composer's block).
+    this.clearPostTurnAsk(session);
     session.toolItemsByStep.clear();
     session.nextToolSequence = 0;
     session.pendingSubagentSpecs = [];
@@ -1395,6 +1417,7 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
         this.settleActiveTurn(session, { state: "interrupted" });
       }
     }
+    this.clearPostTurnAsk(session);
     this.sessions.delete(threadId);
     this.emit({
       ...this.base(session),
@@ -1412,8 +1435,54 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
     // Print mode never surfaces interactive requests (full-access only).
   }
 
-  async respondToUserInput(): Promise<void> {
-    // Print mode never surfaces mid-turn questions.
+  async respondToUserInput(
+    threadId: string,
+    requestId: string,
+    answers: UserInputAnswers,
+  ): Promise<UserInputRespondResult> {
+    // Ownership and the aftermath follow-up resolve in this one call. Print
+    // mode has no live question to answer — the process that asked is gone —
+    // so an owned answer's delivery is the follow-up turn text returned here,
+    // which the caller sends through the ordinary turn path (journaling,
+    // queueing and history then behave like a typed message). The formatter
+    // never throws, so formatting before clearing cannot strand the park;
+    // a dismissal formats to nothing and carries no follow-up. Unowned means
+    // a fresh turn already superseded the ask (or a stop abandoned it), and
+    // the caller sends nothing for it — never a phantom follow-up.
+    const session = this.sessions.get(threadId);
+    if (!session) return { owned: false };
+    const pending = session.pendingPostTurnAsk;
+    if (!pending || pending.requestId !== requestId) return { owned: false };
+    const followUp = formatPostTurnAskFollowUp(pending.questions, answers);
+    delete session.pendingPostTurnAsk;
+    this.emit({ ...this.base(session), type: "user-input.resolved", requestId, answers });
+    const result: UserInputRespondResult = { owned: true };
+    if (followUp !== undefined) result.followUp = followUp;
+    return result;
+  }
+
+  /** Park this turn's auto-skipped asks as one post-turn question modal. A
+   *  repeat of an already-surfaced question keeps a single entry in
+   *  first-seen order (the agent re-asks after a skip when the earlier one
+   *  still stands); a turn with no asks, or none parseable, leaves no modal.
+   *  At most one modal is ever parked — a newer turn supersedes the previous
+   *  aftermath. */
+  private surfacePostTurnAsk(session: AntigravitySession, turnId: string): void {
+    const questions = collectPostTurnQuestions(session.turnAsks);
+    if (questions.length === 0) return;
+    const requestId = randomUUID();
+    session.pendingPostTurnAsk = { requestId, questions };
+    this.emit({ ...this.base(session), type: "user-input.requested", requestId, turnId, questions, postTurn: true });
+  }
+
+  /** Drop a parked post-turn ask, clearing its modal when one is showing. A
+   *  fresh manual turn supersedes the previous turn's aftermath; a stop
+   *  abandons it outright. */
+  private clearPostTurnAsk(session: AntigravitySession): void {
+    const pending = session.pendingPostTurnAsk;
+    if (!pending) return;
+    delete session.pendingPostTurnAsk;
+    this.emit({ ...this.base(session), type: "user-input.resolved", requestId: pending.requestId, answers: {} });
   }
 
   async listSessions(): Promise<Session[]> {
@@ -1498,6 +1567,7 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
         turnId,
         conversationId: session.conversationId,
       });
+      this.surfacePostTurnAsk(session, turnId);
     } else {
       const event: Extract<RuntimeEvent, { type: "turn.aborted" }> = {
         ...this.base(session),
@@ -1881,6 +1951,12 @@ export class AntigravityPrintAdapter implements ProviderAdapter {
           const scope = run ? `sub-${run.snapshot.toolUseId}-tool` : "tool";
           const itemId = `antigravity-${session.activeTurnId}-${scope}-${owner.nextToolSequence++}`;
           owner.pendingTools.push({ stepIndex, itemId, name, args });
+          // An ask inside a native subagent run belongs to the child's
+          // transcript — only the parent's own asks resurface post-turn, so a
+          // follow-up answer lands in the conversation that asked.
+          if (isParent && isPrintAskQuestion(name)) {
+            session.turnAsks.push({ args });
+          }
           if (run) {
             run.snapshot.lastToolName = name;
             run.snapshot.toolUses = (run.snapshot.toolUses ?? 0) + 1;

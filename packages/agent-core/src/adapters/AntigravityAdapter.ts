@@ -15,6 +15,7 @@ import type {
   SessionStartInput,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "../types.js";
 
 // Antigravity facade — one ProviderAdapter for the "antigravity" provider that
@@ -158,7 +159,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     return this.transportFor(threadId).respondToRequest(threadId, requestId, decision);
   }
 
-  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<void> {
+  async respondToUserInput(threadId: string, requestId: string, answers: UserInputAnswers): Promise<UserInputRespondResult> {
     return this.transportFor(threadId).respondToUserInput(threadId, requestId, answers);
   }
 

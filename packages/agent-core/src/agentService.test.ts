@@ -12,6 +12,7 @@ import type {
   SendTurnInput,
   ThreadCompactionCapability,
   TurnStartResult,
+  UserInputRespondResult,
 } from "./types.js";
 
 // AgentService is exercised with fake adapters INJECTED through its options
@@ -103,7 +104,9 @@ class FakeAdapter {
   async respondToRequest(threadId: string, requestId: string, decision: string): Promise<void> {
     FakeAdapter.responded.push({ threadId, requestId, decision });
   }
-  async respondToUserInput(): Promise<void> {}
+  async respondToUserInput(): Promise<UserInputRespondResult> {
+    return { owned: true };
+  }
   async listSessions(): Promise<unknown[]> {
     return [];
   }

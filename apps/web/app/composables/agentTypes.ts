@@ -42,10 +42,13 @@ export type AssistantBlock = {
 export type ThreadBlock = UserBlock | AssistantBlock;
 
 /** A live question the agent is asking mid-turn — the composer swaps its
- *  orb/input for the answer modal while this is set. */
+ *  orb/input for the answer modal while this is set. `postTurn` marks a
+ *  print-mode aftermath ask: the turn already settled, so answering delivers
+ *  the answers as a follow-up turn instead of resolving a live call. */
 export type PendingUserInput = {
   requestId: string;
   questions: UserInputQuestion[];
+  postTurn?: boolean;
 };
 
 /** A live tool approval the agent is waiting on — the turn is parked until the

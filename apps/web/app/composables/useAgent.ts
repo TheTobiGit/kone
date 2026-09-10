@@ -22,6 +22,7 @@ import type {
   SubagentRunSnapshot,
   TokenUsage,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "~/types/desktop";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { agentPersonaForThread, carryThreadAgent } from "~/utils/agents";
@@ -599,9 +600,12 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
         blocks.value = [...blocks.value];
         break;
       }
-      case "user-input.requested":
-        pendingUserInput.value = { requestId: event.requestId, questions: event.questions };
+      case "user-input.requested": {
+        const input: PendingUserInput = { requestId: event.requestId, questions: event.questions };
+        if (event.postTurn) input.postTurn = true;
+        pendingUserInput.value = input;
         break;
+      }
       case "user-input.resolved":
         // The backend settled this round-trip (our answer, or a drain on
         // interrupt/stop). Clear the modal if it's the one we're showing.
@@ -1591,19 +1595,42 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   }
 
   /** Answer the agent's live question. Clears the modal optimistically, then
-   *  hands the answers to the adapter — which resolves the parked tool call and
-   *  emits `user-input.resolved` (a belt-and-braces re-clear). */
+   *  hands the answers to the backend in one call — which reports whether it
+   *  still owned the request and, for a print-mode aftermath ask, the
+   *  follow-up turn text carrying the answers. A stale answer (a superseded
+   *  aftermath, a double submit, a stop race) resolves unowned and sends
+   *  nothing, so it can never start a phantom follow-up turn. A print-mode
+   *  aftermath ask has no live call to resolve, so an owned answer goes out
+   *  as an ordinary follow-up turn instead — journaling, queueing and history
+   *  then behave like a typed message. A dismissal (nothing answered) carries
+   *  no follow-up and sends nothing. A failed backend call restores the modal
+   *  so the answers are not lost; a failed follow-up never does — the backend
+   *  cleared its park before answering, so there is nothing left to retry
+   *  against, and resurrecting the modal would answer into a dead request.
+   *  The send error itself still surfaces through the send path. */
   async function respondUserInput(requestId: string, answers: UserInputAnswers): Promise<void> {
-    if (pendingUserInput.value?.requestId === requestId) {
+    const pending =
+      pendingUserInput.value?.requestId === requestId ? pendingUserInput.value : undefined;
+    if (pending) {
       pendingUserInput.value = null;
     }
     const api = bridge();
-    if (!api) return;
-    try {
-      await api.respondUserInput(threadId.value, requestId, answers);
-    } catch {
-      // If the send fails the turn will abort and clear state via turn.aborted.
+    if (!api) {
+      if (pending) pendingUserInput.value = pending;
+      return;
     }
+    let result: UserInputRespondResult;
+    try {
+      result = await api.respondUserInput(threadId.value, requestId, answers);
+    } catch {
+      // The backend never took the answers — put the modal back so the user
+      // can retry instead of losing them to a cleared prompt. No follow-up:
+      // nothing was owned, so there is nothing to deliver.
+      if (pending) pendingUserInput.value = pending;
+      return;
+    }
+    if (!result.owned) return;
+    if (result.followUp) await send(result.followUp);
   }
 
   /** Decide a parked tool approval. Drops it from the queue optimistically,

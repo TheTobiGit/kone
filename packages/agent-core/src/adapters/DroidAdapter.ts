@@ -41,6 +41,7 @@ import type {
   TokenUsage,
   TurnStartResult,
   UserInputAnswers,
+  UserInputRespondResult,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
@@ -1106,9 +1107,10 @@ export class DroidAdapter implements ProviderAdapter {
     if (decision === "reject-and-stop") void this.interruptTurn(threadId);
   }
 
-  async respondToUserInput(_threadId: string, _requestId: string, _answers: UserInputAnswers): Promise<void> {
+  async respondToUserInput(_threadId: string, _requestId: string, _answers: UserInputAnswers): Promise<UserInputRespondResult> {
     // droid's ACP surface was never observed sending an `elicitation/create`
     // reverse request; nothing parks a question, so there's nothing to resolve.
+    return { owned: false };
   }
 
   async listSessions(): Promise<Session[]> {
