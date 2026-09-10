@@ -3,10 +3,10 @@ import type {
   ApprovalRequest,
   ApprovalRequestKind,
   UserInputQuestion,
-  UserInputQuestionOption,
 } from "../types.js";
 import { formatPlanTasks, parseTodoWriteInput, reconcilePlanTasks } from "@kone/protocol/plan-tasks";
 import type { ClaudeItemBuffer } from "./claudeAdapterTypes.js";
+import { normalizeUserInputQuestions } from "./userInputQuestions.js";
 
 /** A decoded JSON value from the Claude CLI's stream-json wire: scalars,
  *  null, arrays, or nested objects of the same. */
@@ -120,46 +120,17 @@ export function claudeApprovalRequest(
   return request;
 }
 
+/** Normalize a Claude AskUserQuestion input into the questions the answer
+ *  modal shows. The id is the question text itself, index ignored: the SDK
+ *  looks answers up by text, not by a synthetic id, so two identical question
+ *  texts share one id and one answer — duplicate texts cannot be told apart.
+ *  Claude spells multi-select exactly one way; the shared walk handles
+ *  everything else. */
 export function parseAskUserQuestions(input: ClaudeWirePayload): UserInputQuestion[] {
-  const rawQuestions = asRecord(input)?.questions;
-  if (!Array.isArray(rawQuestions)) return [];
-
-  const out: UserInputQuestion[] = [];
-  for (const raw of rawQuestions) {
-    const record = asRecord(raw);
-    const question = readString(record, "question")?.trim();
-    if (!question) continue;
-    const header = readString(record, "header")?.trim() || "Question";
-
-    const options: UserInputQuestionOption[] = [];
-    const rawOptions = Array.isArray(record?.options) ? record!.options : [];
-    for (const rawOption of rawOptions) {
-      if (
-        rawOption &&
-        !(rawOption instanceof Object) &&
-        !Number.isFinite(rawOption) &&
-        rawOption !== true
-      ) {
-        const label = String(rawOption).trim();
-        if (label) options.push({ label });
-        continue;
-      }
-      const optionRecord = asRecord(rawOption);
-      const label = readString(optionRecord, "label")?.trim();
-      if (!label) continue;
-      const description = readString(optionRecord, "description")?.trim();
-      options.push(description ? { label, description } : { label });
-    }
-
-    out.push({
-      id: question,
-      header,
-      question,
-      options,
-      multiSelect: record?.multiSelect === true,
-    });
-  }
-  return out;
+  return normalizeUserInputQuestions(asRecord(input)?.questions, {
+    idFor: (_entry, question) => question,
+    isMultiSelect: (entry) => entry.multiSelect === true,
+  });
 }
 
 /** A short inline summary for a tool call, dug out of its (parsed) input. */
