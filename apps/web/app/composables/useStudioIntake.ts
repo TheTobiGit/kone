@@ -11,14 +11,24 @@
 // however it was started.
 //
 // Two paths, because a row is only mounted when the plane already holds one for
-// its project (or that project's page is open underneath):
+// its project (or that project's page is open underneath). They are two
+// adapters behind one call, not two ways to call: a row has two states with
+// different owners, and each adapter serves exactly one.
 //
 //   · mounted — hand the thread to the row. It opens the pane and persists it on
 //     its own debounce. A mounted row is the only writer of its own layout, so
 //     writing the document behind one would just be clobbered by its next save.
+//     The handoff narrows the row to the intake seam at the call site, so this
+//     path can only adopt and dismiss — never sessions, focus, or teardown.
 //   · not mounted — write the pane entry straight into the plane. The row set is
 //     derived from the document, so this both brings the row into being and puts
 //     the pane on it; when the row does mount it restores exactly what we wrote.
+//
+// One seam. Everything that puts a thread on a row comes through adoptThread
+// — or the inbox's policy wrapper adoptInboxThread — and both are fire-and-
+// forget: callers do not wait for an answer, the column converges the next
+// time the row is seen. Adopting twice is safe — the second write observes
+// the first and adds nothing.
 //
 // Neither path focuses the pane and neither summons the plane. You asked for a
 // thread, not to be taken somewhere — the column is simply there the next time
@@ -27,8 +37,39 @@
 import { usePaneWidthPrefs } from "~/composables/usePaneWidthPrefs";
 import { useStudioPersistence } from "~/composables/useStudioPersistence";
 import { useStudioRowRegistry } from "~/composables/useStudioRowRegistry";
+import type { InboxViewId } from "~/types/inbox";
 import { foldThreadPanes } from "~/utils/panes";
 import type { PaneEntry, StudioRow } from "~/types/studio";
+
+/** The intake seam's view of a row: the only two operations the inbox-to-studio
+ *  handoff may use. The full row contract is seventeen methods wide and most
+ *  of it is the row's own business (sessions, terminals, focus, teardown);
+ *  intake adopting and dismissing threads must not depend on all of that, or
+ *  every change to the row's surface ripples into the portal handoff. A mounted
+ *  row satisfies this structurally, so call sites narrow rowFor's result to
+ *  this at the point of use and nothing registers twice. */
+export interface StudioIntakeRow {
+  adoptThread: (threadId: string) => void;
+  dismissThread: (threadId: string) => void;
+}
+
+/** Everything the inbox's adopt policy reads, in one place. The three inbox
+ *  call sites used to each re-derive whether a thread joins the row — which
+ *  list is showing, whether the thread is finished — and drifted: one of them
+ *  forgot the finished check. Now they only forward what they know and the
+ *  rule lives here, once. */
+export interface InboxAdoptRequest {
+  projectPath: string | null | undefined;
+  threadId: string | null | undefined;
+  /** Which list the thread was opened from. Only the live inbox joins the row;
+   *  a thread opened from the archive or the done list is being looked back
+   *  at, not worked on. */
+  view: InboxViewId;
+  /** Whether the thread is finished. A finished thread's claim is over, and a
+   *  column for it would resurrect work the user already set down. Only
+   *  exactly true counts — anything else joins. */
+  done?: boolean;
+}
 
 let intakeSeq = 0;
 
@@ -73,8 +114,9 @@ export function useStudioIntake() {
   const { defaultWidth } = usePaneWidthPrefs();
 
   /** Put a thread on its project's studio row. Safe to call for a thread that is
-   *  already there — both paths dedupe, because one conversation is hosted by
-   *  exactly one pane. */
+   *  already there — the cold write folds first and adds nothing when the
+   *  thread is already on the row, and the mounted path leaves dedupe to the
+   *  row, which already hosts at most one pane per conversation. */
   async function adoptThread(projectPath: string, threadId: string): Promise<void> {
     if (!projectPath || !threadId) return;
 
@@ -84,7 +126,7 @@ export function useStudioIntake() {
     // let the two interleave (mounted write landing while the cold read is
     // still in flight). Serializing keeps call order per project.
     return serialized(projectPath, async () => {
-      const mounted = rowRegistry.rowFor(projectPath);
+      const mounted: StudioIntakeRow | null = rowRegistry.rowFor(projectPath);
       if (mounted) {
         mounted.adoptThread(threadId);
         return;
@@ -97,7 +139,7 @@ export function useStudioIntake() {
       // studio being summoned, the project's page opening. From that moment the
       // row owns its layout, so hand the thread over rather than write underneath
       // it and have its first save drop the pane.
-      const arrived = rowRegistry.rowFor(projectPath);
+      const arrived: StudioIntakeRow | null = rowRegistry.rowFor(projectPath);
       if (arrived) {
         arrived.adoptThread(threadId);
         return;
@@ -131,6 +173,17 @@ export function useStudioIntake() {
     });
   }
 
+  /** The inbox portal's single way onto a row. Applies the studio policy —
+   *  live list, unfinished thread — and delegates the rest to adoptThread, so
+   *  every call site applies the same rule to the same thread. */
+  async function adoptInboxThread(req: InboxAdoptRequest): Promise<void> {
+    if (req.view !== "inbox") return;
+    if (req.done === true) return;
+    const projectPath = req.projectPath ?? "";
+    const threadId = req.threadId ?? "";
+    return adoptThread(projectPath, threadId);
+  }
+
   /** Remove a thread from its project's studio row. Safe to call for a thread that is
    *  not on the row or a project that has no row yet — both paths no-op cleanly. */
   async function dismissThread(projectPath: string, threadId: string): Promise<void> {
@@ -139,7 +192,7 @@ export function useStudioIntake() {
     // Same chain as adopt: a mounted dismissal racing a cold adopt for the
     // same project must land in call order, not interleave with its read.
     return serialized(projectPath, async () => {
-      const mounted = rowRegistry.rowFor(projectPath);
+      const mounted: StudioIntakeRow | null = rowRegistry.rowFor(projectPath);
       if (mounted) {
         mounted.dismissThread(threadId);
         return;
@@ -149,7 +202,7 @@ export function useStudioIntake() {
       const existing = await store.loadRow();
 
       // Hand over if the row mounted while reading the cold plane.
-      const arrived = rowRegistry.rowFor(projectPath);
+      const arrived: StudioIntakeRow | null = rowRegistry.rowFor(projectPath);
       if (arrived) {
         arrived.dismissThread(threadId);
         return;
@@ -199,6 +252,6 @@ export function useStudioIntake() {
     await Promise.all(paths.map((path) => dismissThread(path, threadId)));
   }
 
-  return { adoptThread, dismissThread, dismissThreadAnywhere };
+  return { adoptThread, adoptInboxThread, dismissThread, dismissThreadAnywhere };
 }
 

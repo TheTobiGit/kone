@@ -143,6 +143,52 @@ describe("no row mounted", () => {
   });
 });
 
+// The inbox's policy — live list, unfinished thread — in one entry, so every
+// call site applies the same rule to the same thread.
+describe("inbox policy", () => {
+  test("only the live inbox list joins the row", async () => {
+    const intake = useStudioIntake();
+    await intake.adoptInboxThread({ projectPath: A, threadId: "t-1", view: "archived" });
+    await intake.adoptInboxThread({ projectPath: A, threadId: "t-1", view: "done" });
+    expect(rowFor(A)).toBeNull();
+  });
+
+  test("a finished thread stays off the row", async () => {
+    await useStudioIntake().adoptInboxThread({
+      projectPath: A,
+      threadId: "t-1",
+      view: "inbox",
+      done: true,
+    });
+    expect(rowFor(A)).toBeNull();
+  });
+
+  test("a live unfinished thread joins the row once, even when adopted twice", async () => {
+    const intake = useStudioIntake();
+    await intake.adoptInboxThread({ projectPath: A, threadId: "t-1", view: "inbox", done: false });
+    await intake.adoptInboxThread({ projectPath: A, threadId: "t-1", view: "inbox" });
+    expect(threadIdsOn(A)).toEqual(["t-1"]);
+  });
+
+  test("a mounted row takes the thread through the same entry", async () => {
+    const row = fakeRow();
+    registry.register(A, row);
+    await useStudioIntake().adoptInboxThread({
+      projectPath: A,
+      threadId: "t-1",
+      view: "inbox",
+      done: false,
+    });
+    expect(row.adopted).toEqual(["t-1"]);
+  });
+
+  test("missing ids touch nothing", async () => {
+    await useStudioIntake().adoptInboxThread({ projectPath: null, threadId: "t-1", view: "inbox" });
+    await useStudioIntake().adoptInboxThread({ projectPath: A, threadId: null, view: "inbox" });
+    expect(rowFor(A)).toBeNull();
+  });
+});
+
 describe("row mounted", () => {
   test("the row is handed the thread and the document is left to it", async () => {
     const row = fakeRow();
