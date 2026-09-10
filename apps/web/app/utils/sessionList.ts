@@ -77,41 +77,81 @@ export function isThreadUnread(meta: StoredThreadMeta): boolean {
 }
 
 /**
- * Which thread, if any, a list should stamp as read right now.
+ * Which thread, if any, a list should stamp as read right now — as a pure
+ * latch transition, so the caller owns the one entry of state and this stays
+ * testable without a clock or a write to inject.
  *
- * Three conditions, and the first is the one that is easy to lose. A list keeps
- * a selection long after anyone stopped looking at it — the inbox portal hides
- * rather than unmounts, its views are held alive, and starting a new message
- * takes the reading pane without clearing what was picked. So the surface has
- * to say whether the selected thread is actually on screen; the selection alone
- * does not know. Without that, a reply landing while the user is somewhere else
- * entirely gets marked read by a list nobody can see, and the mark it should
- * have raised is gone for good — read state is a comparison against a stamp, and
- * a stamp that moved forward cannot be un-moved.
+ * One pass over the rows: find the selected row, and only when it is there
+ * and unread compare its generation against the latch. A repeated sighting of
+ * the same generation — the watcher's immediate run plus its first reactive
+ * run, or a silent reload that re-summarizes unchanged rows — stamps nothing
+ * but keeps the latch. Anything with no stamp target (the surface hid, the
+ * selection moved on, the row came back read, the selection is not in this
+ * list) clears the latch, so the next unread sighting stamps fresh. An unread
+ * row with a newer activity stamp is a turn that landed under the open thread,
+ * which stamps again.
  *
- * Then: something has to be selected, and it has to be a row this list is
- * actually showing AND currently reading as unread. That last part is what keeps
- * the stamp live rather than one-shot — a turn landing under an open thread
- * re-summarizes the row as unread, and the same check takes the mark straight
- * back off.
+ * The caller holds `next` until the next poll and writes `toStamp` when it is
+ * non-null. One latch per list instance, so nothing leaks across views and
+ * there is nothing to prune.
  */
-export function threadToStampVisited(input: {
+export interface VisitStamp {
+  threadId: string;
+  updatedAt: number;
+}
+
+/** What the visit check reads each time the list settles. */
+export interface VisitStampInput {
   /** The selected thread is in front of the user right now. */
   reading: boolean;
   selectedThreadId: string | null | undefined;
-  rows: readonly Pick<SessionSummary, "threadId" | "unread">[];
-}): string | null {
-  if (!input.reading) return null;
-  const open = input.selectedThreadId;
-  if (!open) return null;
-  return input.rows.some((row) => row.threadId === open && row.unread) ? open : null;
+  rows: readonly Pick<SessionSummary, "threadId" | "unread" | "updatedAt">[];
 }
 
-/** The visits already written this run, keyed by what they acknowledged. A
- *  surface stamps on every settle of every thread it is showing, and several
+export interface VisitStampTransition {
+  /** The stamp to write now, or null when nothing should be written. */
+  toStamp: VisitStamp | null;
+  /** The latch the caller holds until the next poll. */
+  next: VisitStamp | null;
+}
+
+export function nextVisitStamp(
+  last: VisitStamp | null,
+  input: VisitStampInput,
+): VisitStampTransition {
+  if (!input.reading) return { toStamp: null, next: null };
+  const open = input.selectedThreadId;
+  if (!open) return { toStamp: null, next: null };
+  let openRow: VisitStampInput["rows"][number] | undefined;
+  for (const row of input.rows) {
+    if (row.threadId === open) {
+      openRow = row;
+      break;
+    }
+  }
+  if (!openRow || !openRow.unread) return { toStamp: null, next: null };
+  if (last?.threadId === openRow.threadId && last.updatedAt === openRow.updatedAt) {
+    return { toStamp: null, next: last };
+  }
+  const stamp: VisitStamp = { threadId: openRow.threadId, updatedAt: openRow.updatedAt };
+  return { toStamp: stamp, next: stamp };
+}
+
+/** The keyed visits already written this run, keyed by what they acknowledged.
+ *  A surface stamps on every settle of every thread it is showing, and several
  *  surfaces can be showing the same one — without this, a strip of five columns
- *  is five identical writes per landed turn. */
-const stamped = new Map<string, number>();
+ *  is five identical writes per landed turn.
+ *
+ *  Bounded: a long run settles thousands of turns and these entries are never
+ *  read back, only probed. Once full the oldest go, and the worst a dropped
+ *  entry costs is one repeat courtesy write. */
+const keyedStamps = new Map<string, number>();
+
+/** Past this many keyed stamps the oldest entries are dropped. Five hundred is
+ *  far beyond any strip of columns times any burst of turns, so in practice
+ *  the bound never bites — it is here so the map cannot grow for the life of
+ *  the app. */
+const KEYED_STAMPS_MAX = 500;
 
 /**
  * Record that the user has just had this thread in front of them.
@@ -129,8 +169,12 @@ const stamped = new Map<string, number>();
 export function markThreadVisited(threadId: string, key?: string, at = Date.now()): void {
   if (key) {
     const mark = `${threadId}:${key}`;
-    if (stamped.has(mark)) return;
-    stamped.set(mark, at);
+    if (keyedStamps.has(mark)) return;
+    if (keyedStamps.size >= KEYED_STAMPS_MAX) {
+      const oldest = keyedStamps.keys().next();
+      if (!oldest.done) keyedStamps.delete(oldest.value);
+    }
+    keyedStamps.set(mark, at);
   }
   if (!import.meta.client) return;
   void window.koneDesktop?.agent?.history?.setVisited(threadId, at).catch(() => {});

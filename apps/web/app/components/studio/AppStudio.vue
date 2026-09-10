@@ -23,17 +23,27 @@ import { computed, onMounted, ref, watch } from "vue";
 import { recordsStanding, resolveLandingProject, resolveRowFocus } from "~/utils/rowFocus";
 import { useEventListener, usePreferredReducedMotion } from "@vueuse/core";
 import type { Project } from "~/composables/useProject";
+import type { PortalState } from "~/composables/usePortals";
+import type { SurfaceId } from "~/utils/surfaceTop";
 
 const props = defineProps<{
-  /** The plane is summoned. Hidden with `visibility`, never unmounted. */
-  open: boolean;
+  /** Where the plane sits in the portal stack. `hidden` is away, `active` is
+   *  the frontmost layer, `covered` is open underneath another portal. Hidden
+   *  with `visibility`, never unmounted. */
+  state: PortalState;
+  /** Which viewport surface owns Escape, resolved once in the page. The plane
+   *  answers only when named, so one press never dismisses two layers. */
+  surfaceTop: SurfaceId;
   /** The project whose page is showing underneath, if any. It earns a row of its
    *  own even before it has any work on it — see `renderRows`. */
   activeProject: Project | null;
-  /** Another portal is over the plane. While set, Escape and plane shortcuts
-   *  belong to it, so the plane stays quiet underneath. */
-  suspended?: boolean;
 }>();
+
+// The frontmost layer answers keys and holds focus; anything else stays quiet
+// underneath, and a covered plane keeps its paint (so the cover fades over
+// work) while taking no input.
+const isActive = computed(() => props.state === "active");
+const isCovered = computed(() => props.state === "covered");
 
 const emit = defineEmits<{
   /** A row asked to be brought forward while the plane was away — its first
@@ -325,7 +335,7 @@ const g = useProjectGit(focusedProject);
 
 // ── travel & 2D overview navigation ──────────────────────────────────────────
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!props.open || props.suspended || e.defaultPrevented) return;
+  if (!isActive.value || e.defaultPrevented) return;
 
   if (matchesShortcut("toggle-overview", e)) {
     e.preventDefault();
@@ -335,6 +345,9 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 
   if (studioOverview.value) {
     if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+      // A modal over the plane owns these first — leaving the overview
+      // underneath an open dialog would answer a key meant for the dialog.
+      if (props.surfaceTop !== "studio") return;
       e.preventDefault();
       exitStudioOverview();
       return;
@@ -396,7 +409,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 
 // ── keyboard shortcuts for panes ──────────────────────────────────────────────
 function resolveTargetProjectPath(): string | null {
-  if (props.open) {
+  if (isActive.value) {
     // In studio: currently showing project row
     return focusedPath.value;
   }
@@ -409,7 +422,7 @@ function resolveTargetProjectPath(): string | null {
 }
 
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (props.suspended || e.defaultPrevented) return;
+  if (isCovered.value || e.defaultPrevented) return;
 
   if (matchesShortcut("new-thread", e)) {
     const targetPath = resolveTargetProjectPath();
@@ -478,11 +491,11 @@ function refuse(): void {
 
 // Escape closes one layer at a time. Anything inside a row owns it first and
 // marks the event handled, so reaching here means the plane itself is the
-// frontmost thing — unless it is suspended, in which case the portal over it
-// owns Escape and one press must not dismiss both.
+// frontmost thing — while covered, or while a modal or the assistant stands
+// over it, the layer above owns Escape and one press must not dismiss both.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!props.open || e.key !== "Escape" || e.defaultPrevented) return;
-  if (props.suspended) return;
+  if (!isActive.value || e.key !== "Escape" || e.defaultPrevented) return;
+  if (props.surfaceTop !== "studio") return;
   if (studioOverview.value) {
     exitStudioOverview();
     return;
@@ -508,10 +521,11 @@ function onOpenBranch(): void {
 
 // A row asks to be brought forward — its first turn, a new thread, a terminal.
 // From a row that is already the focused one this is just "summon the plane";
-// from any other it is also a step of the camera.
+// from any other it is also a step of the camera. Only a hidden plane needs
+// summoning: a covered one is already open underneath and stays there.
 function onSummon(projectPath: string): void {
   if (projectPath !== focusedPath.value) focusRow(projectPath);
-  if (!props.open) emit("summon");
+  if (props.state === "hidden") emit("summon");
 }
 
 defineExpose({
@@ -532,17 +546,17 @@ defineExpose({
   <div
     class="plane portal-fade"
     :class="{
-      'portal-fade--hidden': !open || empty,
+      'portal-fade--hidden': state === 'hidden' || empty,
       // Covered by the inbox: cut instead of fading (see .portal-fade--covered
       // in main.css). The plane only ever opens under cover during a downward
       // portal switch, where a fade would play out unseen and still be
       // mid-flight when the inbox lifts.
-      'portal-fade--covered': suspended,
+      'portal-fade--covered': isCovered,
       'is-overview': studioOverview,
       'is-multi-row': studioOverview && displayRows.length > 1,
       'is-two-row': studioOverview && displayRows.length === 2,
     }"
-    :inert="!open || empty"
+    :inert="!isActive || empty"
     @wheel="onStudioWheel"
   >
     <div
@@ -567,8 +581,8 @@ defineExpose({
 
         <StudioRow
           :project="{ path: row.projectPath, name: row.name }"
-          :visible="open && (studioOverview || row.projectPath === focusedPath)"
-          :blocked="false"
+          :visible="isActive && (studioOverview || row.projectPath === focusedPath)"
+          :blocked="isCovered"
           :branch="row.projectPath === focusedPath ? g.branch.value : null"
           :origin="row.projectPath === focusedPath ? g.origin.value : null"
           :overview="studioOverview"

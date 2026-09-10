@@ -31,7 +31,7 @@ import { CENTER_MODES } from "~/utils/stripScroll";
 // pages is declared in useSettingsSurface, since the launcher's slide is measured
 // from the same value.
 
-const props = defineProps<{ open: boolean }>();
+const props = defineProps<{ open: boolean; surfaceTop: SurfaceId }>();
 const emit = defineEmits<{ close: [] }>();
 
 const { muted, toggleMuted, cue } = useSound();
@@ -95,6 +95,7 @@ function onSoundToggle() {
 }
 
 import type { ComponentPublicInstance } from "vue";
+import type { SurfaceId } from "~/utils/surfaceTop";
 
 // The nav rows and the volume glyph drive their own icons. Hover on a row replays
 // its glyph (row-level, not the tiny icon); toggling sound fires the volume glyph
@@ -212,10 +213,13 @@ function backToRoot() {
 
 // Esc is a natural "up": from a detail pane → back to root; from root → close.
 // A rebind capture on the shortcuts page owns Esc first (capture-phase listener
-// there), so one Esc leaves capture and a second walks back.
+// there), so one Esc leaves capture and a second walks back. And the drawer
+// only answers while it is the topmost surface — a portal or a modal standing
+// over it owns the press instead, so one Esc never dismisses two layers.
 function onKeydown(e: KeyboardEvent) {
   if (!props.open) return;
-  if (e.key !== "Escape") return;
+  if (e.key !== "Escape" || e.defaultPrevented) return;
+  if (props.surfaceTop !== "settings") return;
   e.preventDefault();
   if (pane.value !== "root") {
     backToRoot();

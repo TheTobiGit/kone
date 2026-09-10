@@ -8,10 +8,12 @@ import {
   isThreadDone,
   isThreadUnread,
   liftLegacyPins,
+  nextVisitStamp,
   SESSION_PIN_KEY,
   STALE_AFTER_MS,
   summarizeSession,
-  threadToStampVisited,
+  type VisitStamp,
+  type VisitStampInput,
 } from "./sessionList";
 
 /** Minimal persisted thread row; tests override just the fields under test. */
@@ -244,37 +246,98 @@ describe("liftLegacyPins — one-time localStorage→DB migration", () => {
   });
 });
 
-describe("threadToStampVisited", () => {
-  const rows = [
-    { threadId: "a", unread: true },
-    { threadId: "b", unread: false },
-  ];
+describe("nextVisitStamp — one pure pass from latch plus list settle to stamp", () => {
+  function row(
+    threadId: string,
+    unread: boolean,
+    updatedAt = 5000,
+  ): Pick<SessionSummary, "threadId" | "unread" | "updatedAt"> {
+    return { threadId, unread, updatedAt };
+  }
 
-  test("stamps the selected thread while it is being read", () => {
-    expect(threadToStampVisited({ reading: true, selectedThreadId: "a", rows })).toBe("a");
+  function input(
+    overrides: Partial<VisitStampInput> = {},
+  ): VisitStampInput {
+    return {
+      reading: true,
+      selectedThreadId: "a",
+      rows: [row("a", true), row("b", false)],
+      ...overrides,
+    };
+  }
+
+  test("stamps the open unread thread", () => {
+    const transition = nextVisitStamp(null, input());
+    expect(transition.toStamp).toEqual({ threadId: "a", updatedAt: 5000 });
+    expect(transition.next).toEqual({ threadId: "a", updatedAt: 5000 });
   });
 
-  test("a hidden surface with a leftover selection stamps nothing", () => {
-    // The regression this exists for. The inbox portal hides rather than
+  test("a hidden surface with a leftover selection stamps nothing and clears", () => {
+    // The regression this gate exists for. The inbox portal hides rather than
     // unmounts and its lists are kept alive, so a thread selected an hour ago is
     // still selected. A reply landing now re-summarizes the row as unread and
     // would be stamped read by a list nobody can see — and the stamp only moves
     // forward, so that mark never comes back.
-    expect(threadToStampVisited({ reading: false, selectedThreadId: "a", rows })).toBeNull();
+    const latched: VisitStamp = { threadId: "a", updatedAt: 5000 };
+    const transition = nextVisitStamp(
+      latched,
+      input({ reading: false, rows: [row("a", true)] }),
+    );
+    expect(transition.toStamp).toBeNull();
+    expect(transition.next).toBeNull();
   });
 
-  test("nothing selected, nothing to stamp", () => {
-    expect(threadToStampVisited({ reading: true, selectedThreadId: null, rows })).toBeNull();
-    expect(threadToStampVisited({ reading: true, selectedThreadId: undefined, rows })).toBeNull();
+  test("nothing selected, or a selection the list does not carry, stamps nothing and clears", () => {
+    const latched: VisitStamp = { threadId: "a", updatedAt: 5000 };
+    const rows = [row("a", true)];
+    expect(nextVisitStamp(latched, input({ selectedThreadId: null, rows })).next).toBeNull();
+    expect(nextVisitStamp(latched, input({ selectedThreadId: undefined, rows })).next).toBeNull();
+    expect(nextVisitStamp(latched, input({ selectedThreadId: "zzz", rows })).next).toBeNull();
+    expect(nextVisitStamp(null, input({ selectedThreadId: "zzz", rows })).toStamp).toBeNull();
   });
 
-  test("a thread already read is left alone, so the write is not repeated", () => {
-    expect(threadToStampVisited({ reading: true, selectedThreadId: "b", rows })).toBeNull();
+  test("a thread already read is left alone and clears the latch", () => {
+    const latched: VisitStamp = { threadId: "a", updatedAt: 5000 };
+    const transition = nextVisitStamp(latched, input({ rows: [row("a", false)] }));
+    expect(transition.toStamp).toBeNull();
+    expect(transition.next).toBeNull();
   });
 
-  test("a selection this list does not carry is not this list's to stamp", () => {
-    // Each view holds its own rows; a thread selected in the inbox and then
-    // archived is a selection the archive's list has and the inbox's does not.
-    expect(threadToStampVisited({ reading: true, selectedThreadId: "zzz", rows })).toBeNull();
+  test("polling the same unread generation twice stamps once and keeps the latch", () => {
+    const first = nextVisitStamp(null, input({ rows: [row("a", true)] }));
+    expect(first.toStamp).toEqual({ threadId: "a", updatedAt: 5000 });
+    // The watcher's immediate run plus its first reactive run, and every
+    // silent reload that re-summarizes unchanged rows, arrive exactly like
+    // this — same thread, same activity stamp, fresh array each time.
+    const second = nextVisitStamp(first.next, input({ rows: [row("a", true)] }));
+    expect(second.toStamp).toBeNull();
+    expect(second.next).toEqual({ threadId: "a", updatedAt: 5000 });
+    const third = nextVisitStamp(second.next, input({ rows: [row("a", true)] }));
+    expect(third.toStamp).toBeNull();
+    expect(third.next).toEqual({ threadId: "a", updatedAt: 5000 });
+  });
+
+  test("a turn landing under the open thread re-stamps", () => {
+    const first = nextVisitStamp(null, input({ rows: [row("a", true, 5000)] }));
+    expect(first.toStamp).toEqual({ threadId: "a", updatedAt: 5000 });
+    // The reload behind the landed turn re-summarizes the row: unread again,
+    // with a newer activity stamp. That is a new generation, not an echo.
+    const second = nextVisitStamp(first.next, input({ rows: [row("a", true, 8000)] }));
+    expect(second.toStamp).toEqual({ threadId: "a", updatedAt: 8000 });
+    expect(second.next).toEqual({ threadId: "a", updatedAt: 8000 });
+  });
+
+  test("a poll with nothing to stamp re-arms the latch", () => {
+    const first = nextVisitStamp(null, input({ rows: [row("a", true)] }));
+    expect(first.toStamp).toEqual({ threadId: "a", updatedAt: 5000 });
+    // The row came back read — or the surface hid, or the selection moved on.
+    // Either way the latch drops, so the next unread sighting stamps fresh:
+    // a mark-unread picked back up, or a retry after a write that never
+    // landed, both arrive as unread with the same activity stamp.
+    const cleared = nextVisitStamp(first.next, input({ rows: [row("a", false)] }));
+    expect(cleared.toStamp).toBeNull();
+    expect(cleared.next).toBeNull();
+    const restamped = nextVisitStamp(cleared.next, input({ rows: [row("a", true)] }));
+    expect(restamped.toStamp).toEqual({ threadId: "a", updatedAt: 5000 });
   });
 });

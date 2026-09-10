@@ -17,31 +17,56 @@
 // gutter between them. The window itself is the outer shelf, so there is no
 // frame around the panes to repeat an edge that is already there.
 
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch } from "vue";
 import { useElementSize, useEventListener, useStorage } from "@vueuse/core";
 import {
-  CHROME_WIDTH,
-  clampListWidth,
   DEFAULT_LIST_WIDTH,
+  dragListWidth,
   GUTTER_WIDTH,
+  gutterKeyWidth,
+  INBOX_PADDING,
   MAX_LIST_WIDTH,
   MIN_LIST_WIDTH,
   RAIL_WIDTH,
+  resolveListWidth,
 } from "~/utils/inboxLayout";
+import {
+  createInboxReadingPaneState,
+  openThread,
+  pickThread,
+  resolveInboxReadingPane,
+  threadStarted,
+} from "~/utils/inboxReadingPane";
 import InboxNewThread from "~/components/inbox/InboxNewThread.vue";
 import { useShortcuts } from "~/composables/useShortcuts";
 import { setInlineThread } from "~/composables/useAgent";
+import type { PortalState, ThreadJumpTarget } from "~/composables/usePortals";
+import type { SurfaceId } from "~/utils/surfaceTop";
 import { resolveThreadSummary, summarizeSession } from "~/utils/sessionList";
 import type { InboxViewId } from "~/types/inbox";
 import type { SessionSummary } from "~/types/session";
 
 const props = defineProps<{
-  /** The inbox is summoned. Hidden with `visibility`, never unmounted. */
-  open: boolean;
+  /** Where the inbox sits in the portal stack. `hidden` is away, `active` is
+   *  the frontmost layer, `covered` is open underneath another portal. Hidden
+   *  with `visibility`, never unmounted. */
+  state: PortalState;
+  /** Which viewport surface owns Escape, resolved once in the page. The inbox
+   *  answers only when named, so one press never dismisses two layers. */
+  surfaceTop: SurfaceId;
+  /** A parked thread asking to be read here. Set by the portal orchestrator's
+   *  jump and cleared once taken — the inbox routes it the ordinary way. */
+  pendingJump: ThreadJumpTarget | null;
 }>();
+
+// The frontmost layer answers keys and holds focus; anything else stays quiet
+// underneath while keeping its paint, the same terms the plane renders from.
+const isActive = computed(() => props.state === "active");
+const isCovered = computed(() => props.state === "covered");
 
 const emit = defineEmits<{
   close: [];
+  jumpConsumed: [];
 }>();
 
 const { cue } = useSound();
@@ -54,37 +79,39 @@ const intake = useStudioIntake();
 // about itself rather than state buried in a control.
 const view = ref<InboxViewId>("inbox");
 
-// Starting a conversation takes over the reading pane rather than opening
-// beside it: the inbox is one thing at a time, and a half-written message you
-// cannot see is a message you lose. Selecting a thread puts it away, so the
-// list stays the way out.
-//
-// It is also where the pane rests. With nothing picked there is nothing to
-// read, and a line saying so would be a wall between you and the one thing you
-// might want an empty inbox for — so the empty state IS the composer, and New
-// is for when you are reading something and want to start beside it rather
-// than a door you have to go through first.
-const composing = ref(false);
-const writing = computed(() => composing.value || selected.value === null);
+// What the reading pane is showing, as one value. The pieces behind it — a
+// half-written message, the picked thread, whether the portal has ever been
+// entered, the session a just-started thread is running in — live here as
+// portal-owned state: the list v-model, the read-marking watcher, and the
+// child-thread lookup read the selection directly, and the single-field steps
+// assign directly. The module holds the resolver the template switches on and
+// the multi-field transitions where more than one field moves together.
+const paneState = reactive(createInboxReadingPaneState());
+const pane = computed(() => resolveInboxReadingPane(paneState));
+
+// No thread is on screen: the composer is up, or nothing has been picked, or
+// the portal has never been entered. Read-marking and the bots' skip both key
+// off the negation, so a reply landing while nobody is looking still raises
+// its mark.
+const writing = computed(() => pane.value.kind !== "reader");
 
 /** Somebody is actually looking at the selected thread. The three ways that
- *  stops being true are all silent — the portal is dismissed, the composer takes
- *  the pane, or nothing is picked — and none of them clear `selected`, which is
+ *  stops being true are all silent — the portal leaves the front, the composer takes
+ *  the pane, or nothing is picked — and none of them clear the selection, which is
  *  deliberate: coming back should put you where you were. So the fact that a
  *  selection exists says nothing about whether it is on screen, and the lists
  *  need to be told, because marking a thread read is a claim that it was read. */
-const reading = computed(() => props.open && !writing.value);
+const reading = computed(() => isActive.value && !writing.value);
 
-// The portal is never unmounted, only hidden, so a pane that claims a session
-// on mount would claim one at boot for a project nobody has opened. Latched
-// rather than tied to `open`: once you have been in, the surface stays put
-// across visits instead of throwing away a half-written message every time the
-// inbox is dismissed.
-const visited = ref(false);
+// Latched rather than tied to the frontmost state: once you have been in, the
+// surface stays put across visits instead of throwing away a half-written
+// message every time the inbox is dismissed. Until then the pane stays idle —
+// the portal is never unmounted, only hidden, so mounting the composer earlier
+// would claim a session at boot for a project nobody has opened.
 watch(
-  () => props.open,
-  (open) => {
-    if (open) visited.value = true;
+  isActive,
+  (active) => {
+    if (active) paneState.visited = true;
   },
   { immediate: true },
 );
@@ -93,7 +120,9 @@ const newThreadRef = ref<InstanceType<typeof InboxNewThread> | null>(null);
 
 function startNewThread(): void {
   cue("select");
-  composing.value = true;
+  // The selection underneath is kept, not cleared — the composer covers it,
+  // and dismissing the composer puts you back where you were.
+  paneState.composing = true;
   void nextTick(() => {
     newThreadRef.value?.focus();
   });
@@ -104,28 +133,44 @@ function startNewThread(): void {
  *  like any other in the list, and there is nothing left that only the pane
  *  that made it could offer. */
 function onThreadStarted(row: SessionSummary, sessionKey: string): void {
-  selected.value = row;
-  handedKey.value = sessionKey;
-  composing.value = false;
+  threadStarted(paneState, row, sessionKey);
   // The two portals hold the same work under different questions, and this is
   // the one moment a thread exists in only one of them. The inbox is where you
   // started it; the studio is where the project's work lives, so the thread gets
   // a column on that project's row too. It lands unfocused and does not summon
   // the plane — you are reading the thread here, and being moved would be the
-  // portal deciding for you where you meant to be.
-  if (row.projectPath) void intake.adoptThread(row.projectPath, row.threadId);
+  // portal deciding for you where you meant to be. A birth always joins: it is
+  // live by definition, so it goes through the same entry as every other adopt
+  // with that said outright. Fire-and-forget — the column converges the next
+  // time you travel to the row either way.
+  void intake
+    .adoptInboxThread({
+      projectPath: row.projectPath ?? null,
+      threadId: row.threadId,
+      view: "inbox",
+      done: false,
+    })
+    .catch(() => undefined);
 }
 
 /** A thread picked out of the list: the composer's, if it was up, goes away, and
- *  so does its session key — this thread is opened the ordinary way. When opened
- *  from the active inbox list, it joins its project's studio row as well. */
-function onPickThread(): void {
-  composing.value = false;
-  handedKey.value = null;
-  const row = selected.value;
-  if (row?.projectPath && !row.done && view.value === "inbox") {
-    void intake.adoptThread(row.projectPath, row.threadId);
-  }
+ *  so does its session key — this thread is opened the ordinary way. The picked
+ *  row arrives as the update payload, so this reads the row rather than
+ *  re-reading the binding. A null payload is a clear from a row action — silent,
+ *  with the composer left alone. When opened from the live inbox list, an
+ *  unfinished thread joins its project's studio row as well. That policy lives
+ *  in the intake entry — this only forwards what the list knows. */
+function onPickThread(row: SessionSummary | null): void {
+  if (row === null) return;
+  pickThread(paneState);
+  void intake
+    .adoptInboxThread({
+      projectPath: row.projectPath ?? null,
+      threadId: row.threadId ?? null,
+      view: view.value,
+      done: row.done,
+    })
+    .catch(() => undefined);
 }
 
 /** A spawned child's own conversation, asked for from the reading pane's
@@ -134,7 +179,7 @@ function onPickThread(): void {
  *  selected the ordinary way — the pane remounts onto it. A child the store
  *  cannot name yet leaves you where you are. */
 async function onOpenThread(threadId: string): Promise<void> {
-  const parent = selected.value;
+  const parent = paneState.selected;
   const projectPath = parent?.projectPath;
   if (!projectPath) return;
   await onOpenProjectThread(projectPath, threadId, parent?.projectName);
@@ -142,8 +187,9 @@ async function onOpenThread(threadId: string): Promise<void> {
 
 /** A parked thread the bots row names, possibly in another project. Resolved
  *  out of that project's stored threads and selected the ordinary way — the
- *  pane remounts onto it and its ask answers inline there. Joins its
- *  project's studio row as well, the way a picked row does. */
+ *  pane remounts onto it and its ask answers inline there. An unfinished thread
+ *  opened from the live inbox list joins its project's studio row as well, the
+ *  way a picked row does. */
 async function onOpenProjectThread(
   projectPath: string,
   threadId: string,
@@ -152,36 +198,40 @@ async function onOpenProjectThread(
   const summary = await resolveThreadSummary(projectPath, threadId, projectName);
   if (!summary) return;
   cue("select");
-  composing.value = false;
-  handedKey.value = null;
-  selected.value = summary;
-  if (view.value === "inbox") void intake.adoptThread(projectPath, threadId);
+  openThread(paneState, summary);
+  void intake
+    .adoptInboxThread({
+      projectPath,
+      threadId,
+      view: view.value,
+      done: summary.done,
+    })
+    .catch(() => undefined);
 }
-
-// Which thread the reading pane is showing. Portal-level rather than per-view,
-// so switching between the inbox and the archive does not throw away what you
-// were reading.
-const selected = ref<SessionSummary | null>(null);
-
-// The live session behind a thread the composer just started, so the reading
-// pane attaches to that very session instead of looking one up by id. Only ever
-// set by the handover, and dropped as soon as you read something else — every
-// other thread is opened the ordinary way.
-const handedKey = ref<string | null>(null);
 
 // Report the thread on screen, so the global bots skip what is already in
 // front of the user: its ask answers inline in the reading pane. `reading`
 // already excludes the dismissed portal, the composer, and the empty state —
 // the report is just the thread it names, or null the moment nothing is shown.
 watch(
-  () => (reading.value ? (selected.value?.threadId ?? null) : null),
+  () => (reading.value ? (paneState.selected?.threadId ?? null) : null),
   (threadId) => setInlineThread("inbox", threadId),
   { immediate: true },
 );
 
-// What the global bots row calls: open a parked thread (any project) the
-// ordinary way, so its ask answers inline here.
-defineExpose({ openProjectThread: onOpenProjectThread });
+// A cross-portal jump waiting to be routed: a parked thread (any project) the
+// orchestrator recorded, opened the ordinary way so its ask answers inline
+// here. Cleared the moment it is taken — before the async resolve — so a
+// second jump landing mid-resolve is a fresh value rather than being wiped by
+// the first one's completion.
+watch(
+  () => props.pendingJump,
+  (jump) => {
+    if (!jump) return;
+    emit("jumpConsumed");
+    void onOpenProjectThread(jump.projectPath, jump.threadId, jump.projectName);
+  },
+);
 
 // ── the gutter ───────────────────────────────────────────────────────────────
 // How wide the list is, in pixels, remembered across restarts. Stored raw and
@@ -195,18 +245,11 @@ const stored = useStorage("kone.inbox.list-width", DEFAULT_LIST_WIDTH);
 
 // Observed rather than read on demand, so the clamp tracks a window being
 // resized and not only the moment of the last drag. This is the content box, so
-// the portal's padding is already out of it.
+// the portal's padding is already out of it. The width maths lives in
+// inboxLayout: this only forwards what is stored and what is observed.
 const { width: contentWidth } = useElementSize(root);
 
-/** The space the two panes share: everything the rail and the gaps do not take. */
-function availableWidth(): number {
-  // Before the first measurement, wide enough that a stored width is honoured
-  // as-is; the observer corrects it on the same frame the element appears.
-  if (!contentWidth.value) return MAX_LIST_WIDTH * 2;
-  return contentWidth.value - CHROME_WIDTH;
-}
-
-const listWidth = computed(() => clampListWidth(stored.value, availableWidth()));
+const listWidth = computed(() => resolveListWidth(stored.value, contentWidth.value));
 
 const dragging = ref(false);
 
@@ -221,7 +264,7 @@ function onGutterDown(e: PointerEvent): void {
   handle.setPointerCapture(e.pointerId);
 
   const onMove = (move: PointerEvent) => {
-    stored.value = clampListWidth(startWidth + (move.clientX - startX), availableWidth());
+    stored.value = dragListWidth(startWidth, startX, move.clientX, contentWidth.value);
   };
   const onUp = () => {
     dragging.value = false;
@@ -236,15 +279,13 @@ function onGutterDown(e: PointerEvent): void {
   handle.addEventListener("pointercancel", onUp);
 }
 
-/** The keyboard's version of the drag, so the split is not mouse-only. */
+/** The keyboard's version of the drag, so the split is not mouse-only. The
+ *  module maps the key to the width to store, or null when the key is not the
+ *  gutter's — this only forwards the event and writes down the answer. */
 function onGutterKey(e: KeyboardEvent): void {
-  const step = e.shiftKey ? 48 : 12;
-  if (e.key === "ArrowLeft") stored.value = clampListWidth(listWidth.value - step, availableWidth());
-  else if (e.key === "ArrowRight")
-    stored.value = clampListWidth(listWidth.value + step, availableWidth());
-  else if (e.key === "Home") stored.value = MIN_LIST_WIDTH;
-  else if (e.key === "End") stored.value = MAX_LIST_WIDTH;
-  else return;
+  const next = gutterKeyWidth(listWidth.value, e.key, e.shiftKey, contentWidth.value);
+  if (next === null) return;
+  stored.value = next;
   e.preventDefault();
 }
 
@@ -257,18 +298,21 @@ function onGutterReset(): void {
 // ── keyboard shortcuts & leaving ─────────────────────────────────────────────
 // Escape leaves, but only when nothing inside owns it first — anything that
 // answers Escape of its own stops the event at its handler, so reaching here
-// means the inbox itself is the frontmost thing.
+// means the inbox itself is the frontmost thing. While covered or away, or
+// while a modal or the assistant stands over it, that layer (or nothing) owns
+// keys, so one press never dismisses both.
 //
 // ⌘N starts a new conversation in the inbox portal rather than delegating to
 // the studio plane behind it.
 useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!props.open || e.defaultPrevented) return;
+  if (!isActive.value || e.defaultPrevented) return;
   if (matchesShortcut("new-thread", e)) {
     e.preventDefault();
     startNewThread();
     return;
   }
   if (e.key === "Escape") {
+    if (props.surfaceTop !== "inbox") return;
     e.preventDefault();
     close();
     return;
@@ -289,13 +333,18 @@ function close(): void {
   <div
     ref="root"
     class="inbox portal-fade"
-    :class="{ 'portal-fade--hidden': !open, 'inbox--dragging': dragging }"
+    :class="{
+      'portal-fade--hidden': state === 'hidden',
+      'portal-fade--covered': isCovered,
+      'inbox--dragging': dragging,
+    }"
     :style="{
       '--inbox-list-w': `${listWidth}px`,
       '--inbox-gutter-w': `${GUTTER_WIDTH}px`,
       '--inbox-rail-w': `${RAIL_WIDTH}px`,
+      '--inbox-pad': `${INBOX_PADDING}px`,
     }"
-    :inert="!open"
+    :inert="!isActive"
   >
     <InboxRail v-model="view" />
 
@@ -306,11 +355,11 @@ function close(): void {
       <KeepAlive>
         <InboxThreadList
           :key="view"
-          v-model:selected="selected"
+          v-model:selected="paneState.selected"
           :view="view"
           :reading="reading"
           @new-thread="startNewThread"
-          @update:selected="onPickThread"
+          @update:selected="(row) => onPickThread(row)"
         />
       </KeepAlive>
     </section>
@@ -336,15 +385,19 @@ function close(): void {
     </div>
 
     <section class="inbox__pane inbox__pane--read" aria-label="Thread">
+      <!-- One value picks the pane: the composer while writing, the reader for
+           the picked thread, and nothing while idle — idle is the portal before
+           its first visit, kept empty on purpose rather than mounting the
+           composer and claiming a session for a project nobody has opened. -->
       <InboxNewThread
-        v-if="visited && writing"
+        v-if="pane.kind === 'composer'"
         ref="newThreadRef"
         @started="onThreadStarted"
       />
       <InboxThreadReader
-        v-else-if="selected"
-        :row="selected"
-        :session-key="handedKey ?? undefined"
+        v-else-if="pane.kind === 'reader'"
+        :row="pane.row"
+        :session-key="pane.sessionKey ?? undefined"
         @open-thread="onOpenThread"
       />
     </section>
@@ -366,7 +419,7 @@ function close(): void {
      unbroken line in there cannot push the grid wider than the portal. */
   grid-template-columns: var(--inbox-rail-w) var(--inbox-list-w) minmax(0, 1fr);
   gap: var(--inbox-gutter-w);
-  padding: 20px;
+  padding: var(--inbox-pad);
 }
 
 /* Surfaces rather than outlines: the panes are a step up off the ground, the
@@ -383,12 +436,14 @@ function close(): void {
 
 .inbox__gutter {
   position: absolute;
-  top: 20px;
-  bottom: 20px;
+  top: var(--inbox-pad);
+  bottom: var(--inbox-pad);
   /* The portal's own padding, then the rail and its gap, then the list — so the
      handle is pinned to the split it moves, with no second copy of the width to
      keep in step. */
-  left: calc(20px + var(--inbox-rail-w) + var(--inbox-gutter-w) + var(--inbox-list-w));
+  left: calc(
+    var(--inbox-pad) + var(--inbox-rail-w) + var(--inbox-gutter-w) + var(--inbox-list-w)
+  );
   width: var(--inbox-gutter-w);
   display: grid;
   place-items: center;
