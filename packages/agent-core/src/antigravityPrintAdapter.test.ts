@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import type { RuntimeEvent } from "./types.js";
+import type { RuntimeEvent, UserInputAnswers } from "./types.js";
 
 class DatabaseSyncShim {
   private readonly db: Database;
@@ -28,27 +28,17 @@ mock.module("node:sqlite", () => ({ DatabaseSync: DatabaseSyncShim }));
 mock.module("./sqlite.js", () => ({ DatabaseSync: DatabaseSyncShim }));
 
 import {
-  ANTGRAVITY_BINARY,
-  parseAntigravityVersion,
-  resolveAntigravityBinary,
-} from "./antigravityHome.js";
-import {
   AntigravityPrintAdapter,
   antigravityPromptCommandLineIssue,
-  antigravityTurnOutcome,
   buildKoneCaptureCommand,
   buildKoneHookConfig,
   hookScriptSource,
-  parseAntigravityCliModelLabel,
-  parseAntigravityModelLines,
   readCompleteAntigravityLines,
-  resolveAntigravityCliModelLabel,
-  summarizeAntigravityTool,
 } from "./adapters/AntigravityPrintAdapter.js";
 
-// The adapter's parsing helpers are exercised directly, with no CLI spawn:
-// each helper is the same one the adapter runs live, and the shapes it
-// asserts were captured from the real CLI's output.
+// The hook builders run against the real shell with no CLI spawn; the turn
+// tests drive the adapter through scripted `agy` stand-ins that replay the
+// transcripts and hook stream a real print-mode turn produces.
 
 const noopEmit = () => {};
 
@@ -68,168 +58,6 @@ function runCaptureCommand(command: string, input: string, env: NodeJS.ProcessEn
     timeout: 5_000,
   });
 }
-
-describe("Antigravity CLI model translation", () => {
-  test("collapses CLI model/effort labels into base models with effort ladders", () => {
-    expect(
-      parseAntigravityModelLines(`
-Gemini 3.5 Flash (Medium)
-Gemini 3.5 Flash (High)
-Gemini 3.5 Flash (Low)
-Gemini 3.1 Pro (Low)
-Gemini 3.1 Pro (High)
-Claude Sonnet 4.6 (Thinking)
-Claude Opus 4.6 (Thinking)
-GPT-OSS 120B (Medium)
-`),
-    ).toEqual([
-      {
-        id: "Gemini 3.5 Flash",
-        label: "Gemini 3.5 Flash",
-        contextWindowTokens: 1_000_000,
-        reasoningEfforts: ["low", "medium", "high"],
-        defaultReasoningEffort: "medium",
-      },
-      {
-        id: "Gemini 3.1 Pro",
-        label: "Gemini 3.1 Pro",
-        contextWindowTokens: 1_000_000,
-        reasoningEfforts: ["low", "high"],
-        defaultReasoningEffort: "low",
-      },
-      {
-        id: "Claude Sonnet 4.6",
-        label: "Claude Sonnet 4.6",
-        contextWindowTokens: 200_000,
-        reasoningEfforts: ["thinking"],
-        defaultReasoningEffort: "thinking",
-      },
-      {
-        id: "Claude Opus 4.6",
-        label: "Claude Opus 4.6",
-        contextWindowTokens: 200_000,
-        reasoningEfforts: ["thinking"],
-        defaultReasoningEffort: "thinking",
-      },
-      {
-        id: "GPT-OSS 120B",
-        label: "GPT-OSS 120B",
-        contextWindowTokens: 128_000,
-        reasoningEfforts: ["medium"],
-        defaultReasoningEffort: "medium",
-      },
-    ]);
-  });
-
-  test("collapses tab-separated slug/label rows from newer agy models output", () => {
-    expect(
-      parseAntigravityModelLines(`
-gemini-3.6-flash-high\tGemini 3.6 Flash (High)
-gemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)
-gemini-3.6-flash-low\tGemini 3.6 Flash (Low)
-gemini-3.1-pro-high\tGemini 3.1 Pro (High)
-gemini-3.1-pro-low\tGemini 3.1 Pro (Low)
-claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
-`),
-    ).toEqual([
-      {
-        id: "Gemini 3.6 Flash",
-        label: "Gemini 3.6 Flash",
-        contextWindowTokens: 1_000_000,
-        reasoningEfforts: ["low", "medium", "high"],
-        defaultReasoningEffort: "medium",
-      },
-      {
-        id: "Gemini 3.1 Pro",
-        label: "Gemini 3.1 Pro",
-        contextWindowTokens: 1_000_000,
-        reasoningEfforts: ["low", "high"],
-        defaultReasoningEffort: "low",
-      },
-      {
-        id: "Claude Sonnet 4.6",
-        label: "Claude Sonnet 4.6",
-        contextWindowTokens: 200_000,
-        reasoningEfforts: ["thinking"],
-        defaultReasoningEffort: "thinking",
-      },
-    ]);
-  });
-
-  test("rebuilds the exact CLI model label only at dispatch", () => {
-    expect(parseAntigravityCliModelLabel("Gemini 3.5 Flash (High)")).toEqual({
-      model: "Gemini 3.5 Flash",
-      effort: "high",
-    });
-    expect(parseAntigravityCliModelLabel("gemini-3.6-flash-high\tGemini 3.6 Flash (High)")).toEqual({
-      model: "Gemini 3.6 Flash",
-      effort: "high",
-    });
-    expect(resolveAntigravityCliModelLabel("Gemini 3.5 Flash")).toBe("Gemini 3.5 Flash (Medium)");
-    expect(resolveAntigravityCliModelLabel("Gemini 3.5 Flash", { reasoningEffort: "high" })).toBe(
-      "Gemini 3.5 Flash (High)",
-    );
-    expect(resolveAntigravityCliModelLabel("Gemini 3.5 Flash (Low)")).toBe("Gemini 3.5 Flash (Low)");
-    expect(resolveAntigravityCliModelLabel("gemini-3.6-flash-high\tGemini 3.6 Flash (High)")).toBe(
-      "Gemini 3.6 Flash (High)",
-    );
-  });
-
-  test("accepts bullet-prefixed model output", () => {
-    expect(parseAntigravityCliModelLabel("* Gemini 3.5 Flash (High)")).toEqual({
-      model: "Gemini 3.5 Flash",
-      effort: "high",
-    });
-    expect(parseAntigravityCliModelLabel("• Claude Sonnet 4.6 (Thinking)")).toEqual({
-      model: "Claude Sonnet 4.6",
-      effort: "thinking",
-    });
-  });
-
-  test("discovers future CLI models without requiring a static catalog update", () => {
-    expect(
-      parseAntigravityModelLines(`
-Gemini 4 Pro (Low)
-Gemini 4 Pro (Ultra)
-Claude Sonnet 5 (Thinking)
-`),
-    ).toEqual([
-      {
-        id: "Gemini 4 Pro",
-        label: "Gemini 4 Pro",
-        contextWindowTokens: 1_000_000,
-        reasoningEfforts: ["low", "ultra"],
-        defaultReasoningEffort: "low",
-      },
-      {
-        id: "Claude Sonnet 5",
-        label: "Claude Sonnet 5",
-        contextWindowTokens: 200_000,
-        reasoningEfforts: ["thinking"],
-        defaultReasoningEffort: "thinking",
-      },
-    ]);
-  });
-
-  test("dispatches a discovered model with its discovered default effort", () => {
-    expect(resolveAntigravityCliModelLabel("Gemini 4 Pro", undefined, "low")).toBe(
-      "Gemini 4 Pro (Low)",
-    );
-  });
-});
-
-describe("Antigravity install detection", () => {
-  test("falls back to `agy` for a blank override, keeps a real path", () => {
-    expect(resolveAntigravityBinary(undefined)).toBe(ANTGRAVITY_BINARY);
-    expect(resolveAntigravityBinary("  ")).toBe(ANTGRAVITY_BINARY);
-    expect(resolveAntigravityBinary("/opt/homebrew/bin/agy")).toBe("/opt/homebrew/bin/agy");
-  });
-
-  test("reads the bare semver from --version output", () => {
-    expect(parseAntigravityVersion("1.0.12\n")).toBe("1.0.12");
-    expect(parseAntigravityVersion("agy 1.0.12 (build 2026-07-01)\n")).toBe("1.0.12");
-  });
-});
 
 describe("Antigravity capture plugin", () => {
   test("keeps the globally installed hook neutral outside kone sessions", () => {
@@ -330,56 +158,6 @@ describe("Antigravity capture plugin", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
-
-  test("summarizeAntigravityTool extracts human-readable target text and details", () => {
-    expect(summarizeAntigravityTool("run_command", { CommandLine: "bun test" })).toEqual({
-      text: "bun test",
-      detail: '{\n  "CommandLine": "bun test"\n}',
-    });
-    expect(
-      summarizeAntigravityTool("view_file", { AbsolutePath: "/path/to/file.ts", toolAction: "Viewing file" }),
-    ).toEqual({
-      text: "/path/to/file.ts",
-      detail: '{\n  "AbsolutePath": "/path/to/file.ts",\n  "toolAction": "Viewing file"\n}',
-    });
-    expect(
-      summarizeAntigravityTool("write_to_file", { TargetFile: "/path/to/file.ts" }),
-    ).toEqual({
-      text: "/path/to/file.ts",
-      detail: '{\n  "TargetFile": "/path/to/file.ts"\n}',
-    });
-    expect(
-      summarizeAntigravityTool("replace_file_content", { TargetFile: "/path/to/file.ts" }),
-    ).toEqual({
-      text: "/path/to/file.ts",
-      detail: '{\n  "TargetFile": "/path/to/file.ts"\n}',
-    });
-    expect(
-      summarizeAntigravityTool("manage_task", { Action: "kill", TaskId: "task-19" }),
-    ).toEqual({
-      text: "kill task-19",
-      detail: '{\n  "Action": "kill",\n  "TaskId": "task-19"\n}',
-    });
-    expect(
-      summarizeAntigravityTool("grep_search", { Query: "antigravity" }),
-    ).toEqual({
-      text: "antigravity",
-      detail: '{\n  "Query": "antigravity"\n}',
-    });
-    expect(
-      summarizeAntigravityTool("find_by_name", { Pattern: "*.ts" }),
-    ).toEqual({
-      text: "*.ts",
-      detail: '{\n  "Pattern": "*.ts"\n}',
-    });
-    expect(summarizeAntigravityTool("run_command", {})).toEqual({ text: "" });
-    expect(summarizeAntigravityTool("run_command", undefined)).toEqual({ text: "" });
-    // When text matches tool name, it returns empty string
-    expect(summarizeAntigravityTool("run_command", { command: "run_command" })).toEqual({
-      text: "",
-      detail: '{\n  "command": "run_command"\n}',
-    });
   });
 
   test("answers pre-invocation allow for kone-managed sessions so subagent launches survive", () => {
@@ -618,6 +396,30 @@ async function waitForEvent(
   }
 }
 
+/** Write one scripted `agy` stand-in: it replays the given hook-stream lines
+ *  (each `name\tjson`, with a real tab) into $KONE_ANTIGRAVITY_EVENTS, then
+ *  exits. The plugin-install probe runs the same binary with no events path,
+ *  so every script no-ops there. Pass `{ first, rest }` for a two-shot script
+ *  whose later runs replay different lines (a marker file tells them apart).
+ *  The heredoc appends the lines byte-for-byte, so payloads need no shell
+ *  quoting the way one printf per line did. */
+function writeScriptedCli(
+  runDir: string,
+  scriptName: string,
+  steps: string[] | { first: string[]; rest: string[] },
+): string {
+  const emit = (lines: string[]): string =>
+    lines.length === 0 ? ":" : `cat >> "$EV" <<'KONE_EV_EOF'\n${lines.join("\n")}\nKONE_EV_EOF`;
+  const replay = Array.isArray(steps)
+    ? emit(steps)
+    : `MARKER="${path.join(runDir, "saw-first")}"\nif [ -f "$MARKER" ]; then\n${emit(steps.rest)}\nexit 0\nfi\ntouch "$MARKER"\n${emit(steps.first)}`;
+  const scriptPath = path.join(runDir, scriptName);
+  writeFileSync(scriptPath, `#!/bin/sh\nEV="$KONE_ANTIGRAVITY_EVENTS"\n[ -n "$EV" ] || exit 0\n${replay}\nexit 0\n`, {
+    mode: 0o755,
+  });
+  return scriptPath;
+}
+
 describe("Antigravity native subagents", () => {
   test("surfaces a native subagent run without losing the parent conversation", async () => {
     const runDir = mkdtempSync(path.join(tmpdir(), "kone-antigravity-sub-"));
@@ -753,14 +555,10 @@ describe("Antigravity token usage emission", () => {
     insert.run(0, genMetadataRow(chatMessage(usageMessage(1200, 450, 150, "resp-1"))));
     db.close();
 
-    const scriptPath = path.join(runDir, "agy-usage.sh");
-    const script = `#!/bin/sh
-EV="$KONE_ANTIGRAVITY_EVENTS"
-[ -n "$EV" ] || exit 0
-printf 'pre-invocation\t{"conversationId":"conv-123"}\n' >> "$EV"
-printf 'stop\t{"conversationId":"conv-123","fullyIdle":true}\n' >> "$EV"
-`;
-    writeFileSync(scriptPath, script, { mode: 0o755 });
+    const scriptPath = writeScriptedCli(runDir, "agy-usage.sh", [
+      'pre-invocation\t{"conversationId":"conv-123"}',
+      'stop\t{"conversationId":"conv-123","fullyIdle":true}',
+    ]);
 
     const events: RuntimeEvent[] = [];
     const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
@@ -820,41 +618,339 @@ printf 'stop\t{"conversationId":"conv-123","fullyIdle":true}\n' >> "$EV"
   });
 });
 
-describe("antigravityTurnOutcome", () => {
-  const outcome = (over: Partial<Parameters<typeof antigravityTurnOutcome>[0]>) =>
-    antigravityTurnOutcome({
-      interrupted: false,
-      agentStopped: false,
-      code: 0,
-      signal: null,
-      ...over,
+describe("print-mode post-turn ask lifecycle", () => {
+  test("content-dedup keeps the first identical ask", async () => {
+    // Two identical ask_question reports in one turn collapse to one modal
+    // entry. The collect keeps first-seen order with no reorder, so the
+    // survivor carries the first report's id.
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-dedup-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-dedup.sh", [
+      'pre-invocation\t{"conversationId":"conv-dedup"}',
+      'pre-tool\t{"conversationId":"conv-dedup","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Which color?","options":["Red","Blue"]}]}},"stepIdx":0}',
+      'post-tool\t{"conversationId":"conv-dedup","stepIdx":0}',
+      'pre-tool\t{"conversationId":"conv-dedup","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Which color?","options":["Red","Blue"]}]}},"stepIdx":1}',
+      'post-tool\t{"conversationId":"conv-dedup","stepIdx":1}',
+      'stop\t{"conversationId":"conv-dedup","fullyIdle":true}',
+    ]);
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
     });
+    const threadId = "t-postturn-dedup";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      const started = await adapter.sendTurn({ threadId, input: "go" });
+      const completed = await waitForEvent(events, (event) => event.type === "turn.completed");
+      if (completed.type !== "turn.completed") throw new Error("expected turn.completed");
+      const requested = await waitForEvent(events, (event) => event.type === "user-input.requested");
+      if (requested.type !== "user-input.requested") throw new Error("expected user-input.requested");
+      expect(requested.turnId).toBe(completed.turnId);
+      expect(requested.turnId).toBe(started.turnId);
+      expect(requested.postTurn).toBe(true);
+      expect(requested.questions.length).toBe(1);
+      const only = requested.questions[0];
+      if (!only) throw new Error("expected one parked question");
+      expect(only.question).toBe("Which color?");
+      expect(only.options.map((option) => option.label)).toEqual(["Red", "Blue"]);
+      // The first report wins, so the id carries call index 0.
+      expect(only.id).toBe("ask-0-0");
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
-  test("a clean exit completes the turn", () => {
-    expect(outcome({})).toBe("completed");
-  });
+  test("unparseable turn leaves no modal", async () => {
+    // An ask_question report with no askable entries parses to zero
+    // questions, so the turn completes without parking a modal.
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-unparseable-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-unparseable.sh", [
+      'pre-invocation\t{"conversationId":"conv-unparseable"}',
+      'pre-tool\t{"conversationId":"conv-unparseable","toolCall":{"name":"ask_question","args":{"questions":[{"options":["A"]}]}},"stepIdx":0}',
+      'post-tool\t{"conversationId":"conv-unparseable","stepIdx":0}',
+      'stop\t{"conversationId":"conv-unparseable","fullyIdle":true}',
+    ]);
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+    const threadId = "t-postturn-unparseable";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId, input: "go" });
+      const completed = await waitForEvent(events, (event) => event.type === "turn.completed");
+      if (completed.type !== "turn.completed") throw new Error("expected turn.completed");
+      // The request (if any) is emitted synchronously after completion, so a
+      // short settle wait proves absence rather than racing the poll.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(events.filter((event) => event.type === "user-input.requested").length).toBe(0);
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
-  test("a non-zero exit with no Stop behind it fails the turn", () => {
-    expect(outcome({ code: 1 })).toBe("failed");
-    expect(outcome({ code: null })).toBe("failed");
-  });
+  test("fresh turn supersedes a parked ask", async () => {
+    // A parked aftermath modal belongs to the turn that left it. Starting a
+    // new turn clears it with an empty resolved event so the renderer drops
+    // the stale prompt instead of answering into the wrong turn.
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-fresh-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-fresh.sh", {
+      first: [
+        'pre-invocation\t{"conversationId":"conv-fresh"}',
+        'pre-tool\t{"conversationId":"conv-fresh","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Proceed?","options":["Yes","No"]}]}},"stepIdx":0}',
+        'post-tool\t{"conversationId":"conv-fresh","stepIdx":0}',
+        'stop\t{"conversationId":"conv-fresh","fullyIdle":true}',
+      ],
+      rest: [
+        'pre-invocation\t{"conversationId":"conv-fresh"}',
+        'stop\t{"conversationId":"conv-fresh","fullyIdle":true}',
+      ],
+    });
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+    const threadId = "t-postturn-fresh";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      const first = await adapter.sendTurn({ threadId, input: "first" });
+      await waitForEvent(
+        events,
+        (event) => event.type === "turn.completed" && event.turnId === first.turnId,
+      );
+      const firstRequested = await waitForEvent(
+        events,
+        (event) => event.type === "user-input.requested",
+      );
+      if (firstRequested.type !== "user-input.requested")
+        throw new Error("expected user-input.requested");
+      const firstRequestId = firstRequested.requestId;
+      expect(firstRequested.turnId).toBe(first.turnId);
 
-  test("a signalled exit with no Stop behind it reads as interrupted", () => {
-    expect(outcome({ code: null, signal: "SIGKILL" })).toBe("interrupted");
-  });
+      const second = await adapter.sendTurn({ threadId, input: "second" });
+      const cleared = await waitForEvent(
+        events,
+        (event) => event.type === "user-input.resolved" && event.requestId === firstRequestId,
+      );
+      if (cleared.type !== "user-input.resolved") throw new Error("expected user-input.resolved");
+      expect(cleared.answers).toEqual({});
+      await waitForEvent(
+        events,
+        (event) => event.type === "turn.completed" && event.turnId === second.turnId,
+      );
+      // The second turn asked nothing, so the only request on record is the
+      // superseded first one.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(events.filter((event) => event.type === "user-input.requested").length).toBe(1);
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
-  test("the user's interrupt wins over everything", () => {
-    expect(outcome({ interrupted: true, agentStopped: true, code: 1 })).toBe("interrupted");
-  });
+  test("stop abandons a parked ask", async () => {
+    // Stopping the session drops the parked aftermath and clears its modal
+    // with an empty resolved event. Afterwards no answer is owned, so a late
+    // answer returns false and emits nothing.
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-stop-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-stop.sh", [
+      'pre-invocation\t{"conversationId":"conv-stop"}',
+      'pre-tool\t{"conversationId":"conv-stop","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Proceed?","options":["Yes","No"]}]}},"stepIdx":0}',
+      'post-tool\t{"conversationId":"conv-stop","stepIdx":0}',
+      'stop\t{"conversationId":"conv-stop","fullyIdle":true}',
+    ]);
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+    const threadId = "t-postturn-stop";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId, input: "go" });
+      const requested = await waitForEvent(events, (event) => event.type === "user-input.requested");
+      if (requested.type !== "user-input.requested")
+        throw new Error("expected user-input.requested");
+      const requestId = requested.requestId;
+      const parked = requested.questions[0];
+      if (!parked) throw new Error("expected one parked question");
 
-  // The regression: a turn that leaves a background subagent running keeps
-  // print mode waiting, the Stop-hook teardown kills it, and the CLI exits
-  // non-zero after printing its wait timeout. The turn still completed.
-  test("a non-zero exit after the Stop hook completes the turn", () => {
-    expect(outcome({ agentStopped: true, code: 1 })).toBe("completed");
-  });
+      await adapter.stopSession(threadId);
+      const cleared = await waitForEvent(
+        events,
+        (event) => event.type === "user-input.resolved" && event.requestId === requestId,
+      );
+      if (cleared.type !== "user-input.resolved") throw new Error("expected user-input.resolved");
+      expect(cleared.answers).toEqual({});
 
-  test("the teardown escalating to SIGKILL still completes the turn", () => {
-    expect(outcome({ agentStopped: true, code: null, signal: "SIGKILL" })).toBe("completed");
-  });
+      const beforeAnswer = events.length;
+      const late = await adapter.respondToUserInput(threadId, requestId, {
+        [parked.id]: "Yes",
+      });
+      expect(late).toEqual({ owned: false });
+      expect(events.length).toBe(beforeAnswer);
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("stale request id is ignored while the parked ask survives", async () => {
+    // Ownership is the parked request id. A wrong id returns false, emits
+    // nothing, and leaves the park intact; the correct id then returns true
+    // and resolves with the supplied answers.
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-stale-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-stale.sh", [
+      'pre-invocation\t{"conversationId":"conv-stale"}',
+      'pre-tool\t{"conversationId":"conv-stale","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Proceed?","options":["Yes","No"]}]}},"stepIdx":0}',
+      'post-tool\t{"conversationId":"conv-stale","stepIdx":0}',
+      'stop\t{"conversationId":"conv-stale","fullyIdle":true}',
+    ]);
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+    const threadId = "t-postturn-stale";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId, input: "go" });
+      const requested = await waitForEvent(events, (event) => event.type === "user-input.requested");
+      if (requested.type !== "user-input.requested")
+        throw new Error("expected user-input.requested");
+      const requestId = requested.requestId;
+      const parked = requested.questions[0];
+      if (!parked) throw new Error("expected one parked question");
+
+      const beforeStale = events.length;
+      const stale = await adapter.respondToUserInput(threadId, "stale-request", {
+        [parked.id]: "Yes",
+      });
+      expect(stale).toEqual({ owned: false });
+      expect(events.length).toBe(beforeStale);
+
+      const owned = await adapter.respondToUserInput(threadId, requestId, {
+        [parked.id]: "Yes",
+      });
+      expect(owned.owned).toBe(true);
+      expect(owned.followUp).toBe("My answers to your questions:\n\n**Proceed?**\nYes");
+      const resolved = await waitForEvent(
+        events,
+        (event) => event.type === "user-input.resolved" && event.requestId === requestId,
+      );
+      if (resolved.type !== "user-input.resolved") throw new Error("expected user-input.resolved");
+      expect(resolved.answers).toEqual({ [parked.id]: "Yes" });
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("owned answers hand back the follow-up; a dismissal carries none", async () => {
+    // The ownership + follow-up handoff is atomic: one call clears the park
+    // and returns the turn text the caller should send. A dismissal (nothing
+    // answered) still owns the park but carries no follow-up, so the caller
+    // sends nothing. A runtime-wild value (a number through IPC decoding)
+    // coerces instead of throwing after the clear.
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-handoff-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-handoff.sh", [
+      'pre-invocation\t{"conversationId":"conv-handoff"}',
+      'pre-tool\t{"conversationId":"conv-handoff","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Proceed?","options":["Yes","No"]}]}},"stepIdx":0}',
+      'post-tool\t{"conversationId":"conv-handoff","stepIdx":0}',
+      'stop\t{"conversationId":"conv-handoff","fullyIdle":true}',
+    ]);
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+    const threadId = "t-postturn-handoff";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId, input: "go" });
+      const requested = await waitForEvent(events, (event) => event.type === "user-input.requested");
+      if (requested.type !== "user-input.requested")
+        throw new Error("expected user-input.requested");
+      const requestId = requested.requestId;
+      const parked = requested.questions[0];
+      if (!parked) throw new Error("expected one parked question");
+
+      const wild: UserInputAnswers = JSON.parse(`{"${parked.id}": 42}`);
+      const answered = await adapter.respondToUserInput(threadId, requestId, wild);
+      expect(answered).toEqual({
+        owned: true,
+        followUp: "My answers to your questions:\n\n**Proceed?**\n42",
+      });
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("an owned dismissal resolves with no follow-up", async () => {
+    const runDir = mkdtempSync(path.join(tmpdir(), "kone-postturn-dismiss-"));
+    const scriptPath = writeScriptedCli(runDir, "agy-dismiss.sh", [
+      'pre-invocation\t{"conversationId":"conv-dismiss"}',
+      'pre-tool\t{"conversationId":"conv-dismiss","toolCall":{"name":"ask_question","args":{"questions":[{"question":"Proceed?","options":["Yes","No"]}]}},"stepIdx":0}',
+      'post-tool\t{"conversationId":"conv-dismiss","stepIdx":0}',
+      'stop\t{"conversationId":"conv-dismiss","fullyIdle":true}',
+    ]);
+    const events: RuntimeEvent[] = [];
+    const adapter = new AntigravityPrintAdapter((event) => events.push(event), undefined, {
+      homeDir: TEST_HOME,
+      resolveBinary: () => scriptPath,
+    });
+    const threadId = "t-postturn-dismiss";
+    try {
+      await adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: runDir,
+        mode: "full-access",
+      });
+      await adapter.sendTurn({ threadId, input: "go" });
+      const requested = await waitForEvent(events, (event) => event.type === "user-input.requested");
+      if (requested.type !== "user-input.requested")
+        throw new Error("expected user-input.requested");
+      const dismissed = await adapter.respondToUserInput(threadId, requested.requestId, {});
+      expect(dismissed).toEqual({ owned: true });
+    } finally {
+      await adapter.stopSession(threadId);
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
