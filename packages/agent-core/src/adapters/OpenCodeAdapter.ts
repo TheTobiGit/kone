@@ -18,7 +18,9 @@ import {
 } from "../commandSafety.js";
 import type { JsonValue } from "../lib-jsonValue.js";
 import { emitCompacted } from "./emitCompacted.js";
-import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputQuestionOption, UserInputRespondResult } from "../types.js";
+import type { AgentPersona, ApprovalDecision, ApprovalRequest, ApprovalRequestKind, EmitEvent, GatewayConnection, InteractionMode, ModelDescriptor, PlanTask, ProviderAdapter, ProviderConfig, ProviderStatus, RuntimeEvent, RuntimeItem, RuntimeItemKind, RuntimeItemStatus, Session, SendTurnInput, SessionStartInput, SubagentRunSnapshot, SubagentStatus, TokenUsage, TurnStartResult, UserInputAnswers, UserInputQuestion, UserInputRespondResult } from "../types.js";
+import { normalizeUserInputQuestions } from "./userInputQuestions.js";
+import { joinAnswerValues } from "../postTurnAnswers.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 
 /** One decoded JSON value from opencode's HTTP/SSE surface — message infos,
@@ -76,6 +78,11 @@ type OpenCodeSession = {
   emittedTextByPartId: Map<string, string>; completedTextPartIds: Set<string>;
   lastEmittedTokenUsageKey?: string;
   pendingUserInputs: Map<string, { questions: UserInputQuestion[]; resolve: (answers: UserInputAnswers) => void }>;
+  /** Which question-reply route answered last — `/question/{id}/reply`
+   *  (`root`) on current servers, `/api/session/{sid}/question/{id}/reply`
+   *  (`sessionScoped`) on older ones. Set only after a successful reply, so a
+   *  transient failure re-probes next time instead of pinning the fallback. */
+  questionReplyRoute?: "root" | "sessionScoped";
   /** In-flight permission approvals, keyed by the permission request's id. Each
    *  holds the ask we surfaced and the resolver that posts the reply — settled
    *  by respondToRequest (the user decided) or drained on interrupt/stop. */
@@ -236,6 +243,19 @@ function textField(value: OpenCodeJsonValue | undefined): string | undefined {
 function answerRows(value: OpenCodeJsonValue | undefined): string[][] {
   if (!Array.isArray(value)) return [];
   return value.map((row) => Array.isArray(row) ? row.flatMap((cell) => { const text = textField(cell); return text === undefined ? [] : [text]; }) : []);
+}
+
+/** The request id behind a permission/question payload, under either spelling.
+ *  Ask events mint it as `id` while the reply/reject echoes refer back to the
+ *  same request as `requestID` (the reply endpoints take it as the
+ *  `{requestID}` path param), so one helper reads both. `requestID` wins when
+ *  a payload carries both so the parked key and the echo lookup agree;
+ *  missing/blank yields undefined so callers skip instead of keying the
+ *  literal "undefined". */
+function requestIdOf(p: RecordLike): string | undefined {
+  const raw = textField(p.requestID) ?? textField(p.id);
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function openCodeModelName(metadata: RecordLike | undefined): string | undefined {
@@ -918,13 +938,37 @@ export class OpenCodeAdapter implements ProviderAdapter {
        case "permission.asked":
        case "permission.v2.asked": void this.permissionAsked(session, p); break;
        case "permission.replied":
-       case "permission.v2.replied": session.pendingPermissions.delete(String(p.requestID)); break;
+       case "permission.v2.replied": {
+         const repliedId = requestIdOf(p);
+         if (repliedId === undefined) {
+           console.warn(`[opencode] permission.replied without a request id; nothing to clear (thread ${session.threadId})`);
+           break;
+         }
+         session.pendingPermissions.delete(repliedId);
+         break;
+       }
        case "question.asked":
        case "question.v2.asked": this.questionAsked(session, p); break;
-       case "question.replied":
-       case "question.v2.replied": this.questionResolved(session, String(p.requestID), answerRows(p.answers)); break;
-       case "question.rejected":
-       case "question.v2.rejected": this.questionResolved(session, String(p.requestID), []); break;
+        case "question.replied":
+        case "question.v2.replied": {
+          const repliedId = requestIdOf(p);
+          if (repliedId === undefined) {
+            console.warn(`[opencode] question.replied without a request id; parked question cannot be settled (thread ${session.threadId})`);
+            break;
+          }
+          this.questionResolved(session, repliedId, answerRows(p.answers));
+          break;
+        }
+        case "question.rejected":
+        case "question.v2.rejected": {
+          const rejectedId = requestIdOf(p);
+          if (rejectedId === undefined) {
+            console.warn(`[opencode] question.rejected without a request id; parked question cannot be settled (thread ${session.threadId})`);
+            break;
+          }
+          this.questionResolved(session, rejectedId, []);
+          break;
+        }
       default: break;
     }
   }
@@ -1138,9 +1182,138 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (interrupting) this.emit({ ...base(session), type: "turn.aborted", turnId, reason: "interrupted" });
     else this.emit({ ...base(session), type: "turn.completed", turnId, conversationId: session.openCodeSessionId });
   }
-  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> { const requestId = String(p.id ?? p.requestID); /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */ if (!session.activeTurnId) { session.pendingPermissions.set(requestId, p.permission ?? null); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ }); return; } /* `full-access` never parks: an ask is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". The one exception is a command that is irreversible past the working tree, which this gate is now the last place to stop (see permissionRules). */ if (session.mode === "full-access") { session.pendingPermissions.delete(requestId); const refusal = criticalCommandInPermission(p, session.threadId); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: refusal ? "reject" : "once" }).catch(() => { /* provider will surface session.error */ }); return; } session.pendingPermissions.set(requestId, p.permission ?? null); const approval = openCodeApprovalRequest(p.permission); const decision = await new Promise<ApprovalDecision>((resolve) => { session.pendingApprovals.set(requestId, { approval, resolve: (decision) => { resolve(decision); void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ }); }, subagentToolUseId }); const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval }; if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId; this.emit(approvalRequested); }); this.emit({ ...base(session), type: "approval.resolved", requestId, decision }); }
+  private async permissionAsked(session: OpenCodeSession, p: RecordLike, subagentToolUseId?: string): Promise<void> {
+    const requestId = requestIdOf(p);
+    if (requestId === undefined) {
+      console.warn(`[opencode] permission.asked without a request id; cannot fail-closed without an id to reply to — dropping, the provider turn may be waiting for a reply that never comes (thread ${session.threadId})`);
+      return;
+    }
+    /* Fail closed: a permission recovered without an active turn has no trustworthy interaction mode — reply reject instead of parking a modal nothing will ever answer (e.g. a request left by an interrupted turn or a resumed session with no prompt in flight). */
+    if (!session.activeTurnId) {
+      session.pendingPermissions.set(requestId, p.permission ?? null);
+      void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: "reject" }).catch(() => { /* provider will surface session.error */ });
+      return;
+    }
+    /* `full-access` never parks: an ask is auto-approved rather than surfacing a prompt — the rung's contract is "never prompts". The one exception is a command that is irreversible past the working tree, which this gate is now the last place to stop (see permissionRules). */
+    if (session.mode === "full-access") {
+      session.pendingPermissions.delete(requestId);
+      const refusal = criticalCommandInPermission(p, session.threadId);
+      void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: refusal ? "reject" : "once" }).catch(() => { /* provider will surface session.error */ });
+      return;
+    }
+    session.pendingPermissions.set(requestId, p.permission ?? null);
+    const approval = openCodeApprovalRequest(p.permission);
+    const decision = await new Promise<ApprovalDecision>((resolve) => {
+      session.pendingApprovals.set(requestId, {
+        approval,
+        resolve: (decision) => {
+          resolve(decision);
+          void session.client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { reply: toOpenCodeReply(decision) }).catch(() => { /* provider will surface session.error */ });
+        },
+        subagentToolUseId,
+      });
+      const approvalRequested: Extract<RuntimeEvent, { type: "approval.requested" }> = { ...base(session), type: "approval.requested", requestId, turnId: session.activeTurnId, approval };
+      if (subagentToolUseId) approvalRequested.subagentToolUseId = subagentToolUseId;
+      this.emit(approvalRequested);
+    });
+    this.emit({ ...base(session), type: "approval.resolved", requestId, decision });
+  }
   /** Settle one parked permission approval (idempotent — a no-op once drained). */
   private resolveApproval(session: OpenCodeSession, requestId: string, decision: ApprovalDecision): void { const pending = session.pendingApprovals.get(requestId); if (!pending) return; session.pendingApprovals.delete(requestId); pending.resolve(decision); }
-  private questionAsked(session: OpenCodeSession, p: RecordLike): void { const questions = (Array.isArray(p.questions) ? p.questions : []).map((entry, i) => { const q = record(entry) ?? {}; return { id: `question-${i}-${String(q.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, header: String(q.header ?? "Question"), question: String(q.question ?? ""), options: Array.isArray(q.options) ? q.options.map((optionEntry) => { const o = record(optionEntry) ?? {}; const option: UserInputQuestionOption = { label: String(o.label ?? "") }; if (o.description) option.description = String(o.description); return option; }) : [], multiSelect: q.multiple === true }; }); const requestId = String(p.id); this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions }); session.pendingUserInputs.set(requestId, { questions, resolve: (answers) => { void session.client.request("POST", `/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`, { answers: questions.map((q) => { const value = answers[q.id]; return Array.isArray(value) ? value : value == null ? [] : [value]; }) }); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers }); } }); }
-  private questionResolved(session: OpenCodeSession, requestId: string, answers: string[][]): void { const pending = session.pendingUserInputs.get(requestId); if (!pending) return; const mapped: UserInputAnswers = {}; pending.questions.forEach((q, i) => { mapped[q.id] = answers[i]?.join(", ") ?? ""; }); session.pendingUserInputs.delete(requestId); this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped }); }
+  private questionAsked(session: OpenCodeSession, p: RecordLike): void {
+    // opencode's question payload walks through the shared normalizer with
+    // its own id scheme (positional `question-{i}-{slug}`, unchanged) and its
+    // own multi-select spelling (`multiple`). Tightenings versus the old
+    // inline walk are deliberate: entries without question text and options
+    // without a label are dropped instead of surfacing as empty prompts, and
+    // non-text headers/descriptions fall back instead of stringifying into
+    // "[object Object]".
+    const questions = normalizeUserInputQuestions(p.questions, {
+      idFor: (entry, _question, index) =>
+        `question-${index}-${String(entry.header ?? "question").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      isMultiSelect: (entry) => entry.multiple === true,
+    });
+    const requestId = requestIdOf(p);
+    if (requestId === undefined) {
+      console.warn(`[opencode] question.asked without a request id; no modal to park and no reply to post — dropping, the provider turn may be waiting for a reply that never comes (thread ${session.threadId})`);
+      return;
+    }
+    this.emit({ ...base(session), type: "user-input.requested", requestId, turnId: session.activeTurnId, questions });
+    session.pendingUserInputs.set(requestId, {
+      questions,
+      resolve: (answers) => {
+        const payload = {
+          answers: questions.map((q) => {
+            const value = answers[q.id];
+            return Array.isArray(value) ? value : value == null ? [] : [value];
+          }),
+        };
+        this.postQuestionReply(session, requestId, payload);
+        this.emit({ ...base(session), type: "user-input.resolved", requestId, answers });
+      },
+    });
+  }
+  private questionResolved(session: OpenCodeSession, requestId: string, answers: string[][]): void {
+    const pending = session.pendingUserInputs.get(requestId);
+    if (!pending) return;
+    const mapped: UserInputAnswers = {};
+    pending.questions.forEach((q, i) => {
+      mapped[q.id] = joinAnswerValues(answers[i]);
+    });
+    session.pendingUserInputs.delete(requestId);
+    this.emit({ ...base(session), type: "user-input.resolved", requestId, answers: mapped });
+  }
+  /** POST a question answer to whichever route this server speaks. The first
+   *  answer probes the root route and, on a 404 only, falls through to the
+   *  session-scoped one; the winner is remembered so later answers go straight
+   *  there instead of paying a failed round-trip each. The route is pinned
+   *  only after a success — a transient failure leaves it unset so the next
+   *  answer re-probes. The modal already resolved optimistically, so a reply
+   *  the provider never got would look answered while the turn hangs: every
+   *  failure below surfaces as a session error plus a log, never silently. */
+  private postQuestionReply(session: OpenCodeSession, requestId: string, payload: { answers: string[][] }): void {
+    const root = `/question/${encodeURIComponent(requestId)}/reply`;
+    const scoped = `/api/session/${encodeURIComponent(session.openCodeSessionId)}/question/${encodeURIComponent(requestId)}/reply`;
+    if (session.questionReplyRoute === "root") {
+      void session.client.request("POST", root, payload).then(
+        () => undefined,
+        (cause: unknown) => this.failQuestionReply(session, requestId, cause),
+      );
+      return;
+    }
+    if (session.questionReplyRoute === "sessionScoped") {
+      void session.client.request("POST", scoped, payload).then(
+        () => undefined,
+        (cause: unknown) => this.failQuestionReply(session, requestId, cause),
+      );
+      return;
+    }
+    void (async () => {
+      try {
+        await session.client.request("POST", root, payload);
+        session.questionReplyRoute = "root";
+      } catch (rootError) {
+        if (!isOpenCodeNotFound(rootError)) {
+          this.failQuestionReply(session, requestId, rootError);
+          return;
+        }
+        try {
+          await session.client.request("POST", scoped, payload);
+          session.questionReplyRoute = "sessionScoped";
+        } catch (scopedError) {
+          this.failQuestionReply(session, requestId, scopedError);
+        }
+      }
+    })();
+  }
+  /** Surface a question reply the provider never received. The modal already
+   *  resolved optimistically, so without this the answer would look sent while
+   *  the turn waits for it. Clears the pinned route so the next answer
+   *  re-probes instead of replaying a failing route. */
+  private failQuestionReply(session: OpenCodeSession, requestId: string, cause: unknown): void {
+    session.questionReplyRoute = undefined;
+    const message = `question reply ${requestId} failed: ${errorMessage(cause)} — the provider never received the answer and the turn may still be waiting`;
+    console.error(`[opencode] ${message}`);
+    this.emit({ ...base(session, "opencode.sse.lifecycle"), type: "session.state.changed", state: "error", message });
+  }
 }
