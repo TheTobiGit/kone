@@ -66,6 +66,7 @@ import {
 import { formatPlanTasks } from "@kone/protocol/plan-tasks";
 import { isResumeRefusalError } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
+import { joinAnswerValues } from "../postTurnAnswers.js";
 import {
   buildClaudeAttachmentContent,
   composePromptText,
@@ -672,7 +673,16 @@ export class ClaudeAdapter implements ProviderAdapter {
       return { behavior: "deny", message: "The user dismissed the question without answering." };
     }
     // The SDK's tool input is a record; spreading it back keeps every original key.
-    return { behavior: "allow", updatedInput: { ...input, answers } };
+    // Its answers contract is question-text -> single string (multi-select
+    // comma-separated), so coerce the renderer's string[]/null values through
+    // the shared join — passing them through raw would hand the CLI a
+    // malformed answer. The join trims padding and drops non-text picks
+    // rather than stringifying them; the ", " separator is unchanged.
+    const coerced: Record<string, string> = {};
+    for (const [key, value] of Object.entries(answers)) {
+      coerced[key] = joinAnswerValues(value);
+    }
+    return { behavior: "allow", updatedInput: { ...input, answers: coerced } };
   }
 
   /** Settle one parked AskUserQuestion. True when a pending question was

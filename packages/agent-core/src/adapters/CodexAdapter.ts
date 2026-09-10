@@ -34,7 +34,6 @@ import type {
   UserInputAnswers,
   UserInputRespondResult,
   UserInputQuestion,
-  UserInputQuestionOption,
 } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 import {
@@ -42,6 +41,7 @@ import {
   isRecoverableCodexResumeError,
 } from "./errors.js";
 import { emitCompacted } from "./emitCompacted.js";
+import { normalizeUserInputQuestions, readUserInputText } from "./userInputQuestions.js";
 import { buildCodexTurnCollaborationMode, type CodexTurnCollaborationMode } from "../gateway/appContext.js";
 import { formatPlanTasks, parseCodexPlanSnapshot, reconcilePlanTasks, type CodexPlanPayload } from "@kone/protocol/plan-tasks";
 import {
@@ -339,34 +339,19 @@ function toStringArray(value: string | string[] | null | undefined): string[] {
 }
 
 /** Normalize a Codex `item/tool/requestUserInput` payload into kone's neutral
- *  UserInputQuestion[]. Codex questions carry their own `id` (echoed back in the
- *  answer map) and options are `{ label, description }`; Codex has no per-question
- *  multi-select flag, so it's always single-select. */
+ *  UserInputQuestion[] via the shared walk. Codex questions carry their own
+ *  `id` (echoed back in the answer map), so the id reads the entry's own id
+ *  field; entries without one normalize to an empty id and are dropped below
+ *  — with no id there is no key to file the answer under. Codex has no
+ *  per-question multi-select flag, so it's always single-select. One widening
+ *  comes along with the shared walk: plain-string options now normalize
+ *  instead of dropping (Codex only ever sends label/description objects, so
+ *  no real payload changes shape). */
 function parseCodexUserInputQuestions(params: CodexJsonValue | null | undefined): UserInputQuestion[] {
-  const rawQuestions = asRecord(params)?.questions;
-  if (!Array.isArray(rawQuestions)) return [];
-
-  const out: UserInputQuestion[] = [];
-  for (const raw of rawQuestions) {
-    const record = asRecord(raw);
-    const question = readString(record, "question")?.trim();
-    const id = readString(record, "id")?.trim();
-    if (!question || !id) continue;
-    const header = readString(record, "header")?.trim() || "Question";
-
-    const options: UserInputQuestionOption[] = [];
-    const rawOptions = Array.isArray(record?.options) ? record!.options : [];
-    for (const rawOption of rawOptions) {
-      const optionRecord = asRecord(rawOption);
-      const label = readString(optionRecord, "label")?.trim();
-      if (!label) continue;
-      const description = readString(optionRecord, "description")?.trim();
-      options.push(description ? { label, description } : { label });
-    }
-
-    out.push({ id, header, question, options, multiSelect: false });
-  }
-  return out;
+  return normalizeUserInputQuestions(asRecord(params)?.questions, {
+    idFor: (entry) => readUserInputText(entry.id) ?? "",
+    isMultiSelect: (_entry) => false,
+  }).filter((question) => question.id.length > 0);
 }
 
 // ── mode → Codex approval/sandbox mapping ───────────────────────────────────
