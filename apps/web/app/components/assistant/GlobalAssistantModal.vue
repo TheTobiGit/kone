@@ -43,6 +43,11 @@ import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
 import { dedupeMentionProjects } from "~/utils/composerMentions";
 import { formatDayDivider } from "~/utils/threadDates";
+import type { SurfaceId } from "~/utils/surfaceTop";
+
+// Which viewport surface owns Escape, resolved once in the page. The card
+// answers only when named, so one press never dismisses two layers.
+const props = defineProps<{ surfaceTop: SurfaceId }>();
 
 const {
   close,
@@ -174,6 +179,8 @@ function onNewChatFromHistory(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // A launcher modal standing over the card owns every key.
+  if (props.surfaceTop !== "assistant") return;
   if (event.key === "Escape") {
     // The model picker is a modal of its own on top of this one; the first
     // Escape belongs to whichever surface is highest.

@@ -32,7 +32,7 @@ import TurnOrb from "~/components/turn/TurnOrb.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { sessionBrand } from "~/utils/modelCatalog";
-import { byRecency, threadToStampVisited } from "~/utils/sessionList";
+import { byRecency, nextVisitStamp, type VisitStamp } from "~/utils/sessionList";
 import { timeAgo } from "~/utils/timeAgo";
 import { stateForToolFamily, type TurnOrbState } from "~/utils/thinkingOrb";
 import { describeTurnActivity } from "~/utils/turnActivity";
@@ -181,11 +181,17 @@ function select(row: SessionSummary): void {
 }
 
 // Reading a thread is what marks it read — and it keeps marking it, for as long
-// as it is the one on screen. The reload behind a landed turn re-summarizes
-// every row from the record, so a reply that arrives while you are looking at
-// the thread would otherwise come back unread a beat after you read it. Watching
-// the rows rather than only the selection is what closes that: whatever puts a
-// mark on the open thread takes it straight back off.
+// as it is the one on screen. The check below owns which row is the stamp
+// target and whether the thread is actually in front of someone; the latch it
+// compares against lives here, one entry per list, so a reload echo never
+// becomes a second write and nothing leaks across views. The write is this
+// list's own markVisited, so the row clears under the eye first and the bridge
+// write lands behind it.
+//
+// Watching the rows rather than only the selection is what keeps the stamp
+// live: the reload behind a landed turn re-summarizes every row from the
+// record, so a reply arriving under the open thread comes back unread and the
+// same check takes the mark straight back off.
 //
 // `reading` is what keeps that from running in the dark. A selection outlives
 // the visit that made it — the portal only hides, the list stays alive behind
@@ -193,15 +199,17 @@ function select(row: SessionSummary): void {
 // so without this gate a reply landing while you are somewhere else entirely is
 // marked read by a list nobody can see, and the mark it should have raised is
 // gone for good.
+const lastStamp = ref<VisitStamp | null>(null);
 watch(
   [selected, threads, () => props.reading],
   () => {
-    const open = threadToStampVisited({
+    const transition = nextVisitStamp(lastStamp.value, {
       reading: props.reading,
       selectedThreadId: selected.value?.threadId,
       rows: threads.value,
     });
-    if (open) source.markVisited(open);
+    lastStamp.value = transition.next;
+    if (transition.toStamp) source.markVisited(transition.toStamp.threadId, Date.now());
   },
   { immediate: true },
 );
