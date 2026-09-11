@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { AiChipIcon } from "@hugeicons/core-free-icons";
 import {
   buildMentionItems,
   createMentionKindResolver,
   dedupeMentionProjects,
   detectFileMentionTrigger,
   detectSlashCommandTrigger,
+  detectToken,
   filterSlashCommandItems,
   formatFileMention,
   parseLeadingSlashCommand,
   replaceComposerTextRange,
+  slashCommandTitle,
   splitComposerMentionSegments,
 } from "./composerMentions";
 
@@ -69,6 +72,46 @@ describe("detectSlashCommandTrigger", () => {
   });
 });
 
+describe("detectToken", () => {
+  test("finds an @ token with its marker", () => {
+    expect(detectToken("Inspect @apps/web", "Inspect @apps/web".length, ["@", "/"])).toEqual({
+      marker: "@",
+      query: "apps/web",
+      rangeStart: 8,
+      rangeEnd: "Inspect @apps/web".length,
+    });
+  });
+
+  test("finds a / token with its marker", () => {
+    expect(detectToken("/model", "/model".length, ["@", "/"])).toEqual({
+      marker: "/",
+      query: "model",
+      rangeStart: 0,
+      rangeEnd: "/model".length,
+    });
+  });
+
+  test("only listens for the requested markers", () => {
+    expect(detectToken("/model", "/model".length, ["@"])).toBeNull();
+    expect(detectToken("Inspect @a", "Inspect @a".length, ["/"])).toBeNull();
+  });
+
+  test("rejects // comments and paths by the shared slash rule", () => {
+    expect(detectToken("// comment", "// comment".length, ["/"])).toBeNull();
+    expect(detectToken("see https://x.io", "see https://x.io".length, ["/"])).toBeNull();
+  });
+
+  test("rejects tokens that do not start after whitespace", () => {
+    expect(detectToken("email me@example.com", "email me@example.com".length, ["@"])).toBeNull();
+  });
+});
+
+describe("slashCommandTitle", () => {
+  test("derives the label from the name", () => {
+    expect(slashCommandTitle("agent")).toBe("/agent");
+  });
+});
+
 describe("parseLeadingSlashCommand", () => {
   test("reads a bare compact command with empty focus", () => {
     expect(parseLeadingSlashCommand("/compact")).toEqual({ name: "compact", focus: "" });
@@ -114,7 +157,7 @@ describe("parseLeadingSlashCommand", () => {
 });
 
 describe("filterSlashCommandItems", () => {
-  const items = [{ name: "model", title: "/model", description: "Open model picker" }];
+  const items = [{ name: "model", description: "Open model picker", icon: AiChipIcon }];
 
   test("offers everything on an empty query", () => {
     expect(filterSlashCommandItems(items, "")).toEqual(items);

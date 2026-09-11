@@ -1,38 +1,31 @@
-import {
-  computed,
-  h,
-  nextTick,
-  ref,
-  render,
-  type Ref,
-} from "vue";
+import { computed, h, nextTick, render, type Ref } from "vue";
 import MentionChip from "~/components/composer/MentionChip.vue";
 import {
   buildMentionItems,
-  detectFileMentionTrigger,
   formatFileMention,
   splitComposerMentionSegments,
-  type FileMentionTrigger,
   type MentionItem,
   type MentionKind,
   type MentionProject,
 } from "~/utils/composerMentions";
 import { useProjectFiles } from "./useProjectFiles";
-
-export type DomTrigger = { node: Text; start: number; end: number };
+import type { TokenInsertion } from "./useComposerTrigger";
 
 /** How many project rows one @ query may offer. The list is recents, already
  *  short and already ordered, so this only trims a long tail. */
 const MAX_PROJECT_MENTIONS = 6;
 
+/** The composer's @ half: the contenteditable editor (chips, serialization)
+ *  plus the mention row source. Trigger state — the token, the index, the
+ *  keyboard — lives in the shared trigger machine; the query arrives as a
+ *  getter so the file search follows the one live token. */
 export function useComposerMentions(deps: {
   field: Ref<HTMLElement | null>;
   text: Ref<string>;
+  /** The live @ query, or "" when @ isn't the open marker. */
+  query: () => string;
   projectPath: () => string;
-  isOpen: () => boolean;
-  isBusy: () => boolean;
   onSync: () => void;
-  onSubmitOrQueue: () => void;
   /** Projects the @ picker offers above files. Empty everywhere except the
    *  global assistant, which has no project of its own. */
   projects?: () => MentionProject[];
@@ -42,19 +35,14 @@ export function useComposerMentions(deps: {
    *  re-entering the field would otherwise always come back a file chip —
    *  the assistant answers "project" for paths it offered as projects. */
   resolveMentionKind?: (path: string) => MentionKind;
+  /** Place the caret — the trigger machine owns the caret helper. */
+  placeCaret: (node: Node, offset: number) => void;
 }) {
-  const { field, text, projectPath, isOpen, isBusy, onSync, onSubmitOrQueue } = deps;
-
-  const mentionTrigger = ref<FileMentionTrigger | null>(null);
-  const mentionActiveIndex = ref(0);
-  let domTrigger: DomTrigger | null = null;
-
-  const mentionQuery = computed(() => mentionTrigger.value?.query ?? "");
-  const mentionOpen = computed(() => isOpen() && mentionTrigger.value !== null && !isBusy());
+  const { field, text, projectPath, onSync, placeCaret } = deps;
 
   const projectFiles = useProjectFiles(
     () => projectPath(),
-    () => mentionQuery.value,
+    () => deps.query(),
     () => deps.fileMentionsEnabled?.() ?? true,
   );
   const mentionFiles = computed(() => projectFiles.entries.value);
@@ -63,26 +51,26 @@ export function useComposerMentions(deps: {
 
   // Projects whose name or path contains the query, recents order kept. An
   // empty query offers the head of recents, so a bare @ already names
-  // somewhere to point the turn at.
-  const mentionProjects = computed<MentionProject[]>(() => {
+  // somewhere to point the turn at. Substring, not prefix (the deliberate
+  // split from slash rows): project paths are an unbounded set, so `/m`
+  // narrowing to one verb would be wrong here.
+  function mentionProjectsFor(query: string): MentionProject[] {
     const all = deps.projects?.() ?? [];
     if (all.length === 0) return [];
-    const q = mentionQuery.value.trim().toLowerCase();
+    const q = query.trim().toLowerCase();
     if (!q) return all.slice(0, MAX_PROJECT_MENTIONS);
     return all
       .filter(
         (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q),
       )
       .slice(0, MAX_PROJECT_MENTIONS);
-  });
+  }
 
   /** One keyboard list across both sections, built once — the menu renders it
    *  verbatim so no offset arithmetic lives here or in the template. */
-  const mentionItems = computed<MentionItem[]>(() =>
-    buildMentionItems(mentionProjects.value, mentionFiles.value),
-  );
-
-  const mentionCount = computed(() => mentionItems.value.length);
+  function mentionItemsFor(query: string): MentionItem[] {
+    return buildMentionItems(mentionProjectsFor(query), mentionFiles.value);
+  }
 
   const chipHosts = new Set<HTMLElement>();
 
@@ -131,54 +119,21 @@ export function useComposerMentions(deps: {
     return out.replace(/^\n/, "");
   }
 
-  function onEditorChanged(): void {
+  /** Re-serialize the DOM into the sendable text. The trigger refresh rides
+   *  alongside in the composer's input handler, not in here. */
+  function syncEditorText(): void {
     text.value = serializeEditor();
-    refreshTrigger();
     void nextTick(onSync);
   }
 
-  function readDomTrigger(): { trigger: FileMentionTrigger; dom: DomTrigger } | null {
+  /** Drop a picked mention where the token was, then a trailing space so the
+   *  caret lands outside the chip and typing continues as prose. */
+  function applyMention(item: MentionItem, insertion: TokenInsertion | null): void {
     const root = field.value;
-    const sel = "window" in globalThis ? window.getSelection() : null;
-    if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-    const range = sel.getRangeAt(0);
-    const node = range.startContainer;
-    if (!(node instanceof Text) || !root.contains(node)) return null;
-    const textNode = node;
-    const trigger = detectFileMentionTrigger(textNode.data, range.startOffset);
-    if (!trigger) return null;
-    return { trigger, dom: { node: textNode, start: trigger.rangeStart, end: range.startOffset } };
-  }
+    if (!insertion || !root) return;
+    const { parent, after } = insertion;
 
-  function refreshTrigger(): void {
-    const found = readDomTrigger();
-    domTrigger = found?.dom ?? null;
-    mentionTrigger.value = found?.trigger ?? null;
-  }
-
-  function placeCaret(node: Node, offset: number): void {
-    const sel = window.getSelection();
-    if (!sel) return;
-    const range = document.createRange();
-    range.setStart(node, offset);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-
-  function selectMention(entry: { path: string; kind?: MentionKind }): void {
-    const trig = domTrigger;
-    const root = field.value;
-    if (!trig || !root) return;
-
-    const after = trig.node.splitText(trig.end);
-    trig.node.splitText(trig.start);
-    const parent = trig.node.parentNode;
-    const queryNode = trig.node.nextSibling;
-    if (!parent || !queryNode) return;
-    parent.removeChild(queryNode);
-
-    const chip = makeChipEl(entry.path, entry.kind ?? "file");
+    const chip = makeChipEl(item.path, item.kind);
     parent.insertBefore(chip, after);
 
     let caretNode: Node;
@@ -195,59 +150,7 @@ export function useComposerMentions(deps: {
 
     root.focus();
     placeCaret(caretNode, caretOffset);
-    mentionActiveIndex.value = 0;
-    onEditorChanged();
-  }
-
-  function selectMentionAt(index: number): boolean {
-    const item = mentionItems.value[index];
-    if (!item) return false;
-    selectMention({ path: item.path, kind: item.kind });
-    return true;
-  }
-
-  function onFieldInput(): void {
-    onEditorChanged();
-  }
-
-  function onFieldClick(): void {
-    refreshTrigger();
-  }
-
-  function onFieldKeyup(): void {
-    refreshTrigger();
-  }
-
-  function onFieldKeydown(e: KeyboardEvent): void {
-    if (mentionOpen.value) {
-      const count = mentionCount.value;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        if (count) mentionActiveIndex.value = (mentionActiveIndex.value + 1) % count;
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        if (count) mentionActiveIndex.value = (mentionActiveIndex.value - 1 + count) % count;
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        if (selectMentionAt(mentionActiveIndex.value)) {
-          e.preventDefault();
-          return;
-        }
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        mentionTrigger.value = null;
-        domTrigger = null;
-        return;
-      }
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      onSubmitOrQueue();
-    }
+    syncEditorText();
   }
 
   function setEditorFromText(value: string): void {
@@ -267,8 +170,6 @@ export function useComposerMentions(deps: {
     field.value?.replaceChildren();
     disposeChips();
     text.value = "";
-    mentionTrigger.value = null;
-    domTrigger = null;
   }
 
   function focusEditorEnd(): void {
@@ -306,29 +207,18 @@ export function useComposerMentions(deps: {
   }
 
   return {
-    mentionTrigger,
-    mentionActiveIndex,
-    mentionQuery,
-    mentionOpen,
-    mentionCount,
-    mentionItems,
-    projectFiles,
-    mentionProjects,
-    mentionFiles,
     mentionPending,
     mentionError,
+    projectFiles,
+    mentionFiles,
+    mentionProjectsFor,
+    mentionItemsFor,
     makeChipEl,
     disposeChips,
     serializeNode,
     serializeEditor,
-    onEditorChanged,
-    refreshTrigger,
-    selectMention,
-    selectMentionAt,
-    onFieldInput,
-    onFieldClick,
-    onFieldKeyup,
-    onFieldKeydown,
+    syncEditorText,
+    applyMention,
     setEditorFromText,
     clearEditor,
     focusEditorEnd,

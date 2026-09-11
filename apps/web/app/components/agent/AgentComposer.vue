@@ -24,7 +24,9 @@ import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
 import { useComposerSlash } from "~/composables/useComposerSlash";
-import type { MentionProject, SlashCommandItem } from "~/utils/composerMentions";
+import { useComposerTrigger } from "~/composables/useComposerTrigger";
+import type { MentionItem, MentionProject, SlashCommandItem } from "~/utils/composerMentions";
+import { SLASH_COMMANDS } from "~/composables/useComposerSlash";
 import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
@@ -413,27 +415,51 @@ const mentionKindResolver = computed(() =>
   createMentionKindResolver(props.mentionProjects ?? []),
 );
 
+// ── slash commands (`/…`) ───────────────────────────────────────────────────
+// The six switchable flags stay six flags — they also drive non-slash UI (the
+// model button, the tray pickers, the mention search), and every host already
+// binds them individually. One `capabilities` object would churn four call
+// sites for no behavior gain. The single choke point is below instead: the
+// gates feed BOTH the `/` menu filter and the send-time dispatch through the
+// one command table, so a row can never be offered where its send-time twin
+// would refuse to run.
+const { slashItemsFor, isSlashAllowed } = useComposerSlash({
+  canSwitchAgent: () => canSwitchAgent.value,
+  canSwitchModel: () => canSwitchModel.value,
+  canCompact: () => props.compactable !== false,
+  canBranch: () => canSwitchBranch.value,
+  canCreate: () => props.creatable !== false,
+});
+
+// ── one trigger state for both markers ──────────────────────────────────────
+// One token lives under the caret and carries one first character, so `@` and
+// `/` share a single trigger value — the menus are mutually exclusive in
+// state, never by which keystroke handler runs first.
+const trigger = useComposerTrigger<MentionItem | SlashCommandItem>({
+  field,
+  isOpen: () => open.value,
+  markers: ["@", "/"],
+  // @ names files, so it hides while a turn runs; `/` rows are local UI,
+  // never a send, so a running turn must not hide them.
+  blocked: (marker) => marker === "@" && (props.busy ?? false),
+  resolveItems: (active) =>
+    active.marker === "@" ? mentionItemsFor(active.query) : slashItemsFor(active.query),
+  applyItem: (item) => acceptTriggerItem(item),
+  onCommit: () => submitOrQueue(),
+  onMutated: () => handleEditorChanged(),
+});
+
 const {
-  mentionTrigger,
-  mentionActiveIndex,
-  mentionQuery,
-  mentionOpen,
-  mentionCount,
-  mentionItems,
-  projectFiles,
   mentionPending,
   mentionError,
+  projectFiles,
+  mentionItemsFor,
   makeChipEl,
   disposeChips,
   serializeNode,
   serializeEditor,
-  onEditorChanged: onMentionEditorChanged,
-  refreshTrigger,
-  selectMention,
-  onFieldInput: onMentionInput,
-  onFieldClick: onMentionClick,
-  onFieldKeyup: onMentionKeyup,
-  onFieldKeydown: onMentionKeydown,
+  syncEditorText,
+  applyMention,
   setEditorFromText: setMentionEditorFromText,
   clearEditor: clearMentionEditor,
   focusEditorEnd,
@@ -441,108 +467,110 @@ const {
 } = useComposerMentions({
   field,
   text,
+  query: () => trigger.queryFor("@"),
   projectPath: () => props.projectPath,
-  isOpen: () => open.value,
-  isBusy: () => props.busy,
   onSync: sync,
-  onSubmitOrQueue: () => submitOrQueue(),
   projects: () => props.mentionProjects ?? [],
   fileMentionsEnabled: () => !props.disableFileMentions,
   resolveMentionKind: (path) => mentionKindResolver.value(path),
+  placeCaret: (node, offset) => trigger.placeCaret(node, offset),
 });
 
-// ── slash commands (`/…`) ───────────────────────────────────────────────────
-// One token lives under the caret, so the `/` menu and the `@` menu can never
-// be open at once — the slash keystroke runs first and falls through to the
-// mention handler otherwise.
-const {
-  slashActiveIndex,
-  slashQuery,
-  slashOpen,
-  slashCount,
-  slashItems,
-  refreshSlashTrigger,
-  dismissSlash,
-  clearSlashToken,
-  onSlashKeydown,
-} = useComposerSlash({
-  field,
-  isOpen: () => open.value,
-  canSwitchAgent: () => canSwitchAgent.value,
-  canSwitchModel: () => canSwitchModel.value,
-  canCompact: () => props.compactable !== false,
-  canBranch: () => canSwitchBranch.value,
-  canCreate: () => props.creatable !== false,
-  onMutated: () => handleEditorChanged(),
-  onAccept: (item) => acceptSlashCommand(item),
-});
-
-/** A slash row runs in place of a send. Most delete the `/...` token and
- *  never emit it as prompt text — `/agent` keeps it, since the roster picks
- *  who takes the pending draft. */
-function acceptSlashCommand(item: SlashCommandItem) {
-  if (item.name === "compact") {
-    clearSlashToken();
-    emit("compact", "");
-    cue("select");
-    return;
+/** A picked row runs in place of a send. Most consume the token and never
+ *  emit it as prompt text — `/agent` keeps the draft, since the roster picks
+ *  who takes it. Unknown names never reach here from the menu (it only lists
+ *  the table), and at send time they fall through to the provider. */
+function runSlashCommand(name: string, focus: string, opts: { fromMenu: boolean }): boolean {
+  const def = SLASH_COMMANDS[name];
+  if (!def || !isSlashAllowed(name)) return false;
+  if (!def.keepDraft) {
+    if (opts.fromMenu && !def.clearsAll) trigger.consumeToken();
+    else {
+      clearComposerEditor();
+      clearAttachments();
+      syncSoon();
+    }
   }
-  if (item.name === "agent") {
-    // the roster picks who takes the pending draft, so the token stays —
-    // clearing it would delete the prose the handoff is about.
-    openAgentPicker();
-    cue("select");
-    return;
+  if (opts.fromMenu && !def.silent) cue("select");
+  switch (name) {
+    case "compact":
+      emit("compact", focus);
+      return true;
+    case "agent":
+      openAgentPicker();
+      return true;
+    case "branch":
+      emit("open-branch");
+      return true;
+    case "new":
+      emit("new-thread");
+      return true;
+    case "model":
+      openModels();
+      return true;
+    default:
+      return false;
   }
-  if (item.name === "branch") {
-    clearSlashToken();
-    emit("open-branch");
-    cue("select");
-    return;
-  }
-  if (item.name === "new") {
-    clearComposerEditor();
-    clearAttachments();
-    syncSoon();
-    emit("new-thread");
-    return;
-  }
-  if (item.name !== "model") return;
-  clearSlashToken();
-  openModels();
-  cue("select");
 }
 
-/** Re-serialize the field for both trigger systems after any DOM mutation. */
+/** One row in, from either surface: the keyboard path (by index) and the
+ *  mouse path (by item) meet here. The marker decides the kind — the menus
+ *  only ever offer their own. */
+function acceptTriggerItem(item: MentionItem | SlashCommandItem): void {
+  const active = trigger.trigger.value;
+  if (!active) return;
+  if (active.marker === "@" && "kind" in item) {
+    applyMention(item, trigger.consumeToken());
+    return;
+  }
+  if (active.marker === "/" && "name" in item && !("kind" in item)) {
+    runSlashCommand(item.name, "", { fromMenu: true });
+  }
+}
+
+/** The trigger's rows, narrowed per menu — the shell lists one marker's rows
+ *  at a time, so each menu reads only its own half of the union. */
+const mentionMenuItems = computed<MentionItem[]>(() =>
+  trigger.marker.value === "@"
+    ? trigger.items.value.filter((item): item is MentionItem => "kind" in item)
+    : [],
+);
+const slashMenuItems = computed<SlashCommandItem[]>(() =>
+  trigger.marker.value === "/"
+    ? trigger.items.value.filter((item): item is SlashCommandItem => !("kind" in item))
+    : [],
+);
+const triggerMenuOpen = computed(
+  () => trigger.open.value && trigger.marker.value !== null,
+);
+
+/** Re-serialize the field and refresh the one trigger state after any DOM
+ *  mutation — the single fan-in the five per-marker wrappers collapsed to. */
 function handleEditorChanged(): void {
-  onMentionEditorChanged();
-  refreshSlashTrigger();
+  syncEditorText();
+  trigger.refreshTrigger();
 }
 
 function onComposerInput(): void {
-  onMentionInput();
-  refreshSlashTrigger();
+  handleEditorChanged();
 }
 
 function onComposerClick(): void {
-  onMentionClick();
-  refreshSlashTrigger();
+  trigger.refreshTrigger();
 }
 
 function onComposerKeyup(): void {
-  onMentionKeyup();
-  refreshSlashTrigger();
+  trigger.refreshTrigger();
 }
 
 function onComposerKeydown(e: KeyboardEvent): void {
-  if (onSlashKeydown(e)) return;
-  onMentionKeydown(e);
+  trigger.onKeydown(e);
 }
 
-/** Drop the draft for both trigger systems (a send, or a consumed `/model`). */
+/** Drop the draft for the trigger (a send, or a consumed command). */
 function clearComposerEditor(): void {
   clearMentionEditor();
-  dismissSlash();
+  trigger.dismiss();
 }
 
 const isEmpty = computed(() => text.value.trim().length === 0);
@@ -745,43 +773,10 @@ function dispatchDraft() {
   // without trailing prose) is a local command, not a prompt: consume it,
   // run it, and never emit it as turn text. Any other `/...` falls through
   // to the provider, which owns its own commands. Local UI first, so these
-  // work even while the provider is unreachable.
+  // work even while the provider is unreachable. The menu-pick path runs
+  // through the same table and the same gates — one command, one rule.
   const slash = parseLeadingSlashCommand(text.value);
-  if (slash?.name === "model") {
-    clearComposerEditor();
-    clearAttachments();
-    syncSoon();
-    openModels();
-    return;
-  }
-  if (slash?.name === "compact" && props.compactable !== false) {
-    const focus = slash.focus;
-    clearComposerEditor();
-    clearAttachments();
-    syncSoon();
-    emit("compact", focus);
-    return;
-  }
-  if (slash?.name === "agent") {
-    // the roster picks who takes the pending draft, so it stays put —
-    // consuming it here would delete the prose the handoff is about.
-    openAgentPicker();
-    return;
-  }
-  if (slash?.name === "branch" && canSwitchBranch.value) {
-    clearComposerEditor();
-    clearAttachments();
-    syncSoon();
-    emit("open-branch");
-    return;
-  }
-  if (slash?.name === "new" && props.creatable !== false) {
-    clearComposerEditor();
-    clearAttachments();
-    syncSoon();
-    emit("new-thread");
-    return;
-  }
+  if (slash && runSlashCommand(slash.name, slash.focus, { fromMenu: false })) return;
   // Nothing to send it to. Return before clearComposerEditor() below — a send refused
   // for a reason the user hasn't fixed yet must not also cost them their draft.
   if (props.blockedReason) {
@@ -835,30 +830,12 @@ onUnmounted(() => {
   clearAttachments();
 });
 watch(text, scheduleDraftSave);
-watch(
-  [mentionQuery, mentionCount],
-  () => {
-    mentionActiveIndex.value = Math.min(
-      mentionActiveIndex.value,
-      Math.max(0, mentionCount.value - 1),
-    );
-  },
-);
-watch(
-  [slashQuery, slashCount],
-  () => {
-    slashActiveIndex.value = Math.min(
-      slashActiveIndex.value,
-      Math.max(0, slashCount.value - 1),
-    );
-  },
-);
 
 async function setDraft(draft: string) {
   await wake();
   await nextTick();
   setMentionEditorFromText(draft);
-  dismissSlash();
+  trigger.dismiss();
   focusEditorEnd();
   syncSoon();
 }
@@ -896,25 +873,24 @@ defineExpose({ wake, setDraft, focus });
       @change="onFilePicked"
     />
 
-    <div v-if="mentionOpen" class="mention-picker" @mousedown.stop>
+    <div v-if="triggerMenuOpen" class="mention-picker" @mousedown.stop>
       <ProjectFileMentionMenu
-        :items="mentionItems"
-        :query="mentionQuery"
-        :active-index="mentionActiveIndex"
+        v-if="trigger.marker.value === '@'"
+        :items="mentionMenuItems"
+        :query="trigger.query.value"
+        :active-index="trigger.activeIndex.value"
         :pending="mentionPending"
         :error="mentionError"
-        @highlight="mentionActiveIndex = $event"
-        @select="selectMention"
+        @highlight="trigger.setActiveIndex($event)"
+        @select="acceptTriggerItem"
       />
-    </div>
-
-    <div v-if="slashOpen" class="mention-picker" @mousedown.stop>
       <SlashCommandMenu
-        :items="slashItems"
-        :query="slashQuery"
-        :active-index="slashActiveIndex"
-        @highlight="slashActiveIndex = $event"
-        @select="acceptSlashCommand"
+        v-else-if="trigger.marker.value === '/'"
+        :items="slashMenuItems"
+        :query="trigger.query.value"
+        :active-index="trigger.activeIndex.value"
+        @highlight="trigger.setActiveIndex($event)"
+        @select="acceptTriggerItem"
       />
     </div>
 
