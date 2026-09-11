@@ -1,7 +1,12 @@
 import { ipcMain } from "electron";
 
 import { getConversationStore } from "@kone/agent-core/ConversationStore.js";
-import type { PresetCreateInput, PresetDeleteInput, PresetUpdateInput } from "./types.js";
+import type {
+  PresetCreateInput,
+  PresetDeleteInput,
+  PresetNativeConfigInput,
+  PresetUpdateInput,
+} from "./types.js";
 
 let registered = false;
 
@@ -21,5 +26,9 @@ export function registerPresetsIpc(): void {
   );
   ipcMain.handle("presets:delete", (_event, input: PresetDeleteInput) =>
     store.deleteSubagentPreset(input.presetId),
+  );
+  ipcMain.handle("presets:native-list", () => store.listNativeSubagentConfigs());
+  ipcMain.handle("presets:native-config", (_event, input: PresetNativeConfigInput) =>
+    store.setNativeSubagentConfig(input.presetId, input.patch),
   );
 }

@@ -183,6 +183,31 @@ export type SubagentPresetCreateInput = {
   modelFallbacks?: AgentModelRef[] | null;
 };
 
+/**
+ * A native preset sub-agent's user config — the one half of a shipped
+ * definition that is a row rather than code. The instructions and name come
+ * from the build; what the user owns is whether it is on, and the model chain
+ * it runs on. `enabled: true` is the default a missing entry reads as, so a
+ * build that ships a new native has it working the moment it lands.
+ */
+export type NativeSubagentConfig = {
+  presetId: string;
+  enabled: boolean;
+  /** The pinned model chain, or null to run where the caller runs. */
+  model: AgentModelRef | null;
+  modelFallbacks: AgentModelRef[] | null;
+  updatedAt: number;
+};
+
+/** What a native config write carries. Every field is required in spirit:
+ *  omitted fields keep the row's current values, so a partial patch and a
+ *  full rewrite are the same call. */
+export type NativeSubagentConfigPatch = {
+  enabled?: boolean;
+  model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
+};
+
 /** An edit to a preset sub-agent. A key left out is left alone; the name is the
  *  one field that can't be cleared, since a preset with no name is not one. */
 export type SubagentPresetPatch = {
@@ -244,7 +269,7 @@ export function clampAgentField(
 /** One decoded agent column. The store parses each JSON column once when the
  *  row is read; everything downstream branches on these domain values, so no
  *  step has to interrogate a representation. */
-type ColumnValue =
+export type ColumnValue =
   | string
   | number
   | boolean
@@ -252,7 +277,7 @@ type ColumnValue =
   | ColumnValue[]
   | { [key: string]: ColumnValue };
 
-type ColumnRecord = { [key: string]: ColumnValue };
+export type ColumnRecord = { [key: string]: ColumnValue };
 
 /** Decoded JSON numbers are always finite, so finiteness separates the number
  *  variant from every other JSON variant without inspecting representations. */
@@ -260,7 +285,7 @@ function isColumnNumber(value: ColumnValue | undefined): value is number {
   return Number.isFinite(value);
 }
 
-function isColumnRecord(value: ColumnValue | undefined): value is ColumnRecord {
+export function isColumnRecord(value: ColumnValue | undefined): value is ColumnRecord {
   return value instanceof Object && !Array.isArray(value);
 }
 
@@ -397,6 +422,33 @@ export function parseModelRef(raw: string | null): AgentModelRef | null {
 export function parseModelFallbacks(raw: string | null): AgentModelRef[] | null {
   const chain = parseModelChain(raw);
   return chain.length === 0 ? null : chain.slice(1);
+}
+
+/** One entry of the native config document, in the column-value terms the
+ *  other JSON decoders here use. An entry is a config only when its enabled
+ *  flag is a real boolean — everything else has a livable default, but a flag
+ *  that isn't true-or-false says the row is not the shape this build writes,
+ *  and the entry reads as absent so the shipped default stands. */
+export function normalizeNativeSubagentEntry(
+  presetId: string,
+  entry: ColumnValue | undefined,
+): NativeSubagentConfig | null {
+  if (!isColumnRecord(entry)) return null;
+  if (entry.enabled !== true && entry.enabled !== false) return null;
+  const model = normalizeModelRef(entry.model);
+  const rawFallbacks = Array.isArray(entry.modelFallbacks) ? entry.modelFallbacks : [];
+  // Each fallback is revalidated through normalizeModelRef; an unshapely one
+  // drops out rather than corrupting the chain.
+  const modelFallbacks = rawFallbacks
+    .map((fallback) => normalizeModelRef(fallback))
+    .filter((fallback): fallback is AgentModelRef => fallback !== null);
+  return {
+    presetId,
+    enabled: entry.enabled,
+    model,
+    modelFallbacks: model ? modelFallbacks : null,
+    updatedAt: isColumnNumber(entry.updatedAt) ? entry.updatedAt : 0,
+  };
 }
 
 /** Read a capability column back into its list, or null when the column is null

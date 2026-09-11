@@ -1323,6 +1323,140 @@ export const SET_STRIP_SETTINGS_JSON_SCHEMA = {
   },
 } satisfies GatewayRecord;
 
+export const GetTypographyInputSchema = z.object({});
+
+export const GET_TYPOGRAPHY_JSON_SCHEMA = {
+  type: "object",
+  properties: {},
+} satisfies GatewayRecord;
+
+export const SetTypographyInputSchema = z
+  .object({
+    sans: z
+      .string()
+      .optional()
+      .describe("Custom font family for interface / UI text (e.g. 'Inter', 'Geist', or 'default' / '' for the shipped default stack)."),
+    serif: z
+      .string()
+      .optional()
+      .describe("Custom font family for wordmark / display text (e.g. 'Fraunces', 'Georgia', or 'default' / '' for the shipped default stack)."),
+    mono: z
+      .string()
+      .optional()
+      .describe("Custom font family for code / monospace text (e.g. 'JetBrains Mono', 'Fira Code', or 'default' / '' for the shipped default stack)."),
+    composer: z
+      .string()
+      .optional()
+      .describe("Custom font family for composer input text (e.g. 'Inter', or 'default' / '' to inherit the interface font)."),
+    sizeInterface: z
+      .number()
+      .min(12)
+      .max(20)
+      .optional()
+      .describe("Interface root font size in pixels (12–20, default 16)."),
+    sizeComposer: z
+      .number()
+      .min(12)
+      .max(20)
+      .optional()
+      .describe("Composer input font size in pixels (12–20, default 14)."),
+    sizeCode: z
+      .number()
+      .min(10)
+      .max(18)
+      .optional()
+      .describe("Code / editor font size in pixels (10–18, default 12)."),
+    lineHeightBody: z
+      .number()
+      .min(1.35)
+      .max(1.8)
+      .optional()
+      .describe("Body text line height / leading multiplier (1.35–1.80, default 1.55)."),
+    measure: z
+      .number()
+      .min(55)
+      .max(80)
+      .optional()
+      .describe("Reading column width / measure in characters (55–80ch, default 68ch)."),
+    smoothing: z
+      .boolean()
+      .optional()
+      .describe("Whether subpixel font smoothing is enabled (true/false, default true)."),
+    reset: z
+      .boolean()
+      .optional()
+      .describe("Set to true to reset all typography preferences back to shipped defaults."),
+  })
+  .refine(
+    (data) =>
+      data.reset === true ||
+      data.sans !== undefined ||
+      data.serif !== undefined ||
+      data.mono !== undefined ||
+      data.composer !== undefined ||
+      data.sizeInterface !== undefined ||
+      data.sizeComposer !== undefined ||
+      data.sizeCode !== undefined ||
+      data.lineHeightBody !== undefined ||
+      data.measure !== undefined ||
+      data.smoothing !== undefined,
+    { message: "Name at least one typography setting to change or pass reset: true." },
+  );
+
+export const SET_TYPOGRAPHY_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    sans: {
+      type: "string",
+      description:
+        "Custom font family for interface / UI text (e.g. 'Inter', 'Geist', or 'default' / '' for shipped default).",
+    },
+    serif: {
+      type: "string",
+      description:
+        "Custom font family for wordmark / display text (e.g. 'Fraunces', 'Georgia', or 'default' / '' for shipped default).",
+    },
+    mono: {
+      type: "string",
+      description:
+        "Custom font family for code / monospace text (e.g. 'JetBrains Mono', 'Fira Code', or 'default' / '' for shipped default).",
+    },
+    composer: {
+      type: "string",
+      description:
+        "Custom font family for composer input text (e.g. 'Inter', or 'default' / '' to inherit the interface font).",
+    },
+    sizeInterface: {
+      type: "number",
+      description: "Interface root font size in pixels (12–20, default 16).",
+    },
+    sizeComposer: {
+      type: "number",
+      description: "Composer input font size in pixels (12–20, default 14).",
+    },
+    sizeCode: {
+      type: "number",
+      description: "Code / editor font size in pixels (10–18, default 12).",
+    },
+    lineHeightBody: {
+      type: "number",
+      description: "Body text line height / leading multiplier (1.35–1.80, default 1.55).",
+    },
+    measure: {
+      type: "number",
+      description: "Reading column width / measure in characters (55–80ch, default 68ch).",
+    },
+    smoothing: {
+      type: "boolean",
+      description: "Whether subpixel font smoothing is enabled (true/false, default true).",
+    },
+    reset: {
+      type: "boolean",
+      description: "Set to true to reset all typography preferences back to shipped defaults.",
+    },
+  },
+} satisfies GatewayRecord;
+
 export type AgentModelRefInput = z.infer<typeof AgentModelRefSchema>;
 export type AgentFacePaintInput = z.infer<typeof AgentFacePaintSchema>;
 export type ListAppAgentsInput = z.infer<typeof ListAppAgentsInputSchema>;
@@ -1336,6 +1470,8 @@ export type UpdateSubagentPresetInput = z.infer<typeof UpdateSubagentPresetInput
 export type DeleteSubagentPresetInput = z.infer<typeof DeleteSubagentPresetInputSchema>;
 export type GetStripSettingsInput = z.infer<typeof GetStripSettingsInputSchema>;
 export type SetStripSettingsInput = z.infer<typeof SetStripSettingsInputSchema>;
+export type GetTypographyInput = z.infer<typeof GetTypographyInputSchema>;
+export type SetTypographyInput = z.infer<typeof SetTypographyInputSchema>;
 
 // ── projects ─────────────────────────────────────────────────────────────────
 
@@ -1855,4 +1991,105 @@ export const UPDATE_APP_PROVIDER_JSON_SCHEMA = {
 
 export type SetAppProviderEnabledInput = z.infer<typeof SetAppProviderEnabledInputSchema>;
 export type UpdateAppProviderInput = z.infer<typeof UpdateAppProviderInputSchema>;
+
+// ── language-server (lsp) tool inputs ────────────────────────────────────────
+// One tool, `kone_lsp`, fronts the six read-only actions: the zod
+// `inputSchema` validates args; the hand-written JSON schema is what
+// tools/list advertises, so the enum literals are repeated there — the client
+// never sees zod. Positions are path + 1-indexed line + symbol substring
+// (never columns); `newName` belongs to the rename preview only.
+
+export const LspToolInputSchema = z
+  .object({
+    action: z.enum(["definition", "references", "hover", "symbols", "diagnostics", "rename"]),
+    path: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Workspace-relative path to the file (e.g. \"src/a.ts\"). Required for every action except a project-wide symbols search; must stay inside the project.",
+      ),
+    line: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(
+        "1-indexed line holding the symbol (definition, references, hover, rename). There are no column addresses.",
+      ),
+    symbol: z
+      .string()
+      .optional()
+      .describe(
+        "Substring of the symbol on that line, locating the exact position. Required with line; occurrence picks among repeats.",
+      ),
+    occurrence: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Which repeat of the symbol on the line to use (default 1)."),
+    newName: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("The new name for a rename preview. Only valid with action \"rename\"."),
+    query: z
+      .string()
+      .optional()
+      .describe(
+        "Filter for a project-wide symbols search (action \"symbols\" without path). Ignored when path names a file.",
+      ),
+  })
+  .refine((data) => data.action !== "rename" || data.newName !== undefined, {
+    message: "newName is required when action is \"rename\".",
+    path: ["newName"],
+  })
+  .refine((data) => data.action === "rename" || data.newName === undefined, {
+    message: "newName only applies when action is \"rename\".",
+    path: ["newName"],
+  });
+
+export const LSP_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["definition", "references", "hover", "symbols", "diagnostics", "rename"],
+      description:
+        "The language-server action: definition, references, hover, symbols (document symbols with path, project-wide search without), diagnostics, or rename (preview only, never writes).",
+    },
+    path: {
+      type: "string",
+      description:
+        "Workspace-relative path to the file (e.g. \"src/a.ts\"). Required for every action except a project-wide symbols search; must stay inside the project.",
+    },
+    line: {
+      type: "integer",
+      description:
+        "1-indexed line holding the symbol (definition, references, hover, rename). There are no column addresses.",
+    },
+    symbol: {
+      type: "string",
+      description:
+        "Substring of the symbol on that line, locating the exact position. Required with line; occurrence picks among repeats.",
+    },
+    occurrence: {
+      type: "integer",
+      description: "Which repeat of the symbol on the line to use (default 1).",
+    },
+    newName: {
+      type: "string",
+      description: "The new name for a rename preview. Only valid with action \"rename\".",
+    },
+    query: {
+      type: "string",
+      description:
+        "Filter for a project-wide symbols search (action \"symbols\" without path). Ignored when path names a file.",
+    },
+  },
+  required: ["action"],
+} satisfies GatewayRecord;
+
+export type LspToolInput = z.infer<typeof LspToolInputSchema>;
 

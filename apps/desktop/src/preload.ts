@@ -7,6 +7,7 @@ import type {
   StoredStudioLayout,
   StoredThreadPage,
   SubagentPresetRecord,
+  NativeSubagentConfig,
   ThreadAgentBinding,
 } from "@kone/agent-core/ConversationStore.js";
 import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
@@ -86,6 +87,8 @@ import type {
 import type {
   PresetCreateInput,
   PresetDeleteInput,
+  PresetNativeConfigInput,
+  PresetNativeConfigResult,
   PresetUpdateInput,
 } from "./modules/presets/index.js";
 import type { AvatarFetchInput, AvatarFetchResult } from "./modules/avatars/index.js";
@@ -651,6 +654,10 @@ const api = {
       ipcRenderer.invoke("presets:update", input),
     delete: (input: PresetDeleteInput): Promise<boolean> =>
       ipcRenderer.invoke("presets:delete", input),
+    nativeList: (): Promise<NativeSubagentConfig[]> =>
+      ipcRenderer.invoke("presets:native-list"),
+    nativeConfig: (input: PresetNativeConfigInput): Promise<PresetNativeConfigResult | null> =>
+      ipcRenderer.invoke("presets:native-config", input),
   },
   avatars: {
     fetch: (input: AvatarFetchInput): Promise<AvatarFetchResult> =>

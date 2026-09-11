@@ -33,6 +33,10 @@ const emit = defineEmits<{
    *  shell asking to open a spawned child's thread. The portal owns selection,
    *  so it arrives here rather than being answered in the pane. */
   "open-thread": [threadId: string];
+  /** Start a conversation — the live pane's `/new` row asking for the
+   *  composer. The portal owns what that means, so it arrives here rather
+   *  than being answered in the pane. */
+  "new-thread": [];
 }>();
 
 const projectPath = computed(() => props.row.projectPath ?? null);
@@ -46,6 +50,7 @@ const projectPath = computed(() => props.row.projectPath ?? null);
     :project-path="projectPath"
     :session-key="sessionKey"
     @open-thread="emit('open-thread', $event)"
+    @new-thread="emit('new-thread')"
   />
 
   <InboxThreadStored v-else :key="row.threadId" :row="row" />

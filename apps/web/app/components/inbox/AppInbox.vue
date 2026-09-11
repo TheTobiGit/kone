@@ -399,6 +399,7 @@ function close(): void {
         :row="pane.row"
         :session-key="pane.sessionKey ?? undefined"
         @open-thread="onOpenThread"
+        @new-thread="startNewThread"
       />
     </section>
   </div>

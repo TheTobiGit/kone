@@ -56,6 +56,8 @@ console.log("Compiling Electron main/preload...");
 // binary relative to its real node_modules location, so bundling it (which moves
 // the import.meta.url anchor) breaks that resolution at runtime. See build.ts.
 // node-pty is also kept external because it loads native .node extensions at runtime.
+// @ast-grep/napi stays external for the same reason: its loader requires the
+// platform .node binary relative to its real node_modules location. See build.ts.
 const compileMain = spawnSync(
   "bun",
   [
@@ -71,6 +73,8 @@ const compileMain = spawnSync(
     "@anthropic-ai/claude-agent-sdk",
     "--external",
     "node-pty",
+    "--external",
+    "@ast-grep/napi",
   ],
   { cwd: desktopDir, stdio: "inherit" },
 );

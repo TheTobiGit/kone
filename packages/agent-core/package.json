@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@ast-grep/napi": "0.45.3",
     "@kone/git-core": "workspace:*",
     "@kone/protocol": "workspace:*",
     "@types/yauzl": "^3.4.0",

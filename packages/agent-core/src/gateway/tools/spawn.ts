@@ -39,8 +39,16 @@ import type {
   StoredBlock,
   StoredThread,
 } from "../../types.js";
-import type { AgentModelRef, AgentRecord, SubagentPresetRecord } from "../../ConversationStore.js";
-import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "../../presetSpawn.js";
+import type {
+  AgentModelRef,
+  AgentRecord,
+  NativeSubagentConfig,
+  SubagentPresetRecord,
+} from "../../ConversationStore.js";
+import {
+  builtinPresetsWithConfig,
+  planPresetSpawn,
+} from "../../presetSpawn.js";
 import { resolveDelegation } from "../../delegate.js";
 import type { ModelCandidate, ModelSelection, ProviderAvailability } from "../../agentModel.js";
 import type {
@@ -77,6 +85,9 @@ export interface SpawnToolStore {
   listSubagentPresets(): SubagentPresetRecord[];
   /** One preset by id — tried before the name scan, since an id is exact. */
   getSubagentPreset(presetId: string): SubagentPresetRecord | null;
+  /** The native presets' user config — the enabled flags and pinned model
+   *  chains that decide which shipped definitions an agent can reach. */
+  listNativeSubagentConfigs(): NativeSubagentConfig[];
   /** The project's team — the agents this project can delegate to, in roster
    *  order. Delegation resolves its target from this list ONLY, so an agent the
    *  user hasn't put on the team can't be handed work. */
@@ -124,16 +135,30 @@ function mapSpawnError(cause: unknown): GatewayToolError {
   throw cause;
 }
 
+/** The shipped presets as this user has them configured: the disabled ones
+ *  left out, the enabled ones carrying their pinned model chain. Reads through
+ *  the store so a toggle mid-session reaches the next spawn without a restart. */
+function configuredNatives(store: SpawnToolStore): SubagentPresetRecord[] {
+  return builtinPresetsWithConfig(store.listNativeSubagentConfigs());
+}
+
 /** Find a preset by the agent's reference: an exact id first, then a
  *  case-insensitive name match. Names aren't unique, so the name path takes the
- *  first in roster order — the same one at the top of the user's list. */
+ *  first in roster order — the same one at the top of the user's list. A native
+ *  the user turned off reads as absent: the name resolves to nothing, exactly
+ *  as though kone had never shipped it. */
 function findPreset(store: SpawnToolStore, ref: string): SubagentPresetRecord | null {
   const byId = store.getSubagentPreset(ref);
   if (byId) return byId;
   const wanted = ref.trim().toLowerCase();
   const fromStore = store.listSubagentPresets().find((p) => p.name.trim().toLowerCase() === wanted);
   if (fromStore) return fromStore;
-  return findBuiltinPreset(ref);
+  const natives = configuredNatives(store);
+  return (
+    natives.find((p) => p.presetId.toLowerCase() === wanted) ??
+    natives.find((p) => p.name.trim().toLowerCase() === wanted) ??
+    null
+  );
 }
 
 /** Find a delegation target in the caller's OWN project team: an exact agent id
@@ -163,13 +188,15 @@ function gist(text: string | null | undefined, max = 140): string | undefined {
 
 /** The preset sub-agents an agent can invoke, shaped for the targets report and
  *  kept in the user's saved order — the same order `findPreset` resolves a name
- *  against, so the first of a duplicated name is the one named here too. */
+ *  against, so the first of a duplicated name is the one named here too. The
+ *  natives fold in only as configured: a disabled one is not offered, and an
+ *  enabled one carries the model chain the user pinned on it. */
 function presetTargets(store: SpawnToolStore): NonNullable<SpawnTargetsReport["presets"]> {
   const storePresets = store.listSubagentPresets();
   const seenNames = new Set(storePresets.map((p) => p.name.trim().toLowerCase()));
   const all = [...storePresets];
 
-  for (const builtin of BUILTIN_SWARM_PRESETS) {
+  for (const builtin of configuredNatives(store)) {
     if (!seenNames.has(builtin.name.trim().toLowerCase())) {
       all.push(builtin);
     }

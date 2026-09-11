@@ -92,6 +92,71 @@ export function formatFileMention(path: string): string {
   return `@"${normalized.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
+/** A `/...` token at the composer cursor — the slash-command trigger. Like the
+ *  @ token it only starts after whitespace, so paths (`src/a/b`), urls
+ *  (`https://…`) and `//` comments are never hijacked. */
+export type SlashCommandTrigger = {
+  query: string;
+  rangeStart: number;
+  rangeEnd: number;
+};
+
+/** Find the active `/...` token at a textarea cursor. The token stays open
+ *  while the user types the command name; a space ends it, so `/model` matches
+ *  but `/model foo` no longer does. */
+export function detectSlashCommandTrigger(
+  text: string,
+  cursorInput: number,
+): SlashCommandTrigger | null {
+  const cursor = Math.max(0, Math.min(text.length, Math.floor(cursorInput)));
+  let start = cursor - 1;
+  while (start >= 0 && !isBoundary(text[start])) start -= 1;
+  start += 1;
+
+  const token = text.slice(start, cursor);
+  if (!token.startsWith("/") || token.startsWith("//") || !isBoundary(text[start - 1])) {
+    return null;
+  }
+  return { query: token.slice(1), rangeStart: start, rangeEnd: cursor };
+}
+
+/** A leading `/name focus…` draft — the send-time slash parse. Runs on the
+ *  trimmed draft so `/compact focus` still reads after the menu has closed
+ *  (the trigger ends at the space). The name folds to lowercase for the
+ *  switch; the focus keeps its casing, trimmed. */
+export type LeadingSlashCommand = {
+  name: string;
+  focus: string;
+};
+
+export function parseLeadingSlashCommand(text: string): LeadingSlashCommand | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;
+  const match = /^\/(\S+)(?:\s+(.*))?/.exec(trimmed);
+  const raw = match?.[1] ?? "";
+  if (!raw) return null;
+  return { name: raw.toLowerCase(), focus: (match?.[2] ?? "").trim() };
+}
+
+/** One row in the composer's `/` picker. */
+export type SlashCommandItem = {
+  name: string;
+  title: string;
+  description: string;
+};
+
+/** Prefix-filter slash rows by the trigger query — the same first-wins,
+ *  projects-first spirit as the mention list, reduced to one section. An empty
+ *  query offers everything, so a bare `/` already names what it can do. */
+export function filterSlashCommandItems(
+  items: readonly SlashCommandItem[],
+  query: string,
+): SlashCommandItem[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...items];
+  return items.filter((item) => item.name.toLowerCase().startsWith(q));
+}
+
 /** A composer buffer after a range replacement, plus the caret position that
  *  follows the inserted text. */
 export type ComposerTextReplacement = {

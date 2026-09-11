@@ -2893,6 +2893,27 @@ export type PresetDeleteInput = {
   presetId: string;
 };
 
+/** A native preset sub-agent's user config (mirrors the desktop
+ * `NativeSubagentConfig`): the name and instructions come from the build, and
+ * what the user owns is whether it is on and the model chain it runs on. */
+export type NativeSubagentConfig = {
+  presetId: string;
+  enabled: boolean;
+  /** The pinned model chain, or null to run where the caller runs. */
+  model: AgentModelRef | null;
+  modelFallbacks: AgentModelRef[] | null;
+  updatedAt: number;
+};
+export type NativeSubagentConfigPatch = {
+  enabled?: boolean;
+  model?: AgentModelRef | null;
+  modelFallbacks?: AgentModelRef[] | null;
+};
+export type PresetNativeConfigInput = {
+  presetId: string;
+  patch: NativeSubagentConfigPatch;
+};
+
 /** The preset sub-agents: reusable definitions a spawn is cut from. Separate
  *  from `roster` — a preset is a standing definition any agent can invoke, not
  *  a person you hand a thread to. */
@@ -2901,6 +2922,13 @@ export type KonePresetsApi = {
   create: (input: SubagentPresetCreateInput) => Promise<SubagentPresetRecord | null>;
   update: (input: PresetUpdateInput) => Promise<SubagentPresetRecord | null>;
   delete: (input: PresetDeleteInput) => Promise<boolean>;
+  /** The shipped sub-agents' config — one per native, in list order, whether
+   *  on or off. Always the full set: a native with no stored entry reports the
+   *  default (enabled, no model). */
+  nativeList: () => Promise<NativeSubagentConfig[]>;
+  /** Write one native's config — its toggle, its pinned model chain. Returns
+   *  the stored config, or null when the id is not one kone shipped. */
+  nativeConfig: (input: PresetNativeConfigInput) => Promise<NativeSubagentConfig | null>;
 };
 
 /** One theme in the renderer's library as the shell mirrors it. Deliberately

@@ -1,5 +1,9 @@
 import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
-import type { AgentModelRef, SubagentPresetRecord } from "./ConversationStore.js";
+import type {
+  AgentModelRef,
+  NativeSubagentConfig,
+  SubagentPresetRecord,
+} from "./ConversationStore.js";
 import type { ProviderKind, SpawnTarget } from "./types.js";
 import {
   modelChainOf,
@@ -101,6 +105,37 @@ export const BUILTIN_SWARM_PRESETS: readonly SubagentPresetRecord[] =
     createdAt: 0,
     updatedAt: 0,
   }));
+
+/** The shipped presets' ids alone, in list order — the identity half of a
+ *  native's config. Kept beside the records it derives from so a new native
+ *  lands in both at once; a config for an id off this list is not a native's
+ *  and is refused by the store. */
+export const BUILTIN_SWARM_PRESET_IDS: readonly string[] = BUILTIN_SUBAGENT_PRESETS.map(
+  (preset) => preset.presetId,
+);
+
+/** The native a reference names, WITH the user's config folded in — the
+ *  enabled flag read by the spawn gate, and the pinned model chain a spawn
+ *  from the native runs on. A disabled native reads as absent everywhere a
+ *  spawn could name it, so turning one off removes it from the agent's menu
+ *  without deleting the definition the toggle lives on. `configs` is keyed by
+ *  preset id; a missing entry is the default (on, no model). */
+export function builtinPresetsWithConfig(
+  configs: readonly NativeSubagentConfig[],
+): SubagentPresetRecord[] {
+  const byId = new Map(configs.map((config) => [config.presetId, config]));
+  return BUILTIN_SWARM_PRESETS.filter((preset) => {
+    const config = byId.get(preset.presetId);
+    return config ? config.enabled : true;
+  }).map((preset) => {
+    const config = byId.get(preset.presetId);
+    return {
+      ...preset,
+      model: config?.model ?? null,
+      modelFallbacks: config?.modelFallbacks ?? null,
+    };
+  });
+}
 
 export function findBuiltinPreset(nameOrId: string): SubagentPresetRecord | null {
   const query = nameOrId.trim().toLowerCase();

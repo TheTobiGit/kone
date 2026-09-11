@@ -9,20 +9,23 @@ import {
 import { HugeiconsIcon } from "@hugeicons/vue";
 import PresetModelList from "~/components/presets/PresetModelList.vue";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
+import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
 import { useSubagentPresets } from "~/composables/useSubagentPresets";
 import { useSound } from "~/composables/useSound";
 import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
 
 // §3.4's preset sub-agents surface: the reusable definitions an agent cuts a
-// spawn from. A list of presets, each opening into a light editor — name, the
-// standing instructions the child wakes up to, and the model chain it runs on.
-// No face, no role: a preset is lighter than an agent on purpose, just
-// enough to name a repeatable job and say how it should run.
+// spawn from. The shipped five sit at the top as natives — on or off, a model
+// chain to pin, never edited or deleted — and the user's own presets follow as
+// cards opening into a light editor. No face, no role: a preset is lighter than
+// an agent on purpose, just enough to name a repeatable job and say how it
+// runs.
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
 
-const { presets, createPreset, updatePreset, deletePreset } = useSubagentPresets();
+const { presets, nativeConfigs, configureNative, createPreset, updatePreset, deletePreset } =
+  useSubagentPresets();
 const { cue } = useSound();
 
 const openId = ref<string | null>(null);
@@ -75,6 +78,76 @@ function startCreate() {
   draft.modelFallbacks = [];
   isCreating.value = true;
   cue("open");
+}
+
+// ── the natives ──────────────────────────────────────────────────────────────
+// The shipped definitions, joined with their config for the pane's top
+// section. The definitions come from the same shared list the spawn gateway
+// folds in from, so what is drawn here is what an agent can invoke; the config
+// half is the store's, so a toggle reaches the next spawn without a restart.
+
+/** The native section's one row shape: the definition and its config as one. */
+const natives = computed(() =>
+  BUILTIN_SUBAGENT_PRESETS.map((preset) => {
+    const config = nativeConfigs.value.find((c) => c.presetId === preset.presetId);
+    return {
+      presetId: preset.presetId,
+      name: preset.name,
+      instructions: preset.instructions,
+      enabled: config?.enabled ?? true,
+      model: config?.model ?? null,
+      modelFallbacks: config?.modelFallbacks ?? [],
+    };
+  }),
+);
+
+/** The natives whose detail editor is open, if any; one at a time. */
+const openNativeId = ref<string | null>(null);
+const openNative = computed(() => natives.value.find((n) => n.presetId === openNativeId.value));
+
+/** Flip a native's toggle. The card's checkbox carries the state, so the
+ *  label click opens the detail instead of toggling. */
+function toggleNative(presetId: string, enabled: boolean) {
+  cue("press");
+  void configureNative(presetId, { enabled });
+}
+
+/** One native's model chain, in the card summary's one-line form. */
+function nativeModelSummary(native: { model: AgentModelRef | null; modelFallbacks: AgentModelRef[] }): string {
+  if (!native.model) return "Inherits the caller";
+  const head = native.model.label ?? native.model.model;
+  const tail = native.modelFallbacks.map((f) => f.label ?? f.model);
+  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
+}
+
+/** A short snippet of the native's instructions for the card body. */
+function nativeSnippet(instructions: string): string {
+  const first = instructions.split(/\n{2,}/)[0]?.trim();
+  return first || "No standing instructions.";
+}
+
+// The picker emits the primary and the tail as two events in the same tick —
+// the same coalescing a stored preset's chain uses, so a promote or an append
+// can't race a wipe of the chain against the write that puts it back.
+type NativeChainPatch = { model?: AgentModelRef | null; fallbacks?: AgentModelRef[] };
+let pendingNativeChain: Record<string, NativeChainPatch> = {};
+let nativeChainFlushQueued = false;
+
+function queueNativeChain(presetId: string, patch: NativeChainPatch) {
+  pendingNativeChain[presetId] = { ...pendingNativeChain[presetId], ...patch };
+  if (nativeChainFlushQueued) return;
+  nativeChainFlushQueued = true;
+  queueMicrotask(() => {
+    nativeChainFlushQueued = false;
+    for (const [id, next] of Object.entries(pendingNativeChain)) {
+      const current = natives.value.find((n) => n.presetId === id);
+      if (!current) continue;
+      const model = next.model !== undefined ? next.model : current.model;
+      const fallbacks = next.fallbacks !== undefined ? next.fallbacks : current.modelFallbacks;
+      void configureNative(id, { model, modelFallbacks: model ? fallbacks : null });
+    }
+    pendingNativeChain = {};
+  });
 }
 
 async function submitDraft() {
@@ -301,6 +374,55 @@ function snippetFor(preset: SubagentPresetRecord): string {
     </template>
 
     <div class="sa">
+      <!-- The natives: the shipped five, one row each, toggle-first. -->
+      <section class="sa__natives" aria-label="Native sub-agents">
+        <h3 class="sa__section-title">Native sub-agents</h3>
+        <p class="sa__section-note">
+          The sub-agents kone ships, ready for any agent to invoke. Turn one off and it leaves the
+          spawn menu; pin a model on one and every spawn from it runs there.
+        </p>
+        <div
+          v-for="native in natives"
+          :key="native.presetId"
+          class="sa__native"
+          :class="{ 'sa__native--off': !native.enabled }"
+        >
+          <label class="sa__native-toggle" :for="`native-${native.presetId}`">
+            <input
+              :id="`native-${native.presetId}`"
+              type="checkbox"
+              class="sa__native-check"
+              :checked="native.enabled"
+              :tabindex="open ? 0 : -1"
+              @change="
+                toggleNative(native.presetId, ($event.target as HTMLInputElement).checked)
+              "
+            />
+            <span class="sa__native-name">{{ native.name }}</span>
+            <span class="sa__native-model">{{ nativeModelSummary(native) }}</span>
+          </label>
+          <button
+            type="button"
+            class="sa__native-open"
+            :tabindex="open ? 0 : -1"
+            :aria-label="`Configure ${native.name}`"
+            @click.stop="openNativeId = openNativeId === native.presetId ? null : native.presetId"
+          >
+            <HugeiconsIcon :icon="ArrowRight01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+          </button>
+
+          <div v-if="openNativeId === native.presetId" class="sa__native-detail">
+            <p class="sa__native-snippet">{{ nativeSnippet(native.instructions) }}</p>
+            <PresetModelList
+              :model="native.model"
+              :fallbacks="native.modelFallbacks"
+              @update:model="(m) => queueNativeChain(native.presetId, { model: m })"
+              @update:fallbacks="(f) => queueNativeChain(native.presetId, { fallbacks: f })"
+            />
+          </div>
+        </div>
+      </section>
+
       <div class="sa__grid" role="list" aria-label="Preset sub-agents">
         <article
           v-for="p in presets"
@@ -354,10 +476,10 @@ function snippetFor(preset: SubagentPresetRecord): string {
     </div>
 
     <template #foot>
-      Sub-agents are reusable definitions any agent can invoke without setting one up first —
-      Explorer to map code, Code Reviewer to read a diff, and so on. Each carries a name, a standing
-      brief, and an ordered model preference; the runtime takes the first model that can run and
-      falls to the next when it can't.
+      Sub-agents are reusable definitions any agent can invoke without setting one up first. The
+      five kone ships can be turned off or pinned to a model; your own carry a name, a standing
+      brief, and an ordered model preference, and the runtime takes the first model that can run
+      and falls to the next when it can't.
     </template>
   </SettingsPageShell>
 </template>
@@ -422,6 +544,107 @@ function snippetFor(preset: SubagentPresetRecord): string {
 .sa__action-btn--danger:hover {
   background-color: color-mix(in srgb, #e05252 14%, transparent);
   color: #e05252;
+}
+
+/* ── natives ───────────────────────────────────────────────────────────────── */
+.sa__natives {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 6px;
+}
+.sa__section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.sa__section-note {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 64ch;
+  text-wrap: pretty;
+}
+.sa__native {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background-color: color-mix(in srgb, var(--ink) 3%, transparent);
+  transition: background-color 160ms ease;
+}
+.sa__native:hover {
+  background-color: var(--hover);
+}
+.sa__native--off {
+  opacity: 0.62;
+}
+.sa__native-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: default;
+}
+.sa__native-check {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.sa__native-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.sa__native-model {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sa__native-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    transform 200ms var(--sa-ease);
+}
+.sa__native-open:hover {
+  color: var(--ink);
+  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.sa__native-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex-basis: 100%;
+  width: 100%;
+  padding: 4px 2px 8px;
+}
+.sa__native-snippet {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  max-width: 70ch;
+  text-wrap: pretty;
 }
 
 /* ── cards grid ───────────────────────────────────────────────────────────── */

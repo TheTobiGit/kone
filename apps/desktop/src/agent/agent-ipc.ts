@@ -21,6 +21,7 @@ import {
   currentAgentRoster,
   currentProjects,
   currentStripSettings,
+  currentTypographySettings,
 } from "../modules/appState/index.js";
 import { scanAgentInventory } from "@kone/agent-core/inventory/index.js";
 import { readSkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
@@ -163,6 +164,9 @@ export function registerAgentIpc(): void {
     // And the thread strip's settings, which are per-install renderer storage
     // the main process has no way to read.
     readStripSettings: () => currentStripSettings(),
+    // The typography preferences the same way: custom fonts, sizes, line height,
+    // measure and smoothing, mirrored from the renderer's app:state push.
+    readTypography: () => currentTypographySettings(),
     // The projects the same way — which folders the user has opened is browser
     // storage. Only the list crosses: the branch and diff behind each one are
     // read from git when a tool is called, so they are never a stale mirror.

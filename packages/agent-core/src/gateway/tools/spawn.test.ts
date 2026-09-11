@@ -2,7 +2,11 @@ import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { initSpawnEngine as realInitSpawnEngine } from "../../threadSpawn.js";
 
 import type { AgentPersona, SpawnedThread, SpawnThreadResult, StoredThread } from "../../types.js";
-import type { AgentRecord, SubagentPresetRecord } from "../../ConversationStore.js";
+import type {
+  AgentRecord,
+  NativeSubagentConfig,
+  SubagentPresetRecord,
+} from "../../ConversationStore.js";
 import type { GatewayToolContext, ToolEntry } from "../schemas.js";
 import {
   CONTINUE_THREAD_JSON_SCHEMA,
@@ -111,6 +115,7 @@ type SpawnToolStore = {
   loadThread(threadId: string): StoredThread | null;
   listSubagentPresets(): SubagentPresetRecord[];
   getSubagentPreset(presetId: string): SubagentPresetRecord | null;
+  listNativeSubagentConfigs(): NativeSubagentConfig[];
   listProjectAgents(projectPath: string): AgentRecord[];
 };
 let createSpawnTools: (input: { store: SpawnToolStore }) => ToolEntry[];
@@ -144,6 +149,7 @@ function makeStore(
   threads: StoredThread[] = [],
   presets: SubagentPresetRecord[] = [],
   team: AgentRecord[] = [],
+  nativeConfigs: NativeSubagentConfig[] = [],
 ): SpawnToolStore {
   const byId = new Map(threads.map((t) => [t.threadId, t]));
   const presetById = new Map(presets.map((p) => [p.presetId, p]));
@@ -151,6 +157,7 @@ function makeStore(
     loadThread: (threadId) => byId.get(threadId) ?? null,
     listSubagentPresets: () => presets,
     getSubagentPreset: (presetId) => presetById.get(presetId) ?? null,
+    listNativeSubagentConfigs: () => nativeConfigs,
     listProjectAgents: () => team,
   };
 }
@@ -481,7 +488,17 @@ describe("spawn gateway tools", () => {
       makeAgent({ agentId: "agent-nameless", name: null, instructions: "Hidden." }),
     ];
     const registry = createRegistry(
-      createSpawnTools({ store: makeStore([], presets, team) }),
+      createSpawnTools({
+        store: makeStore([], presets, team, [
+          {
+            presetId: "builtin-librarian",
+            enabled: false,
+            model: null,
+            modelFallbacks: null,
+            updatedAt: 1,
+          },
+        ]),
+      }),
     );
     const res = await registry.call(ctx, "kone_spawn_targets", {});
     expect(res.isError).toBeUndefined();
@@ -494,6 +511,9 @@ describe("spawn gateway tools", () => {
       limits: { maxDepth: 2, remainingChildren: 12 },
     });
     // Presets fold in with a one-line gist and their model, in saved order.
+    // The natives follow the stored ones (a stored preset shadows a native by
+    // name), and only the enabled ones — this store's config turns Librarian
+    // off, so it must not be offered.
     expect(res.structuredContent?.report).toMatchObject({
       presets: [
         {
@@ -502,10 +522,17 @@ describe("spawn gateway tools", () => {
           model: { provider: "claudeAgent", model: "haiku" },
         },
         { name: "Code Reviewer", summary: "Look for regressions and edge cases." },
-        { name: "PR Handler" },
-        { name: "Git Handler" },
+        { name: "Scout" },
+        { name: "Reviewer" },
+        { name: "Security Reviewer" },
+        { name: "Worker" },
       ],
     });
+    const report = res.structuredContent?.report;
+    // SAFETY: asserted only after the report exists — the toMatchObject above
+    // already proved presets is the array being read here.
+    const names = report ? (report as { presets: Array<{ name: string }> }).presets.map((p) => p.name) : [];
+    expect(names).not.toContain("Librarian");
     // The plain-text summary names presets so even a client that ignores
     // structuredContent sees them.
     const text = res.content[0]?.text ?? "";
@@ -1033,6 +1060,88 @@ describe("kone_spawn_worker_preset", () => {
     expect(capturedRequest?.target).toEqual({ provider: "claudeAgent", model: "opus" });
     expect(capturedRequest?.fallbacks).toEqual([{ provider: "codex", model: "gpt-5" }]);
     expect(res.structuredContent).toMatchObject({ selection: "assigned" });
+  });
+
+  test("spawns a native by name, on the model the user pinned on it", async () => {
+    let capturedRequest: FakeSpawnRequest | null = null;
+    currentEngine = makeEngine({
+      targets: async () =>
+        targetsReport([
+          { provider: "claudeAgent", models: ["haiku", "opus"] },
+          { provider: "codex", models: ["gpt-5"] },
+        ]),
+      spawn: async (caller, request) => {
+        capturedRequest = request;
+        return {
+          requestId: request.requestId,
+          threadId: "child-1",
+          parentThreadId: caller.threadId,
+          title: "t",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    const registry = createRegistry(
+      createSpawnTools({
+        store: makeStore(
+          [],
+          [],
+          [],
+          [
+            {
+              presetId: "builtin-scout",
+              enabled: true,
+              model: { provider: "claudeAgent", model: "haiku" },
+              modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+              updatedAt: 1,
+            },
+          ],
+        ),
+      }),
+    );
+    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+      preset: "Scout",
+      task: "Map the auth flow.",
+      requestId: "op-1",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(capturedRequest?.target).toEqual({ provider: "claudeAgent", model: "haiku" });
+    expect(capturedRequest?.fallbacks).toEqual([{ provider: "codex", model: "gpt-5" }]);
+    expect(capturedRequest?.prompt).toContain("Read-only investigation of the codebase");
+    expect(capturedRequest?.prompt).toContain("Map the auth flow.");
+    expect(res.structuredContent).toMatchObject({ preset: "Scout", selection: "assigned" });
+  });
+
+  test("a native the user turned off reads as gone", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(
+      createSpawnTools({
+        store: makeStore(
+          [],
+          [],
+          [],
+          [
+            {
+              presetId: "builtin-librarian",
+              enabled: false,
+              model: null,
+              modelFallbacks: null,
+              updatedAt: 1,
+            },
+          ],
+        ),
+      }),
+    );
+    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+      preset: "Librarian",
+      task: "Go.",
+      requestId: "op-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
   });
 });
 

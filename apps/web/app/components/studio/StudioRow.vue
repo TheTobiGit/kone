@@ -42,6 +42,7 @@ import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
 import { agentForThread } from "~/utils/agents";
+import { compactPropsForSession } from "~/utils/compactAvailability";
 import { usePendingThread } from "~/composables/useProject";
 import { useStudioRowRegistry, type StudioRowApi } from "~/composables/useStudioRowRegistry";
 
@@ -258,6 +259,36 @@ async function recheckProviders(): Promise<void> {
   } finally {
     recheckingProviders.value = false;
   }
+}
+
+// The composer's `/compact` row — the strip columns' shared rule, read off the
+// focused thread. A blank thread has no user turn worth compacting, so the row
+// stays hidden until the conversation starts.
+const focusedCompact = computed(() =>
+  compactPropsForSession(focusedThread.value, providers.statuses.value),
+);
+const focusedCompactable = computed(
+  () =>
+    !threadIsBlank.value &&
+    Boolean(focusedCompact.value.onCompact) &&
+    focusedCompact.value.compactState === "available",
+);
+
+// The composer's `/compact` emit — the strip button's call, so the two agree.
+// Guards mirror the button: a busy or already-compacting thread consumes
+// silently, never calls.
+function onComposerCompact(_focus: string): void {
+  if (!focusedCompact.value.onCompact || focusedCompact.value.compactState !== "available") return;
+  focusedCompact.value.onCompact();
+}
+
+// The composer's `/new` row — the same call the shortcut and the registry
+// publish, so every way of starting over lands in the same place: open (or
+// reveal the singleton blank) and wake the composer under it. No busy guard —
+// a running turn keeps its column while the fresh one focuses, the way the
+// shortcut behaves mid-turn.
+function onComposerNewThread(): void {
+  void newThreadPane();
 }
 
 // ── empty-row chooser ────────────────────────────────────────────────────────
@@ -1507,6 +1538,8 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :fast-mode="fastActive"
           :context-window="contextWindow"
           :blocked-reason="sendBlockedReason"
+          :compactable="focusedCompactable"
+          :creatable="blankThreadPane === null"
           @send="onSend"
           @remove-queued="onRemoveQueued"
           @reorder-queued="agent.reorderQueuedTurns($event)"
@@ -1520,6 +1553,8 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           @update:context-window="onComposerContextWindow"
           @open-models="modelSwitchable && (modelPickerOpen = true)"
           @open-branch="emit('openBranch')"
+          @compact="onComposerCompact"
+          @new-thread="onComposerNewThread"
           @update:open="composerOpen = $event"
         />
       </div>

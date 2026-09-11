@@ -42,6 +42,7 @@ import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useModalExit } from "~/composables/useModalExit";
 import { useSound } from "~/composables/useSound";
 import { dedupeMentionProjects } from "~/utils/composerMentions";
+import { compactPropsForSession } from "~/utils/compactAvailability";
 import { formatDayDivider } from "~/utils/threadDates";
 import type { SurfaceId } from "~/utils/surfaceTop";
 
@@ -89,6 +90,30 @@ const composer = useInboxComposer({
   session: () => session.value,
   projectPath: GLOBAL_ASSISTANT_PROJECT_PATH,
 });
+
+// The composer's `/compact` row — the same shared rule as the strip and the
+// inbox pane, so every surface agrees. Null session (or an unsupported
+// provider) hides the row.
+const agentProviders = useAgentProviders();
+const compact = computed(() => compactPropsForSession(session.value, agentProviders.statuses.value));
+const compactable = computed(
+  () => Boolean(compact.value.onCompact) && compact.value.compactState === "available",
+);
+
+// The composer's `/compact` emit — the meter button's call. Guards mirror the
+// button: a busy or already-compacting thread consumes silently, never calls.
+function onComposerCompact(_focus: string): void {
+  if (!compact.value.onCompact || compact.value.compactState !== "available") return;
+  compact.value.onCompact();
+}
+
+// The composer's `/new` row — a fresh assistant chat through the same call
+// the header pencil makes. No-op while a turn runs: the row consumes
+// silently rather than abandoning work in flight.
+function onComposerNewThread(): void {
+  if (busy.value) return;
+  void newChat();
+}
 
 // The idle sweep evicts sessions it believes nobody is looking at, and the
 // registry cannot see who is on screen — so the card says so for as long as it
@@ -487,6 +512,7 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
               :context-window="composer.contextWindow.value"
               :picking="composer.pickerOpen.value"
               :blocked-reason="composer.sendBlockedReason.value"
+              :compactable="compactable"
               @send="onSend"
               @remove-queued="session?.cancelQueuedTurn($event)"
               @reorder-queued="session?.reorderQueuedTurns($event)"
@@ -498,6 +524,8 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
               @update:fast-mode="composer.onFastMode"
               @update:context-window="composer.onContextWindow"
               @open-models="composer.openPicker"
+              @compact="onComposerCompact"
+              @new-thread="onComposerNewThread"
             />
           </div>
         </div>

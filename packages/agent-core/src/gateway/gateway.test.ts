@@ -322,6 +322,9 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_irc_list",
       "kone_irc_inbox",
       "kone_launch",
+      "kone_lsp",
+      "kone_ast_find_calls",
+      "kone_ast_preview",
     ]);
     res = await mcpPost(url, conn.bearerToken, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "kone_scratchpad_read", arguments: {} } });
     expect(rpcResult(res).isError).toBe(true);
@@ -431,6 +434,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_delete_subagent_preset",
       "app_get_strip_settings",
       "app_set_strip_settings",
+      "app_get_typography",
+      "app_set_typography",
       "app_list_projects",
       "app_get_project",
       "app_list_threads",
@@ -444,6 +449,8 @@ describe("gateway integration (real store + HTTP)", () => {
       "app_get_usage_report",
       "app_set_provider_enabled",
       "app_update_provider",
+      "kone_ast_find_calls",
+      "kone_ast_preview",
     ]);
 
     // Every tool it was handed is one the host-context block will name — the
@@ -461,6 +468,74 @@ describe("gateway integration (real store + HTTP)", () => {
     });
     expect(rpcResult(denied).isError).toBe(true);
     expect(rpcResult(denied).structuredContent.error.code).toBe("permission_denied");
+
+    await gateway.shutdown();
+  });
+
+  test("an assistant thread can inspect and steer typography", async () => {
+    const store = freshStore();
+    const currentTypo = {
+      sans: "Inter",
+      serif: "",
+      mono: "SF Mono",
+      composer: "",
+      sizeInterface: 16,
+      sizeComposer: 14,
+      sizeCode: 12,
+      lineHeightBody: 1.55,
+      measure: 68,
+      smoothing: true,
+    };
+    const { gateway, events } = makeGateway(store, async () => true, {
+      readTypography: () => currentTypo,
+    });
+    await gateway.ready;
+
+    store.ensureThread({
+      threadId: "assistant-typo",
+      projectPath: GLOBAL_ASSISTANT_PROJECT_PATH,
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+    const conn = gateway.connectionForThread("assistant-typo", "claudeAgent", "sonnet");
+
+    // 1. Inspect typography via JSON-RPC
+    const getRes = await mcpPost(conn.url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "app_get_typography", arguments: {} },
+    });
+    expect(getRes.status).toBe(200);
+    const getResult = rpcResult(getRes);
+    expect(getResult.isError).toBeUndefined();
+    expect(getResult.content?.[0]?.text).toContain('"Inter"');
+    expect(getResult.content?.[0]?.text).toContain('"SF Mono"');
+
+    // 2. Steer typography via JSON-RPC
+    const setRes = await mcpPost(conn.url, conn.bearerToken, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "app_set_typography",
+        arguments: { mono: "JetBrains Mono", sizeCode: 14 },
+      },
+    });
+    expect(setRes.status).toBe(200);
+    const setResult = rpcResult(setRes);
+    expect(setResult.isError).toBeUndefined();
+    expect(setResult.content?.[0]?.text).toContain('"JetBrains Mono"');
+    expect(setResult.content?.[0]?.text).toContain("14px");
+
+    // 3. Verify emitted runtime event
+    expect(events.length).toBe(1);
+    expect(events[0]?.type).toBe("app.typography_mutation");
+    if (events[0]?.type === "app.typography_mutation") {
+      expect(events[0].mono).toBe("JetBrains Mono");
+      expect(events[0].sizeCode).toBe(14);
+      expect(events[0].threadId).toBe("assistant-typo");
+    }
 
     await gateway.shutdown();
   });
