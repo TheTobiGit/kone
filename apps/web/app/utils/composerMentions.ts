@@ -1,10 +1,13 @@
+import type { AiChipIcon } from "@hugeicons/core-free-icons";
 import type { GitProjectFile } from "~/types/desktop";
 
-export type FileMentionTrigger = {
+export type ComposerTrigger = {
   query: string;
   rangeStart: number;
   rangeEnd: number;
 };
+
+export type FileMentionTrigger = ComposerTrigger;
 
 /** What a chip names: a document in the project, or a project itself. */
 export type MentionKind = "file" | "project";
@@ -64,8 +67,54 @@ export type ComposerMentionSegment =
   | { type: "text"; text: string }
   | { type: "mention"; path: string; source: string };
 
+/** A trigger marker the composer listens for: `@` names context, `/` commands. */
+export type TriggerMarker = "@" | "/";
+
+/** One live token under the caret, with the marker that opened it. A single
+ *  word carries a single first character, so one token can never be both —
+ *  the `@` and `/` menus are mutually exclusive by construction, not by which
+ *  keystroke handler runs first. */
+export type DetectedToken = ComposerTrigger & { marker: TriggerMarker };
+
 function isBoundary(character: string | undefined): boolean {
   return character === undefined || /\s/.test(character);
+}
+
+/** Walk back from the cursor to the word boundary, handing back the word and
+ *  where it started. The one scan both markers share. */
+/** The word under the cursor and where it starts: the one scan both markers share. */
+type ScannedWord = { word: string; start: number; cursor: number };
+
+function scanWordAtCursor(text: string, cursorInput: number): ScannedWord {
+  const cursor = Math.max(0, Math.min(text.length, Math.floor(cursorInput)));
+  let start = cursor - 1;
+  while (start >= 0 && !isBoundary(text[start])) start -= 1;
+  start += 1;
+  return { word: text.slice(start, cursor), start, cursor };
+}
+
+/** A `/` token is never a path or a comment: `src/a/b`, `https://…` and `//`
+ *  must not open the command menu. `@` needs no such guard — an email address
+ *  already fails the boundary rule, since its `@` is not word-leading. */
+function isSlashWord(word: string): boolean {
+  return word.startsWith("/") && !word.startsWith("//");
+}
+
+/** Find the active trigger token at a textarea cursor for any of the given
+ *  markers. The token stays open while the user types, but only starts after
+ *  whitespace so prose is never hijacked. */
+export function detectToken(
+  text: string,
+  cursorInput: number,
+  markers: readonly TriggerMarker[],
+): DetectedToken | null {
+  const { word, start, cursor } = scanWordAtCursor(text, cursorInput);
+  const head = word[0];
+  if (head !== "@" && head !== "/") return null;
+  if (!markers.includes(head)) return null;
+  if (!isBoundary(text[start - 1])) return null;
+  if (head === "/" && !isSlashWord(word)) return null;
+  return { marker: head, query: word.slice(1), rangeStart: start, rangeEnd: cursor };
 }
 
 /** Find the active `@...` token at a textarea cursor. The token stays open
@@ -75,14 +124,9 @@ export function detectFileMentionTrigger(
   text: string,
   cursorInput: number,
 ): FileMentionTrigger | null {
-  const cursor = Math.max(0, Math.min(text.length, Math.floor(cursorInput)));
-  let start = cursor - 1;
-  while (start >= 0 && !isBoundary(text[start])) start -= 1;
-  start += 1;
-
-  const token = text.slice(start, cursor);
-  if (!token.startsWith("@") || !isBoundary(text[start - 1])) return null;
-  return { query: token.slice(1), rangeStart: start, rangeEnd: cursor };
+  const found = detectToken(text, cursorInput, ["@"]);
+  if (!found) return null;
+  return { query: found.query, rangeStart: found.rangeStart, rangeEnd: found.rangeEnd };
 }
 
 /** Format a selected project path as a stable, editable mention token. */
@@ -95,11 +139,7 @@ export function formatFileMention(path: string): string {
 /** A `/...` token at the composer cursor — the slash-command trigger. Like the
  *  @ token it only starts after whitespace, so paths (`src/a/b`), urls
  *  (`https://…`) and `//` comments are never hijacked. */
-export type SlashCommandTrigger = {
-  query: string;
-  rangeStart: number;
-  rangeEnd: number;
-};
+export type SlashCommandTrigger = ComposerTrigger;
 
 /** Find the active `/...` token at a textarea cursor. The token stays open
  *  while the user types the command name; a space ends it, so `/model` matches
@@ -108,16 +148,9 @@ export function detectSlashCommandTrigger(
   text: string,
   cursorInput: number,
 ): SlashCommandTrigger | null {
-  const cursor = Math.max(0, Math.min(text.length, Math.floor(cursorInput)));
-  let start = cursor - 1;
-  while (start >= 0 && !isBoundary(text[start])) start -= 1;
-  start += 1;
-
-  const token = text.slice(start, cursor);
-  if (!token.startsWith("/") || token.startsWith("//") || !isBoundary(text[start - 1])) {
-    return null;
-  }
-  return { query: token.slice(1), rangeStart: start, rangeEnd: cursor };
+  const slash = detectToken(text, cursorInput, ["/"]);
+  if (!slash) return null;
+  return { query: slash.query, rangeStart: slash.rangeStart, rangeEnd: slash.rangeEnd };
 }
 
 /** A leading `/name focus…` draft — the send-time slash parse. Runs on the
@@ -131,23 +164,39 @@ export type LeadingSlashCommand = {
 
 export function parseLeadingSlashCommand(text: string): LeadingSlashCommand | null {
   const trimmed = text.trim();
+  // The cursor grammar owns `/` vs `//`: a draft leading with `//` is a
+  // comment, not a command, by the same rule that keeps the menu shut.
   if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;
-  const match = /^\/(\S+)(?:\s+(.*))?/.exec(trimmed);
-  const raw = match?.[1] ?? "";
-  if (!raw) return null;
-  return { name: raw.toLowerCase(), focus: (match?.[2] ?? "").trim() };
+  const headEnd = trimmed.search(/\s/);
+  const head = headEnd === -1 ? trimmed : trimmed.slice(0, headEnd);
+  // The name half is one token under the same scan the menu uses — boundary at
+  // the draft start, marker `/` — so the two parses can't disagree on what a
+  // name is. Only the focus half is send-time-only: the menu's token ends at
+  // the space, while the send reads past it.
+  const token = detectToken(head, head.length, ["/"]);
+  if (!token || !token.query) return null;
+  const focus = headEnd === -1 ? "" : trimmed.slice(headEnd).trim();
+  return { name: token.query.toLowerCase(), focus };
 }
 
-/** One row in the composer's `/` picker. */
+/** One row in the composer's `/` picker. The `/name` label derives from the
+ *  name at render time — storing it beside the name only ever drifted. */
 export type SlashCommandItem = {
   name: string;
-  title: string;
   description: string;
+  icon: typeof AiChipIcon;
 };
 
-/** Prefix-filter slash rows by the trigger query — the same first-wins,
- *  projects-first spirit as the mention list, reduced to one section. An empty
- *  query offers everything, so a bare `/` already names what it can do. */
+/** Render a slash row's label: the name with its leading marker. */
+export function slashCommandTitle(name: string): string {
+  return `/${name}`;
+}
+
+/** Prefix-filter slash rows by the trigger query — deliberately narrower than
+ *  the @ picker's substring match. Command names are a handful of verbs, so a
+ *  prefix keeps `/m` to `/model` instead of also offering `/compact`; file and
+ *  project names are an unbounded set, so those match anywhere. An empty query
+ *  offers everything, so a bare `/` already names what it can do. */
 export function filterSlashCommandItems(
   items: readonly SlashCommandItem[],
   query: string,

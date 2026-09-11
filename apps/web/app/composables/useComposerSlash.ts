@@ -1,26 +1,90 @@
-import { computed, ref, type Ref } from "vue";
 import {
-  detectSlashCommandTrigger,
+  AiChipIcon,
+  BotIcon,
+  FoldVerticalIcon,
+  GitBranchIcon,
+  PlusSignIcon,
+} from "@hugeicons/core-free-icons";
+import {
   filterSlashCommandItems,
   type SlashCommandItem,
-  type SlashCommandTrigger,
 } from "~/utils/composerMentions";
 
-/** The composer's built-in `/` rows. Alphabetical by name — project/user
- *  file commands shadow by name once they exist. */
-export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandItem[] = [
-  { name: "agent", title: "/agent", description: "Hand the turn to someone else" },
-  { name: "branch", title: "/branch", description: "Switch or fork the thread branch" },
-  { name: "compact", title: "/compact", description: "Compact the conversation" },
-  { name: "model", title: "/model", description: "Open model picker" },
-  { name: "new", title: "/new", description: "Start a new thread" },
-];
+/** Which capability surface a slash row needs. One name per row, shared by the
+ *  menu filter and the send-time dispatch so a row can never be offered where
+ *  its send-time twin would refuse to run. */
+export type SlashGate = "agent" | "model" | "compact" | "branch" | "create";
 
-export type DomSlashTrigger = { node: Text; start: number; end: number };
+export type SlashCapabilities = Record<SlashGate, boolean>;
 
+/** One slash command: its row, the gate that hides it, and what a run keeps.
+ *  `keepDraft` rows never consume text (`/agent` hands the pending draft to
+ *  the roster); `clearsAll` rows drop the whole editor even from the menu
+ *  (`/new` abandons the draft, never carries it over); `silent` rows run
+ *  without the pick chime. The effect itself (which emit) lives in the
+ *  composer's single dispatch — the table owns visibility and consumption. */
+export type SlashCommandDef = {
+  description: string;
+  icon: typeof AiChipIcon;
+  gatedBy: SlashGate;
+  keepDraft?: boolean;
+  clearsAll?: boolean;
+  silent?: boolean;
+};
+
+/** The composer's `/` commands, one row per name. Alphabetical by name —
+ *  project/user file commands shadow by name once they exist. */
+export const SLASH_COMMANDS: Record<string, SlashCommandDef> = {
+  agent: {
+    description: "Hand the turn to someone else",
+    icon: BotIcon,
+    gatedBy: "agent",
+    keepDraft: true,
+  },
+  branch: {
+    description: "Switch or fork the thread branch",
+    icon: GitBranchIcon,
+    gatedBy: "branch",
+  },
+  compact: {
+    description: "Compact the conversation",
+    icon: FoldVerticalIcon,
+    gatedBy: "compact",
+  },
+  model: {
+    description: "Open model picker",
+    icon: AiChipIcon,
+    gatedBy: "model",
+  },
+  new: {
+    description: "Start a new thread",
+    icon: PlusSignIcon,
+    gatedBy: "create",
+    clearsAll: true,
+    silent: true,
+  },
+};
+
+/** The picker's rows, derived from the table so the menu can never list a
+ *  command the dispatch doesn't know. Sorted by name — the table already is,
+ *  but the order is a contract, not an accident of insertion. */
+export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandItem[] = Object.entries(SLASH_COMMANDS)
+  .map(([name, def]) => ({ name, description: def.description, icon: def.icon }))
+  .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+/** Pure gate check, so both the menu filter and the send-time dispatch — and
+ *  tests — read the same rule. Unknown names are never allowed: anything the
+ *  table doesn't name falls through to the provider, which owns its commands. */
+export function slashAllowed(gates: SlashCapabilities, name: string): boolean {
+  const def = SLASH_COMMANDS[name];
+  if (!def) return false;
+  return gates[def.gatedBy];
+}
+
+/** The composer's `/` config: the capability gates plus the row source and
+ *  the gate check. Trigger state (the token, the index, the keyboard) lives in
+ *  the shared trigger machine — this only knows commands. */
 export function useComposerSlash(deps: {
-  field: Ref<HTMLElement | null>;
-  isOpen: () => boolean;
   /** The row only runs where its surface exists — `/agent` needs a roster. */
   canSwitchAgent: () => boolean;
   /** The row only runs where its surface exists — `/model` needs a picker. */
@@ -31,140 +95,30 @@ export function useComposerSlash(deps: {
   canBranch: () => boolean;
   /** The row only runs where a fresh thread can start — `/new` needs a host. */
   canCreate: () => boolean;
-  /** Re-serialize the DOM after a token mutation (the mentions' editor sync). */
-  onMutated: () => void;
-  onAccept: (item: SlashCommandItem) => void;
 }) {
-  const { field, isOpen, canSwitchAgent, canSwitchModel, canCompact, canBranch, canCreate, onMutated, onAccept } = deps;
+  function readGates() {
+    return {
+      agent: deps.canSwitchAgent(),
+      model: deps.canSwitchModel(),
+      compact: deps.canCompact(),
+      branch: deps.canBranch(),
+      create: deps.canCreate(),
+    } satisfies SlashCapabilities;
+  }
 
-  const slashTrigger = ref<SlashCommandTrigger | null>(null);
-  const slashActiveIndex = ref(0);
-  let domTrigger: DomSlashTrigger | null = null;
-
-  const slashQuery = computed(() => slashTrigger.value?.query ?? "");
   /** Gated per row, not on busy: opening a picker or compacting is local
    *  ui, never a send, so a running turn must not hide any of them. */
-  const slashItems = computed<SlashCommandItem[]>(() => {
-    const visible = BUILTIN_SLASH_COMMANDS.filter((item) => {
-      if (item.name === "compact") return canCompact();
-      if (item.name === "branch") return canBranch();
-      if (item.name === "new") return canCreate();
-      if (item.name === "agent") return canSwitchAgent();
-      return canSwitchModel();
-    });
-    return filterSlashCommandItems(visible, slashQuery.value);
-  });
-  const slashCount = computed(() => slashItems.value.length);
-  const slashOpen = computed(
-    () => isOpen() && slashTrigger.value !== null && slashCount.value > 0,
-  );
-
-  function readDomTrigger(): { trigger: SlashCommandTrigger; dom: DomSlashTrigger } | null {
-    const root = field.value;
-    const sel = "window" in globalThis ? window.getSelection() : null;
-    if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-    const range = sel.getRangeAt(0);
-    const node = range.startContainer;
-    if (!(node instanceof Text) || !root.contains(node)) return null;
-    const textNode = node;
-    const trigger = detectSlashCommandTrigger(textNode.data, range.startOffset);
-    if (!trigger) return null;
-    return { trigger, dom: { node: textNode, start: trigger.rangeStart, end: range.startOffset } };
+  function isSlashAllowed(name: string): boolean {
+    return slashAllowed(readGates(), name);
   }
 
-  function refreshSlashTrigger(): void {
-    const found = readDomTrigger();
-    domTrigger = found?.dom ?? null;
-    slashTrigger.value = found?.trigger ?? null;
-    if (slashTrigger.value === null) slashActiveIndex.value = 0;
-  }
-
-  function dismissSlash(): void {
-    slashTrigger.value = null;
-    domTrigger = null;
-    slashActiveIndex.value = 0;
-  }
-
-  function placeCaret(node: Node, offset: number): void {
-    const sel = window.getSelection();
-    if (!sel) return;
-    const range = document.createRange();
-    range.setStart(node, offset);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-
-  /** Delete the `/...` token under the caret, leaving the caret where the
-   *  token started. The row's action (opening the picker) replaces the send. */
-  function clearSlashToken(): boolean {
-    const trig = domTrigger;
-    const root = field.value;
-    if (!trig || !root) return false;
-
-    const after = trig.node.splitText(trig.end);
-    trig.node.splitText(trig.start);
-    const parent = trig.node.parentNode;
-    const queryNode = trig.node.nextSibling;
-    if (!parent || !queryNode) return false;
-    parent.removeChild(queryNode);
-
-    root.focus();
-    placeCaret(after, 0);
-    dismissSlash();
-    onMutated();
-    return true;
-  }
-
-  function acceptSlashAt(index: number): boolean {
-    const item = slashItems.value[index];
-    if (!item) return false;
-    onAccept(item);
-    return true;
-  }
-
-  /** Returns true when the keystroke was consumed by the slash menu. The host
-   *  falls through to the mention handler otherwise — one token lives under
-   *  the caret, so both menus can never be open at once. */
-  function onSlashKeydown(e: KeyboardEvent): boolean {
-    if (!slashOpen.value) return false;
-    const count = slashCount.value;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      if (count) slashActiveIndex.value = (slashActiveIndex.value + 1) % count;
-      return true;
-    }
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      if (count) slashActiveIndex.value = (slashActiveIndex.value - 1 + count) % count;
-      return true;
-    }
-    if (e.key === "Enter" || e.key === "Tab") {
-      if (acceptSlashAt(slashActiveIndex.value)) {
-        e.preventDefault();
-        return true;
-      }
-      return false;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      dismissSlash();
-      return true;
-    }
-    return false;
+  function slashItemsFor(query: string): SlashCommandItem[] {
+    const visible = BUILTIN_SLASH_COMMANDS.filter((item) => isSlashAllowed(item.name));
+    return filterSlashCommandItems(visible, query);
   }
 
   return {
-    slashTrigger,
-    slashActiveIndex,
-    slashQuery,
-    slashOpen,
-    slashCount,
-    slashItems,
-    refreshSlashTrigger,
-    dismissSlash,
-    clearSlashToken,
-    acceptSlashAt,
-    onSlashKeydown,
+    slashItemsFor,
+    isSlashAllowed,
   };
 }
