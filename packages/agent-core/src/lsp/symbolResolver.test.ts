@@ -6,7 +6,6 @@ import type { SymbolResolveRequest } from "./symbolResolver.js";
 function request(overrides: Partial<SymbolResolveRequest> & { documentLines: readonly string[] }): SymbolResolveRequest {
   return {
     line1Indexed: 1,
-    projectAware: false,
     ...overrides,
   };
 }
@@ -14,7 +13,7 @@ function request(overrides: Partial<SymbolResolveRequest> & { documentLines: rea
 describe("resolvePosition lines", () => {
   test("resolves a 1-indexed line to a 0-based protocol line", () => {
     const result = resolvePosition(
-      request({ documentLines: ["first", "second"], line1Indexed: 2 }),
+      request({ documentLines: ["first", "second"], line1Indexed: 2, symbol: "second" }),
     );
     expect(result).toEqual({ kind: "ok", line: 1, character: 0 });
   });
@@ -33,30 +32,20 @@ describe("resolvePosition lines", () => {
 });
 
 describe("resolvePosition without a symbol", () => {
-  test("errors on project-aware servers", () => {
-    const result = resolvePosition(
-      request({ documentLines: ["const foo = 1;"], projectAware: true }),
-    );
+  test("errors on a bare line", () => {
+    const result = resolvePosition(request({ documentLines: ["const foo = 1;"] }));
     expect(result.kind).toBe("error");
   });
 
-  test("resolves to the first non-whitespace column otherwise", () => {
-    const result = resolvePosition(
-      request({ documentLines: ["\t  hello();"], projectAware: false }),
-    );
-    expect(result).toEqual({ kind: "ok", line: 0, character: 3 });
-  });
-
   test("treats a blank symbol as omitted", () => {
-    const result = resolvePosition(
-      request({ documentLines: ["  hello();"], symbol: "   ", projectAware: false }),
-    );
-    expect(result).toEqual({ kind: "ok", line: 0, character: 2 });
+    const result = resolvePosition(request({ documentLines: ["  hello();"], symbol: "   " }));
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.message).toContain("1");
   });
 
-  test("resolves a blank line to column zero", () => {
-    const result = resolvePosition(request({ documentLines: ["   "], projectAware: false }));
-    expect(result).toEqual({ kind: "ok", line: 0, character: 0 });
+  test("errors on a blank line without a symbol", () => {
+    const result = resolvePosition(request({ documentLines: ["   "] }));
+    expect(result.kind).toBe("error");
   });
 });
 

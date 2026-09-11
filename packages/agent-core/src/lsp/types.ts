@@ -138,6 +138,10 @@ export interface ServerConfig {
   args: readonly string[];
   /** Extensions without dots, matched case-insensitively ("ts", "tsx"). */
   fileTypes: readonly string[];
+  /** didOpen language tags by extension (lowercase, no dots): the tag the
+   *  server expects for each owned file type. Entries the map omits fall
+   *  back to the extension itself. */
+  languageIds?: { readonly [extension: string]: string };
   /** Filenames that mark a project root when walking up from a file. */
   rootMarkers: readonly string[];
   initOptions?: LspJsonObject;
@@ -146,19 +150,28 @@ export interface ServerConfig {
   warmupTimeoutMs?: number;
 }
 
-/** The six read-only actions the gateway tool will expose. Agents address a
+/** The six read-only actions the gateway tool exposes. Agents address a
  *  position by file plus 1-indexed line plus symbol substring — never by
- *  column — and rename only previews. */
+ *  column — and rename only previews. The action names below match the
+ *  gateway tool's input schema exactly; they are the same strings the tool
+ *  switches on. */
 export const LSP_ACTIONS = [
   "definition",
   "references",
   "hover",
-  "documentSymbol",
+  "symbols",
   "diagnostics",
-  "renamePreview",
+  "rename",
 ] as const;
 
 export type LspAction = (typeof LSP_ACTIONS)[number];
+
+/** Per-request overrides: how long to wait plus which signal cancels the
+ *  call. A bare number where this is accepted means a timeout on its own. */
+export interface LspRequestOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
 
 /** The resolved-client handle slice 2 fulfills: one running server process
  *  rooted at a project directory. Pass null params when the method takes
@@ -167,6 +180,7 @@ export interface LspClientHandle {
   readonly serverName: string;
   readonly rootPath: string;
   request(method: string, params: LspJsonValue, timeoutMs: number): Promise<LspJsonValue>;
+  request(method: string, params: LspJsonValue, options?: LspRequestOptions): Promise<LspJsonValue>;
   notify(method: string, params: LspJsonValue): void;
   isRunning(): boolean;
 }

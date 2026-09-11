@@ -5,7 +5,9 @@ import { findOnPath } from "../antigravityAcpBinary.js";
 import { userDataPath } from "../userDataDir.js";
 import { LspAbortError, LspClient } from "./client.js";
 import type { LspSpawnFn } from "./client.js";
+import { clampInt, isJsonList, isRecord, jsonText, positiveInt } from "./json.js";
 import {
+  languageIdForFile as registryLanguageIdForFile,
   localBinCandidates,
   LSP_GLOBAL_CONFIG_FILENAME,
   mergeServerConfig,
@@ -151,16 +153,6 @@ interface LspPoolEntry {
   lastActivity: number;
 }
 
-function positiveOr(raw: number | undefined, fallback: number): number {
-  if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return fallback;
-  return Math.floor(raw);
-}
-
-function boundedAttempts(raw: number | undefined, fallback: number): number {
-  if (raw === undefined || !Number.isFinite(raw)) return fallback;
-  return Math.min(Math.max(Math.floor(raw), 1), 10);
-}
-
 function defaultReadTextFile(filePath: string): string | null {
   try {
     return readFileSync(filePath, "utf8");
@@ -174,20 +166,6 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function isRecord(value: LspJsonValue | undefined): value is LspJsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
-
-function isCountedNumber(value: LspJsonValue | undefined): value is number {
-  return Number.isFinite(value);
-}
-
-function jsonText(value: LspJsonValue | undefined): string | null {
-  if (value === undefined || value === null || value === true || value === false) return null;
-  if (Array.isArray(value) || value instanceof Object || isCountedNumber(value)) return null;
-  return value;
 }
 
 export class LspManager {
@@ -241,6 +219,50 @@ export class LspManager {
         candidates.map((candidate) => candidate.name),
       );
     }
+    const rootPath = discoverProjectRoot(
+      cwd,
+      options.filePath,
+      server.rootMarkers,
+      this.binaryDeps.existsSync,
+    );
+    return this.pooledClient(server, cwd, rootPath);
+  }
+
+  // The pooled client for project-wide work that names no file, such as a
+  // workspace/symbol search. The first enabled server serves it; nothing is
+  // probed on disk to pick one, since ownership is already answered by the
+  // registry's extension map.
+  async getWorkspaceClient(cwd: string): Promise<LspClient> {
+    if (this.disposed) {
+      throw new LspManagerError("language-server manager is shut down");
+    }
+    const root = path.resolve(cwd);
+    const servers = this.effectiveServers(root);
+    const server = servers.find((candidate) => candidate.disabled !== true);
+    if (server === undefined) {
+      throw new LspNoServerError(
+        root,
+        servers.map((candidate) => candidate.name),
+      );
+    }
+    const rootPath = discoverProjectRootFromDir(root, server.rootMarkers, this.binaryDeps.existsSync);
+    return this.pooledClient(server, root, rootPath);
+  }
+
+  // The didOpen language tag for a file, from the registry's extension
+  // ownership over the effective servers — the same servers startup resolves
+  // against, so the tag and the owner never disagree.
+  languageIdForFile(cwd: string, filePath: string): string {
+    return registryLanguageIdForFile(this.effectiveServers(path.resolve(cwd)), filePath);
+  }
+
+  // One pooled client per command plus directory: the first call starts it
+  // and concurrent calls join the same startup.
+  private async pooledClient(
+    server: ServerConfig,
+    cwd: string,
+    rootPath: string,
+  ): Promise<LspClient> {
     const key = `${server.command}:${cwd}`;
     const live = this.pool.get(key);
     if (live !== undefined) {
@@ -253,7 +275,7 @@ export class LspManager {
       entry.lastActivity = this.clock();
       return entry.client;
     }
-    const started = this.startClient(key, server, cwd, options.filePath);
+    const started = this.startClient(key, server, cwd, rootPath);
     this.starting.set(key, started);
     try {
       const entry = await started;
@@ -272,7 +294,7 @@ export class LspManager {
     client: LspClientHandle,
     options: LspEnsureLoadedOptions = {},
   ): Promise<void> {
-    const timeoutMs = positiveOr(options.timeoutMs, DEFAULT_LSP_WARMUP_TIMEOUT_MS);
+    const timeoutMs = positiveInt(options.timeoutMs, DEFAULT_LSP_WARMUP_TIMEOUT_MS);
     // Bounded attempts that fit inside the budget: at most one probe per
     // second of budget (capped), each probe timed so attempts plus sleeps
     // land near the budget instead of multiplying past it.
@@ -284,23 +306,22 @@ export class LspManager {
       SETTLE_PROBE_TIMEOUT_MS,
       Math.max(SETTLE_PROBE_MIN_TIMEOUT_MS, Math.floor(timeoutMs / attempts)),
     );
-    const deadline = this.clock() + timeoutMs;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      if (options.signal?.aborted === true) {
-        throw new LspAbortError("workspace/symbol");
-      }
-      try {
-        await client.request("workspace/symbol", { query: "" }, probeTimeoutMs);
-        return;
-      } catch {
-        // Any failure (timeout, unsupported method, dead server) reads as
-        // "not settled yet": sleep and probe again. The loop is bounded by
-        // the attempt count, so a server that never settles still returns.
-      }
-      if (attempt < attempts && this.clock() < deadline) {
-        await this.sleep(SETTLE_POLL_MS);
-      }
-    }
+    await this.withPoll(
+      { signal: options.signal, attempts, delayMs: SETTLE_POLL_MS, abortMethod: "workspace/symbol" },
+      async () => {
+        try {
+          await client.request("workspace/symbol", { query: "" }, probeTimeoutMs);
+          return true;
+        } catch {
+          // Any failure (timeout, unsupported method, dead server) reads as
+          // "not settled yet": the poll sleeps and probes again. The loop is
+          // bounded by the attempt count, so a server that never settles
+          // still returns.
+          return false;
+        }
+      },
+      (settled) => settled,
+    );
   }
 
   // Ask for references, retrying when the answer holds only the queried
@@ -314,19 +335,38 @@ export class LspManager {
     declaration: LspDeclarationTarget,
     options: LspReferencesRetryOptions = {},
   ): Promise<LspJsonValue> {
-    const attempts = boundedAttempts(options.maxAttempts, REFERENCES_MAX_ATTEMPTS);
-    const delayMs = positiveOr(options.delayMs, REFERENCES_RETRY_DELAY_MS);
-    const timeoutMs = positiveOr(options.timeoutMs, DEFAULT_LSP_WARMUP_TIMEOUT_MS);
-    let last: LspJsonValue = null;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      if (options.signal?.aborted === true) {
-        throw new LspAbortError("textDocument/references");
+    const attempts = clampInt(options.maxAttempts, REFERENCES_MAX_ATTEMPTS, 1, 10);
+    const delayMs = positiveInt(options.delayMs, REFERENCES_RETRY_DELAY_MS);
+    const timeoutMs = positiveInt(options.timeoutMs, DEFAULT_LSP_WARMUP_TIMEOUT_MS);
+    return this.withPoll(
+      { signal: options.signal, attempts, delayMs, abortMethod: "textDocument/references" },
+      () => client.request("textDocument/references", params, timeoutMs),
+      (value) => !isOnlyDeclaration(value, declaration),
+    );
+  }
+
+  // One bounded poll for the two waits above: run the attempt, stop when it
+  // settles, sleep between attempts. Abortion rejects immediately; anything
+  // else returns the last answer once the attempts run out.
+  private async withPoll<T>(
+    plan: { signal?: AbortSignal; attempts: number; delayMs: number; abortMethod: string },
+    run: () => Promise<T>,
+    done: (value: T) => boolean,
+  ): Promise<T> {
+    let last: T | undefined = undefined;
+    for (let attempt = 1; attempt <= plan.attempts; attempt += 1) {
+      if (plan.signal?.aborted === true) {
+        throw new LspAbortError(plan.abortMethod);
       }
-      last = await client.request("textDocument/references", params, timeoutMs);
-      if (attempt >= attempts || !isOnlyDeclaration(last, declaration)) {
-        return last;
-      }
-      await this.sleep(delayMs);
+      const value = await run();
+      last = value;
+      if (attempt >= plan.attempts || done(value)) return value;
+      await this.sleep(plan.delayMs);
+    }
+    // Every call site clamps attempts to at least one, so falling out means
+    // the plan itself named no attempts — a caller bug, not a server outcome.
+    if (last === undefined) {
+      throw new LspManagerError("poll ran no attempts");
     }
     return last;
   }
@@ -364,14 +404,7 @@ export class LspManager {
         stale.push(entry);
       }
     }
-    for (const entry of stale) {
-      try {
-        await entry.client.close();
-      } catch {
-        // Shutdown already tried its best; a wedged server met the
-        // tree-kill inside close, so there is nothing left to report.
-      }
-    }
+    await this.closeEntries(stale);
   }
 
   // Shut everything down: stop the reap timer and close every pooled client.
@@ -381,11 +414,17 @@ export class LspManager {
     this.stopReapTimer();
     const entries = [...this.pool.values()];
     this.pool.clear();
+    await this.closeEntries(entries);
+  }
+
+  // Best-effort close over pooled entries: a wedged server already met the
+  // tree-kill inside close, so there is nothing left to report either way.
+  private async closeEntries(entries: Iterable<LspPoolEntry>): Promise<void> {
     for (const entry of entries) {
       try {
         await entry.client.close();
       } catch {
-        // Best effort, as in sweepIdle: close owns the tree-kill fallback.
+        // Best effort, as above: close owns the tree-kill fallback.
       }
     }
   }
@@ -435,13 +474,12 @@ export class LspManager {
     key: string,
     server: ServerConfig,
     cwd: string,
-    filePath: string,
+    rootPath: string,
   ): Promise<LspPoolEntry> {
     const binary = resolveServerBinary(server, cwd, this.binaryDeps);
     if (binary === null) {
       throw new LspServerStartError(server.name, server.command, searchedBinaryPaths(server, cwd));
     }
-    const rootPath = discoverProjectRoot(cwd, filePath, server.rootMarkers, this.binaryDeps.existsSync);
     let entry: LspPoolEntry | null = null;
     const client = new LspClient({
       serverName: server.name,
@@ -488,14 +526,34 @@ function discoverProjectRoot(
   markers: readonly string[],
   existsSync: (candidatePath: string) => boolean,
 ): string {
-  if (markers.length === 0) return cwd;
-  let dir = path.dirname(path.resolve(filePath));
+  return walkUpForMarkers(path.dirname(path.resolve(filePath)), markers, existsSync, cwd);
+}
+
+// Walk up from the project directory itself, for work that names no file:
+// the nearest marked ancestor wins, else the directory itself.
+function discoverProjectRootFromDir(
+  cwd: string,
+  markers: readonly string[],
+  existsSync: (candidatePath: string) => boolean,
+): string {
+  const root = path.resolve(cwd);
+  return walkUpForMarkers(root, markers, existsSync, root);
+}
+
+function walkUpForMarkers(
+  startDir: string,
+  markers: readonly string[],
+  existsSync: (candidatePath: string) => boolean,
+  fallback: string,
+): string {
+  if (markers.length === 0) return fallback;
+  let dir = startDir;
   for (;;) {
     for (const marker of markers) {
       if (existsSync(path.join(dir, marker))) return dir;
     }
     const parent = path.dirname(dir);
-    if (parent === dir) return cwd;
+    if (parent === dir) return fallback;
     dir = parent;
   }
 }
@@ -504,7 +562,7 @@ function discoverProjectRoot(
 // location, and it is the declaration that was asked about. Anything else —
 // empty, several, or one elsewhere — is a complete answer already.
 function isOnlyDeclaration(value: LspJsonValue, declaration: LspDeclarationTarget): boolean {
-  if (!Array.isArray(value) || value.length !== 1) return false;
+  if (!isJsonList(value) || value.length !== 1) return false;
   const only = value[0];
   if (!isRecord(only)) return false;
   if (jsonText(only.uri) !== declaration.uri) return false;

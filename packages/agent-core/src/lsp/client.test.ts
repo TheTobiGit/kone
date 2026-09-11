@@ -152,6 +152,10 @@ describe("LspClient abort and timeout", () => {
       controller.abort();
       const failure = await rejectionOf(pending);
       expect(failure).toBeInstanceOf(LspAbortError);
+      // The rejection carries the transport's cancellation name straight from
+      // its definition, so the gateway passthrough recognizes it unwrapped.
+      if (!(failure instanceof LspAbortError)) throw new Error("expected an LspAbortError");
+      expect(failure.name).toBe("AbortError");
       // The rejection fires the moment the signal does; the server logs the
       // cancellation a turn later, so wait for its evidence.
       await waitFor(() => countLogLines(readLogLines(log), "in:$/cancelRequest") === 1);

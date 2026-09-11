@@ -6,6 +6,7 @@ import {
   ALL_DEFAULT_SERVERS,
   decodeLspConfigFile,
   GO_DEFAULT_SERVERS,
+  languageIdForFile,
   localBinCandidates,
   mergeServerConfig,
   projectLspConfigPath,
@@ -404,5 +405,44 @@ describe("serversForFile", () => {
 describe("projectLspConfigPath", () => {
   test("points at .kone/lsp.json under the checkout", () => {
     expect(projectLspConfigPath("/proj/app")).toBe(path.join("/proj/app", ".kone", "lsp.json"));
+  });
+});
+
+describe("languageIdForFile", () => {
+  test("the typescript server tags each side of the language under its own name", () => {
+    expect(languageIdForFile(TS_DEFAULT_SERVERS, "/proj/a.ts")).toBe("typescript");
+    expect(languageIdForFile(TS_DEFAULT_SERVERS, "/proj/a.tsx")).toBe("typescript");
+    expect(languageIdForFile(TS_DEFAULT_SERVERS, "/proj/a.js")).toBe("javascript");
+    expect(languageIdForFile(TS_DEFAULT_SERVERS, "/proj/a.mjs")).toBe("javascript");
+  });
+
+  test("every bundled server tags its own files", () => {
+    expect(languageIdForFile(GO_DEFAULT_SERVERS, "/proj/main.go")).toBe("go");
+    expect(languageIdForFile(PYTHON_DEFAULT_SERVERS, "/proj/main.py")).toBe("python");
+    expect(languageIdForFile(RUST_DEFAULT_SERVERS, "/proj/main.rs")).toBe("rust");
+  });
+
+  test("an untagged extension falls back to itself, and a missing one to plaintext", () => {
+    expect(languageIdForFile([server()], "/proj/notes.md")).toBe("md");
+    expect(languageIdForFile(TS_DEFAULT_SERVERS, "/proj/Makefile")).toBe("plaintext");
+  });
+
+  test("a config override replaces the tag map wholesale", () => {
+    const merged = mergeServerConfig(
+      TS_DEFAULT_SERVERS,
+      { servers: { typescript: { languageIds: { ts: "typescriptreact" } } } },
+      null,
+    );
+    expect(languageIdForFile(merged, "/proj/a.ts")).toBe("typescriptreact");
+    // Wholesale, like every other override field: js is no longer tagged.
+    expect(languageIdForFile(merged, "/proj/a.js")).toBe("js");
+  });
+
+  test("the enabled owner wins when two servers claim one extension", () => {
+    const servers = [
+      server({ name: "first", languageIds: { ts: "first-tag" }, disabled: true }),
+      server({ name: "second", languageIds: { ts: "second-tag" } }),
+    ];
+    expect(languageIdForFile(servers, "/proj/a.ts")).toBe("second-tag");
   });
 });
