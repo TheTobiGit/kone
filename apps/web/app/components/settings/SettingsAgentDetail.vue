@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onClickOutside } from "@vueuse/core";
 import {
   AiChipIcon,
@@ -17,17 +17,19 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import CreateAgentModal from "~/components/agent/CreateAgentModal.vue";
-import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
+import DetailTable from "~/components/ui/DetailTable.vue";
+import DetailTabs from "~/components/ui/DetailTabs.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
+import type { DetailTab } from "~/composables/useDetailTabs";
 import { useOpenProject } from "~/composables/useProject";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useSettingsSurface } from "~/composables/useSettingsSurface";
 import { useSound } from "~/composables/useSound";
 import { botGround, botMark, botSummary } from "~/utils/bot";
+import { formatModelChain, toDirectives, type DetailTableRow } from "~/utils/detailFormat";
+import { PROVIDER_BRAND } from "~/utils/modelPicker";
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
-import type { BrandKey } from "~/utils/modelCatalog";
-import type { ProviderKind } from "~/types/desktop";
 
 // One agent, opened out of the roster.
 //
@@ -223,94 +225,71 @@ function openEdit() {
   cue("open");
 }
 
-interface Directive {
-  lead: string;
-  body: string;
-}
-
-/**
- * A prose field split into paragraphs, with a `**lead.**` opener pulled out of
- * each when it has one. The lead is set apart by colour rather than weight —
- * Geist ships a single weight here, so bold renders as regular. A paragraph with
- * no `**lead**` reads as plain prose; kone's instruction directives each open
- * with one.
- */
-function toDirectives(text: string | undefined): Directive[] {
-  if (!text) return [];
-  return text
-    .split(/\n{2,}/)
-    .map((raw) => raw.trim())
-    .filter(Boolean)
-    .map((paragraph) => {
-      const match = /^\*\*(.+?)\*\*\s*([\s\S]*)$/.exec(paragraph);
-      if (!match) return { lead: "", body: paragraph };
-      return { lead: (match[1] ?? "").trim(), body: (match[2] ?? "").trim() };
-    });
-}
-
 const instructions = computed(() => toDirectives(agent.value?.instructions));
 
-// ── what the details table reads back ──────────────────────────────────────
-// Each of these is one row's value, resolved once here so the template stays a
-// list of rows rather than a list of conditions.
-
-/** The provider's own logomark for a pinned model's row. */
-const PROVIDER_BRAND = {
-  codex: "codex",
-  claudeAgent: "claude",
-  opencode: "opencode",
-  cursor: "cursor",
-  droid: "droid",
-  antigravity: "antigravity",
-} satisfies Record<ProviderKind, BrandKey>;
-
 const model = computed(() => agent.value?.capabilities.model ?? null);
-const modelLabel = computed(() => {
-  const m = model.value;
-  if (!m) return "Inherits the thread";
-  const head = m.label || m.model;
-  const tail = (agent.value?.capabilities.modelFallbacks ?? []).map((f) => f.label || f.model);
-  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
-});
 const skills = computed(() => agent.value?.capabilities.skills ?? []);
+
+// ── what the details table reads back ──────────────────────────────────────
+// One row per truth about the agent, resolved once here so the table stays a
+// list of rows rather than a list of conditions.
+const detailRows = computed<DetailTableRow[]>(() => {
+  const chain = formatModelChain(model.value, agent.value?.capabilities.modelFallbacks ?? []);
+  const skillNames = skills.value.map((s) => s.name);
+  return [
+    {
+      id: "model",
+      label: "Model",
+      icon: AiChipIcon,
+      brands: model.value ? [PROVIDER_BRAND[model.value.provider]] : [],
+      text: chain ?? undefined,
+      aside: model.value ? PROVIDER_LABEL[model.value.provider] : undefined,
+      emptyText: "Inherits the thread's model",
+    },
+    {
+      id: "skills",
+      label: "Skills",
+      icon: SparklesIcon,
+      wrap: true,
+      tags: skillNames.slice(0, 8),
+      aside: skillNames.length > 8 ? `+${skillNames.length - 8} more` : undefined,
+      emptyText: "None assigned",
+    },
+    {
+      id: "teams",
+      label: "Teams",
+      icon: UserGroupIcon,
+      wrap: true,
+      tags: teamNames.value,
+      emptyText: "On no team",
+    },
+    { id: "bot", label: "Bot", icon: BotIcon, emptyText: "None" },
+    {
+      id: "identifier",
+      label: "Identifier",
+      icon: IdIcon,
+      mono: true,
+      text: agent.value?.id ?? "",
+    },
+  ];
+});
+
 // ── the tabs ──────────────────────────────────────────────────────────────
 // Everything below the head is one tabbed panel: what is true about the agent,
 // and what it was told. They are alternatives — you come to the page for one
 // of them — and stacking both down a column is the wall the page had before.
 type TabKey = "details" | "instructions";
-const tab = ref<TabKey>("details");
-const tabStrip = ref<HTMLElement>();
 
 const TABS = [
   { key: "details", label: "Details", icon: IdIcon },
   { key: "instructions", label: "Instructions", icon: NoteIcon },
-] as const satisfies readonly { key: TabKey; label: string; icon: unknown }[];
+] as const satisfies readonly DetailTab<TabKey>[];
 
-function selectTab(key: TabKey) {
-  if (tab.value === key) return;
-  tab.value = key;
-  cue("select");
-}
-
-/** Left and right walk the strip, since only the live tab is in the tab order.
- *  The moved-to tab takes focus with it — otherwise the arrows would keep
- *  answering to a button that is no longer the one selected. */
-async function stepTab(delta: number) {
-  const keys = TABS.map((t) => t.key);
-  const at = keys.indexOf(tab.value);
-  const next = keys[(at + delta + keys.length) % keys.length];
-  if (!next) return;
-  selectTab(next);
-  await nextTick();
-  tabStrip.value?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
-}
-
-// Switching agents puts the page back to its resting shape, so a tab left open
-// on one doesn't greet you inside the next.
+// Switching agents clears the page's transient state. The tab strip rests
+// itself on the same id inside DetailTabs.
 watch(
   () => props.agentId,
   () => {
-    tab.value = "details";
     isDeleting.value = false;
     isEditing.value = false;
   },
@@ -469,124 +448,29 @@ watch(
       <!-- One strip over one panel: what is true about the agent, and what it
            was told. The body group ensures the tab strip directly frames the
            content panel without disconnected spacing. -->
-      <div class="det__body">
-        <div
-          ref="tabStrip"
-          class="det__tabs"
-          role="tablist"
-          aria-label="Agent"
-          @keydown.left.prevent="stepTab(-1)"
-          @keydown.right.prevent="stepTab(1)"
-        >
-          <button
-            v-for="t in TABS"
-            :key="t.key"
-            type="button"
-            role="tab"
-            class="det__tab"
-            :class="{ 'det__tab--on': tab === t.key }"
-            :aria-selected="tab === t.key"
-            :tabindex="open && tab === t.key ? 0 : -1"
-            @click="selectTab(t.key)"
-          >
-            <HugeiconsIcon
-              class="det__tab-glyph"
-              :icon="t.icon"
-              :size="14"
-              :stroke-width="1.6"
-              aria-hidden="true"
-            />
-            <span class="det__tab-label">{{ t.label }}</span>
-          </button>
-        </div>
-
-        <div class="det__panel" role="tabpanel" :aria-label="TABS.find((t) => t.key === tab)?.label">
+      <DetailTabs
+        :tabs="TABS"
+        :reset-key="agentId"
+        ariaLabel="Agent"
+        :can-focus="open"
+        v-slot="{ tab }"
+      >
           <!-- Everything true about the agent, on one table: what it runs on, what
                it is equipped with, where it works, what it may never do, and what
                it is called by the store. Reading it should not mean opening an
                editor. -->
-          <dl v-if="tab === 'details'" class="det__table">
-            <div class="det__row">
-              <dt class="det__key">
-                <HugeiconsIcon :icon="AiChipIcon" :size="14" :stroke-width="1.6" aria-hidden="true" />
-                <span>Model</span>
-              </dt>
-              <dd class="det__val">
-                <template v-if="model">
-                  <ProviderLogo :brand="PROVIDER_BRAND[model.provider]" :size="14" />
-                  <span>{{ modelLabel }}</span>
-                  <span class="det__aside">{{ PROVIDER_LABEL[model.provider] }}</span>
-                </template>
-                <span v-else class="det__none">Inherits the thread's model</span>
-              </dd>
-            </div>
-
-            <div class="det__row">
-              <dt class="det__key">
-                <HugeiconsIcon
-                  :icon="SparklesIcon"
-                  :size="14"
-                  :stroke-width="1.6"
-                  aria-hidden="true"
-                />
-                <span>Skills</span>
-              </dt>
-              <dd class="det__val det__val--wrap">
-                <template v-if="skills.length">
-                  <span v-for="s in skills.slice(0, 8)" :key="s.path" class="det__tag">{{
-                    s.name
-                  }}</span>
-                  <span v-if="skills.length > 8" class="det__aside"
-                    >+{{ skills.length - 8 }} more</span
-                  >
-                </template>
-                <span v-else class="det__none">None assigned</span>
-              </dd>
-            </div>
-
-            <div class="det__row">
-              <dt class="det__key">
-                <HugeiconsIcon
-                  :icon="UserGroupIcon"
-                  :size="14"
-                  :stroke-width="1.6"
-                  aria-hidden="true"
-                />
-                <span>Teams</span>
-              </dt>
-              <dd class="det__val det__val--wrap">
-                <template v-if="teamNames.length">
-                  <span v-for="name in teamNames" :key="name" class="det__tag">{{ name }}</span>
-                </template>
-                <span v-else class="det__none">On no team</span>
-              </dd>
-            </div>
-
-            <div class="det__row">
-              <dt class="det__key">
-                <HugeiconsIcon :icon="BotIcon" :size="14" :stroke-width="1.6" aria-hidden="true" />
-                <span>Bot</span>
-              </dt>
-              <dd class="det__val">
-                <span
-                  v-if="agent.bot"
-                  class="det__botchip"
-                  :style="{ background: botGround(agent.bot) }"
-                  :aria-label="botSummary(agent.bot)"
-                  v-html="botMark(agent.bot)"
-                />
-                <span v-else class="det__none">None</span>
-              </dd>
-            </div>
-
-            <div class="det__row">
-              <dt class="det__key">
-                <HugeiconsIcon :icon="IdIcon" :size="14" :stroke-width="1.6" aria-hidden="true" />
-                <span>Identifier</span>
-              </dt>
-              <dd class="det__val det__val--mono">{{ agent.id }}</dd>
-            </div>
-          </dl>
+          <DetailTable v-if="tab === 'details'" :rows="detailRows">
+            <!-- The bot is a picture, not text, so it overrides its cell. When
+                 there is none the row falls back to its quiet `None`. -->
+            <template v-if="agent.bot" #value-bot>
+              <span
+                class="det__botchip"
+                :style="{ background: botGround(agent.bot) }"
+                :aria-label="botSummary(agent.bot)"
+                v-html="botMark(agent.bot)"
+              />
+            </template>
+          </DetailTable>
 
           <template v-else>
             <div v-if="instructions.length" class="det__prose">
@@ -598,8 +482,7 @@ watch(
               Just a name and a face for now — no instructions to carry into a thread.
             </p>
           </template>
-        </div>
-      </div>
+      </DetailTabs>
     </article>
 
     <template #foot>
@@ -611,7 +494,6 @@ watch(
 
 <style scoped>
 .det {
-  --det-hair: color-mix(in srgb, var(--ink) 7%, transparent);
   display: flex;
   flex-direction: column;
   gap: 26px;
@@ -894,153 +776,6 @@ watch(
   transform: translateY(-4px) scale(0.97);
 }
 
-/* ── body & tabs ──────────────────────────────────────────────────────────── */
-.det__body {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-/* A strip of names over one panel, on a hairline rather than in a container:
-   the underline under the live tab is the only mark that carries weight. */
-.det__tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  border-bottom: 1px solid var(--det-hair);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.det__tabs::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-.det__tab {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 12px 10px;
-  border-radius: 8px 8px 0 0;
-  cursor: pointer;
-  white-space: nowrap;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--muted);
-  transition:
-    background-color 160ms ease,
-    color 160ms ease;
-}
-.det__tab:hover {
-  background-color: var(--hover);
-  color: var(--ink);
-}
-.det__tab:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-.det__tab--on {
-  color: var(--ink);
-}
-/* The live tab's rule sits on the strip's hairline rather than beside it, so
-   the two read as one line with a segment inked in. */
-.det__tab--on::after {
-  content: "";
-  position: absolute;
-  inset-inline: 6px;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px 2px 0 0;
-  background-color: var(--ink);
-}
-.det__tab-glyph {
-  flex: none;
-  color: var(--muted);
-  transition: color 160ms ease;
-}
-.det__tab--on .det__tab-glyph {
-  color: var(--ink);
-}
-.det__tab-label {
-  font-size: 12.5px;
-  line-height: 1.2;
-  color: inherit;
-}
-
-.det__panel {
-  padding-top: 14px;
-}
-
-/* ── details table ────────────────────────────────────────────────────────── */
-/* Hairlines between rows, nothing around the block: the table is a rhythm, not
-   a container. */
-.det__table {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-}
-.det__row {
-  display: grid;
-  grid-template-columns: 8.5rem minmax(0, 1fr);
-  align-items: center;
-  gap: 16px;
-  padding-block: 10px;
-}
-.det__row + .det__row {
-  border-top: 1px solid var(--det-hair);
-}
-.det__key {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.4;
-  color: var(--muted);
-}
-.det__key :deep(svg) {
-  flex: none;
-}
-.det__val {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  min-width: 0;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--ink);
-}
-.det__val--wrap {
-  flex-wrap: wrap;
-  row-gap: 6px;
-}
-.det__val--mono {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--ink-soft);
-}
-.det__none {
-  color: var(--muted);
-}
-.det__aside {
-  font-size: 11.5px;
-  color: var(--muted);
-}
-/* A name the agent carries rather than a control — soft ground, no outline. */
-.det__tag {
-  padding: 3px 9px;
-  border-radius: 8px;
-  background-color: color-mix(in srgb, var(--ink) 5%, transparent);
-  font-size: 11.5px;
-  line-height: 1.35;
-  color: var(--ink-soft);
-}
-.det__tag--code {
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
 .det__botchip {
   display: block;
   flex: none;
@@ -1088,13 +823,5 @@ watch(
   line-height: 1.6;
   color: var(--muted);
   text-wrap: pretty;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .det__tab,
-  .det__tab-glyph,
-  .det__tab-label {
-    transition: none;
-  }
 }
 </style>
