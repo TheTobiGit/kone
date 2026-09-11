@@ -7,7 +7,7 @@ import type { useAgentSettings } from "~/composables/useAgentSettings";
 import { isKonePluginEnabled, type useSkills } from "~/composables/useSkills";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
-import type { BrandKey } from "~/utils/modelCatalog";
+import { ORIGIN_TO_BRAND, brandsForOrigin, originLabel } from "~/utils/detailFormat";
 import { useRecentProjects } from "~/composables/useRecentProjects";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 
@@ -21,22 +21,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ open: [SkillEntry]; openPlugin: [PluginEntry] }>();
-
-const ORIGIN_TO_BRAND: Record<string, BrandKey> = {
-  claude: "claude",
-  codex: "codex",
-  cursor: "cursor",
-  opencode: "opencode",
-  factory: "droid",
-};
-
-const AGENTS_BRANDS: BrandKey[] = ["codex", "cursor", "opencode", "droid", "antigravity"];
-
-function brandsFor(skill: SkillEntry): BrandKey[] {
-  if (skill.origin === "agents") return AGENTS_BRANDS;
-  const b = ORIGIN_TO_BRAND[skill.origin];
-  return b ? [b] : ["generic"];
-}
 
 const { recents } = useRecentProjects();
 
@@ -68,15 +52,6 @@ const query = ref("");
 const typeFilter = ref<"all" | "skill" | "plugin">("all");
 const providerFilter = ref<string | null>(null);
 
-const ORIGIN_LABEL: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  agents: "Shared",
-  factory: "Factory",
-};
-
 const PROVIDER_ORDER = ["agents", "claude", "codex", "cursor", "opencode", "factory"] as const;
 
 const providerOptions = computed(() => {
@@ -94,7 +69,7 @@ const providerOptions = computed(() => {
   const order: string[] = [...PROVIDER_ORDER, ...extras];
   return order
     .filter((o) => (counts.get(o) ?? 0) > 0 || o === providerFilter.value)
-    .map((origin) => ({ origin, label: ORIGIN_LABEL[origin] ?? origin, count: counts.get(origin) ?? 0 }));
+    .map((origin) => ({ origin, label: originLabel(origin), count: counts.get(origin) ?? 0 }));
 });
 
 function matchesProvider(origin: string): boolean {
@@ -264,9 +239,9 @@ const { measure, maskStyle } = useEdgeFade(scroller);
       <div ref="scroller" class="sk__scroll" :style="maskStyle" @scroll.passive="measure">
         <p v-if="noMatch" class="sk__empty">
           <template v-if="providerFilter && query.trim()">
-            No {{ providerFilter ? ORIGIN_LABEL[providerFilter] ?? providerFilter : "" }} match for “{{ query }}”.
+            No {{ providerFilter ? originLabel(providerFilter) : "" }} match for “{{ query }}”.
           </template>
-          <template v-else-if="providerFilter"> No {{ ORIGIN_LABEL[providerFilter] ?? providerFilter }} skills found. </template>
+          <template v-else-if="providerFilter"> No {{ originLabel(providerFilter) }} skills found. </template>
           <template v-else>No match for “{{ query }}”.</template>
         </p>
 
@@ -281,8 +256,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
           >
             <div class="card__top">
               <div class="icons">
-                <!-- SAFETY: Plugin origin string conforms to SkillEntry origin type for brand resolution -->
-                <span v-for="b in brandsFor({ origin: p.origin } as SkillEntry)" :key="b" class="icon">
+                <span v-for="b in brandsForOrigin(p.origin)" :key="b" class="icon">
                   <ProviderLogo :brand="b" :size="18" />
                 </span>
               </div>
@@ -323,7 +297,7 @@ const { measure, maskStyle } = useEdgeFade(scroller);
           >
             <div class="card__top">
               <div class="icons">
-                <span v-for="b in brandsFor(s)" :key="b" class="icon">
+                <span v-for="b in brandsForOrigin(s.origin)" :key="b" class="icon">
                   <ProviderLogo :brand="b" :size="18" />
                 </span>
               </div>

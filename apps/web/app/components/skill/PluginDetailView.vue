@@ -4,7 +4,7 @@ import type { PluginEntry, SkillEntry } from "~/types/desktop";
 import { isKonePluginEnabled, type useSkills } from "~/composables/useSkills";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
-import type { BrandKey } from "~/utils/modelCatalog";
+import { brandsForOrigin } from "~/utils/detailFormat";
 
 const props = defineProps<{
   plugin: PluginEntry;
@@ -19,20 +19,6 @@ const busy = computed(() => props.skills.isPluginBusy(props.plugin));
 
 async function togglePlugin(enabled: boolean) {
   await props.skills.setPluginEnabled(props.plugin, enabled);
-}
-
-const ORIGIN_TO_BRAND: Record<string, BrandKey> = {
-  claude: "claude",
-  codex: "codex",
-  cursor: "cursor",
-  opencode: "opencode",
-  factory: "droid",
-};
-const AGENTS_BRANDS: BrandKey[] = ["codex", "cursor", "opencode", "droid", "antigravity"];
-function brandsFor(s: SkillEntry): BrandKey[] {
-  if (s.origin === "agents") return AGENTS_BRANDS;
-  const b = ORIGIN_TO_BRAND[s.origin];
-  return b ? [b] : ["generic"];
 }
 
 </script>
@@ -79,7 +65,7 @@ function brandsFor(s: SkillEntry): BrandKey[] {
         >
           <div class="card__top">
             <div class="icons">
-              <span v-for="b in brandsFor(s)" :key="b" class="icon">
+              <span v-for="b in brandsForOrigin(s.origin)" :key="b" class="icon">
                 <ProviderLogo :brand="b" :size="16" />
               </span>
             </div>
