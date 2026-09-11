@@ -33,7 +33,11 @@ console.log("Bundling Electron main/preload...");
 // becomes unresolvable at runtime ("Native CLI binary not found").
 // node-pty must also stay external because it loads native .node extensions at
 // runtime using relative paths inside node_modules.
-await $`bun build src/main.ts --outfile dist/main.js --target node --external electron --external @anthropic-ai/claude-agent-sdk --external node-pty`.cwd(
+// @ast-grep/napi stays external for the same reason: its CJS loader requires
+// the platform .node binary (via @ast-grep/napi-darwin-arm64 and siblings)
+// with paths relative to its real node_modules location, so inlining it into
+// dist/main.js would orphan that anchor and break the require.
+await $`bun build src/main.ts --outfile dist/main.js --target node --external electron --external @anthropic-ai/claude-agent-sdk --external node-pty --external @ast-grep/napi`.cwd(
   desktopDir,
 );
 // The stdio→HTTP MCP proxy is a plain runtime asset (not bundled — injection.ts

@@ -19,6 +19,9 @@ import { startGatewayHttpServer } from "./httpServer.js";
 import { makeInFlightRequestRegistry } from "./inFlightRequests.js";
 import { makeMcpTransport } from "./mcpTransport.js";
 import { createRegistry, type GatewayApprove } from "./registry.js";
+import { LspManager } from "../lsp/manager.js";
+import { createAstTools } from "./tools/ast.js";
+import { createLspTools } from "./tools/lsp.js";
 import { createScratchpadTools } from "./tools/scratchpad.js";
 import { createSpawnTools } from "./tools/spawn.js";
 import { createIrcTools } from "./tools/irc.js";
@@ -42,6 +45,11 @@ import {
   type StripSettingsReading,
 } from "./tools/appStrip.js";
 import {
+  createAppTypographyTools,
+  type AppTypographyToolOptions,
+  type TypographyReading,
+} from "./tools/appTypography.js";
+import {
   createAppProjectTools,
   type AppProjectsToolOptions,
   type ProjectRosterEntry,
@@ -64,7 +72,13 @@ export { GatewayToolError } from "./schemas.js";
 export type { GatewayApprove, GatewayApprovalRequest } from "./registry.js";
 
 export { createIrcTools } from "./tools/irc.js";
+export { createAstTools } from "./tools/ast.js";
+export { createLspTools } from "./tools/lsp.js";
 export { createAppAgentTools } from "./tools/appAgents.js";
+export { createAppStripTools } from "./tools/appStrip.js";
+export type { AppStripToolOptions, StripSettingsReading } from "./tools/appStrip.js";
+export { createAppTypographyTools } from "./tools/appTypography.js";
+export type { AppTypographyToolOptions, TypographyReading } from "./tools/appTypography.js";
 export { createAppProjectTools } from "./tools/appProjects.js";
 export type { ProjectRosterEntry } from "./tools/appProjects.js";
 export { createAppThreadTools } from "./tools/appThreads.js";
@@ -138,6 +152,10 @@ export interface GatewayInput {
    *  tools report them as unknown rather than naming defaults the user may
    *  have changed. */
   readStripSettings?: () => StripSettingsReading | null;
+  /** The typography preferences the renderer last reported. Absent, the
+   *  typography tools report them as unknown rather than naming defaults the
+   *  user may have changed. */
+  readTypography?: () => TypographyReading | null;
   /** The projects the renderer last reported. Absent, the project tools say so
    *  rather than offering a list of their own — which folders the user has
    *  opened is browser storage, and the shell holds no second copy of it. The
@@ -183,6 +201,8 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   if (input.readAgents) appAgentOptions.readAgents = input.readAgents;
   const appStripOptions: AppStripToolOptions = { emit: input.emit };
   if (input.readStripSettings) appStripOptions.readStripSettings = input.readStripSettings;
+  const appTypographyOptions: AppTypographyToolOptions = { emit: input.emit };
+  if (input.readTypography) appTypographyOptions.readTypography = input.readTypography;
   // The projects module reads two mirrors: the project list, and the roster it
   // takes the team names from. Both stay omitted rather than undefined for the
   // same reason as the rest.
@@ -209,6 +229,9 @@ export function createGateway(input: GatewayInput): GatewayHandle {
   const inFlight = makeInFlightRequestRegistry();
   const turnState = new Map<string, TurnState>();
   const launchSupervisor = new ProcessSupervisor();
+  // One language-server pool for the gateway's lifetime: every kone_lsp call
+  // shares it, and shutdown below reaps every server it started.
+  const lspManager = new LspManager();
   const workerTools = [
     ...createScratchpadTools({ store: input.store, emit: input.emit }),
     ...createSpawnTools({ store: input.store }),
@@ -218,6 +241,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
         : { store: input.store },
     ),
     ...createLaunchTools({ supervisor: launchSupervisor }),
+    ...createLspTools({ manager: lspManager }),
   ].map((tool) => ({ ...tool, target: "worker" as const }));
 
   const assistantTools = [
@@ -225,12 +249,16 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     ...createAppAgentTools(appAgentOptions),
     ...createAppSubagentTools({ store: input.store, emit: input.emit }),
     ...createAppStripTools(appStripOptions),
+    ...createAppTypographyTools(appTypographyOptions),
     ...createAppProjectTools(appProjectOptions),
     ...createAppThreadTools(appThreadOptions),
     ...createAppProviderTools(appProviderOptions),
   ].map((tool) => ({ ...tool, target: "assistant" as const }));
 
-  const tools = [...workerTools, ...assistantTools];
+  // The ast search stays target "all" (visible from worker and assistant
+  // scopes alike), so it joins after the two maps that stamp their own
+  // target onto every entry they hold.
+  const tools = [...workerTools, ...assistantTools, ...createAstTools()];
   const registry = createRegistry(tools, { approve: input.approve });
   const transport = makeMcpTransport({
     credentials,
@@ -303,6 +331,7 @@ export function createGateway(input: GatewayInput): GatewayHandle {
     shutdown: async () => {
       detach();
       await launchSupervisor.stopAll();
+      await lspManager.disposeAll();
       await server.close();
     },
   };

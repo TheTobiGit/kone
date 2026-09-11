@@ -47,6 +47,10 @@ const emit = defineEmits<{
    *  action. The pane shows one thread, so reaching another one is the portal's
    *  call, not this pane's. */
   "open-thread": [threadId: string];
+  /** Start a conversation — the composer's `/new` row. The pane shows one
+   *  thread, so showing the composer instead is the portal's call, not this
+   *  pane's. */
+  "new-thread": [];
 }>();
 
 const { cue } = useSound();
@@ -176,6 +180,28 @@ const modalOpen = computed(
 // actions card.
 const agentProviders = useAgentProviders();
 const compact = computed(() => compactPropsForSession(session.value, agentProviders.statuses.value));
+
+// The composer's `/compact` row follows the same availability as the header
+// button — offered only when the button could run.
+const compactable = computed(
+  () => Boolean(compact.value.onCompact) && compact.value.compactState === "available",
+);
+
+// The composer's `/compact` emit — the header button's call, so the two can
+// never disagree. Guards mirror the button: a busy or already-compacting
+// thread consumes silently, never calls.
+function onComposerCompact(_focus: string): void {
+  if (!compact.value.onCompact || compact.value.compactState !== "available") return;
+  compact.value.onCompact();
+}
+
+// The composer's `/new` row — the portal's own compose action, so the row
+// lands where the list's new-chat button lands. A turn in flight consumes
+// silently: nothing is started over it, and nothing says so.
+function onComposerNewThread(): void {
+  if (busy.value) return;
+  emit("new-thread");
+}
 
 // No visible scrollbar — the thread content smokes its top/bottom edges over whatever
 // content runs past the cutoff, easing in over the first ~28px of scroll.
@@ -324,6 +350,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :context-window="composer.contextWindow.value"
         :picking="composer.pickerOpen.value"
         :blocked-reason="composer.sendBlockedReason.value"
+        :compactable="compactable"
         @send="onSend"
         @remove-queued="session?.cancelQueuedTurn($event)"
         @reorder-queued="session?.reorderQueuedTurns($event)"
@@ -336,6 +363,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         @update:fast-mode="composer.onFastMode"
         @update:context-window="composer.onContextWindow"
         @open-models="composer.openPicker"
+        @compact="onComposerCompact"
+        @new-thread="onComposerNewThread"
         @update:open="composerOpen = $event"
       />
     </div>

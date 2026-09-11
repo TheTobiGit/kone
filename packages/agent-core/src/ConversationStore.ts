@@ -41,6 +41,10 @@ import {
   AGENT_ROLE_MAX,
   SUBAGENT_PRESET_COLUMNS,
   clampAgentField,
+  isColumnRecord,
+  normalizeNativeSubagentEntry,
+  type ColumnRecord,
+  type ColumnValue,
   normalizeSkillRef,
   rowToAgent,
   rowToSubagentPreset,
@@ -53,12 +57,15 @@ import {
   type AgentPatch,
   type AgentRecord,
   type AgentRow,
+  type NativeSubagentConfig,
+  type NativeSubagentConfigPatch,
   type SubagentPresetCreateInput,
   type SubagentPresetPatch,
   type SubagentPresetRecord,
   type SubagentPresetRow,
   type ThreadAgentBinding,
 } from "./rosterRecord.js";
+import { BUILTIN_SWARM_PRESET_IDS } from "./presetSpawn.js";
 
 import {
   DONE_CLEARED,
@@ -3871,6 +3878,118 @@ export class ConversationStore {
       .prepare(`SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM subagent_presets`)
       .get() as { next: number } | undefined;
     return row?.next ?? 0;
+  }
+  // ── native sub-agent config ─────────────────────────────────────────────────
+  /** The app_state key holding the one JSON document every native's config
+   *  lives in: a map of presetId to { enabled, model, modelFallbacks,
+   *  updatedAt }. One row rather than a table because the document is small,
+   *  read whole, and written whole — a per-native row would only split the
+   *  one read every consumer makes. */
+  private static readonly NATIVE_SUBAGENT_CONFIG_KEY = "native_subagent_config";
+
+  /** Read the whole config document, or an empty record for a store that never
+   *  wrote one. Never throws: a corrupt blob reads as empty, which turns every
+   *  native back on with no model — the shipped defaults — rather than closing
+   *  the app over a bad row. Parsed here to the column-value terms the
+   *  roster-record decoders take, so every entry below goes through the same
+   *  validation gate the agent columns do. */
+  private readNativeSubagentConfigDoc(db: DatabaseSync): ColumnRecord {
+    try {
+      // SAFETY: app_state holds at most one row for this key, one TEXT column.
+      const row = db
+        .prepare(`SELECT value FROM app_state WHERE key = '${ConversationStore.NATIVE_SUBAGENT_CONFIG_KEY}'`)
+        .get() as { value: string } | undefined;
+      if (!row?.value) return {};
+      // SAFETY: disk content is untrusted — parse to the column-value shape
+      // and let isColumnRecord below decide, as every JSON column does.
+      const parsed = JSON.parse(row.value) as ColumnValue;
+      return isColumnRecord(parsed) ? parsed : {};
+    } catch (err) {
+      console.error("[conversation-store] readNativeSubagentConfigDoc failed:", err);
+      return {};
+    }
+  }
+
+  /** Decode one entry of the config document into its config, or null when the
+   *  entry is not shaped like one. A malformed entry reads as absent, which is
+   *  the shipped default — on, no model — the same recovery a corrupt whole
+   *  document takes. */
+  private decodeNativeSubagentEntry(
+    presetId: string,
+    entry: ColumnValue | undefined,
+  ): NativeSubagentConfig | null {
+    return normalizeNativeSubagentEntry(presetId, entry);
+  }
+
+  /** Every native's config, one per shipped definition in list order. A
+   *  native with no stored entry reports the default — on, no model — so the
+   *  list is always the full five, whatever the document holds. */
+  listNativeSubagentConfigs(): NativeSubagentConfig[] {
+    const db = this.handle();
+    if (!db) return [];
+    const doc = this.readNativeSubagentConfigDoc(db);
+    return BUILTIN_SWARM_PRESET_IDS.map((presetId) => {
+      const stored = this.decodeNativeSubagentEntry(presetId, doc[presetId]);
+      return stored ?? { presetId, enabled: true, model: null, modelFallbacks: null, updatedAt: 0 };
+    });
+  }
+
+  /** One native's config, or the on/no-model default when nothing was stored. */
+  getNativeSubagentConfig(presetId: string): NativeSubagentConfig {
+    const defaults = { presetId, enabled: true, model: null, modelFallbacks: null, updatedAt: 0 };
+    if (!BUILTIN_SWARM_PRESET_IDS.includes(presetId)) return defaults;
+    const db = this.handle();
+    if (!db) return defaults;
+    const doc = this.readNativeSubagentConfigDoc(db);
+    const stored = this.decodeNativeSubagentEntry(presetId, doc[presetId]);
+    return stored ?? defaults;
+  }
+
+  /** Write one native's config. A patch field left out keeps the entry's
+   *  current value; a native with no entry yet starts from the default. An
+   *  id that is not one of the shipped definitions is refused — a config for
+   *  a preset this build never shipped would sit unread in the document. */
+  setNativeSubagentConfig(
+    presetId: string,
+    patch: NativeSubagentConfigPatch,
+  ): NativeSubagentConfig | null {
+    if (!BUILTIN_SWARM_PRESET_IDS.includes(presetId)) return null;
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const current = this.getNativeSubagentConfig(presetId);
+      const model =
+        patch.model !== undefined
+          ? patch.model
+          : current.model;
+      const rawFallbacks =
+        patch.modelFallbacks !== undefined
+          ? patch.modelFallbacks
+          : (current.modelFallbacks ?? []);
+      const next: NativeSubagentConfig = {
+        presetId,
+        enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
+        model,
+        // A fallback chain is only meaningful under a primary: with no model
+        // there is nothing to fall back FROM, so the tail is dropped rather
+        // than stored to spring a surprise primary on the next read.
+        modelFallbacks: model ? rawFallbacks : null,
+        updatedAt: Date.now(),
+      };
+      const doc = this.readNativeSubagentConfigDoc(db);
+      doc[presetId] = next;
+      db.prepare(
+        `INSERT INTO app_state (key, value, updated_at)
+         VALUES ('${ConversationStore.NATIVE_SUBAGENT_CONFIG_KEY}', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at`,
+      ).run(JSON.stringify(doc), Date.now());
+      return next;
+    } catch (err) {
+      console.error("[conversation-store] setNativeSubagentConfig failed:", err);
+      return null;
+    }
   }
 
   // ── who worked a thread, and who is up next ─────────────────────────────────

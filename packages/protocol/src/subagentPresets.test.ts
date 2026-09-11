@@ -9,12 +9,14 @@ describe("BUILTIN_SUBAGENT_PRESETS", () => {
     expect(uniqueIds.size).toBe(ids.length);
   });
 
-  test("contains standard built-in roles", () => {
+  test("contains the five native roles", () => {
     const ids = BUILTIN_SUBAGENT_PRESETS.map((p) => p.presetId);
-    expect(ids).toContain("builtin-explorer");
-    expect(ids).toContain("builtin-code-reviewer");
-    expect(ids).toContain("builtin-pr-handler");
-    expect(ids).toContain("builtin-git-handler");
+    expect(ids).toContain("builtin-scout");
+    expect(ids).toContain("builtin-reviewer");
+    expect(ids).toContain("builtin-security-reviewer");
+    expect(ids).toContain("builtin-librarian");
+    expect(ids).toContain("builtin-worker");
+    expect(ids).toHaveLength(5);
   });
 
   test("each preset has non-empty name and instructions", () => {

@@ -637,6 +637,80 @@ describe("preset sub-agents", () => {
   });
 });
 
+describe("native sub-agent config", () => {
+  // Every native reports on with no model until the user says otherwise — a
+  // fresh install opens with the shipped five fully active.
+  test("a fresh store reports every native enabled with no model", () => {
+    const configs = freshStore().listNativeSubagentConfigs();
+    expect(configs.map((c) => c.presetId)).toEqual([
+      "builtin-scout",
+      "builtin-reviewer",
+      "builtin-security-reviewer",
+      "builtin-librarian",
+      "builtin-worker",
+    ]);
+    for (const config of configs) {
+      expect(config.enabled).toBe(true);
+      expect(config.model).toBeNull();
+      expect(config.modelFallbacks).toBeNull();
+    }
+  });
+
+  test("a toggle and a pinned model round-trip through the database", () => {
+    const store = freshStore();
+    store.setNativeSubagentConfig("builtin-librarian", { enabled: false });
+    store.setNativeSubagentConfig("builtin-scout", {
+      model: { provider: "claudeAgent", model: "haiku" },
+      modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+    });
+    store.close();
+    const reopened = new ConversationStoreCtor();
+    expect(reopened.getNativeSubagentConfig("builtin-librarian").enabled).toBe(false);
+    const scout = reopened.getNativeSubagentConfig("builtin-scout");
+    expect(scout.model).toEqual({ provider: "claudeAgent", model: "haiku" });
+    expect(scout.modelFallbacks).toEqual([{ provider: "codex", model: "gpt-5" }]);
+    // A native never touched reads as it always was.
+    expect(reopened.getNativeSubagentConfig("builtin-worker")).toEqual({
+      presetId: "builtin-worker",
+      enabled: true,
+      model: null,
+      modelFallbacks: null,
+      updatedAt: 0,
+    });
+  });
+
+  // A patch field left out keeps the entry's value — the one-write-at-a-time
+  // the pane's picker needs.
+  test("a patch changes only the fields it names", () => {
+    const store = freshStore();
+    store.setNativeSubagentConfig("builtin-scout", {
+      model: { provider: "claudeAgent", model: "haiku" },
+    });
+    const after = store.setNativeSubagentConfig("builtin-scout", { enabled: false })!;
+    expect(after.enabled).toBe(false);
+    expect(after.model).toEqual({ provider: "claudeAgent", model: "haiku" });
+  });
+
+  // A fallback chain is only meaningful under a primary: clearing the model
+  // drops the tail with it, so the next read can't spring a surprise primary.
+  test("clearing the model drops the fallbacks with it", () => {
+    const store = freshStore();
+    store.setNativeSubagentConfig("builtin-reviewer", {
+      model: { provider: "claudeAgent", model: "haiku" },
+      modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+    });
+    const after = store.setNativeSubagentConfig("builtin-reviewer", { model: null })!;
+    expect(after.model).toBeNull();
+    expect(after.modelFallbacks).toBeNull();
+  });
+
+  test("an id that is not a shipped native is refused", () => {
+    const store = freshStore();
+    expect(store.setNativeSubagentConfig("builtin-explorer", { enabled: false })).toBeNull();
+    expect(store.setNativeSubagentConfig("some-user-preset", { enabled: false })).toBeNull();
+  });
+});
+
 describe("a project's team", () => {
   const project = "/tmp/kone-project";
   const other = "/tmp/other-project";

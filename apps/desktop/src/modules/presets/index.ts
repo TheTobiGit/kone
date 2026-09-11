@@ -1,2 +1,9 @@
 export { registerPresetsIpc } from "./ipc.js";
-export type { PresetCreateInput, PresetDeleteInput, PresetUpdateInput } from "./types.js";
+export type {
+  PresetCreateInput,
+  PresetDeleteInput,
+  PresetNativeConfigInput,
+  PresetNativeListInput,
+  PresetNativeConfigResult,
+  PresetUpdateInput,
+} from "./types.js";

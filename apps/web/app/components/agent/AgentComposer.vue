@@ -16,14 +16,16 @@ import AgentBotBead from "~/components/agent/AgentBotBead.vue";
 import AgentQueueStrip from "~/components/agent/AgentQueueStrip.vue";
 import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
+import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import type { AttachmentKind, InteractionMode } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
 import { useComposerMentions } from "~/composables/useComposerMentions";
-import type { MentionProject } from "~/utils/composerMentions";
-import { createMentionKindResolver } from "~/utils/composerMentions";
+import { useComposerSlash } from "~/composables/useComposerSlash";
+import type { MentionProject, SlashCommandItem } from "~/utils/composerMentions";
+import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
 import { botMark } from "~/utils/bot";
@@ -140,6 +142,12 @@ const props = defineProps<{
   /** File search needs a real project on disk. The global assistant has none,
    *  so it turns this off and its @ picker names projects only. */
   disableFileMentions?: boolean;
+  /** Whether the `/compact` row is offered. False hides it where no host
+   *  handles the emit — the picker row and the send-time parse alike. */
+  compactable?: boolean;
+  /** Whether the `/new` row is offered. False hides it where no host
+   *  handles the emit — the picker row and the send-time parse alike. */
+  creatable?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -162,8 +170,14 @@ const emit = defineEmits<{
   "update:contextWindow": [id: string];
   /** Ask the host to open the full providers→models→effort picker. */
   "open-models": [];
+  /** Ask the host to compact the thread, with an optional focus the user
+   *  typed after `/compact`. */
+  compact: [focus: string];
   /** Ask the host to open the branch picker (the tray's branch chip). */
   "open-branch": [];
+  /** ask the host to start a new thread. carries no payload — the pending
+   *  draft is dropped, never carried over to the fresh thread. */
+  "new-thread": [];
   /** Whether the surface is expanded into the input. The host lifts the
    *  composer's layer while it's open so the corner docks can't sit over it on
    *  a narrow window. */
@@ -392,7 +406,7 @@ const {
 } = useComposerDraft({
   getProjectPath: () => props.projectPath,
   getText: () => text.value,
-  setEditorFromText: (val) => setEditorFromText(val),
+  setEditorFromText: (val) => setMentionEditorFromText(val),
 });
 
 const mentionKindResolver = computed(() =>
@@ -413,15 +427,15 @@ const {
   disposeChips,
   serializeNode,
   serializeEditor,
-  onEditorChanged,
+  onEditorChanged: onMentionEditorChanged,
   refreshTrigger,
   selectMention,
-  onFieldInput,
-  onFieldClick,
-  onFieldKeyup,
-  onFieldKeydown,
-  setEditorFromText,
-  clearEditor,
+  onFieldInput: onMentionInput,
+  onFieldClick: onMentionClick,
+  onFieldKeyup: onMentionKeyup,
+  onFieldKeydown: onMentionKeydown,
+  setEditorFromText: setMentionEditorFromText,
+  clearEditor: clearMentionEditor,
   focusEditorEnd,
   insertTextAtCaret,
 } = useComposerMentions({
@@ -436,6 +450,100 @@ const {
   fileMentionsEnabled: () => !props.disableFileMentions,
   resolveMentionKind: (path) => mentionKindResolver.value(path),
 });
+
+// ── slash commands (`/…`) ───────────────────────────────────────────────────
+// One token lives under the caret, so the `/` menu and the `@` menu can never
+// be open at once — the slash keystroke runs first and falls through to the
+// mention handler otherwise.
+const {
+  slashActiveIndex,
+  slashQuery,
+  slashOpen,
+  slashCount,
+  slashItems,
+  refreshSlashTrigger,
+  dismissSlash,
+  clearSlashToken,
+  onSlashKeydown,
+} = useComposerSlash({
+  field,
+  isOpen: () => open.value,
+  canSwitchAgent: () => canSwitchAgent.value,
+  canSwitchModel: () => canSwitchModel.value,
+  canCompact: () => props.compactable !== false,
+  canBranch: () => canSwitchBranch.value,
+  canCreate: () => props.creatable !== false,
+  onMutated: () => handleEditorChanged(),
+  onAccept: (item) => acceptSlashCommand(item),
+});
+
+/** A slash row runs in place of a send. Most delete the `/...` token and
+ *  never emit it as prompt text — `/agent` keeps it, since the roster picks
+ *  who takes the pending draft. */
+function acceptSlashCommand(item: SlashCommandItem) {
+  if (item.name === "compact") {
+    clearSlashToken();
+    emit("compact", "");
+    cue("select");
+    return;
+  }
+  if (item.name === "agent") {
+    // the roster picks who takes the pending draft, so the token stays —
+    // clearing it would delete the prose the handoff is about.
+    openAgentPicker();
+    cue("select");
+    return;
+  }
+  if (item.name === "branch") {
+    clearSlashToken();
+    emit("open-branch");
+    cue("select");
+    return;
+  }
+  if (item.name === "new") {
+    clearComposerEditor();
+    clearAttachments();
+    syncSoon();
+    emit("new-thread");
+    return;
+  }
+  if (item.name !== "model") return;
+  clearSlashToken();
+  openModels();
+  cue("select");
+}
+
+/** Re-serialize the field for both trigger systems after any DOM mutation. */
+function handleEditorChanged(): void {
+  onMentionEditorChanged();
+  refreshSlashTrigger();
+}
+
+function onComposerInput(): void {
+  onMentionInput();
+  refreshSlashTrigger();
+}
+
+function onComposerClick(): void {
+  onMentionClick();
+  refreshSlashTrigger();
+}
+
+function onComposerKeyup(): void {
+  onMentionKeyup();
+  refreshSlashTrigger();
+}
+
+function onComposerKeydown(e: KeyboardEvent): void {
+  if (onSlashKeydown(e)) return;
+  onMentionKeydown(e);
+}
+
+/** Drop the draft for both trigger systems (a send, or a consumed `/model`). */
+function clearComposerEditor(): void {
+  clearMentionEditor();
+  dismissSlash();
+}
 
 const isEmpty = computed(() => text.value.trim().length === 0);
 
@@ -472,7 +580,7 @@ function onPaste(e: ClipboardEvent) {
   if (plain) {
     e.preventDefault();
     insertTextAtCaret(plain);
-    onEditorChanged();
+    handleEditorChanged();
   }
 }
 
@@ -620,7 +728,7 @@ async function onGlobalKey(e: KeyboardEvent) {
   await wake();
   focusEditorEnd();
   insertTextAtCaret(e.key);
-  onEditorChanged();
+  handleEditorChanged();
 }
 useEventListener(window, "keydown", onGlobalKey);
 
@@ -633,7 +741,48 @@ function dispatchDraft() {
     void wake();
     return;
   }
-  // Nothing to send it to. Return before clearEditor() below — a send refused
+  // A leading `/model`, `/compact`, `/agent`, `/branch` or `/new` (with or
+  // without trailing prose) is a local command, not a prompt: consume it,
+  // run it, and never emit it as turn text. Any other `/...` falls through
+  // to the provider, which owns its own commands. Local UI first, so these
+  // work even while the provider is unreachable.
+  const slash = parseLeadingSlashCommand(text.value);
+  if (slash?.name === "model") {
+    clearComposerEditor();
+    clearAttachments();
+    syncSoon();
+    openModels();
+    return;
+  }
+  if (slash?.name === "compact" && props.compactable !== false) {
+    const focus = slash.focus;
+    clearComposerEditor();
+    clearAttachments();
+    syncSoon();
+    emit("compact", focus);
+    return;
+  }
+  if (slash?.name === "agent") {
+    // the roster picks who takes the pending draft, so it stays put —
+    // consuming it here would delete the prose the handoff is about.
+    openAgentPicker();
+    return;
+  }
+  if (slash?.name === "branch" && canSwitchBranch.value) {
+    clearComposerEditor();
+    clearAttachments();
+    syncSoon();
+    emit("open-branch");
+    return;
+  }
+  if (slash?.name === "new" && props.creatable !== false) {
+    clearComposerEditor();
+    clearAttachments();
+    syncSoon();
+    emit("new-thread");
+    return;
+  }
+  // Nothing to send it to. Return before clearComposerEditor() below — a send refused
   // for a reason the user hasn't fixed yet must not also cost them their draft.
   if (props.blockedReason) {
     cue("error");
@@ -645,7 +794,7 @@ function dispatchDraft() {
   const files = attachments.value.map((a) => a.file);
   emit("send", draft, files.length ? files : undefined);
   cue("send");
-  clearEditor();
+  clearComposerEditor();
   clearAttachments();
   syncSoon();
 }
@@ -695,11 +844,21 @@ watch(
     );
   },
 );
+watch(
+  [slashQuery, slashCount],
+  () => {
+    slashActiveIndex.value = Math.min(
+      slashActiveIndex.value,
+      Math.max(0, slashCount.value - 1),
+    );
+  },
+);
 
 async function setDraft(draft: string) {
   await wake();
   await nextTick();
-  setEditorFromText(draft);
+  setMentionEditorFromText(draft);
+  dismissSlash();
   focusEditorEnd();
   syncSoon();
 }
@@ -746,6 +905,16 @@ defineExpose({ wake, setDraft, focus });
         :error="mentionError"
         @highlight="mentionActiveIndex = $event"
         @select="selectMention"
+      />
+    </div>
+
+    <div v-if="slashOpen" class="mention-picker" @mousedown.stop>
+      <SlashCommandMenu
+        :items="slashItems"
+        :query="slashQuery"
+        :active-index="slashActiveIndex"
+        @highlight="slashActiveIndex = $event"
+        @select="acceptSlashCommand"
       />
     </div>
 
@@ -856,11 +1025,11 @@ defineExpose({ wake, setDraft, focus });
               aria-multiline="true"
               aria-label="Ask anything"
               :tabindex="open ? 0 : -1"
-              @keydown="onFieldKeydown"
-              @input="onFieldInput"
-              @click="onFieldClick"
-              @keyup="onFieldKeyup"
-              @focus="onFieldClick"
+              @keydown="onComposerKeydown"
+              @input="onComposerInput"
+              @click="onComposerClick"
+              @keyup="onComposerKeyup"
+              @focus="onComposerClick"
               @paste="onPaste"
             />
           </div>

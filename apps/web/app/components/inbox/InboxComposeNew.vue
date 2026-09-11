@@ -289,6 +289,9 @@ defineExpose({ focus });
         :checking="composer.recheckingProviders.value"
         @recheck="composer.recheckProviders"
       />
+      <!-- no thread yet — nothing exists to compact before the first send,
+           so the `/compact` row stays hidden. This pane is the new thread,
+           so the `/new` row stays hidden too. -->
       <AgentComposer
         ref="composerRef"
         always-open
@@ -311,6 +314,8 @@ defineExpose({ focus });
         :fast-mode="composer.fastMode.value"
         :context-window="composer.contextWindow.value"
         :blocked-reason="composer.sendBlockedReason.value"
+        :compactable="false"
+        :creatable="false"
         @send="onSend"
         @remove-queued="session?.cancelQueuedTurn($event)"
         @reorder-queued="session?.reorderQueuedTurns($event)"

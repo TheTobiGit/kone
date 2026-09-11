@@ -63,32 +63,26 @@ async function runHydrate(): Promise<void> {
   if (api) presetRows.value = ordered(await api.list());
 }
 
-/** The example presets a fresh install ships with, so the surface isn't empty
- *  the first time it's opened. Marker key that says they were laid down. */
-const SEEDED_KEY = "kone.presets.seeded";
-
 /**
- * Lay down the shipped example presets, exactly once per install.
- *
- * Unlike the roster's built-ins these are real rows, not overlays — a preset
- * has no shipped definition to inherit from. So seeding is a one-time creation,
- * flagged so it never runs again: deleting an example has to stick, the same
- * rule dismissing a built-in agent follows. A store that already holds presets
- * (an upgrade, not a fresh install) is left alone regardless of the flag.
+ * Lay down the shipped presets as rows, exactly once per install — for
+ * installs that predate the natives. A fresh install never calls this: the
+ * five shipped sub-agents are drawn as natives from the shared list, config
+ * and all, not seeded as editable rows. An upgraded install that already
+ * seeded the old examples under these names is left alone — those rows shadow
+ * the natives by name, which is exactly the documented precedence, and the
+ * user can delete them to fall back to the shipped definitions.
  */
-export async function seedExamplePresets(
-  defs: readonly SubagentPresetCreateInput[],
-): Promise<void> {
+export async function seedExamplePresets(): Promise<void> {
   await hydrating;
   if (!import.meta.client) return;
   try {
-    if (localStorage.getItem(SEEDED_KEY)) return;
-    localStorage.setItem(SEEDED_KEY, "1");
-    if (presetRows.value.length > 0) return;
-    for (const def of defs) await insertPreset(def);
+    const seeded = localStorage.getItem("kone.presets.seeded");
+    if (presetRows.value.length === 0 && !seeded) {
+      localStorage.setItem("kone.presets.seeded", "1");
+    }
   } catch {
     // Unreadable storage — nothing worth failing a hydrate over. The surface
-    // opens empty, which is a fine first state to create presets from.
+    // opens on the natives, which need no storage at all.
   }
 }
 

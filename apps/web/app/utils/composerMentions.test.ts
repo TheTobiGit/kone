@@ -4,7 +4,10 @@ import {
   createMentionKindResolver,
   dedupeMentionProjects,
   detectFileMentionTrigger,
+  detectSlashCommandTrigger,
+  filterSlashCommandItems,
   formatFileMention,
+  parseLeadingSlashCommand,
   replaceComposerTextRange,
   splitComposerMentionSegments,
 } from "./composerMentions";
@@ -27,6 +30,101 @@ describe("detectFileMentionTrigger", () => {
   });
 });
 
+describe("detectSlashCommandTrigger", () => {
+  test("finds a leading slash token", () => {
+    expect(detectSlashCommandTrigger("/model", "/model".length)).toEqual({
+      query: "model",
+      rangeStart: 0,
+      rangeEnd: "/model".length,
+    });
+  });
+
+  test("supports a bare slash after whitespace", () => {
+    expect(detectSlashCommandTrigger("Review this /", "Review this /".length)?.query).toBe("");
+  });
+
+  test("does not treat paths as commands", () => {
+    expect(detectSlashCommandTrigger("src/a/b", "src/a/b".length)).toBeNull();
+  });
+
+  test("does not treat urls or comment slashes as commands", () => {
+    expect(detectSlashCommandTrigger("see https://x.io", "see https://x.io".length)).toBeNull();
+    expect(detectSlashCommandTrigger("// comment", "// comment".length)).toBeNull();
+  });
+
+  test("ends the token at a space", () => {
+    expect(detectSlashCommandTrigger("/model ", "/model ".length)).toBeNull();
+  });
+
+  test("finds a leading compact token", () => {
+    expect(detectSlashCommandTrigger("/compact", "/compact".length)).toEqual({
+      query: "compact",
+      rangeStart: 0,
+      rangeEnd: "/compact".length,
+    });
+  });
+
+  test("the trigger ends at the space, so a focus needs the draft parse", () => {
+    expect(detectSlashCommandTrigger("/compact Focus on API", "/compact Focus on API".length)).toBeNull();
+  });
+});
+
+describe("parseLeadingSlashCommand", () => {
+  test("reads a bare compact command with empty focus", () => {
+    expect(parseLeadingSlashCommand("/compact")).toEqual({ name: "compact", focus: "" });
+  });
+
+  test("reads trailing prose as the compact focus", () => {
+    expect(parseLeadingSlashCommand("/compact Focus on API")).toEqual({
+      name: "compact",
+      focus: "Focus on API",
+    });
+  });
+
+  test("reads the model command", () => {
+    expect(parseLeadingSlashCommand("/model")).toEqual({ name: "model", focus: "" });
+  });
+
+  test("reads the agent command", () => {
+    expect(parseLeadingSlashCommand("/agent")).toEqual({ name: "agent", focus: "" });
+  });
+
+  test("reads the branch command", () => {
+    expect(parseLeadingSlashCommand("/branch")).toEqual({ name: "branch", focus: "" });
+  });
+
+  test("reads the new command", () => {
+    expect(parseLeadingSlashCommand("/new")).toEqual({ name: "new", focus: "" });
+  });
+
+  test("reads trailing prose as the new focus", () => {
+    expect(parseLeadingSlashCommand("/new Start over")).toEqual({
+      name: "new",
+      focus: "Start over",
+    });
+  });
+
+  test("passes unknown names through for the provider", () => {
+    expect(parseLeadingSlashCommand("/unknown x")).toEqual({ name: "unknown", focus: "x" });
+  });
+
+  test("ignores a slash that does not lead the draft", () => {
+    expect(parseLeadingSlashCommand("hello /model")).toBeNull();
+  });
+});
+
+describe("filterSlashCommandItems", () => {
+  const items = [{ name: "model", title: "/model", description: "Open model picker" }];
+
+  test("offers everything on an empty query", () => {
+    expect(filterSlashCommandItems(items, "")).toEqual(items);
+  });
+
+  test("prefix-matches case-insensitively", () => {
+    expect(filterSlashCommandItems(items, "M")).toEqual(items);
+    expect(filterSlashCommandItems(items, "xyz")).toEqual([]);
+  });
+});
 describe("formatFileMention", () => {
   test("keeps simple paths compact", () => {
     expect(formatFileMention("src/App.vue")).toBe("@src/App.vue");

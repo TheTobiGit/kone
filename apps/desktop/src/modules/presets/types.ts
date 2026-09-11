@@ -9,6 +9,8 @@
  * channel family rather than crowding either of those.
  */
 import type {
+  NativeSubagentConfig,
+  NativeSubagentConfigPatch,
   SubagentPresetCreateInput,
   SubagentPresetPatch,
 } from "@kone/agent-core/ConversationStore.js";
@@ -23,3 +25,12 @@ export type PresetUpdateInput = {
 export type PresetDeleteInput = {
   presetId: string;
 };
+
+export type PresetNativeListInput = Record<string, never>;
+
+export type PresetNativeConfigInput = {
+  presetId: string;
+  patch: NativeSubagentConfigPatch;
+};
+
+export type PresetNativeConfigResult = NativeSubagentConfig;

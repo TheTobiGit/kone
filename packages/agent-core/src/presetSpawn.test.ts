@@ -103,29 +103,32 @@ describe("planPresetSpawn", () => {
     });
   });
 
-  test("resolves built-in presets (Explorer, Code Reviewer, PR Handler, Git Handler)", () => {
-    expect(BUILTIN_SWARM_PRESETS.length).toBeGreaterThanOrEqual(4);
+  test("resolves the five natives by name and id", () => {
+    expect(BUILTIN_SWARM_PRESETS).toHaveLength(5);
 
-    const explorer = findBuiltinPreset("Explorer");
-    expect(explorer).not.toBeNull();
-    expect(explorer?.name).toBe("Explorer");
+    const scout = findBuiltinPreset("Scout");
+    expect(scout?.name).toBe("Scout");
 
-    const reviewer = findBuiltinPreset("builtin-code-reviewer");
-    expect(reviewer).not.toBeNull();
-    expect(reviewer?.name).toBe("Code Reviewer");
+    const reviewer = findBuiltinPreset("builtin-reviewer");
+    expect(reviewer?.name).toBe("Reviewer");
 
-    const prHandler = findBuiltinPreset("pr-handler");
-    expect(prHandler).not.toBeNull();
-    expect(prHandler?.name).toBe("PR Handler");
+    const security = findBuiltinPreset("security-reviewer");
+    expect(security?.name).toBe("Security Reviewer");
 
-    if (explorer) {
-      const plan = planPresetSpawn(explorer, "Audit repo structure", available, {
+    const librarian = findBuiltinPreset("librarian");
+    expect(librarian?.name).toBe("Librarian");
+
+    const worker = findBuiltinPreset("worker");
+    expect(worker?.name).toBe("Worker");
+
+    if (scout) {
+      const plan = planPresetSpawn(scout, "Audit repo structure", available, {
         provider: "claudeAgent",
         model: "sonnet",
       });
       expect(plan.ok).toBe(true);
       if (plan.ok) {
-        expect(plan.prompt).toContain("Map the code and report what you find");
+        expect(plan.prompt).toContain("Read-only investigation of the codebase");
         expect(plan.prompt).toContain("Audit repo structure");
       }
     }
