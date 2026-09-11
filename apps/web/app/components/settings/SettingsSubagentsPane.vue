@@ -7,9 +7,9 @@ import {
   RoboticIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import PresetModelList from "~/components/presets/PresetModelList.vue";
+import PresetModelList, { type PresetModelChain } from "~/components/presets/PresetModelList.vue";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
-import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
+import { BUILTIN_SUBAGENT_PRESETS, normalizeChain } from "@kone/protocol/subagent-presets";
 import { useSubagentPresets } from "~/composables/useSubagentPresets";
 import { useSound } from "~/composables/useSound";
 import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
@@ -112,52 +112,33 @@ function toggleNative(presetId: string, enabled: boolean) {
   void configureNative(presetId, { enabled });
 }
 
-/** One native's model chain, in the card summary's one-line form. */
-function nativeModelSummary(native: { model: AgentModelRef | null; modelFallbacks: AgentModelRef[] }): string {
-  if (!native.model) return "Inherits the caller";
-  const head = native.model.label ?? native.model.model;
-  const tail = native.modelFallbacks.map((f) => f.label ?? f.model);
+/** One preset's model chain, in the card summary's one-line form. Natives and
+ *  customs share it — both are a nullable primary plus an ordered tail. */
+function chainSummary(
+  model: AgentModelRef | null,
+  fallbacks: readonly AgentModelRef[] | null | undefined,
+): string {
+  if (!model) return "Inherits the caller";
+  const head = model.label ?? model.model;
+  const tail = (fallbacks ?? []).map((f) => f.label ?? f.model);
   return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
 }
 
-/** A short snippet of the native's instructions for the card body. */
-function nativeSnippet(instructions: string): string {
-  const first = instructions.split(/\n{2,}/)[0]?.trim();
-  return first || "No standing instructions.";
-}
-
-// The picker emits the primary and the tail as two events in the same tick —
-// the same coalescing a stored preset's chain uses, so a promote or an append
-// can't race a wipe of the chain against the write that puts it back.
-type NativeChainPatch = { model?: AgentModelRef | null; fallbacks?: AgentModelRef[] };
-let pendingNativeChain: Record<string, NativeChainPatch> = {};
-let nativeChainFlushQueued = false;
-
-function queueNativeChain(presetId: string, patch: NativeChainPatch) {
-  pendingNativeChain[presetId] = { ...pendingNativeChain[presetId], ...patch };
-  if (nativeChainFlushQueued) return;
-  nativeChainFlushQueued = true;
-  queueMicrotask(() => {
-    nativeChainFlushQueued = false;
-    for (const [id, next] of Object.entries(pendingNativeChain)) {
-      const current = natives.value.find((n) => n.presetId === id);
-      if (!current) continue;
-      const model = next.model !== undefined ? next.model : current.model;
-      const fallbacks = next.fallbacks !== undefined ? next.fallbacks : current.modelFallbacks;
-      void configureNative(id, { model, modelFallbacks: model ? fallbacks : null });
-    }
-    pendingNativeChain = {};
-  });
+/** A short snippet of standing instructions for the card body. */
+function snippetText(instructions: string | null | undefined, empty: string): string {
+  const first = instructions?.split(/\n{2,}/)[0]?.trim();
+  return first || empty;
 }
 
 async function submitDraft() {
   const name = draft.name.trim();
   if (!name) return;
+  const chain = normalizeChain(draft.model, draft.modelFallbacks);
   const row = await createPreset({
     name,
     instructions: draft.instructions.trim() || null,
-    model: draft.model,
-    modelFallbacks: draft.model ? draft.modelFallbacks : null,
+    model: chain.primary,
+    modelFallbacks: chain.fallbacks,
   });
   if (row) {
     isCreating.value = false;
@@ -168,6 +149,14 @@ async function submitDraft() {
 // Edits to an open preset persist as they happen — no separate save. The name
 // is the one field that can't be blanked, so an empty value is simply not sent;
 // the input still shows it, and the stored name stands until a real one lands.
+function readTextValue(e: Event): string {
+  // SAFETY: bound to a single text field each, so the target is always that field's own element.
+  return (e.target as HTMLInputElement | HTMLTextAreaElement).value;
+}
+function readChecked(e: Event): boolean {
+  // SAFETY: bound to the native's own checkbox, so the target is always that input.
+  return (e.target as HTMLInputElement).checked;
+}
 function setName(value: string) {
   const preset = current.value;
   if (!preset) return;
@@ -180,37 +169,26 @@ function setInstructions(value: string) {
   if (preset) void updatePreset(preset.presetId, { instructions: value.trim() || null });
 }
 
-// The picker emits the primary and the tail as two events in the same tick.
-// One write, after both land, is what keeps a promote or an append from
-// racing a wipe of the chain against the write that puts it back.
-type ChainPatch = { model?: AgentModelRef | null; fallbacks?: AgentModelRef[] };
-let pendingChain: ChainPatch | null = null;
-let chainFlushQueued = false;
-
-function queueChain(patch: ChainPatch) {
-  pendingChain = { ...pendingChain, ...patch };
-  if (chainFlushQueued) return;
-  chainFlushQueued = true;
-  queueMicrotask(() => {
-    const preset = current.value;
-    const next = pendingChain;
-    pendingChain = null;
-    chainFlushQueued = false;
-    if (!preset || !next) return;
-    const model = next.model !== undefined ? next.model : preset.model;
-    const fallbacks = next.fallbacks !== undefined ? next.fallbacks : (preset.modelFallbacks ?? []);
-    void updatePreset(preset.presetId, {
-      model,
-      modelFallbacks: model ? fallbacks : null,
-    });
+// The picker emits one chain event per pick, already paired — settling it
+// against the store is a single write, no queue.
+function onPresetChain(chain: PresetModelChain) {
+  const preset = current.value;
+  if (!preset) return;
+  const settled = normalizeChain(chain.model, chain.fallbacks);
+  void updatePreset(preset.presetId, {
+    model: settled.primary,
+    modelFallbacks: settled.fallbacks,
   });
 }
 
-function setModel(next: AgentModelRef | null) {
-  queueChain({ model: next });
+function onNativeChain(presetId: string, chain: PresetModelChain) {
+  const settled = normalizeChain(chain.model, chain.fallbacks);
+  void configureNative(presetId, { model: settled.primary, modelFallbacks: settled.fallbacks });
 }
-function setFallbacks(next: AgentModelRef[]) {
-  queueChain({ fallbacks: next });
+
+function onDraftChain(chain: PresetModelChain) {
+  draft.model = chain.model;
+  draft.modelFallbacks = chain.fallbacks;
 }
 
 async function handleDelete() {
@@ -221,20 +199,6 @@ async function handleDelete() {
     cue("press");
     closeToList();
   }
-}
-
-/** A one-line read of a preset's model for the card. */
-function modelSummary(preset: SubagentPresetRecord): string {
-  if (!preset.model) return "Inherits the caller";
-  const head = preset.model.label ?? preset.model.model;
-  const tail = (preset.modelFallbacks ?? []).map((f) => f.label ?? f.model);
-  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
-}
-
-/** A short snippet of the instructions for the card body. */
-function snippetFor(preset: SubagentPresetRecord): string {
-  const first = preset.instructions?.split(/\n{2,}/)[0]?.trim();
-  return first || "No standing instructions yet.";
 }
 </script>
 
@@ -279,7 +243,7 @@ function snippetFor(preset: SubagentPresetRecord): string {
           type="text"
           class="sa__input"
           :tabindex="open ? 0 : -1"
-          @input="setName(($event.target as HTMLInputElement).value)"
+          @input="setName(readTextValue($event))"
         />
       </label>
 
@@ -303,7 +267,7 @@ function snippetFor(preset: SubagentPresetRecord): string {
           class="sa__textarea"
           rows="5"
           :tabindex="open ? 0 : -1"
-          @input="setInstructions(($event.target as HTMLTextAreaElement).value)"
+          @input="setInstructions(readTextValue($event))"
         />
       </label>
 
@@ -312,15 +276,13 @@ function snippetFor(preset: SubagentPresetRecord): string {
           v-if="isCreating"
           :model="draft.model"
           :fallbacks="draft.modelFallbacks"
-          @update:model="(m) => (draft.model = m)"
-          @update:fallbacks="(f) => (draft.modelFallbacks = f)"
+          @update:chain="onDraftChain"
         />
         <PresetModelList
           v-else-if="current"
           :model="current.model"
           :fallbacks="current.modelFallbacks ?? []"
-          @update:model="setModel"
-          @update:fallbacks="setFallbacks"
+          @update:chain="onPresetChain"
         />
       </section>
 
@@ -394,12 +356,10 @@ function snippetFor(preset: SubagentPresetRecord): string {
               class="sa__native-check"
               :checked="native.enabled"
               :tabindex="open ? 0 : -1"
-              @change="
-                toggleNative(native.presetId, ($event.target as HTMLInputElement).checked)
-              "
+              @change="toggleNative(native.presetId, readChecked($event))"
             />
             <span class="sa__native-name">{{ native.name }}</span>
-            <span class="sa__native-model">{{ nativeModelSummary(native) }}</span>
+            <span class="sa__native-model">{{ chainSummary(native.model, native.modelFallbacks) }}</span>
           </label>
           <button
             type="button"
@@ -412,12 +372,11 @@ function snippetFor(preset: SubagentPresetRecord): string {
           </button>
 
           <div v-if="openNativeId === native.presetId" class="sa__native-detail">
-            <p class="sa__native-snippet">{{ nativeSnippet(native.instructions) }}</p>
+            <p class="sa__native-snippet">{{ snippetText(native.instructions, "No standing instructions.") }}</p>
             <PresetModelList
               :model="native.model"
               :fallbacks="native.modelFallbacks"
-              @update:model="(m) => queueNativeChain(native.presetId, { model: m })"
-              @update:fallbacks="(f) => queueNativeChain(native.presetId, { fallbacks: f })"
+              @update:chain="(chain) => onNativeChain(native.presetId, chain)"
             />
           </div>
         </div>
@@ -441,14 +400,14 @@ function snippetFor(preset: SubagentPresetRecord): string {
             </span>
             <div class="sa__ident">
               <h4 class="sa__name">{{ p.name }}</h4>
-              <p class="sa__model">{{ modelSummary(p) }}</p>
+              <p class="sa__model">{{ chainSummary(p.model, p.modelFallbacks) }}</p>
             </div>
             <span class="sa__open-cue" aria-hidden="true">
               <HugeiconsIcon :icon="ArrowRight01Icon" :size="15" :stroke-width="1.8" />
             </span>
           </div>
 
-          <p class="sa__snippet">{{ snippetFor(p) }}</p>
+          <p class="sa__snippet">{{ snippetText(p.instructions, "No standing instructions yet.") }}</p>
         </article>
 
         <button

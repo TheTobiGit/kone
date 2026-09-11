@@ -18,6 +18,7 @@ import {
   WAIT_FOR_RESPONSES_JSON_SCHEMA,
 } from "../schemas.js";
 import { createRegistry } from "../registry.js";
+import { mergeVisiblePresets } from "../../rosterRecord.js";
 
 // The tools import ../../threadSpawn.ts, which the engine worker is writing in
 // parallel — stub it wholesale (mock.module before the dynamic import, the
@@ -116,6 +117,7 @@ type SpawnToolStore = {
   listSubagentPresets(): SubagentPresetRecord[];
   getSubagentPreset(presetId: string): SubagentPresetRecord | null;
   listNativeSubagentConfigs(): NativeSubagentConfig[];
+  listVisiblePresets(): SubagentPresetRecord[];
   listProjectAgents(projectPath: string): AgentRecord[];
 };
 let createSpawnTools: (input: { store: SpawnToolStore }) => ToolEntry[];
@@ -158,6 +160,7 @@ function makeStore(
     listSubagentPresets: () => presets,
     getSubagentPreset: (presetId) => presetById.get(presetId) ?? null,
     listNativeSubagentConfigs: () => nativeConfigs,
+    listVisiblePresets: () => mergeVisiblePresets(presets, nativeConfigs),
     listProjectAgents: () => team,
   };
 }
@@ -1142,6 +1145,41 @@ describe("kone_spawn_worker_preset", () => {
     });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("a legacy preset name spawns from its successor native", async () => {
+    let capturedRequest: FakeSpawnRequest | null = null;
+    currentEngine = makeEngine({
+      targets: async () =>
+        targetsReport([
+          { provider: "claudeAgent", models: ["haiku", "opus"] },
+          { provider: "codex", models: ["gpt-5"] },
+        ]),
+      spawn: async (caller, request) => {
+        capturedRequest = request;
+        return {
+          requestId: request.requestId,
+          threadId: "child-1",
+          parentThreadId: caller.threadId,
+          title: "t",
+          provider: request.target.provider,
+          model: request.target.model,
+          mode: "ask",
+          status: "dispatched",
+        };
+      },
+    });
+    // No stored rows at all: "Explorer" is a name only an earlier build
+    // shipped, and the Scout native answers for it.
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_spawn_worker_preset", {
+      preset: "Explorer",
+      task: "Map the auth flow.",
+      requestId: "op-1",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(capturedRequest?.prompt).toContain("Read-only investigation of the codebase");
+    expect(res.structuredContent).toMatchObject({ preset: "Scout" });
   });
 });
 

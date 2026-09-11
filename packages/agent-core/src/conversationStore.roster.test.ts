@@ -711,6 +711,55 @@ describe("native sub-agent config", () => {
   });
 });
 
+describe("the visible presets", () => {
+  test("a fresh store shows the five natives in list order", () => {
+    const visible = freshStore().listVisiblePresets();
+    expect(visible.map((preset) => preset.presetId)).toEqual([
+      "builtin-scout",
+      "builtin-reviewer",
+      "builtin-security-reviewer",
+      "builtin-librarian",
+      "builtin-worker",
+    ]);
+  });
+
+  test("stored presets come first; a stored row shadows a native by name", () => {
+    const store = freshStore();
+    store.createSubagentPreset({ presetId: "user-1", name: "Helper" });
+    store.createSubagentPreset({ presetId: "user-2", name: "Scout" });
+    const visible = store.listVisiblePresets();
+    expect(visible.map((preset) => preset.name)).toEqual([
+      "Helper",
+      "Scout",
+      "Reviewer",
+      "Security Reviewer",
+      "Librarian",
+      "Worker",
+    ]);
+    // The shadowing row is the user's own, not the native's.
+    expect(visible.find((preset) => preset.name === "Scout")?.presetId).toBe("user-2");
+  });
+
+  test("a disabled native leaves the visible list", () => {
+    const store = freshStore();
+    store.setNativeSubagentConfig("builtin-worker", { enabled: false });
+    const visible = store.listVisiblePresets();
+    expect(visible.map((preset) => preset.presetId)).not.toContain("builtin-worker");
+    expect(visible).toHaveLength(4);
+  });
+
+  test("a pinned chain rides along on the visible native", () => {
+    const store = freshStore();
+    store.setNativeSubagentConfig("builtin-scout", {
+      model: { provider: "claudeAgent", model: "haiku" },
+      modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+    });
+    const scout = store.listVisiblePresets().find((preset) => preset.presetId === "builtin-scout")!;
+    expect(scout.model).toEqual({ provider: "claudeAgent", model: "haiku" });
+    expect(scout.modelFallbacks).toEqual([{ provider: "codex", model: "gpt-5" }]);
+  });
+});
+
 describe("a project's team", () => {
   const project = "/tmp/kone-project";
   const other = "/tmp/other-project";

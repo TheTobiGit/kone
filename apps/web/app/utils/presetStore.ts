@@ -12,8 +12,8 @@
  * browser storage when there is no bridge to reach it through.
  */
 import { useStorage } from "@vueuse/core";
+import { normalizeChain } from "@kone/protocol/subagent-presets";
 import type {
-  AgentModelRef,
   SubagentPresetCreateInput,
   SubagentPresetPatch,
   SubagentPresetRecord,
@@ -64,13 +64,21 @@ async function runHydrate(): Promise<void> {
 }
 
 /**
- * Lay down the shipped presets as rows, exactly once per install — for
- * installs that predate the natives. A fresh install never calls this: the
- * five shipped sub-agents are drawn as natives from the shared list, config
- * and all, not seeded as editable rows. An upgraded install that already
- * seeded the old examples under these names is left alone — those rows shadow
- * the natives by name, which is exactly the documented precedence, and the
- * user can delete them to fall back to the shipped definitions.
+ * The once-per-install marker for the era when the shipped presets seeded as
+ * editable rows. A fresh install never calls this: the five shipped sub-agents
+ * are drawn as natives from the shared list, config and all, not seeded as
+ * rows — there is nothing to lay down, only the marker to leave so a future
+ * reader knows the seeding question was asked and answered.
+ *
+ * An upgraded install keeps whatever it seeded: rows the old build laid down
+ * (Explorer, Code Reviewer, PR Handler, Git Handler, under caller-minted ids)
+ * do NOT shadow the renamed natives — the names no longer collide — they
+ * persist as ordinary stored presets, listed first, that the user can keep,
+ * adapt, or delete. Agents naming a retired preset resolve to its successor
+ * native through the protocol's alias map, unless one of those kept rows
+ * claims the name first. Nothing here deletes or rewrites user data to tidy
+ * that up: a row the user may have edited is theirs, even when kone put it
+ * there first.
  */
 export async function seedExamplePresets(): Promise<void> {
   await hydrating;
@@ -146,13 +154,6 @@ function clamp(value: string | null | undefined, max: number): string | null {
   return value.trim().slice(0, max);
 }
 
-/** The one model a spawn from the preset runs on. Unlike a capability there is
- *  nothing above a preset to inherit, so null is not "inherit" — null and
- *  undefined both settle to null, "no model, let the caller's own stand". */
-function clampModel(value: AgentModelRef | null | undefined): AgentModelRef | null {
-  return value ?? null;
-}
-
 function nextSortOrder(): number {
   return presetRows.value.reduce((max, row) => Math.max(max, row.sortOrder + 1), 0);
 }
@@ -176,12 +177,13 @@ function insertLocal(input: SubagentPresetCreateInput): SubagentPresetRecord | n
   const name = clamp(input.name, NAME_MAX);
   if (!name) return null;
   const now = Date.now();
+  const chain = normalizeChain(input.model, input.modelFallbacks);
   const row: SubagentPresetRecord = {
     presetId: input.presetId ?? mintPresetId(),
     name,
     instructions: clamp(input.instructions, PROSE_MAX),
-    model: clampModel(input.model),
-    modelFallbacks: input.model ? (input.modelFallbacks ?? []) : null,
+    model: chain.primary,
+    modelFallbacks: chain.fallbacks,
     sortOrder: nextSortOrder(),
     createdAt: now,
     updatedAt: now,
@@ -202,9 +204,14 @@ function patchLocal(presetId: string, patch: SubagentPresetPatch): SubagentPrese
     next.name = name;
   }
   if (patch.instructions !== undefined) next.instructions = clamp(patch.instructions, PROSE_MAX);
-  if (patch.model !== undefined) next.model = clampModel(patch.model);
-  if (patch.modelFallbacks !== undefined) next.modelFallbacks = patch.modelFallbacks ?? [];
-  if (next.model === null) next.modelFallbacks = null;
+  if (patch.model !== undefined || patch.modelFallbacks !== undefined) {
+    const chain = normalizeChain(
+      patch.model !== undefined ? patch.model : current.model,
+      patch.modelFallbacks !== undefined ? patch.modelFallbacks : current.modelFallbacks,
+    );
+    next.model = chain.primary;
+    next.modelFallbacks = chain.fallbacks;
+  }
   applyRow(next);
   return next;
 }

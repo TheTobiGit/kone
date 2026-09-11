@@ -1,5 +1,8 @@
 import { computed, onMounted, ref } from "vue";
-import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
+import {
+  BUILTIN_SUBAGENT_PRESETS,
+  normalizeChain,
+} from "@kone/protocol/subagent-presets";
 import {
   hydratePresets,
   insertPreset,
@@ -54,18 +57,19 @@ export function useSubagentPresets() {
     if (!bridge) {
       const current = nativeConfigs.value.find((config) => config.presetId === presetId);
       if (!current) return;
+      // The pairing is the one normalizeChain owns, so a fallbacks-only write
+      // settles against the current primary the same way the store settles it.
+      const chain = normalizeChain(
+        patch.model !== undefined ? patch.model : current.model,
+        patch.modelFallbacks !== undefined ? patch.modelFallbacks : current.modelFallbacks,
+      );
       nativeConfigs.value = nativeConfigs.value.map((config) =>
         config.presetId === presetId
           ? {
               ...config,
               enabled: patch.enabled !== undefined ? patch.enabled : config.enabled,
-              model: patch.model !== undefined ? patch.model : config.model,
-              modelFallbacks:
-                patch.model !== undefined
-                  ? patch.model
-                    ? (patch.modelFallbacks ?? [])
-                    : null
-                  : config.modelFallbacks,
+              model: chain.primary,
+              modelFallbacks: chain.fallbacks,
               updatedAt: Date.now(),
             }
           : config,

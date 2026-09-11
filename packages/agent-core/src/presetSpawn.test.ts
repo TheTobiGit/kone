@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { BUILTIN_SWARM_PRESETS, findBuiltinPreset, planPresetSpawn } from "./presetSpawn.js";
+import { planPresetSpawn } from "./presetSpawn.js";
+import { builtinPresetsWithConfig } from "./rosterRecord.js";
+import {
+  BUILTIN_SUBAGENT_PRESETS,
+  resolveLegacyPresetId,
+} from "@kone/protocol/subagent-presets";
 import type { ProviderAvailability } from "./agentModel.js";
 import type { SubagentPresetRecord } from "./ConversationStore.js";
 
@@ -103,34 +108,56 @@ describe("planPresetSpawn", () => {
     });
   });
 
-  test("resolves the five natives by name and id", () => {
-    expect(BUILTIN_SWARM_PRESETS).toHaveLength(5);
+  test("the five natives carry no model until one is pinned", () => {
+    const natives = builtinPresetsWithConfig([]);
+    expect(natives).toHaveLength(5);
+    expect(natives.map((native) => native.presetId)).toEqual(
+      BUILTIN_SUBAGENT_PRESETS.map((preset) => preset.presetId),
+    );
+    for (const native of natives) {
+      expect(native.model).toBeNull();
+      expect(native.modelFallbacks).toBeNull();
+    }
+  });
 
-    const scout = findBuiltinPreset("Scout");
-    expect(scout?.name).toBe("Scout");
+  test("a disabled native reads as absent; a pinned chain folds in", () => {
+    const natives = builtinPresetsWithConfig([
+      { presetId: "builtin-librarian", enabled: false, model: null, modelFallbacks: null, updatedAt: 1 },
+      {
+        presetId: "builtin-scout",
+        enabled: true,
+        model: { provider: "claudeAgent", model: "haiku" },
+        modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+        updatedAt: 1,
+      },
+    ]);
+    expect(natives.map((native) => native.presetId)).not.toContain("builtin-librarian");
+    expect(natives.find((native) => native.presetId === "builtin-scout")).toMatchObject({
+      model: { provider: "claudeAgent", model: "haiku" },
+      modelFallbacks: [{ provider: "codex", model: "gpt-5" }],
+    });
+  });
 
-    const reviewer = findBuiltinPreset("builtin-reviewer");
-    expect(reviewer?.name).toBe("Reviewer");
+  test("a legacy name resolves to its successor native", () => {
+    expect(resolveLegacyPresetId("Explorer")).toBe("builtin-scout");
+    expect(resolveLegacyPresetId("code-reviewer")).toBe("builtin-reviewer");
+    expect(resolveLegacyPresetId("builtin-code-reviewer")).toBe("builtin-reviewer");
+    // Retired with no successor: the agent gets the current list, not a guess.
+    expect(resolveLegacyPresetId("PR Handler")).toBeNull();
+    expect(resolveLegacyPresetId("Git Handler")).toBeNull();
+    expect(resolveLegacyPresetId("Scout")).toBeNull();
 
-    const security = findBuiltinPreset("security-reviewer");
-    expect(security?.name).toBe("Security Reviewer");
-
-    const librarian = findBuiltinPreset("librarian");
-    expect(librarian?.name).toBe("Librarian");
-
-    const worker = findBuiltinPreset("worker");
-    expect(worker?.name).toBe("Worker");
-
-    if (scout) {
-      const plan = planPresetSpawn(scout, "Audit repo structure", available, {
-        provider: "claudeAgent",
-        model: "sonnet",
-      });
-      expect(plan.ok).toBe(true);
-      if (plan.ok) {
-        expect(plan.prompt).toContain("Read-only investigation of the codebase");
-        expect(plan.prompt).toContain("Audit repo structure");
-      }
+    const scout = builtinPresetsWithConfig([]).find(
+      (native) => native.presetId === resolveLegacyPresetId("Explorer"),
+    )!;
+    const plan = planPresetSpawn(scout, "Audit repo structure", available, {
+      provider: "claudeAgent",
+      model: "sonnet",
+    });
+    expect(plan.ok).toBe(true);
+    if (plan.ok) {
+      expect(plan.prompt).toContain("Read-only investigation of the codebase");
+      expect(plan.prompt).toContain("Audit repo structure");
     }
   });
 });

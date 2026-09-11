@@ -42,6 +42,7 @@ import {
   SUBAGENT_PRESET_COLUMNS,
   clampAgentField,
   isColumnRecord,
+  mergeVisiblePresets,
   normalizeNativeSubagentEntry,
   type ColumnRecord,
   type ColumnValue,
@@ -65,7 +66,10 @@ import {
   type SubagentPresetRow,
   type ThreadAgentBinding,
 } from "./rosterRecord.js";
-import { BUILTIN_SWARM_PRESET_IDS } from "./presetSpawn.js";
+import {
+  BUILTIN_SUBAGENT_PRESET_IDS,
+  normalizeChain,
+} from "@kone/protocol/subagent-presets";
 
 import {
   DONE_CLEARED,
@@ -3897,8 +3901,8 @@ export class ConversationStore {
     try {
       // SAFETY: app_state holds at most one row for this key, one TEXT column.
       const row = db
-        .prepare(`SELECT value FROM app_state WHERE key = '${ConversationStore.NATIVE_SUBAGENT_CONFIG_KEY}'`)
-        .get() as { value: string } | undefined;
+        .prepare(`SELECT value FROM app_state WHERE key = ?`)
+        .get(ConversationStore.NATIVE_SUBAGENT_CONFIG_KEY) as { value: string } | undefined;
       if (!row?.value) return {};
       // SAFETY: disk content is untrusted — parse to the column-value shape
       // and let isColumnRecord below decide, as every JSON column does.
@@ -3910,17 +3914,6 @@ export class ConversationStore {
     }
   }
 
-  /** Decode one entry of the config document into its config, or null when the
-   *  entry is not shaped like one. A malformed entry reads as absent, which is
-   *  the shipped default — on, no model — the same recovery a corrupt whole
-   *  document takes. */
-  private decodeNativeSubagentEntry(
-    presetId: string,
-    entry: ColumnValue | undefined,
-  ): NativeSubagentConfig | null {
-    return normalizeNativeSubagentEntry(presetId, entry);
-  }
-
   /** Every native's config, one per shipped definition in list order. A
    *  native with no stored entry reports the default — on, no model — so the
    *  list is always the full five, whatever the document holds. */
@@ -3928,8 +3921,8 @@ export class ConversationStore {
     const db = this.handle();
     if (!db) return [];
     const doc = this.readNativeSubagentConfigDoc(db);
-    return BUILTIN_SWARM_PRESET_IDS.map((presetId) => {
-      const stored = this.decodeNativeSubagentEntry(presetId, doc[presetId]);
+    return BUILTIN_SUBAGENT_PRESET_IDS.map((presetId) => {
+      const stored = normalizeNativeSubagentEntry(presetId, doc[presetId]);
       return stored ?? { presetId, enabled: true, model: null, modelFallbacks: null, updatedAt: 0 };
     });
   }
@@ -3937,11 +3930,11 @@ export class ConversationStore {
   /** One native's config, or the on/no-model default when nothing was stored. */
   getNativeSubagentConfig(presetId: string): NativeSubagentConfig {
     const defaults = { presetId, enabled: true, model: null, modelFallbacks: null, updatedAt: 0 };
-    if (!BUILTIN_SWARM_PRESET_IDS.includes(presetId)) return defaults;
+    if (!BUILTIN_SUBAGENT_PRESET_IDS.includes(presetId)) return defaults;
     const db = this.handle();
     if (!db) return defaults;
     const doc = this.readNativeSubagentConfigDoc(db);
-    const stored = this.decodeNativeSubagentEntry(presetId, doc[presetId]);
+    const stored = normalizeNativeSubagentEntry(presetId, doc[presetId]);
     return stored ?? defaults;
   }
 
@@ -3953,43 +3946,47 @@ export class ConversationStore {
     presetId: string,
     patch: NativeSubagentConfigPatch,
   ): NativeSubagentConfig | null {
-    if (!BUILTIN_SWARM_PRESET_IDS.includes(presetId)) return null;
+    if (!BUILTIN_SUBAGENT_PRESET_IDS.includes(presetId)) return null;
     const db = this.handle();
     if (!db) return null;
     try {
       const current = this.getNativeSubagentConfig(presetId);
-      const model =
-        patch.model !== undefined
-          ? patch.model
-          : current.model;
-      const rawFallbacks =
-        patch.modelFallbacks !== undefined
-          ? patch.modelFallbacks
-          : (current.modelFallbacks ?? []);
+      // A patch field left out keeps the entry's current value; the pairing is
+      // the one normalizeChain owns, so clearing the model drops the tail with
+      // it rather than storing a chain with nothing to fall back from.
+      const chain = normalizeChain(
+        patch.model !== undefined ? patch.model : current.model,
+        patch.modelFallbacks !== undefined ? patch.modelFallbacks : current.modelFallbacks,
+      );
       const next: NativeSubagentConfig = {
         presetId,
         enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
-        model,
-        // A fallback chain is only meaningful under a primary: with no model
-        // there is nothing to fall back FROM, so the tail is dropped rather
-        // than stored to spring a surprise primary on the next read.
-        modelFallbacks: model ? rawFallbacks : null,
+        model: chain.primary,
+        modelFallbacks: chain.fallbacks,
         updatedAt: Date.now(),
       };
       const doc = this.readNativeSubagentConfigDoc(db);
       doc[presetId] = next;
       db.prepare(
         `INSERT INTO app_state (key, value, updated_at)
-         VALUES ('${ConversationStore.NATIVE_SUBAGENT_CONFIG_KEY}', ?, ?)
+         VALUES (?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET
            value = excluded.value,
            updated_at = excluded.updated_at`,
-      ).run(JSON.stringify(doc), Date.now());
+      ).run(ConversationStore.NATIVE_SUBAGENT_CONFIG_KEY, JSON.stringify(doc), Date.now());
       return next;
     } catch (err) {
       console.error("[conversation-store] setNativeSubagentConfig failed:", err);
       return null;
     }
+  }
+
+  /** Every preset an agent can name, stored first: the user's own rows, then
+   *  the configured natives a stored row hasn't shadowed by name. The one
+   *  precedence the gateway resolves by, read straight from the store so a
+   *  toggle mid-session reaches the next spawn without a restart. */
+  listVisiblePresets(): SubagentPresetRecord[] {
+    return mergeVisiblePresets(this.listSubagentPresets(), this.listNativeSubagentConfigs());
   }
 
   // ── who worked a thread, and who is up next ─────────────────────────────────

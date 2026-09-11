@@ -26,8 +26,6 @@ export type PresetDeleteInput = {
   presetId: string;
 };
 
-export type PresetNativeListInput = Record<string, never>;
-
 export type PresetNativeConfigInput = {
   presetId: string;
   patch: NativeSubagentConfigPatch;

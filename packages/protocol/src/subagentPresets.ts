@@ -99,3 +99,93 @@ Hyperfocus on the assignment; never deviate from it. Prefer narrow lookups and r
 Finish with the minimum useful result: what was done, what changed, and what remains. Be concise — no filler, no repetition, no narrating every step. The user cannot see your transcript; the result is notes for whoever assigned the work.`,
   },
 ];
+
+/** The shipped presets' ids alone, in list order — the identity half of a
+ *  native's config. Derived from the list above so a new native lands in both
+ *  at once; a config for an id off this list is not a native's, and the store
+ *  refuses it. */
+export const BUILTIN_SUBAGENT_PRESET_IDS: readonly string[] = BUILTIN_SUBAGENT_PRESETS.map(
+  (preset) => preset.presetId,
+);
+
+/**
+ * A shipped preset an earlier build carried and this one renamed — and the
+ * native that answers for it now. The previous set (Explorer, Code Reviewer,
+ * PR Handler, Git Handler) seeded as ordinary stored rows under caller-minted
+ * ids, so no id map can find them; what survives an upgrade is the NAME an
+ * agent was told to invoke. A spawn that names a legacy preset resolves to the
+ * successor below, unless a stored preset already claims the name — a row the
+ * user kept or edited always wins over an alias.
+ *
+ * Only true successors are listed. PR Handler and Git Handler have none: their
+ * work was folded into the general Worker rather than replaced one-for-one, so
+ * an agent naming one gets the current list instead of a silent escalation to
+ * a fully-capable worker. Their stored rows, where the user kept them, keep
+ * working as ordinary presets.
+ */
+export type LegacyPresetAlias = {
+  /** The retired definition's id, as the previous build's spawn menu listed it. */
+  presetId: string;
+  /** The retired definition's name, as an agent would have named it. */
+  name: string;
+  /** The current native that answers for it. */
+  successor: string;
+};
+
+export const LEGACY_PRESET_ALIASES: readonly LegacyPresetAlias[] = [
+  { presetId: "builtin-explorer", name: "Explorer", successor: "builtin-scout" },
+  { presetId: "builtin-code-reviewer", name: "Code Reviewer", successor: "builtin-reviewer" },
+];
+
+/** Fold one alias's match forms: the retired id, the retired name, and the id
+ *  with its `builtin-` prefix off — each punctuation-blind, so "Code Reviewer",
+ *  "code-reviewer" and "codereviewer" are the same reference. */
+function legacyAliasKeys(alias: LegacyPresetAlias): string[] {
+  const strip = (value: string): string => value.toLowerCase().replace(/[\s_-]+/g, "");
+  const id = strip(alias.presetId);
+  const short = id.startsWith("builtin") ? id.slice("builtin".length) : id;
+  return [id, strip(alias.name), short];
+}
+
+/** The current native id a legacy reference names, or null when the reference
+ *  is not a retired preset's. Callers try their stored and shipped definitions
+ *  first and fall through to here, so an alias never shadows a real row. */
+export function resolveLegacyPresetId(ref: string): string | null {
+  const wanted = ref.toLowerCase().replace(/[\s_-]+/g, "");
+  if (!wanted) return null;
+  for (const alias of LEGACY_PRESET_ALIASES) {
+    if (legacyAliasKeys(alias).includes(wanted)) return alias.successor;
+  }
+  return null;
+}
+
+/**
+ * An entity's ordered model preference: the model it runs on first, and the
+ * models tried in order when that one can't run. One shape for every holder —
+ * stored presets, native configs, agent overlays — so the invariant below is
+ * stated once instead of re-enforced at every write.
+ *
+ * The tail is null exactly when the primary is null: with no primary there is
+ * nothing to fall back FROM. A pinned primary always carries an array, [] when
+ * there is no second choice. Readers that want a plain list still fold with
+ * `?? []`; what this settles is the write side, where null and [] used to be
+ * dealt out inconsistently.
+ */
+export type ModelChain<TRef> = {
+  primary: TRef | null;
+  fallbacks: TRef[] | null;
+};
+
+/** Fold a primary and its tail into the one canonical pair. Null and undefined
+ *  inputs settle the same way — a missing primary drops the tail however it
+ *  was spelt, and a pinned primary with no tail reads [] rather than inheriting
+ *  whatever the row held before. No validation: refs are checked where they
+ *  are decoded, this only owns the pairing. */
+export function normalizeChain<TRef>(
+  primary: TRef | null | undefined,
+  fallbacks?: readonly TRef[] | null,
+): ModelChain<TRef> {
+  const resolved = primary ?? null;
+  if (resolved === null) return { primary: null, fallbacks: null };
+  return { primary: resolved, fallbacks: fallbacks ? [...fallbacks] : [] };
+}

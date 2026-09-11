@@ -2895,7 +2895,12 @@ export type PresetDeleteInput = {
 
 /** A native preset sub-agent's user config (mirrors the desktop
  * `NativeSubagentConfig`): the name and instructions come from the build, and
- * what the user owns is whether it is on and the model chain it runs on. */
+ * what the user owns is whether it is on and the model chain it runs on.
+ *
+ * Hand-mirrored rather than imported: the canonical type lives in
+ * `@kone/agent-core`, which the renderer cannot depend on (node-only runtime),
+ * so this copy and that one must be changed together — including the
+ * null-means-no-primary tail rule normalizeChain owns. */
 export type NativeSubagentConfig = {
   presetId: string;
   enabled: boolean;
