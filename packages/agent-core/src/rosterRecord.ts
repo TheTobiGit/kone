@@ -1,4 +1,8 @@
 import type { ProviderKind } from "./types.js";
+import {
+  BUILTIN_SUBAGENT_PRESETS,
+  normalizeChain,
+} from "@kone/protocol/subagent-presets";
 
 // ── the roster (v22) ─────────────────────────────────────────────────────────
 
@@ -216,6 +220,60 @@ export type SubagentPresetPatch = {
   model?: AgentModelRef | null;
   modelFallbacks?: AgentModelRef[] | null;
 };
+
+/** Preset ids and names compare without their punctuation or whitespace, so
+ *  "code-reviewer", "Code Reviewer" and "codereviewer" are the same reference.
+ *  The one spelling every precedence check uses — stored-first shadowing in the
+ *  store, name resolution in the gateway — so the two can never disagree about
+ *  which names collide. */
+export function presetNameKey(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+/** The natives as this user has them configured — the enabled ones, carrying
+ *  the model chain pinned on each. A disabled native reads as absent everywhere
+ *  a spawn could name it, so turning one off removes it from the agent's menu
+ *  without deleting the definition the toggle lives on. `configs` is keyed by
+ *  preset id; a missing entry is the default (on, no model). */
+export function builtinPresetsWithConfig(
+  configs: readonly NativeSubagentConfig[],
+): SubagentPresetRecord[] {
+  const byId = new Map(configs.map((config) => [config.presetId, config]));
+  const out: SubagentPresetRecord[] = [];
+  for (const [index, preset] of BUILTIN_SUBAGENT_PRESETS.entries()) {
+    const config = byId.get(preset.presetId);
+    if (config && !config.enabled) continue;
+    const chain = normalizeChain(config?.model, config?.modelFallbacks);
+    out.push({
+      presetId: preset.presetId,
+      name: preset.name,
+      instructions: preset.instructions,
+      model: chain.primary,
+      modelFallbacks: chain.fallbacks,
+      sortOrder: index,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+  }
+  return out;
+}
+
+/** Every preset an agent can name: the user's own first, then the shipped ones
+ *  a user preset hasn't taken the name of. Stored-first is the whole rule — a
+ *  stored preset shadows a native of the same name, and a spawn from that name
+ *  uses the stored row. */
+export function mergeVisiblePresets(
+  stored: readonly SubagentPresetRecord[],
+  configs: readonly NativeSubagentConfig[],
+): SubagentPresetRecord[] {
+  const taken = new Set(stored.map((preset) => presetNameKey(preset.name)));
+  return [
+    ...stored,
+    ...builtinPresetsWithConfig(configs).filter(
+      (native) => !taken.has(presetNameKey(native.name)),
+    ),
+  ];
+}
 
 /** Room for a name the roster can lay out on one line. */
 export const AGENT_NAME_MAX = 64;
@@ -438,15 +496,17 @@ export function normalizeNativeSubagentEntry(
   const model = normalizeModelRef(entry.model);
   const rawFallbacks = Array.isArray(entry.modelFallbacks) ? entry.modelFallbacks : [];
   // Each fallback is revalidated through normalizeModelRef; an unshapely one
-  // drops out rather than corrupting the chain.
-  const modelFallbacks = rawFallbacks
+  // drops out rather than corrupting the chain. The pairing itself is the one
+  // normalizeChain owns — a null primary drops the tail however it was spelt.
+  const fallbacks = rawFallbacks
     .map((fallback) => normalizeModelRef(fallback))
     .filter((fallback): fallback is AgentModelRef => fallback !== null);
+  const chain = normalizeChain(model, fallbacks);
   return {
     presetId,
     enabled: entry.enabled,
-    model,
-    modelFallbacks: model ? modelFallbacks : null,
+    model: chain.primary,
+    modelFallbacks: chain.fallbacks,
     updatedAt: isColumnNumber(entry.updatedAt) ? entry.updatedAt : 0,
   };
 }

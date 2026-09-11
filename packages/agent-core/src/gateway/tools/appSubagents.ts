@@ -13,13 +13,17 @@
 // refused for editing (there is no row to edit, and a later build would
 // overwrite whatever was kept).
 
-import { builtinPresetsWithConfig } from "../../presetSpawn.js";
+import {
+  BUILTIN_SUBAGENT_PRESET_IDS,
+  resolveLegacyPresetId,
+} from "@kone/protocol/subagent-presets";
 import type {
   NativeSubagentConfig,
   SubagentPresetCreateInput,
   SubagentPresetPatch,
   SubagentPresetRecord,
 } from "../../rosterRecord.js";
+import { presetNameKey } from "../../rosterRecord.js";
 import type { EmitEvent } from "../../types.js";
 import {
   CreateSubagentPresetInputSchema,
@@ -38,7 +42,7 @@ import {
   type GatewayRecord,
 } from "../schemas.js";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
-import { modelRefPayload, squash } from "../helpers.js";
+import { modelRefPayload } from "../helpers.js";
 
 /** The slice of the store these tools use. Narrow on purpose: the same reason
  *  the spawn tools declare their own — a test can stand one up without a
@@ -55,6 +59,9 @@ export interface SubagentPresetStore {
   /** The native presets' user config — which shipped definitions are enabled,
    *  and the model chain pinned on each. */
   listNativeSubagentConfigs(): NativeSubagentConfig[];
+  /** Every preset an agent can name, stored first: the user's own rows, then
+   *  the configured natives no stored row shadows by name. */
+  listVisiblePresets(): SubagentPresetRecord[];
 }
 
 export interface AppSubagentToolOptions {
@@ -68,12 +75,12 @@ export interface AppSubagentToolOptions {
 /** A shipped preset, which has no row behind it. Editing one is refused rather
  *  than quietly forked: a fork under the same name would be spawned from in
  *  preference to the built-in and nobody asked for a second definition. */
-function isBuiltin(preset: SubagentPresetRecord, natives: SubagentPresetRecord[]): boolean {
-  return natives.some((builtin) => builtin.presetId === preset.presetId);
+function isBuiltin(preset: SubagentPresetRecord): boolean {
+  return BUILTIN_SUBAGENT_PRESET_IDS.includes(preset.presetId);
 }
 
 
-function presetPayload(preset: SubagentPresetRecord, natives: SubagentPresetRecord[]): GatewayRecord {
+function presetPayload(preset: SubagentPresetRecord): GatewayRecord {
   const fallbacks = preset.modelFallbacks ?? [];
   return {
     presetId: preset.presetId,
@@ -81,14 +88,14 @@ function presetPayload(preset: SubagentPresetRecord, natives: SubagentPresetReco
     instructions: preset.instructions,
     model: preset.model ? modelRefPayload(preset.model) : null,
     modelFallbacks: fallbacks.map(modelRefPayload),
-    builtIn: isBuiltin(preset, natives),
+    builtIn: isBuiltin(preset),
   };
 }
 
 /** One line of the listing. The instructions are summarised rather than quoted
  *  in full: the list is for choosing between presets, and four sets of standing
  *  orders at full length crowd out the choice. */
-function presetLine(preset: SubagentPresetRecord, natives: SubagentPresetRecord[]): string {
+function presetLine(preset: SubagentPresetRecord): string {
   const gist = preset.instructions?.trim().replace(/\s+/g, " ") ?? "";
   const shortened = gist.length > 140 ? `${gist.slice(0, 139)}…` : gist;
   const chain = preset.model
@@ -97,7 +104,7 @@ function presetLine(preset: SubagentPresetRecord, natives: SubagentPresetRecord[
         .join(" → ")
     : "inherits the caller";
   const bits = [
-    isBuiltin(preset, natives) ? "built-in, read-only" : "editable",
+    isBuiltin(preset) ? "built-in, read-only" : "editable",
     `model: ${chain}`,
   ];
   return `- **${preset.name}** (\`${preset.presetId}\`) [${bits.join(", ")}]${shortened ? `: ${shortened}` : ""}`;
@@ -107,35 +114,27 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
   const { store } = options;
   const emit = options.emit;
 
-  /** The shipped presets as this user has them configured — the enabled ones,
-   *  carrying the model chain pinned on each. A disabled native is absent from
-   *  every list and every resolve below, so an agent cannot name one any more
-   *  than it could name a preset kone never shipped. */
-  const configuredNatives = (): SubagentPresetRecord[] =>
-    builtinPresetsWithConfig(store.listNativeSubagentConfigs());
-
   /** Every preset an agent can name: the user's own first, then the shipped
    *  ones a user preset hasn't taken the name of. The same precedence
    *  `kone_spawn_worker_preset` resolves by, so what is listed here is what a
-   *  spawn from that name would actually use. */
-  const allPresets = (): SubagentPresetRecord[] => {
-    const stored = store.listSubagentPresets();
-    const taken = new Set(stored.map((preset) => squash(preset.name)));
-    return [
-      ...stored,
-      ...configuredNatives().filter((builtin) => !taken.has(squash(builtin.name))),
-    ];
-  };
+   *  spawn from that name would actually use. Read straight from the store so
+   *  the two tools can never disagree about which names collide. */
+  const allPresets = (): SubagentPresetRecord[] => store.listVisiblePresets();
 
   const resolve = (ref: string): SubagentPresetRecord | undefined => {
-    const clean = squash(ref.trim());
+    const clean = presetNameKey(ref.trim());
     if (!clean) return undefined;
     const presets = allPresets();
-    return (
-      presets.find((preset) => squash(preset.presetId) === clean) ??
-      presets.find((preset) => squash(preset.name) === clean) ??
-      presets.find((preset) => squash(preset.name).includes(clean))
-    );
+    const direct =
+      presets.find((preset) => presetNameKey(preset.presetId) === clean) ??
+      presets.find((preset) => presetNameKey(preset.name) === clean) ??
+      presets.find((preset) => presetNameKey(preset.name).includes(clean));
+    if (direct) return direct;
+    // A preset an earlier build shipped under another name (Explorer, Code
+    // Reviewer): the agent learned the old name, and the successor answers.
+    const legacy = resolveLegacyPresetId(ref);
+    if (!legacy) return undefined;
+    return presets.find((preset) => preset.presetId === legacy);
   };
 
   /** Resolve or refuse with the set spelled out, so the next attempt has real
@@ -156,7 +155,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
   /** Resolve to a preset that can actually be written to. */
   const requireEditable = (ref: string): SubagentPresetRecord => {
     const preset = requirePreset(ref);
-    if (isBuiltin(preset, configuredNatives())) {
+    if (isBuiltin(preset)) {
       throw new GatewayToolError(
         "permission_denied",
         `"${preset.name}" is one of the presets kone ships, so it has no stored definition to edit. Create a preset of your own with app_create_subagent_preset — a stored preset takes precedence over a shipped one of the same name.`,
@@ -188,7 +187,6 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     params: ListSubagentPresetsInput,
   ): Promise<GatewayToolResult> => {
     const query = params.query?.trim().toLowerCase();
-    const natives = configuredNatives();
     const presets = allPresets().filter((preset) => {
       if (!query) return true;
       return `${preset.name} ${preset.instructions ?? ""}`.toLowerCase().includes(query);
@@ -202,13 +200,13 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
             presets.length === 0
               ? "No preset sub-agents match. Use app_create_subagent_preset to define one."
               : `${presets.length} preset sub-agent${presets.length === 1 ? "" : "s"}, in the order a spawn resolves a name:\n` +
-                presets.map((preset) => presetLine(preset, natives)).join("\n") +
+                presets.map((preset) => presetLine(preset)).join("\n") +
                 "\nStart a worker from one with kone_spawn_worker_preset.",
         },
       ],
       structuredContent: {
         total: presets.length,
-        presets: presets.map((preset) => presetPayload(preset, natives)),
+        presets: presets.map((preset) => presetPayload(preset)),
       },
     };
   };
@@ -223,7 +221,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     // every spawn that names it, and neither is obviously the one meant.
     const clash = store
       .listSubagentPresets()
-      .find((preset) => squash(preset.name) === squash(name));
+      .find((preset) => presetNameKey(preset.name) === presetNameKey(name));
     if (clash) {
       throw new GatewayToolError(
         "invalid_input",
@@ -253,7 +251,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
           text: `${summary} Start a worker from it by name with kone_spawn_worker_preset.`,
         },
       ],
-      structuredContent: { ok: true, summary, preset: presetPayload(created, configuredNatives()) },
+      structuredContent: { ok: true, summary, preset: presetPayload(created) },
     };
   };
 
@@ -287,7 +285,8 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
         .listSubagentPresets()
         .find(
           (preset) =>
-            preset.presetId !== target.presetId && squash(preset.name) === squash(patch.name ?? ""),
+            preset.presetId !== target.presetId &&
+            presetNameKey(preset.name) === presetNameKey(patch.name ?? ""),
         );
       if (clash) {
         throw new GatewayToolError(
@@ -316,14 +315,13 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
     if (cleared.length > 0) parts.push(`cleared ${cleared.join(", ")}`);
     const summary = `Updated preset sub-agent "${updated.name}" (\`${updated.presetId}\`): ${parts.join("; ")}.`;
 
-    const natives = configuredNatives();
     return {
       content: [{ type: "text", text: summary }],
       structuredContent: {
         ok: true,
         summary,
-        preset: presetPayload(updated, natives),
-        previous: presetPayload(target, natives),
+        preset: presetPayload(updated),
+        previous: presetPayload(target),
       },
     };
   };
@@ -354,7 +352,7 @@ export function createAppSubagentTools(options: AppSubagentToolOptions): ToolEnt
           text: `${summary} A preset keeps no history, so this cannot be undone.`,
         },
       ],
-      structuredContent: { ok: true, summary, preset: presetPayload(target, configuredNatives()) },
+      structuredContent: { ok: true, summary, preset: presetPayload(target) },
     };
   };
 

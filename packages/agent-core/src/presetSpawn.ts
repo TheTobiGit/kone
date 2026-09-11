@@ -1,9 +1,4 @@
-import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
-import type {
-  AgentModelRef,
-  NativeSubagentConfig,
-  SubagentPresetRecord,
-} from "./ConversationStore.js";
+import type { AgentModelRef, SubagentPresetRecord } from "./rosterRecord.js";
 import type { ProviderKind, SpawnTarget } from "./types.js";
 import {
   modelChainOf,
@@ -86,68 +81,4 @@ export function planPresetSpawn(
   const target: SpawnTarget = { provider: plan.target.provider };
   if (plan.target.model) target.model = plan.target.model;
   return { ok: true, prompt, target, fallbacks: plan.fallbacks, selection: plan.selection };
-}
-
-// ── Built-in Swarm Presets ──────────────────────────────────────────────────
-
-// The shipped presets as full records, projected from the one shared list the
-// settings pane seeds from too. They carry no row of their own, so their
-// timestamps are zero and their order is the list's order; a stored preset of
-// the same name always shadows them.
-export const BUILTIN_SWARM_PRESETS: readonly SubagentPresetRecord[] =
-  BUILTIN_SUBAGENT_PRESETS.map((preset, index) => ({
-    presetId: preset.presetId,
-    name: preset.name,
-    instructions: preset.instructions,
-    model: null,
-    modelFallbacks: null,
-    sortOrder: index,
-    createdAt: 0,
-    updatedAt: 0,
-  }));
-
-/** The shipped presets' ids alone, in list order — the identity half of a
- *  native's config. Kept beside the records it derives from so a new native
- *  lands in both at once; a config for an id off this list is not a native's
- *  and is refused by the store. */
-export const BUILTIN_SWARM_PRESET_IDS: readonly string[] = BUILTIN_SUBAGENT_PRESETS.map(
-  (preset) => preset.presetId,
-);
-
-/** The native a reference names, WITH the user's config folded in — the
- *  enabled flag read by the spawn gate, and the pinned model chain a spawn
- *  from the native runs on. A disabled native reads as absent everywhere a
- *  spawn could name it, so turning one off removes it from the agent's menu
- *  without deleting the definition the toggle lives on. `configs` is keyed by
- *  preset id; a missing entry is the default (on, no model). */
-export function builtinPresetsWithConfig(
-  configs: readonly NativeSubagentConfig[],
-): SubagentPresetRecord[] {
-  const byId = new Map(configs.map((config) => [config.presetId, config]));
-  return BUILTIN_SWARM_PRESETS.filter((preset) => {
-    const config = byId.get(preset.presetId);
-    return config ? config.enabled : true;
-  }).map((preset) => {
-    const config = byId.get(preset.presetId);
-    return {
-      ...preset,
-      model: config?.model ?? null,
-      modelFallbacks: config?.modelFallbacks ?? null,
-    };
-  });
-}
-
-export function findBuiltinPreset(nameOrId: string): SubagentPresetRecord | null {
-  const query = nameOrId.trim().toLowerCase();
-  for (const p of BUILTIN_SWARM_PRESETS) {
-    if (
-      p.presetId.toLowerCase() === query ||
-      p.name.toLowerCase() === query ||
-      p.name.toLowerCase().replace(/\s+/g, "-") === query ||
-      p.presetId.toLowerCase().replace("builtin-", "") === query
-    ) {
-      return p;
-    }
-  }
-  return null;
 }
