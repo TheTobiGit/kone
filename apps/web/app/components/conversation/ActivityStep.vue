@@ -165,7 +165,6 @@ function toggle(): void {
       @click="toggle"
     >
       <span class="astep__icon">
-        <!-- Thinking -->
         <template v-if="isThinking">
           <TurnOrb
             v-if="streaming"
@@ -176,7 +175,6 @@ function toggle(): void {
           />
           <AiBrain01 v-else ref="iconApi" :size="14" :stroke-width="1.8" trigger="manual" />
         </template>
-        <!-- Tool -->
         <template v-else-if="tool && meta">
           <TurnOrb
             v-if="status === 'running'"
