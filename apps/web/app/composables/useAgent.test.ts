@@ -83,7 +83,7 @@ describe("useAgent durable turn queue", () => {
 
   test("queued rows read 1, 2 in arrival order", () => {
     const { session } = harness();
-    session.sessionState.value = "running"; // busy
+    session.sessionState.value = "running";
     session.blocks.value = [
       ...session.blocks.value,
       userBlock("b-a"),

@@ -260,12 +260,10 @@ async function onCopy(): Promise<void> {
 
     <!-- Body contents -->
     <div class="sdetail__body">
-      <!-- Command -->
       <template v-if="payload.kind === 'command'">
         <CodeBlock :code="payload.command" info="bash" />
       </template>
 
-      <!-- File edit -->
       <template v-else-if="payload.kind === 'file_edit'">
         <div class="sdetail__file-row">
           <FileChip :path="payload.file" />
@@ -299,7 +297,6 @@ async function onCopy(): Promise<void> {
         </div>
       </template>
 
-      <!-- Search -->
       <template v-else-if="payload.kind === 'search'">
         <div class="sdetail__search-grid">
           <div class="sdetail__search-item">
@@ -313,12 +310,10 @@ async function onCopy(): Promise<void> {
         </div>
       </template>
 
-      <!-- JSON -->
       <template v-else-if="payload.kind === 'json'">
         <CodeBlock :code="payload.formatted" info="json" />
       </template>
 
-      <!-- Diff -->
       <template v-else-if="payload.kind === 'diff'">
         <ToolDiffView :raw-diff="payload.content" />
       </template>

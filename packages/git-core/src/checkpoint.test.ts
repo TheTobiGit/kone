@@ -126,7 +126,6 @@ describe("git-core checkpoint", () => {
     writeFileSync(path.join(tempDir, "staged.txt"), "staged content\n");
     await git(tempDir, ["add", "staged.txt"]);
 
-    // Create a checkpoint
     const cp = await createCheckpoint(tempDir, { name: "index-test" });
 
     // Mutate the working tree

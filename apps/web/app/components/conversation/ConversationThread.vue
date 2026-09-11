@@ -1078,7 +1078,6 @@ watch(
             </button>
           </div>
 
-          <!-- Videos -->
           <div
             v-if="partitionAttachments(block.attachments).videos.length"
             class="att-videos"
