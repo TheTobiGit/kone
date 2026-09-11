@@ -11,6 +11,7 @@ import {
   removePreset,
   seedExamplePresets,
 } from "~/utils/presetStore";
+import { sendable } from "~/utils/agentStore";
 import type { NativeSubagentConfig, NativeSubagentConfigPatch } from "~/types/desktop";
 
 // The preset sub-agents surface's view of the store: the reusable definitions
@@ -76,7 +77,7 @@ export function useSubagentPresets() {
       );
       return;
     }
-    const stored = await bridge.nativeConfig({ presetId, patch });
+    const stored = await bridge.nativeConfig(sendable({ presetId, patch }));
     if (stored) {
       nativeConfigs.value = nativeConfigs.value.map((config) =>
         config.presetId === presetId ? stored : config,
