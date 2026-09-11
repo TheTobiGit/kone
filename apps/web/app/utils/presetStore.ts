@@ -13,6 +13,7 @@
  */
 import { useStorage } from "@vueuse/core";
 import { normalizeChain } from "@kone/protocol/subagent-presets";
+import { sendable } from "./agentStore";
 import type {
   SubagentPresetCreateInput,
   SubagentPresetPatch,
@@ -102,7 +103,7 @@ export async function insertPreset(
   await hydrating;
   const api = bridge();
   if (!api) return insertLocal(input);
-  const row = await api.create(input);
+  const row = await api.create(sendable(input));
   if (row) applyRow(row);
   return row;
 }
@@ -119,7 +120,7 @@ export async function patchPreset(
   const optimistic = patchLocal(presetId, patch);
   const api = bridge();
   if (!api) return optimistic;
-  const row = await api.update({ presetId, patch });
+  const row = await api.update(sendable({ presetId, patch }));
   if (row) applyRow(row);
   // Refused — the row is gone, or the edit left it nameless. Go back to what
   // the store has.

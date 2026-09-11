@@ -1,92 +1,62 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   Add01Icon,
   ArrowRight01Icon,
-  Delete02Icon,
   RoboticIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import PresetModelList, { type PresetModelChain } from "~/components/presets/PresetModelList.vue";
+import CreateSubagentModal from "~/components/presets/CreateSubagentModal.vue";
 import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
-import { BUILTIN_SUBAGENT_PRESETS, normalizeChain } from "@kone/protocol/subagent-presets";
+import SettingsSubagentDetail from "~/components/settings/SettingsSubagentDetail.vue";
+import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
+import { BUILTIN_SUBAGENT_PRESETS } from "@kone/protocol/subagent-presets";
 import { useSubagentPresets } from "~/composables/useSubagentPresets";
 import { useSound } from "~/composables/useSound";
+import { formatModelChain } from "~/utils/detailFormat";
+import { nativeSubagentIcon } from "~/utils/subagentIcons";
 import type { AgentModelRef, SubagentPresetRecord } from "~/types/desktop";
-
-// §3.4's preset sub-agents surface: the reusable definitions an agent cuts a
-// spawn from. The shipped five sit at the top as natives — on or off, a model
-// chain to pin, never edited or deleted — and the user's own presets follow as
-// cards opening into a light editor. No face, no role: a preset is lighter than
-// an agent on purpose, just enough to name a repeatable job and say how it
-// runs.
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ back: [] }>();
 
-const { presets, nativeConfigs, configureNative, createPreset, updatePreset, deletePreset } =
-  useSubagentPresets();
+const { presets, nativeConfigs, configureNative } = useSubagentPresets();
 const { cue } = useSound();
 
-const openId = ref<string | null>(null);
-const isCreating = ref(false);
-const isDeleting = ref(false);
+// One overlay at a time: the list, the create modal, or one preset's detail.
+// A union rather than two booleans, so the modal and the detail can't stack.
+type Overlay = { kind: "none" } | { kind: "create" } | { kind: "preset"; id: string };
+const overlay = ref<Overlay>({ kind: "none" });
 
-const current = computed<SubagentPresetRecord | undefined>(() =>
-  presets.value.find((p) => p.presetId === openId.value),
-);
-
-// A blank draft the create form binds to. Kept apart from the stored rows so
-// typing a new preset never touches one until it's actually created.
-const draft = reactive<{
-  name: string;
-  instructions: string;
-  model: AgentModelRef | null;
-  modelFallbacks: AgentModelRef[];
-}>({
-  name: "",
-  instructions: "",
-  model: null,
-  modelFallbacks: [],
-});
-
-// Closing the drawer returns to the list, so reopening it doesn't drop you back
-// inside whichever preset or flow you last looked at.
 watch(
   () => props.open,
   (open) => {
-    if (!open) closeToList();
+    if (!open) {
+      overlay.value = { kind: "none" };
+    }
   },
 );
 
-function closeToList() {
-  openId.value = null;
-  isCreating.value = false;
-  isDeleting.value = false;
-}
-
 function openPreset(id: string) {
-  openId.value = id;
-  isDeleting.value = false;
+  overlay.value = { kind: "preset", id };
   cue("press");
 }
 
 function startCreate() {
-  draft.name = "";
-  draft.instructions = "";
-  draft.model = null;
-  draft.modelFallbacks = [];
-  isCreating.value = true;
+  overlay.value = { kind: "create" };
   cue("open");
 }
 
-// ── the natives ──────────────────────────────────────────────────────────────
-// The shipped definitions, joined with their config for the pane's top
-// section. The definitions come from the same shared list the spawn gateway
-// folds in from, so what is drawn here is what an agent can invoke; the config
-// half is the store's, so a toggle reaches the next spawn without a restart.
+function closeOverlay() {
+  overlay.value = { kind: "none" };
+}
 
-/** The native section's one row shape: the definition and its config as one. */
+function onCreated(created: SubagentPresetRecord) {
+  overlay.value = { kind: "preset", id: created.presetId };
+}
+
+// ── Native Subagents ────────────────────────────────────────────────────────
 const natives = computed(() =>
   BUILTIN_SUBAGENT_PRESETS.map((preset) => {
     const config = nativeConfigs.value.find((c) => c.presetId === preset.presetId);
@@ -101,220 +71,39 @@ const natives = computed(() =>
   }),
 );
 
-/** The natives whose detail editor is open, if any; one at a time. */
-const openNativeId = ref<string | null>(null);
-const openNative = computed(() => natives.value.find((n) => n.presetId === openNativeId.value));
-
-/** Flip a native's toggle. The card's checkbox carries the state, so the
- *  label click opens the detail instead of toggling. */
 function toggleNative(presetId: string, enabled: boolean) {
-  cue("press");
+  cue("toggle");
   void configureNative(presetId, { enabled });
 }
 
-/** One preset's model chain, in the card summary's one-line form. Natives and
- *  customs share it — both are a nullable primary plus an ordered tail. */
 function chainSummary(
   model: AgentModelRef | null,
   fallbacks: readonly AgentModelRef[] | null | undefined,
 ): string {
-  if (!model) return "Inherits the caller";
-  const head = model.label ?? model.model;
-  const tail = (fallbacks ?? []).map((f) => f.label ?? f.model);
-  return tail.length > 0 ? `${head} → ${tail.join(" → ")}` : head;
+  return formatModelChain(model, fallbacks) ?? "Inherits the caller";
 }
 
-/** A short snippet of standing instructions for the card body. */
 function snippetText(instructions: string | null | undefined, empty: string): string {
   const first = instructions?.split(/\n{2,}/)[0]?.trim();
   return first || empty;
 }
-
-async function submitDraft() {
-  const name = draft.name.trim();
-  if (!name) return;
-  const chain = normalizeChain(draft.model, draft.modelFallbacks);
-  const row = await createPreset({
-    name,
-    instructions: draft.instructions.trim() || null,
-    model: chain.primary,
-    modelFallbacks: chain.fallbacks,
-  });
-  if (row) {
-    isCreating.value = false;
-    openId.value = row.presetId;
-  }
-}
-
-// Edits to an open preset persist as they happen — no separate save. The name
-// is the one field that can't be blanked, so an empty value is simply not sent;
-// the input still shows it, and the stored name stands until a real one lands.
-function readTextValue(e: Event): string {
-  // SAFETY: bound to a single text field each, so the target is always that field's own element.
-  return (e.target as HTMLInputElement | HTMLTextAreaElement).value;
-}
-function readChecked(e: Event): boolean {
-  // SAFETY: bound to the native's own checkbox, so the target is always that input.
-  return (e.target as HTMLInputElement).checked;
-}
-function setName(value: string) {
-  const preset = current.value;
-  if (!preset) return;
-  const name = value.trim();
-  if (!name) return;
-  void updatePreset(preset.presetId, { name });
-}
-function setInstructions(value: string) {
-  const preset = current.value;
-  if (preset) void updatePreset(preset.presetId, { instructions: value.trim() || null });
-}
-
-// The picker emits one chain event per pick, already paired — settling it
-// against the store is a single write, no queue.
-function onPresetChain(chain: PresetModelChain) {
-  const preset = current.value;
-  if (!preset) return;
-  const settled = normalizeChain(chain.model, chain.fallbacks);
-  void updatePreset(preset.presetId, {
-    model: settled.primary,
-    modelFallbacks: settled.fallbacks,
-  });
-}
-
-function onNativeChain(presetId: string, chain: PresetModelChain) {
-  const settled = normalizeChain(chain.model, chain.fallbacks);
-  void configureNative(presetId, { model: settled.primary, modelFallbacks: settled.fallbacks });
-}
-
-function onDraftChain(chain: PresetModelChain) {
-  draft.model = chain.model;
-  draft.modelFallbacks = chain.fallbacks;
-}
-
-async function handleDelete() {
-  const preset = current.value;
-  if (!preset) return;
-  const ok = await deletePreset(preset.presetId);
-  if (ok) {
-    cue("press");
-    closeToList();
-  }
-}
 </script>
 
 <template>
-  <!-- Detail / create editor -->
-  <SettingsPageShell
-    v-if="current || isCreating"
+  <CreateSubagentModal
+    v-if="overlay.kind === 'create'"
+    @close="closeOverlay"
+    @created="onCreated"
+  />
+
+  <SettingsSubagentDetail
+    v-else-if="overlay.kind === 'preset'"
     :open="open"
-    :breadcrumb="`Ecosystem / Sub-agents / ${isCreating ? 'New' : (current?.name ?? '')}`"
-    :breadcrumb-icon="RoboticIcon"
-    :label="isCreating ? 'New sub-agent' : (current?.name ?? '')"
-    @back="isCreating ? (isCreating = false) : (openId = null)"
-  >
-    <template v-if="current && !isCreating" #actions>
-      <button
-        type="button"
-        class="sa__action-btn sa__action-btn--danger"
-        title="Delete this preset"
-        :tabindex="open ? 0 : -1"
-        @click="isDeleting ? handleDelete() : (isDeleting = true)"
-      >
-        <HugeiconsIcon :icon="Delete02Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
-        <span>{{ isDeleting ? "Confirm delete" : "Delete" }}</span>
-      </button>
-    </template>
+    :preset-id="overlay.id"
+    @back="closeOverlay"
+    @switched="(id) => (overlay = { kind: 'preset', id })"
+  />
 
-    <div class="sa__editor">
-      <label class="sa__field">
-        <span class="sa__field-label">Name</span>
-        <input
-          v-if="isCreating"
-          v-model="draft.name"
-          type="text"
-          class="sa__input"
-          placeholder="e.g. Explorer"
-          :tabindex="open ? 0 : -1"
-          @keydown.enter.prevent="submitDraft"
-        />
-        <input
-          v-else
-          :value="current?.name"
-          type="text"
-          class="sa__input"
-          :tabindex="open ? 0 : -1"
-          @input="setName(readTextValue($event))"
-        />
-      </label>
-
-      <label class="sa__field">
-        <span class="sa__field-label">Instructions</span>
-        <span class="sa__field-hint">
-          The standing brief the sub-agent wakes up to, laid ahead of the specific task on each
-          spawn.
-        </span>
-        <textarea
-          v-if="isCreating"
-          v-model="draft.instructions"
-          class="sa__textarea"
-          rows="5"
-          placeholder="What this sub-agent is for, and how it should work."
-          :tabindex="open ? 0 : -1"
-        />
-        <textarea
-          v-else
-          :value="current?.instructions ?? ''"
-          class="sa__textarea"
-          rows="5"
-          :tabindex="open ? 0 : -1"
-          @input="setInstructions(readTextValue($event))"
-        />
-      </label>
-
-      <section class="sa__field" aria-label="Model">
-        <PresetModelList
-          v-if="isCreating"
-          :model="draft.model"
-          :fallbacks="draft.modelFallbacks"
-          @update:chain="onDraftChain"
-        />
-        <PresetModelList
-          v-else-if="current"
-          :model="current.model"
-          :fallbacks="current.modelFallbacks ?? []"
-          @update:chain="onPresetChain"
-        />
-      </section>
-
-      <div v-if="isCreating" class="sa__create-actions">
-        <button
-          type="button"
-          class="sa__cancel-btn"
-          :tabindex="open ? 0 : -1"
-          @click="isCreating = false"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          class="sa__submit-btn"
-          :disabled="!draft.name.trim()"
-          :tabindex="open ? 0 : -1"
-          @click="submitDraft"
-        >
-          Create sub-agent
-        </button>
-      </div>
-    </div>
-
-    <template #foot>
-      A preset is a reusable sub-agent an agent invokes when it needs one — a name, a standing
-      brief, and which model runs it. It isn't a member of the roster and keeps no history of its
-      own; each spawn copies its brief and resolves its model afresh.
-    </template>
-  </SettingsPageShell>
-
-  <!-- List -->
   <SettingsPageShell
     v-else
     :open="open"
@@ -330,115 +119,123 @@ async function handleDelete() {
         :tabindex="open ? 0 : -1"
         @click="startCreate"
       >
-        <HugeiconsIcon :icon="Add01Icon" :size="13" :stroke-width="2" aria-hidden="true" />
+        <HugeiconsIcon :icon="Add01Icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
         <span>New sub-agent</span>
       </button>
     </template>
 
     <div class="sa">
-      <!-- The natives: the shipped five, one row each, toggle-first. -->
-      <section class="sa__natives" aria-label="Native sub-agents">
-        <h3 class="sa__section-title">Native sub-agents</h3>
-        <p class="sa__section-note">
-          The sub-agents kone ships, ready for any agent to invoke. Turn one off and it leaves the
-          spawn menu; pin a model on one and every spawn from it runs there.
-        </p>
-        <div
-          v-for="native in natives"
-          :key="native.presetId"
-          class="sa__native"
-          :class="{ 'sa__native--off': !native.enabled }"
-        >
-          <label class="sa__native-toggle" :for="`native-${native.presetId}`">
-            <input
-              :id="`native-${native.presetId}`"
-              type="checkbox"
-              class="sa__native-check"
-              :checked="native.enabled"
-              :tabindex="open ? 0 : -1"
-              @change="toggleNative(native.presetId, readChecked($event))"
-            />
-            <span class="sa__native-name">{{ native.name }}</span>
-            <span class="sa__native-model">{{ chainSummary(native.model, native.modelFallbacks) }}</span>
-          </label>
-          <button
-            type="button"
-            class="sa__native-open"
-            :tabindex="open ? 0 : -1"
-            :aria-label="`Configure ${native.name}`"
-            @click.stop="openNativeId = openNativeId === native.presetId ? null : native.presetId"
-          >
-            <HugeiconsIcon :icon="ArrowRight01Icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-          </button>
+      <!-- Section 1: Built-in native sub-agents -->
+      <section class="sa__section" aria-label="Built-in">
+        <header class="sa__sectionhead">
+          <HugeiconsIcon
+            :icon="RoboticIcon"
+            :size="12"
+            :stroke-width="1.8"
+            aria-hidden="true"
+            class="sa__sectionglyph"
+          />
+          <span class="sa__eyebrow">Built-in</span>
+          <span class="sa__count">{{ natives.length }}</span>
+        </header>
 
-          <div v-if="openNativeId === native.presetId" class="sa__native-detail">
-            <p class="sa__native-snippet">{{ snippetText(native.instructions, "No standing instructions.") }}</p>
-            <PresetModelList
-              :model="native.model"
-              :fallbacks="native.modelFallbacks"
-              @update:chain="(chain) => onNativeChain(native.presetId, chain)"
-            />
-          </div>
+        <div class="sa__grid" role="list" aria-label="Built-in">
+          <article
+            v-for="native in natives"
+            :key="native.presetId"
+            role="listitem"
+            class="sa__card"
+            :class="{ 'sa__card--off': !native.enabled }"
+            :tabindex="open ? 0 : -1"
+            :aria-label="native.name"
+            @click="openPreset(native.presetId)"
+            @keydown.enter.prevent="openPreset(native.presetId)"
+            @keydown.space.prevent="openPreset(native.presetId)"
+          >
+            <div class="sa__card-head">
+              <span class="sa__glyph" aria-hidden="true">
+                <HugeiconsIcon
+                  :icon="nativeSubagentIcon(native.presetId)"
+                  :size="18"
+                  :stroke-width="1.7"
+                />
+              </span>
+              <div class="sa__ident">
+                <h4 class="sa__name">{{ native.name }}</h4>
+                <p class="sa__model">{{ chainSummary(native.model, native.modelFallbacks) }}</p>
+              </div>
+
+              <div class="sa__head-actions" @click.stop>
+                <ToggleSwitch
+                  :model-value="native.enabled"
+                  :aria-label="`Enable ${native.name}`"
+                  @update:model-value="toggleNative(native.presetId, $event)"
+                />
+              </div>
+            </div>
+
+            <p class="sa__snippet">
+              {{ snippetText(native.instructions, "No standing instructions.") }}
+            </p>
+          </article>
         </div>
       </section>
 
-      <div class="sa__grid" role="list" aria-label="Preset sub-agents">
-        <article
-          v-for="p in presets"
-          :key="p.presetId"
-          role="listitem"
-          class="sa__card"
-          :tabindex="open ? 0 : -1"
-          :aria-label="p.name"
-          @click="openPreset(p.presetId)"
-          @keydown.enter.prevent="openPreset(p.presetId)"
-          @keydown.space.prevent="openPreset(p.presetId)"
-        >
-          <div class="sa__card-head">
-            <span class="sa__glyph" aria-hidden="true">
-              <HugeiconsIcon :icon="RoboticIcon" :size="18" :stroke-width="1.7" />
-            </span>
-            <div class="sa__ident">
-              <h4 class="sa__name">{{ p.name }}</h4>
-              <p class="sa__model">{{ chainSummary(p.model, p.modelFallbacks) }}</p>
-            </div>
-            <span class="sa__open-cue" aria-hidden="true">
-              <HugeiconsIcon :icon="ArrowRight01Icon" :size="15" :stroke-width="1.8" />
-            </span>
-          </div>
+      <!-- Section 2: Custom presets -->
+      <section class="sa__section" aria-label="Custom">
+        <header class="sa__sectionhead">
+          <HugeiconsIcon
+            :icon="SparklesIcon"
+            :size="12"
+            :stroke-width="1.8"
+            aria-hidden="true"
+            class="sa__sectionglyph"
+          />
+          <span class="sa__eyebrow">Custom</span>
+          <span class="sa__count">{{ presets.length }}</span>
+        </header>
 
-          <p class="sa__snippet">{{ snippetText(p.instructions, "No standing instructions yet.") }}</p>
-        </article>
+        <div v-if="!presets.length" class="sa__empty">
+          <p>No custom sub-agents yet.</p>
+        </div>
 
-        <button
-          type="button"
-          class="sa__card sa__card--create"
-          role="listitem"
-          :tabindex="open ? 0 : -1"
-          aria-label="Create a new sub-agent"
-          @click="startCreate"
-        >
-          <div class="sa__card-head">
-            <span class="sa__create-icon-wrap" aria-hidden="true">
-              <HugeiconsIcon :icon="Add01Icon" :size="20" :stroke-width="2" />
-            </span>
-            <div class="sa__ident">
-              <h4 class="sa__name">New sub-agent</h4>
-              <p class="sa__model">Reusable preset</p>
+        <div v-else class="sa__grid" role="list" aria-label="Custom">
+          <article
+            v-for="p in presets"
+            :key="p.presetId"
+            role="listitem"
+            class="sa__card"
+            :tabindex="open ? 0 : -1"
+            :aria-label="p.name"
+            @click="openPreset(p.presetId)"
+            @keydown.enter.prevent="openPreset(p.presetId)"
+            @keydown.space.prevent="openPreset(p.presetId)"
+          >
+            <div class="sa__card-head">
+              <span class="sa__glyph" aria-hidden="true">
+                <HugeiconsIcon :icon="RoboticIcon" :size="18" :stroke-width="1.7" />
+              </span>
+              <div class="sa__ident">
+                <h4 class="sa__name">{{ p.name }}</h4>
+                <p class="sa__model">{{ chainSummary(p.model, p.modelFallbacks) }}</p>
+              </div>
+              <span class="sa__open-cue" aria-hidden="true">
+                <HugeiconsIcon :icon="ArrowRight01Icon" :size="15" :stroke-width="1.8" />
+              </span>
             </div>
-          </div>
-          <p class="sa__snippet sa__snippet--create">
-            Name a repeatable job, write its standing brief, and rank the models it should run on.
-          </p>
-        </button>
-      </div>
+
+            <p class="sa__snippet">
+              {{ snippetText(p.instructions, "No standing instructions yet.") }}
+            </p>
+          </article>
+        </div>
+      </section>
     </div>
 
     <template #foot>
-      Sub-agents are reusable definitions any agent can invoke without setting one up first. The
-      five kone ships can be turned off or pinned to a model; your own carry a name, a standing
-      brief, and an ordered model preference, and the runtime takes the first model that can run
-      and falls to the next when it can't.
+      A sub-agent is a lightweight, focused worker spawned by a lead agent to execute an isolated
+      task. Built-in presets provide tested patterns for exploration, code review, security, research,
+      and execution; custom presets allow tailoring instructions and pinning model preferences.
     </template>
   </SettingsPageShell>
 </template>
@@ -448,162 +245,71 @@ async function handleDelete() {
   --sa-ease: cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 32px;
   max-width: 56rem;
   padding-block: 4px 3rem;
   container-type: inline-size;
 }
 
-/* ── masthead action buttons ──────────────────────────────────────────────── */
+/* ── masthead action button ───────────────────────────────────────────────── */
 .sa__new-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 27px;
   padding-inline: 11px;
   border-radius: 8px;
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--accent-ink);
-  background-color: var(--accent);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    opacity 140ms ease,
-    filter 140ms ease;
-}
-.sa__new-action-btn:hover {
-  filter: brightness(1.05);
-}
-.sa__new-action-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
-}
-
-.sa__action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 27px;
-  padding-inline: 10px;
-  border-radius: 8px;
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--muted);
+  font-size: 11px;
+  color: var(--ink-soft);
   cursor: pointer;
   white-space: nowrap;
   transition:
     background-color 140ms ease,
     color 140ms ease;
 }
-.sa__action-btn:hover {
+.sa__new-action-btn:hover {
   background-color: var(--hover);
   color: var(--ink);
 }
-.sa__action-btn--danger:hover {
-  background-color: color-mix(in srgb, #e05252 14%, transparent);
-  color: #e05252;
+.sa__new-action-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
 
-/* ── natives ───────────────────────────────────────────────────────────────── */
-.sa__natives {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-bottom: 6px;
-}
-.sa__section-title {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-}
-.sa__section-note {
-  margin: 0 0 6px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--muted);
-  max-width: 64ch;
-  text-wrap: pretty;
-}
-.sa__native {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background-color: color-mix(in srgb, var(--ink) 3%, transparent);
-  transition: background-color 160ms ease;
-}
-.sa__native:hover {
-  background-color: var(--hover);
-}
-.sa__native--off {
-  opacity: 0.62;
-}
-.sa__native-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1 1 auto;
-  min-width: 0;
-  cursor: default;
-}
-.sa__native-check {
-  width: 15px;
-  height: 15px;
-  flex-shrink: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-.sa__native-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink);
-  white-space: nowrap;
-}
-.sa__native-model {
-  font-size: 12px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sa__native-open {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    color 140ms ease,
-    background-color 140ms ease,
-    transform 200ms var(--sa-ease);
-}
-.sa__native-open:hover {
-  color: var(--ink);
-  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
-}
-.sa__native-detail {
+/* ── sections ──────────────────────────────────────────────────────────────── */
+.sa__section {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  flex-basis: 100%;
-  width: 100%;
-  padding: 4px 2px 8px;
 }
-.sa__native-snippet {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--ink-soft);
-  max-width: 70ch;
-  text-wrap: pretty;
+
+.sa__sectionhead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 4px;
+}
+
+.sa__sectionglyph {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.sa__eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.sa__count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  opacity: 0.6;
 }
 
 /* ── cards grid ───────────────────────────────────────────────────────────── */
@@ -633,7 +339,8 @@ async function handleDelete() {
   transition:
     background-color 200ms var(--sa-ease),
     transform 200ms var(--sa-ease),
-    border-color 200ms var(--sa-ease);
+    border-color 200ms var(--sa-ease),
+    opacity 200ms var(--sa-ease);
 }
 .sa__card:hover {
   background-color: var(--hover);
@@ -642,15 +349,17 @@ async function handleDelete() {
 .sa__card:focus-visible {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 32%, transparent);
 }
-
-.sa__card--create {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--ink) 12%, transparent);
-  background-color: color-mix(in srgb, var(--ink) 1.5%, transparent);
+.sa__card--off {
+  opacity: 0.58;
 }
-.sa__card--create:hover {
-  border-color: color-mix(in srgb, var(--ink) 28%, transparent);
-  background-color: color-mix(in srgb, var(--ink) 4%, transparent);
+
+.sa__empty {
+  padding: 18px 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.sa__empty p {
+  margin: 0;
 }
 
 .sa__card-head {
@@ -665,8 +374,8 @@ async function handleDelete() {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border-radius: 12px;
   background-color: color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--ink-soft);
@@ -677,27 +386,6 @@ async function handleDelete() {
 .sa__card:hover .sa__glyph {
   color: var(--accent);
   background-color: color-mix(in oklab, var(--accent) 14%, transparent);
-}
-
-.sa__create-icon-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background-color: color-mix(in srgb, var(--ink) 6%, transparent);
-  color: var(--muted);
-  transition:
-    background-color 200ms ease,
-    color 200ms ease,
-    transform 200ms var(--sa-ease);
-}
-.sa__card--create:hover .sa__create-icon-wrap {
-  background-color: color-mix(in oklab, var(--accent) 15%, transparent);
-  color: var(--accent);
-  transform: scale(1.05);
 }
 
 .sa__ident {
@@ -726,6 +414,12 @@ async function handleDelete() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sa__head-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .sa__open-cue {
@@ -759,110 +453,11 @@ async function handleDelete() {
   text-wrap: pretty;
   min-height: 2.9em;
 }
-.sa__snippet--create {
-  color: var(--muted);
-}
-
-/* ── editor ───────────────────────────────────────────────────────────────── */
-.sa__editor {
-  display: flex;
-  flex-direction: column;
-  gap: 26px;
-  max-width: 48rem;
-  padding-bottom: 2.5rem;
-}
-.sa__field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.sa__field-label {
-  font-size: 13px;
-  color: var(--ink);
-}
-.sa__field-hint {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--muted);
-  max-width: 60ch;
-  text-wrap: pretty;
-}
-.sa__input,
-.sa__textarea {
-  width: 100%;
-  font: inherit;
-  font-size: 13.5px;
-  line-height: 1.6;
-  color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 3.5%, transparent);
-  border: 0;
-  border-radius: 12px;
-  padding: 11px 13px;
-  outline: none;
-  transition: box-shadow 0.16s ease, background-color 0.16s ease;
-}
-.sa__textarea {
-  resize: vertical;
-  min-height: 7rem;
-}
-.sa__input::placeholder,
-.sa__textarea::placeholder {
-  color: var(--faint);
-}
-.sa__input:focus,
-.sa__textarea:focus {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
-}
-
-.sa__create-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.sa__cancel-btn {
-  height: 32px;
-  padding-inline: 14px;
-  border-radius: 9px;
-  font-size: 12.5px;
-  color: var(--muted);
-  background: transparent;
-  cursor: pointer;
-  transition:
-    background-color 140ms ease,
-    color 140ms ease;
-}
-.sa__cancel-btn:hover {
-  background: var(--hover);
-  color: var(--ink);
-}
-.sa__submit-btn {
-  height: 32px;
-  padding-inline: 16px;
-  border-radius: 9px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--accent-ink);
-  background: var(--accent);
-  cursor: pointer;
-  transition:
-    filter 140ms ease,
-    opacity 140ms ease;
-}
-.sa__submit-btn:hover:not(:disabled) {
-  filter: brightness(1.05);
-}
-.sa__submit-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
 
 @media (prefers-reduced-motion: reduce) {
   .sa__card,
   .sa__glyph,
-  .sa__open-cue,
-  .sa__create-icon-wrap {
+  .sa__open-cue {
     transition: none;
     transform: none;
   }
