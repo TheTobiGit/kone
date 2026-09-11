@@ -66,6 +66,17 @@ export const MAX_MEASURE = 80;
  *  usable rather than failing the whole push. */
 export const MAX_TYPOGRAPHY_FAMILY_LENGTH = 240;
 
+/** Short display labels naming what each family's shipped default is, for tool
+ *  answers that say what "Default" means. The renderer holds the full stacks
+ *  it paints with; these live beside the prefs so a stack rename updates the
+ *  text that quotes it instead of orphaning it. */
+export const TYPOGRAPHY_FAMILY_FALLBACK_LABELS = {
+  sans: '"Geist", system-ui, sans-serif',
+  serif: '"Fraunces", ui-serif, serif',
+  mono: 'ui-monospace, "SF Mono", monospace',
+  composer: "inherits Interface font",
+} satisfies Record<TypographyFamilyKind, string>;
+
 function clampNumber(value: number, minimum: number, maximum: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(maximum, Math.max(minimum, value));
@@ -119,7 +130,7 @@ function isCandidate(value: TypographyStoredCandidate | null | undefined): value
   return value instanceof Object;
 }
 
-function readFamily(value: string | undefined): string {
+export function readFamily(value: string | undefined): string {
   if (!value) return "";
   const trimmed = value.trim();
   if (trimmed.length === 0) return "";
