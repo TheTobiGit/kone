@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { AST_MAX_MATCHES } from "../../ast/engine.js";
+import { AST_MAX_MATCHES } from "../../ast/format.js";
 import { createRegistry } from "../registry.js";
 import type { GatewayToolContext, GatewayValue } from "../schemas.js";
 import {
