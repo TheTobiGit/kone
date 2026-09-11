@@ -7,6 +7,7 @@
 // utf-16 offsets as the protocol sends them.
 
 import type { LspDiagnosticSeverity } from "./types.js";
+import { asInt } from "./json.js";
 
 /** How many references keep full context before the rest collapse. */
 export const DEFAULT_MAX_REFERENCES_WITH_CONTEXT = 10;
@@ -52,15 +53,17 @@ export interface BudgetDiagnostic {
 function resolveMaxWithContext(options: FormatReferencesOptions | undefined): number {
   const raw = options?.maxWithContext;
   if (raw === undefined) return DEFAULT_MAX_REFERENCES_WITH_CONTEXT;
-  if (!Number.isInteger(raw) || raw < 0) return DEFAULT_MAX_REFERENCES_WITH_CONTEXT;
-  return raw;
+  const parsed = asInt(raw);
+  if (parsed === null || parsed < 0) return DEFAULT_MAX_REFERENCES_WITH_CONTEXT;
+  return parsed;
 }
 
 function resolveMaxChars(options: FormatBudgetOptions | undefined): number {
   const raw = options?.maxChars;
   if (raw === undefined) return DEFAULT_BUDGET_CHARS;
-  if (!Number.isInteger(raw) || raw < 1) return DEFAULT_BUDGET_CHARS;
-  return raw;
+  const parsed = asInt(raw);
+  if (parsed === null || parsed < 1) return DEFAULT_BUDGET_CHARS;
+  return parsed;
 }
 
 /** Hard cut at the ceiling with the tail marker; text already inside the

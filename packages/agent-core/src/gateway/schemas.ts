@@ -6,7 +6,21 @@
 
 import { z } from "zod";
 
+import {
+  DEFAULT_TYPOGRAPHY_PREFS,
+  MAX_CODE_FONT_SIZE,
+  MAX_COMPOSER_FONT_SIZE,
+  MAX_INTERFACE_FONT_SIZE,
+  MAX_LINE_HEIGHT_BODY,
+  MAX_MEASURE,
+  MIN_CODE_FONT_SIZE,
+  MIN_COMPOSER_FONT_SIZE,
+  MIN_INTERFACE_FONT_SIZE,
+  MIN_LINE_HEIGHT_BODY,
+  MIN_MEASURE,
+} from "@kone/protocol/typography";
 import type { ProviderKind } from "../types.js";
+import { LSP_ACTIONS } from "../lsp/types.js";
 
 /** One decoded gateway payload — validated tool arguments, structured tool
  *  results, and error detail are all plain JSON data, so consumers branch on
@@ -1350,34 +1364,44 @@ export const SetTypographyInputSchema = z
       .describe("Custom font family for composer input text (e.g. 'Inter', or 'default' / '' to inherit the interface font)."),
     sizeInterface: z
       .number()
-      .min(12)
-      .max(20)
+      .min(MIN_INTERFACE_FONT_SIZE)
+      .max(MAX_INTERFACE_FONT_SIZE)
       .optional()
-      .describe("Interface root font size in pixels (12–20, default 16)."),
+      .describe(
+        `Interface root font size in pixels (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}).`,
+      ),
     sizeComposer: z
       .number()
-      .min(12)
-      .max(20)
+      .min(MIN_COMPOSER_FONT_SIZE)
+      .max(MAX_COMPOSER_FONT_SIZE)
       .optional()
-      .describe("Composer input font size in pixels (12–20, default 14)."),
+      .describe(
+        `Composer input font size in pixels (${MIN_COMPOSER_FONT_SIZE}–${MAX_COMPOSER_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeComposer}).`,
+      ),
     sizeCode: z
       .number()
-      .min(10)
-      .max(18)
+      .min(MIN_CODE_FONT_SIZE)
+      .max(MAX_CODE_FONT_SIZE)
       .optional()
-      .describe("Code / editor font size in pixels (10–18, default 12)."),
+      .describe(
+        `Code / editor font size in pixels (${MIN_CODE_FONT_SIZE}–${MAX_CODE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeCode}).`,
+      ),
     lineHeightBody: z
       .number()
-      .min(1.35)
-      .max(1.8)
+      .min(MIN_LINE_HEIGHT_BODY)
+      .max(MAX_LINE_HEIGHT_BODY)
       .optional()
-      .describe("Body text line height / leading multiplier (1.35–1.80, default 1.55)."),
+      .describe(
+        `Body text line height / leading multiplier (${MIN_LINE_HEIGHT_BODY}–${MAX_LINE_HEIGHT_BODY}, default ${DEFAULT_TYPOGRAPHY_PREFS.lineHeightBody}).`,
+      ),
     measure: z
       .number()
-      .min(55)
-      .max(80)
+      .min(MIN_MEASURE)
+      .max(MAX_MEASURE)
       .optional()
-      .describe("Reading column width / measure in characters (55–80ch, default 68ch)."),
+      .describe(
+        `Reading column width / measure in characters (${MIN_MEASURE}–${MAX_MEASURE}ch, default ${DEFAULT_TYPOGRAPHY_PREFS.measure}ch).`,
+      ),
     smoothing: z
       .boolean()
       .optional()
@@ -1428,23 +1452,23 @@ export const SET_TYPOGRAPHY_JSON_SCHEMA = {
     },
     sizeInterface: {
       type: "number",
-      description: "Interface root font size in pixels (12–20, default 16).",
+      description: `Interface root font size in pixels (${MIN_INTERFACE_FONT_SIZE}–${MAX_INTERFACE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeInterface}).`,
     },
     sizeComposer: {
       type: "number",
-      description: "Composer input font size in pixels (12–20, default 14).",
+      description: `Composer input font size in pixels (${MIN_COMPOSER_FONT_SIZE}–${MAX_COMPOSER_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeComposer}).`,
     },
     sizeCode: {
       type: "number",
-      description: "Code / editor font size in pixels (10–18, default 12).",
+      description: `Code / editor font size in pixels (${MIN_CODE_FONT_SIZE}–${MAX_CODE_FONT_SIZE}, default ${DEFAULT_TYPOGRAPHY_PREFS.sizeCode}).`,
     },
     lineHeightBody: {
       type: "number",
-      description: "Body text line height / leading multiplier (1.35–1.80, default 1.55).",
+      description: `Body text line height / leading multiplier (${MIN_LINE_HEIGHT_BODY}–${MAX_LINE_HEIGHT_BODY}, default ${DEFAULT_TYPOGRAPHY_PREFS.lineHeightBody}).`,
     },
     measure: {
       type: "number",
-      description: "Reading column width / measure in characters (55–80ch, default 68ch).",
+      description: `Reading column width / measure in characters (${MIN_MEASURE}–${MAX_MEASURE}ch, default ${DEFAULT_TYPOGRAPHY_PREFS.measure}ch).`,
     },
     smoothing: {
       type: "boolean",
@@ -1994,14 +2018,14 @@ export type UpdateAppProviderInput = z.infer<typeof UpdateAppProviderInputSchema
 
 // ── language-server (lsp) tool inputs ────────────────────────────────────────
 // One tool, `kone_lsp`, fronts the six read-only actions: the zod
-// `inputSchema` validates args; the hand-written JSON schema is what
-// tools/list advertises, so the enum literals are repeated there — the client
-// never sees zod. Positions are path + 1-indexed line + symbol substring
-// (never columns); `newName` belongs to the rename preview only.
+// `inputSchema` validates args and the hand-written JSON schema is what
+// tools/list advertises, so both read the action names off LSP_ACTIONS — the
+// client never sees zod. Positions are path + 1-indexed line + symbol
+// substring (never columns); `newName` belongs to the rename preview only.
 
 export const LspToolInputSchema = z
   .object({
-    action: z.enum(["definition", "references", "hover", "symbols", "diagnostics", "rename"]),
+    action: z.enum(LSP_ACTIONS),
     path: z
       .string()
       .min(1)
@@ -2055,7 +2079,7 @@ export const LSP_JSON_SCHEMA = {
   properties: {
     action: {
       type: "string",
-      enum: ["definition", "references", "hover", "symbols", "diagnostics", "rename"],
+      enum: [...LSP_ACTIONS],
       description:
         "The language-server action: definition, references, hover, symbols (document symbols with path, project-wide search without), diagnostics, or rename (preview only, never writes).",
     },

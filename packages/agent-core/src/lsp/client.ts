@@ -3,11 +3,14 @@ import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { killTree } from "../spawn.js";
+import { decodeDiagnostic } from "./decode.js";
+import { isJsonList, isJsonNumber, isRecord, jsonText, positiveInt } from "./json.js";
 import type {
   LspClientHandle,
   LspDiagnostic,
   LspJsonObject,
   LspJsonValue,
+  LspRequestOptions,
 } from "./types.js";
 
 // Framed stdio client for one language server process.
@@ -73,13 +76,16 @@ export class LspTimeoutError extends LspClientError {
 }
 
 // The caller's AbortSignal fired: the server got $/cancelRequest and the
-// pending promise rejects instead of resolving late.
+// pending promise rejects instead of resolving late. Named AbortError so the
+// gateway registry's cancellation passthrough recognizes it without any
+// per-call-site rewrap: a cancelled call vanishes with the caller rather
+// than reading as a crash.
 export class LspAbortError extends LspClientError {
   readonly method: string;
 
   constructor(method: string) {
     super(`lsp request "${method}" was aborted`);
-    this.name = "LspAbortError";
+    this.name = "AbortError";
     this.method = method;
   }
 }
@@ -93,40 +99,17 @@ export class LspNotRunningError extends LspClientError {
   }
 }
 
-// ── json decoding ────────────────────────────────────────────────────────────
-// The wire gives untyped values, so every field is narrowed the way the
-// registry does: records by constructor, numbers by finiteness, text by
-// excluding every other variant — never by inspecting representations.
-
-function isRecord(value: LspJsonValue | undefined): value is LspJsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
-
-function isCountedNumber(value: LspJsonValue | undefined): value is number {
-  return Number.isFinite(value);
-}
-
-function jsonText(value: LspJsonValue | undefined): string | null {
-  if (value === undefined || value === null || value === true || value === false) return null;
-  if (Array.isArray(value) || value instanceof Object || isCountedNumber(value)) return null;
-  return value;
-}
+// ── json-rpc ids ─────────────────────────────────────────────────────────────
 
 // A json-rpc id is a string or a number; anything else (null included) cannot
 // address a pending request.
 function asRpcId(value: LspJsonValue | undefined): string | number | null {
-  if (value === undefined || value === null || value === true || value === false) return null;
-  if (Array.isArray(value) || value instanceof Object) return null;
-  if (isCountedNumber(value)) return value;
-  return value;
+  const text = jsonText(value);
+  if (text !== null) return text;
+  return isJsonNumber(value) ? value : null;
 }
 
 // ── client ───────────────────────────────────────────────────────────────────
-
-export interface LspRequestOptions {
-  timeoutMs?: number;
-  signal?: AbortSignal;
-}
 
 export interface LspClientStartOptions {
   initializationOptions?: LspJsonObject;
@@ -188,11 +171,6 @@ interface LspResponseErrorText {
   message: string;
 }
 
-function normalizeTimeoutMs(raw: number | undefined, fallback: number): number {
-  if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return fallback;
-  return Math.floor(raw);
-}
-
 // The settled per-call plan for one request: how long to wait and which
 // signal cancels it. Named so the split below keeps its return contract.
 interface LspRequestPlan {
@@ -209,16 +187,15 @@ function splitRequestOptions(
 ): LspRequestPlan {
   if (timeoutMsOrOptions instanceof Object) {
     return {
-      timeoutMs: normalizeTimeoutMs(timeoutMsOrOptions.timeoutMs, fallbackMs),
+      timeoutMs: positiveInt(timeoutMsOrOptions.timeoutMs, fallbackMs),
       signal: timeoutMsOrOptions.signal ?? null,
     };
   }
-  return { timeoutMs: normalizeTimeoutMs(timeoutMsOrOptions, fallbackMs), signal: null };
+  return { timeoutMs: positiveInt(timeoutMsOrOptions, fallbackMs), signal: null };
 }
 
 function errorMessageOf(responseError: LspJsonObject): LspResponseErrorText {
-  const codeRaw = responseError.code;
-  const code = codeRaw !== undefined && codeRaw !== null && Number.isFinite(codeRaw) ? Number(codeRaw) : -32000;
+  const code = isJsonNumber(responseError.code) ? responseError.code : -32000;
   const messageRaw = jsonText(responseError.message);
   return { code, message: messageRaw ?? "unknown language-server error" };
 }
@@ -248,7 +225,7 @@ export class LspClient implements LspClientHandle {
 
   constructor(options: LspClientOptions) {
     this.serverName = options.serverName;
-    this.defaultTimeoutMs = normalizeTimeoutMs(options.defaultTimeoutMs, DEFAULT_LSP_REQUEST_TIMEOUT_MS);
+    this.defaultTimeoutMs = positiveInt(options.defaultTimeoutMs, DEFAULT_LSP_REQUEST_TIMEOUT_MS);
     this.spawnProcess = options.spawnProcess ?? defaultSpawn;
     this.killPid = options.killPid ?? ((pid) => killTree(pid));
     this.onActivity = options.onActivity ?? null;
@@ -335,7 +312,7 @@ export class LspClient implements LspClientHandle {
       params.initializationOptions = init.initializationOptions;
     }
     try {
-      const timeoutMs = normalizeTimeoutMs(init?.initializeTimeoutMs, this.defaultTimeoutMs);
+      const timeoutMs = positiveInt(init?.initializeTimeoutMs, this.defaultTimeoutMs);
       const result = await this.sendRequest("initialize", params, timeoutMs, null);
       this.initializeResult = isRecord(result) ? result : null;
       this.sendNotification("initialized", {});
@@ -653,15 +630,13 @@ export class LspClient implements LspClientHandle {
     }
     const uri = jsonText(params.uri);
     const rawList = params.diagnostics;
-    if (uri === null || !Array.isArray(rawList)) {
+    if (uri === null || !isJsonList(rawList)) {
       this.droppedFrames += 1;
       return;
     }
     const kept: LspDiagnostic[] = [];
     for (const raw of rawList) {
-      // SAFETY: each list item is narrowed to a record before any field is
-      // read, and decodeDiagnostic returns null for anything unusable.
-      const diagnostic = decodeDiagnostic(raw as LspJsonValue);
+      const diagnostic = decodeDiagnostic(raw);
       if (diagnostic !== null) kept.push(diagnostic);
     }
     this.diagnostics.set(uri, kept);
@@ -678,7 +653,7 @@ export class LspClient implements LspClientHandle {
   ): Promise<void> {
     switch (method) {
       case "workspace/configuration": {
-        const items = isRecord(params) && Array.isArray(params.items) ? params.items : [];
+        const items = isRecord(params) && isJsonList(params.items) ? params.items : [];
         const answers: LspJsonValue[] = items.map(() => this.settings);
         this.writeFrame({ jsonrpc: "2.0", id, result: answers });
         return;
@@ -716,7 +691,7 @@ export class LspClient implements LspClientHandle {
   }
 
   private trackRegistrations(params: LspJsonValue | undefined, add: boolean): void {
-    if (!isRecord(params) || !Array.isArray(params.registrations)) return;
+    if (!isRecord(params) || !isJsonList(params.registrations)) return;
     for (const raw of params.registrations) {
       if (!isRecord(raw)) continue;
       const name = jsonText(raw.method);
@@ -728,43 +703,4 @@ export class LspClient implements LspClientHandle {
       }
     }
   }
-}
-
-function decodeRange(value: LspJsonValue | undefined): LspDiagnostic["range"] | null {
-  if (!isRecord(value)) return null;
-  const start = isRecord(value.start) ? value.start : null;
-  const end = isRecord(value.end) ? value.end : null;
-  if (start === null || end === null) return null;
-  const startLine = start.line;
-  const startChar = start.character;
-  const endLine = end.line;
-  const endChar = end.character;
-  if (!isCountedNumber(startLine) || !isCountedNumber(startChar)) return null;
-  if (!isCountedNumber(endLine) || !isCountedNumber(endChar)) return null;
-  return {
-    start: { line: startLine, character: startChar },
-    end: { line: endLine, character: endChar },
-  };
-}
-
-function decodeDiagnostic(value: LspJsonValue): LspDiagnostic | null {
-  if (!isRecord(value)) return null;
-  const range = decodeRange(value.range);
-  const message = jsonText(value.message);
-  if (range === null || message === null) return null;
-  const diagnostic: LspDiagnostic = { range, message };
-  const severityRaw = value.severity;
-  if (severityRaw === 1 || severityRaw === 2 || severityRaw === 3 || severityRaw === 4) {
-    diagnostic.severity = severityRaw;
-  }
-  const codeRaw = value.code;
-  const codeText = jsonText(codeRaw);
-  if (isCountedNumber(codeRaw)) {
-    diagnostic.code = codeRaw;
-  } else if (codeText !== null) {
-    diagnostic.code = codeText;
-  }
-  const source = jsonText(value.source);
-  if (source !== null) diagnostic.source = source;
-  return diagnostic;
 }

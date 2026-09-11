@@ -525,3 +525,62 @@ describe("LspManager idle reap", () => {
     expect(failure).toBeInstanceOf(LspManagerError);
   });
 });
+
+describe("LspManager workspace client", () => {
+  test("a project-wide client starts with no files on disk and shares the pool", async () => {
+    const proj = freshDir("kone-lsp-workspace-");
+    const log = path.join(proj, "methods.log");
+    const manager = new LspManager({
+      defaults: [fakeServerConfig(fakeServerScript(log, "basic"))],
+      binaryDeps: binaryDeps(),
+      readTextFile: noConfigs(),
+    });
+    try {
+      const workspace = await manager.getWorkspaceClient(proj);
+      expect(workspace.isRunning()).toBe(true);
+      // Same command plus directory means the same process a file client gets.
+      const filed = await manager.getClient({ cwd: proj, filePath: path.join(proj, "a.fakets") });
+      expect(filed).toBe(workspace);
+      const seen = await waitForLog(log, 2);
+      expect(countLogLines(seen, "in:initialize")).toBe(1);
+    } finally {
+      await manager.disposeAll();
+    }
+  });
+
+  test("no enabled server reads as no server", async () => {
+    const proj = freshDir("kone-lsp-workspace-none-");
+    const manager = new LspManager({
+      defaults: [fakeServerConfig("never-spawned", { disabled: true })],
+      binaryDeps: binaryDeps(),
+      readTextFile: noConfigs(),
+    });
+    try {
+      let failure: Error | null = null;
+      try {
+        await manager.getWorkspaceClient(proj);
+      } catch (error) {
+        if (error instanceof Error) failure = error;
+      }
+      expect(failure).toBeInstanceOf(LspNoServerError);
+    } finally {
+      await manager.disposeAll();
+    }
+  });
+
+  test("languageIdForFile follows the registry's extension ownership", async () => {
+    const proj = freshDir("kone-lsp-langid-");
+    const manager = new LspManager({
+      defaults: [fakeServerConfig("never-spawned")],
+      binaryDeps: binaryDeps(),
+      readTextFile: noConfigs(),
+    });
+    try {
+      // The fake server names no tags, so its files open under the extension.
+      expect(manager.languageIdForFile(proj, path.join(proj, "a.fakets"))).toBe("fakets");
+      expect(manager.languageIdForFile(proj, path.join(proj, "notes.md"))).toBe("md");
+    } finally {
+      await manager.disposeAll();
+    }
+  });
+});

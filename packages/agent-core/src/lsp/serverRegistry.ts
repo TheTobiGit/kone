@@ -6,17 +6,30 @@
 
 import path from "node:path";
 
+import { asInt, isJsonList, isRecord, jsonText } from "./json.js";
 import type { LspJsonObject, LspJsonValue, ServerConfig } from "./types.js";
 
 // ── default set ──────────────────────────────────────────────────────────────
 
-/** the bundled typescript server over stdio. */
+/** the bundled typescript server over stdio. The didOpen tags split by
+ *  extension because the server expects each side of the language under its
+ *  own name. */
 export const TS_DEFAULT_SERVERS: readonly ServerConfig[] = [
   {
     name: "typescript",
     command: "typescript-language-server",
     args: ["--stdio"],
     fileTypes: ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+    languageIds: {
+      ts: "typescript",
+      tsx: "typescript",
+      mts: "typescript",
+      cts: "typescript",
+      js: "javascript",
+      jsx: "javascript",
+      mjs: "javascript",
+      cjs: "javascript",
+    },
     rootMarkers: ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
     warmupTimeoutMs: 15000,
   },
@@ -29,6 +42,7 @@ export const GO_DEFAULT_SERVERS: readonly ServerConfig[] = [
     command: "gopls",
     args: [],
     fileTypes: ["go"],
+    languageIds: { go: "go" },
     rootMarkers: ["go.mod", "go.work"],
     warmupTimeoutMs: 15000,
   },
@@ -42,6 +56,7 @@ export const PYTHON_DEFAULT_SERVERS: readonly ServerConfig[] = [
     command: "pyright-langserver",
     args: ["--stdio"],
     fileTypes: ["py"],
+    languageIds: { py: "python" },
     rootMarkers: [
       "pyproject.toml",
       "setup.py",
@@ -60,6 +75,7 @@ export const RUST_DEFAULT_SERVERS: readonly ServerConfig[] = [
     command: "rust-analyzer",
     args: [],
     fileTypes: ["rs"],
+    languageIds: { rs: "rust" },
     rootMarkers: ["Cargo.toml"],
     warmupTimeoutMs: 15000,
   },
@@ -167,6 +183,8 @@ export interface LspServerOverride {
   command?: string;
   args?: readonly string[];
   fileTypes?: readonly string[];
+  /** didOpen language tags by extension, same shape as the server's own. */
+  languageIds?: { readonly [extension: string]: string };
   rootMarkers?: readonly string[];
   initOptions?: LspJsonObject;
   settings?: LspJsonObject;
@@ -176,24 +194,6 @@ export interface LspServerOverride {
 
 export interface LspConfigFile {
   servers: { [name: string]: LspServerOverride };
-}
-
-// Decoding narrows parsed json the same way the rest of the codebase does:
-// numbers by finiteness, text by excluding every other variant by value,
-// records by constructor — never by inspecting representations.
-
-function isJsonRecord(value: LspJsonValue | undefined): value is LspJsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
-
-function isJsonNumber(value: LspJsonValue | undefined): value is number {
-  return Number.isFinite(value);
-}
-
-function jsonText(value: LspJsonValue | undefined): string | null {
-  if (value === undefined || value === null || value === true || value === false) return null;
-  if (Array.isArray(value) || value instanceof Object || isJsonNumber(value)) return null;
-  return value;
 }
 
 function jsonFlag(value: LspJsonValue | undefined): boolean | null {
@@ -206,7 +206,7 @@ function jsonFlag(value: LspJsonValue | undefined): boolean | null {
  *  whole override. Blank command strings likewise keep the default — an
  *  empty command could never resolve to a binary. */
 function jsonStringArray(value: LspJsonValue | undefined): readonly string[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!isJsonList(value)) return null;
   const kept: string[] = [];
   for (const item of value) {
     const text = jsonText(item);
@@ -216,17 +216,31 @@ function jsonStringArray(value: LspJsonValue | undefined): readonly string[] | n
 }
 
 function jsonTimeoutMs(value: LspJsonValue | undefined): number | null {
-  if (!isJsonNumber(value)) return null;
-  if (!Number.isInteger(value) || value < 0) return null;
-  return value;
+  const parsed = asInt(value);
+  if (parsed === null || parsed < 0) return null;
+  return parsed;
+}
+
+// Lenient extension-to-tag map: non-string values drop out, a non-record
+// drops the whole override. Keys normalize like fileTypes (dots, case), so
+// ".TS" and "ts" name the same tag.
+function jsonLanguageIds(value: LspJsonValue | undefined): { [extension: string]: string } | null {
+  if (!isRecord(value)) return null;
+  const kept: { [extension: string]: string } = {};
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const extension = normalizeExtension(rawKey);
+    const tag = jsonText(rawValue);
+    if (extension !== null && tag !== null && tag.trim().length > 0) kept[extension] = tag;
+  }
+  return kept;
 }
 
 function jsonOptionsObject(value: LspJsonValue | undefined): LspJsonObject | null {
-  return isJsonRecord(value) ? value : null;
+  return isRecord(value) ? value : null;
 }
 
 function decodeServerOverride(raw: LspJsonValue | undefined): LspServerOverride | null {
-  if (!isJsonRecord(raw)) return null;
+  if (!isRecord(raw)) return null;
   const override: LspServerOverride = {};
   const command = jsonText(raw.command);
   if (command !== null && command.trim().length > 0) override.command = command;
@@ -234,6 +248,8 @@ function decodeServerOverride(raw: LspJsonValue | undefined): LspServerOverride 
   if (args !== null) override.args = args;
   const fileTypes = jsonStringArray(raw.fileTypes);
   if (fileTypes !== null) override.fileTypes = fileTypes;
+  const languageIds = jsonLanguageIds(raw.languageIds);
+  if (languageIds !== null) override.languageIds = languageIds;
   const rootMarkers = jsonStringArray(raw.rootMarkers);
   if (rootMarkers !== null) override.rootMarkers = rootMarkers;
   const initOptions = jsonOptionsObject(raw.initOptions);
@@ -251,10 +267,10 @@ function decodeServerOverride(raw: LspJsonValue | undefined): LspServerOverride 
  *  with no usable shape; entries naming no known server are dropped here, so
  *  a typo in a config file can never summon an arbitrary binary. */
 export function decodeLspConfigFile(raw: LspJsonValue): LspConfigFile | null {
-  if (!isJsonRecord(raw)) return null;
+  if (!isRecord(raw)) return null;
   const serversRaw = raw.servers;
   if (serversRaw === undefined || serversRaw === null) return { servers: {} };
-  if (!isJsonRecord(serversRaw)) return null;
+  if (!isRecord(serversRaw)) return null;
   const servers: { [name: string]: LspServerOverride } = {};
   for (const name of Object.keys(serversRaw)) {
     const decoded = decodeServerOverride(serversRaw[name]);
@@ -273,6 +289,15 @@ function mergeDisabled(
   return override ?? base;
 }
 
+// A fresh copy of an extension-to-tag map, or undefined when there is none:
+// merged configs never share the map with the layer they came from.
+function copyLanguageIds(
+  source: { readonly [extension: string]: string } | undefined,
+): { readonly [extension: string]: string } | undefined {
+  if (source === undefined) return undefined;
+  return { ...source };
+}
+
 /** One override layer over one server. Inputs are treated as immutable —
  *  array fields come out as fresh copies — and object fields (settings,
  *  initOptions) replace wholesale rather than merging key by key. */
@@ -285,6 +310,7 @@ function applyServerOverride(
       ...base,
       args: [...base.args],
       fileTypes: [...base.fileTypes],
+      languageIds: copyLanguageIds(base.languageIds),
       rootMarkers: [...base.rootMarkers],
     };
   }
@@ -293,6 +319,7 @@ function applyServerOverride(
     command: override.command ?? base.command,
     args: override.args ?? [...base.args],
     fileTypes: override.fileTypes ?? [...base.fileTypes],
+    languageIds: copyLanguageIds(override.languageIds ?? base.languageIds),
     rootMarkers: override.rootMarkers ?? [...base.rootMarkers],
     initOptions: override.initOptions ?? base.initOptions,
     settings: override.settings ?? base.settings,
@@ -337,4 +364,22 @@ export function serversForFile(
   return servers.filter((server) =>
     server.fileTypes.some((fileType) => normalizeExtension(fileType) === wanted),
   );
+}
+
+// The didOpen language tag for a file: the owning server's tag for the
+// extension, the extension itself when the owner names none, and plaintext
+// when nothing owns the file. The owner prefers enabled servers, mirroring
+// startup resolution — a disabled server still answers when it is the only
+// owner, since its files would have opened under that tag.
+export function languageIdForFile(
+  servers: readonly ServerConfig[],
+  filePath: string,
+): string {
+  const extension = normalizeExtension(path.extname(filePath));
+  if (extension === null) return "plaintext";
+  const owned = serversForFile(servers, filePath);
+  const owner = owned.find((server) => server.disabled !== true) ?? owned[0];
+  const tag = owner?.languageIds?.[extension];
+  if (tag !== undefined && tag.trim().length > 0) return tag;
+  return extension;
 }

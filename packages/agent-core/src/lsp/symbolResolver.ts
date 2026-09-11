@@ -9,15 +9,14 @@
 // line.
 
 /** What the resolver needs: the open document as lines, the agent's
- *  1-indexed line, and the optional symbol disambiguator. projectAware marks
- *  servers that need the symbol to pick a node (a bare line is ambiguous to
- *  them); lenient servers accept a bare line as "start of content". */
+ *  1-indexed line, and the optional symbol disambiguator. A bare line is
+ *  always refused: without symbol text on the line the position is ambiguous,
+ *  so the caller must name what sits there. */
 export interface SymbolResolveRequest {
   documentLines: readonly string[];
   line1Indexed: number;
   symbol?: string;
   occurrence?: number;
-  projectAware: boolean;
 }
 
 export type SymbolResolveResult =
@@ -39,35 +38,22 @@ function matchStarts(lineText: string, symbol: string): readonly number[] {
   return starts;
 }
 
-/** First non-whitespace column. A blank line has none; column 0 keeps the
- *  position valid instead of erroring on whitespace-only lines. */
-function firstContentColumn(lineText: string): number {
-  const found = lineText.search(/\S/);
-  return found < 0 ? 0 : found;
-}
-
 function error(message: string): SymbolResolveResult {
   return { kind: "error", message };
 }
 
 export function resolvePosition(request: SymbolResolveRequest): SymbolResolveResult {
   const total = request.documentLines.length;
-  if (!Number.isInteger(request.line1Indexed) || request.line1Indexed < 1 || request.line1Indexed > total) {
-    return error(`line ${request.line1Indexed} is outside the document (1-${total})`);
-  }
+  // The single line guard: any out-of-range, fractional, or otherwise
+  // unusable line indexes no element, so one check covers every bad line.
   const lineText = request.documentLines[request.line1Indexed - 1];
   if (lineText === undefined) {
-    // The range check above keeps this index in bounds; the guard is for the
-    // indexed-access type, which cannot see that.
     return error(`line ${request.line1Indexed} is outside the document (1-${total})`);
   }
 
   const symbol = request.symbol;
   if (symbol === undefined || symbol.trim().length === 0) {
-    if (request.projectAware) {
-      return error(`line ${request.line1Indexed} needs a symbol on project-aware servers`);
-    }
-    return { kind: "ok", line: request.line1Indexed - 1, character: firstContentColumn(lineText) };
+    return error(`line ${request.line1Indexed} needs a symbol; pass the symbol text on the line`);
   }
 
   const occurrence = request.occurrence ?? 1;
@@ -78,14 +64,10 @@ export function resolvePosition(request: SymbolResolveRequest): SymbolResolveRes
   if (starts.length === 0) {
     return error(`symbol "${symbol}" not found on line ${request.line1Indexed}`);
   }
-  if (occurrence > starts.length) {
-    return error(
-      `occurrence ${occurrence} is out of range: line ${request.line1Indexed} has ${starts.length} of "${symbol}"`,
-    );
-  }
+  // The single occurrence guard: any pick past the last match indexes no
+  // element, so one check covers every out-of-range occurrence.
   const start = starts[occurrence - 1];
   if (start === undefined) {
-    // Bounds-checked above; the guard is for the indexed-access type.
     return error(
       `occurrence ${occurrence} is out of range: line ${request.line1Indexed} has ${starts.length} of "${symbol}"`,
     );

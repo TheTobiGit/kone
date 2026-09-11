@@ -9,9 +9,9 @@ describe("lsp action contract", () => {
       "definition",
       "references",
       "hover",
-      "documentSymbol",
+      "symbols",
       "diagnostics",
-      "renamePreview",
+      "rename",
     ]);
   });
 
