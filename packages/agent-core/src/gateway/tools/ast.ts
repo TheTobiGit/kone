@@ -8,27 +8,19 @@
 // model passes bare names; kone builds the matching pattern internally, so
 // there is no way to send a pattern, a wildcard, or a regular expression.
 
-import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { z } from "zod";
 
-import {
-  AST_MAX_MATCHES,
-  AST_MAX_PARSE_ISSUES_SHOWN,
-  AstEngine,
-  formatFindCalls,
-  isPlainIdentifier,
-  langForPath,
-} from "../../ast/engine.js";
-import type { AstParseIssue } from "../../ast/engine.js";
+import { AstEngine } from "../../ast/engine.js";
+import type { AstPreviewOne, AstPreviewRun } from "../../ast/engine.js";
+import { formatFindCalls, formatRewritePreview, isPlainIdentifier } from "../../ast/format.js";
+import type { AstPreviewChange } from "../../ast/format.js";
 import {
   AstRewriteError,
-  formatRewritePreview,
   previewAddArgument,
   previewRenameCall,
 } from "../../ast/rewrite.js";
-import type { AstFilePreview, AstPreviewChange } from "../../ast/rewrite.js";
 import type {
   GatewayRecord,
   GatewayToolContext,
@@ -37,6 +29,7 @@ import type {
 } from "../schemas.js";
 import { GatewayToolError } from "../schemas.js";
 import { gatewayToolErrorResult } from "../registry.js";
+import { resolveSearchRoot } from "../paths.js";
 
 export const AstFindCallsInputSchema = z.object({
   name: z
@@ -81,102 +74,42 @@ export interface AstToolOptions {
   engine?: AstEngine;
 }
 
-// A workspace-relative path resolved against the project root, or null when
-// it escapes. Absolute paths inside the project resolve fine; anything
-// climbing out with `..` is refused rather than normalized into place.
-function resolveInWorkspace(projectRoot: string, relPath: string): string | null {
-  const absolute = path.resolve(projectRoot, relPath);
-  const relative = path.relative(projectRoot, absolute);
-  if (relative === ".." || relative.startsWith(`..${path.sep}`)) return null;
-  return absolute;
-}
-
-function hasGlobMagic(value: string): boolean {
-  return value.includes("*") || value.includes("?") || value.includes("[");
-}
-
-// Resolve a tool path argument to an absolute search root. Escapes and
-// literal paths naming nothing throw invalid_input (a glob matching nothing
-// is a successful empty search instead). Shared by both ast tools; the
-// registry maps the throw to the usual error result.
-function resolveSearchRoot(projectRoot: string, relPath: string): string {
-  const absPath = resolveInWorkspace(projectRoot, relPath);
-  if (absPath === null) {
-    throw new GatewayToolError(
-      "invalid_input",
-      `Path "${relPath}" escapes the project root; pass a workspace-relative path inside the project.`,
-    );
-  }
-  // A literal path naming nothing is an agent-fixable mistake; a glob that
-  // matches nothing is a successful empty search.
-  let exists = false;
-  try {
-    statSync(absPath);
-    exists = true;
-  } catch {
-    exists = false;
-  }
-  if (!exists && !hasGlobMagic(relPath)) {
-    throw new GatewayToolError(
-      "invalid_input",
-      `Cannot search "${relPath}": no such file or directory inside the project.`,
-    );
-  }
-  return absPath;
-}
-
 // ── rewrite previews ─────────────────────────────────────────────────────
 // kone_ast_preview shows what a fixed call rewrite would change, as text the
 // caller applies with its own edit tools. It never writes: the handler only
 // reads, the pure previews only splice strings, and every call is stateless —
 // no proposals are staged, so a preview goes stale the moment a file changes.
 
-export const AstPreviewInputSchema = z
-  .object({
-    op: z.enum(["rename-call", "add-argument"]),
-    name: z.string().min(1).optional(),
-    from: z.string().min(1).optional(),
-    to: z.string().min(1).optional(),
-    argText: z.string().optional(),
-    position: z.enum(["first", "last"]).default("last"),
-    path: z.string().min(1).default("."),
-  })
-  .superRefine((data, ctx) => {
-    if (data.op === "rename-call") {
-      if (data.from === undefined || !isPlainIdentifier(data.from)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["from"],
-          message:
-            'op "rename-call" needs "from" as a plain identifier (letters, digits, _, $); patterns and wildcards are refused',
-        });
-      }
-      if (data.to === undefined || !isPlainIdentifier(data.to)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["to"],
-          message:
-            'op "rename-call" needs "to" as a plain identifier (letters, digits, _, $); patterns and wildcards are refused',
-        });
-      }
-      return;
-    }
-    if (data.name === undefined || !isPlainIdentifier(data.name)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["name"],
-        message:
-          'op "add-argument" needs "name" as a plain identifier (letters, digits, _, $); patterns and wildcards are refused',
-      });
-    }
-    if (data.argText === undefined || data.argText.trim().length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["argText"],
-        message: 'op "add-argument" needs "argText" as a non-empty comma-separated expression list',
-      });
-    }
-  });
+const AstRenameCallSchema = z.object({
+  op: z.literal("rename-call"),
+  from: z.string().min(1).refine(isPlainIdentifier, {
+    message:
+      'op "rename-call" needs "from" as a plain identifier (letters, digits, _, $); patterns and wildcards are refused',
+  }),
+  to: z.string().min(1).refine(isPlainIdentifier, {
+    message:
+      'op "rename-call" needs "to" as a plain identifier (letters, digits, _, $); patterns and wildcards are refused',
+  }),
+  path: z.string().min(1).default("."),
+});
+
+const AstAddArgumentSchema = z.object({
+  op: z.literal("add-argument"),
+  name: z.string().min(1).refine(isPlainIdentifier, {
+    message:
+      'op "add-argument" needs "name" as a plain identifier (letters, digits, _, $); patterns and wildcards are refused',
+  }),
+  argText: z.string().refine((value) => value.trim().length > 0, {
+    message: 'op "add-argument" needs "argText" as a non-empty comma-separated expression list',
+  }),
+  position: z.enum(["first", "last"]).default("last"),
+  path: z.string().min(1).default("."),
+});
+
+export const AstPreviewInputSchema = z.discriminatedUnion("op", [
+  AstRenameCallSchema,
+  AstAddArgumentSchema,
+]);
 
 export type AstPreviewInput = z.infer<typeof AstPreviewInputSchema>;
 
@@ -230,11 +163,6 @@ const AST_PREVIEW_DESCRIPTION = [
 
 const AST_PREVIEW_PROMPT_SNIPPET =
   "Preview renaming a call or adding an argument across the project: pass the op and names, get back before→after lines to apply yourself; kone never writes.";
-
-/** One validated preview request: the schema guarantees the fields per op. */
-type AstPreviewRequest =
-  | { op: "rename-call"; from: string; to: string }
-  | { op: "add-argument"; name: string; argText: string; position: "first" | "last" };
 
 /**
  * Creates the structural call-search gateway tools: `kone_ast_find_calls`
@@ -318,115 +246,49 @@ export function createAstTools(options: AstToolOptions = {}): ToolEntry[] {
         new GatewayToolError("invalid_input", parsed.error.message),
       );
     }
+    // The discriminated union narrows args by op, so each branch carries only
+    // its own fields — no re-checks for undefined, no assertions.
     const args = parsed.data;
-    // Pin the per-op fields without assertions: the schema narrows nothing
-    // across the union, so the checks below carry the defined types forward.
-    let request: AstPreviewRequest;
+    let previewOne: AstPreviewOne;
+    let change: AstPreviewChange;
+    let opFields: GatewayRecord;
     if (args.op === "rename-call") {
-      if (args.from === undefined || args.to === undefined) {
-        return gatewayToolErrorResult(
-          new GatewayToolError(
-            "invalid_input",
-            'op "rename-call" needs "from" and "to"; pass both plain identifiers.',
-          ),
-        );
-      }
-      request = { op: "rename-call", from: args.from, to: args.to };
+      previewOne = (text, lang, filePath) =>
+        previewRenameCall(text, { from: args.from, to: args.to, lang, path: filePath });
+      change = { kind: "rename", from: args.from, to: args.to };
+      opFields = { from: args.from, to: args.to };
     } else {
-      if (args.name === undefined || args.argText === undefined) {
-        return gatewayToolErrorResult(
-          new GatewayToolError(
-            "invalid_input",
-            'op "add-argument" needs "name" and "argText"; pass the call name and a comma-separated expression list.',
-          ),
-        );
-      }
-      request = { op: "add-argument", name: args.name, argText: args.argText, position: args.position };
+      previewOne = (text, lang, filePath) =>
+        previewAddArgument(text, {
+          name: args.name,
+          argText: args.argText,
+          position: args.position,
+          lang,
+          path: filePath,
+        });
+      change = { kind: "add", name: args.name, argText: args.argText };
+      opFields = { name: args.name, argText: args.argText, position: args.position };
     }
     const projectRoot = path.resolve(ctx.cwd);
     const absPath = resolveSearchRoot(projectRoot, args.path);
-    // Same walk and glob rules as find-calls, in sorted order so the preview
-    // and its cap are deterministic. Only reads happen below — the pure
-    // previews splice strings, never the files.
-    const files = engine.collectFiles(absPath, projectRoot).sort();
-    let filesSearched = 0;
-    let totalReplacements = 0;
-    const perFile: AstFilePreview[] = [];
-    const parseIssues: AstParseIssue[] = [];
-    let parseIssuesTotal = 0;
-    for (const filePath of files) {
-      const lang = langForPath(filePath);
-      if (lang === null) continue;
-      let text: string | null = null;
-      try {
-        text = readFileSync(filePath, "utf8");
-      } catch {
-        text = null;
+    // Same walk and glob rules as find-calls: the engine walks, reads, caps,
+    // and counts, while the callback above only splices strings, never files.
+    let run: AstPreviewRun;
+    try {
+      run = engine.previewFiles(absPath, projectRoot, previewOne);
+    } catch (error) {
+      // Unparseable files never reach here (counted skips); any other
+      // rewrite failure (overlap, invalid argument) aborts the call so no
+      // partial preview goes out.
+      if (error instanceof AstRewriteError) {
+        return gatewayToolErrorResult(new GatewayToolError("invalid_input", error.message));
       }
-      if (text === null) {
-        parseIssuesTotal += 1;
-        if (parseIssues.length < AST_MAX_PARSE_ISSUES_SHOWN) {
-          parseIssues.push({
-            path: filePath,
-            message: "could not read file: it is missing or unreadable",
-          });
-        }
-        continue;
-      }
-      filesSearched += 1;
-      let preview: AstFilePreview;
-      try {
-        preview =
-          request.op === "rename-call"
-            ? previewRenameCall(text, { from: request.from, to: request.to, lang, path: filePath })
-            : previewAddArgument(text, {
-                name: request.name,
-                argText: request.argText,
-                position: request.position,
-                lang,
-                path: filePath,
-              });
-      } catch (error) {
-        // Unparseable files join the same counted-issue accounting as
-        // find-calls; any other rewrite failure (overlap, invalid argument)
-        // aborts the call so no partial preview goes out.
-        if (error instanceof AstRewriteError && error.issue === "parse") {
-          parseIssuesTotal += 1;
-          if (parseIssues.length < AST_MAX_PARSE_ISSUES_SHOWN) {
-            parseIssues.push({ path: filePath, message: error.message });
-          }
-          continue;
-        }
-        if (error instanceof AstRewriteError) {
-          return gatewayToolErrorResult(new GatewayToolError("invalid_input", error.message));
-        }
-        throw error;
-      }
-      totalReplacements += preview.replacements.length;
-      perFile.push(preview);
+      throw error;
     }
-    const limitReached = totalReplacements > AST_MAX_MATCHES;
-    // The first AST_MAX_MATCHES replacements in file order, mirroring the
-    // find-calls cap; the totals below stay exact.
-    const shown: AstFilePreview[] = [];
-    let kept = 0;
-    for (const file of perFile) {
-      if (kept >= AST_MAX_MATCHES) break;
-      const slice = file.replacements.slice(0, AST_MAX_MATCHES - kept);
-      kept += slice.length;
-      if (slice.length > 0) shown.push({ path: file.path, replacements: slice });
-    }
-    const filesTouched = perFile.filter((file) => file.replacements.length > 0).length;
-    const change: AstPreviewChange =
-      request.op === "rename-call"
-        ? { kind: "rename", from: request.from, to: request.to }
-        : { kind: "add", name: request.name, argText: request.argText };
     const structured: GatewayRecord = {
-      op: request.op,
-      ...(request.op === "rename-call"
-        ? { from: request.from, to: request.to }
-        : { name: request.name, argText: request.argText, position: request.position }),
-      files: shown.map((file) => ({
+      op: args.op,
+      ...opFields,
+      files: run.files.map((file) => ({
         path: file.path,
         replacements: file.replacements.map((replacement) => ({
           line: replacement.line,
@@ -434,13 +296,13 @@ export function createAstTools(options: AstToolOptions = {}): ToolEntry[] {
           after: replacement.after,
         })),
       })),
-      filesTouched,
-      totalReplacements,
-      filesSearched,
+      filesTouched: run.filesTouched,
+      totalReplacements: run.totalReplacements,
+      filesSearched: run.filesSearched,
       previewOnly: true,
-      limitReached,
-      parseIssues: parseIssues.map((issue) => ({ path: issue.path, message: issue.message })),
-      parseIssuesTotal,
+      limitReached: run.limitReached,
+      parseIssues: run.parseIssues.map((issue) => ({ path: issue.path, message: issue.message })),
+      parseIssuesTotal: run.parseIssuesTotal,
     };
     return {
       content: [
@@ -448,13 +310,13 @@ export function createAstTools(options: AstToolOptions = {}): ToolEntry[] {
           type: "text",
           text: formatRewritePreview({
             change,
-            files: shown,
-            totalReplacements,
-            filesTouched,
-            filesSearched,
-            limitReached,
-            parseIssues,
-            parseIssuesTotal,
+            files: run.files,
+            totalReplacements: run.totalReplacements,
+            filesTouched: run.filesTouched,
+            filesSearched: run.filesSearched,
+            limitReached: run.limitReached,
+            parseIssues: run.parseIssues,
+            parseIssuesTotal: run.parseIssuesTotal,
           }),
         },
       ],

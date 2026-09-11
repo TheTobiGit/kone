@@ -10,11 +10,11 @@ import {
   AST_MAX_MATCHES,
   AST_OUTPUT_BUDGET_CHARS,
   AST_TRUNCATION_MARKER,
-} from "./engine.js";
+  formatRewritePreview,
+} from "./format.js";
 import {
   AstRewriteError,
   applyEditsToText,
-  formatRewritePreview,
   previewAddArgument,
   previewRenameCall,
 } from "./rewrite.js";

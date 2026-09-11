@@ -9,17 +9,16 @@ import path from "node:path";
 
 import { Lang } from "@ast-grep/napi";
 
+import { AstEngine, matchCalls } from "./engine.js";
+import type { AstFileInput } from "./engine.js";
 import {
   AST_MAX_MATCHES,
   AST_SNIPPET_CHARS,
-  AstEngine,
-  findCallSpans,
   formatFindCalls,
   isPlainIdentifier,
-  langForPath,
   snippetOf,
-} from "./engine.js";
-import type { AstFileInput } from "./engine.js";
+} from "./format.js";
+import { langForPath } from "./walk.js";
 
 const MULTI_LINE_SOURCE = [
   'import { foo } from "./x";',
@@ -147,11 +146,11 @@ describe("AstEngine.findCalls", () => {
   });
 });
 
-describe("findCallSpans", () => {
-  function spansOf(text: string): ReturnType<typeof findCallSpans> {
+describe("matchCalls", () => {
+  function hitsOf(text: string): ReturnType<typeof matchCalls> {
     const engine = new AstEngine();
     const root = engine.parseText(Lang.TypeScript, text);
-    return findCallSpans(root.root(), "foo");
+    return matchCalls(root.root(), "foo");
   }
 
   function sliceBytes(text: string, start: number, end: number): string {
@@ -160,54 +159,71 @@ describe("findCallSpans", () => {
 
   test("locates the callee and argument list as string offsets", () => {
     const text = "foo(1, 2);\n";
-    const spans = spansOf(text);
-    expect(spans.length).toBe(1);
-    expect(sliceBytes(text, spans[0]?.startIndex ?? -1, spans[0]?.endIndex ?? -1)).toBe("foo(1, 2)");
-    expect(sliceBytes(text, spans[0]?.calleeStartIndex ?? -1, spans[0]?.calleeEndIndex ?? -1)).toBe("foo");
-    expect(sliceBytes(text, spans[0]?.argsStartIndex ?? -1, spans[0]?.argsEndIndex ?? -1)).toBe("(1, 2)");
-    expect(spans[0]?.argCount).toBe(2);
-    expect(spans[0]?.line).toBe(1);
-    expect(spans[0]?.column).toBe(1);
+    const hits = hitsOf(text);
+    expect(hits.length).toBe(1);
+    const span = hits[0]?.span;
+    expect(sliceBytes(text, span?.startIndex ?? -1, span?.endIndex ?? -1)).toBe("foo(1, 2)");
+    expect(sliceBytes(text, span?.calleeStartIndex ?? -1, span?.calleeEndIndex ?? -1)).toBe("foo");
+    expect(sliceBytes(text, span?.argsStartIndex ?? -1, span?.argsEndIndex ?? -1)).toBe("(1, 2)");
+    expect(span?.argCount).toBe(2);
+    expect(span?.line).toBe(1);
+    expect(span?.column).toBe(1);
   });
 
   test("reports string offsets past multibyte characters", () => {
     const text = "// 😀\nfoo(1);\n";
-    const spans = spansOf(text);
-    expect(spans.length).toBe(1);
-    const callee = spans[0];
-    expect(text.slice(callee?.calleeStartIndex ?? -1, callee?.calleeEndIndex ?? -1)).toBe("foo");
-    expect(text.slice(callee?.startIndex ?? -1, callee?.endIndex ?? -1)).toBe("foo(1)");
+    const hits = hitsOf(text);
+    expect(hits.length).toBe(1);
+    const span = hits[0]?.span;
+    expect(text.slice(span?.calleeStartIndex ?? -1, span?.calleeEndIndex ?? -1)).toBe("foo");
+    expect(text.slice(span?.startIndex ?? -1, span?.endIndex ?? -1)).toBe("foo(1)");
   });
 
   test("spans a multi-line call from the callee through the closing paren", () => {
     const text = 'foo(\n  "a",\n);\n';
-    const spans = spansOf(text);
-    expect(spans.length).toBe(1);
-    expect(sliceBytes(text, spans[0]?.calleeStartIndex ?? -1, spans[0]?.calleeEndIndex ?? -1)).toBe("foo");
-    expect(sliceBytes(text, spans[0]?.argsStartIndex ?? -1, spans[0]?.argsEndIndex ?? -1)).toBe('(\n  "a",\n)');
+    const hits = hitsOf(text);
+    expect(hits.length).toBe(1);
+    const span = hits[0]?.span;
+    expect(sliceBytes(text, span?.calleeStartIndex ?? -1, span?.calleeEndIndex ?? -1)).toBe("foo");
+    expect(sliceBytes(text, span?.argsStartIndex ?? -1, span?.argsEndIndex ?? -1)).toBe('(\n  "a",\n)');
   });
 
   test("agrees with findCalls on matches and arities", () => {
     const engine = new AstEngine();
     const found = engine.findCalls(inputs([["a.ts", MULTI_LINE_SOURCE]]), { name: "foo" });
     const root = engine.parseText(Lang.TypeScript, MULTI_LINE_SOURCE);
-    const spans = findCallSpans(root.root(), "foo");
-    expect(spans.length).toBe(found.matches.length);
-    expect(spans.map((span) => span.argCount)).toEqual(found.matches.map((match) => match.argCount));
-    expect(spans.map((span) => span.line)).toEqual(found.matches.map((match) => match.line));
+    const hits = matchCalls(root.root(), "foo");
+    expect(hits.length).toBe(found.matches.length);
+    expect(hits.map((hit) => hit.span.argCount)).toEqual(found.matches.map((match) => match.argCount));
+    expect(hits.map((hit) => hit.span.line)).toEqual(found.matches.map((match) => match.line));
+  });
+
+  test("carries the same row findCalls reports", () => {
+    const engine = new AstEngine();
+    const found = engine.findCalls(inputs([["a.ts", MULTI_LINE_SOURCE]]), { name: "foo" });
+    const root = engine.parseText(Lang.TypeScript, MULTI_LINE_SOURCE);
+    const hits = matchCalls(root.root(), "foo");
+    expect(hits.map((hit) => hit.row)).toEqual(
+      found.matches.map((match) => ({
+        line: match.line,
+        column: match.column,
+        snippet: match.snippet,
+        argCount: match.argCount,
+      })),
+    );
   });
 
   test("orders nested matches outer-first for the overlap check", () => {
-    const spans = spansOf("foo(foo(1));\n");
-    expect(spans.length).toBe(2);
-    expect(spans[0]?.startIndex).toBeLessThan(spans[1]?.startIndex ?? 0);
-    expect(spans[0]?.endIndex).toBeGreaterThan(spans[1]?.endIndex ?? 0);
+    const hits = hitsOf("foo(foo(1));\n");
+    expect(hits.length).toBe(2);
+    expect(hits[0]?.span.startIndex).toBeLessThan(hits[1]?.span.startIndex ?? 0);
+    expect(hits[0]?.span.endIndex).toBeGreaterThan(hits[1]?.span.endIndex ?? 0);
   });
 
   test("refuses a non-identifier name instead of building a pattern from it", () => {
     const engine = new AstEngine();
     const root = engine.parseText(Lang.TypeScript, "foo(1);\n");
-    expect(() => findCallSpans(root.root(), "foo($$$ARGS)")).toThrow();
+    expect(() => matchCalls(root.root(), "foo($$$ARGS)")).toThrow();
   });
 });
 
