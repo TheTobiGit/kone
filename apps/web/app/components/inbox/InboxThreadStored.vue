@@ -179,7 +179,7 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
       :brand="row.brand"
       :side-chat="row.sideChat"
       :worktree-path="row.worktreePath"
-      :workspace-pending="row.workspacePending"
+      :env-mode="row.envMode"
       archivable
       @archive="onArchive"
     />

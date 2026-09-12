@@ -31,7 +31,7 @@ import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue
 import { bootProvider } from "~/utils/modelPicker";
 import { SESSION_BRAND } from "~/types/session";
 import { agentIdentity } from "~/utils/agentIdentity";
-import type { ChatAttachment } from "~/types/desktop";
+import type { ChatAttachment, SessionStartInput } from "~/types/desktop";
 import type { RecentProject } from "~/composables/useRecentProjects";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import type { ThreadSession } from "~/composables/useAgent";
@@ -129,6 +129,35 @@ const composer = useInboxComposer({
 // outside the composer's dock, so the composer could not own it.
 const branchOpen = ref(false);
 
+// Where this conversation will work, held as draft state until the first send.
+//
+// Nothing is created while it sits here: choosing a workspace is a decision, and
+// a user who opens the picker and then closes the pane must leave no directory
+// behind. The send hands it to the session, which hands it to the one start that
+// builds the worktree — after which the choice is locked, because a running
+// session cannot change the directory it is in.
+type WorkspaceChoice = { mode: "local" | "worktree"; branch: string | null };
+const workspace = ref<WorkspaceChoice>({ mode: "local", branch: null });
+
+function onWorkspacePick(choice: WorkspaceChoice): void {
+  workspace.value = choice;
+  branchOpen.value = false;
+  // Local means the project's own checkout, so the branch shown is the
+  // project's and worth re-reading; a worktree does not exist yet and has
+  // nothing to read.
+  if (choice.mode === "local") void composer.refreshBranch();
+}
+
+// The branch the work would land on. A picked worktree branch names where the
+// first turn will go, so it wins while picked; otherwise the composer's read
+// of the project's checkout.
+const displayedBranch = computed(
+  () =>
+    workspace.value.mode === "worktree" && workspace.value.branch
+      ? workspace.value.branch
+      : (composer.branch.value ?? undefined),
+);
+
 const busy = computed(() => session.value?.busy.value ?? false);
 const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const error = computed(() => session.value?.error.value ?? null);
@@ -184,6 +213,14 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // The draft goes in before the turn does — provider first, since setting it
     // clears the model. Nothing was written to this session until now.
     if (!existing) await composer.applyDraft();
+    // Where the work lands, handed over at the same moment as the rest of the
+    // draft. The session consumes it on its one start; a retry of a failed send
+    // finds the session already there and leaves the earlier choice standing.
+    if (!existing && workspace.value.mode === "worktree") {
+      const request: SessionStartInput["workspace"] = { mode: "worktree" };
+      if (workspace.value.branch) request.branch = workspace.value.branch;
+      s.stageWorkspace(request);
+    }
     // Not awaited: see the handover note above.
     const sent = s.send(text, uploaded);
     // The send gate can still refuse on a status that went stale under the
@@ -192,8 +229,18 @@ async function onSend(text: string, files?: File[]): Promise<void> {
     // the line above the composer.
     if (s.blocks.value.length === 0) {
       await sent;
+      // A refusal starts nothing, so nothing will ever report into a stepper.
+      // Make sure none is left open behind it — normally a no-op, since the
+      // open below runs only on the accepted path.
+      s.dismissWorkspaceSteps();
       return;
     }
+    // The stepper opens only once the send is accepted, so a refused send never
+    // leaves an all-pending list with nothing reporting into it — and an
+    // accepted one has it on screen for the whole build instead of appearing a
+    // beat into it. It follows the session, so it survives this pane handing
+    // over.
+    if (!existing && workspace.value.mode === "worktree") s.beginWorkspaceSteps();
     const id = s.threadId.value;
     const claimed = key.value;
     if (!id || !claimed) return;
@@ -297,8 +344,9 @@ defineExpose({ focus });
         always-open
         :project-path="projectPath"
         :project-name="projectName"
-        :branch="composer.branch.value ?? undefined"
+        :branch="displayedBranch ?? undefined"
         :branch-switchable="!sending"
+        :env-mode="workspace.mode"
         :thread-name="session?.title.value"
         :thread-id="session?.threadId.value"
         :busy="busy"
@@ -332,15 +380,15 @@ defineExpose({ focus });
       />
     </div>
 
-    <!-- Switching branch here moves the working tree, which every other surface
-         on this repository shares. That is the honest cost of choosing where
-         the work lands before it starts, and it is why the offer closes the
-         moment the thread does. -->
+    <!-- Asking where the work lands, not moving anything. A conversation that
+         takes a branch of its own gets a directory of its own, built on the
+         first send — so the project's checkout, which every other surface on
+         this repository shares, stays exactly where the user left it. -->
     <ConversationBranchPickerModal
       v-if="branchOpen"
+      mode="select"
       :project-path="projectPath"
-      :refresh="composer.refreshBranch"
-      @switched="branchOpen = false"
+      @picked="onWorkspacePick"
       @cancel="branchOpen = false"
     />
 

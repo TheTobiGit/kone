@@ -27,6 +27,7 @@ import InboxRowMenu, {
 import { useAllRecentSessions } from "~/composables/useAllRecentSessions";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { sessionBrand } from "~/utils/modelCatalog";
+import { isWorkspacePending } from "~/utils/threadWorkspace";
 import { timeAgo } from "~/utils/timeAgo";
 import type { TurnOrbState } from "~/utils/thinkingOrb";
 import type { HugeIcon } from "~/utils/toolPresentation";
@@ -222,7 +223,7 @@ function whereTitle(s: SessionSummary): string {
   // project's checkout is already fully described by the two lines above.
   const lives = s.worktreePath
     ? `Works in its own worktree:\n${s.worktreePath}`
-    : s.workspacePending
+    : isWorkspacePending(s)
       ? "Its worktree hasn't been created yet."
       : null;
   return [where, ran, lives].filter(Boolean).join("\n");
@@ -298,7 +299,7 @@ function select(): void {
                threads are, so marking them all would say nothing. The
                tooltip spells it out. -->
           <span
-            v-if="thread.projectName || thread.branch || thread.worktreePath || thread.workspacePending"
+            v-if="thread.projectName || thread.branch || thread.worktreePath || isWorkspacePending(thread)"
             class="tl__chip"
             :title="whereTitle(thread)"
           >
@@ -312,6 +313,11 @@ function select(): void {
               />
               <span class="tl__branch-name">{{ thread.branch }}</span>
             </span>
+            <ThreadWorkspaceMark
+              class="tl__workspace"
+              :worktree-path="thread.worktreePath"
+              :env-mode="thread.envMode"
+            />
           </span>
         </span>
 
@@ -665,11 +671,19 @@ function select(): void {
    same rule carries the workspace mark, which follows whichever of the two
    actually rendered. */
 .tl__where + .tl__branch,
+.tl__where + .tl__workspace,
+.tl__branch + .tl__workspace {
   margin-left: 4px;
   padding-left: 5px;
   border-left: 1px solid color-mix(in oklab, var(--faint) 35%, transparent);
 }
 
+/* Gives way before the branch does: which branch the turn ran on is the more
+   useful half when the row is narrow. */
+.tl__workspace {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 
 /* One slot, two occupants. The stamp is laid out and the actions are stacked
    over it, so the row's width is decided by the wider of the two once and never

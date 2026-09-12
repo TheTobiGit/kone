@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { ForkContext, StoredThreadMeta } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
+import { isWorkspacePending } from "./threadWorkspace";
 import {
   byRecency,
   DONE_CLEARED,
@@ -100,6 +101,25 @@ describe("summarizeSession — flatten a stored thread into a list row", () => {
   test("carries snippet when present on meta", () => {
     expect(summarizeSession(meta({ snippet: "Done and reviewed." }), false).snippet).toBe("Done and reviewed.");
     expect(summarizeSession(meta(), false).snippet).toBeUndefined();
+  });
+
+  test("carries the pending worktree request alongside the place", () => {
+    const pending = summarizeSession(
+      meta({ envMode: "worktree", worktreePath: null, requestedBranch: "feature/picker" }),
+      false,
+    );
+    expect(pending.envMode).toBe("worktree");
+    expect(pending.worktreePath).toBeUndefined();
+    expect(isWorkspacePending(pending)).toBe(true);
+    expect(pending.requestedBranch).toBe("feature/picker");
+
+    const ready = summarizeSession(
+      meta({ envMode: "worktree", worktreePath: "/wt/picker", requestedBranch: null }),
+      false,
+    );
+    expect(ready.envMode).toBe("worktree");
+    expect(isWorkspacePending(ready)).toBe(false);
+    expect(ready.worktreePath).toBe("/wt/picker");
   });
 });
 

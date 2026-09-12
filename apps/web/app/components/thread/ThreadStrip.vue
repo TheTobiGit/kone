@@ -1479,6 +1479,8 @@ watch(
       :repo="repo"
       :branch="branch"
       :origin="origin"
+      :worktree-path="infoSession.worktreePath.value"
+      :env-mode="infoSession.envMode.value"
       @close="closeInfo"
       @rename="onRename"
     />

@@ -13,7 +13,7 @@ import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { sessionBrand, type BrandKey } from "~/utils/modelCatalog";
 import type { MeterCompactProps } from "~/utils/compactAvailability";
-import type { ProviderKind, TokenUsage } from "~/types/desktop";
+import type { ProviderKind, ThreadEnvMode, TokenUsage } from "~/types/desktop";
 
 const props = defineProps<{
   /** Thread title displayed as the prominent heading. */
@@ -41,8 +41,10 @@ const props = defineProps<{
   /** The directory this conversation works in, when it is not the project's own
    *  checkout. Absent is the ordinary case and wears no mark. */
   worktreePath?: string | null;
-  /** A worktree was chosen for this conversation and does not exist yet. */
-  workspacePending?: boolean;
+  /** What this conversation asked for. A worktree choice with no directory yet
+   *  is still being built — the mark derives that from these two facts, rather
+   *  than taking it as a separate flag. */
+  envMode?: ThreadEnvMode | null;
 }>();
 
 const emit = defineEmits<{
@@ -107,6 +109,13 @@ const effectiveBrand = computed(() =>
     </div>
 
     <div class="ith__tail">
+      <!-- Where this conversation works, for as long as you are reading it.
+           Nothing renders for a thread in the project's checkout. -->
+      <ThreadWorkspaceMark
+        class="ith__workspace"
+        :worktree-path="worktreePath"
+        :env-mode="envMode"
+      />
       <ContextWindowMeter
         v-if="tokenUsage"
         :usage="tokenUsage"

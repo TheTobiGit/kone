@@ -1,4 +1,4 @@
-import type { ProviderKind } from "~/types/desktop";
+import type { ProviderKind, ThreadEnvMode } from "~/types/desktop";
 import type { BrandKey } from "~/utils/modelCatalog";
 
 // A single line in the Project Home "recent conversations" list (the PINNED /
@@ -35,9 +35,13 @@ export type SessionSummary = {
    *  running in the project's own checkout — which is most of them — so a
    *  surface can tell "somewhere of its own" from "here" by presence alone. */
   worktreePath?: string | null;
-  /** True while a chosen worktree is still being built: the conversation has
-   *  asked for its own directory and does not have one yet, so it cannot run. */
-  workspacePending?: boolean;
+  /** What this conversation asked for: its own worktree, or the project's
+   *  checkout. Absent reads as local. A raw fact, not the pending verdict —
+   *  surfaces derive that at the mark, so a row never disagrees with itself. */
+  envMode?: ThreadEnvMode;
+  /** The branch a pending worktree was asked for, when the user named one.
+   *  Carried for display and rebuilds; null when generated or already built. */
+  requestedBranch?: string | null;
   added?: number;
   removed?: number;
   /** Total tokens spent across the thread, when known. */

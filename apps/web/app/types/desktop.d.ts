@@ -163,6 +163,34 @@ export type GitStashEntry = {
   relative: string;
 };
 
+export type GitWorktree = {
+  /** Absolute path to the working directory, canonicalized. */
+  path: string;
+  /** Commit HEAD points at; null on a bare repository's own entry. */
+  head: string | null;
+  /** Short branch name ("main"). Null when detached or bare. */
+  branch: string | null;
+  detached: boolean;
+  /** The repository's own entry for a bare repo — not a checkout. */
+  bare: boolean;
+  /** The primary checkout; always listed first. */
+  main: boolean;
+  locked: boolean;
+  /** Why it is locked, or null when locked without a reason (or unlocked). */
+  lockReason: string | null;
+  /** Git's own reason this entry can be pruned; null when intact. */
+  prunableReason: string | null;
+};
+
+export type CreateWorktreeOptions = {
+  /** Absolute path of the directory to create. */
+  path: string;
+  /** Branch to create and check out there. Must not already exist. */
+  branch: string;
+  /** Ref the new branch starts from. Defaults to HEAD. */
+  base?: string;
+};
+
 export type GitCommitFile = {
   path: string;
   from?: string;
@@ -608,6 +636,15 @@ export type KoneGitApi = {
   stashApply: (dir: string, index: number, opts?: { pop?: boolean }) => Promise<void>;
   stashDrop: (dir: string, index: number) => Promise<void>;
 
+  /** Every checkout of this repository, the primary one first. */
+  worktrees: (dir: string) => Promise<GitWorktree[]>;
+  /** Create a worktree on a new branch. */
+  worktreeAdd: (dir: string, input: CreateWorktreeOptions) => Promise<GitWorktree>;
+  /** `force: true` discards uncommitted work; it does not override a lock. */
+  worktreeRemove: (dir: string, input: { path: string; force?: boolean }) => Promise<void>;
+  /** Unregister worktrees whose directories are gone; returns their paths. */
+  worktreePrune: (dir: string) => Promise<string[]>;
+
   /** Repo README markdown, or null when the repo has none. */
   readme: (dir: string) => Promise<GitReadme | null>;
   /** The name/email git attributes work to in this repo. */
@@ -790,7 +827,21 @@ export type AgentPersona = {
 export type SessionStartInput = {
   threadId: string;
   provider: ProviderKind;
+  /** The project this conversation belongs to — its identity, not necessarily
+   *  where its process runs. A thread that owns a worktree is registered here
+   *  and spawned there; the main process resolves the place. */
   cwd: string;
+  /** What this conversation asked for before its first message — the one moment
+   *  the choice can be made, because a live session cannot change the directory
+   *  it is running in. Absent, or `mode: "local"`, runs in the project's own
+   *  checkout. */
+  workspace?: {
+    mode: ThreadEnvMode;
+    /** Branch the worktree goes on. A name is generated when absent. */
+    branch?: string;
+    /** Ref that branch starts from. The project's HEAD when absent. */
+    base?: string;
+  };
   model?: string;
   mode?: InteractionMode;
   /** Reasoning-effort tier. Flag-based providers (Codex) take effort per turn
@@ -1183,6 +1234,11 @@ export type RuntimeEventSource =
   // never crosses the bridge, so nothing downstream can observe this source.
   | "kone.mock";
 
+/** The three things that happen between choosing a worktree and a session
+ *  running in it. Named rather than numbered so a surface can render them in a
+ *  fixed order and still recognize one that arrives out of turn. */
+export type ThreadWorkspaceStep = "create" | "link" | "start";
+
 export type AgentBaseEvent = {
   threadId: string;
   provider: ProviderKind;
@@ -1210,6 +1266,14 @@ export type RuntimeEvent =
   | (AgentBaseEvent & { type: "session.exited"; code: number | null })
   | (AgentBaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (AgentBaseEvent & { type: "thread.title.updated"; title: string })
+  // Building the working tree a conversation asked for, before its session can
+  // start. Transient and never journaled.
+  | (AgentBaseEvent & {
+      type: "thread.workspace.progress";
+      step: ThreadWorkspaceStep;
+      state: "running" | "done" | "failed";
+      message?: string;
+    })
   // The provider compacted the thread's context window — natively or
   // synthesized after a manual `/compact` turn. Consumers invalidate any
   // pre-compaction usage snapshot on this and wait for the next
@@ -1456,6 +1520,10 @@ export type RuntimeEvent =
 // UserBlock | AssistantBlock timeline shape the renderer uses, so a reloaded
 // thread drops straight into `blocks`. Mirrors packages/agent-core/src/types.ts.
 
+/** What a conversation asked for: the project's own checkout, or a worktree of
+ *  its own. Absent or unrecognized reads as "local". */
+export type ThreadEnvMode = "local" | "worktree";
+
 export type StoredThreadMeta = {
   threadId: string;
   projectPath: string;
@@ -1464,8 +1532,21 @@ export type StoredThreadMeta = {
   conversationId?: string;
   createdAt: number;
   updatedAt: number;
-  /** The branch the project was on when the thread last ran. */
+  /** The branch this thread's working directory was on when it last ran — its
+   *  worktree's branch when it has one, the project's otherwise. */
   branch?: string | null;
+  /** What this thread asked for: its own worktree, or the project's checkout.
+   *  Absent reads as "local". */
+  envMode?: ThreadEnvMode;
+  /** The worktree this thread owns, once it has actually been created. Null
+   *  while a chosen worktree is still being built, and on every local thread.
+   *  Distinct from `projectPath`, which stays the thread's identity: this is
+   *  where it runs, that is what it belongs to. */
+  worktreePath?: string | null;
+  /** The branch a pending worktree was asked for. Set alongside the intent
+   *  before the build, cleared when the worktree materializes or the thread
+   *  returns to local. */
+  requestedBranch?: string | null;
   /** Working-tree diffstat snapshotted at the thread's last turn. */
   added?: number;
   removed?: number;
@@ -2389,6 +2470,9 @@ export type KoneAgentApi = {
   renameThread: (threadId: string, title: string) => Promise<boolean>;
   /** Start a thread; resolves once the session is ready. */
   startSession: (input: SessionStartInput) => Promise<Session>;
+  /** Back out of a worktree still being built. Does not interrupt git — what the
+   *  creation produces is removed once it finishes. */
+  cancelWorkspace: (threadId: string) => Promise<void>;
   /** Persist an attachment's bytes to disk; resolves to the bytes-free
    *  ChatAttachment the composer then carries on its next turn. */
   uploadAttachment: (input: UploadAttachmentInput) => Promise<ChatAttachment>;

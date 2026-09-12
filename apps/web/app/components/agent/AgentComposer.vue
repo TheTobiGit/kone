@@ -18,7 +18,7 @@ import AgentPickerModal from "~/components/agent/AgentPickerModal.vue";
 import ProjectFileMentionMenu from "~/components/composer/ProjectFileMentionMenu.vue";
 import SlashCommandMenu from "~/components/composer/SlashCommandMenu.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
-import type { AttachmentKind, InteractionMode } from "~/types/desktop";
+import type { AttachmentKind, InteractionMode, ThreadEnvMode } from "~/types/desktop";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 import { useComposerAttachments } from "~/composables/useComposerAttachments";
 import { useComposerDraft } from "~/composables/useComposerDraft";
@@ -28,6 +28,7 @@ import { useComposerTrigger } from "~/composables/useComposerTrigger";
 import type { MentionItem, MentionProject, SlashCommandItem } from "~/utils/composerMentions";
 import { SLASH_COMMANDS } from "~/composables/useComposerSlash";
 import { createMentionKindResolver, parseLeadingSlashCommand } from "~/utils/composerMentions";
+import { isWorkspacePending } from "~/utils/threadWorkspace";
 import { agentIdentity } from "~/utils/agentIdentity";
 import { agentForThread, GUEST_LABEL, type Agent } from "~/utils/agents";
 import { botMark } from "~/utils/bot";
@@ -76,8 +77,17 @@ const props = defineProps<{
    *  the chip is gone. */
   branch?: string;
   /** When true (the default), the branch chip opens the picker. Once a thread
-   *  has already started, the host turns this off so the chip is only a label. */
+   *  has already started, the host turns this off so the chip is only a label —
+   *  a running session cannot be moved to another directory, so offering the
+   *  control would be offering something that cannot be honoured. */
   branchSwitchable?: boolean;
+  /** The directory this conversation works in, when it is not the project's own
+   *  checkout. Absent is the ordinary case and shows nothing. */
+  worktreePath?: string | null;
+  /** What this conversation asked for. A worktree choice with no directory yet
+   *  is still being built — the tray derives that from these two facts at the
+   *  mark, rather than taking it as a separate flag. */
+  envMode?: ThreadEnvMode | null;
   /** The focused thread's title, parked on the far right of the tray so the
    *  left stays who and where. Empty / missing falls back to "New thread". */
   threadName?: string;
@@ -1217,12 +1227,15 @@ defineExpose({ wake, setDraft, focus });
         <HugeiconsIcon :icon="Folder01Icon" :size="13" :stroke-width="1.8" />
         <span class="tray__label tray__label--strong">{{ projectName }}</span>
       </span>
+      <!-- Switchable only before the first send, which is also the only moment
+           the workspace can be chosen — so this one control asks both halves of
+           "where does this work land". -->
       <button
         v-if="branch && canSwitchBranch"
         type="button"
         class="tray__item tray__item--action"
-        :aria-label="`On ${branch}. Switch branch.`"
-        :title="`On ${branch} — click to switch branch`"
+        :aria-label="`On ${branch}. Choose where this conversation works.`"
+        :title="`On ${branch} — click to choose where this conversation works`"
         @click.stop="emit('open-branch')"
       >
         <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
@@ -1235,6 +1248,16 @@ defineExpose({ wake, setDraft, focus });
       >
         <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="1.8" />
         <span class="tray__label">{{ branch }}</span>
+      </span>
+      <!-- Frozen once the thread has started: the same words, with nothing that
+           implies you can still change them. Renders nothing for a conversation
+           in the project's own checkout. -->
+      <span v-if="worktreePath || isWorkspacePending({ envMode, worktreePath })" class="tray__item">
+        <ThreadWorkspaceMark
+          class="tray__workspace"
+          :worktree-path="worktreePath"
+          :env-mode="envMode"
+        />
       </span>
       <span
         class="tray__item tray__item--end"
@@ -1714,6 +1737,13 @@ html.dark .dock {
   text-overflow: ellipsis;
 }
 .tray__label--strong { opacity: 0.86; }
+/* Reads at the same weight as the branch beside it — one statement about where
+   the work goes, not two facts of different importance. */
+.tray__workspace {
+  color: var(--ink);
+  opacity: 0.62;
+  max-width: 148px;
+}
 .tray__item--action {
   cursor: pointer;
   transition: background-color 0.2s ease;

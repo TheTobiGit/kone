@@ -14,8 +14,9 @@ import { describeModelId, EFFORT_META, type BrandKey, type EffortTier } from "~/
 import { PROVIDER_LABEL } from "~/utils/usageProviders";
 import { formatContextTokens as fmt } from "~/utils/formatContextTokens";
 import { brainStack } from "~/utils/subagentRuns";
+import { isWorkspacePending } from "~/utils/threadWorkspace";
 import type { ThreadSession } from "~/composables/useAgent";
-import type { GitRemote, ProviderKind } from "~/types/desktop";
+import type { GitRemote, ProviderKind, ThreadEnvMode } from "~/types/desktop";
 
 // The thread-info drop-down — the natural read-out of a conversation's name.
 // Clicking the column title opens this beneath it: the thread's own name leads,
@@ -37,6 +38,14 @@ const props = defineProps<{
   /** The project's origin remote, when it has one — what turns the Repo row
    *  from a folder name into the hosted repo it tracks. */
   origin?: GitRemote | null;
+  /** The directory this conversation works in, when that is not the project's
+   *  own checkout. The Branch row above means two different things depending on
+   *  it, so where there is a worktree it is named rather than implied. */
+  worktreePath?: string | null;
+  /** What this conversation asked for. A worktree choice with no directory yet
+   *  is still being built — the row derives that from these two facts at the
+   *  mark, rather than taking it as a separate flag. */
+  envMode?: ThreadEnvMode | null;
 }>();
 
 const inGitProject = computed(() => Boolean(props.branch));
@@ -376,6 +385,17 @@ onBeforeUnmount(() => {
               <dd class="tip__branch" :title="branch">
                 <HugeiconsIcon :icon="GitBranchIcon" :size="13" :stroke-width="2" aria-hidden="true" />
                 <span>{{ branch }}</span>
+              </dd>
+            </div>
+            <!-- Only when it is not the ordinary answer. A thread in the
+                 project's checkout works where the Repo row already said. -->
+            <div v-if="worktreePath || isWorkspacePending({ envMode, worktreePath })" class="tip__row">
+              <dt>Works in</dt>
+              <dd class="tip__branch">
+                <ThreadWorkspaceMark
+                  :worktree-path="worktreePath"
+                  :env-mode="envMode"
+                />
               </dd>
             </div>
           </template>

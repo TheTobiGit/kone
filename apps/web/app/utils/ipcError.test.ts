@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   classifyIpcError,
+  isWorkspaceCancel,
   kindHint,
   peelIpcError,
   peelIpcErrorLine,
@@ -173,5 +174,27 @@ describe("kindHint", () => {
 
   test("gives a retry hint for TIMEOUT", () => {
     expect(kindHint("TIMEOUT")).toBe("The request timed out — try again.");
+  });
+});
+
+describe("isWorkspaceCancel", () => {
+  test("recognizes the classified cancellation through the IPC wrapper", () => {
+    const err = new Error(
+      "Error invoking remote method 'agent:start-session': GitError: [kone:WORKSPACE_CANCELLED] Preparing the worktree was cancelled.",
+    );
+    expect(isWorkspaceCancel(err)).toBe(true);
+    expect(classifyIpcError(err, "fallback").kind).toBe("WORKSPACE_CANCELLED");
+  });
+
+  test("peels the marker so a cancel never renders raw", () => {
+    const err = new Error("[kone:WORKSPACE_CANCELLED] Preparing the worktree was cancelled.");
+    expect(peelIpcError(err, "fallback")).toBe("Preparing the worktree was cancelled.");
+  });
+
+  test("rejects ordinary failures", () => {
+    expect(isWorkspaceCancel(new Error("boom"))).toBe(false);
+    expect(
+      isWorkspaceCancel(new Error("[kone:TIMEOUT] git:status timed out after 20000ms")),
+    ).toBe(false);
   });
 });

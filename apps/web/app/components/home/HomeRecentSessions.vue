@@ -403,6 +403,14 @@ function hasMetricValue(s: SessionSummary): boolean {
                 {{ s.branch }}
               </span>
 
+              <!-- Only for a conversation working somewhere of its own; the
+                   ordinary case wears nothing. -->
+              <ThreadWorkspaceMark
+                class="rs__workspace"
+                :worktree-path="s.worktreePath"
+                :env-mode="s.envMode"
+              />
+
               <template v-if="hasDiff(s)">
                 <span v-if="s.added" class="rs__add">+{{ s.added }}</span>
                 <span v-if="s.removed" class="rs__del">−{{ s.removed }}</span>
@@ -914,6 +922,11 @@ function hasMetricValue(s: SessionSummary): boolean {
   align-items: center;
   gap: 5px;
   min-width: 0;
+}
+.rs__workspace {
+  gap: 5px;
+  min-width: 0;
+  max-width: 16ch;
 }
 .rs__branch svg {
   flex-shrink: 0;
