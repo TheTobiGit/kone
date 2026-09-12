@@ -1,3 +1,4 @@
+import { createGlobalState } from "@vueuse/core";
 import type { StoredThreadMeta } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import { useRecentProjects } from "~/composables/useRecentProjects";
@@ -137,8 +138,22 @@ export interface AllRecentSessionsOptions {
 }
 
 export function useAllRecentSessions(options?: AllRecentSessionsOptions) {
-  const { recents } = useRecentProjects();
   const archived = options?.archived === true;
+  return archived ? useArchivedAllRecentSessions() : useLiveAllRecentSessions();
+}
+
+// One live pipeline per source key (live vs archived), shared by every caller.
+// The backing store lives in an app-scoped effect scope, created once and shared
+// by every caller — NOT re-created per component. Each useSessionList instance
+// eagerly load()s (one SQLite list() per recent project) and subscribes to the
+// event pump with its own debounced refetch, so per-component instances drift:
+// a menu pin flips one copy while the rendered rows hold another. Sharing one
+// instance per archived flag means togglePin/archive mutate once and every
+// reader (launcher rows, menu target resolution, inbox live/archived lists)
+// sees it. Live and archived are disjoint queries over one column, so they stay
+// separate pipelines keyed by the flag.
+function buildAllRecentSessions(archived: boolean) {
+  const { recents } = useRecentProjects();
   const history = () =>
     import.meta.client ? window.koneDesktop?.agent?.history : undefined;
 
@@ -174,3 +189,10 @@ export function useAllRecentSessions(options?: AllRecentSessionsOptions) {
     trigger: () => recents.value.map((p) => p.path).join("\n"),
   });
 }
+
+// createGlobalState is SSR-safe here for the same reason as the recent-projects
+// store: useSessionList already guards the bridge behind import.meta.client and
+// falls back to mocks on the server, so the shared scope holds mock rows there
+// and hydrates from SQLite on the client.
+const useLiveAllRecentSessions = createGlobalState(() => buildAllRecentSessions(false));
+const useArchivedAllRecentSessions = createGlobalState(() => buildAllRecentSessions(true));
