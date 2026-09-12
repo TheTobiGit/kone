@@ -30,6 +30,8 @@ import type {
   GitRemote,
   GitRepoState,
   GitStashEntry,
+  GitWorktree,
+  CreateWorktreeOptions,
 } from "~/types/desktop";
 
 // Everything behind the Git Space, in one funnel.
@@ -62,7 +64,8 @@ export type GitSpaceOp =
   | "branch"
   | "stash"
   | "pr"
-  | "checkout";
+  | "checkout"
+  | "worktree";
 
 /** How many commits one page of history holds. */
 const PAGE = 50;
@@ -85,6 +88,7 @@ export function useGitSpace(
   const commitsDone = ref(false);
   const branches = ref<GitBranch[]>([]);
   const stashes = ref<GitStashEntry[]>([]);
+  const worktrees = ref<GitWorktree[]>([]);
   const prs = ref<GitHubPullRequest[]>([]);
   const gh = ref<GitHubStatus | null>(null);
   const prState = ref<"open" | "all">("open");
@@ -182,6 +186,12 @@ export function useGitSpace(
   function loadStashes(): Promise<void> {
     return once("stashes", async () => {
       stashes.value = await bridge.stashes(dir()).catch(() => []);
+    });
+  }
+
+  function loadWorktrees(): Promise<void> {
+    return once("worktrees", async () => {
+      worktrees.value = await bridge.worktrees(dir()).catch(() => []);
     });
   }
 
@@ -425,6 +435,25 @@ export function useGitSpace(
     return act("stash", () => bridge.stashDrop(dir(), index), loadStashes);
   }
 
+  function addWorktree(input: CreateWorktreeOptions): Promise<boolean> {
+    // A new worktree claims a branch, so the branch list is stale too — but the
+    // project's own checkout has not moved, so its status is not.
+    return act("worktree", () => bridge.worktreeAdd(dir(), input).then(() => undefined), () =>
+      Promise.all([loadWorktrees(), loadBranches()]),
+    );
+  }
+  /** `force` discards uncommitted work in that worktree. It does not override a
+   *  lock — a locked worktree comes back as WORKTREE_LOCKED for the caller to
+   *  decide about. */
+  function removeWorktree(path: string, force = false): Promise<boolean> {
+    return act("worktree", () => bridge.worktreeRemove(dir(), { path, force }), () =>
+      Promise.all([loadWorktrees(), loadBranches()]),
+    );
+  }
+  function pruneWorktrees(): Promise<boolean> {
+    return act("worktree", () => bridge.worktreePrune(dir()).then(() => undefined), loadWorktrees);
+  }
+
   /** Resolves the created PR (for the composer's success line), or null on
    *  failure — the message is already in `error` by then. */
   async function createPr(
@@ -470,6 +499,7 @@ export function useGitSpace(
     commitsDone,
     branches,
     stashes,
+    worktrees,
     prs,
     gh,
     prState,
@@ -488,6 +518,7 @@ export function useGitSpace(
     loadCommits,
     loadBranches,
     loadStashes,
+    loadWorktrees,
     loadPrs,
     loadAbout,
     loadCommitAuthors,
@@ -514,6 +545,9 @@ export function useGitSpace(
     stash,
     applyStash,
     dropStash,
+    addWorktree,
+    removeWorktree,
+    pruneWorktrees,
     createPr,
     checkoutPr,
     openExternal,

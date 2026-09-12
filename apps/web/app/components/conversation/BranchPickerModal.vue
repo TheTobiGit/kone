@@ -1,31 +1,57 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { motion } from "motion-v";
 import { Magnet } from "~/components/ui/magnet";
 import type { GitBranch } from "~/types/desktop";
 import { useModalExit } from "~/composables/useModalExit";
 
-// "Switch branch" overlay — the same scrim + elastic card shell the folder and
-// model pickers use (bottom-left anchored, a hairline ring, a springy height
-// that settles as the list loads), wrapped around a list of the project's local
-// branches. Picking one checks it out here, then waits (spinner up, scrim
-// locked) for the app's git model to re-read — so the card only leaves once the
-// new branch's changes are on screen — before it plays its exit and reports
-// `switched`.
+// The branch overlay — the same scrim + elastic card shell the folder and model
+// pickers use (bottom-left anchored, a hairline ring, a springy height that
+// settles as the list loads), wrapped around a list of the project's local
+// branches.
+//
+// It answers two different questions, and the difference matters because one of
+// them moves the user's files.
+//
+// `checkout` is the project's own "Switch branch": picking a branch checks it
+// out, then waits (spinner up, scrim locked) for the app's git model to re-read
+// — so the card only leaves once the new branch's changes are on screen.
+//
+// `select` is a new conversation choosing where its work will land. Nothing is
+// checked out and nothing is created: it reports a choice, and the directory is
+// built later, on the first send, so a user who opens this and changes their
+// mind leaves nothing behind. A conversation that takes a branch of its own gets
+// a working tree of its own, which is the only way two conversations in one
+// project can be on two branches at once.
 
-const props = defineProps<{
-  projectPath: string;
-  // Re-reads the open project's git model. Awaited after the checkout so the
-  // picker doesn't leave until the new branch's changes have actually landed on
-  // screen — a big tree can take a beat, and closing early would flash stale
-  // counts behind the fading scrim.
-  refresh?: () => Promise<void>;
-}>();
+type PickerMode = "checkout" | "select";
+
+const props = withDefaults(
+  defineProps<{
+    projectPath: string;
+    mode?: PickerMode;
+    // Re-reads the open project's git model. Awaited after the checkout so the
+    // picker doesn't leave until the new branch's changes have actually landed on
+    // screen — a big tree can take a beat, and closing early would flash stale
+    // counts behind the fading scrim.
+    refresh?: () => Promise<void>;
+  }>(),
+  { mode: "checkout", refresh: undefined },
+);
 
 const emit = defineEmits<{
   switched: [branch: string];
+  /** `select` only. `local` shares the project's checkout and its branch;
+   *  `worktree` carries the branch the conversation's own directory goes on. */
+  picked: [choice: { mode: "local" | "worktree"; branch: string | null }];
   cancel: [];
 }>();
+
+const selecting = computed(() => props.mode === "select");
+/** `select` only: which half of the question is on screen. The branch list is
+ *  the second step, because it only means anything once the conversation has
+ *  said it wants somewhere of its own. */
+const where = ref<"local" | "worktree">("local");
 
 const git = useGit();
 
@@ -51,7 +77,14 @@ async function load() {
 }
 
 async function choose(b: GitBranch) {
-  if (b.current || switchingTo.value) return;
+  if (switchingTo.value) return;
+  if (selecting.value) {
+    // Nothing happens here but a decision. The branch is not checked out, no
+    // directory is made, and the conversation can still be abandoned.
+    close(() => emit("picked", { mode: "worktree", branch: b.name }));
+    return;
+  }
+  if (b.current) return;
   switchingTo.value = b.name;
   switchError.value = null;
   try {
@@ -156,13 +189,15 @@ const cardSpring = {
       :transition="cardSpring"
       role="dialog"
       aria-modal="true"
-      aria-label="Switch branch"
+      :aria-label="selecting ? 'Where this conversation works' : 'Switch branch'"
     >
       <div ref="contentEl" class="branch-browser flex shrink-0 flex-col px-3 pb-3">
         <!-- Header band: title + dismiss, the same recessed band the folder
              browser wears. -->
         <div class="picker-header -mx-3 mb-3 flex items-center justify-between gap-4">
-          <span class="branch-title">Switch branch</span>
+          <span class="branch-title">{{
+            selecting ? "Where this conversation works" : "Switch branch"
+          }}</span>
           <button
             type="button"
             class="picker-action shrink-0 text-muted"
@@ -173,7 +208,46 @@ const cardSpring = {
           </button>
         </div>
 
+        <!-- The first half of the question, asked only for a new conversation:
+             does this work land in the project's checkout, where every other
+             surface will see it, or in a directory of its own. -->
+        <div v-if="selecting" class="flex w-full flex-col items-start gap-0.5">
+          <button
+            type="button"
+            role="menuitemradio"
+            :aria-checked="where === 'local'"
+            class="picker-row"
+            @click="close(() => emit('picked', { mode: 'local', branch: null }))"
+          >
+            <span class="picker-label">Project checkout</span>
+            <span class="branch-tag">shares its branch</span>
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            :aria-checked="where === 'worktree'"
+            class="picker-row"
+            :class="{ 'is-current': where === 'worktree' }"
+            @click="where = 'worktree'"
+          >
+            <span class="picker-label">Its own worktree</span>
+            <span class="branch-tag">on its own branch</span>
+          </button>
+          <p v-if="where === 'worktree'" class="branch-note">
+            Which branch? A new one is made for you if you skip this.
+          </p>
+          <button
+            v-if="where === 'worktree'"
+            type="button"
+            class="picker-row"
+            @click="close(() => emit('picked', { mode: 'worktree', branch: null }))"
+          >
+            <span class="picker-label">Name one for me</span>
+          </button>
+        </div>
+
         <div
+          v-if="!selecting || where === 'worktree'"
           class="picker-scroll relative flex max-h-[48vh] w-full flex-col items-start gap-0.5 overflow-y-auto overflow-x-hidden py-1"
         >
           <p v-if="loading" class="branch-note">Loading…</p>
@@ -196,7 +270,7 @@ const cardSpring = {
               type="button"
               role="menuitemradio"
               :aria-checked="b.current"
-              :disabled="b.current || !!switchingTo"
+              :disabled="(b.current && !selecting) || !!switchingTo"
               class="picker-row"
               :class="{ 'is-current': b.current }"
               @click="choose(b)"

@@ -9,9 +9,10 @@
 //
 // The kinds vocabulary, marker format, and parser live in @kone/protocol —
 // this module only adds the renderer-side unwrapping and presentation hints.
-import { parseKind, type IpcErrorKind } from "@kone/protocol/ipc-error";
+import { isWorkspaceCancel, parseKind, type IpcErrorKind } from "@kone/protocol/ipc-error";
 
 export type { IpcErrorKind };
+export { isWorkspaceCancel };
 
 /** Drop a leading kind marker via the shared protocol parser. The marker is a
  *  serialization detail, never something a user should read. */
@@ -86,6 +87,20 @@ export function kindHint(kind: IpcErrorKind | null): string | null {
       return "That request was malformed.";
     case "TIMEOUT":
       return "The request timed out — try again.";
+    case "WORKTREE_BRANCH_IN_USE":
+      return "Another workspace is already on that branch.";
+    case "WORKTREE_BRANCH_EXISTS":
+      return "That branch already exists — pick another name.";
+    case "WORKTREE_DIRTY":
+      return "That workspace has uncommitted changes.";
+    case "WORKTREE_LOCKED":
+      return "That workspace is locked — unlock it first.";
+    case "WORKTREE_PATH_EXISTS":
+      return "Something is already at that path.";
+    case "WORKTREE_STALE_REGISTRATION":
+      return "A removed workspace is still registered — prune it first.";
+    case "WORKTREE_IS_MAIN":
+      return "That's the project's own checkout, not a workspace.";
     default:
       return null;
   }

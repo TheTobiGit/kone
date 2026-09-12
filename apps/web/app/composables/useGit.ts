@@ -28,6 +28,8 @@ import type {
   GitRepoState,
   GitRunStackedActionInput,
   GitRunStackedActionResult,
+  GitWorktree,
+  CreateWorktreeOptions,
   GitStashEntry,
   GitStatus,
 } from "~/types/desktop";
@@ -121,6 +123,12 @@ export function useGit() {
     stashes(dir: string): Promise<GitStashEntry[]> {
       if (git) return git.stashes(dir);
       return withLatency(mockStashes(dir)).then((s) => s ?? []);
+    },
+    // Worktrees need a real filesystem and a git binary, so browser dev has
+    // none to report rather than a demo-world stand-in — a mock worktree would
+    // claim a directory that does not exist.
+    worktrees(dir: string): Promise<GitWorktree[]> {
+      return git ? git.worktrees(dir) : Promise.resolve([]);
     },
     // Live status. Only the desktop bridge can watch a real filesystem, so in
     // `nuxt dev` this is a no-op (the mock repos never change on disk anyway).
@@ -228,6 +236,16 @@ export function useGit() {
     },
     stashDrop(dir: string, index: number): Promise<void> {
       return git ? git.stashDrop(dir, index) : beat();
+    },
+    worktreeAdd(dir: string, input: CreateWorktreeOptions): Promise<GitWorktree> {
+      if (git) return git.worktreeAdd(dir, input);
+      return Promise.reject(new Error("Worktrees need the desktop app."));
+    },
+    worktreeRemove(dir: string, input: { path: string; force?: boolean }): Promise<void> {
+      return git ? git.worktreeRemove(dir, input) : beat();
+    },
+    worktreePrune(dir: string): Promise<string[]> {
+      return git ? git.worktreePrune(dir) : Promise.resolve([]);
     },
 
     // ── About section ───────────────────────────────────────────────────────

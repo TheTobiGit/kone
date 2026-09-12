@@ -19,14 +19,18 @@ import ConversationThread from "~/components/conversation/ConversationThread.vue
 import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import AgentComposer from "~/components/agent/AgentComposer.vue";
 import ProviderHealthBanner from "~/components/provider/ProviderHealthBanner.vue";
+import ThreadBranchDrift from "~/components/inbox/ThreadBranchDrift.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
+import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
 import { useStudioIntake } from "~/composables/useStudioIntake";
+import { getSideChatSource } from "~/composables/sideChats";
 import { compactPropsForSession } from "~/utils/compactAvailability";
-import type { ApprovalDecision, ChatAttachment, UserInputAnswers } from "~/types/desktop";
+import { resolveBranchDrift } from "~/utils/branchDrift";
+import type { ApprovalDecision, ChatAttachment, GitRemote, UserInputAnswers } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 import type { QueuedTurnEntry } from "~/composables/useAgent";
 
@@ -131,11 +135,95 @@ watch(handleKey, (next, prev) => {
 });
 
 const blocks = computed(() => session.value?.timelineBlocks.value ?? []);
+
+/** Whether this thread's history was written on a different branch than the one
+ *  its next turn would land on. The row carries what the thread's last settled
+ *  turn stamped on it; the composer has already read what the checkout says now
+ *  — so the comparison costs nothing beyond what both ends already hold. */
+/** Backing out of a worktree still being built. The stepper goes away at once —
+ *  the decision is made and there is nothing further to watch — while the
+ *  teardown happens behind it, once the creation it is undoing finishes. */
+async function onCancelWorkspace(): Promise<void> {
+  const s = session.value;
+  if (!s) return;
+  s.dismissWorkspaceSteps();
+  await s.cancelWorkspace();
+}
+
+const branchDrift = computed(() =>
+  resolveBranchDrift({
+    recorded: props.row.branch,
+    live: composer.branch.value,
+    envMode: props.row.envMode,
+    worktreePath: props.row.worktreePath,
+    requestedBranch: props.row.requestedBranch ?? null,
+  }),
+);
 const busy = computed(() => session.value?.busy.value ?? false);
 const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const starting = computed(() => session.value?.sessionState.value === "starting");
 const threadTitle = computed(() => session.value?.title.value || props.row.title);
 
+// A forked throwaway conversation reads as provisional — the same temporary
+// mark the studio column wears, so the thread never reads as a main one.
+const isSideChat = computed(
+  () =>
+    Boolean(session.value?.isSideChat.value) ||
+    Boolean(getSideChatSource(props.row.threadId)) ||
+    Boolean(props.row.sideChat),
+);
+
+// The thread-info drop-down — the studio column header's own read-out, anchored
+// beneath the title that opened it. The strip owns this same state per column;
+// this pane shows one thread, so it owns it once.
+const infoAnchor = ref<DOMRect | null>(null);
+const infoOpen = computed(() => infoAnchor.value !== null);
+function toggleInfo(ev: Event): void {
+  if (infoAnchor.value) {
+    infoAnchor.value = null;
+    return;
+  }
+  // SAFETY: toggleInfo is bound to the header title element, so currentTarget
+  // is that HTMLElement during dispatch (nulled after — hence | null).
+  const el = ev.currentTarget as HTMLElement | null;
+  if (!el || !session.value) return;
+  infoAnchor.value = el.getBoundingClientRect();
+}
+function closeInfo(): void {
+  infoAnchor.value = null;
+}
+
+// Where the thread's work lives — the info panel's Project section. The branch
+// rides the composer's git read with the row's stored branch as fallback; the
+// remote is read once per pane, the way a project page reads it once per open.
+const git = useGit();
+const origin = ref<GitRemote | null>(null);
+onMounted(async () => {
+  try {
+    const remotes = await git.remotes(props.projectPath);
+    origin.value = remotes.find((r) => r.name === "origin") ?? remotes[0] ?? null;
+  } catch {
+    origin.value = null;
+  }
+});
+
+// A thread is renamed from its info panel's Name row — the same write the strip
+// owns, so the title lands optimistically and reverts on a store refusal.
+async function onRename(title: string): Promise<void> {
+  const s = session.value;
+  if (!s) return;
+  const previous = s.title.value;
+  s.title.value = title;
+  if (!import.meta.client) return;
+  const api = window.koneDesktop?.agent;
+  if (!api) return;
+  try {
+    const ok = await api.renameThread(s.threadId.value, title);
+    if (ok === false) s.title.value = previous;
+  } catch {
+    s.title.value = previous;
+  }
+}
 
 // Archiving from the header walks the same path as the list row's own
 // archive — optimistic drop with refusal-restore — and the reading pane clears
@@ -145,6 +233,7 @@ async function onArchive(): Promise<void> {
   const threadId = props.row.threadId;
   if (!threadId) return;
   cue("press");
+  infoAnchor.value = null;
   const ok = await sessions.archive(threadId, true).catch(() => false);
   if (!ok) return;
   void intake.dismissThread(props.projectPath, threadId);
@@ -266,8 +355,36 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :brand="row.brand"
       :token-usage="session?.tokenUsage.value ?? undefined"
       :compact="compact"
+      :side-chat="isSideChat"
       archivable
+      :worktree-path="row.worktreePath"
+      :env-mode="row.envMode"
+      :info-clickable="!!session"
+      :info-open="infoOpen"
       @archive="onArchive"
+      @open-info="toggleInfo"
+    />
+
+    <!-- Building this conversation's worktree, while it happens. Renders only
+         for the seconds it takes, and only for a thread that asked for one. -->
+    <ThreadWorkspacePrep
+      v-if="session && session.workspaceSteps.value.length > 0"
+      :steps="session.workspaceSteps.value"
+      @cancel="onCancelWorkspace"
+      @dismiss="session?.dismissWorkspaceSteps()"
+    />
+
+    <ThreadInfoPanel
+      v-if="session && infoAnchor"
+      :session="session"
+      :anchor="infoAnchor"
+      :repo="row.projectName"
+      :branch="composer.branch.value ?? row.branch ?? undefined"
+      :origin="origin"
+      :worktree-path="row.worktreePath"
+      :env-mode="row.envMode"
+      @close="closeInfo"
+      @rename="onRename"
     />
 
     <div
@@ -305,6 +422,11 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
          opens or a queued strip appears. While an ask owns the centre-bottom
          the composer steps aside for it. -->
     <div v-if="!modalOpen" class="live__dock">
+      <!-- Above the provider's banner: a provider that cannot take the turn is
+           about whether the turn happens at all, and this is about where it
+           would land — so the nearer-term obstacle sits nearer the composer. -->
+      <ThreadBranchDrift class="live__banner" :drift="branchDrift" />
+
       <ProviderHealthBanner
         class="live__banner"
         :status="composer.sendBlockedStatus.value"
@@ -327,6 +449,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :project-name="row.projectName"
         :branch="composer.branch.value ?? undefined"
         :branch-switchable="false"
+        :worktree-path="row.worktreePath"
+        :env-mode="row.envMode"
         :thread-name="threadTitle"
         :thread-id="row.threadId"
         :busy="busy"
