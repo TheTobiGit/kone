@@ -31,6 +31,13 @@ export type SessionSummary = {
   model?: string;
   /** The branch the session worked on, when a source can attribute one. */
   branch?: string | null;
+  /** The worktree this conversation owns, when it has one. Absent on a thread
+   *  running in the project's own checkout — which is most of them — so a
+   *  surface can tell "somewhere of its own" from "here" by presence alone. */
+  worktreePath?: string | null;
+  /** True while a chosen worktree is still being built: the conversation has
+   *  asked for its own directory and does not have one yet, so it cannot run. */
+  workspacePending?: boolean;
   added?: number;
   removed?: number;
   /** Total tokens spent across the thread, when known. */

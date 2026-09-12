@@ -21,6 +21,7 @@ import SettingsPageShell from "~/components/settings/SettingsPageShell.vue";
 import DetailTable from "~/components/ui/DetailTable.vue";
 import DetailTabs from "~/components/ui/DetailTabs.vue";
 import { useAgentRoster } from "~/composables/useAgentRoster";
+import { isShippedAgent } from "~/utils/agents";
 import type { DetailTab } from "~/composables/useDetailTabs";
 import { useOpenProject } from "~/composables/useProject";
 import { useRecentProjects } from "~/composables/useRecentProjects";
@@ -62,7 +63,13 @@ const { recents } = useRecentProjects();
 const { compact, closeDrawer } = useSettingsSurface();
 const { cue } = useSound();
 const agent = computed(() => agentById(props.agentId));
-const isCustom = computed(() => agent.value?.id !== "kone");
+// Asked of the shipped list rather than of one id: a build that ships a second
+// agent would otherwise label it Custom and read its cleared fields as unset,
+// when clearing one hands the field back to the preset.
+const isCustom = computed(() => {
+  const id = agent.value?.id;
+  return id !== undefined && !isShippedAgent(id);
+});
 const isDeleting = ref(false);
 const isEditing = ref(false);
 const menuOpen = ref(false);

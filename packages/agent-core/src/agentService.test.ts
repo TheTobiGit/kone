@@ -959,6 +959,16 @@ describe("AgentService thread archive + retention", () => {
     );
   }
 
+  /** The done-mark events, narrowed the same way. */
+  function doneEvents(): Array<
+    Extract<import("./types.js").RuntimeEvent, { type: "thread.done.updated" }>
+  > {
+    return events.filter(
+      (e): e is Extract<import("./types.js").RuntimeEvent, { type: "thread.done.updated" }> =>
+        e.type === "thread.done.updated",
+    );
+  }
+
   test("archiving a subtree cancels its queued turns and announces every thread", async () => {
     history.seed("root-1", "codex");
     history.seed("child-1", "codex", "root-1");
@@ -1059,6 +1069,34 @@ describe("AgentService thread archive + retention", () => {
     // Recent activity is stale to neither pass.
     expect(history.doneStamps.get("recent-1")).toBeNull();
     expect(history.archivedStamp.get("recent-1")).toBeNull();
+    // Each mark is announced, so lists waiting on the stream move the row
+    // without needing a turn to happen first. Done-range order is oldest
+    // first; the week-old thread rides both passes.
+    expect(doneEvents().map((e) => ({ threadId: e.threadId, done: e.done }))).toEqual([
+      { threadId: "cooling-1", done: true },
+      { threadId: "cold-1", done: true },
+    ]);
+  });
+
+  test("setThreadDone announces the mark and the un-mark, and nothing for unknown threads", () => {
+    history.seed("t-1", "codex");
+
+    archiveService.setThreadDone("t-1", true);
+    expect(history.doneStamps.get("t-1")).not.toBeNull();
+    expect(doneEvents().map((e) => ({ threadId: e.threadId, done: e.done }))).toEqual([
+      { threadId: "t-1", done: true },
+    ]);
+
+    events.length = 0;
+    archiveService.setThreadDone("t-1", false);
+    expect(history.doneStamps.get("t-1")).toBe(0);
+    expect(doneEvents().map((e) => e.done)).toEqual([false]);
+
+    // Unknown threads have no row to agree with and no provider to route by —
+    // announcing would send every list chasing a thread that isn't there.
+    events.length = 0;
+    archiveService.setThreadDone("never-existed", true);
+    expect(events).toHaveLength(0);
   });
 
   test("a failing history store surfaces as a rejection, not a swallowed error", async () => {

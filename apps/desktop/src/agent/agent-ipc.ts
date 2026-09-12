@@ -361,6 +361,9 @@ export function registerAgentIpc(): void {
       // derived state in the transcript journal.
       event.type !== "thread.archived" &&
       event.type !== "thread.unarchived" &&
+      // Done marks are meta the same way: setThreadDone wrote the column
+      // directly, so the announcement is stream-only, never journaled.
+      event.type !== "thread.done.updated" &&
       // App steering is live instruction for the renderer, not transcript: the
       // theme, the agent roster, the preset sub-agents, the thread strip and
       // the typography prefs are app state the user can see for themselves,
@@ -738,10 +741,17 @@ export function registerAgentIpc(): void {
   // Done state lives in the DB alongside pins, so a thread you have finished
   // with stays finished with across browser profiles. Distinct from archive:
   // the thread stays in the live list, it just stops asking — and it starts
-  // asking again on its own the moment the agent speaks in it.
+  // asking again on its own the moment the agent speaks in it. Runs through
+  // the service, not the bare store, so every window learns the mark over
+  // thread.done.updated the way archive/restore fan out.
   ipcMain.handle("agent:set-done", (_event, threadId: string, done: boolean) =>
-    store.setDone(threadId, done),
+    svc.setThreadDone(threadId, done),
   );
+  // Run the thread-retention sweep now instead of waiting for its timer. The
+  // inbox asks for one when it opens, so quiet threads settle while someone
+  // is looking rather than minutes later in the middle of a thread.
+  // Idempotent — a sweep with no candidates is two small reads and no writes.
+  ipcMain.handle("agent:retention-sweep", () => svc.sweepStaleThreads());
   // Read state lives in the DB beside pins and done, so a reply you have
   // already seen stays seen across profiles and restarts. A visit time, not an
   // unread flag: the surface showing the thread is the only writer, and every

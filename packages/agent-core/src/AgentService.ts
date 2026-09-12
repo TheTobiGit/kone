@@ -7,6 +7,7 @@ import {
   type ModelCandidate,
   type ProviderAvailability,
 } from "./agentModel.js";
+import { DONE_CLEARED } from "./conversationStoreTypes.js";
 import { isCompactionSupported } from "./types.js";
 import { onceEvent, withTimeout, type EventWait } from "./eventWait.js";
 import { AntigravityAdapter } from "./adapters/AntigravityAdapter.js";
@@ -1622,13 +1623,44 @@ export class AgentService {
     return result;
   }
 
+  /** Mark a thread done, or take the mark off — the one path the renderer's
+   *  set-done request and the retention sweep both walk. The store writes the
+   *  stamp; this method owns the announcement side: one thread.done.updated
+   *  event so every surface — the request's own list, the inbox, the home
+   *  recents, other windows — reconciles. Done never touches queues or
+   *  sessions: it is an attention mark, not a hiding, so there is nothing to
+   *  cancel and no refusal to report. */
+  setThreadDone(threadId: string, done: boolean): void {
+    const history = this.historyStore;
+    if (!history) return;
+    const meta = history.threadMeta(threadId);
+    const provider = meta?.provider ?? this.routing.get(threadId);
+    // Unknown threads have no row to agree with and no provider to route by —
+    // announcing would send every list chasing a thread that isn't there, so
+    // skip the write too instead of stamping a row that doesn't exist.
+    if (!provider) return;
+    history.setDone(threadId, done);
+    const at = Date.now();
+    this.dispatch({
+      type: "thread.done.updated",
+      threadId,
+      provider,
+      at,
+      source: "kone.store",
+      done,
+      doneAt: done ? at : DONE_CLEARED,
+    });
+  }
+
   /** The thread-retention sweep, in two passes over the same timer:
    *
    *  1. Mark done — a thread quiet for three days stops asking. Done is an
    *     attention mark, not a hiding: the thread stays in the live list and
    *     the mark self-clears the moment the agent speaks in it. Never applied
    *     to threads already done, and never to `done_at = 0` (the user's
-   *     explicit "not finished", which outranks age for good).
+   *     explicit "not finished", which outranks age for good). Each mark is
+   *     announced, so lists waiting on the event stream move the row without
+   *     needing a turn to happen first.
    *  2. Archive — a thread quiet for a week is put away entirely (the same
    *     week-old thread already reads as done by then, so the funnel is
    *     done-at-three-days, archived-at-seven).
@@ -1657,7 +1689,7 @@ export class AgentService {
       });
       let done = 0;
       for (const threadId of doneCandidates) {
-        history.setDone(threadId, true);
+        this.setThreadDone(threadId, true);
         done++;
         if (RETENTION_BATCH_PAUSE_MS > 0) {
           await new Promise((resolve) => setTimeout(resolve, RETENTION_BATCH_PAUSE_MS));

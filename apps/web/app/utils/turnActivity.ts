@@ -9,7 +9,8 @@
 
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { RuntimeItem } from "~/types/desktop";
-import { activeHues, type ToolOrbFamily } from "~/utils/toolOrbDraw";
+import { activeHues, type ToolOrbFamily, type TurnOrbState } from "~/utils/toolOrbDraw";
+import { stateForToolFamily } from "~/utils/thinkingOrb";
 
 export type TurnActivity = {
   /** Which orb/glyph the pill shows at its left. `done` is a settled turn held
@@ -18,6 +19,9 @@ export type TurnActivity = {
   /** For a tool orb — its family motion + hue (same table as the thread). */
   family?: ToolOrbFamily;
   hue?: string;
+  /** The orb's motion state, resolved through the family mapping at describe
+   *  time so readers take it directly instead of re-deriving it. */
+  orbState: TurnOrbState;
   /** The one-line status: "Reading example.vue", "Thinking", "Replied". */
   label: string;
   /** Colours a settled (`done`) turn's glyph + label. */
@@ -45,7 +49,13 @@ function shorten(s: string, max = 30): string {
 }
 
 function tool(family: ToolOrbFamily, label: string): TurnActivity {
-  return { orb: "tool", family, hue: activeHues().families[family]!, label };
+  return {
+    orb: "tool",
+    family,
+    hue: activeHues().families[family]!,
+    label,
+    orbState: stateForToolFamily(family),
+  };
 }
 
 /** The present-tense status for a running tool_call, matching the thread's
@@ -137,14 +147,20 @@ function toolActivity(item: RuntimeItem): TurnActivity {
 export function describeTurnActivity(block: AssistantBlock | null | undefined): TurnActivity | null {
   if (!block) return null;
   // Settled — the pill holds a finished turn until it's opened.
-  if (block.state === "completed") return { orb: "done", label: "Replied", tone: "ok" };
-  if (block.state === "failed") return { orb: "done", label: "Couldn't finish", tone: "error" };
-  if (block.state === "interrupted") return { orb: "done", label: "Stopped", tone: "muted" };
+  if (block.state === "completed")
+    return { orb: "done", label: "Replied", tone: "ok", orbState: "neutral" };
+  if (block.state === "failed")
+    return { orb: "done", label: "Couldn't finish", tone: "error", orbState: "neutral" };
+  if (block.state === "interrupted")
+    return { orb: "done", label: "Stopped", tone: "muted", orbState: "neutral" };
   const last = block.items[block.items.length - 1];
   // Nothing in flight — the opening beat after send, or a lull between steps.
-  if (!last || last.status !== "in-progress") return { orb: "working", label: "Working" };
-  if (last.kind === "reasoning_text") return { orb: "thinking", label: "Thinking" };
-  if (last.kind === "plan_text") return { orb: "working", label: "Planning" };
-  if (last.kind === "assistant_text") return { orb: "working", label: "Working" };
+  if (!last || last.status !== "in-progress")
+    return { orb: "working", label: "Working", orbState: "working" };
+  if (last.kind === "reasoning_text")
+    return { orb: "thinking", label: "Thinking", orbState: "thinking" };
+  if (last.kind === "plan_text") return { orb: "working", label: "Planning", orbState: "working" };
+  if (last.kind === "assistant_text")
+    return { orb: "working", label: "Working", orbState: "working" };
   return toolActivity(last);
 }

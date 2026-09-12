@@ -5,9 +5,7 @@ import type { ApprovalDecision, UserInputAnswers } from "~/types/desktop";
 // The focused thread's live asks, in one place: the mid-turn question and the
 // parked tool approval both land bottom-centre over the composer's spot, each
 // in the pickers' contained shell so the scrim dims only the owning thread.
-// Answering either resolves the parked request and the turn continues; the
-// subagent shell, when it already shows the same approval inline, owns that
-// ask instead and this overlay's approval modal stays down.
+// Answering either resolves the parked request and the turn continues.
 
 const props = withDefaults(
   defineProps<{
@@ -18,16 +16,12 @@ const props = withDefaults(
     /** The full pending-approval queue — enables the modal's position readout
      *  and digit shortcuts. Absent means the single-ask behaviour. */
     approvalQueue?: PendingApproval[];
-    /** True while the subagent shell renders the same approval inline — the
-     *  approval modal stays down so one ask never has two answer spots. */
-    shellSuppressesApproval?: boolean;
     /** True while the host surface must not answer in place (the studio's
      *  overview grid). Renders nothing — keeps that guard in one place. */
     suppressed?: boolean;
   }>(),
   {
     approvalQueue: undefined,
-    shellSuppressesApproval: false,
     suppressed: false,
   },
 );
@@ -52,7 +46,7 @@ const emit = defineEmits<{
     @cancel="(requestId) => emit('cancel', requestId)"
   />
   <AgentApprovalModal
-    v-if="props.approval && !props.shellSuppressesApproval && !props.suppressed"
+    v-if="props.approval && !props.suppressed"
     contained
     :request-id="props.approval.requestId"
     :approval="props.approval.approval"

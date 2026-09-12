@@ -1228,6 +1228,11 @@ export type RuntimeEvent =
   // An archived thread was restored. One event per affected thread, mirroring
   // the archive event's per-subtree-thread fan-out.
   | (AgentBaseEvent & { type: "thread.unarchived" })
+  // A thread was marked done, or had the mark taken off — by hand or by the
+  // retention sweep. Done only moves the row between the inbox and done
+  // lists; `doneAt` is the stamp the store wrote, so consumers agree with
+  // the row on when the mark landed.
+  | (AgentBaseEvent & { type: "thread.done.updated"; done: boolean; doneAt: number })
   // The provider rerouted the request to a different model mid-session. Update
   // the session's model label; `reason` is the provider's own wording.
   | (AgentBaseEvent & {
@@ -2356,6 +2361,9 @@ export type KoneAgentApi = {
   /** Update one provider's CLI through the channel that installed it, then
    *  re-probe. Resolves with the transcript and the refreshed surface. */
   updateProvider: (provider: ProviderKind) => Promise<ProviderUpdateResult>;
+  /** Run the thread-retention sweep now rather than on its timer; quiet
+   *  threads settle while someone is looking. Resolves when the pass ends. */
+  sweepRetention: () => Promise<void>;
   /** Persisted conversation history (read-only). */
   history: KoneAgentHistoryApi;
   /** Ranged token/cost accounting over the same per-turn rows history is built

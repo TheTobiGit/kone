@@ -24,6 +24,7 @@ import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
+import { useStudioIntake } from "~/composables/useStudioIntake";
 import { compactPropsForSession } from "~/utils/compactAvailability";
 import type { ApprovalDecision, ChatAttachment, UserInputAnswers } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
@@ -43,10 +44,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  /** Reveal a spawned child thread's own conversation — the shell's open-thread
-   *  action. The pane shows one thread, so reaching another one is the portal's
-   *  call, not this pane's. */
-  "open-thread": [threadId: string];
   /** Start a conversation — the composer's `/new` row. The pane shows one
    *  thread, so showing the composer instead is the portal's call, not this
    *  pane's. */
@@ -54,6 +51,11 @@ const emit = defineEmits<{
 }>();
 
 const { cue } = useSound();
+const intake = useStudioIntake();
+// The live list's shared pipeline — the same instance the inbox rows read —
+// so a header archive drops optimistically with the same refusal-restore as a
+// row archive, instead of a second bridge path with its own semantics.
+const sessions = useAllRecentSessions();
 
 // Resolved once, at setup: the registry is picked from this value eagerly, so
 // this component is keyed on the project and thread by its host rather than
@@ -134,9 +136,22 @@ const queued = computed(() => session.value?.queuedTurns.value ?? []);
 const starting = computed(() => session.value?.sessionState.value === "starting");
 const threadTitle = computed(() => session.value?.title.value || props.row.title);
 
+
+// Archiving from the header walks the same path as the list row's own
+// archive — optimistic drop with refusal-restore — and the reading pane clears
+// off the store fan-out the portal already trusts. The store can refuse (a
+// spawned descendant mid-turn), which leaves the thread exactly where it is.
+async function onArchive(): Promise<void> {
+  const threadId = props.row.threadId;
+  if (!threadId) return;
+  cue("press");
+  const ok = await sessions.archive(threadId, true).catch(() => false);
+  if (!ok) return;
+  void intake.dismissThread(props.projectPath, threadId);
+}
+
 // Derives and snapshot for active plan, touched files, and subagent delegates.
 const {
-  subagentsRaw,
   activePlan,
   activeChanges,
   activeDelegates,
@@ -145,34 +160,10 @@ const {
   computed(() => session.value?.spawnedChildren.value ?? []),
 );
 
-// Which delegate's expanded transcript is on screen. Approvals still go
-// through this pane's one approval path, and revealing a spawned thread is the
-// portal's call — the shell only asks.
-const focusedKey = computed(() => session.value?.key ?? null);
-const {
-  activeShell,
-  activeShellRun,
-  activeShellThread,
-  shellApprovals,
-  shellSuppressesApproval,
-  onCloseShell,
-  onDecideShellApproval,
-  onShellOpenThread,
-  onOpenDelegate,
-} = useSubagentShell({
-  subagents: subagentsRaw,
-  focusedThread: session,
-  focusedPendingApproval: pendingApproval,
-  focusedKey,
-  respondApproval: (requestId, decision) => onRespondApproval(requestId, decision),
-  revealThread: (threadId) => emit("open-thread", threadId),
-  cue,
-});
-
 // While an ask owns the centre-bottom the composer steps aside for it — the
 // modal sits in the composer's spot, the way it does on the studio.
 const modalOpen = computed(
-  () => Boolean(pendingUserInput.value) || (Boolean(pendingApproval.value) && !shellSuppressesApproval.value),
+  () => Boolean(pendingUserInput.value) || Boolean(pendingApproval.value),
 );
 
 // The header meter's Compact control — the same shared rule as the strip, so
@@ -275,6 +266,8 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       :brand="row.brand"
       :token-usage="session?.tokenUsage.value ?? undefined"
       :compact="compact"
+      archivable
+      @archive="onArchive"
     />
 
     <div
@@ -371,33 +364,21 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
 
     <!-- Mid-turn question + tool approval, over the composer in the
          picker-family shells, the way they sit on the studio. Contained to
-         this thread pane so the scrim dims only the thread. While the
-         subagent shell already shows the same approval inline, the approval
-         modal stays down. -->
+         this thread pane so the scrim dims only the thread. -->
     <ThreadInteractionOverlay
       :user-input="pendingUserInput"
       :approval="pendingApproval"
       :approval-queue="session?.pendingApprovals.value"
-      :shell-suppresses-approval="shellSuppressesApproval"
       @answer="onAnswerUserInput"
       @cancel="onCancelUserInput"
       @decide="onRespondApproval"
     />
 
-    <!-- The subagent corner — delegated runs bottom-left with their expanded
-         shell. Steps aside while the shell is open. -->
+    <!-- The subagent corner — delegated runs bottom-left. -->
     <ThreadSubagentDock
       :rows="activeDelegates.rows"
       :streaming="activeDelegates.streaming"
-      :shell="activeShell"
-      :shell-run="activeShellRun"
-      :shell-thread="activeShellThread"
-      :shell-approvals="shellApprovals"
-      @open="onOpenDelegate"
       @stop-subagent="onStopSubagent"
-      @close="onCloseShell"
-      @open-thread="onShellOpenThread"
-      @decide-approval="onDecideShellApproval"
     />
 
     <!-- The full providers → models → effort picker. It is the surface's to

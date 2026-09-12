@@ -5,6 +5,8 @@
 // the thread title, and token usage context.
 
 import { computed } from "vue";
+import { HugeiconsIcon } from "@hugeicons/vue";
+import { Archive02Icon, BubbleChatTemporaryIcon } from "@hugeicons/core-free-icons";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
@@ -27,6 +29,28 @@ const props = defineProps<{
   /** The meter's Compact control — absent hides the actions card (stored
    *  threads have no live session to compact). */
   compact?: MeterCompactProps;
+  /** Forked throwaway conversation — wears the temporary mark beside the title. */
+  sideChat?: boolean;
+  /** Show the archive action (the studio column header's own control). */
+  archivable?: boolean;
+  /** Make the title open the thread info panel (the studio column header's
+   *  read-out — rename lives there, so the header itself stays a read-out). */
+  infoClickable?: boolean;
+  /** Whether the info panel is currently open for this thread. */
+  infoOpen?: boolean;
+  /** The directory this conversation works in, when it is not the project's own
+   *  checkout. Absent is the ordinary case and wears no mark. */
+  worktreePath?: string | null;
+  /** A worktree was chosen for this conversation and does not exist yet. */
+  workspacePending?: boolean;
+}>();
+
+const emit = defineEmits<{
+  /** Archive this thread (the studio column header's own control). */
+  archive: [];
+  /** Title asked for its info panel — carries the DOM event so the caller can
+   *  anchor the panel to the title that opened it. */
+  "open-info": [event: Event];
 }>();
 
 const identity = computed(() => agentIdentity(props.seed));
@@ -55,7 +79,29 @@ const effectiveBrand = computed(() =>
       </div>
 
       <div class="ith__body">
-        <h2 class="ith__title" :title="title">{{ title }}</h2>
+        <div class="ith__title-row">
+          <span v-if="sideChat" class="ith__sidechat" title="Side chat — forked from a conversation">
+            <HugeiconsIcon :icon="BubbleChatTemporaryIcon" :size="11" :stroke-width="2" aria-hidden="true" />
+          </span>
+          <h2
+            v-if="infoClickable"
+            class="ith__title ith__title--btn"
+            :class="{ 'ith__title--sidechat': sideChat }"
+            :title="title"
+            role="button"
+            tabindex="0"
+            :aria-expanded="infoOpen"
+            @click.stop="emit('open-info', $event)"
+            @keydown.enter.prevent="emit('open-info', $event)"
+            @keydown.space.prevent="emit('open-info', $event)"
+          >{{ title }}</h2>
+          <h2
+            v-else
+            class="ith__title"
+            :class="{ 'ith__title--sidechat': sideChat }"
+            :title="title"
+          >{{ title }}</h2>
+        </div>
         <p class="ith__sub">{{ identity.name }}</p>
       </div>
     </div>
@@ -67,6 +113,16 @@ const effectiveBrand = computed(() =>
         v-bind="compact"
         class="ith__meter"
       />
+      <button
+        v-if="archivable"
+        type="button"
+        class="ith__tool"
+        aria-label="Archive conversation"
+        title="Archive conversation"
+        @click.stop="emit('archive')"
+      >
+        <HugeiconsIcon :icon="Archive02Icon" :size="14" :stroke-width="1.9" aria-hidden="true" />
+      </button>
     </div>
   </header>
 </template>
@@ -183,6 +239,39 @@ const effectiveBrand = computed(() =>
   white-space: nowrap;
 }
 
+.ith__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ith__title--btn {
+  cursor: pointer;
+}
+
+.ith__title--btn:hover {
+  color: var(--ink);
+}
+
+.ith__title--btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.ith__sidechat {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink-soft));
+}
+
+.ith__title--sidechat {
+  color: color-mix(in srgb, var(--accent) 58%, var(--muted));
+  font-style: italic;
+}
+
 .ith__sub {
   margin: 0;
   font-family: var(--font-mono);
@@ -199,6 +288,36 @@ const effectiveBrand = computed(() =>
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Muted and mono, the same register the inbox row uses for it — a statement
+   about the thread, not a control. */
+.ith__workspace {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--faint);
+  max-width: 18ch;
+}
+
+.ith__tool {
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.ith__tool:hover {
+  background: var(--hover);
+  color: var(--ink);
 }
 
 @media (prefers-reduced-motion: reduce) {

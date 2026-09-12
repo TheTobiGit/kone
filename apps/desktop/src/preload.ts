@@ -387,6 +387,10 @@ const api = {
     // Run the update through whichever channel installed the CLI, then re-probe.
     updateProvider: (provider: ProviderKind): Promise<ProviderUpdateResult> =>
       ipcRenderer.invoke("agent:update-provider", provider),
+    // Run the thread-retention sweep now instead of waiting for its timer —
+    // the inbox asks for one when it opens, so quiet threads settle while
+    // someone is looking. Resolves when the pass ends.
+    sweepRetention: (): Promise<void> => ipcRenderer.invoke("agent:retention-sweep"),
     // Session lifecycle — these resolve when the turn is *accepted*; the actual
     // output arrives on the agent:event stream (subscribe via onEvent).
     startSession: (input: SessionStartInput): Promise<Session> =>

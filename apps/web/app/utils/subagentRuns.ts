@@ -5,9 +5,9 @@
 // when each was spawned. Purely derived: the dock is presentational, the same way
 // ChangedFilesList and PlanTaskList are.
 //
-// The same file carries the shared *presentation* helpers (title, engine, effort)
-// and the open-subagent injection key, so the dock rows, the activity-feed
-// affordance, and the transcript panel all speak with one voice.
+// The same file carries the shared *presentation* helpers (title, engine,
+// effort), so the dock rows, the activity-feed affordance, and the transcript
+// panel all speak with one voice.
 //
 // Since the spawn design, the dock also lists a SECOND kind of delegate — real
 // child threads the agent opened via kone_spawn_worker — so this file carries
@@ -16,7 +16,6 @@
 // order. One view model over both kinds, the same single-projection ruling as
 // the backend's spawnProjection.ts.
 
-import type { InjectionKey } from "vue";
 import type { ThreadBlock } from "~/composables/useAgent";
 import { describeModelId, EFFORT_META } from "~/utils/modelCatalog";
 import type { EffortTier } from "~/utils/modelCatalog";
@@ -28,13 +27,6 @@ import type {
   SubagentRunSnapshot,
   SubagentStatus,
 } from "~/types/desktop";
-
-/** Call to open a subagent run's transcript, keyed by its `toolUseId`. Provided
- *  by ProjectView, injected where a run surfaces without a direct emit path
- *  (the activity feed's subagent step rows). Absent → no affordance is shown. */
-export const SUBAGENT_OPEN_KEY: InjectionKey<(toolUseId: string) => void> = Symbol(
-  "subagent-open",
-);
 
 export type SubagentRunView = SubagentRun & {
   /** True while the run is still starting or running. */
