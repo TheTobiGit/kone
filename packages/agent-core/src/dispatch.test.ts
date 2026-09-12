@@ -5,6 +5,7 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 
 import { composeTurnDelivery } from "./dispatch.js";
+import { isWorkspaceCancel } from "@kone/protocol/ipc-error";
 import { setUserDataDir } from "./userDataDir.js";
 import type {
   EmitEvent,
@@ -61,8 +62,10 @@ class FakeAdapter {
   async startSession(
     input: Pick<SessionStartInput, "threadId" | "cwd">,
   ): Promise<{ threadId: string; provider: "codex" }> {
-    // The directory a provider process would have been spawned in.
+    // The directory a provider process would have been spawned in. Recorded
+    // before the gate so a test can tell the session has started coming up.
     FakeAdapter.startedCwds.push(input.cwd);
+    if (startGate) await startGate;
     return { threadId: input.threadId, provider: "codex" };
   }
   async sendTurn(input: SendTurnInput): Promise<TurnStartResult> {
@@ -97,6 +100,67 @@ beforeAll(async () => {
 
 /** A dispatcher wired to a fresh store, a real service, and one fake adapter,
  *  with the thread already registered and its session up. */
+/** What the injected provisioner was asked for. The real one runs git; here the
+ *  point is the ordering around it, not the checkout. */
+const provisioned: Array<{ projectPath: string; branch?: string }> = [];
+let provisionFails = false;
+/** Override what the fake provisioner reports about the branch it built. Absent
+ *  means derived: a build with no requested branch reports a generated one, a
+ *  build with a requested name reports a user-named one. */
+let provisionGeneratedOverride: boolean | undefined;
+let provisionAttachedOverride: boolean | undefined;
+let releaseFails = false;
+/** Holds the creation open so a test can act mid-build — a cancel only means
+ *  anything while git is still writing, which is the whole point of it. */
+let provisionGate: Promise<void> | null = null;
+let openProvisionGate: (() => void) | null = null;
+
+function holdProvisioning(): void {
+  provisionGate = new Promise<void>((resolve) => {
+    openProvisionGate = resolve;
+  });
+}
+function releaseProvisioning(): void {
+  openProvisionGate?.();
+  provisionGate = null;
+  openProvisionGate = null;
+}
+/** Holds the provider session start open so a test can act while the stepper
+ *  shows Starting session — the window where backing out has nothing left to
+ *  undo and the UI withholds the Cancel affordance. */
+let startGate: Promise<void> | null = null;
+let openStartGate: (() => void) | null = null;
+
+function holdSessionStart(): void {
+  startGate = new Promise<void>((resolve) => {
+    openStartGate = resolve;
+  });
+}
+function releaseSessionStart(): void {
+  openStartGate?.();
+  startGate = null;
+  openStartGate = null;
+}
+/** Resolve once `condition` holds, or throw after a short budget. Lets a test
+ *  wait until the session start is actually parked on the gate rather than
+ *  racing the provision that precedes it. */
+async function waitFor(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the session start");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+/** Worktrees the dispatcher asked to have removed again, with the branch
+ *  cleanup flag it passed each time. */
+const released: Array<{
+  worktreePath: string;
+  branch?: string;
+  reclaimGeneratedBranch?: boolean;
+}> = [];
+/** Every workspace progress report, in order. */
+const steps: Array<{ step: string; state: string }> = [];
+
 async function harness(): Promise<{
   store: StoreType;
   dispatcher: import("./dispatch.js").ThreadDispatcher;
@@ -118,7 +182,31 @@ async function harness(): Promise<{
       return [new FakeAdapter(emit) as unknown as ProviderAdapter];
     },
   });
-  const dispatcher = initThreadDispatcher({ service, store, broadcast: () => {} });
+  const dispatcher = initThreadDispatcher({
+    service,
+    store,
+    broadcast: (event) => {
+      if (event.type === "thread.workspace.progress") {
+        steps.push({ step: event.step, state: event.state });
+      }
+    },
+    provisionWorkspace: async (request) => {
+      provisioned.push(request);
+      if (provisionGate) await provisionGate;
+      if (provisionFails) throw new Error("git said no");
+      const branch = request.branch ?? "kone/deadbeef";
+      return {
+        path: `/tmp/kone-worktrees/${branch.replace(/\//g, "-")}`,
+        branch,
+        generatedBranch: provisionGeneratedOverride ?? (request.branch === undefined),
+        attachedExisting: provisionAttachedOverride ?? false,
+      };
+    },
+    releaseWorkspace: async (input) => {
+      if (releaseFails) throw new Error("remove refused");
+      released.push(input);
+    },
+  });
   store.ensureThread({ threadId: THREAD, projectPath: CWD, provider: "codex" });
   await dispatcher.startThread({ threadId: THREAD, provider: "codex", cwd: CWD });
   if (!captured) throw new Error("the fake adapter was not constructed");
@@ -322,6 +410,519 @@ describe("thread dispatcher: where a session is spawned", () => {
     await dispatcher.startThread({ threadId: "t-project", provider: "codex", cwd: CWD });
 
     expect(FakeAdapter.startedCwds).toEqual([CWD]);
+  });
+
+  test("a thread with a worktree spawns there, not in its project", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    const worktree = "/tmp/kone-dispatch-worktree";
+
+    store.ensureThread({ threadId: "t-wt", projectPath: CWD, provider: "codex" });
+    store.setThreadWorkspace("t-wt", { envMode: "worktree", worktreePath: worktree });
+
+    // The renderer has no idea the thread lives anywhere but its project — it
+    // sends the project path, exactly as it does for every other thread.
+    await dispatcher.startThread({ threadId: "t-wt", provider: "codex", cwd: CWD });
+
+    expect(FakeAdapter.startedCwds).toEqual([worktree]);
+    // Identity untouched: the thread is still this project's.
+    expect(store.threadProjectPath("t-wt")).toBe(CWD);
+  });
+
+  test("a thread that asks for a worktree gets one built before its session", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+
+    await dispatcher.startThread({
+      threadId: "t-ask",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "feature/foo" },
+    });
+
+    expect(provisioned).toEqual([{ projectPath: CWD, branch: "feature/foo" }]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/feature-foo"]);
+    // Both halves are recorded: what was asked for, and what was built. The
+    // request clears once the directory exists.
+    expect(store.threadWorkspace("t-ask")).toEqual({
+      envMode: "worktree",
+      worktreePath: "/tmp/kone-worktrees/feature-foo",
+      requestedBranch: null,
+    });
+    expect(store.threadProjectPath("t-ask")).toBe(CWD);
+  });
+
+  test("two conversations in one project run on two branches", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+
+    await dispatcher.startThread({
+      threadId: "t-a",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "one" },
+    });
+    await dispatcher.startThread({
+      threadId: "t-b",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "two" },
+    });
+
+    const [a, b] = FakeAdapter.startedCwds;
+    expect(a).not.toBe(b);
+    // Neither moved the other, and both are still this project's threads.
+    expect(store.threadWorkspace("t-a")?.worktreePath).toBe(a ?? "");
+    expect(store.threadWorkspace("t-b")?.worktreePath).toBe(b ?? "");
+    expect(store.threadProjectPath("t-a")).toBe(CWD);
+    expect(store.threadProjectPath("t-b")).toBe(CWD);
+  });
+
+  test("reopening a worktree thread reuses its directory, building nothing", async () => {
+    const { store, dispatcher } = await harness();
+    store.ensureThread({ threadId: "t-reopen", projectPath: CWD, provider: "codex" });
+    store.setThreadWorkspace("t-reopen", {
+      envMode: "worktree",
+      worktreePath: "/tmp/kone-worktrees/already",
+    });
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+
+    await dispatcher.startThread({
+      threadId: "t-reopen",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "already" },
+    });
+
+    expect(provisioned).toEqual([]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/already"]);
+  });
+
+  test("a failed build fails the send and spawns nothing", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisionFails = true;
+
+    await expect(
+      dispatcher.startThread({
+        threadId: "t-fail",
+        provider: "codex",
+        cwd: CWD,
+        workspace: { mode: "worktree", branch: "doomed" },
+      }),
+    ).rejects.toThrow();
+    provisionFails = false;
+
+    expect(FakeAdapter.startedCwds).toEqual([]);
+    // Left pending, not local: the thread still wants a worktree, and a retry
+    // must not quietly run it in the project's checkout instead. The request
+    // stays beside the intent so the retry rebuilds the same branch.
+    expect(store.threadWorkspace("t-fail")).toEqual({
+      envMode: "worktree",
+      worktreePath: null,
+      requestedBranch: "doomed",
+    });
+  });
+
+  test("asking for local changes nothing", async () => {
+    const { dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+
+    await dispatcher.startThread({
+      threadId: "t-local",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "local" },
+    });
+
+    expect(provisioned).toEqual([]);
+    expect(FakeAdapter.startedCwds).toEqual([CWD]);
+  });
+
+  test("reports each step of the build, in order", async () => {
+    const { dispatcher } = await harness();
+    steps.length = 0;
+
+    await dispatcher.startThread({
+      threadId: "t-steps",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "stepped" },
+    });
+
+    expect(steps).toEqual([
+      { step: "create", state: "running" },
+      { step: "create", state: "done" },
+      { step: "link", state: "running" },
+      { step: "link", state: "done" },
+      { step: "start", state: "running" },
+      { step: "start", state: "done" },
+    ]);
+  });
+
+  test("a thread that never asked for a worktree reports nothing", async () => {
+    const { dispatcher } = await harness();
+    steps.length = 0;
+
+    await dispatcher.startThread({ threadId: "t-quiet", provider: "codex", cwd: CWD });
+
+    expect(steps).toEqual([]);
+  });
+
+  test("a failed build marks the step it failed on and stops there", async () => {
+    const { dispatcher } = await harness();
+    steps.length = 0;
+    provisionFails = true;
+
+    await expect(
+      dispatcher.startThread({
+        threadId: "t-step-fail",
+        provider: "codex",
+        cwd: CWD,
+        workspace: { mode: "worktree", branch: "doomed" },
+      }),
+    ).rejects.toThrow();
+    provisionFails = false;
+
+    expect(steps).toEqual([
+      { step: "create", state: "running" },
+      { step: "create", state: "failed" },
+    ]);
+  });
+
+  test("cancelling mid-build removes what the creation produced", async () => {
+    const { store, dispatcher } = await harness();
+    steps.length = 0;
+    released.length = 0;
+    provisionGeneratedOverride = undefined;
+    provisionAttachedOverride = undefined;
+    FakeAdapter.startedCwds.length = 0;
+    holdProvisioning();
+
+    const starting = dispatcher.startThread({
+      threadId: "t-cancel",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "abandoned" },
+    });
+    // The user backs out while git is still writing. Nothing is interrupted.
+    dispatcher.cancelThreadWorkspace("t-cancel");
+    releaseProvisioning();
+
+    const failure: unknown = await starting.then(
+      () => null,
+      (error) => error,
+    );
+    // A user cancel is typed, not a crash: the renderer tells it apart from a
+    // real build failure and returns to idle quietly instead of erroring.
+    expect(isWorkspaceCancel(failure)).toBe(true);
+
+    // What was made is unmade, and no session was ever spawned in it.
+    expect(released.map((r) => r.worktreePath)).toEqual(["/tmp/kone-worktrees/abandoned"]);
+    // A branch the user named is kept: the directory goes, the ref stays.
+    expect(released[0]?.reclaimGeneratedBranch ?? false).toBe(false);
+    expect(released[0]?.branch).toBe("abandoned");
+    expect(FakeAdapter.startedCwds).toEqual([]);
+    // The thread is handed back as an ordinary local one rather than left
+    // pending forever on a worktree it no longer wants.
+    expect(store.threadWorkspace("t-cancel")).toEqual({
+      envMode: "local",
+      worktreePath: null,
+      requestedBranch: null,
+    });
+  });
+
+  test("cancelling a generated-branch build reclaims its branch", async () => {
+    const { dispatcher } = await harness();
+    released.length = 0;
+    provisionGeneratedOverride = true;
+    provisionAttachedOverride = false;
+    FakeAdapter.startedCwds.length = 0;
+    holdProvisioning();
+
+    const starting = dispatcher.startThread({
+      threadId: "t-cancel-generated",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree" },
+    });
+    dispatcher.cancelThreadWorkspace("t-cancel-generated");
+    releaseProvisioning();
+
+    const generatedFailure: unknown = await starting.then(
+      () => null,
+      (error) => error,
+    );
+    expect(isWorkspaceCancel(generatedFailure)).toBe(true);
+    provisionGeneratedOverride = undefined;
+    provisionAttachedOverride = undefined;
+
+    // The directory removal also carries the reclaim flag, so no kone/<hex>
+    // branch is stranded behind the cancelled build.
+    expect(released.length).toBe(1);
+    expect(released[0]?.branch).toBe("kone/deadbeef");
+    expect(released[0]?.reclaimGeneratedBranch).toBe(true);
+    expect(FakeAdapter.startedCwds).toEqual([]);
+  });
+
+  test("cancelling an attached-existing build keeps its branch", async () => {
+    const { dispatcher } = await harness();
+    released.length = 0;
+    provisionGeneratedOverride = false;
+    provisionAttachedOverride = true;
+    FakeAdapter.startedCwds.length = 0;
+    holdProvisioning();
+
+    const starting = dispatcher.startThread({
+      threadId: "t-cancel-attached",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "dormant" },
+    });
+    dispatcher.cancelThreadWorkspace("t-cancel-attached");
+    releaseProvisioning();
+
+    const attachedFailure: unknown = await starting.then(
+      () => null,
+      (error) => error,
+    );
+    expect(isWorkspaceCancel(attachedFailure)).toBe(true);
+    provisionGeneratedOverride = undefined;
+    provisionAttachedOverride = undefined;
+
+    // The worktree existed before this build, so only the registration goes —
+    // the pre-existing branch is never reclaimed.
+    expect(released.length).toBe(1);
+    expect(released[0]?.branch).toBe("dormant");
+    expect(released[0]?.reclaimGeneratedBranch ?? false).toBe(false);
+  });
+
+  test("a failed removal still reports the cancellation", async () => {
+    const { dispatcher } = await harness();
+    released.length = 0;
+    provisionGeneratedOverride = true;
+    provisionAttachedOverride = false;
+    FakeAdapter.startedCwds.length = 0;
+    releaseFails = true;
+    holdProvisioning();
+
+    const starting = dispatcher.startThread({
+      threadId: "t-cancel-release-fails",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree" },
+    });
+    dispatcher.cancelThreadWorkspace("t-cancel-release-fails");
+    releaseProvisioning();
+
+    // Best effort: the teardown failure is logged, and the caller still sees
+    // the cancellation rather than the removal error.
+    const removalFailure: unknown = await starting.then(
+      () => null,
+      (error) => error,
+    );
+    expect(isWorkspaceCancel(removalFailure)).toBe(true);
+    releaseFails = false;
+    provisionGeneratedOverride = undefined;
+    provisionAttachedOverride = undefined;
+    expect(FakeAdapter.startedCwds).toEqual([]);
+  });
+
+  test("a cancel that arrives after the build finished does not affect the next one", async () => {
+    const { store, dispatcher } = await harness();
+    released.length = 0;
+    provisionGeneratedOverride = undefined;
+    provisionAttachedOverride = undefined;
+    releaseFails = false;
+
+    dispatcher.cancelThreadWorkspace("t-stale");
+    await dispatcher.startThread({
+      threadId: "t-stale",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "kept" },
+    });
+
+    expect(released).toEqual([]);
+    expect(store.threadWorkspace("t-stale")?.worktreePath).toBe(
+      "/tmp/kone-worktrees/kept",
+    );
+  });
+
+  test("forgetting a thread clears a stale cancel so a reused id builds normally", async () => {
+    const { store, dispatcher } = await harness();
+    released.length = 0;
+    FakeAdapter.startedCwds.length = 0;
+
+    dispatcher.cancelThreadWorkspace("t-reuse");
+    dispatcher.forgetThread("t-reuse");
+
+    await dispatcher.startThread({
+      threadId: "t-reuse",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "reused" },
+    });
+
+    expect(released).toEqual([]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/reused"]);
+    expect(store.threadWorkspace("t-reuse")?.worktreePath).toBe("/tmp/kone-worktrees/reused");
+  });
+
+  test("a cancel landing during the session start does not stop it", async () => {
+    const { store, dispatcher } = await harness();
+    released.length = 0;
+    steps.length = 0;
+    provisionGeneratedOverride = undefined;
+    provisionAttachedOverride = undefined;
+    FakeAdapter.startedCwds.length = 0;
+    holdSessionStart();
+
+    const starting = dispatcher.startThread({
+      threadId: "t-late",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "late" },
+    });
+    try {
+      // Wait until the build has linked and the session is coming up — the
+      // stepper shows Starting session, where the UI withholds Cancel because
+      // there is nothing left to undo.
+      await waitFor(() =>
+        FakeAdapter.startedCwds.includes("/tmp/kone-worktrees/late"),
+      );
+      dispatcher.cancelThreadWorkspace("t-late");
+    } finally {
+      releaseSessionStart();
+    }
+
+    // The late cancel is ignored: the session owns the linked worktree now, so
+    // it starts rather than throwing a cancellation for a teardown that would
+    // strand it.
+    const session = await starting;
+    expect(session.threadId).toBe("t-late");
+    expect(released).toEqual([]);
+    expect(store.threadWorkspace("t-late")).toEqual({
+      envMode: "worktree",
+      worktreePath: "/tmp/kone-worktrees/late",
+      requestedBranch: null,
+    });
+    expect(steps).toEqual([
+      { step: "create", state: "running" },
+      { step: "create", state: "done" },
+      { step: "link", state: "running" },
+      { step: "link", state: "done" },
+      { step: "start", state: "running" },
+      { step: "start", state: "done" },
+    ]);
+  });
+
+  test("a thread pending on a stored request builds it without being re-asked", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+    steps.length = 0;
+
+    store.ensureThread({ threadId: "t-pending", projectPath: CWD, provider: "codex" });
+    store.setThreadWorkspace("t-pending", { envMode: "worktree", requestedBranch: "feature/stored" });
+
+    // The existing-thread send carries no workspace — the renderer never stages
+    // one for a thread that already exists — yet the build still happens from
+    // the stored branch.
+    await dispatcher.startThread({ threadId: "t-pending", provider: "codex", cwd: CWD });
+
+    expect(provisioned).toEqual([{ projectPath: CWD, branch: "feature/stored" }]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/feature-stored"]);
+    expect(store.threadWorkspace("t-pending")).toEqual({
+      envMode: "worktree",
+      worktreePath: "/tmp/kone-worktrees/feature-stored",
+      requestedBranch: null,
+    });
+    expect(steps).toEqual([
+      { step: "create", state: "running" },
+      { step: "create", state: "done" },
+      { step: "link", state: "running" },
+      { step: "link", state: "done" },
+      { step: "start", state: "running" },
+      { step: "start", state: "done" },
+    ]);
+  });
+
+  test("a pending thread with no stored branch still provisions with a generated one", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+
+    store.ensureThread({ threadId: "t-pending-generated", projectPath: CWD, provider: "codex" });
+    store.setThreadWorkspace("t-pending-generated", { envMode: "worktree" });
+
+    await dispatcher.startThread({ threadId: "t-pending-generated", provider: "codex", cwd: CWD });
+
+    expect(provisioned).toEqual([{ projectPath: CWD }]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/kone-deadbeef"]);
+    expect(store.threadWorkspace("t-pending-generated")).toEqual({
+      envMode: "worktree",
+      worktreePath: "/tmp/kone-worktrees/kone-deadbeef",
+      requestedBranch: null,
+    });
+  });
+
+  test("a reload that wipes the staged workspace still builds from the store", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+
+    // First send stages the request and fails before the session comes up —
+    // the row keeps the intent plus the branch while the renderer's in-memory
+    // draft is gone (the reload simulation: nothing is re-staged).
+    provisionFails = true;
+    await expect(
+      dispatcher.startThread({
+        threadId: "t-reload",
+        provider: "codex",
+        cwd: CWD,
+        workspace: { mode: "worktree", branch: "feature/reload" },
+      }),
+    ).rejects.toThrow();
+    provisionFails = false;
+    expect(store.threadWorkspace("t-reload")).toEqual({
+      envMode: "worktree",
+      worktreePath: null,
+      requestedBranch: "feature/reload",
+    });
+
+    // Second send after reload: no workspace on the input, no staged draft.
+    provisioned.length = 0;
+    FakeAdapter.startedCwds.length = 0;
+    await dispatcher.startThread({ threadId: "t-reload", provider: "codex", cwd: CWD });
+
+    expect(provisioned).toEqual([{ projectPath: CWD, branch: "feature/reload" }]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/feature-reload"]);
+    expect(store.threadWorkspace("t-reload")?.worktreePath).toBe(
+      "/tmp/kone-worktrees/feature-reload",
+    );
+  });
+
+  test("an explicit request wins over a stale stored branch", async () => {
+    const { store, dispatcher } = await harness();
+    FakeAdapter.startedCwds.length = 0;
+    provisioned.length = 0;
+
+    store.ensureThread({ threadId: "t-override", projectPath: CWD, provider: "codex" });
+    store.setThreadWorkspace("t-override", { envMode: "worktree", requestedBranch: "stale/branch" });
+
+    await dispatcher.startThread({
+      threadId: "t-override",
+      provider: "codex",
+      cwd: CWD,
+      workspace: { mode: "worktree", branch: "fresh/branch" },
+    });
+
+    expect(provisioned).toEqual([{ projectPath: CWD, branch: "fresh/branch" }]);
+    expect(FakeAdapter.startedCwds).toEqual(["/tmp/kone-worktrees/fresh-branch"]);
   });
 });
 

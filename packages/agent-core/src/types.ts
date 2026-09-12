@@ -135,8 +135,27 @@ export type SessionStartInput = {
    *  onto it via ProviderRefs. */
   threadId: string;
   provider: ProviderKind;
-  /** Absolute path of the project/workspace root the agent operates in. */
+  /** Absolute path of the project/workspace root the agent operates in.
+   *
+   *  The thread's identity, not necessarily where its process runs: a thread
+   *  that owns a worktree is registered here and spawned there. Callers always
+   *  send the project path; the dispatcher resolves the place. */
   cwd: string;
+  /** What this conversation asked for before its first message — the one moment
+   *  the choice can be made, because a live session cannot change the directory
+   *  it is running in.
+   *
+   *  Carried on the start input rather than stored ahead of time because it is
+   *  draft state until the send: a user who opens the picker and changes their
+   *  mind must leave nothing behind. What gets stored is the outcome. Absent,
+   *  or `mode: "local"`, runs in the project's own checkout. */
+  workspace?: {
+    mode: ThreadEnvMode;
+    /** Branch the worktree is created on. A generated name is used when absent. */
+    branch?: string;
+    /** Ref that branch starts from. The project's HEAD when absent. */
+    base?: string;
+  };
   /** Provider model id (ModelDescriptor.id); provider default when omitted. */
   model?: string;
   mode?: InteractionMode;
@@ -467,8 +486,22 @@ export type StoredThreadMeta = {
   conversationId?: string;
   createdAt: number;
   updatedAt: number;
-  /** The branch the project was on when the thread last ran. */
+  /** The branch this thread's working directory was on when it last ran — its
+   *  worktree's branch when it has one, the project's otherwise. */
   branch?: string | null;
+  /** What this thread asked for: its own worktree, or the project's checkout.
+   *  Absent reads as "local". */
+  envMode?: ThreadEnvMode;
+  /** The worktree this thread owns, once `git worktree add` has succeeded. Null
+   *  while a chosen worktree is still being built, and on every local thread.
+   *  Distinct from `projectPath`, which stays the thread's identity: this is
+   *  where it runs, that is what it belongs to. */
+  worktreePath?: string | null;
+  /** The branch a pending worktree was asked for. Set alongside the intent
+   *  before the build, cleared when the worktree materializes or the thread
+   *  returns to local. Null on threads that never asked, asked without naming
+   *  a branch, or already have their directory. */
+  requestedBranch?: string | null;
   /** Working-tree diffstat snapshotted at the thread's last turn. */
   added?: number;
   removed?: number;
@@ -944,6 +977,9 @@ export type RuntimeItemStatus = "in-progress" | "completed" | "failed";
 export type { PlanTask, PlanTaskStatus } from "@kone/protocol/plan-tasks";
 import type { PlanTask } from "@kone/protocol/plan-tasks";
 
+export type { ThreadEnvMode } from "./threadWorkspace.js";
+import type { ThreadEnvMode } from "./threadWorkspace.js";
+
 // ── provider-native subagents ────────────────────────────────────────────────
 // A provider can spawn *its own* nested agents inside a single turn: Claude
 // Code's `Task`/`Agent` tool hands a scoped brief to a fresh agent with its own
@@ -1139,6 +1175,11 @@ export type RuntimeEventSource =
   // Main-process store / side-channel work (e.g. first-turn title rename).
   | "kone.store";
 
+/** The three things that happen between choosing a worktree and a session
+ *  running in it. Named rather than numbered so a surface can render them in a
+ *  fixed order and still recognize one that arrives out of turn. */
+export type ThreadWorkspaceStep = "create" | "link" | "start";
+
 export type BaseEvent = {
   threadId: string;
   provider: ProviderKind;
@@ -1167,6 +1208,18 @@ export type RuntimeEvent =
   | (BaseEvent & { type: "session.exited"; code: number | null })
   | (BaseEvent & { type: "thread.token-usage.updated"; usage: TokenUsage })
   | (BaseEvent & { type: "thread.title.updated"; title: string })
+  // Building the working tree a conversation asked for, before its session can
+  // start. Transient and never journaled: it describes a few seconds of setup,
+  // not anything that happened in the conversation. A failed step is reported
+  // and left standing rather than withdrawn — a stepper that vanishes on
+  // failure leaves the user to guess what went wrong.
+  | (BaseEvent & {
+      type: "thread.workspace.progress";
+      step: ThreadWorkspaceStep;
+      state: "running" | "done" | "failed";
+      /** Why it failed, when it did. */
+      message?: string;
+    })
   // The provider compacted the thread's context window — natively (Codex
   // `thread/compacted`, OpenCode `session.compacted`, Claude's
   // `compact_boundary`) or synthesized after a manual `/compact` turn settled

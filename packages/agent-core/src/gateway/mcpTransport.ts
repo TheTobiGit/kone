@@ -12,7 +12,8 @@
 // the HTTP layer.
 
 import type { ConversationStore } from "../ConversationStore.js";
-import { isAssistantProjectPath, workingDirFor } from "../assistantWorkspace.js";
+import { isAssistantProjectPath } from "../assistantWorkspace.js";
+import { threadWorkingDir } from "../threadWorkspace.js";
 import type { ProviderKind } from "../types.js";
 import type { GatewayCredentials } from "./credentials.js";
 import type { InFlightRequestRegistry } from "./inFlightRequests.js";
@@ -22,7 +23,10 @@ import type { GatewayRecord, GatewayValue } from "./schemas.js";
 
 /** The store surface the transport needs — structural, so unit tests can
  *  substitute a stub; the real ConversationStore satisfies it. */
-export type GatewayTransportStore = Pick<ConversationStore, "threadProjectPath">;
+export type GatewayTransportStore = Pick<
+  ConversationStore,
+  "threadProjectPath" | "threadWorkspace"
+>;
 
 export const MCP_DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = new Set(["2025-06-18", "2025-03-26", "2024-11-05"]);
@@ -275,12 +279,48 @@ export function makeMcpTransport(input: McpTransportInput): McpTransport {
           ),
         };
       }
-      // The assistant's project path is a sentinel, not a place, so the cwd a
-      // tool call runs against is resolved the same way a session's own spawn
-      // resolves it — one answer for both, or a tool and the CLI it belongs to
-      // would disagree about where the thread is.
+      // The cwd a tool call runs against is resolved the same way a session's
+      // own spawn resolves it — one answer for both, or a tool and the CLI it
+      // belongs to would disagree about where the thread is. That covers the
+      // assistant, whose project path is a sentinel rather than a place, and a
+      // thread that owns a worktree, which runs outside its project entirely.
+      // An unknown or unreadable workspace refuses like a pending one: never
+      // fall back to the shared checkout when isolation is uncertain.
       const isAssistant = isAssistantProjectPath(projectPath);
-      const cwd = workingDirFor(projectPath);
+      let cwd: string | null = null;
+      try {
+        const workspace = input.store.threadWorkspace(threadId);
+        if (!workspace) {
+          return {
+            status: 409,
+            body: jsonRpcError(
+              null,
+              JSON_RPC_INVALID_REQUEST,
+              "Bearer token refers to a thread whose workspace is unknown.",
+            ),
+          };
+        }
+        cwd = threadWorkingDir({ projectPath, ...workspace });
+      } catch {
+        return {
+          status: 409,
+          body: jsonRpcError(
+            null,
+            JSON_RPC_INVALID_REQUEST,
+            "Bearer token refers to a thread whose workspace could not be read.",
+          ),
+        };
+      }
+      if (!cwd) {
+        return {
+          status: 409,
+          body: jsonRpcError(
+            null,
+            JSON_RPC_INVALID_REQUEST,
+            "Bearer token refers to a thread whose workspace has not been created yet.",
+          ),
+        };
+      }
 
       // The security boundary: a write tool's authority is the exact turn
       // running when the request arrives. Bind at ingress — the first bind

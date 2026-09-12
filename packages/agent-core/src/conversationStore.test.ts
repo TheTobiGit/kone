@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 3 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 5 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(3);
+    expect(version.user_version).toBe(5);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -225,6 +225,8 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 1, name: "Baseline" },
       { migration_id: 2, name: "QueuedTurnSortKey" },
       { migration_id: 3, name: "Compactions" },
+      { migration_id: 4, name: "ThreadWorkspace" },
+      { migration_id: 5, name: "RequestedBranch" },
     ]);
 
     const idx = raw
@@ -2393,5 +2395,136 @@ describe("queued turns schema", () => {
     // The never-started prompt leaves with its row (no stranded unanswered
     // message); the claimed row may own a live turn, so its prompt stays.
     expect(store.loadThread("t-1")!.blocks.map((b) => b.id)).toEqual([firstId, claimedId]);
+  });
+});
+
+describe("thread workspace", () => {
+  test("a thread with nothing recorded reads as local", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-1", projectPath: "/p", provider: "opencode" });
+
+    expect(store.threadWorkspace("w-1")).toEqual({
+      envMode: "local",
+      worktreePath: null,
+      requestedBranch: null,
+    });
+  });
+
+  test("an unknown thread has no workspace at all", () => {
+    expect(freshStore().threadWorkspace("nope")).toBeNull();
+  });
+
+  test("intent and place are written independently", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-2", projectPath: "/p", provider: "opencode" });
+
+    // Chosen, but not built yet.
+    store.setThreadWorkspace("w-2", { envMode: "worktree" });
+    expect(store.threadWorkspace("w-2")).toEqual({
+      envMode: "worktree",
+      worktreePath: null,
+      requestedBranch: null,
+    });
+
+    // Materialized, without restating the mode.
+    store.setThreadWorkspace("w-2", { worktreePath: "/wt/p-feature" });
+    expect(store.threadWorkspace("w-2")).toEqual({
+      envMode: "worktree",
+      worktreePath: "/wt/p-feature",
+      requestedBranch: null,
+    });
+  });
+
+  test("the requested branch rides beside the intent and clears on materialize", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-branch", projectPath: "/p", provider: "opencode" });
+
+    store.setThreadWorkspace("w-branch", { envMode: "worktree", requestedBranch: "feature/from-picker" });
+    expect(store.threadWorkspace("w-branch")).toEqual({
+      envMode: "worktree",
+      worktreePath: null,
+      requestedBranch: "feature/from-picker",
+    });
+    expect(store.threadMeta("w-branch")?.requestedBranch).toBe("feature/from-picker");
+    expect(store.loadThread("w-branch")?.requestedBranch).toBe("feature/from-picker");
+
+    store.setThreadWorkspace("w-branch", { worktreePath: "/wt/p-feature", requestedBranch: null });
+    expect(store.threadWorkspace("w-branch")).toEqual({
+      envMode: "worktree",
+      worktreePath: "/wt/p-feature",
+      requestedBranch: null,
+    });
+    expect(store.threadMeta("w-branch")?.requestedBranch).toBeNull();
+  });
+
+  test("a blank requested branch reads as none", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-blank", projectPath: "/p", provider: "opencode" });
+
+    store.setThreadWorkspace("w-blank", { envMode: "worktree", requestedBranch: "   " });
+    expect(store.threadWorkspace("w-blank")?.requestedBranch).toBeNull();
+  });
+
+  test("the worktree can be cleared without losing the thread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-3", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("w-3", { envMode: "worktree", worktreePath: "/wt/gone" });
+
+    store.setThreadWorkspace("w-3", { worktreePath: null });
+
+    expect(store.threadWorkspace("w-3")?.worktreePath).toBeNull();
+    expect(store.threadProjectPath("w-3")).toBe("/p");
+  });
+
+  test("the project path is the thread's identity and the worktree its place", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-4", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("w-4", { envMode: "worktree", worktreePath: "/wt/p-x" });
+
+    // Still listed under its project, whatever directory it runs in.
+    expect(store.threadProjectPath("w-4")).toBe("/p");
+  });
+
+  test("subtreeWorkspaces collects the subtree's directories, skipping threads with none", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-parent", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("w-parent", { envMode: "worktree", worktreePath: "/wt/parent" });
+    store.writeSpawnedThread({
+      threadId: "w-child",
+      projectPath: "/p",
+      provider: "opencode",
+      createdAt: 10,
+      title: "Child",
+      lineage: spawnedLineage("w-parent", "w-parent"),
+    });
+    store.setThreadWorkspace("w-child", { envMode: "worktree", worktreePath: "/wt/child" });
+    store.ensureThread({ threadId: "w-local", projectPath: "/p", provider: "opencode" });
+    store.ensureThread({ threadId: "w-sibling", projectPath: "/p", provider: "opencode" });
+
+    // The subtree is the parent plus its spawned child — never the sibling, and
+    // never the local thread that owns no directory.
+    expect(store.subtreeWorkspaces("w-parent")).toEqual([
+      { threadId: "w-parent", projectPath: "/p", worktreePath: "/wt/parent" },
+      { threadId: "w-child", projectPath: "/p", worktreePath: "/wt/child" },
+    ]);
+    expect(store.subtreeWorkspaces("w-sibling")).toEqual([]);
+    expect(store.subtreeWorkspaces("nope")).toEqual([]);
+  });
+
+  test("isWorktreePathReferenced tracks the rows that name a directory", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "w-gone", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("w-gone", { envMode: "worktree", worktreePath: "/wt/shared" });
+    store.ensureThread({ threadId: "w-kept", projectPath: "/p", provider: "opencode" });
+    store.setThreadWorkspace("w-kept", { envMode: "worktree", worktreePath: "/wt/shared" });
+
+    expect(store.isWorktreePathReferenced("/wt/shared")).toBe(true);
+    expect(store.isWorktreePathReferenced("/wt/nowhere")).toBe(false);
+
+    // One holder deleted, one remains: still referenced. Both gone: free.
+    expect(store.deleteThread("w-gone")).toEqual({ ok: true });
+    expect(store.isWorktreePathReferenced("/wt/shared")).toBe(true);
+    expect(store.deleteThread("w-kept")).toEqual({ ok: true });
+    expect(store.isWorktreePathReferenced("/wt/shared")).toBe(false);
   });
 });

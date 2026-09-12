@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -435,10 +435,41 @@ function migration0003Compactions(db: DatabaseSync): void {
   `);
 }
 
+/** A thread's place, as distinct from its identity. `project_path` says which
+ *  project the conversation belongs to and never changes meaning; these two say
+ *  where its turns actually run.
+ *
+ *  `env_mode` is the declared intent ("local" / "worktree"), chosen before the
+ *  first message. `worktree_path` is the materialized directory, and stays NULL
+ *  until `git worktree add` has actually succeeded — the gap between the two is
+ *  a real state, not a transient, and the resolver treats it as one.
+ *
+ *  Both are nullable with no default: an existing row reads as local, which is
+ *  exactly what it is. */
+function migration0004ThreadWorkspace(db: DatabaseSync): void {
+  addColumn(db, "threads", "env_mode", "TEXT");
+  addColumn(db, "threads", "worktree_path", "TEXT");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_threads_worktree
+      ON threads (worktree_path) WHERE worktree_path IS NOT NULL;
+  `);
+}
+
+/** The branch a pending worktree was asked for, kept beside the intent it
+ *  refines. Nullable with no default: rows written before the request was
+ *  persisted read as no requested branch, which rebuilds with a generated
+ *  name — the same outcome as before. Cleared when the worktree materializes
+ *  or the thread returns to local, so it lives only in the pending gap. */
+function migration0005RequestedBranch(db: DatabaseSync): void {
+  addColumn(db, "threads", "requested_branch", "TEXT");
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
   { id: 3, name: "Compactions", run: migration0003Compactions },
+  { id: 4, name: "ThreadWorkspace", run: migration0004ThreadWorkspace },
+  { id: 5, name: "RequestedBranch", run: migration0005RequestedBranch },
 ];
 
 export interface MigrationOptions {
