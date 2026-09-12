@@ -223,6 +223,40 @@ export type GitStashEntry = {
   relative: string;
 };
 
+export type GitWorktree = {
+  /** Absolute path to the working directory, canonicalized — git reports
+   *  realpaths, so a path built from user input will not compare equal until it
+   *  has been through the same resolution. */
+  path: string;
+  /** Commit HEAD points at. Null on a bare repository's own entry, which has no
+   *  HEAD line at all. */
+  head: string | null;
+  /** Short branch name ("main"). Null when detached or bare. */
+  branch: string | null;
+  detached: boolean;
+  /** The repository's own entry for a bare repo — not a checkout. */
+  bare: boolean;
+  /** The primary checkout. Exactly one worktree is the main one, and git always
+   *  lists it first regardless of path ordering. */
+  main: boolean;
+  locked: boolean;
+  /** Why it is locked, or null when locked without a reason (or unlocked). */
+  lockReason: string | null;
+  /** Git's own diagnostic for why this entry can be pruned — the directory is
+   *  gone or its gitdir pointer is broken. Null when the worktree is intact. */
+  prunableReason: string | null;
+};
+
+export type CreateWorktreeOptions = {
+  /** Absolute path of the directory to create. Must not already exist as a
+   *  non-empty directory. */
+  path: string;
+  /** Branch to create and check out there. Must not already exist. */
+  branch: string;
+  /** Ref the new branch starts from. Defaults to HEAD. */
+  base?: string;
+};
+
 export type GitCommitFile = {
   path: string;
   from?: string;
