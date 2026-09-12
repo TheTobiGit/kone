@@ -10,6 +10,7 @@ import type {
   StoredThreadMeta,
   SubagentRun,
 } from "./types.js";
+import { threadEnvMode } from "./threadWorkspace.js";
 
 /** The value `done_at` carries when you explicitly un-marked a thread, as
  *  opposed to never having marked it (NULL). Epoch zero is not a time any
@@ -113,6 +114,15 @@ export type ThreadRow = {
   resume_session_at: string | null;
   done_at: number | null;
   last_visited_at: number | null;
+  /** Declared intent: "local" / "worktree". NULL on every row written before
+   *  worktrees existed, which reads as local. */
+  env_mode: string | null;
+  /** The materialized worktree directory, NULL until `git worktree add` has
+   *  actually succeeded. */
+  worktree_path: string | null;
+  /** The branch a pending worktree was asked for. NULL on rows written before
+   *  the request was persisted, and cleared once the worktree materializes. */
+  requested_branch?: string | null;
   snippet?: string | null;
 };
 
@@ -367,6 +377,12 @@ export function rowToMeta(row: ThreadRow): StoredThreadMeta {
     createdAt: row.created_at,
     updatedAt: row.last_activity_at,
     branch: row.branch ?? null,
+    /** Declared intent and materialized place. Read through the threadWorkspace
+     *  resolver rather than separately — the pending gap between them is a
+     *  state of its own. */
+    envMode: threadEnvMode(row.env_mode),
+    worktreePath: row.worktree_path ?? null,
+    requestedBranch: row.requested_branch?.trim() ? row.requested_branch : null,
     added: row.added ?? undefined,
     removed: row.removed ?? undefined,
     tokens: row.tokens ?? undefined,

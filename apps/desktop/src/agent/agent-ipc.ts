@@ -11,6 +11,12 @@ import {
   projectStoredThreadForIpc,
 } from "@kone/agent-core/ConversationStore.js";
 import { initThreadDispatcher } from "@kone/agent-core/dispatch.js";
+import { provisionWorktree } from "../modules/git/worktreeProvision.js";
+import { removeWorktree } from "../modules/git/worktree.js";
+import {
+  collectSubtreeWorktrees,
+  removeCollectedWorktrees,
+} from "../modules/git/worktreeCleanup.js";
 import { indexThreadGates, threadGateFor } from "@kone/agent-core/spawnProjection.js";
 import { startIrcDelivery } from "@kone/agent-core/ircDelivery.js";
 import { getIrcMailbox } from "@kone/agent-core/gateway/tools/irc.js";
@@ -120,7 +126,26 @@ export function registerAgentIpc(): void {
   // §5.1) — the spawn engine drives child threads headlessly through the same
   // dispatcher the handlers below forward to, so a spawned thread behaves
   // exactly like a renderer-driven one.
-  const dispatcher = initThreadDispatcher({ service: svc, store, broadcast });
+  const dispatcher = initThreadDispatcher({
+    service: svc,
+    store,
+    broadcast,
+    // Git lives out here, so the dispatcher is handed the capability rather
+    // than reaching for it. A thread that asks for its own branch gets a
+    // worktree built before its session starts, and the project's checkout is
+    // never moved to satisfy it.
+    provisionWorkspace: (request) => provisionWorktree(request),
+    // Only ever a worktree this dispatcher just built and had to give back.
+    // Not forced: a directory with work in it is never removed on a cancel, and
+    // git refusing is the refusal to respect. A branch this build invented goes
+    // with its worktree; a branch a person named is kept by the remover.
+    releaseWorkspace: ({ projectPath, worktreePath, reclaimGeneratedBranch }) => {
+      if (reclaimGeneratedBranch === true) {
+        return removeWorktree(projectPath, { path: worktreePath, reclaimGeneratedBranch: true });
+      }
+      return removeWorktree(projectPath, { path: worktreePath });
+    },
+  });
   // Renderer event-stream subscriptions: who gets the live stream, plus the
   // reload-recovery replay of parked asks. One instance per process; broadcast
   // and the subscribe/unsubscribe handlers below all read it.
@@ -197,6 +222,10 @@ export function registerAgentIpc(): void {
         if (!guard.ok) {
           return { ok: false, reason: guard.reason };
         }
+        // Snapshot the subtree's worktree directories BEFORE the rows go — after
+        // deleteThread nothing names them anymore. Spawned children are included:
+        // subtreeWorkspaces walks the whole subtree, not just the root.
+        const doomed = collectSubtreeWorktrees(store, threadId);
         const meta = store.threadMeta(threadId);
         const cancelledQueueIds = store.cancelQueuedTurnsForThread(threadId);
         if (meta) {
@@ -216,6 +245,22 @@ export function registerAgentIpc(): void {
         const res = store.deleteThread(threadId);
         dispatcher.forgetThread(threadId);
         if (!res.ok) return { ok: false, reason: res.reason };
+        // Remove AFTER a successful delete, best-effort and never failing it.
+        // Forced: this delete is user-confirmed and destructive, so a worktree
+        // with uncommitted work goes with its thread rather than stranding a
+        // directory behind a conversation that no longer exists. A directory
+        // another thread still names, or one outside the managed root, is left
+        // alone. Generated kone/<hex> branches go with their worktree; a branch
+        // a person named is never deleted automatically.
+        await removeCollectedWorktrees(doomed, {
+          isReferenced: (worktreePath) => store.isWorktreePathReferenced(worktreePath),
+          remove: (projectPath, worktreePath) =>
+            removeWorktree(projectPath, {
+              path: worktreePath,
+              force: true,
+              reclaimGeneratedBranch: true,
+            }),
+        });
         return { ok: true };
       },
       renameThread: async (threadId, title) => {
@@ -446,6 +491,12 @@ export function registerAgentIpc(): void {
   ipcMain.handle("agent:start-session", (_event, input: SessionStartInput) =>
     dispatcher.startThread(input),
   );
+  // Backing out of a worktree that is still being built. Synchronous and always
+  // accepted: it records the decision, and the teardown happens when the
+  // creation it is undoing actually finishes.
+  ipcMain.handle("agent:cancel-workspace", (_event, threadId: string) => {
+    dispatcher.cancelThreadWorkspace(threadId);
+  });
   // Persist an attachment's bytes to disk and hand back the bytes-free metadata
   // the composer carries on its next turn. Runs before send-turn — the composer
   // uploads on pick/drop/paste, then sends the turn with the returned ids.
@@ -704,6 +755,10 @@ export function registerAgentIpc(): void {
       console.warn(`[ipc] delete refused for ${threadId}: ${guard.reason}`);
       return;
     }
+    // Snapshot the subtree's worktree directories BEFORE the rows go — after
+    // deleteThread nothing names them anymore. Spawned children are included:
+    // subtreeWorkspaces walks the whole subtree, not just the root.
+    const doomed = collectSubtreeWorktrees(store, threadId);
     // Flip the thread's queued + promoting rows and surface one
     // turn.queued-cancelled (reason "thread-deleted") per row BEFORE the
     // thread is dropped: a deleted thread's follow-ups must never survive to
@@ -729,8 +784,25 @@ export function registerAgentIpc(): void {
     // Unlink the thread's attachment files first (best-effort), then drop every
     // row — otherwise the bytes on disk would outlive the conversation.
     await attachments.deleteThreadFiles(threadId);
-    store.deleteThread(threadId);
+    const deleted = store.deleteThread(threadId);
     dispatcher.forgetThread(threadId);
+    if (!deleted.ok) return;
+    // Remove AFTER a successful delete, best-effort and never failing it.
+    // Forced: this delete is user-confirmed and destructive, so a worktree
+    // with uncommitted work goes with its thread rather than stranding a
+    // directory behind a conversation that no longer exists. A directory
+    // another thread still names, or one outside the managed root, is left
+    // alone. Generated kone/<hex> branches go with their worktree; a branch
+    // a person named is never deleted automatically.
+    await removeCollectedWorktrees(doomed, {
+      isReferenced: (worktreePath) => store.isWorktreePathReferenced(worktreePath),
+      remove: (projectPath, worktreePath) =>
+        removeWorktree(projectPath, {
+          path: worktreePath,
+          force: true,
+          reclaimGeneratedBranch: true,
+        }),
+    });
   });
   // Pin state lives in the DB (v18), so a pinned thread follows the thread
   // across browser profiles — the Project Home / launcher pin toggles call

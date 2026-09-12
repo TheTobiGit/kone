@@ -1,5 +1,8 @@
 import { detect, diffStatBetween, snapshotWorkingTree } from "@kone/git-core/status.js";
+import { GitError } from "@kone/git-core/core.js";
 import type { AgentService } from "./AgentService.js";
+import { threadWorkingDir, threadWorkspaceState } from "./threadWorkspace.js";
+import type { ThreadWorkspace } from "./threadWorkspace.js";
 import { workingDirFor } from "./assistantWorkspace.js";
 import type { ConversationStore } from "./ConversationStore.js";
 import { buildResumeContext } from "./resumeContext.js";
@@ -10,6 +13,7 @@ import {
 } from "./threadTitle.js";
 import type {
   CompactThreadResult,
+  ThreadWorkspaceStep,
   ProviderKind,
   RuntimeEvent,
   SendTurnInput,
@@ -24,12 +28,56 @@ import type {
 // on a child thread headlessly, doing exactly what the renderer's path does.
 // ipc.ts forwards to this module, so the renderer path is unchanged.
 
+/** Build the directory a worktree thread runs in. Injected because git lives in
+ *  the desktop layer, and a headless host (a test, the spawn engine's own
+ *  harness) can run every thread local without one. Absent means worktrees are
+ *  unavailable here, and a thread that asked for one fails its send rather than
+ *  quietly running in the project's checkout. */
+export type ProvisionThreadWorkspace = (input: {
+  projectPath: string;
+  branch?: string;
+  base?: string;
+}) => Promise<{
+  path: string;
+  branch: string;
+  /** True when the provisioner invented the branch name, so the caller may
+   *  clean it up later. Absent reads as not generated: never delete unless
+   *  the provisioner positively says it invented the name. */
+  generatedBranch?: boolean;
+  /** The branch already existed and was moved into this worktree. Its history
+   *  is not ours to discard, even when the name looks generated. */
+  attachedExisting?: boolean;
+}>;
+
+/** Tear down a worktree this dispatcher built. Only ever called on one it just
+ *  created and then had to give back — a user who cancelled while it was being
+ *  made. Best effort: a worktree left behind is untidy, a failed teardown that
+ *  masked the real error would be worse. */
+export type ReleaseThreadWorkspace = (input: {
+  projectPath: string;
+  worktreePath: string;
+  /** The branch the worktree was built on, for logging. The remover re-reads
+   *  the live branch itself rather than trusting this. */
+  branch?: string;
+  /** Delete the worktree's branch after removal, when it was generated for
+   *  this build. The remover still refuses user-named branches regardless. */
+  reclaimGeneratedBranch?: boolean;
+}) => Promise<void>;
+
+/** The sentence worth showing from a failure, or `fallback` when it carries
+ *  none worth reading. */
+function messageOf(error: Error, fallback: string): string {
+  return error.message.trim() || fallback;
+}
+
 export interface ThreadDispatcherDeps {
   service: AgentService;
   store: ConversationStore;
   /** Push one runtime event to every subscribed renderer. `journal` false
    *  skips store.applyEvent — ipc.ts owns both. */
   broadcast: (event: RuntimeEvent, journal?: boolean) => void;
+  provisionWorkspace?: ProvisionThreadWorkspace;
+  releaseWorkspace?: ReleaseThreadWorkspace;
 }
 
 export interface StartThreadOptions {
@@ -83,6 +131,9 @@ export interface ThreadDispatcher {
    *  Nothing is journaled: the settled `thread.state.changed` "compacted"
    *  boundary is the record, not a user message. */
   compactThread(threadId: string): Promise<CompactThreadResult>;
+  /** Back out of a worktree that is still being built. Does not interrupt git —
+   *  the creation is awaited and what it made is then removed. */
+  cancelThreadWorkspace(threadId: string): void;
   /** The id of the turn that spawned this thread, when it is a spawned child
    *  (registered via startThread/sendThreadTurn parentTurnId) — used by the
    *  IPC broadcast choke point to stamp child events. */
@@ -155,6 +206,15 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private readonly service: AgentService;
   private readonly store: ConversationStore;
   private readonly broadcast: ThreadDispatcherDeps["broadcast"];
+  private readonly provisionWorkspace: ProvisionThreadWorkspace | undefined;
+  private readonly releaseWorkspace: ReleaseThreadWorkspace | undefined;
+  /** Threads whose user backed out while their worktree was being built.
+   *
+   *  Cancelling is not "stop trying" — git is already mid-checkout and there is
+   *  nothing to interrupt. It is "undo whatever finishes": the creation is still
+   *  awaited, and the directory it produces is then removed. The alternative is
+   *  a worktree nobody asked for, owned by a thread that never started. */
+  private readonly cancelledWorkspaces = new Set<string>();
 
   // Threads whose live provider session came up with none of the thread's
   // context — no stored resume id to offer, or the provider refused the one we
@@ -175,6 +235,8 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     this.service = deps.service;
     this.store = deps.store;
     this.broadcast = deps.broadcast;
+    this.provisionWorkspace = deps.provisionWorkspace;
+    this.releaseWorkspace = deps.releaseWorkspace;
   }
 
   spawnParentTurnId(threadId: string): string | undefined {
@@ -204,10 +266,29 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     // directory. The thread keeps the project path it was registered under —
     // that is its identity, and the assistant's is a sentinel rather than a
     // place — while the process gets somewhere it can actually run.
-    const workingDir = workingDirFor(input.cwd);
-    const session = await this.service.startSession(
-      workingDir === input.cwd ? input : { ...input, cwd: workingDir },
-    );
+    //
+    // Resolved here rather than trusted from the caller: the renderer sends a
+    // per-project cwd at every call site and has no idea a thread might live in
+    // a worktree. One authority for the answer, and a caller that forgot to ask
+    // cannot defeat it.
+    const workingDir = await this.resolveThreadPlace(input);
+    let session: Session;
+    try {
+      session = await this.service.startSession(
+        workingDir === input.cwd ? input : { ...input, cwd: workingDir },
+      );
+    } catch (error) {
+      // Closes the stepper's last step when one is open. A thread that never
+      // asked for a worktree has no stepper and nothing reads this.
+      this.reportWorkspaceStep(
+        input,
+        "start",
+        "failed",
+        error instanceof Error ? messageOf(error, "Could not start.") : "Could not start.",
+      );
+      throw error;
+    }
+    this.reportWorkspaceStep(input, "start", "done");
     // The provider conversation exists the moment startSession resolves.
     // Capture its id NOW — durably — rather than waiting for the session.started
     // fold (which also captures it): a crash in the window between the CLI
@@ -364,6 +445,7 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   forgetThread(threadId: string): void {
     this.threadsNeedingReplay.delete(threadId);
     this.spawnParentTurnIds.delete(threadId);
+    this.cancelledWorkspaces.delete(threadId);
   }
 
   /** Persist a title and notify renderers. No-ops when the title is unchanged. */
@@ -419,10 +501,25 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     const projectPath = this.store.threadProjectPath(input.threadId);
     if (!projectPath) return;
 
+    // An unknown or unreadable workspace skips naming rather than falling back
+    // to the shared checkout: the one-shot must run where the thread runs.
+    let namingDir: string | null = null;
+    try {
+      const workspace = this.store.threadWorkspace(input.threadId);
+      if (!workspace) return;
+      namingDir = threadWorkingDir({ projectPath, ...workspace });
+    } catch {
+      return;
+    }
+    // A thread whose worktree is not built yet has nowhere to run the one-shot.
+    // Naming is a convenience; skipping it costs a generated title, and running
+    // it in the project's checkout would be the wrong directory.
+    if (!namingDir) return;
+
     void generateThreadTitle({
       // Another spawn, and the same reason the session's own cwd is resolved:
       // the naming one-shot runs in a directory too.
-      cwd: workingDirFor(projectPath),
+      cwd: namingDir,
       message: input.message,
       provider: input.provider,
     })
@@ -455,6 +552,236 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
       .catch(() => {});
   }
 
+  /**
+   * The directory this session will run in, building it first when the thread
+   * asked for a worktree it does not have yet.
+   *
+   * Ordered so that a worktree is built once and only once: a thread that
+   * already has a path is never rebuilt, and the path is written to the row the
+   * moment git reports it, so a crash after creation does not strand the
+   * directory. The declared mode is recorded alongside it — the row says both
+   * what was asked for and what was built.
+   *
+   * A pending thread rebuilds from the stored request without needing the
+   * caller to re-ask: the branch rides durably beside the intent, so a reload
+   * that wipes the renderer's in-memory staging still has everything needed to
+   * build. An explicit workspace on the input wins over the stored one.
+   *
+   * Throws rather than falling back. A thread that asked for isolation and got
+   * the shared checkout instead is the exact failure this feature exists to
+   * prevent, so the send fails loudly and the user can try again.
+   */
+  private async resolveThreadPlace(input: SessionStartInput): Promise<string> {
+    const wanted = input.workspace?.mode === "worktree" ? input.workspace : null;
+    // An unknown or unreadable workspace never falls back to the shared
+    // checkout: a thread that might want isolation fails loudly instead. An
+    // explicit worktree request still builds — the input itself states the
+    // intent, so there is nothing unknown about what to make.
+    let recorded: ThreadWorkspace;
+    try {
+      const read = this.store.threadWorkspace(input.threadId);
+      if (!read) {
+        if (!wanted) throw new Error(`Unknown workspace for thread ${input.threadId}`);
+        recorded = {};
+      } else {
+        recorded = read;
+      }
+    } catch (error) {
+      if (!wanted) {
+        throw error instanceof Error
+          ? error
+          : new Error("Cannot start the thread: its workspace could not be read.");
+      }
+      recorded = {};
+    }
+    const state = threadWorkspaceState(recorded);
+
+    // Already built. Nothing about a live worktree is rebuilt or re-chosen —
+    // the choice was made before the first message and does not reopen.
+    if (state === "worktree-ready") {
+      const settled = threadWorkingDir({ ...recorded, projectPath: input.cwd });
+      if (settled) return settled;
+    }
+
+    if (wanted) {
+      const branch = wanted.branch?.trim() ? wanted.branch.trim() : null;
+      // The intent is recorded before the build, with the requested branch
+      // beside it, so a crash mid-creation leaves a thread that still knows
+      // both what it wanted and what it asked to call it rather than one that
+      // silently reverts to sharing the project's checkout.
+      this.store.setThreadWorkspace(input.threadId, { envMode: "worktree", requestedBranch: branch });
+      return this.buildThreadWorktree(input, {
+        branch: branch ?? undefined,
+        base: wanted.base,
+      });
+    }
+
+    if (state === "worktree-pending") {
+      if (!this.provisionWorkspace) throw new Error("Worktrees aren't available here.");
+      const storedBranch = recorded.requestedBranch?.trim() ? recorded.requestedBranch.trim() : undefined;
+      return this.buildThreadWorktree(input, { branch: storedBranch });
+    }
+    return workingDirFor(input.cwd);
+  }
+
+  /** Provision the worktree, wire its progress reports, and record the outcome.
+   *  Shared by the explicit request and the stored-pending rebuild so the two
+   *  can never disagree about ordering, cancellation, or what the row says. */
+  private async buildThreadWorktree(
+    input: SessionStartInput,
+    requestBranch: { branch?: string; base?: string },
+  ): Promise<string> {
+    if (!this.provisionWorkspace) throw new Error("Worktrees aren't available here.");
+    this.cancelledWorkspaces.delete(input.threadId);
+    const step = (
+      name: ThreadWorkspaceStep,
+      state: "running" | "done" | "failed",
+      message?: string,
+    ): void => this.emitWorkspaceStep(input, name, state, message);
+
+    const request: Parameters<ProvisionThreadWorkspace>[0] = { projectPath: input.cwd };
+    if (requestBranch.branch) request.branch = requestBranch.branch;
+    if (requestBranch.base) request.base = requestBranch.base;
+
+    step("create", "running");
+    let made: Awaited<ReturnType<ProvisionThreadWorkspace>>;
+    try {
+      made = await this.provisionWorkspace(request);
+    } catch (error) {
+      this.cancelledWorkspaces.delete(input.threadId);
+      step(
+        "create",
+        "failed",
+        error instanceof Error
+          ? messageOf(error, "Could not create the worktree.")
+          : "Could not create the worktree.",
+      );
+      throw error;
+    }
+    step("create", "done");
+
+    // The cancel lands here, not earlier: git was already mid-checkout and
+    // there was nothing to interrupt. What was made gets unmade, including
+    // a branch this build invented. A branch the user named, or one that
+    // already existed before the build, is never reclaimed — the remover
+    // refuses those regardless, and this flag stays false for them.
+    if (this.cancelledWorkspaces.delete(input.threadId)) {
+      await this.discardWorkspace(input.cwd, made.path, {
+        branch: made.branch,
+        reclaimGeneratedBranch:
+          made.generatedBranch === true && made.attachedExisting !== true,
+      });
+      this.store.setThreadWorkspace(input.threadId, { envMode: "local", requestedBranch: null });
+      step("link", "failed", "Cancelled.");
+      throw GitError.classified("WORKSPACE_CANCELLED", "Preparing the worktree was cancelled.");
+    }
+
+    step("link", "running");
+    this.store.setThreadWorkspace(input.threadId, { worktreePath: made.path, requestedBranch: null });
+    step("link", "done");
+    step("start", "running");
+    return made.path;
+  }
+
+  /** One step of building a thread's worktree, on its way to every renderer.
+   *
+   *  Never journaled — it describes a few seconds of setup, not anything that
+   *  happened in the conversation, and a transcript replayed a week later should
+   *  carry no trace of it. Emitted only for a thread that asked for a worktree,
+   *  so nothing else is disturbed by it. */
+  private reportWorkspaceStep(
+    input: SessionStartInput,
+    step: ThreadWorkspaceStep,
+    state: "running" | "done" | "failed",
+    message?: string,
+  ): void {
+    if (input.workspace?.mode === "worktree") {
+      this.emitWorkspaceStep(input, step, state, message);
+      return;
+    }
+    // A pending thread rebuilding from its stored request carries no workspace
+    // on the input — the caller never re-asked — but its stepper still needs
+    // the closing start step. The store is the record there. An unreadable
+    // store skips the step: progress reporting never fails a start.
+    let recorded: ThreadWorkspace | null = null;
+    try {
+      recorded = this.store.threadWorkspace(input.threadId);
+    } catch {
+      return;
+    }
+    if (recorded && threadWorkspaceState(recorded) !== "local") {
+      this.emitWorkspaceStep(input, step, state, message);
+    }
+  }
+
+  /** Broadcast one workspace step unconditionally. The build path calls this
+   *  directly because it already knows it is building; the start boundary
+   *  above decides whether a given input warrants one. */
+  private emitWorkspaceStep(
+    input: SessionStartInput,
+    step: ThreadWorkspaceStep,
+    state: "running" | "done" | "failed",
+    message?: string,
+  ): void {
+    const event: RuntimeEvent = {
+      type: "thread.workspace.progress",
+      threadId: input.threadId,
+      provider: input.provider,
+      at: Date.now(),
+      source: "kone.store",
+      step,
+      state,
+    };
+    if (message) event.message = message;
+    this.broadcast(event, false);
+  }
+
+  /** Back out of a worktree that is still being built.
+   *
+   *  Never interrupts git — by the time a user can press this the checkout is
+   *  already running, and killing it mid-write is how a half-made directory is
+   *  left behind. The flag is read once the creation resolves, and what it made
+   *  is removed then. A cancel landing after the link is already written has
+   *  nothing left to undo and is cleared on the next start. Harmless on a
+   *  thread that is not building anything. */
+  cancelThreadWorkspace(threadId: string): void {
+    this.cancelledWorkspaces.add(threadId);
+  }
+
+  /** Remove a worktree this dispatcher just built and then had to give back.
+   *  Best effort: a failed removal is logged and the cancellation error still
+   *  throws, so teardown never masks the reason the build ended. */
+  private async discardWorkspace(
+    projectPath: string,
+    worktreePath: string,
+    opts?: { branch?: string; reclaimGeneratedBranch?: boolean },
+  ): Promise<void> {
+    if (!this.releaseWorkspace) return;
+    try {
+      const release: Parameters<ReleaseThreadWorkspace>[0] = { projectPath, worktreePath };
+      if (opts?.branch !== undefined) release.branch = opts.branch;
+      if (opts?.reclaimGeneratedBranch === true) release.reclaimGeneratedBranch = true;
+      await this.releaseWorkspace(release);
+    } catch (err) {
+      console.error("[dispatch] could not remove a cancelled worktree:", err);
+    }
+  }
+
+  /** Where this thread's processes run, or null when it has asked for a worktree
+   *  that does not exist yet. `projectPath` is the thread's identity; this is its
+   *  place, and the two differ exactly when the thread owns a worktree. An
+   *  unknown or unreadable workspace answers null — callers skip rather than
+   *  fall back to the shared checkout. */
+  private threadWorkingDir(threadId: string, projectPath: string): string | null {
+    try {
+      const workspace = this.store.threadWorkspace(threadId);
+      if (!workspace) return null;
+      return threadWorkingDir({ projectPath, ...workspace });
+    } catch {
+      return null;
+    }
+  }
+
   /** Resolve the thread's project path, run git against it, and persist the
    *  snapshot. The diffstat is scoped to this conversation: baseline snapshot →
    *  a fresh snapshot of the tree as the turn settles, so the +/− count only the
@@ -463,14 +790,19 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
   private captureRepoStats(threadId: string): void {
     const projectPath = this.store.threadProjectPath(threadId);
     if (!projectPath) return;
-    void detect(projectPath)
+    // The same directory the turn ran in, not the project's. A thread in a
+    // worktree that reported the main checkout's branch and diffstat would be
+    // telling exactly the lie the worktree exists to end.
+    const dir = this.threadWorkingDir(threadId, projectPath);
+    if (!dir) return;
+    void detect(dir)
       .then(async (repo) => {
         if (!repo) return;
         const baseline = this.store.getBaseline(threadId);
-        const current = baseline ? await snapshotWorkingTree(projectPath) : null;
+        const current = baseline ? await snapshotWorkingTree(dir) : null;
         const stat =
           baseline && current
-            ? await diffStatBetween(projectPath, baseline, current)
+            ? await diffStatBetween(dir, baseline, current)
             : { added: 0, removed: 0 };
         this.store.recordRepoStats({
           threadId,

@@ -29,6 +29,8 @@ function fixture() {
   const credentials = new GatewayCredentials();
   const store: GatewayTransportStore = {
     threadProjectPath: (threadId: string) => (threadId === "thread-1" ? PROJECT : null),
+    // Every fixture thread runs in its project's own checkout.
+    threadWorkspace: () => ({ envMode: "local" as const, worktreePath: null }),
   };
   const registry = createRegistry([
     {
@@ -310,6 +312,8 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
     const credentials = new GatewayCredentials();
     const store: GatewayTransportStore = {
       threadProjectPath: (threadId: string) => (threadId === "thread-1" ? PROJECT : null),
+      // Every fixture thread runs in its project's own checkout.
+      threadWorkspace: () => ({ envMode: "local" as const, worktreePath: null }),
     };
     let started!: () => void;
     const startedP = new Promise<void>((resolve) => {
@@ -378,6 +382,8 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
     const store: GatewayTransportStore = {
       threadProjectPath: (threadId: string) =>
         threadId === "thread-1" || threadId === "thread-2" ? PROJECT : null,
+      // Every fixture thread runs in its project's own checkout.
+      threadWorkspace: () => ({ envMode: "local" as const, worktreePath: null }),
     };
     let started!: () => void;
     const startedP = new Promise<void>((resolve) => {
@@ -452,6 +458,8 @@ describe("in-flight MCP cancellation (cross-POST)", () => {
     const credentials = new GatewayCredentials();
     const store: GatewayTransportStore = {
       threadProjectPath: (threadId: string) => (threadId === "thread-1" ? PROJECT : null),
+      // Every fixture thread runs in its project's own checkout.
+      threadWorkspace: () => ({ envMode: "local" as const, worktreePath: null }),
     };
     let started!: () => void;
     const startedP = new Promise<void>((resolve) => {
@@ -520,6 +528,8 @@ describe("mcp transport: new tools (kone_spawn_batch, kone_irc_send, kone_irc_in
     const store: GatewayTransportStore = {
       threadProjectPath: (threadId: string) =>
         threadId === "thread-1" || threadId === "thread-2" ? PROJECT : null,
+      // Every fixture thread runs in its project's own checkout.
+      threadWorkspace: () => ({ envMode: "local" as const, worktreePath: null }),
     };
     const mailbox = new IrcMailbox();
     const fakeSpawnStore = {
@@ -1018,6 +1028,8 @@ describe("mcp transport: new tools (kone_spawn_batch, kone_irc_send, kone_irc_in
           : threadId === "thread-worker"
             ? "/workspace/project"
             : null,
+      // Every fixture thread runs in its project's own checkout.
+      threadWorkspace: () => ({ envMode: "local" as const, worktreePath: null }),
     };
     const transport = makeMcpTransport({
       credentials,
