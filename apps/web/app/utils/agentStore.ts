@@ -180,7 +180,9 @@ export function hydrateAgentRows(presetIds: readonly string[]): Promise<void> {
 async function runHydrate(presetIds: string[]): Promise<void> {
   const api = bridge();
   if (api) applyRosterSnapshot(await api.hydrate({ presetIds }));
-  else for (const presetId of presetIds) ensureLocalRow(presetId);
+  // The preset's index is its position: the same index `agents.ts` draws it at
+  // before hydrate, so nothing moves when the real rows land.
+  else presetIds.forEach((presetId, index) => ensureLocalRow(presetId, index));
   carryLegacyNames(presetIds);
 }
 
@@ -238,10 +240,10 @@ function carryLegacyNames(presetIds: string[]): void {
     // damaged map is read once and never again.
     const names = raw ? (JSON.parse(raw) as Partial<Record<string, string>>) : {};
     localStorage.setItem(LEGACY_NAMES_CARRIED_KEY, "1");
-    for (const presetId of presetIds) {
+    presetIds.forEach((presetId, index) => {
       const name = names[presetId]?.trim();
-      if (name) void patchAgentRow(presetId, { name }, { presetId });
-    }
+      if (name) void patchAgentRow(presetId, { name }, { presetId, sortOrder: index });
+    });
   } catch {
     // Unreadable storage, or a map that turned out not to be one. There is
     // nothing to carry either way, and nothing worth failing a hydrate over.
@@ -249,11 +251,19 @@ function carryLegacyNames(presetIds: string[]): void {
 }
 
 /** Add a user-made agent. Returns the stored row, or null if it was refused
- *  (a nameless agent has nothing to inherit a name from). */
-export async function insertAgentRow(input: AgentCreateInput): Promise<AgentRecord | null> {
+ *  (a nameless agent has nothing to inherit a name from).
+ *
+ *  `base` is how many leading positions the shipped presets occupy — the
+ *  caller's count, since nothing here knows the preset list. It floors the new
+ *  row's position so "added last" holds on the first paint too, before hydrate
+ *  has written the presets' own rows. */
+export async function insertAgentRow(
+  input: AgentCreateInput,
+  opts: { base: number },
+): Promise<AgentRecord | null> {
   await hydrating;
   const api = bridge();
-  if (!api) return insertLocalRow(input);
+  if (!api) return insertLocalRow(input, opts.base);
   const row = await api.create(sendable(input));
   if (row) applyRow(row);
   return row;
@@ -267,15 +277,17 @@ export async function insertAgentRow(input: AgentCreateInput): Promise<AgentReco
  * `ensure` names the preset this row overlays, for the case where the row does
  * not exist yet: an edit is then also the moment the row is created. Without it,
  * editing an agent nobody has heard of is a no-op rather than an invention.
+ * `sortOrder` is that preset's index in the caller's order — the position the
+ * row is created at, matching what hydrate would give it.
  */
 export async function patchAgentRow(
   agentId: string,
   patch: AgentPatch,
-  ensure?: { presetId: string },
+  ensure?: { presetId: string; sortOrder: number },
 ): Promise<AgentRecord | null> {
   await hydrating;
   if (ensure && !agentRows.value.some((row) => row.agentId === agentId)) {
-    ensureLocalRow(ensure.presetId);
+    ensureLocalRow(ensure.presetId, ensure.sortOrder);
   }
   // Applied here first so the pane redraws on the keystroke rather than on the
   // round trip; the authoritative row replaces it a moment later.
@@ -478,8 +490,15 @@ function clampBot(value: AgentBotRef | null | undefined): AgentBotRef | null {
   return { form, color, expression };
 }
 
-function nextSortOrder(): number {
-  return agentRows.value.reduce((max, row) => Math.max(max, row.sortOrder + 1), 0);
+/** The next free roster position at or above `base`.
+ *
+ *  `base` is the caller's count of shipped presets, passed in because nothing
+ *  here knows the preset list. The roster draws a preset with no row yet at its
+ *  own index, so those leading positions are taken from the first paint — a new
+ *  agent that ignored them would sort into the middle of the built-ins, then
+ *  jump to the end the moment the rows landed. */
+function nextSortOrder(base: number): number {
+  return agentRows.value.reduce((max, row) => Math.max(max, row.sortOrder + 1), base);
 }
 
 function ordered(rows: AgentRecord[]): AgentRecord[] {
@@ -496,8 +515,10 @@ function applyRow(row: AgentRecord): void {
 }
 
 /** The overlay row a built-in gets the first time it is touched: a position, a
- *  pair of timestamps, and nothing else — every field still the preset's. */
-function ensureLocalRow(presetId: string): AgentRecord {
+ *  pair of timestamps, and nothing else — every field still the preset's.
+ *  `sortOrder` is the preset's index in the caller's order, so the row lands
+ *  where the pre-hydrate roster already drew it and nothing moves. */
+function ensureLocalRow(presetId: string, sortOrder: number): AgentRecord {
   const existing = agentRows.value.find((row) => row.agentId === presetId);
   if (existing) return existing;
   const now = Date.now();
@@ -514,7 +535,7 @@ function ensureLocalRow(presetId: string): AgentRecord {
     modelFallbacks: null,
     avatar: null,
     bot: null,
-    sortOrder: nextSortOrder(),
+    sortOrder,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -523,7 +544,7 @@ function ensureLocalRow(presetId: string): AgentRecord {
   return row;
 }
 
-function insertLocalRow(input: AgentCreateInput): AgentRecord | null {
+function insertLocalRow(input: AgentCreateInput, base: number): AgentRecord | null {
   const name = clamp(input.name, NAME_MAX);
   if (!name) return null;
   const now = Date.now();
@@ -540,7 +561,7 @@ function insertLocalRow(input: AgentCreateInput): AgentRecord | null {
     modelFallbacks: clampModel(input.model) ? (clampList(input.modelFallbacks) ?? []) : null,
     avatar: clampAvatar(input.avatar),
     bot: clampBot(input.bot),
-    sortOrder: nextSortOrder(),
+    sortOrder: nextSortOrder(base),
     createdAt: now,
     updatedAt: now,
     deletedAt: null,

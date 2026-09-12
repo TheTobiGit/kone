@@ -1631,6 +1631,12 @@ watch(
   align-items: flex-start;
   width: 100%;
 }
+/* A collapsed fold costs no gap: it is still a flex child at zero height, so
+   hand one gap back discretely — no transition, collapsed-or-not is binary
+   and the fold's grid track carries the motion. */
+.stack > .fold:not(.fold--open) {
+  margin-bottom: -15px;
+}
 
 /* ── Speaker line — who answered ───────────────────────────────────────────── */
 .speaker {

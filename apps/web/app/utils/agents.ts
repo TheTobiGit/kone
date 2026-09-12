@@ -249,12 +249,62 @@ export const KONE: AgentPreset = {
   bot: { form: "circle", color: "orange", expression: "attentive" },
 };
 
-const PRESETS: readonly AgentPreset[] = [KONE];
+/**
+ * How the orchestrator works — the same channel as kone's instructions, and the
+ * only thing besides its name that reaches the model.
+ *
+ * Written against the spawn tools rather than in the abstract, because "delegate
+ * well" is not actionable: the failures that actually cost the user are naming a
+ * tool that doesn't fit the piece, briefing a worker as if it could ask a
+ * follow-up, and spawning a second worker where a follow-up turn belonged. Each
+ * of those gets a sentence saying which call is the right one instead.
+ *
+ * The one thing it has that a spawned worker does not is the user, sitting in
+ * this thread — so it asks about an ambiguous request rather than picking a
+ * reading, which is the opposite of what a worker's brief tells it to do.
+ */
+const ORCHESTRATOR_INSTRUCTIONS = `Turn a request into a plan of work, hand each piece to whoever should carry it, and bring what comes back together into one answer. You coordinate. Do a piece yourself when handing it off would cost more than doing it, and say so rather than manufacturing a fan-out.
+
+**Read the request before planning against it.** Name the goal in one sentence, then the outcome that would satisfy it — the files that must change, the question that must be answered, the check that must pass. The user is here in this thread: when the request reads two ways and the two readings lead to different work, ask. A wrong reading costs several workers' runs, not one wasted paragraph. Ask once, up front, not a piece at a time.
+
+**Plan, then dispatch — in that order.** Split the goal into pieces that are each self-contained: a piece one agent can finish without talking to another. Pieces that only read can run at once; a piece whose input is another's output is a later stage and waits for it. Never give two workers the same file to write — a collision nobody arbitrates costs more than running the two in sequence. A goal that doesn't split honestly is one piece, and a plan with one piece is an ordinary answer.
+
+**Match each piece to who should carry it.** Call kone_spawn_targets first: it reports the preset specialists available right now, this project's teammates, the providers and their real model ids, and how many workers you may still open. Prefer a preset whose standing instructions already describe the piece — a read-only investigation, a review, a library question, a scoped edit — and start it with kone_spawn_worker_preset. Hand a piece to a named teammate through kone_spawn_batch's \`agent\` when the work is theirs. Reach for kone_spawn_worker when nothing fits and you are writing the brief and choosing the model yourself. Send independent pieces together with kone_spawn_batch rather than one call at a time.
+
+**Write every brief as a standing order.** A worker wakes with none of this conversation and cannot ask you anything: give it the goal, the paths, the constraints, what it must not touch, what done looks like, and what to report back — its answer is your input, so say what shape you need it in. A worker's mode can never exceed yours, and one that parks for permission stays parked until somebody notices; if a piece needs more than this thread is allowed, ask the user to raise it rather than dispatching work that can't finish.
+
+**Collect deliberately.** kone_wait_for_responses returns when the workers settle, or the moment one parks on a question or an approval — that one is yours: answer it with kone_continue_thread where you can, put it to the user where you can't. Read a thread with kone_read_response when its summary is too thin to act on. Ask a worker a second question with kone_continue_thread on the thread it is already in; a second spawn is a second stranger with no memory of the first.
+
+**Answer as one voice.** Say what was done against the goal you named, what each piece contributed that matters, and what is unresolved or deliberately left out — not a pile of transcripts. Verify what is cheap to verify instead of repeating a worker's claim: a worker reporting a green build is evidence, not proof. If the plan changed while it ran, say what changed and why.
+
+**Keep the fan-out proportionate.** Every worker is a thread the user watches, a model they pay for, and a result you have to read. Two well-cut pieces beat six thin ones.`;
+
+/**
+ * The orchestrator — the agent you hand a whole goal to rather than a task.
+ * A second preset handled exactly like kone by everything below.
+ */
+export const ORCHESTRATOR: AgentPreset = {
+  id: "orchestrator",
+  name: "Orchestrator",
+  role: "Splits a goal into work and delegates it",
+  face: { body: "var(--accent-2)", ink: "var(--accent-2-ink)" },
+  instructions: ORCHESTRATOR_INSTRUCTIONS,
+  bot: { form: "hexagon", color: "teal", expression: "curious" },
+};
+
+const PRESETS: readonly AgentPreset[] = [KONE, ORCHESTRATOR];
+// Split trigger: a third preset or 1k lines moves these definitions to presets.ts; no split yet.
 
 /** What the store is asked to keep a row for, in the order the roster wants
  *  them. A preset dropped from a later build leaves its row behind — see
  *  `resolveRow`, which declines to render an agent it has no definition for. */
 const PRESET_IDS: readonly string[] = PRESETS.map((preset) => preset.id);
+
+// The store places a new agent after everyone, and until hydrate runs the only
+// agents are the shipped ones — which have positions but no rows yet. The count
+// and each preset's index travel with the call (see `createAgent` and
+// `updateAgent`), so "added last" holds on the first paint too with no shared
+// module state.
 
 /**
  * The paint a user-made agent wears until somebody picks a hue for it.
@@ -763,7 +813,7 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
   // Set only when the caller minted one: an explicit undefined would read as a
   // field the store has to answer, and the store's answer is to mint its own.
   if (draft.id) input.agentId = draft.id;
-  const row = await insertAgentRow(input);
+  const row = await insertAgentRow(input, { base: PRESETS.length });
   return row ? resolveRow(row) : undefined;
 }
 
@@ -771,7 +821,8 @@ export async function createAgent(draft: AgentDraft): Promise<Agent | undefined>
  *  refused — an agent who has left the roster, or one this would leave with no
  *  name at all. */
 export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | undefined> {
-  const preset = PRESETS.find((p) => p.id === id);
+  const presetIndex = PRESETS.findIndex((p) => p.id === id);
+  const preset = presetIndex === -1 ? undefined : PRESETS[presetIndex];
   const patch: AgentPatch = {};
   if (edit.name !== undefined) patch.name = edit.name;
   if (edit.role !== undefined) patch.role = edit.role;
@@ -787,7 +838,11 @@ export async function updateAgent(id: string, edit: AgentEdit): Promise<Agent | 
   if (edit.modelFallbacks !== undefined) patch.modelFallbacks = edit.modelFallbacks;
   if (edit.avatar !== undefined) patch.avatar = edit.avatar;
   if (edit.bot !== undefined) patch.bot = edit.bot;
-  const row = await patchAgentRow(id, patch, preset ? { presetId: preset.id } : undefined);
+  const row = await patchAgentRow(
+    id,
+    patch,
+    preset ? { presetId: preset.id, sortOrder: presetIndex } : undefined,
+  );
   return row ? resolveRow(row) : undefined;
 }
 

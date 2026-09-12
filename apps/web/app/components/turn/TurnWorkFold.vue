@@ -62,6 +62,11 @@ watch(
 </template>
 
 <style scoped>
+/* A closed fold has to take up no room at all, which is not the same as having
+   no height. A collapsed fold costs no gap — the parent stack hands that back
+   with a discrete negative margin (see .stack in ConversationThread), so this
+   side carries no compensation and no margin animation: collapsed or not is a
+   binary fact, and the grid track below carries the motion. */
 .fold {
   width: 100%;
   max-width: 42rem;
@@ -81,7 +86,6 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: 4px;
   min-height: 0;
   overflow: hidden;
 }

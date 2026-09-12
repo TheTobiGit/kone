@@ -17,7 +17,7 @@
 // gutter between them. The window itself is the outer shelf, so there is no
 // frame around the panes to repeat an edge that is already there.
 
-import { computed, nextTick, reactive, ref, watch } from "vue";
+import { computed, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
 import { useElementSize, useEventListener, useStorage } from "@vueuse/core";
 import {
   DEFAULT_LIST_WIDTH,
@@ -43,6 +43,7 @@ import { setInlineThread } from "~/composables/useAgent";
 import type { PortalState, ThreadJumpTarget } from "~/composables/usePortals";
 import type { SurfaceId } from "~/utils/surfaceTop";
 import { resolveThreadSummary, summarizeSession } from "~/utils/sessionList";
+import type { RuntimeEvent } from "~/types/desktop";
 import type { InboxViewId } from "~/types/inbox";
 import type { SessionSummary } from "~/types/session";
 
@@ -110,11 +111,41 @@ const reading = computed(() => isActive.value && !writing.value);
 // would claim a session at boot for a project nobody has opened.
 watch(
   isActive,
-  (active) => {
-    if (active) paneState.visited = true;
+  async (active) => {
+    if (!active) return;
+    paneState.visited = true;
+    // The list behind the portal may predate the retention sweep — run the
+    // sweep first, then re-read the shown view once, so quiet threads settle
+    // while someone is looking instead of mid-thread later. Sequenced, not
+    // raced: the sweep's stamps land before the read, so the view settles in
+    // one pass instead of the reload racing the sweep and the fan-out
+    // correcting it a beat later. Silent — an open never flashes loading. The
+    // kept-alive other views re-read on their own activation.
+    try {
+      await window.koneDesktop?.agent?.sweepRetention?.();
+    } catch {
+      // Retention is a convenience — a failed sweep still leaves the reload.
+    }
+    listRef.value?.reload(true);
   },
   { immediate: true },
 );
+
+// The store fans out one thread.archived per thread that actually moved — a
+// row archive, a header archive, the sweep, another window. The lists drop
+// their rows off that same fan-out; clearing the reading pane here keeps pane
+// and lists in step without a parallel emit chain.
+const detachArchived = import.meta.client
+  ? window.koneDesktop?.agent?.onEvent?.((event: RuntimeEvent) => {
+      if (event.type !== "thread.archived") return;
+      if (paneState.selected?.threadId !== event.threadId) return;
+      paneState.selected = null;
+      paneState.handedKey = null;
+    })
+  : undefined;
+onScopeDispose(() => detachArchived?.());
+
+const listRef = ref<{ reload: (silent?: boolean) => void } | null>(null);
 
 const newThreadRef = ref<InstanceType<typeof InboxNewThread> | null>(null);
 
@@ -171,18 +202,6 @@ function onPickThread(row: SessionSummary | null): void {
       done: row.done,
     })
     .catch(() => undefined);
-}
-
-/** A spawned child's own conversation, asked for from the reading pane's
- *  subagent shell. The child lives in the same project as the thread that
- *  spawned it, so its row is resolved out of that project's stored threads and
- *  selected the ordinary way — the pane remounts onto it. A child the store
- *  cannot name yet leaves you where you are. */
-async function onOpenThread(threadId: string): Promise<void> {
-  const parent = paneState.selected;
-  const projectPath = parent?.projectPath;
-  if (!projectPath) return;
-  await onOpenProjectThread(projectPath, threadId, parent?.projectName);
 }
 
 /** A parked thread the bots row names, possibly in another project. Resolved
@@ -354,6 +373,7 @@ function close(): void {
            once it has been. -->
       <KeepAlive>
         <InboxThreadList
+          ref="listRef"
           :key="view"
           v-model:selected="paneState.selected"
           :view="view"
@@ -398,7 +418,6 @@ function close(): void {
         v-else-if="pane.kind === 'reader'"
         :row="pane.row"
         :session-key="pane.sessionKey ?? undefined"
-        @open-thread="onOpenThread"
         @new-thread="startNewThread"
       />
     </section>

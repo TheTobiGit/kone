@@ -17,6 +17,7 @@ import {
   hydrateRoster,
   isOnProjectTeam,
   KONE,
+  ORCHESTRATOR,
   projectTeam,
   removeAgentFromProject,
   renameAgent,
@@ -63,9 +64,10 @@ beforeEach(() => {
 });
 
 describe("the roster", () => {
-  test("ships with kone and nobody else", () => {
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id]);
+  test("ships with the built-ins and nobody else", () => {
+    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, ORCHESTRATOR.id]);
     expect(agentById(KONE.id)?.name).toBe(KONE.name);
+    expect(agentById(ORCHESTRATOR.id)?.name).toBe(ORCHESTRATOR.name);
   });
 
   test("nobody is picked for you — a fresh app sends work to a default solo partner", () => {
@@ -85,7 +87,7 @@ describe("the roster", () => {
   test("hydrating gives every built-in a row and changes nothing on screen", async () => {
     const before = agentRoster();
     await hydrateRoster();
-    expect(agentRows.value.map((row) => row.agentId)).toEqual([KONE.id]);
+    expect(agentRows.value.map((row) => row.agentId)).toEqual([KONE.id, ORCHESTRATOR.id]);
     expect(agentRoster()).toEqual(before);
   });
 
@@ -94,7 +96,25 @@ describe("the roster", () => {
   // nobody has touched yet.
   test("a made agent doesn't hide a built-in with no row of its own", async () => {
     const made = await createAgent({ name: "Ada" });
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, made!.id]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([
+      KONE.id,
+      ORCHESTRATOR.id,
+      made!.id,
+    ]);
+  });
+
+  // The second half of the ordering guarantee: a made agent sorts after the
+  // built-ins on the first paint and stays there once hydrate writes the
+  // presets' own rows at their indexes.
+  test("a made agent stays last when hydrate lands after it", async () => {
+    const made = await createAgent({ name: "Ada" });
+    const before = agentRoster().map((agent) => agent.id);
+    expect(before).toEqual([KONE.id, ORCHESTRATOR.id, made!.id]);
+    await hydrateRoster();
+    expect(agentRoster().map((agent) => agent.id)).toEqual(before);
+    expect(rowFor(KONE.id).sortOrder).toBe(0);
+    expect(rowFor(ORCHESTRATOR.id).sortOrder).toBe(1);
+    expect(rowFor(made!.id).sortOrder).toBe(2);
   });
 
   // A row is a delta, not a copy: only the field that was edited is the row's,
@@ -113,6 +133,17 @@ describe("the roster", () => {
     expect(agentById(KONE.id)?.instructions).toBeUndefined();
     await updateAgent(KONE.id, { instructions: null });
     expect(agentById(KONE.id)?.instructions).toBe(KONE.instructions);
+  });
+
+  // The second preset resolves through the same overlay: an edit sticks, an
+  // empty stays empty, and null hands the field back to the preset.
+  test("orchestrator clears back to the preset like kone does", async () => {
+    await updateAgent(ORCHESTRATOR.id, { role: "Pair", instructions: "" });
+    expect(agentById(ORCHESTRATOR.id)?.role).toBe("Pair");
+    expect(agentById(ORCHESTRATOR.id)?.instructions).toBeUndefined();
+    await updateAgent(ORCHESTRATOR.id, { role: null, instructions: null });
+    expect(agentById(ORCHESTRATOR.id)?.role).toBe(ORCHESTRATOR.role);
+    expect(agentById(ORCHESTRATOR.id)?.instructions).toBe(ORCHESTRATOR.instructions);
   });
 });
 
@@ -195,6 +226,19 @@ describe("what the provider session is told", () => {
     });
     // These two and no more: the face, role and roster order are drawer-only,
     // so a third key here would mean a layer leaked across the boundary.
+    expect(Object.keys(persona!).sort()).toEqual(["instructions", "name"]);
+  });
+
+  // The second preset reaches the session through the same door: name plus
+  // instructions, and nothing drawer-only.
+  test("orchestrator's thread carries its name and instructions", () => {
+    const id = threadId();
+    settleThreadAgent(id, ORCHESTRATOR.id);
+    const persona = agentPersonaForThread(id);
+    expect(persona).toEqual({
+      name: ORCHESTRATOR.name,
+      instructions: ORCHESTRATOR.instructions,
+    });
     expect(Object.keys(persona!).sort()).toEqual(["instructions", "name"]);
   });
 
@@ -370,7 +414,11 @@ describe("an agent you made yourself", () => {
     expect(made?.name).toBe("Ada");
     expect(made?.role).toBe("Reviewer");
     expect(made?.instructions).toBe("Exacting.");
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, made!.id]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([
+      KONE.id,
+      ORCHESTRATOR.id,
+      made!.id,
+    ]);
   });
 
   test("a name is the one thing it can't do without", async () => {
@@ -390,7 +438,7 @@ describe("an agent who leaves the roster", () => {
   test("is gone from everywhere you could pick them", async () => {
     await hydrateRoster();
     expect(await deleteAgent(KONE.id)).toBe(true);
-    expect(agentRoster()).toEqual([]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ORCHESTRATOR.id]);
     expect(agentById(KONE.id)).toBeUndefined();
 
     selectAgent(KONE.id);
@@ -425,7 +473,7 @@ describe("an agent who leaves the roster", () => {
     await hydrateRoster();
     await deleteAgent(KONE.id);
     await hydrateRoster();
-    expect(agentRoster()).toEqual([]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([ORCHESTRATOR.id]);
   });
 
   test("leaving twice, or leaving when you were never here, is a no", async () => {
@@ -444,6 +492,9 @@ describe("an agent who leaves the roster", () => {
 });
 
 describe("forking an agent", () => {
+  // Deliberate: a fork sits directly below its source even when that splits the
+  // presets — [KONE, copy, ORCHESTRATOR]. Presets are not a pinned block; the
+  // roster is one order and a fork takes the position below what it copied.
   test("the copy reads like the original and sits straight below it", async () => {
     await hydrateRoster();
     const copy = await duplicateAgent(KONE.id, "kone copy");
@@ -451,7 +502,11 @@ describe("forking an agent", () => {
     // A fork keeps no inheritance, so the preset's words are copied onto it.
     expect(copy?.instructions).toBe(KONE.instructions);
     expect(copy?.role).toBe(KONE.role);
-    expect(agentRoster().map((agent) => agent.id)).toEqual([KONE.id, copy!.id]);
+    expect(agentRoster().map((agent) => agent.id)).toEqual([
+      KONE.id,
+      copy!.id,
+      ORCHESTRATOR.id,
+    ]);
   });
 
   test("an edit to the original doesn't reach the copy", async () => {

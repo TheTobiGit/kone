@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
-import { ArrowRight01Icon, ArrowUpRight01Icon, AiBrain01Icon, StopIcon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon, AiBrain01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import { SESSION_BRAND } from "~/types/session";
@@ -24,14 +24,11 @@ import type { ApprovalDecision } from "~/types/desktop";
 // and the Tasks dock (PlanTaskList) in the same folder-picker shell, docked
 // bottom-right while a turn hands work off. It lists everything the agent has
 // delegated to this thread in one chronological list, of two kinds: provider-
-// native nested runs (ephemeral, one turn long — clicking opens that run's
-// transcript in the expanded shell, SubagentShell) and spawned kone threads
-// (real, persistent conversations that outlive the parent's turn — clicking
-// opens their shell too, whose open-thread action takes you to the thread
-// itself).
+// native nested runs (ephemeral, one turn long) and spawned kone threads
+// (real, persistent conversations that outlive the parent's turn).
 //
 // Both kinds wear ONE row: same status vocabulary (working orb → ✓/✕), same
-// meta line, same trailing glyph. A delegate is a delegate, and giving the
+// meta line. A delegate is a delegate, and giving the
 // newer kind its own chrome would fork this dock into two panels living in one
 // shell. What genuinely differs — that a spawned thread can sit parked waiting
 // on a human, or report how long it took — is carried in the row's hint line,
@@ -48,8 +45,7 @@ import type { ApprovalDecision } from "~/types/desktop";
 // lives in the child's own thread — so it stays a plain parked hint.
 //
 // Purely presentational apart from that one answer action — it renders the
-// rows deriveDelegates already built and reports which one the user wants to
-// open.
+// rows deriveDelegates already built.
 
 const props = defineProps<{
   rows: DelegateRow[];
@@ -58,9 +54,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  /** Open one delegate — a run's transcript or a spawned thread's conversation.
-   *  One event; the parent decides what opening means for each kind. */
-  open: [row: DelegateRow];
   /** Stop a live provider-native nested run, leaving the parent turn running.
    *  Only fired for run-kind rows while they're live. The parent hands it to
    *  the session's stopSubagent (keyed by the run's toolUseId). */
@@ -108,11 +101,6 @@ const meta = computed(() => {
 
 const liveRun = computed(() => props.rows.find((r) => r.live));
 
-// One label for both kinds — a nested run's transcript and a spawned thread's
-// conversation are both "that delegate's thread" to the person reading it.
-function rowLabel(row: DelegateRow): string {
-  return `Open ${row.title}'s thread`;
-}
 
 function measureScroll(): void {
   const el = scrollEl.value;
@@ -284,24 +272,20 @@ function rowBrand(row: DelegateRow): BrandKey {
               </AnimatePresence>
 
               <AnimatePresence :initial="false">
-                <motion.button
+                <motion.div
                   v-for="(row, index) in props.rows"
                   :key="row.id"
-                  type="button"
                   class="sub-row"
                   :class="{
                     'sub-row--live': row.live,
                     'sub-row--done': row.state === 'done',
                     'sub-row--failed': row.state === 'failed',
                   }"
-                  :aria-label="rowLabel(row)"
-                  :title="rowLabel(row)"
                   layout
                   :initial="{ opacity: 0, y: 8, scale: 0.98 }"
                   :animate="{ opacity: 1, y: 0, scale: 1 }"
                   :exit="{ opacity: 0, y: -6, scale: 0.98 }"
                   :transition="{ ...rowSpring, delay: rowDelay(index) }"
-                  @click="emit('open', row)"
                 >
                   <span class="sub-state" aria-hidden="true">
                     <span class="sub-state-stack">
@@ -398,8 +382,7 @@ function rowBrand(row: DelegateRow): BrandKey {
                     <!-- A spawned child parked on an approval can be answered
                          right here — the ask is not reachable through the parent
                          session, so this reads the registry-level inbox and
-                         decides via agent:respond. Stops propagation so the row
-                         doesn't also open. -->
+                         decides via agent:respond. -->
                     <AnimatePresence mode="wait">
                       <motion.span
                         v-if="rowApproval(row)"
@@ -409,33 +392,26 @@ function rowBrand(row: DelegateRow): BrandKey {
                         :animate="{ opacity: 1, y: 0 }"
                         :exit="{ opacity: 0, y: -3 }"
                         :transition="{ duration: 0.18, ease: fadeEase }"
-                        @click.stop
                       >
                         <span class="sub-approve-ask" :title="rowApproval(row)!.approval.title">
                           {{ rowApproval(row)!.approval.title }}
                         </span>
                         <span class="sub-approve-actions">
-                          <span
+                          <button
+                            type="button"
                             class="sub-approve-btn"
-                            role="button"
-                            tabindex="0"
-                            @click.stop="decideRowApproval(row, 'reject-once')"
-                            @keydown.enter.prevent.stop="decideRowApproval(row, 'reject-once')"
-                          >Reject</span>
-                          <span
+                            @click="decideRowApproval(row, 'reject-once')"
+                          >Reject</button>
+                          <button
+                            type="button"
                             class="sub-approve-btn"
-                            role="button"
-                            tabindex="0"
-                            @click.stop="decideRowApproval(row, 'allow-always')"
-                            @keydown.enter.prevent.stop="decideRowApproval(row, 'allow-always')"
-                          >Always</span>
-                          <span
+                            @click="decideRowApproval(row, 'allow-always')"
+                          >Always</button>
+                          <button
+                            type="button"
                             class="sub-approve-btn sub-approve-btn--allow"
-                            role="button"
-                            tabindex="0"
-                            @click.stop="decideRowApproval(row, 'allow-once')"
-                            @keydown.enter.prevent.stop="decideRowApproval(row, 'allow-once')"
-                          >Allow</span>
+                            @click="decideRowApproval(row, 'allow-once')"
+                          >Allow</button>
                         </span>
                       </motion.span>
                     </AnimatePresence>
@@ -444,24 +420,18 @@ function rowBrand(row: DelegateRow): BrandKey {
                   <!-- Stop a live nested run right from the dock — the parent
                        turn keeps running. Spawned threads aren't stop-able
                        here (their session is theirs); only provider-native
-                       runs carry the affordance, and only while live. A span
-                       (not a button): the row itself is a button. -->
-                  <span
+                       runs carry the affordance, and only while live. -->
+                  <button
                     v-if="row.target.kind === 'run' && row.live"
+                    type="button"
                     class="sub-stop"
-                    role="button"
-                    tabindex="0"
                     :aria-label="`Stop ${row.title}`"
                     :title="`Stop ${row.title}`"
-                    @click.stop="emit('stop-subagent', row.target.toolUseId)"
-                    @keydown.enter.prevent.stop="emit('stop-subagent', row.target.toolUseId)"
+                    @click="emit('stop-subagent', row.target.toolUseId)"
                   >
                     <HugeiconsIcon :icon="StopIcon" :size="13" :stroke-width="2" />
-                  </span>
-                  <span class="sub-open" aria-hidden="true">
-                    <HugeiconsIcon :icon="ArrowUpRight01Icon" :size="14" :stroke-width="2" />
-                  </span>
-                </motion.button>
+                  </button>
+                </motion.div>
               </AnimatePresence>
             </div>
           </div>
@@ -647,53 +617,11 @@ function rowBrand(row: DelegateRow): BrandKey {
   gap: 0.55rem;
   width: 100%;
   padding: 0.5rem 0.5rem;
-  border: 0;
   border-radius: 12px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 0.14s ease;
-}
-.sub-row:hover,
-.sub-row:focus-visible {
-  background: var(--hover);
-  outline: none;
-}
-.sub-row:focus-visible {
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 26%, transparent);
 }
 
-/* The open affordance — a quiet up-right arrow that slides in on hover/focus,
-   so a row reads as a doorway into the run's transcript rather than a label. */
-.sub-open {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  align-self: center;
-  width: 16px;
-  height: 16px;
-  margin-left: auto;
-  opacity: 0;
-  transform: translate(-2px, 2px);
-  color: var(--muted);
-  transition: opacity 0.14s ease, transform 0.18s ease;
-}
-.sub-row:hover .sub-open,
-.sub-row:focus-visible .sub-open {
-  opacity: 0.85;
-  transform: none;
-}
-.sub-row--live .sub-open {
-  opacity: 0.6;
-  transform: none;
-}
-
-/* Stop affordance for a live nested run — quiet square that lifts on hover
-   like the open arrow, but shown while the run is live so stopping is
-   discoverable without hovering. */
+/* Stop affordance for a live nested run — quiet square that lifts on hover,
+   shown while the run is live so stopping is discoverable without hovering. */
 .sub-stop {
   display: inline-flex;
   align-items: center;
@@ -703,8 +631,13 @@ function rowBrand(row: DelegateRow): BrandKey {
   width: 18px;
   height: 18px;
   margin-left: auto;
+  border: 0;
+  padding: 0;
   border-radius: 6px;
+  background: transparent;
   color: var(--muted);
+  font: inherit;
+  cursor: pointer;
   opacity: 0.55;
   transition:
     opacity 0.14s ease,
@@ -893,7 +826,10 @@ function rowBrand(row: DelegateRow): BrandKey {
 }
 .sub-approve-btn {
   padding: 0.15rem 0.5rem;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
+  font: inherit;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.01em;

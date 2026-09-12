@@ -106,6 +106,8 @@ export function useSessionList(source: SessionListSource) {
   // Mark a thread done, or take the mark off. Unlike archive this never drops
   // the row: done is a fact about your attention, and which list a done thread
   // belongs in is the caller's question to answer, not this composable's.
+  // Optimistic with no refusal path: the write is fire-and-forget, so a store
+  // rejection can never put the mark back.
   function toggleDone(threadId: string): void {
     const row = items.value.find((s) => s.threadId === threadId);
     if (!row) return;
@@ -237,9 +239,12 @@ export function useSessionList(source: SessionListSource) {
       // list and the archive are disjoint queries, so a stamp anywhere moves
       // the row across. Reconcile by refetch rather than by patching rows:
       // the stamp may have landed on a subtree, and this list may not even
-      // be the surface that asked for it.
+      // be the surface that asked for it. Done moves rows the same way,
+      // between the inbox and done views — including marks the retention
+      // sweep made while nobody was sending anything.
       event.type !== "thread.archived" &&
-      event.type !== "thread.unarchived"
+      event.type !== "thread.unarchived" &&
+      event.type !== "thread.done.updated"
     ) {
       return;
     }
@@ -272,7 +277,7 @@ export function useSessionList(source: SessionListSource) {
     recent,
     loading,
     hasAny,
-    reload: () => load(),
+    reload: (silent = false) => load(silent),
     togglePin,
     toggleDone,
     markVisited,

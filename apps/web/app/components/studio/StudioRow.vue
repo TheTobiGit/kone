@@ -37,7 +37,6 @@ import type { ModelPick } from "~/composables/useModelCommit";
 import { setInlineThread, type QueuedTurnEntry } from "~/composables/useAgent";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
-import SubagentShell from "~/components/conversation/SubagentShell.vue";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
@@ -116,7 +115,9 @@ const agent = useAgent({
   cwd: () => props.project.path,
   mode: bootMode(props.project.path) ?? undefined,
 });
-// A conversation the launcher asked us to resume on open (see onMounted).
+// A conversation the launcher asked us to resume on open. Consumption is
+// reactive (see the resume block below), not mount-only: this row usually
+// mounted long before the click.
 const pendingThread = usePendingThread();
 const {
   blocks,
@@ -193,6 +194,42 @@ function whenStudioReady(): Promise<void> {
     });
   });
 }
+
+// ── launcher resume ─────────────────────────────────────────────────────────
+// Clicking a recent conversation sets a global resume request and switches to
+// its project — but this row usually mounted long before that click (the plane
+// renders every persisted row at app start), so mount-only consumption dropped
+// the request and the click landed on the project page with the thread never
+// opened. Consumption is therefore reactive: the request is taken whenever it
+// names this project, whether it arrives before, during, or after this row's
+// own mount. Taking is path-namespaced — a request for another project is left
+// for its row — and each take nulls the state synchronously, so mount, watcher
+// and post-restore check can never open it twice.
+function takeResume(): string | null {
+  const req = pendingThread.value;
+  if (!req || req.path !== props.project.path) return null;
+  pendingThread.value = null;
+  return req.threadId;
+}
+async function resumeThread(threadId: string): Promise<void> {
+  // One open path for a stored thread: studio.open dedupes against live AND
+  // dormant panes (the resume target is usually already restored as a pane —
+  // often the focused one), focuses the hosting pane so the strip scrolls to
+  // it, or mints a fresh pane bound to the id. Either way we land on the
+  // studio.
+  await studio.open("thread", { threadId });
+  emit("summon");
+}
+watch(pendingThread, () => {
+  // A request that lands mid-restore is picked up after it (see onMounted);
+  // anything later is taken and opened as soon as it arrives. takeResume
+  // above is the single consumption primitive — path-namespaced and
+  // sync-nulling — so this never re-checks the path or nulls the state itself.
+  if (!studioReady.value) return;
+  const threadId = takeResume();
+  if (!threadId) return;
+  void resumeThread(threadId);
+});
 
 // The project's persisted thread ids (metadata only) — restore() checks stored
 // panes against these so a blank thread that was saved with its client id, but
@@ -409,7 +446,6 @@ function captureToScratchpad(text: string, sourceKey: string): void {
 
 // Derives and snapshot for active plan, touched files, and subagent delegates.
 const {
-  subagentsRaw: activeSubagentsRaw,
   activePlan,
   activeChanges,
   activeDelegates,
@@ -430,32 +466,6 @@ const {
 const focusedKey = computed(() => focusedThread.value?.key ?? null);
 
 watch(focusedKey, () => syncDockSnapshot());
-
-// ── the open subagent shell ──────────────────────────────────────────────────
-// Which delegate's expanded transcript is on screen. The two actions the shell
-// can't perform itself are handed down: an approval still goes through this
-// surface's one approval path, and revealing a spawned thread is a studio
-// operation, not the shell's.
-const {
-  activeShell,
-  activeShellRun,
-  activeShellThread,
-  shellApprovals,
-  shellSuppressesApproval,
-  onOpenShell,
-  onCloseShell,
-  onDecideShellApproval,
-  onShellOpenThread,
-  onOpenDelegate,
-} = useSubagentShell({
-  subagents: activeSubagentsRaw,
-  focusedThread,
-  focusedPendingApproval,
-  focusedKey,
-  respondApproval: (requestId, decision) => onRespondApproval(requestId, decision),
-  revealThread: (threadId) => void revealThread(threadId),
-  cue,
-});
 
 /** A thread that must not be archived/deleted right now: a turn in flight, a
  *  parked approval/user-input, live spawned children. Forgetting it tears the
@@ -987,14 +997,10 @@ onMounted(async () => {
   // for the whole mount — and if that mount was torn down mid-chain (the user
   // backs out during the probe), the stale request survived to fire on a later,
   // unrelated open of the same project. Consuming up front scopes it to this
-  // mount; it is also namespaced to this project's path, so a request that ever
-  // leaks past its mount cannot resume inside another project.
-  const requestedThread = pendingThread.value;
-  pendingThread.value = null;
-  const resume =
-    requestedThread && requestedThread.path === props.project.path
-      ? requestedThread.threadId
-      : null;
+  // mount. takeResume is the single consumption primitive — path-namespaced
+  // and sync-nulling — so a request for another project is left for its row
+  // instead of being wiped here.
+  const resume = takeResume();
 
   // Everything the mount needs is fetched up front and in parallel. These six
   // loads are independent of each other but each costs an IPC round-trip, and
@@ -1048,16 +1054,22 @@ onMounted(async () => {
   // agent start on mount would queue behind that work and leave git + history
   // IPC stuck in the loading shell (greeting with no changes/sessions).
   await studio.restore(row, knownThreadIds, { deferHeavyAttach: !resume });
+  // A request that arrived while the restore above was in flight belongs to
+  // this mount too — the watcher stands down until studioReady, so drain it
+  // here alongside the mount-start take. Both go through takeResume (sync
+  // null before the async open), and both are opened in arrival order rather
+  // than short-circuited: dropping the second would strand it in the global
+  // state with nothing left to pick it up.
+  let resumed = false;
   if (resume) {
-    // Launcher asked to resume a specific conversation. One open path for a
-    // stored thread: studio.open dedupes against live AND dormant panes (the
-    // resume target is usually already restored as a pane — often the focused
-    // one), focuses the hosting pane so the strip scrolls to it, or mints a
-    // fresh pane bound to the id. The manual live/dormant check + split
-    // focusThreadById/open call duplicated that logic and could leave the
-    // studio focused elsewhere. Either way we land on the studio.
-    await studio.open("thread", { threadId: resume });
-    emit("summon");
+    // Launcher asked to resume a specific conversation.
+    await resumeThread(resume);
+    resumed = true;
+  }
+  const late = takeResume();
+  if (late && late !== resume) {
+    await resumeThread(late);
+    resumed = true;
   }
   // Only now let layout changes persist — past this point the studio reflects the
   // user's real arrangement, not the boot adopt.
@@ -1073,7 +1085,7 @@ onMounted(async () => {
   // to land on the right one. The target isn't always blank (a restored studio
   // can hand us a live session); there setProvider only flips the ref while the
   // running CLI keeps going.
-  if (!resume) seedBootDefaults();
+  if (!resumed) seedBootDefaults();
 });
 
 // Derive the effort tier for the current model id and ride it along on each
@@ -1455,7 +1467,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
             :user-input="focusedPendingUserInput"
             :approval="focusedPendingApproval"
             :approval-queue="focusedThread?.pendingApprovals.value"
-            :shell-suppresses-approval="shellSuppressesApproval"
             :suppressed="isOverview"
             @answer="onAnswerUserInput"
             @cancel="onCancelUserInput"
@@ -1563,8 +1574,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
     <!-- Subagents dock — the nested runs the agent delegated to this turn. It's
          a taller, wider panel than the Changes/Tasks cards, so it lives in the
          bottom-LEFT corner (free on the studio — the folder only perches there on
-         home) instead of crowding the right-hand stack. It steps aside while
-         its shell is open — the shell is the zoom-in of this same dock. -->
+         home) instead of crowding the right-hand stack. -->
     <Transition
       enter-active-class="transition-opacity duration-150 ease-out"
       enter-from-class="opacity-0"
@@ -1572,7 +1582,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       leave-to-class="opacity-0"
     >
       <div
-        v-if="visible && !blocked && focusedThread && !activeShell && !isOverview"
+        v-if="visible && !blocked && focusedThread && !isOverview"
         data-agent-dock
         class="sub-dock-corner"
       >
@@ -1582,31 +1592,10 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
             :key="`agent-subagents-dock-${focusedKey}`"
             :rows="activeDelegates.rows"
             :streaming="activeDelegates.streaming"
-            @open="onOpenDelegate"
             @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
           />
         </AnimatePresence>
       </div>
-    </Transition>
-
-    <!-- A subagent's expanded shell: clicked from the Subagents dock (or the
-         activity feed's subagent step), the shell rises over the studio — the
-         delegate's identity + live status in the header, its live activity
-         filling the body, and any approval it parked on answerable inline. It
-         tracks the live delegate by identity, so a working child keeps
-         streaming into it. -->
-    <Transition name="sut">
-      <SubagentShell
-        v-if="activeShell && !isOverview"
-        :kind="activeShell.kind"
-        :run="activeShellRun"
-        :thread="activeShellThread"
-        :approvals="shellApprovals"
-        @close="onCloseShell"
-        @open-thread="onShellOpenThread"
-        @decide-approval="onDecideShellApproval"
-        @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
-      />
     </Transition>
 
     <!-- The full providers → models → effort picker, in the folder-picker shell. -->
@@ -1740,18 +1729,6 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
 .archive-notice-leave-to {
   opacity: 0;
   transform: translate(-50%, -8px);
-}
-
-/* The subagent shell rises over the row rather than sliding — it is a step INTO
-   a delegate, not a neighbouring surface. */
-.sut-enter-active,
-.sut-leave-active {
-  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.sut-enter-from,
-.sut-leave-to {
-  opacity: 0;
-  transform: translateY(10px) scale(0.985);
 }
 
 </style>

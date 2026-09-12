@@ -18,7 +18,7 @@ import { computed } from "vue";
 import { motion, AnimatePresence } from "motion-v";
 import TurnOrb from "~/components/turn/TurnOrb.vue";
 import type { AssistantBlock } from "~/composables/useAgent";
-import { stateForToolFamily, type TurnOrbState } from "~/utils/thinkingOrb";
+import { type TurnOrbState } from "~/utils/thinkingOrb";
 import { describeTurnActivity } from "~/utils/turnActivity";
 
 const props = defineProps<{
@@ -33,9 +33,7 @@ const activity = computed(() => describeTurnActivity(props.block));
 const orbState = computed<TurnOrbState | null>(() => {
   const a = activity.value;
   if (!a || a.orb === "done") return null;
-  if (a.orb === "thinking") return "thinking";
-  if (a.orb === "working") return "working";
-  return stateForToolFamily(a.family);
+  return a.orbState;
 });
 
 const seconds = computed(() =>

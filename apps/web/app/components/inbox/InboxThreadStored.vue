@@ -18,18 +18,39 @@ import ConversationThread from "~/components/conversation/ConversationThread.vue
 import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
+import { useStudioIntake } from "~/composables/useStudioIntake";
 import { markHistorical } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
 import { deriveActivePlan } from "~/utils/planTasks";
 import { deriveChangedFiles } from "~/utils/changedFiles";
-import { deriveActiveSubagents, deriveDelegates } from "~/utils/subagentRuns";
+import { deriveDelegates } from "~/utils/subagentRuns";
 import type { ThreadBlock } from "~/composables/agentTypes";
 import type { CompactionRecord } from "~/types/desktop";
 import type { SessionSummary } from "~/types/session";
 
 const props = defineProps<{ row: SessionSummary }>();
 
+const { cue } = useSound();
+const intake = useStudioIntake();
+// The live list's shared pipeline — the same instance the inbox rows read —
+// so a header archive drops optimistically with the same refusal-restore as a
+// row archive, instead of a second bridge path with its own semantics.
+const sessions = useAllRecentSessions();
+
 const history = () => (import.meta.client ? window.koneDesktop?.agent?.history : undefined);
+
+// Archiving from the header walks the same path as the list row's own
+// archive — optimistic drop with refusal-restore — and the reading pane clears
+// off the store fan-out the portal already trusts. No project root is named on
+// this pane, so the column is found rather than known.
+async function onArchive(): Promise<void> {
+  const threadId = props.row.threadId;
+  if (!threadId) return;
+  cue("press");
+  const ok = await sessions.archive(threadId, true).catch(() => false);
+  if (!ok) return;
+  void intake.dismissThreadAnywhere(threadId);
+}
 
 const blocks = ref<ThreadBlock[]>([]);
 const compactions = ref<CompactionRecord[]>([]);
@@ -53,18 +74,7 @@ const now = ref(Date.now());
 // still reads.
 const storedPlan = computed(() => deriveActivePlan(blocks.value));
 const storedChanges = computed(() => deriveChangedFiles(blocks.value));
-const storedSubagents = computed(() => deriveActiveSubagents(blocks.value));
 const storedDelegates = computed(() => deriveDelegates(blocks.value, []));
-
-// The expanded shell for a dock row's run transcript. There is no session
-// behind this pane, so there is nothing to answer or stop from in here — the
-// shell is the read path only, and spawned-thread rows cannot occur without a
-// live spawn list.
-const { cue } = useSound();
-const { activeShell, activeShellRun, onCloseShell, onOpenDelegate } = useSubagentShell({
-  subagents: storedSubagents,
-  cue,
-});
 
 onMounted(async () => {
   const api = history();
@@ -167,6 +177,11 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
       :seed="row.threadId"
       :provider="row.provider"
       :brand="row.brand"
+      :side-chat="row.sideChat"
+      :worktree-path="row.worktreePath"
+      :workspace-pending="row.workspacePending"
+      archivable
+      @archive="onArchive"
     />
 
     <div
@@ -192,14 +207,9 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
       />
     </div>
 
-    <!-- The subagent corner — delegated runs bottom-left with their read-only
-         transcript shell. -->
+    <!-- The subagent corner — delegated runs bottom-left. -->
     <ThreadSubagentDock
       :rows="storedDelegates.rows"
-      :shell="activeShell"
-      :shell-run="activeShellRun"
-      @open="onOpenDelegate"
-      @close="onCloseShell"
     />
 
     <!-- Corner dock stack — Changes above Tasks, bottom-right. -->

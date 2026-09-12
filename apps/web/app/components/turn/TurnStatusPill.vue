@@ -31,7 +31,7 @@ import TurnOrb from "~/components/turn/TurnOrb.vue";
 import ProviderLogo from "~/components/provider/ProviderLogo.vue";
 import type { AssistantBlock } from "~/composables/useAgent";
 import type { BrandKey } from "~/utils/modelCatalog";
-import { stateForToolFamily, type TurnOrbState } from "~/utils/thinkingOrb";
+import { type TurnOrbState } from "~/utils/thinkingOrb";
 import { describeTurnActivity } from "~/utils/turnActivity";
 import type { ActivePlanTask } from "~/utils/planTasks";
 
@@ -64,9 +64,7 @@ const activity = computed(() => describeTurnActivity(props.block));
 const orbState = computed<TurnOrbState | null>(() => {
   const a = activity.value;
   if (!a || a.orb === "done") return null;
-  if (a.orb === "thinking") return "thinking";
-  if (a.orb === "working") return "working";
-  return stateForToolFamily(a.family);
+  return a.orbState;
 });
 
 // A stable identity for the current orb visual — changing it crossfades the orb
