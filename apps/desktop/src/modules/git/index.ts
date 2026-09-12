@@ -27,6 +27,16 @@ export {
 } from "./mutations.js";
 export { fetch, pull, push } from "./sync.js";
 export { stashes, stashApply, stashDrop, stashPush } from "./stash.js";
+export {
+  addWorktree,
+  attachWorktree,
+  isLinkedWorktree,
+  pruneWorktrees,
+  removeWorktree,
+  worktrees,
+} from "./worktree.js";
+export { provisionWorktree } from "./worktreeProvision.js";
+export { isInsideWorktreesRoot, worktreesRoot } from "./worktreePaths.js";
 export { remoteExists, remotes, repoState } from "./state.js";
 export { contributors, identity, logo, readme } from "./about.js";
 export * as github from "./github.js";

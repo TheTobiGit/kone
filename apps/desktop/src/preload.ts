@@ -124,6 +124,8 @@ import type {
   GitRunStackedActionResult,
   GitStashEntry,
   GitStatus,
+  GitWorktree,
+  CreateWorktreeOptions,
   GitHubPrCreateOptions,
   GitHubPrCreateResult,
   GitHubPullRequest,
@@ -212,6 +214,22 @@ const api = {
       ipcRenderer.invoke("git:stash-apply", dir, index, opts),
     stashDrop: (dir: string, index: number): Promise<void> =>
       ipcRenderer.invoke("git:stash-drop", dir, index),
+    // ── Worktrees ──────────────────────────────────────────────────────────
+    /** Every checkout of this repository, the primary one first. */
+    worktrees: (dir: string): Promise<GitWorktree[]> =>
+      ipcRenderer.invoke("git:worktrees", dir),
+    /** Create a worktree on a new branch. Rejects with a classified error when
+     *  the branch or the path is already taken. */
+    worktreeAdd: (dir: string, input: CreateWorktreeOptions): Promise<GitWorktree> =>
+      ipcRenderer.invoke("git:worktree-add", dir, input),
+    /** `force: true` discards uncommitted work; it does not override a lock. */
+    worktreeRemove: (
+      dir: string,
+      input: { path: string; force?: boolean },
+    ): Promise<void> => ipcRenderer.invoke("git:worktree-remove", dir, input),
+    /** Unregister worktrees whose directories are gone; returns their paths. */
+    worktreePrune: (dir: string): Promise<string[]> =>
+      ipcRenderer.invoke("git:worktree-prune", dir),
     // ── About section ──────────────────────────────────────────────────────
     /** Repo README markdown, or null when the repo has none. */
     readme: (dir: string): Promise<GitReadme | null> =>
@@ -395,6 +413,10 @@ const api = {
     // output arrives on the agent:event stream (subscribe via onEvent).
     startSession: (input: SessionStartInput): Promise<Session> =>
       ipcRenderer.invoke("agent:start-session", input),
+    /** Back out of a worktree still being built. Does not interrupt git — what
+     *  the creation produces is removed once it finishes. */
+    cancelWorkspace: (threadId: string): Promise<void> =>
+      ipcRenderer.invoke("agent:cancel-workspace", threadId),
     // Persist an attachment's bytes to disk; resolves to the bytes-free
     // ChatAttachment the composer then carries on its next turn.
     uploadAttachment: (input: UploadAttachmentInput): Promise<ChatAttachment> =>
