@@ -326,6 +326,7 @@ function hasMetricValue(s: SessionSummary): boolean {
           v-for="(s, ri) in visibleRows(section)"
           :key="s.threadId"
           class="rs__row"
+          :data-intent-session="!isLoading(section, ri) && s.projectPath ? s.threadId : null"
           :class="{
             'rs__row--loading': isLoading(section, ri),
             'rs__row--lazy': section.kind === 'recent' && ri >= lazyFrom,

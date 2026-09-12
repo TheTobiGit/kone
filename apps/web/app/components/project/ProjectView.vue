@@ -68,6 +68,29 @@ const row = () => rowRegistry.rowFor(props.project.path);
 // summoned rather than switched to.
 const surface = ref<"overview" | "git">("overview");
 
+// What the intent menu (hosted above this page) reads: where this project is
+// and what is live in it. This page owns both, so it publishes them through
+// the shared intent context and registers its surface switcher for go-tos —
+// the menu never touches git.
+const {
+  setSurface: setIntentSurface,
+  setGit: setIntentGit,
+  clear: clearIntent,
+  registerGoSurface,
+  unregisterGoSurface,
+} = useIntentContext();
+watch(surface, (s) => {
+  setIntentSurface(s);
+}, { immediate: true });
+
+// The menu host calls the registered switcher directly (no event wire), so
+// there is nothing to parse here — just publish, register, and release.
+onMounted(() => registerGoSurface(goSurface));
+onBeforeUnmount(() => {
+  unregisterGoSurface();
+  clearIntent();
+});
+
 // The page publishes its conversation list so its row can correct it: archiving
 // from a thread's column header has to drop the row from this list as well as
 // stamp the store, and the row cannot be handed that function from up there.
@@ -279,6 +302,17 @@ const changeItems = computed<ChangeItem[]>(() =>
     isNew: isNew(c.status),
     deleted: c.status === "deleted",
   })),
+);
+
+// The live git snapshot the intent menu reads (hosted above this page): repo,
+// dirty count and branch, republished whenever the model moves so the menu's
+// "now" card never shows a stale count.
+watch(
+  [() => g.repo.value, () => changeItems.value.length, () => g.branch.value],
+  ([repo, dirtyFiles, branch]) => {
+    setIntentGit({ repo, dirtyFiles, branch });
+  },
+  { immediate: true },
 );
 
 // The file whose detail is open, tracked by path so it survives a staging flip

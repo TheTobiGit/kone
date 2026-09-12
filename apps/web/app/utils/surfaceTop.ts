@@ -6,9 +6,12 @@
 //
 // Tier order, top first:
 //
-//   Tier 4 — launcher-modal, assistant. Fixed full-viewport overlays that own
-//   keys while up. The launcher modal outranks the assistant: it blocks the
-//   assistant summon, so when both somehow stand open it answers first.
+//   Tier 4 — launcher-modal, intent-menu, assistant. Fixed full-viewport
+//   overlays that own keys while up, plus the intent context menu teleported
+//   above every portal while up. Within the tier the launcher modal outranks
+//   the menu (it blocks summon hotkeys, so when both somehow stand open it
+//   answers first), and the menu outranks the assistant (one press dismisses
+//   the menu, not the card beneath it).
 //   Tier 3 — inbox, studio. Full-viewport portals inside the stage; the inbox
 //   paints over the plane. They sit above the drawer on purpose: the tap area
 //   that closes the drawer renders underneath both, so working in a portal
@@ -20,6 +23,7 @@
 /** Every layer that can own the viewport, frontmost first. */
 export type SurfaceId =
   | "launcher-modal"
+  | "intent-menu"
   | "assistant"
   | "inbox"
   | "studio"
@@ -31,6 +35,7 @@ export type SurfaceId =
  *  their surface and never change which surface answers. */
 export interface SurfaceSnapshot {
   launcherModal: boolean;
+  intentMenu: boolean;
   assistant: boolean;
   inbox: boolean;
   studio: boolean;
@@ -42,6 +47,7 @@ export interface SurfaceSnapshot {
  *  first, matching the tier order documented above. */
 export function resolveTop(snapshot: SurfaceSnapshot): SurfaceId {
   if (snapshot.launcherModal) return "launcher-modal";
+  if (snapshot.intentMenu) return "intent-menu";
   if (snapshot.assistant) return "assistant";
   if (snapshot.inbox) return "inbox";
   if (snapshot.studio) return "studio";

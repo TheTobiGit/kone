@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { motion } from "motion-v";
 import type { RecentProject } from "~/composables/useRecentProjects";
+import IntentMenu from "~/components/intent/IntentMenu.vue";
 import { resolveTop } from "~/utils/surfaceTop";
 import type { SurfaceId } from "~/utils/surfaceTop";
 
@@ -209,6 +210,24 @@ function onStudioOpenBranch() {
 // itself, and a card that is never unmounted has no entrance left to play.
 const { isOpen: assistantOpen, toggle: toggleAssistant } = useGlobalAssistant();
 
+// ── intent menu: the right-click layer ─────────────────────────────────────
+// One global menu instead of another surface. Signal gathering, timing and
+// dispatch live in useIntentHost; this page only wires its launcher-modal
+// flags and open flows, and renders the teleport below.
+const intent = useIntentHost({
+  project,
+  activePortal,
+  settingsOpen,
+  pickerOpen,
+  cloneOpen,
+  createOpen,
+  onStart,
+  summon,
+  dismiss,
+  openProject,
+  onOpenSession,
+});
+
 // ── viewport surface stack ─────────────────────────────────────────────────
 // One verdict for which layer owns Escape, derived here because this page
 // holds every flag it depends on. Each surface takes it as a prop and stays
@@ -216,6 +235,7 @@ const { isOpen: assistantOpen, toggle: toggleAssistant } = useGlobalAssistant();
 const surfaceTop = computed<SurfaceId>(() =>
   resolveTop({
     launcherModal: isLauncherModalOpen.value,
+    intentMenu: intent.isOpen.value,
     assistant: assistantOpen.value,
     inbox: activePortal.value === "inbox",
     studio: activePortal.value === "studio",
@@ -295,6 +315,7 @@ function onAttentionOpen(projectPath: string, threadId: string) {
   <div
     class="relative h-full min-h-screen overflow-hidden bg-sunken"
     :style="fadeStyle"
+    @contextmenu="intent.open"
   >
     <!-- Settings panel, pinned to the left edge and revealed as the stage slides
          aside. It sits behind the stage (z-0) and shows through the gap. -->
@@ -398,5 +419,21 @@ function onAttentionOpen(projectPath: string, threadId: string) {
     />
 
     <AssistantGlobalAssistantModal v-if="assistantOpen" :surface-top="surfaceTop" />
+
+    <!-- The intent menu: teleported so the stage slide never re-anchors its
+         fixed position, above every portal while it is up. -->
+    <Teleport to="body">
+      <IntentMenu
+        v-if="intent.isOpen.value"
+        :x="intent.x.value"
+        :y="intent.y.value"
+        :title="intent.title.value"
+        :sections="intent.sections.value"
+        :shown="intent.shown.value"
+        :surface-top="surfaceTop"
+        @pick="intent.pick"
+        @close="intent.close"
+      />
+    </Teleport>
   </div>
 </template>
