@@ -28,6 +28,7 @@ import { fetch as gitFetch, pull as gitPull, push as gitPush } from "./sync.js";
 import { generateCommitMessage } from "./textGen.js";
 import { runStackedAction } from "./stacked.js";
 import { watchStatus } from "./watch.js";
+import { addWorktree, pruneWorktrees, removeWorktree, worktrees } from "./worktree.js";
 import type {
   CommitMessageGenerationInput,
   CreateProjectOptions,
@@ -36,6 +37,7 @@ import type {
   GitPullOptions,
   GitPushOptions,
   GitRunStackedActionInput,
+  CreateWorktreeOptions,
 } from "@kone/git-core/types.js";
 
 
@@ -282,6 +284,25 @@ export function registerGitIpc(): void {
   ipcMain.handle("git:stash-drop", (_event, dir: string, index: number) =>
     stashDrop(dir, index),
   );
+  // Worktrees. The list is a read like any other; add and remove are not given
+  // a caller-side timer — they already run under the repo mutation queue with
+  // their own generous exec ceiling, and a timer that resolves out from under
+  // a checkout in flight is worse than waiting for it.
+  ipcMain.handle("git:worktrees", (_event, dir: string) =>
+    withTimeout(() => worktrees(dir), {
+      channel: "git:worktrees",
+      timeoutMs: GIT_READ_TIMEOUT_MS,
+    }),
+  );
+  ipcMain.handle("git:worktree-add", (_event, dir: string, input: CreateWorktreeOptions) =>
+    addWorktree(dir, input),
+  );
+  ipcMain.handle(
+    "git:worktree-remove",
+    (_event, dir: string, input: { path: string; force?: boolean }) =>
+      removeWorktree(dir, input),
+  );
+  ipcMain.handle("git:worktree-prune", (_event, dir: string) => pruneWorktrees(dir));
   // The About section: the repo's presentation surface. All are local reads
   // that resolve to a "nothing here" shape (null, or an empty list) rather
   // than throwing.
