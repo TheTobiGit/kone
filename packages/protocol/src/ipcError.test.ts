@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { IPC_ERROR_KINDS, isIpcErrorKind, markKind, parseKind } from "./ipcError.js";
+import {
+  IPC_ERROR_KINDS,
+  isIpcErrorKind,
+  isWorkspaceCancel,
+  markKind,
+  parseKind,
+} from "./ipcError.js";
 
 describe("markKind", () => {
   test("prefixes the message with the [kone:KIND] marker", () => {
@@ -70,5 +76,26 @@ describe("IPC_ERROR_KINDS", () => {
     for (const kind of IPC_ERROR_KINDS) {
       expect(kind).toMatch(/^[A-Z][A-Z_]*$/);
     }
+  });
+});
+
+describe("isWorkspaceCancel", () => {
+  test("recognizes the classified cancellation", () => {
+    expect(isWorkspaceCancel(new Error(markKind("WORKSPACE_CANCELLED", "Preparing the worktree was cancelled.")))).toBe(
+      true,
+    );
+  });
+
+  test("recognizes it through the Electron wrapper and error name", () => {
+    const err = new Error(
+      "Error invoking remote method 'agent:start-session': GitError: [kone:WORKSPACE_CANCELLED] Preparing the worktree was cancelled.",
+    );
+    expect(isWorkspaceCancel(err)).toBe(true);
+  });
+
+  test("rejects other kinds and unmarked failures", () => {
+    expect(isWorkspaceCancel(new Error(markKind("TIMEOUT", "timed out")))).toBe(false);
+    expect(isWorkspaceCancel(new Error("Preparing the worktree was cancelled."))).toBe(false);
+    expect(isWorkspaceCancel(new Error("boom"))).toBe(false);
   });
 });

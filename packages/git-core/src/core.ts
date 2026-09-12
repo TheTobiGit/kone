@@ -55,20 +55,59 @@ export function isExecTimeout(cause: unknown): boolean {
   );
 }
 
+/** Default ceiling for a git invocation. Generous for inspection, too tight for
+ *  anything that writes a whole tree to disk — those pass their own. */
+export const GIT_EXEC_TIMEOUT_MS = 15_000;
+
+/** Per-invocation knobs for {@link git}. Passed as the third argument when the
+ *  default exec ceiling is wrong for the command — checking out a whole tree,
+ *  for instance — or when the run needs extra environment. */
+export interface GitExecOptions {
+  /** Extra env for this invocation only — e.g. a scratch `GIT_INDEX_FILE` so a
+   *  command can stage into a throwaway index without touching the real one. */
+  env?: Record<string, string>;
+  /** Override the exec ceiling. Only for commands whose work scales with the
+   *  repository, where the default would kill a healthy run on a large repo. */
+  timeoutMs?: number;
+}
+
+/** Whether the third argument to {@link git} is an options object rather than
+ *  a plain env record. Options objects always carry one of the known keys;
+ *  env records carry upper-case variable names, so the two never collide. */
+function isGitExecOptions(
+  value: Record<string, string> | GitExecOptions,
+): value is GitExecOptions {
+  if (!(value instanceof Object)) return false;
+  return "env" in value || "timeoutMs" in value;
+}
+
+export async function git(cwd: string, args: string[]): Promise<string>;
 export async function git(
   cwd: string,
   args: string[],
-  /** Extra env for this invocation only — e.g. a scratch `GIT_INDEX_FILE` so a
-   *  command can stage into a throwaway index without touching the real one. */
-  extraEnv?: Record<string, string>,
+  env: Record<string, string>,
+): Promise<string>;
+export async function git(
+  cwd: string,
+  args: string[],
+  options: GitExecOptions,
+): Promise<string>;
+export async function git(
+  cwd: string,
+  args: string[],
+  envOrOptions: Record<string, string> | GitExecOptions = {},
 ): Promise<string> {
+  const extraEnv = isGitExecOptions(envOrOptions) ? envOrOptions.env : envOrOptions;
+  const timeoutMs = isGitExecOptions(envOrOptions)
+    ? (envOrOptions.timeoutMs ?? GIT_EXEC_TIMEOUT_MS)
+    : GIT_EXEC_TIMEOUT_MS;
   try {
     const { stdout } = await execFileAsync("git", args, {
       cwd,
       // Deterministic, machine-readable output regardless of user config.
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", ...extraEnv },
       maxBuffer: 32 * 1024 * 1024,
-      timeout: 15_000,
+      timeout: timeoutMs,
       windowsHide: true,
     });
     return stdout;

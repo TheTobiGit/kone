@@ -25,6 +25,20 @@ export const IPC_ERROR_KINDS = [
   "INVALID_INPUT",
   "INTERNAL",
   "TIMEOUT",
+  // Worktree failures. Git reports these with three different exit codes and
+  // only the message distinguishes several of them, so they are classified once
+  // where git ran and never re-derived by regex downstream.
+  "WORKTREE_BRANCH_IN_USE",
+  "WORKTREE_BRANCH_EXISTS",
+  "WORKTREE_DIRTY",
+  "WORKTREE_LOCKED",
+  "WORKTREE_PATH_EXISTS",
+  "WORKTREE_STALE_REGISTRATION",
+  "WORKTREE_IS_MAIN",
+  // The user backed out while a worktree was being built. Not a failure — the
+  // teardown already ran and the thread is back to local — so the renderer
+  // handles it quietly instead of raising an error banner.
+  "WORKSPACE_CANCELLED",
 ] as const;
 
 export type IpcErrorKind = (typeof IPC_ERROR_KINDS)[number];
@@ -40,6 +54,14 @@ const IPC_ERROR_KIND_MAP = {
   INVALID_INPUT: true,
   INTERNAL: true,
   TIMEOUT: true,
+  WORKTREE_BRANCH_IN_USE: true,
+  WORKTREE_BRANCH_EXISTS: true,
+  WORKTREE_DIRTY: true,
+  WORKTREE_LOCKED: true,
+  WORKTREE_PATH_EXISTS: true,
+  WORKTREE_STALE_REGISTRATION: true,
+  WORKTREE_IS_MAIN: true,
+  WORKSPACE_CANCELLED: true,
 } as const satisfies Record<IpcErrorKind, true>;
 
 /** Check if a string is a valid machine-readable IpcErrorKind. */
@@ -73,4 +95,18 @@ export function parseKind(
   const rawKind = match[1];
   if (!rawKind || !isIpcErrorKind(rawKind)) return { kind: null, message };
   return { kind: rawKind, message: message.slice(match[0].length) };
+}
+
+/** True when `cause` is the user backing out of a worktree build, rather than
+ *  a failure. Reads the kind marker out of the message — the marker is what
+ *  survives the main-to-renderer trip, where the thrown error's own fields are
+ *  flattened away — so this holds both for the thrown error itself and for the
+ *  Electron-wrapped rejection the renderer catches. */
+export function isWorkspaceCancel(cause: unknown): boolean {
+  const raw = cause instanceof Error ? cause.message : String(cause ?? "");
+  const peeled = raw
+    .replace(/^Error invoking remote method '[^']*':\s*/, "")
+    .replace(/^\w*Error:\s*/, "")
+    .trim();
+  return parseKind(peeled).kind === "WORKSPACE_CANCELLED";
 }
