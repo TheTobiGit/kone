@@ -33,7 +33,12 @@ describe("projectSpawnedThread", () => {
     const result = projectSpawnedThread(
       base({
         turns: [turn({ at: 10, state: "running" })],
-        gate: { kind: "approval", detail: "Run the script?" },
+        gate: {
+          kind: "approval",
+          detail: "Run the script?",
+          requestId: "ap-7",
+          approval: { kind: "command", title: "Run the script?" },
+        },
         hasLiveSession: false,
       }),
     );
@@ -46,7 +51,12 @@ describe("projectSpawnedThread", () => {
     const result = projectSpawnedThread(
       base({
         turns: [turn({ at: 10, state: "running" })],
-        gate: { kind: "user-input", detail: "Which framework?" },
+        gate: {
+          kind: "user-input",
+          detail: "Which framework?",
+          requestId: "q-1",
+          questions: [{ id: "q-1", header: "Framework", question: "Which framework?", options: [] }],
+        },
       }),
     );
     expect(result.status).toBe("waiting-for-user-input");
@@ -70,20 +80,22 @@ describe("projectSpawnedThread", () => {
     expect(result.terminal).toBe(false);
     expect(result.detail).toBe("Run the script?");
     expect(result.gate).toEqual({
+      kind: "approval",
       requestId: "ap-7",
       approval: { kind: "command", title: "Run the script?" },
     });
   });
 
-  test("a gate without requestId/approval carries no decide payload", () => {
+  test("a user-input gate carries its requestId + questions", () => {
+    const questions = [{ id: "q-1", header: "Framework", question: "Which framework?", options: [] }];
     const result = projectSpawnedThread(
       base({
         turns: [turn({ at: 10, state: "running" })],
-        gate: { kind: "approval", detail: "Run it?" },
+        gate: { kind: "user-input", detail: "Which framework?", requestId: "q-1", questions },
       }),
     );
-    expect(result.status).toBe("waiting-for-approval");
-    expect(result.gate).toBeUndefined();
+    expect(result.status).toBe("waiting-for-user-input");
+    expect(result.gate).toEqual({ kind: "user-input", requestId: "q-1", questions });
   });
 
   test("a running turn with no live session reads interrupted and terminal", () => {
