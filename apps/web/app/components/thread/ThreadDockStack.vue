@@ -3,14 +3,20 @@ import { computed } from "vue";
 import { AnimatePresence } from "motion-v";
 import GitSpaceChangedFilesList from "~/components/git-space/GitSpaceChangedFilesList.vue";
 import PlanTaskList from "~/components/plan/PlanTaskList.vue";
+import AgentSubagentDock from "~/components/agent/AgentSubagentDock.vue";
 import type { ActivePlanState } from "~/utils/planTasks";
 import type { ChangedFilesState } from "~/utils/changedFiles";
+import type { DelegatesState } from "~/utils/subagentRuns";
 
 const props = withDefaults(
   defineProps<{
     composerOpen?: boolean;
     changes?: ChangedFilesState | null;
     plan?: ActivePlanState | null;
+    /** Delegated runs to show in this stack, or null to show none. Which host
+     *  the subagents belong to is the surface's call, not this component's —
+     *  see `subagentsAbove` in the panes that mount it. */
+    delegates?: DelegatesState | null;
     projectPath?: string;
     threadKey?: string | null;
     positionMode?: "absolute-dock" | "absolute-pane" | "fixed";
@@ -19,6 +25,7 @@ const props = withDefaults(
     composerOpen: false,
     changes: null,
     plan: null,
+    delegates: null,
     projectPath: undefined,
     threadKey: "dock",
     positionMode: "absolute-dock",
@@ -27,10 +34,28 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   openFile: [path: string, rect: DOMRect | null];
+  "stop-subagent": [toolUseId: string];
 }>();
 
+const subagents = computed(() => (props.delegates?.rows.length ? props.delegates : null));
+
+/** Subagents ride this stack only while it is the above-composer row. Closing
+ *  the composer hands the dock back to its corner host, and that handover has
+ *  to be instant: the card's own leave spring would otherwise play out inside
+ *  a stack that has already re-laid itself into the opposite corner, so the
+ *  dock would flash there before reappearing where it actually went. Dropping
+ *  the whole AnimatePresence — rather than just its child — is what skips the
+ *  exit; the child's own `v-if` still animates the case this stack owns, a
+ *  delegate list emptying while the composer stays open. */
+const hostsSubagents = computed(() => props.composerOpen);
+
 const hasContent = computed(
-  () => Boolean((props.changes?.files?.length ?? 0) > 0 || props.plan),
+  () =>
+    Boolean(
+      (props.changes?.files?.length ?? 0) > 0 ||
+        props.plan ||
+        (hostsSubagents.value && subagents.value),
+    ),
 );
 </script>
 
@@ -59,6 +84,15 @@ const hasContent = computed(
         :key="`agent-plan-dock-${threadKey}`"
         :tasks="plan.tasks"
         :streaming="plan.streaming"
+      />
+    </AnimatePresence>
+    <AnimatePresence v-if="hostsSubagents" :initial="false" mode="wait">
+      <AgentSubagentDock
+        v-if="subagents"
+        :key="`agent-subagents-dock-${threadKey}`"
+        :rows="subagents.rows"
+        :streaming="subagents.streaming"
+        @stop-subagent="emit('stop-subagent', $event)"
       />
     </AnimatePresence>
   </div>
@@ -104,7 +138,9 @@ const hasContent = computed(
   gap: 12px;
 }
 
-/* Above composer when open */
+/* Above composer when open — wide enough for all three collapsed pills
+   (Changes 17rem + Tasks 17rem + Subagents 18rem + gaps ≈ 848px) to share one
+   row. Expanded docks still wrap onto their own line via flex-wrap. */
 .docks-above {
   position: relative;
   z-index: 5;
@@ -114,7 +150,7 @@ const hasContent = computed(
   justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
-  width: min(100% - 32px, 680px);
+  width: min(100% - 32px, 880px);
   margin-bottom: 8px;
   pointer-events: none;
 }
@@ -126,7 +162,14 @@ const hasContent = computed(
 
 .docks-above :deep(.plan-scroll),
 .docks-above :deep(.chg-scroll),
-.docks-above :deep(.peek-scroll) {
+.docks-above :deep(.peek-scroll),
+.docks-above :deep(.sub-scroll) {
   max-height: min(22rem, calc(100vh - 340px));
+}
+
+.docks-above :deep(.sub-dock) {
+  /* Match the Changes/Tasks 17rem so the three pills share one even row —
+     the corner keeps its wider 18rem stance. */
+  width: min(17rem, 100%);
 }
 </style>
