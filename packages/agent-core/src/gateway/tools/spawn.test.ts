@@ -9,7 +9,10 @@ import type {
 } from "../../ConversationStore.js";
 import type { GatewayToolContext, ToolEntry } from "../schemas.js";
 import {
+  ANSWER_CHILD_INPUT_JSON_SCHEMA,
+  CANCEL_WORKER_JSON_SCHEMA,
   CONTINUE_THREAD_JSON_SCHEMA,
+  DECLINE_CHILD_GATE_JSON_SCHEMA,
   READ_RESPONSE_JSON_SCHEMA,
   SPAWN_BATCH_JSON_SCHEMA,
   SPAWN_WORKER_PRESET_JSON_SCHEMA,
@@ -33,7 +36,7 @@ type FakeSpawnErrorCode =
   | "internal";
 
 /** Detail payload the fake engine attaches, mirroring SpawnError.details. */
-type FakeSpawnErrorDetails = { limit: number };
+type FakeSpawnErrorDetails = { limit: number } | { threadId: string };
 
 class FakeSpawnError extends Error {
   readonly code: FakeSpawnErrorCode;
@@ -89,6 +92,18 @@ type FakeEngine = {
     caller: FakeCaller,
     request: { threadId: string; message: string; requestId?: string },
   ): Promise<{ threadId: string; parentThreadId: string; turnId: string; resumed: boolean }>;
+  cancelChild(
+    caller: FakeCaller,
+    threadId: string,
+  ): Promise<{ threadId: string; parentThreadId: string; cancelled: boolean }>;
+  declineChildGate(
+    caller: FakeCaller,
+    request: { threadId: string; requestId: string },
+  ): Promise<{ threadId: string; requestId: string; resolved: boolean }>;
+  answerChildInput(
+    caller: FakeCaller,
+    request: { threadId: string; requestId: string; answers: Record<string, string | string[] | null> },
+  ): Promise<{ threadId: string; requestId: string; owned: boolean; followUp?: string }>;
   isInSubtree(rootThreadId: string, threadId: string): boolean;
   waitFor(input: FakeWaitInput): Promise<{
     threads: SpawnedThread[];
@@ -140,6 +155,15 @@ function makeEngine(overrides: Partial<FakeEngine> = {}): FakeEngine {
     },
     continueThread: async () => {
       throw new Error("continueThread not stubbed");
+    },
+    cancelChild: async () => {
+      throw new Error("cancelChild not stubbed");
+    },
+    declineChildGate: async () => {
+      throw new Error("declineChildGate not stubbed");
+    },
+    answerChildInput: async () => {
+      throw new Error("answerChildInput not stubbed");
     },
     isInSubtree: () => true,
     waitFor: async () => ({ threads: [], allTerminal: true, timedOut: false, turnIds: [] }),
@@ -236,6 +260,9 @@ describe("spawn gateway tools", () => {
       kone_spawn_worker_preset: { permission: "allow", requiresActiveTurn: true },
       kone_spawn_batch: { permission: "allow", requiresActiveTurn: true },
       kone_continue_thread: { permission: "allow", requiresActiveTurn: true },
+      kone_cancel_worker: { permission: "allow", requiresActiveTurn: true },
+      kone_decline_child_gate: { permission: "allow", requiresActiveTurn: true },
+      kone_answer_child_input: { permission: "allow", requiresActiveTurn: true },
       kone_wait_for_responses: { permission: "allow", requiresActiveTurn: false },
       kone_read_response: { permission: "allow", requiresActiveTurn: false },
     });
@@ -250,6 +277,9 @@ describe("spawn gateway tools", () => {
       "kone_spawn_worker_preset",
       "kone_spawn_batch",
       "kone_continue_thread",
+      "kone_cancel_worker",
+      "kone_decline_child_gate",
+      "kone_answer_child_input",
       "kone_wait_for_responses",
       "kone_read_response",
     ]);
@@ -258,6 +288,9 @@ describe("spawn gateway tools", () => {
     expect(byName["kone_spawn_worker_preset"]).toEqual(SPAWN_WORKER_PRESET_JSON_SCHEMA);
     expect(byName["kone_spawn_batch"]).toEqual(SPAWN_BATCH_JSON_SCHEMA);
     expect(byName["kone_continue_thread"]).toEqual(CONTINUE_THREAD_JSON_SCHEMA);
+    expect(byName["kone_cancel_worker"]).toEqual(CANCEL_WORKER_JSON_SCHEMA);
+    expect(byName["kone_decline_child_gate"]).toEqual(DECLINE_CHILD_GATE_JSON_SCHEMA);
+    expect(byName["kone_answer_child_input"]).toEqual(ANSWER_CHILD_INPUT_JSON_SCHEMA);
     expect(byName["kone_wait_for_responses"]).toEqual(WAIT_FOR_RESPONSES_JSON_SCHEMA);
     expect(byName["kone_read_response"]).toEqual(READ_RESPONSE_JSON_SCHEMA);
   });
@@ -380,6 +413,277 @@ describe("spawn gateway tools", () => {
     const res = await registry.call(ctx, "kone_continue_thread", {
       threadId: "child-x",
       message: "Also update the README.",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("kone_cancel_worker forwards the caller and threadId, returns the cancellation", async () => {
+    let capturedCaller: FakeCaller | null = null;
+    let capturedThreadId: string | null = null;
+    currentEngine = makeEngine({
+      cancelChild: async (caller, threadId) => {
+        capturedCaller = caller;
+        capturedThreadId = threadId;
+        return {
+          threadId,
+          parentThreadId: caller.threadId,
+          cancelled: true,
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_cancel_worker", {
+      threadId: "child-1",
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(capturedCaller).toMatchObject({ threadId: ctx.threadId, turnId: ctx.turnId });
+    expect(capturedThreadId).toBe("child-1");
+    expect(res.structuredContent?.cancellation).toEqual({
+      threadId: "child-1",
+      parentThreadId: "parent-1",
+      cancelled: true,
+    });
+    // One line naming the stopped worker, pointing at the transcript.
+    const text = res.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    expect(text).toContain("child-1");
+    expect(text).toContain("kone_read_response");
+  });
+
+  test("the registry refuses kone_cancel_worker without a live turn", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call({ ...ctx, turnId: null }, "kone_cancel_worker", {
+      threadId: "child-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "capability_denied" });
+  });
+
+  test("a cancel outside the caller's subtree surfaces as not_found", async () => {
+    currentEngine = makeEngine({
+      cancelChild: async () => {
+        throw new FakeSpawnError(
+          "not_found",
+          'Thread "child-x" is not in this conversation\'s subtree — you can only cancel a worker you (or a descendant of yours) spawned.',
+          { threadId: "child-x" },
+        );
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_cancel_worker", {
+      threadId: "child-x",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("kone_decline_child_gate forwards the caller and request, returns the decline", async () => {
+    let capturedCaller: FakeCaller | null = null;
+    let capturedRequest: { threadId: string; requestId: string } | null = null;
+    currentEngine = makeEngine({
+      declineChildGate: async (caller, request) => {
+        capturedCaller = caller;
+        capturedRequest = request;
+        return {
+          threadId: request.threadId,
+          requestId: request.requestId,
+          resolved: true,
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_decline_child_gate", {
+      threadId: "child-1",
+      requestId: "gate-1",
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(capturedCaller).toMatchObject({ threadId: ctx.threadId, turnId: ctx.turnId });
+    expect(capturedRequest).toEqual({
+      threadId: "child-1",
+      requestId: "gate-1",
+    });
+    expect(res.structuredContent?.decline).toEqual({
+      threadId: "child-1",
+      requestId: "gate-1",
+      resolved: true,
+    });
+    // One line naming the declined gate and the worker, pointing at the next wait.
+    const text = res.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    expect(text).toContain("child-1");
+    expect(text).toContain("gate-1");
+    expect(text).toContain("kone_wait_for_responses");
+  });
+
+  test("the registry refuses kone_decline_child_gate without a live turn", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call({ ...ctx, turnId: null }, "kone_decline_child_gate", {
+      threadId: "child-1",
+      requestId: "gate-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "capability_denied" });
+  });
+
+  test("a decline outside the caller's subtree surfaces as not_found", async () => {
+    currentEngine = makeEngine({
+      declineChildGate: async () => {
+        throw new FakeSpawnError(
+          "not_found",
+          'Thread "child-x" is not in this conversation\'s subtree — you can only decline a gate on a worker you (or a descendant of yours) spawned.',
+          { threadId: "child-x" },
+        );
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_decline_child_gate", {
+      threadId: "child-x",
+      requestId: "gate-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("kone_answer_child_input forwards the caller and request, returns the answer", async () => {
+    let capturedCaller: FakeCaller | null = null;
+    let capturedRequest: {
+      threadId: string;
+      requestId: string;
+      answers: Record<string, string | string[] | null>;
+    } | null = null;
+    currentEngine = makeEngine({
+      answerChildInput: async (caller, request) => {
+        capturedCaller = caller;
+        capturedRequest = request;
+        return {
+          threadId: request.threadId,
+          requestId: request.requestId,
+          owned: true,
+        };
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_answer_child_input", {
+      threadId: "child-1",
+      requestId: "q-1",
+      answers: { "q-1": "Use Postgres.", skipped: null, picks: ["a", "b"] },
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect(capturedCaller).toMatchObject({ threadId: ctx.threadId, turnId: ctx.turnId });
+    expect(capturedRequest).toEqual({
+      threadId: "child-1",
+      requestId: "q-1",
+      answers: { "q-1": "Use Postgres.", skipped: null, picks: ["a", "b"] },
+    });
+    expect(res.structuredContent?.answer).toEqual({
+      threadId: "child-1",
+      requestId: "q-1",
+      owned: true,
+    });
+    // One line naming the answered question and the worker, pointing at the next wait.
+    const text = res.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    expect(text).toContain("child-1");
+    expect(text).toContain("q-1");
+    expect(text).toContain("kone_wait_for_responses");
+  });
+
+  test("the registry refuses kone_answer_child_input without a live turn", async () => {
+    currentEngine = makeEngine();
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call({ ...ctx, turnId: null }, "kone_answer_child_input", {
+      threadId: "child-1",
+      requestId: "q-1",
+      answers: { "q-1": "Use Postgres." },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "capability_denied" });
+  });
+
+  test("an answer outside the caller's subtree surfaces as not_found", async () => {
+    currentEngine = makeEngine({
+      answerChildInput: async () => {
+        throw new FakeSpawnError(
+          "not_found",
+          'Thread "child-x" is not in this conversation\'s subtree — you can only answer a question on a worker you (or a descendant of yours) spawned.',
+          { threadId: "child-x" },
+        );
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_answer_child_input", {
+      threadId: "child-x",
+      requestId: "q-1",
+      answers: { "q-1": "Use Postgres." },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("a self-cancel surfaces as not_found", async () => {
+    currentEngine = makeEngine({
+      cancelChild: async (caller, threadId) => {
+        if (threadId === caller.threadId) {
+          throw new FakeSpawnError(
+            "not_found",
+            `Thread "${threadId}" is not in this conversation's subtree — you can only cancel a worker you (or a descendant of yours) spawned.`,
+            { threadId },
+          );
+        }
+        throw new Error("cancelChild must reject the caller's own thread");
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_cancel_worker", {
+      threadId: "parent-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("a self-decline surfaces as not_found", async () => {
+    currentEngine = makeEngine({
+      declineChildGate: async (caller, request) => {
+        if (request.threadId === caller.threadId) {
+          throw new FakeSpawnError(
+            "not_found",
+            `Thread "${request.threadId}" is not in this conversation's subtree — you can only decline a gate on a worker you (or a descendant of yours) spawned.`,
+            { threadId: request.threadId },
+          );
+        }
+        throw new Error("declineChildGate must reject the caller's own thread");
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_decline_child_gate", {
+      threadId: "parent-1",
+      requestId: "gate-1",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
+  });
+
+  test("a self-answer surfaces as not_found", async () => {
+    currentEngine = makeEngine({
+      answerChildInput: async (caller, request) => {
+        if (request.threadId === caller.threadId) {
+          throw new FakeSpawnError(
+            "not_found",
+            `Thread "${request.threadId}" is not in this conversation's subtree — you can only answer a question on a worker you (or a descendant of yours) spawned.`,
+            { threadId: request.threadId },
+          );
+        }
+        throw new Error("answerChildInput must reject the caller's own thread");
+      },
+    });
+    const registry = createRegistry(createSpawnTools({ store: makeStore() }));
+    const res = await registry.call(ctx, "kone_answer_child_input", {
+      threadId: "parent-1",
+      requestId: "q-1",
+      answers: { "q-1": "Use Postgres." },
     });
     expect(res.isError).toBe(true);
     expect(res.structuredContent?.error).toMatchObject({ code: "not_found" });
