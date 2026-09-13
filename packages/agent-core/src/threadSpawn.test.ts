@@ -28,6 +28,7 @@ import type {
   SpawnThreadResult,
   StoredThreadMeta,
   ThreadLineage,
+  UserInputAnswers,
 } from "./types.js";
 
 /** The caught rejection as a plain Error.
@@ -238,6 +239,28 @@ class FakeProviders implements SpawnEngineProviders {
   async stopSession(threadId: string): Promise<void> {
     this.stopped.push(threadId);
     this.liveSessions.delete(threadId);
+  }
+
+  /** Gates the engine declined, in order — decline-only, never an approval. */
+  readonly gateDecisions: Array<{ threadId: string; requestId: string; decision: string }> = [];
+  /** Gates the engine answered, in order. */
+  readonly gateAnswers: Array<{ threadId: string; requestId: string; answers: UserInputAnswers }> = [];
+
+  async respondToRequest(
+    threadId: string,
+    requestId: string,
+    decision: "reject-once" | "reject-and-stop",
+  ): Promise<void> {
+    this.gateDecisions.push({ threadId, requestId, decision });
+  }
+
+  async respondToUserInput(
+    threadId: string,
+    requestId: string,
+    answers: UserInputAnswers,
+  ): Promise<{ owned: boolean; followUp?: string }> {
+    this.gateAnswers.push({ threadId, requestId, answers });
+    return { owned: true };
   }
 }
 

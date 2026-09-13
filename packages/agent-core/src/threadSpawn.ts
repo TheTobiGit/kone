@@ -10,6 +10,14 @@ import {
 } from "./spawnProjection.js";
 import { SpawnWaitCoordinator, type WaiterResult } from "./spawnWait.js";
 import { ThreadContinuationManager } from "./spawnContinuation.js";
+import {
+  ThreadControlManager,
+  type AnswerChildInputRequest,
+  type AnswerChildInputResult,
+  type CancelChildResult,
+  type DeclineChildGateRequest,
+  type DeclineChildGateResult,
+} from "./spawnControl.js";
 import { SpawnFailoverRunner, type FallbackAdmissionCounts } from "./spawnFailover.js";
 import { buildPromptThreadTitleFallback } from "./threadTitle.js";
 import {
@@ -31,6 +39,7 @@ import type {
   SpawnTarget,
   StoredThreadMeta,
   ThreadLineage,
+  UserInputAnswers,
 } from "./types.js";
 
 // ── thread spawning engine (docs/thread-spawning-design.md §6 Wave 2) ────────
@@ -131,6 +140,22 @@ export interface SpawnEngineProviders {
    *  Antigravity children an ACP transport could serve. Optional — absentees
    *  keep the conservative floor. */
   isAntigravityAcpAvailable?(): boolean;
+  /** Answer a parked approval on a child thread with a rejection — the ONLY
+   *  decision the spawn engine ever sends: decline the proposed action so the
+   *  child tries an alternative (reject-once), or decline and stop its turn
+   *  (reject-and-stop). The engine never approves. */
+  respondToRequest(
+    threadId: string,
+    requestId: string,
+    decision: "reject-once" | "reject-and-stop",
+  ): Promise<void>;
+  /** Supply domain answers to a child's parked question, unparking its turn to
+   *  carry on. */
+  respondToUserInput(
+    threadId: string,
+    requestId: string,
+    answers: UserInputAnswers,
+  ): Promise<{ owned: boolean; followUp?: string }>;
 }
 
 export interface SpawnEngineDeps {
@@ -282,12 +307,37 @@ export type ContinueThreadResult = {
   resumed: boolean;
 };
 
+/** Decline a parked approval gate on a spawned child of the caller's subtree.
+ *  The child stays running and tries an alternative. */
+export type { DeclineChildGateRequest, DeclineChildGateResult, CancelChildResult };
+
+/** Answer a parked user-input gate on a spawned child of the caller's
+ *  subtree. */
+export type { AnswerChildInputRequest, AnswerChildInputResult };
+
 export interface SpawnEngine {
   spawn(caller: SpawnCaller, request: SpawnRequest): Promise<SpawnThreadResult>;
   /** Post a follow-up turn into an existing spawned child of the caller's
    *  subtree, continuing that thread's conversation in place — no new row, no
    *  new sidebar tab. */
   continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult>;
+  /** Stop a spawned child of the caller's subtree in place — seal its live
+   *  turn, release its provider session, leave its transcript and store row
+   *  intact. Never approves or answers anything parked on the child. */
+  cancelChild(caller: SpawnCaller, threadId: string): Promise<CancelChildResult>;
+  /** Decline a parked approval gate on a spawned child of the caller's
+   *  subtree — reject the proposed action so the child unparks and tries an
+   *  alternative. Never approves. */
+  declineChildGate(
+    caller: SpawnCaller,
+    request: DeclineChildGateRequest,
+  ): Promise<DeclineChildGateResult>;
+  /** Answer a parked user-input gate on a spawned child of the caller's
+   *  subtree with domain clarification. Never grants a capability. */
+  answerChildInput(
+    caller: SpawnCaller,
+    request: AnswerChildInputRequest,
+  ): Promise<AnswerChildInputResult>;
   targets(caller: SpawnCaller): Promise<SpawnTargetsReport>;
   /** Live snapshots of a parent's direct children, oldest first. */
   children(parentThreadId: string): SpawnedThread[];
@@ -414,6 +464,7 @@ class SpawnEngineImpl implements SpawnEngine {
 
   private readonly waitCoordinator: SpawnWaitCoordinator;
   private readonly continuation: ThreadContinuationManager;
+  private readonly controls: ThreadControlManager;
   private readonly failoverRunner: SpawnFailoverRunner;
 
   constructor(deps: SpawnEngineDeps) {
@@ -436,6 +487,13 @@ class SpawnEngineImpl implements SpawnEngine {
       dispatcher: this.dispatcher,
       tracked: this.tracked,
       liveChildren: this.liveChildren,
+      recompute: (child) => this.recompute(child),
+      isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
+    });
+
+    this.controls = new ThreadControlManager({
+      providers: this.providers,
+      tracked: this.tracked,
       recompute: (child) => this.recompute(child),
       isInSubtree: (rootThreadId, threadId) => this.isInSubtree(rootThreadId, threadId),
     });
@@ -615,6 +673,24 @@ class SpawnEngineImpl implements SpawnEngine {
 
   continueThread(caller: SpawnCaller, request: ContinueThreadRequest): Promise<ContinueThreadResult> {
     return this.continuation.continueThread(caller, request);
+  }
+
+  cancelChild(caller: SpawnCaller, threadId: string): Promise<CancelChildResult> {
+    return this.controls.cancelChild(caller, threadId);
+  }
+
+  declineChildGate(
+    caller: SpawnCaller,
+    request: DeclineChildGateRequest,
+  ): Promise<DeclineChildGateResult> {
+    return this.controls.declineChildGate(caller, request);
+  }
+
+  answerChildInput(
+    caller: SpawnCaller,
+    request: AnswerChildInputRequest,
+  ): Promise<AnswerChildInputResult> {
+    return this.controls.answerChildInput(caller, request);
   }
 
   async targets(caller: SpawnCaller): Promise<SpawnTargetsReport> {
