@@ -35,6 +35,7 @@ import type {
   SpawnedThreadStatus,
   ThreadGateKind,
   ThreadStatus,
+  UserInputQuestion,
 } from "./types.js";
 
 /** One stored assistant turn, oldest first. */
@@ -50,16 +51,12 @@ export type SpawnProjectionTurn = {
  *  approval gate carries the parked requestId + the normalized ask, so the
  *  renderer can answer it in place via the child's own thread id —
  *  `agent:respond(threadId, requestId, decision)` — without routing through
- *  the parent. A user-input gate has no decide action: it resolves through the
- *  child's own thread, so it carries only the words. */
-export type SpawnGate = {
-  kind: ThreadGateKind;
-  detail: string;
-  /** The parked approval's requestId — present exactly for approval gates. */
-  requestId?: string;
-  /** The normalized ask — present exactly for approval gates. */
-  approval?: ApprovalRequest;
-};
+ *  the parent. A user-input gate carries the parked requestId + the normalized
+ *  questions, so a parent can answer them in place via the child's own thread
+ *  id without routing through the user. */
+export type SpawnGate =
+  | { kind: "approval"; detail: string; requestId: string; approval: ApprovalRequest }
+  | { kind: "user-input"; detail: string; requestId: string; questions: UserInputQuestion[] };
 
 /** Everything the projection needs about a child. The engine resolves each
  *  piece from the store and the agent layer — none of them this module's job. */
@@ -287,11 +284,19 @@ export function projectSpawnedThread(input: SpawnProjectionInput): SpawnedThread
   if (elapsedMs !== undefined) projection.elapsedMs = elapsedMs;
   if (summary) projection.summary = summary;
   if (detail) projection.detail = detail;
-  // An approval gate rides its parked ask through to the consumer — the
-  // parent agent sees it (via the wait tool) and the renderer can answer it
-  // via agent:respond without routing through the parent.
-  if (gate && gate.kind === "approval" && gate.requestId && gate.approval) {
-    projection.gate = { requestId: gate.requestId, approval: gate.approval };
+  // A parked gate rides through to the consumer — the parent agent sees it
+  // (via the wait tool) and answers it in place without routing through the
+  // user: an approval via agent:respond, a user-input gate via the child's
+  // own thread.
+  if (gate) {
+    switch (gate.kind) {
+      case "approval":
+        projection.gate = { kind: "approval", requestId: gate.requestId, approval: gate.approval };
+        break;
+      case "user-input":
+        projection.gate = { kind: "user-input", requestId: gate.requestId, questions: gate.questions };
+        break;
+    }
   }
   if (input.tokens !== undefined) projection.tokens = input.tokens;
   return projection;

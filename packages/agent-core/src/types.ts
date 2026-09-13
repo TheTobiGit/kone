@@ -935,12 +935,15 @@ export type SpawnedThread = {
   /** Set when the child failed, or when it is parked: the question/approval
    *  the child is blocked on, so the parent can tell the user what to do. */
   detail?: string;
-  /** When the child is parked on an APPROVAL, the parked requestId + the
-   *  normalized ask — what a consumer needs to answer it in place via
-   *  `agent:respond(childThreadId, requestId, decision)`. Absent for every
-   *  other status; a user-input gate has no decide action (it resolves through
-   *  the child's own thread). */
-  gate?: { requestId: string; approval: ApprovalRequest };
+  /** When the child is parked, the parked requestId plus the payload that
+   *  lets a consumer answer it in place: an approval gate carries the
+   *  normalized ask (answerable via `agent:respond(childThreadId, requestId,
+   *  decision)`), a user-input gate carries the normalized questions
+   *  (answerable through the child's own thread). Absent for every other
+   *  status. */
+  gate?:
+    | { kind: "approval"; requestId: string; approval: ApprovalRequest }
+    | { kind: "user-input"; requestId: string; questions: UserInputQuestion[] };
   tokens?: number;
 };
 

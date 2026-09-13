@@ -1736,10 +1736,15 @@ export type SpawnedThread = {
   summary?: string;
   /** Failure reason, or the question/approval the child is parked on. */
   detail?: string;
-  /** When the child is parked on an APPROVAL, the parked requestId + the
-   *  normalized ask — answerable in place via `agent.respond(threadId,
-   *  requestId, decision)`. Absent for every other status. */
-  gate?: { requestId: string; approval: ApprovalRequest };
+  /** When the child is parked, the parked requestId plus the payload that
+   *  lets a consumer answer it in place: an approval gate carries the
+   *  normalized ask (answerable via `agent.respond(threadId, requestId,
+   *  decision)`), a user-input gate carries the normalized questions
+   *  (answerable through the child's own thread). Absent for every other
+   *  status. */
+  gate?:
+    | { kind: "approval"; requestId: string; approval: ApprovalRequest }
+    | { kind: "user-input"; requestId: string; questions: UserInputQuestion[] };
   tokens?: number;
 };
 

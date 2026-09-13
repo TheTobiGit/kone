@@ -769,6 +769,8 @@ class SpawnEngineImpl implements SpawnEngine {
         child.gate = {
           kind: "user-input",
           detail: event.questions[0]?.question ?? "The agent asked the user a question.",
+          requestId: event.requestId,
+          questions: event.questions,
         };
         break;
       case "approval.resolved":
