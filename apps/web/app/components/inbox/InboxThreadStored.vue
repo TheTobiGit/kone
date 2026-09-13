@@ -16,8 +16,10 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import ConversationThread from "~/components/conversation/ConversationThread.vue";
 import ThreadSubagentDock from "~/components/thread/ThreadSubagentDock.vue";
+import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import InboxThreadHeader from "~/components/inbox/InboxThreadHeader.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
+import { useDockClearance } from "~/composables/useDockClearance";
 import { useStudioIntake } from "~/composables/useStudioIntake";
 import { markHistorical } from "~/composables/agentPrefetch";
 import { peelIpcError } from "~/utils/ipcError";
@@ -142,6 +144,25 @@ const { measure, maskStyle } = useEdgeFade(scroller);
 
 watch(blocks, () => void nextTick(measure));
 
+// The corner docks overlay the transcript's bottom corners — bottom-left for
+// the subagents, bottom-right for Changes/Tasks — so the floor has to clear
+// the taller of the two, expanded or not. They perch 12px off the pane's
+// bottom, with 24px of air under the last line; with no docks the floor is the
+// pane's own resting padding. There is no composer here, so subagents always
+// live in the corner: nothing else can claim them.
+const subDockEl = ref<InstanceType<typeof ThreadSubagentDock>>();
+const dockStackEl = ref<InstanceType<typeof ThreadDockStack>>();
+const { clear: bodyPadBottom, refresh: refreshDockClearance } = useDockClearance(
+  [subDockEl, dockStackEl],
+  { resting: 24, float: 12, air: 24 },
+);
+// The docks mount empty and fill once the stored page lands, and a dock that
+// renders nothing has no element to observe — so re-attach when the blocks
+// arrive. Growing the floor also changes what there is to scroll without
+// resizing any box the edge-fade watches, so re-measure that too.
+watch(blocks, () => void nextTick(refreshDockClearance));
+watch(bodyPadBottom, () => void nextTick(measure));
+
 // Same bottom-pin as the live portal: opening a stored thread should reveal the
 // newest message, with the transcript arriving async on mount.
 function scrollStoredToBottom(): void {
@@ -187,7 +208,7 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
     <div
       ref="scroller"
       class="rd__body"
-      :style="maskStyle"
+      :style="[maskStyle, { paddingBottom: `${bodyPadBottom}px` }]"
       @scroll.passive="measure"
     >
       <ConversationThread
@@ -209,11 +230,13 @@ onMounted(() => void nextTick(() => tryStoredInitialScroll()));
 
     <!-- The subagent corner — delegated runs bottom-left. -->
     <ThreadSubagentDock
+      ref="subDockEl"
       :rows="storedDelegates.rows"
     />
 
     <!-- Corner dock stack — Changes above Tasks, bottom-right. -->
     <ThreadDockStack
+      ref="dockStackEl"
       :changes="storedChanges"
       :plan="storedPlan"
       :thread-key="row.threadId"

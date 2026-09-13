@@ -26,6 +26,7 @@ import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
 import { useEdgeFade } from "~/composables/useEdgeFade";
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
+import { useDockClearance } from "~/composables/useDockClearance";
 import { useStudioIntake } from "~/composables/useStudioIntake";
 import { getSideChatSource } from "~/composables/sideChats";
 import { compactPropsForSession } from "~/utils/compactAvailability";
@@ -288,6 +289,21 @@ function onComposerNewThread(): void {
 const scroller = ref<HTMLElement>();
 const { measure, maskStyle } = useEdgeFade(scroller);
 
+// The composer dock is laid over the transcript, so the scroll floor has to
+// clear whatever it currently stacks: the resting bar, or the open card plus
+// the pills row above it. It floats 18px above the pane bottom, and 26px of
+// air keeps the last line from kissing the card.
+const dockEl = ref<HTMLElement>();
+const { clear: bodyPadBottom } = useDockClearance(dockEl, { resting: 132, float: 18, air: 26 });
+// Growing the floor changes what there is to scroll, but resizes no box the
+// edge-fade observes — so tell it by hand, once the new padding is laid out.
+watch(bodyPadBottom, () => void nextTick(measure));
+
+// Subagents get exactly one host: the row above the composer while it is open,
+// the bottom-left corner the rest of the time. Both placements read this one
+// value, so they can't both render — or both vanish.
+const subagentsAbove = computed(() => composerOpen.value);
+
 watch(blocks, () => void nextTick(measure));
 
 // Opening a thread should land at the latest message, not the top.
@@ -390,7 +406,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
     <div
       ref="scroller"
       class="live__body"
-      :style="maskStyle"
+      :style="[maskStyle, { paddingBottom: `${bodyPadBottom}px` }]"
       @scroll.passive="measure"
     >
       <ConversationThread
@@ -421,7 +437,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
          scrolls behind it, so the thread does not resize every time the card
          opens or a queued strip appears. While an ask owns the centre-bottom
          the composer steps aside for it. -->
-    <div v-if="!modalOpen" class="live__dock">
+    <div v-if="!modalOpen" ref="dockEl" class="live__dock">
       <!-- Above the provider's banner: a provider that cannot take the turn is
            about whether the turn happens at all, and this is about where it
            would land — so the nearer-term obstacle sits nearer the composer. -->
@@ -439,9 +455,11 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         :composer-open="composerOpen"
         :changes="activeChanges"
         :plan="activePlan"
+        :delegates="subagentsAbove ? activeDelegates : null"
         :project-path="projectPath"
         :thread-key="row.threadId"
         position-mode="absolute-dock"
+        @stop-subagent="onStopSubagent"
       />
 
       <AgentComposer
@@ -498,8 +516,11 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
       @decide="onRespondApproval"
     />
 
-    <!-- The subagent corner — delegated runs bottom-left. -->
+    <!-- The subagent corner — delegated runs bottom-left. While the composer
+         is open the dock joins the Changes/Tasks row above the composer
+         instead, so this corner copy steps aside to avoid a duplicate. -->
     <ThreadSubagentDock
+      v-if="!subagentsAbove"
       :rows="activeDelegates.rows"
       :streaming="activeDelegates.streaming"
       @stop-subagent="onStopSubagent"
@@ -534,8 +555,9 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
 
 /* The scroll host. The transcript renders as a plain column and finds its
    scroller by walking up from itself, so this element has to be the one that
-   overflows. The floor clears the composer's resting height — the last thing
-   said must be readable without moving anything. */
+   overflows. The CSS floor is the resting minimum — the bound inline
+   paddingBottom grows it past the open card and pills (see bodyPadBottom), so
+   the last thing said stays readable without moving anything. */
 .live__body {
   flex: 1;
   min-height: 0;

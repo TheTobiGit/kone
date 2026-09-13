@@ -9,7 +9,7 @@ import {
   deriveActiveSubagents,
   deriveDelegates,
   type ActiveSubagentsState,
-  type DelegateRow,
+  type DelegatesState,
 } from "~/utils/subagentRuns";
 import type { SpawnedThread } from "~/types/desktop";
 import type { ThreadBlock } from "~/composables/useAgent";
@@ -18,10 +18,10 @@ export interface UseDockSnapshotReturn {
   planRaw: ComputedRef<ActivePlanState | null>;
   changesRaw: ComputedRef<ChangedFilesState>;
   subagentsRaw: ComputedRef<ActiveSubagentsState>;
-  delegatesRaw: ComputedRef<{ rows: DelegateRow[]; streaming: boolean }>;
+  delegatesRaw: ComputedRef<DelegatesState>;
   activePlan: ShallowRef<ActivePlanState | null>;
   activeChanges: ShallowRef<ChangedFilesState>;
-  activeDelegates: ShallowRef<{ rows: DelegateRow[]; streaming: boolean }>;
+  activeDelegates: ShallowRef<DelegatesState>;
   sync: () => void;
 }
 
@@ -38,7 +38,7 @@ export function useDockSnapshot(
 
   const activePlan = shallowRef<ActivePlanState | null>(planRaw.value);
   const activeChanges = shallowRef<ChangedFilesState>(changesRaw.value);
-  const activeDelegates = shallowRef<{ rows: DelegateRow[]; streaming: boolean }>(delegatesRaw.value);
+  const activeDelegates = shallowRef<DelegatesState>(delegatesRaw.value);
 
   function sync(): void {
     activePlan.value = planRaw.value;

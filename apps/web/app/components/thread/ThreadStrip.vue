@@ -2122,21 +2122,33 @@ watch(
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  /* `.selectable` carries a prose measure cap for text that opts into it. This
+     is the column's scroll host, not prose: capped, it would sit at the
+     measure's width against the column's left edge and leave the rest of a wide
+     column empty, instead of the transcript centring in it. The measure belongs
+     to the transcript's own column (.thread), which sets it. */
+  max-width: none;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: var(--fade-end) 0.4rem 208px;
+  /* The floor and the smoke-fade ride --dock-clear / --dock-fade, published by
+     the row measuring its floating composer dock — so the open card and the
+     pills above it never cover the last turns. The fallbacks are the resting
+     floor, for a strip mounted without a row to publish them: they mirror
+     STRIP_DOCK_RESTING (208) and STRIP_DOCK_RESTING − STRIP_DOCK_FLOAT (176)
+     in composables/useDockClearance.ts — change them together. */
+  padding: var(--fade-end) 0.4rem var(--dock-clear, 208px);
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent var(--fade-top),
     #000 var(--fade-end),
-    #000 calc(100% - 176px),
+    #000 calc(100% - var(--dock-fade, 176px)),
     transparent 100%
   );
   mask-image: linear-gradient(
     to bottom,
     transparent var(--fade-top),
     #000 var(--fade-end),
-    #000 calc(100% - 176px),
+    #000 calc(100% - var(--dock-fade, 176px)),
     transparent 100%
   );
   scrollbar-width: none;

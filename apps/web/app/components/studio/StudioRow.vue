@@ -37,6 +37,12 @@ import type { ModelPick } from "~/composables/useModelCommit";
 import { setInlineThread, type QueuedTurnEntry } from "~/composables/useAgent";
 import ThreadDockStack from "~/components/thread/ThreadDockStack.vue";
 import { useDockSnapshot } from "~/composables/useDockSnapshot";
+import {
+  useDockClearance,
+  STRIP_DOCK_AIR,
+  STRIP_DOCK_FLOAT,
+  STRIP_DOCK_RESTING,
+} from "~/composables/useDockClearance";
 import { useTerminal } from "~/composables/useTerminal";
 import { useScratchpad } from "~/composables/useScratchpad";
 import { createOrJoinSidechat, getSideChatSource } from "~/composables/sideChats";
@@ -148,6 +154,25 @@ const scratchpad = useScratchpad({ projectPath: () => props.project.path });
 // pre-fill it for the draft-thread intent. Its wake watcher lives further down.
 const composerRef = ref<{ wake: () => Promise<void>; setDraft: (text: string) => Promise<void> } | null>(null);
 const composerOpen = ref(false);
+
+// The composer dock floats over the thread columns, so each column's scroll
+// floor has to clear whatever the dock currently stacks: the resting bar, or
+// the open card plus the pills row above it. Measured and published as CSS
+// vars the strip's columns consume (see col__body).
+const composerDockEl = ref<HTMLElement>();
+const { clear: dockClear } = useDockClearance(composerDockEl, {
+  resting: STRIP_DOCK_RESTING,
+  float: STRIP_DOCK_FLOAT,
+  air: STRIP_DOCK_AIR,
+});
+// The column's smoke-fade starts where the dock does, so the last turns fade
+// out behind the card rather than under it.
+const dockFade = computed(() => dockClear.value - STRIP_DOCK_FLOAT);
+
+// Subagents get exactly one host: the row above the composer while it is open,
+// the bottom-left corner the rest of the time. Both placements read this one
+// value, so they can't both render — or both vanish.
+const subagentsAbove = computed(() => composerOpen.value);
 
 // A pad pane briefly pulses its index dash after a thread → pad append.
 const pulseScratchpadKey = ref<string | null>(null);
@@ -1423,6 +1448,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
     <div
       class="surface-layer surface-layer--studio"
       :class="{ 'surface-layer--hidden': !visible && !overview }"
+      :style="{ '--dock-clear': `${dockClear}px`, '--dock-fade': `${dockFade}px` }"
       :inert="(!visible && !overview) || blocked"
       :aria-hidden="(!visible && !overview) ? 'true' : undefined"
     >
@@ -1498,6 +1524,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
     >
       <div
         v-if="!focusedPendingUserInput && !focusedPendingApproval && visible && activePaneIsThread && !showChooser && !isOverview"
+        ref="composerDockEl"
         class="composer-dock pointer-events-none fixed inset-x-0 bottom-8 flex flex-col items-center"
         :class="{ 'composer-dock--open': composerOpen }"
         :inert="blocked"
@@ -1509,7 +1536,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
           :checking="recheckingProviders"
           @recheck="recheckProviders"
         />
-        <!-- Corner / above-composer dock stack (Tasks + Changes) -->
+        <!-- Corner / above-composer dock stack (Tasks + Changes + Subagents) -->
         <Transition
           enter-active-class="transition-opacity duration-150 ease-out"
           enter-from-class="opacity-0"
@@ -1521,10 +1548,12 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
             :composer-open="composerOpen"
             :changes="activeChanges"
             :plan="activePlan"
+            :delegates="subagentsAbove ? activeDelegates : null"
             :project-path="project.path"
             :thread-key="focusedKey"
             position-mode="fixed"
             @open-file="(path, rect) => emit('openFile', path, rect)"
+            @stop-subagent="(toolUseId) => void agent.stopSubagent(toolUseId)"
           />
         </Transition>
         <AgentComposer
@@ -1572,9 +1601,11 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
     </Transition>
 
     <!-- Subagents dock — the nested runs the agent delegated to this turn. It's
-         a taller, wider panel than the Changes/Tasks cards, so it lives in the
-         bottom-LEFT corner (free on the studio — the folder only perches there on
-         home) instead of crowding the right-hand stack. -->
+         a taller, wider panel than the Changes/Tasks cards, so at rest it lives
+         in the bottom-LEFT corner (free on the studio — the folder only perches
+         there on home) instead of crowding the right-hand stack. While the
+         composer is open it joins the dock row above the composer instead, so
+         this corner copy steps aside to avoid a duplicate. -->
     <Transition
       enter-active-class="transition-opacity duration-150 ease-out"
       enter-from-class="opacity-0"
@@ -1582,7 +1613,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
       leave-to-class="opacity-0"
     >
       <div
-        v-if="visible && !blocked && focusedThread && !isOverview"
+        v-if="visible && !blocked && focusedThread && !isOverview && !subagentsAbove"
         data-agent-dock
         class="sub-dock-corner"
       >

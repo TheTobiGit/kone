@@ -1460,6 +1460,10 @@ watch(
   gap: 34px;
   width: 100%;
   max-width: 720px;
+  /* A wide table's unbreakable spans set a huge min-content width, and a flex
+     item's automatic minimum would rather break the 720px cap and pin the
+     column left than stay a centered reader — so opt out of the floor. */
+  min-width: 0;
   margin: 0 auto;
 }
 
