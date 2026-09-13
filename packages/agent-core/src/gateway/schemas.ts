@@ -316,6 +316,33 @@ export const ContinueThreadInputSchema = z.object({
   requestId: z.string().min(1).max(200).optional(),
 });
 
+export const CancelWorkerInputSchema = z.object({
+  /** The child thread to stop — one an earlier spawn, delegation or batch
+   *  returned. Must be in the caller's own spawned subtree. */
+  threadId: z.string().min(1),
+});
+
+export const DeclineChildGateInputSchema = z.object({
+  /** The child thread holding the parked approval — one an earlier spawn,
+   *  delegation or batch returned. Must be in the caller's own spawned subtree. */
+  threadId: z.string().min(1),
+  /** The parked approval's request id, as the child's approval.requested event
+   *  reported it. */
+  requestId: z.string().min(1).max(200),
+});
+
+export const AnswerChildInputSchema = z.object({
+  /** The child thread holding the parked question — one an earlier spawn,
+   *  delegation or batch returned. Must be in the caller's own spawned subtree. */
+  threadId: z.string().min(1),
+  /** The parked question's request id, as the child's user-input.requested
+   *  event reported it. */
+  requestId: z.string().min(1).max(200),
+  /** The answers keyed by question id — a string, a string array, or null to
+   *  skip that question. */
+  answers: z.record(z.string(), z.union([z.string(), z.array(z.string()), z.null()])),
+});
+
 export const SPAWN_TARGETS_JSON_SCHEMA = {
   type: "object",
   properties: {},
@@ -470,6 +497,57 @@ export const SPAWN_BATCH_JSON_SCHEMA = {
     },
   },
   required: ["items"],
+} satisfies GatewayRecord;
+
+export const CANCEL_WORKER_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: {
+      type: "string",
+      description:
+        "The spawned child thread to stop — a threadId an earlier spawn, delegation or batch returned. It must be in your own spawned subtree.",
+    },
+  },
+  required: ["threadId"],
+} satisfies GatewayRecord;
+
+export const DECLINE_CHILD_GATE_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: {
+      type: "string",
+      description:
+        "The spawned child thread holding the parked approval — a threadId an earlier spawn, delegation or batch returned. It must be in your own spawned subtree.",
+    },
+    requestId: {
+      type: "string",
+      description:
+        "The parked approval's request id, as the child's approval.requested event reported it.",
+    },
+  },
+  required: ["threadId", "requestId"],
+} satisfies GatewayRecord;
+
+export const ANSWER_CHILD_INPUT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    threadId: {
+      type: "string",
+      description:
+        "The spawned child thread holding the parked question — a threadId an earlier spawn, delegation or batch returned. It must be in your own spawned subtree.",
+    },
+    requestId: {
+      type: "string",
+      description:
+        "The parked question's request id, as the child's user-input.requested event reported it.",
+    },
+    answers: {
+      type: "object",
+      description:
+        "The answers keyed by question id — each a string, a string array, or null to skip that question.",
+    },
+  },
+  required: ["threadId", "requestId", "answers"],
 } satisfies GatewayRecord;
 
 // ── irc inter-agent communication tools ──────────────────────────────────────

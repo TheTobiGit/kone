@@ -1,7 +1,7 @@
 // Worker- and teammate-dispatching gateway tools (docs/thread-spawning-design.md
 // §5.1, §6 Wave 2).
 //
-// Eight tools that let a running agent dispatch workers and teammates, follow
+// Ten tools that let a running agent dispatch workers and teammates, follow
 // them, read the responses they come back with, and post follow-up turns into
 // the threads it already opened — each one a kone thread. The
 // engine (../../threadSpawn.ts) holds ALL the state — depth/breadth guards,
@@ -23,10 +23,8 @@
 // gateway's GatewayErrorCode values by construction, so they pass straight
 // through; anything else falls through to the registry's internal handling.
 
-import { getSpawnEngine, SpawnError } from "../../threadSpawn.js";
 import type {
   SpawnCaller,
-  SpawnEngine,
   SpawnRequest,
   SpawnTargetsReport,
 } from "../../threadSpawn.js";
@@ -54,7 +52,6 @@ import type {
   GatewayRecord,
   GatewayToolContext,
   GatewayToolResult,
-  GatewayValue,
   ToolEntry,
 } from "../schemas.js";
 import {
@@ -75,6 +72,17 @@ import {
   WAIT_FOR_RESPONSES_JSON_SCHEMA,
 } from "../schemas.js";
 import { gatewayToolErrorResult } from "../registry.js";
+import {
+  createAnswerChildInputTool,
+  createCancelWorkerTool,
+  createDeclineChildGateTool,
+} from "./spawnChildControls.js";
+import {
+  callerOf,
+  mapSpawnError,
+  requiredEngine,
+  withActiveTurn,
+} from "./spawnToolContext.js";
 
 /** The store surface the spawn tools need — structural, so unit tests can
  *  substitute an in-memory fake. The real ConversationStore satisfies it. */
@@ -98,43 +106,6 @@ export interface SpawnToolStore {
 
 export interface SpawnToolInput {
   store: SpawnToolStore;
-}
-
-/** The engine, or the gateway-equivalent internal error when it is not running
- *  in this session. */
-function requiredEngine(): SpawnEngine {
-  const engine = getSpawnEngine();
-  if (!engine) {
-    throw new GatewayToolError("internal", "kone's thread engine is not running in this session.");
-  }
-  return engine;
-}
-
-/** Build the engine's caller identity from the gateway's bound authority
- *  context ONLY — never from agent-supplied arguments, so a child's parentage
- *  cannot be forged (design property 1). Read tools run turn-less; their
- *  callers get an empty turn id, which nothing the engine does with the caller
- *  cares about without a live turn. */
-function callerOf(ctx: GatewayToolContext): SpawnCaller {
-  return {
-    threadId: ctx.threadId,
-    turnId: ctx.turnId ?? "",
-    provider: ctx.provider,
-    model: ctx.model,
-    cwd: ctx.cwd,
-  };
-}
-
-/** Map an engine refusal onto the gateway's error vocabulary — the code
- *  strings are identical by construction, so they cross unchanged. Anything
- *  that is not a SpawnError is rethrown for the registry's internal handling. */
-function mapSpawnError(cause: unknown): GatewayToolError {
-  if (cause instanceof SpawnError) {
-    // SAFETY: engine refusals carry plain-JSON detail bags that are embedded
-    // verbatim into the tool result without further interpretation.
-    return new GatewayToolError(cause.code, cause.message, cause.details as GatewayValue);
-  }
-  throw cause;
 }
 
 /** Find a preset by the agent's reference: an exact id first, then a
@@ -466,7 +437,12 @@ function blockText(block: StoredBlock): string {
 function waitThreadText(thread: SpawnedThread): string {
   const took =
     thread.elapsedMs !== undefined ? ` in ${Math.round(thread.elapsedMs / 1000)}s` : "";
-  const head = `[${thread.title}] ${thread.status}${took} (${thread.threadId}):`;
+  const parkedGateId =
+    (thread.status === "waiting-for-approval" || thread.status === "waiting-for-user-input") &&
+    thread.gate?.requestId
+      ? ` (gate: ${thread.gate.requestId})`
+      : "";
+  const head = `[${thread.title}] ${thread.status}${took} (${thread.threadId})${parkedGateId}:`;
   const body = thread.summary?.trim() || thread.detail?.trim();
   if (body) return `${head}\n${body}`;
   return `${head}\n(no reply text — read the full transcript with kone_read_response)`;
@@ -503,7 +479,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
     }
   };
 
-  const spawnWorkerHandler = async (
+  const spawnWorkerHandler = (
     ctx: GatewayToolContext,
     args: {
       prompt: string;
@@ -513,23 +489,11 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       mode?: InteractionMode;
     },
   ): Promise<GatewayToolResult> => {
-    if (!ctx.turnId) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
-      );
-    }
-    const engine = requiredEngine();
-    const caller = callerOf(ctx);
-    let prepared: PreparedDispatch;
-    try {
-      prepared = await prepareDispatch(input.store, caller, args, async () => []);
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
-    if (!prepared.ok) {
-      return gatewayToolErrorResult(prepared.error);
-    }
-    try {
+    return withActiveTurn(ctx, async (engine, caller) => {
+      const prepared = await prepareDispatch(input.store, caller, args, async () => []);
+      if (!prepared.ok) {
+        return gatewayToolErrorResult(prepared.error);
+      }
       const result = await engine.spawn(caller, prepared.request);
       return {
         content: [
@@ -540,12 +504,10 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         ],
         structuredContent: { spawn: result },
       };
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
+    });
   };
 
-  const spawnWorkerPresetHandler = async (
+  const spawnWorkerPresetHandler = (
     ctx: GatewayToolContext,
     args: {
       preset: string;
@@ -556,20 +518,12 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       model?: AgentModelRef;
     },
   ): Promise<GatewayToolResult> => {
-    if (!ctx.turnId) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
-      );
-    }
-    const engine = requiredEngine();
-    const caller = callerOf(ctx);
-    const getAvailability = async (): Promise<ProviderAvailability[]> => {
-      const report = await engine.targets(caller);
-      return availabilityFromReport(report.providers);
-    };
-    let prepared: PreparedDispatch;
-    try {
-      prepared = await prepareDispatch(
+    return withActiveTurn(ctx, async (engine, caller) => {
+      const getAvailability = async (): Promise<ProviderAvailability[]> => {
+        const report = await engine.targets(caller);
+        return availabilityFromReport(report.providers);
+      };
+      const prepared = await prepareDispatch(
         input.store,
         caller,
         {
@@ -582,13 +536,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         },
         getAvailability,
       );
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
-    if (!prepared.ok) {
-      return gatewayToolErrorResult(prepared.error);
-    }
-    try {
+      if (!prepared.ok) {
+        return gatewayToolErrorResult(prepared.error);
+      }
       const result = await engine.spawn(caller, prepared.request);
       const structuredContent: GatewayRecord = {
         spawn: result,
@@ -604,13 +554,11 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         ],
         structuredContent,
       };
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
+    });
   };
 
 
-  const continueThreadHandler = async (
+  const continueThreadHandler = (
     ctx: GatewayToolContext,
     args: {
       threadId: string;
@@ -620,14 +568,7 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
   ): Promise<GatewayToolResult> => {
     // The registry already refuses turn-less writes; this guard keeps a direct
     // handler call honest and never lets an empty turn id bind idempotency.
-    if (!ctx.turnId) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
-      );
-    }
-    const engine = requiredEngine();
-    const caller = callerOf(ctx);
-    try {
+    return withActiveTurn(ctx, async (engine, caller) => {
       const result = await engine.continueThread(caller, {
         threadId: args.threadId,
         message: args.message,
@@ -645,108 +586,101 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
         ],
         structuredContent: { continuation: result },
       };
-    } catch (error) {
-      return gatewayToolErrorResult(mapSpawnError(error));
-    }
+    });
   };
-  const spawnBatchHandler = async (
+
+  const spawnBatchHandler = (
     ctx: GatewayToolContext,
     args: {
       items: Array<DispatchItemInput>;
     },
   ): Promise<GatewayToolResult> => {
-    if (!ctx.turnId) {
-      return gatewayToolErrorResult(
-        new GatewayToolError("capability_denied", "This tool requires an active agent turn."),
-      );
-    }
-    const engine = requiredEngine();
-    const caller = callerOf(ctx);
-
-    let availabilityPromise: Promise<ProviderAvailability[]> | null = null;
-    const getAvailability = (): Promise<ProviderAvailability[]> => {
-      if (!availabilityPromise) {
-        availabilityPromise = engine.targets(caller).then((r) => availabilityFromReport(r.providers));
-      }
-      return availabilityPromise;
-    };
-
-    const spawnPromises = args.items.map(async (item, index) => {
-      try {
-        const prepared = await prepareDispatch(input.store, caller, item, getAvailability);
-        if (!prepared.ok) {
-          return { index, ok: false as const, error: prepared.error.message };
+    return withActiveTurn(ctx, async (engine, caller) => {
+      let availabilityPromise: Promise<ProviderAvailability[]> | null = null;
+      const getAvailability = (): Promise<ProviderAvailability[]> => {
+        if (!availabilityPromise) {
+          availabilityPromise = engine.targets(caller).then((r) => availabilityFromReport(r.providers));
         }
-        const result = await engine.spawn(caller, prepared.request);
-        const entry: BatchSpawnSuccess = {
-          index,
-          ok: true,
-          threadId: result.threadId,
-          title: result.title,
-          provider: result.provider,
-          model: result.model,
-          kind: prepared.meta.kind,
-        };
-        if (prepared.meta.agent) entry.agent = prepared.meta.agent;
-        if (prepared.meta.preset) entry.preset = prepared.meta.preset;
-        return entry;
-      } catch (error) {
-        const mapped = mapSpawnError(error);
-        return { index, ok: false as const, error: mapped.message };
+        return availabilityPromise;
+      };
+
+      const spawnPromises = args.items.map(async (item, index) => {
+        try {
+          const prepared = await prepareDispatch(input.store, caller, item, getAvailability);
+          if (!prepared.ok) {
+            return { index, ok: false as const, error: prepared.error.message };
+          }
+          const result = await engine.spawn(caller, prepared.request);
+          const entry: BatchSpawnSuccess = {
+            index,
+            ok: true,
+            threadId: result.threadId,
+            title: result.title,
+            provider: result.provider,
+            model: result.model,
+            kind: prepared.meta.kind,
+          };
+          if (prepared.meta.agent) entry.agent = prepared.meta.agent;
+          if (prepared.meta.preset) entry.preset = prepared.meta.preset;
+          return entry;
+        } catch (error) {
+          const mapped = mapSpawnError(error);
+          return { index, ok: false as const, error: mapped.message };
+        }
+      });
+
+      const results: BatchItemResult[] = await Promise.all(spawnPromises);
+      const succeeded = results.filter((r): r is BatchSpawnSuccess => r.ok);
+      const failed = results.filter((r): r is { index: number; ok: false; error: string } => !r.ok);
+
+      const summaryParts: string[] = [];
+      if (succeeded.length > 0) {
+        summaryParts.push(
+          `Spawned ${succeeded.length} thread${succeeded.length === 1 ? "" : "s"}: ${succeeded
+            .map((s) => `"${s.title}" (${s.threadId})`)
+            .join(", ")}.`,
+        );
       }
-    });
+      if (failed.length > 0) {
+        const errList = failed
+          .map((f) => `item ${f.index}: ${f.error.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
+          .join("; ");
+        summaryParts.push(`${failed.length} spawn failed: ${errList}.`);
+      }
 
-    const results: BatchItemResult[] = await Promise.all(spawnPromises);
-    const succeeded = results.filter((r): r is BatchSpawnSuccess => r.ok);
-    const failed = results.filter((r): r is { index: number; ok: false; error: string } => !r.ok);
-
-    const summaryParts: string[] = [];
-    if (succeeded.length > 0) {
-      summaryParts.push(
-        `Spawned ${succeeded.length} thread${succeeded.length === 1 ? "" : "s"}: ${succeeded
-          .map((s) => `"${s.title}" (${s.threadId})`)
-          .join(", ")}.`,
-      );
-    }
-    if (failed.length > 0) {
-      const errList = failed
-        .map((f) => `item ${f.index}: ${f.error.endsWith(".") ? f.error.slice(0, -1) : f.error}`)
-        .join("; ");
-      summaryParts.push(`${failed.length} spawn failed: ${errList}.`);
-    }
-
-    return {
-      content: [{ type: "text", text: summaryParts.join(" ") }],
-      isError: succeeded.length === 0 && failed.length > 0,
-      structuredContent: {
-        batch: {
-          total: args.items.length,
-          succeeded: succeeded.length,
-          failed: failed.length,
-          threads: results.map((r) => {
-            if (r.ok) {
-              const entry: GatewayRecord = {
+      return {
+        content: [{ type: "text", text: summaryParts.join(" ") }],
+        isError: succeeded.length === 0 && failed.length > 0,
+        structuredContent: {
+          batch: {
+            total: args.items.length,
+            succeeded: succeeded.length,
+            failed: failed.length,
+            threads: results.map((r) => {
+              if (r.ok) {
+                const entry: GatewayRecord = {
+                  index: r.index,
+                  ok: true,
+                  threadId: r.threadId,
+                  title: r.title,
+                  provider: r.provider,
+                  model: r.model ?? null,
+                  kind: r.kind,
+                };
+                if (r.agent !== undefined) entry.agent = r.agent;
+                if (r.preset !== undefined) entry.preset = r.preset;
+                return entry;
+              }
+              return {
                 index: r.index,
-                ok: true,
-                threadId: r.threadId,
-                title: r.title,
-                provider: r.provider,
-                model: r.model ?? null,
-                kind: r.kind,
+                ok: false,
+                error: r.error,
               };
-              if (r.agent !== undefined) entry.agent = r.agent;
-              if (r.preset !== undefined) entry.preset = r.preset;
-              return entry;
-            }
-            return {
-              index: r.index,
-              ok: false,
-              error: r.error,
-            };
-          }),
+            }),
+          },
         },
-      },
-    };
+      };
+    });
   };
 
 
@@ -904,6 +838,9 @@ export function createSpawnTools(input: SpawnToolInput): ToolEntry[] {
       ],
       handler: continueThreadHandler,
     },
+    createCancelWorkerTool(),
+    createDeclineChildGateTool(),
+    createAnswerChildInputTool(),
     {
       name: "kone_wait_for_responses",
       description:

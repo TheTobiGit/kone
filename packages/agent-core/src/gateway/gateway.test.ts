@@ -316,6 +316,9 @@ describe("gateway integration (real store + HTTP)", () => {
       "kone_spawn_worker_preset",
       "kone_spawn_batch",
       "kone_continue_thread",
+      "kone_cancel_worker",
+      "kone_decline_child_gate",
+      "kone_answer_child_input",
       "kone_wait_for_responses",
       "kone_read_response",
       "kone_irc_send",
@@ -622,6 +625,8 @@ describe("gateway integration (real store + HTTP)", () => {
         listSessions: async () => [],
         stopSession: async () => {},
         hasLiveSession: () => false,
+        respondToRequest: async () => {},
+        respondToUserInput: async () => ({ owned: true }),
       },
       dispatcher: {
         startThread: async () => ({
