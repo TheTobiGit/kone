@@ -19,19 +19,15 @@
 // closing are registry operations, so they go up to ProjectView as events. Column
 // *width* is purely presentational, so it lives here.
 
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import {
-  useEventListener,
-  usePreferredReducedMotion,
-  useResizeObserver,
-} from "@vueuse/core";
+import { computed, ref } from "vue";
+import { usePreferredReducedMotion } from "@vueuse/core";
 import { motion, AnimatePresence } from "motion-v";
 import { HugeiconsIcon } from "@hugeicons/vue";
 import { Archive02Icon, ArrowExpand01Icon, ArrowShrink01Icon, BubbleChatTemporaryIcon, Cancel01Icon, Folder01Icon, GitBranchIcon, Link05Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { ClosingPlasma } from "~/components/ui/closing-plasma";
 import { Magnet } from "~/components/ui/magnet";
-import type { Pane, PaneId, PaneKind } from "~/types/studio";
-import { PANE_KINDS, paneKindMeta } from "~/utils/paneKinds";
+import type { Pane } from "~/types/studio";
+import { paneKindMeta } from "~/utils/paneKinds";
 import { isBlankThread } from "~/utils/panes";
 // The scroll rule the centring modes name, and the geometry it reads. Shared with
 // SettingsThreadStripPane so the settings preview runs the board's own maths rather
@@ -39,20 +35,23 @@ import { isBlankThread } from "~/utils/panes";
 import {
   JOINT_PX,
   LADDER_PX,
-  MIN_ANIMATED_PX,
   padEndFor,
-  resolveScrollTarget,
-  resolveSnapTarget,
 } from "~/utils/stripScroll";
-import { SESSION_BRAND } from "~/types/session";
+import { brandOf, buildCompactBySession, columnLabel, hasScratchpadPane, readCompactProps } from "~/utils/stripColumnLabels";
 import ContextWindowMeter from "~/components/thread/ContextWindowMeter.vue";
 import ThreadInfoPanel from "~/components/thread/ThreadInfoPanel.vue";
-import { latestAssistant, type ThreadSession } from "~/composables/useAgent";
+import { type ThreadSession } from "~/composables/useAgent";
 import { useAgentProviders } from "~/composables/useAgentProviders";
-import { compactPropsForSession, type MeterCompactProps } from "~/utils/compactAvailability";
-import { markThreadVisited } from "~/utils/sessionList";
+import type { MeterCompactProps } from "~/utils/compactAvailability";
+import { useStripChooser } from "~/composables/useStripChooser";
+import { useStripInfo } from "~/composables/useStripInfo";
+import { useStripKeyboard } from "~/composables/useStripKeyboard";
+import { useStripLinking } from "~/composables/useStripLinking";
+import { useStripPaneActions } from "~/composables/useStripPaneActions";
+import { useStripRail } from "~/composables/useStripRail";
 import { useStripOverview } from "~/composables/useStripOverview";
 import { useStripPresets } from "~/composables/useStripPresets";
+import { useStripSeams } from "~/composables/useStripSeams";
 import type { GitRemote } from "~/types/desktop";
 
 const props = defineProps<{
@@ -151,9 +150,6 @@ const reducedMotion = usePreferredReducedMotion();
 function reducedMotionOn(): boolean {
   return reducedMotion.value === "reduce";
 }
-function scrollBehavior(): ScrollBehavior {
-  return reducedMotionOn() ? "auto" : "smooth";
-}
 
 const {
   PRESETS,
@@ -178,30 +174,16 @@ const {
   reducedMotionOn,
   onWidthEmit: (id, index) => emit("width", id, index),
   onZenEmit: (id, zen) => emit("zen", id, zen),
-  onScrollToColumn: (id) => scrollToColumn(id),
+  // The rail cluster is wired below; the arrow defers the read to call time.
+  onScrollToColumn: (id) => stripRail.scrollToColumn(id),
 });
 
-const {
-  overview,
-  plane,
-  naturalWidth,
-  k,
-  centerShift,
-  planeTransform,
-  scalerStyle,
-  planeStyle,
-  isZooming,
-  zoomBusy,
-  markZooming,
-  markZoomBusy,
-  animateZoom,
-  flipFrom,
-  remeasurePlane,
-} = useStripOverview({
+const overviewState = useStripOverview({
   rail,
   railWidth,
   reducedMotionOn,
 });
+const { overview, plane, scalerStyle, planeStyle, isZooming } = overviewState;
 
 const isSolo = computed(() => props.panes.length === 1);
 
@@ -244,532 +226,79 @@ const railPads = computed(() => {
 });
 
 // ── the rail ──────────────────────────────────────────────────────────────────
-const colEls = new Map<string, HTMLElement>();
-function setCol(key: string, el: Element | ComponentPublicInstance | null): void {
-  if (el instanceof HTMLElement) colEls.set(key, el);
-  else colEls.delete(key);
-}
-
-/** Where the rail should sit for `key` to be usable, or `null` for "don't move".
- *  Honours the centring mode: `never` nudges by the minimum, `on-overflow` centres
- *  but only when a scroll is actually needed, `always` centres unconditionally.
- *  Returning `null` — rather than the current position — is what makes the strip
- *  *stay put*: `scrollToColumn` already treats null as a no-op, so nothing
- *  programmatic fires and no smooth-scroll animation is queued. */
-let programmaticAt = 0;
-
-/** The column's geometry in the rail's *scroller* coordinates.
- *
- *  `offsetLeft`/`offsetWidth` are unscaled *plane* coordinates, but `scrollLeft`
- *  and `scrollWidth` are the rail's *scaled* scroller coordinates in overview. The
- *  scaler shrinks the layout by exactly `k`, so multiply the column's geometry by k
- *  to speak the same units. Without this, arrow-navigating in overview scrolls to
- *  wildly wrong positions — the subtlest bug in the feature. Outside overview k is 1. */
-function measureColumn(r: HTMLElement, el: HTMLElement) {
-  const s = overview.value ? k.value : 1;
-  return {
-    mode: centerMode.value,
-    left: el.offsetLeft * s,
-    width: el.offsetWidth * s,
-    viewport: r.clientWidth,
-    scrollLeft: r.scrollLeft,
-    maxScroll: Math.max(0, r.scrollWidth - r.clientWidth),
-  };
-}
-
-function scrollTargetFor(key: string): number | null {
-  const r = rail.value;
-  const el = colEls.get(key);
-  if (!r || !el) return null;
-  return resolveScrollTarget(measureColumn(r, el));
-}
-
-/** Where the rail should settle after a free swipe. Unlike `scrollTargetFor` this
- *  always returns a position: a released swipe must land on a column boundary
- *  rather than wherever the fingers stopped. In centring modes that boundary is the
- *  viewport centre; in `never` it's the column's left edge (its right edge, if it's
- *  the last one and the strip has run out of room — `clamp` handles that for
- *  free). */
-function snapTargetFor(key: string): number | null {
-  const r = rail.value;
-  const el = colEls.get(key);
-  if (!r || !el) return null;
-  // Measured through the same scaled-coordinate correction as scrollTargetFor. k is 1
-  // outside overview, and the settle path is suspended while overview is on anyway,
-  // but keep the units honest so this never lies about a column boundary.
-  return resolveSnapTarget(measureColumn(r, el));
-}
-let snapKey: string | null = null;
-let snapAt = 0;
-function scrollToColumn(
-  key: string,
-  behavior: ScrollBehavior = scrollBehavior(),
-  // `reveal` obeys the centring mode and may decline to move (returns null);
-  // `snap` is the swipe-release path, which must always land on a boundary.
-  mode: "reveal" | "snap" = "reveal",
-): void {
-  const r = rail.value;
-  if (!r) return;
-  // A hidden layer measures zero width; scrolling against it would clamp the
-  // rail to 0 and lose the real position. The re-centre on reveal restores it.
-  if (r.clientWidth === 0) return;
-  if (isSolo.value) {
-    r.scrollLeft = 0;
-    return;
-  }
-  // A snap we just fired owns this column's position for a beat. When the settle
-  // crossed into a new column it emits `focus` *and* snaps; the focus watcher then
-  // asks for a `reveal` of the very column already gliding to its boundary, and
-  // mid-glide it measures that column as still clipped — so `never` aims a PEEK
-  // short and the swipe lands 24px off the seam, but only when focus changed.
-  // Suppressing the immediate follow-up keeps both settle paths landing identically.
-  if (mode === "reveal" && key === snapKey && Date.now() - snapAt < 80) return;
-  const target = mode === "snap" ? snapTargetFor(key) : scrollTargetFor(key);
-  if (target === null) return;
-  // A smooth scroll landing on top of a zoom is the "swimming" failure: the FLIP was
-  // computed from a scroll offset that then keeps moving under it, so the plane drifts
-  // against its own animation for the length of the glide. While a zoom is in flight the
-  // scroll is part of that animation's from-state, so it has to be instant.
-  const how = zoomBusy.value ? "auto" : behavior;
-  if (how !== "auto" && Math.abs(r.scrollLeft - target) < MIN_ANIMATED_PX) return;
-  if (mode === "snap") {
-    snapKey = key;
-    snapAt = Date.now();
-  }
-  programmaticAt = Date.now();
-  if (how === "auto") r.scrollLeft = target;
-  else r.scrollTo({ left: target, behavior: how });
-}
-
-function computeOverviewNaturalWidth(): number {
-  let total = 0;
-  const count = props.panes.length;
-  if (count > 1) {
-    total += (count - 1) * 28;
-  }
-  for (const pane of props.panes) {
-    total += presetFor(pane.id).px;
-  }
-  return total;
-}
-
-function enterOverview(): void {
-  const r = rail.value;
-  const p = plane.value;
-  if (!r || !p) return;
-  if (props.overview === undefined && props.panes.length < 2) return;
-  markZoomBusy();
-
-  const fromScroll = r.scrollLeft;
-  const fromTransform = planeTransform(k.value, centerShift.value);
-
-  // Set the measured natural width synchronously so `k`, `centerShift` and `scalerStyle`
-  // are fully computed in the exact same render cycle overview becomes true.
-  naturalWidth.value = computeOverviewNaturalWidth();
-  overview.value = true;
-  emit("update:overview", true);
-
-  programmaticAt = Date.now();
-  r.scrollLeft = fromScroll * k.value;
-  animateZoom(flipFrom(fromTransform, fromScroll, r.scrollLeft));
-}
-
-async function exitOverview(targetKey?: string): Promise<void> {
-  const r = rail.value;
-  const p = plane.value;
-  if (!r || !p) return;
-  markZoomBusy();
-  const fromScroll = r.scrollLeft;
-  const fromTransform = planeTransform(k.value, centerShift.value);
-  const scale = k.value;
-
-  // Lock the current transform inline before clearing overview so there is no
-  // unscaled pop before the FLIP animation takes over.
-  p.style.transform = fromTransform;
-
-  overview.value = false;
-  emit("update:overview", false);
-  programmaticAt = Date.now();
-  await nextTick();
-
-  p.style.transform = "";
-  r.scrollLeft = scale ? fromScroll / scale : fromScroll;
-  programmaticAt = Date.now();
-  const focusKey = targetKey ?? props.focusedId;
-  if (focusKey) scrollToColumn(focusKey, "auto");
-  animateZoom(flipFrom(fromTransform, fromScroll, r.scrollLeft));
-}
-
-function toggleOverview(): void {
-  if (props.overview !== undefined) {
-    emit("toggle-overview");
-    return;
-  }
-  if (props.panes.length < 2) return;
-  // Ignore a toggle that lands mid-flight (see markZoomBusy) — reversing the zoom
-  // halfway through is the shakiest thing this feature can do, and a pinch gesture
-  // asks for it constantly.
-  if (zoomBusy.value) return;
-  cue("toggle");
-  if (overview.value) void exitOverview();
-  else void enterOverview();
-}
-
-const isResizing = ref(false);
-let resizeEndTimer: ReturnType<typeof setTimeout> | null = null;
-let resizeRaf = 0;
-function onRailResize(): void {
-  const width = rail.value?.clientWidth ?? 0;
-  // Ignore the zero-width tick a hidden layer reports — keep the last real
-  // width so the rail's padding/centre maths stay intact until it's shown again.
-  if (width === 0) return;
-  railWidth.value = width;
-  isResizing.value = true;
-  if (resizeEndTimer) clearTimeout(resizeEndTimer);
-  cancelAnimationFrame(resizeRaf);
-  resizeRaf = requestAnimationFrame(() => {
-    // A narrower window shrinks every `min(px, 100vw)` rung, so the plane the scaler is
-    // sized to changed too — not just the viewport `k` is measured against.
-    void remeasurePlane();
-    if (props.focusedId) scrollToColumn(props.focusedId, "auto");
-  });
-  resizeEndTimer = setTimeout(() => {
-    isResizing.value = false;
-  }, 120);
-}
-useResizeObserver(rail, onRailResize);
-onBeforeUnmount(() => {
-  cancelAnimationFrame(resizeRaf);
-  if (resizeEndTimer) clearTimeout(resizeEndTimer);
-  if (settleTimer) clearTimeout(settleTimer);
-  if (pinchQuiet) clearTimeout(pinchQuiet);
+// Column geometry, programmatic scrolling, overview zoom, swipe settle,
+// pinch-zoom and resize. The four timing latches that tell programmatic
+// scrolls apart from user scrolls stay inside the composable; the seam card's
+// close travels in (the rail shuts it on any scroll) and the template bindings
+// plus the zoom controls come back out.
+const stripRail = useStripRail({
+  rail,
+  railWidth,
+  panes: () => props.panes,
+  focusedId: () => props.focusedId,
+  visible: () => props.visible,
+  controlledOverview: () => props.overview,
+  isSolo,
+  reducedMotionOn,
+  presetFor,
+  flagWidthAnim,
+  closeJoint: () => closeJoint(),
+  ov: overviewState,
+  emits: {
+    updateOverview: (value) => emit("update:overview", value),
+    toggleOverview: () => emit("toggle-overview"),
+    focus: (key) => emit("focus", key),
+  },
 });
-
-// Trackpad pinch toggles overview. On macOS a pinch arrives as a wheel event with
-// `ctrlKey` synthesised true; accumulate its deltaY and cross a threshold once per
-// gesture (resetting after a beat of quiet, and after any toggle, so one pinch can't
-// flap the mode). Pinch out — fingers apart, negative deltaY — pulls the plane back
-// into overview; pinch in collapses it. A plain two-finger scroll has no ctrlKey and
-// falls straight through to the rail, untouched.
-let pinchAccum = 0;
-let pinchQuiet: ReturnType<typeof setTimeout> | null = null;
-function onWheel(e: WheelEvent): void {
-  if (!e.ctrlKey) return;
-  e.preventDefault(); // otherwise the browser zooms the whole page
-  if (props.panes.length < 2 && props.overview === undefined) return;
-  // A pinch keeps delivering deltas long after it crossed the threshold. Swallow them
-  // while the zoom is in flight *and* keep the accumulator at zero, or the tail of the
-  // same gesture banks up and fires a second toggle the moment the plane lands.
-  if (zoomBusy.value) {
-    pinchAccum = 0;
-    return;
-  }
-  pinchAccum += e.deltaY;
-  if (pinchQuiet) clearTimeout(pinchQuiet);
-  pinchQuiet = setTimeout(() => {
-    pinchAccum = 0;
-    pinchQuiet = null;
-  }, 200);
-  if (Math.abs(pinchAccum) < 40) return;
-  const out = pinchAccum < 0;
-  pinchAccum = 0;
-  if (out && !overview.value) toggleOverview();
-  else if (!out && overview.value) toggleOverview();
-}
-useEventListener(rail, "wheel", onWheel, { passive: false });
-
-/** Which column owns the viewport at a scroll position — seam-first, like niri. */
-function nearestKey(scrollLeft?: number): string | null {
-  const r = rail.value;
-  if (!r || !props.panes.length) return null;
-  const mid = (scrollLeft ?? r.scrollLeft) + r.clientWidth / 2;
-  const dir = scrollLeft === undefined ? 0 : Math.sign(scrollLeft - lastScrollLeft);
-  // Column geometry is unscaled plane coordinates; the scroll position it's compared
-  // against is scaled in overview. Same k correction as scrollTargetFor.
-  const zoom = overview.value ? k.value : 1;
-
-  let byCentre: string | null = null;
-  let centreDist = Infinity;
-  let seamOwner: string | null = null;
-  let seamDist = Infinity;
-  for (const s of props.panes) {
-    const el = colEls.get(s.id);
-    if (!el) continue;
-    const centre = (el.offsetLeft + el.offsetWidth / 2) * zoom;
-    const dist = Math.abs(centre - mid);
-    if (dist < centreDist || (dist === centreDist && dir && Math.sign(centre - mid) === dir)) {
-      centreDist = dist;
-      byCentre = s.id;
-    }
-    const seam = (el.offsetLeft + el.offsetWidth) * zoom;
-    const sd = seam - mid;
-    if (sd >= 0 && sd < seamDist) {
-      seamDist = sd;
-      seamOwner = s.id;
-    }
-  }
-  return seamOwner ?? byCentre;
-}
-
-let settleTimer: ReturnType<typeof setTimeout> | null = null;
-let lastScrollLeft = 0;
-function onScroll(): void {
-  closeJoint();
-  if (isSolo.value) return;
-  // In overview the scroll is either the entry/exit remap or arrow-follow, both
-  // driven programmatically — the snap-on-release settle fighting the zoom just
-  // reads as jank, so leave the position exactly where the maths put it.
-  if (overview.value) return;
-  if (isResizing.value) return;
-  if (Date.now() - programmaticAt < 480) return;
-  const left = rail.value?.scrollLeft ?? 0;
-  if (settleTimer) clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => {
-    // Re-check the programmatic-scroll guard at settle time, not just at scroll
-    // time: a focus-driven scroll that landed after the swipe (an open, a click,
-    // a re-centre) supersedes the settle. Without this, a stale settle snaps to
-    // the pre-open position and can steal focus from a column the user just
-    // opened — the board "opens but doesn't focus" race.
-    if (Date.now() - programmaticAt < 480) return;
-    const key = nearestKey(left);
-    lastScrollLeft = left;
-    if (!key) return;
-    // A released swipe must land on a column boundary, never at whatever sub-pixel
-    // offset the fingers stopped at — so the settle path always snaps, whether or
-    // not it also changed focus. Crossing into a new column emits `focus` (the
-    // registry owns that), but we can't lean on the focus watcher to tidy the
-    // scroll: in `never`/`on-overflow` its `reveal` declines to move an
-    // already-visible column, which would leave the strip clipped at both edges.
-    // `snap` (centre in the centring modes, left edge in `never`) is the boundary.
-    if (key !== props.focusedId) emit("focus", key);
-    scrollToColumn(key, scrollBehavior(), "snap");
-  }, 170);
-}
-
-watch(
-  () => props.focusedId,
-  (key, prev) => {
-    // A focus change means the user (or an open) is directing the strip — a
-    // swipe settle still pending must not override it and snap to a stale
-    // column. The settle's own focus emit runs the watcher only on the next
-    // tick, after its snap has already fired, so this never cancels a settle
-    // in progress.
-    if (settleTimer) {
-      clearTimeout(settleTimer);
-      settleTimer = null;
-    }
-    // Per-column zen: focus away collapses the outgoing column to its ladder rung
-    // while the incoming one expands only if *it* is maximized. Flag both when their
-    // rendered width changes so the glide doesn't snap.
-    if (!reducedMotionOn()) {
-      const prevZen = prev ? Boolean(props.panes.find((p) => p.id === prev)?.entry.zen) : false;
-      const keyZen = key ? Boolean(props.panes.find((p) => p.id === key)?.entry.zen) : false;
-      if (prevZen || keyZen) {
-        if (prev && prev !== key) flagWidthAnim(prev);
-        if (key) flagWidthAnim(key);
-      }
-    }
-    if (key) void nextTick(() => scrollToColumn(key));
-  },
-);
-watch(
-  () => props.panes.length,
-  () => {
-    void nextTick(() => {
-      // A column arrived or left while the plane is zoomed out — ⌘N / ⌘⇧T / ⌘⇧N are
-      // global and still fire in overview, so this is reachable, and a stale scaler
-      // would strand the new card outside the scroll extent.
-      void remeasurePlane();
-      if (props.focusedId) scrollToColumn(props.focusedId);
-    });
-  },
-);
-// Switching centring mode changes both what a "good" scroll position is and how
-// wide the trailing pad is (so scrollWidth shifts). Re-settle the focused column
-// once the new pad has laid out — `auto`, because the change was a preference
-// flip, not a navigation, and a smooth glide there reads as the strip lurching on
-// its own. A stale position after a mode flip is the quickest way this looks broken.
-watch(centerMode, () => {
-  if (props.focusedId) void nextTick(() => scrollToColumn(props.focusedId, "auto"));
-});
-// Re-centre on reveal. While hidden the rail measured zero and skipped every
-// scroll; once the board surface is shown again, re-read the width and snap the
-// focused column back to centre (no animation — it was already there before the
-// surface flip; this just restores what the zero-width guard held back).
-watch(
-  () => props.visible,
-  (visible) => {
-    if (!visible) return;
-    void nextTick(() => {
-      railWidth.value = rail.value?.clientWidth ?? railWidth.value;
-      if (props.focusedId) scrollToColumn(props.focusedId, "auto");
-    });
-  },
-);
-onMounted(() => {
-  railWidth.value = rail.value?.clientWidth ?? 0;
-  if (props.focusedId) void nextTick(() => scrollToColumn(props.focusedId, "auto"));
-});
-
-watch(
-  () => props.overview,
-  (val) => {
-    if (val === undefined) return;
-    if (val && !overview.value) enterOverview();
-    else if (!val && overview.value) void exitOverview();
-  },
-  { immediate: true },
-);
-
-function onColumnClick(key: string): void {
-  // In overview a card is a button, not a document: clicking one always exits — even
-  // the already-focused card — flying the plane back in onto it. Focus it first
-  // so exitOverview lands on the right column.
-  if (overview.value) {
-    cue("select");
-    emit("focus", key);
-    emit("select-column", key);
-    void exitOverview(key);
-    return;
-  }
-  if (key === props.focusedId) return;
-  cue("select");
-  emit("focus", key);
-}
-
-// Enter/Space select a card in overview — it's a `role="button"` there, so the
-// keyboard must activate it like any button.
-function onCardKeydown(key: string, e: KeyboardEvent): void {
-  if (!overview.value) return;
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    onColumnClick(key);
-  }
-}
-
-/** Terminal I/O is the one pair of emits that speaks in session keys rather than pane
- *  ids (useTerminal keys its registry by session), so it goes through these instead of
- *  an inline arrow: the template's `c.session` check doesn't narrow inside a closure,
- *  and re-widening it with `!` is exactly how a pane id ends up on the wire again —
- *  which silently swallows every keystroke, because useTerminal's lookup just misses. */
-function onTerminalWrite(pane: Pane, data: string): void {
-  if (pane.kind !== "terminal" || !pane.session) return;
-  emit("terminal-write", pane.session.key, data);
-}
-function onTerminalResize(pane: Pane, cols: number, rows: number): void {
-  if (pane.kind !== "terminal" || !pane.session) return;
-  emit("terminal-resize", pane.session.key, cols, rows);
-}
-function onTerminalRestart(pane: Pane): void {
-  if (pane.kind !== "terminal" || !pane.session) return;
-  emit("terminal-restart", pane.session.key);
-}
-
-function onClose(key: string): void {
-  cue("collapse");
-  emit("close", key);
-}
-
-function onArchive(c: Pane): void {
-  if (c.kind !== "thread" || !c.session) return;
-  cue("press");
-  emit("archive", c.session.threadId.value, c.id);
-}
-
-// ── turn retry / resend / reload — the session's own send & open paths ───────
-// ConversationThread never touches the send path; these forward its intents to
-// the column's session, which owns send/openStored/start. `send` is the same
-// function the composer uses, so a retry lands exactly like a fresh prompt.
-function onRetryTurn(c: Pane, text: string): void {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  if (!s || !text.trim() || s.busy.value) return;
-  void s.send(text);
-}
-function onResendTurn(c: Pane, text: string): void {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  if (!s || !text.trim() || s.busy.value) return;
-  void s.send(text);
-}
-function onRetryLoad(c: Pane): void {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  const id = anchoredThreadId(c);
-  if (!s || !id) return;
-  void s.openStored(id);
-}
-function onRetrySession(c: Pane): void {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  if (!s) return;
-  void s.start();
-}
-/** Windowed stored threads page their older history on demand — forward the
- *  thread's request to the session's loadOlder (the store read + prepend). */
-function onLoadOlder(c: Pane): void {
-  if (c.kind !== "thread") return;
-  const s = c.session;
-  if (!s || !s.hasOlder.value) return;
-  void s.loadOlder();
-}
-
-/** The stored conversation this pane is anchored to — null for a fresh blank
- *  column. This is the discriminator ConversationThread needs: a thread whose
- *  transcript failed to load still carries its real stored id on the anchor,
- *  while a never-sent blank column's anchor remembers none. */
-function anchoredThreadId(c: Pane): string | null {
-  if (c.kind !== "thread") return null;
-  const anchor = c.entry.anchor;
-  return anchor.kind === "thread" ? anchor.threadId : null;
-}
-
-// ── thread rename ───────────────────────────────────────────────────────────
-// A thread is renamed from its info panel's Name row; the strip owns the write
-// because the column title is a live ref on the session. The new name lands
-// optimistically and reverts if the store's renameThread says no.
-async function onRename(title: string): Promise<void> {
-  const s = infoSession.value;
-  if (!s) return;
-  const previous = s.title.value;
-  s.title.value = title; // optimistic — the strip shows it immediately
-  if (!import.meta.client) return;
-  const api = window.koneDesktop?.agent;
-  if (!api) return; // browser dev — no store to tell; the optimistic title stands
-  try {
-    const ok = await api.renameThread(s.threadId.value, title);
-    if (ok === false) s.title.value = previous;
-  } catch {
-    s.title.value = previous; // bridge hiccup — never keep a title the store lost
-  }
-}
+const {
+  isResizing,
+  setCol,
+  scrollToColumn,
+  enterOverview,
+  exitOverview,
+  toggleOverview,
+  onScroll,
+} = stripRail;
 
 // The thread-info drop-down: clicking a column title toggles a panel anchored
 // beneath it. We keep the opening title's viewport rect as the anchor and the
 // session itself (its refs stay live while the panel is open).
-const infoPaneId = ref<string | null>(null);
-const infoAnchor = ref<DOMRect | null>(null);
-const infoSession = shallowRef<ThreadSession | null>(null);
-function toggleInfo(c: Pane, ev: Event): void {
-  if (c.kind !== "thread") return;
-  if (infoPaneId.value === c.id) {
-    closeInfo();
-    return;
-  }
-  // SAFETY: toggleInfo is bound to the pane title's <h2> element, so
-  // currentTarget is that HTMLElement during dispatch (nulled after — hence
-  // | null before the guard below).
-  const el = ev.currentTarget as HTMLElement | null;
-  if (!el || !c.session) return;
-  infoAnchor.value = el.getBoundingClientRect();
-  infoSession.value = c.session;
-  infoPaneId.value = c.id;
-}
-function closeInfo(): void {
-  infoPaneId.value = null;
-  infoAnchor.value = null;
-  infoSession.value = null;
-}
+const { infoPaneId, infoAnchor, infoSession, toggleInfo, closeInfo } = useStripInfo();
+
+// ── pane event forwarding ───────────────────────────────────────────────────
+// Column intents relayed to their sessions (or re-emitted to the row). The
+// overview ref and the info session travel in as refs; the emitters as one
+// callbacks object, so the forwarding never names the component's events.
+const {
+  onColumnClick,
+  onCardKeydown,
+  onTerminalWrite,
+  onTerminalResize,
+  onTerminalRestart,
+  onClose,
+  onArchive,
+  onRetryTurn,
+  onResendTurn,
+  onRetryLoad,
+  onRetrySession,
+  onLoadOlder,
+  anchoredThreadId,
+  onRename,
+} = useStripPaneActions({
+  focusedId: () => props.focusedId,
+  overview,
+  exitOverview,
+  infoSession,
+  emits: {
+    focus: (key) => emit("focus", key),
+    selectColumn: (key) => emit("select-column", key),
+    close: (key) => emit("close", key),
+    archive: (threadId, key) => emit("archive", threadId, key),
+    terminalWrite: (sessionKey, data) => emit("terminal-write", sessionKey, data),
+    terminalResize: (sessionKey, cols, rows) => emit("terminal-resize", sessionKey, cols, rows),
+    terminalRestart: (sessionKey) => emit("terminal-restart", sessionKey),
+  },
+});
 
 function onInsertColumn(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   cue("press");
@@ -777,281 +306,66 @@ function onInsertColumn(seamIndex: number, kind: "thread" | "terminal" | "scratc
 }
 
 // ── seam insert flyout ────────────────────────────────────────────────────────
-const openSeam = ref<number | null>(null);
-const menuAnchor = ref({ x: 0, y: 0 });
-
-function closeJoint(): void {
-  openSeam.value = null;
-}
-
-function toggleJoint(i: number, target: EventTarget | null): void {
-  const el = target instanceof HTMLElement ? target : null;
-  if (!el) return;
-  if (openSeam.value === i) {
-    closeJoint();
-    cue("collapse");
-    return;
-  }
-  const rect = el.getBoundingClientRect();
-  menuAnchor.value = {
-    // The leading seam (-1) unfolds rightward, so anchor its card to the seam's
-    // right edge; every trailing seam unfolds leftward from its left edge.
-    x: i === -1 ? rect.right : rect.left,
-    y: rect.top + rect.height / 2,
-  };
-  openSeam.value = i;
-  cue("expand");
-}
-
-function onInsertPick(kind: "thread" | "terminal" | "scratchpad"): void {
-  if (openSeam.value === null) return;
-  onInsertColumn(openSeam.value, kind);
-  closeJoint();
-}
-
-// ── keyboard ──────────────────────────────────────────────────────────────────
-const { matchesShortcut, bindingFor, displayTokens } = useShortcuts();
-
-function isTyping(): boolean {
-  // SAFETY: only tagName and isContentEditable are read; a non-HTMLElement
-  // focus target simply fails both checks and yields false.
-  const el = document.activeElement as HTMLElement | null;
-  if (!el) return false;
-  const tag = el.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
-}
-
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (overview.value) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      void exitOverview();
-    }
-    return;
-  }
-  if (matchesShortcut("focus-thread-left", e)) {
-    e.preventDefault();
-    cue("press");
-    return emit("shift", -1);
-  }
-  if (matchesShortcut("focus-thread-right", e)) {
-    e.preventDefault();
-    cue("press");
-    return emit("shift", 1);
-  }
-  if (matchesShortcut("move-thread-left", e)) {
-    e.preventDefault();
-    cue("press");
-    return emit("move", -1);
-  }
-  if (matchesShortcut("move-thread-right", e)) {
-    e.preventDefault();
-    cue("press");
-    return emit("move", 1);
-  }
-  if (matchesShortcut("cycle-thread-width", e)) {
-    e.preventDefault();
-    if (props.focusedId) cycleWidth(props.focusedId);
-    return;
-  }
-  if (matchesShortcut("grow-thread-width", e)) {
-    e.preventDefault();
-    if (props.focusedId) growWidth(props.focusedId);
-    return;
-  }
-  if (matchesShortcut("shrink-thread-width", e)) {
-    e.preventDefault();
-    if (props.focusedId) shrinkWidth(props.focusedId);
-    return;
-  }
-  if (matchesShortcut("maximize-thread", e)) {
-    e.preventDefault();
-    toggleZen();
-    return;
-  }
-  // Escape precedence: overview wins. It sits above the zen branch so a single Esc
-  // exits overview and never also drops zen in the same press (they can't both be on
-  // — entering overview clears zen — but the ordering keeps that guarantee explicit).
-  if (e.key === "Escape" && overview.value) {
-    e.preventDefault();
-    void exitOverview();
-    return;
-  }
-  // Esc leaves zen — but only swallow the event while zen is actually on, so the
-  // rest of the time Escape still bubbles up to close a modal or the settings drawer.
-  if (e.key === "Escape" && props.focusedId && isZen(props.focusedId)) {
-    e.preventDefault();
-    toggleZen();
-    return;
-  }
-  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || isTyping()) return;
-  if (e.key === "ArrowLeft") {
-    e.preventDefault();
-    cue("press");
-    emit("shift", -1);
-  } else if (e.key === "ArrowRight") {
-    e.preventDefault();
-    cue("press");
-    emit("shift", 1);
-  }
+const { openSeam, menuAnchor, closeJoint, toggleJoint, onInsertPick } = useStripSeams({
+  onInsert: (seamIndex, kind) => onInsertColumn(seamIndex, kind),
 });
 
-function brandOf(c: Pane) {
-  if (c.kind !== "thread" || !c.session) return "generic";
-  return SESSION_BRAND[c.session.provider.value] ?? "generic";
-}
+// ── keyboard ──────────────────────────────────────────────────────────────────
+// niri-style focus/carry/width shortcuts plus bare arrows. The window listener
+// lives inside the composable; the preset/zen controls and the overview state
+// travel in, the template's key-hint readers come back out.
+const { matchesShortcut, bindingFor, displayTokens } = useStripKeyboard({
+  focusedId: () => props.focusedId,
+  overview,
+  exitOverview,
+  isZen,
+  cycleWidth,
+  growWidth,
+  shrinkWidth,
+  toggleZen,
+  emits: {
+    shift: (delta) => emit("shift", delta),
+    move: (delta) => emit("move", delta),
+  },
+});
 
 /** The meter's Compact control per live session, memoized by session key — one
  *  shared rule decides, the session runs the call. A computed map (the inbox
  *  live pane's pattern, fanned out) so a re-render reuses the props object
  *  instead of minting a fresh one per column per frame. */
-const compactBySession = computed(() => {
-  const statuses = agentProviders.statuses.value;
-  const map = new Map<string, MeterCompactProps>();
-  for (const pane of props.panes) {
-    if (pane.kind !== "thread" || !pane.session) continue;
-    if (!map.has(pane.session.key)) map.set(pane.session.key, compactPropsForSession(pane.session, statuses));
-  }
-  return map;
-});
+const compactBySession = computed(() =>
+  buildCompactBySession(props.panes, agentProviders.statuses.value),
+);
 
 /** Spread onto ContextWindowMeter with v-bind. */
 function compactProps(s: ThreadSession): MeterCompactProps {
-  return compactBySession.value.get(s.key) ?? {};
+  return readCompactProps(compactBySession.value, s.key);
 }
 
-/** Is a pane of this kind already on the strip? Drives the seam menu's greying
- *  of singleton kinds (the scratchpad, today). */
-function hasKind(kind: PaneKind): boolean {
-  return props.panes.some((c) => c.kind === kind);
-}
 /** The project's single scratchpad is on the strip — the seam menu greys its row. */
-const hasScratchpad = computed(() => {
-  const singleton = PANE_KINDS.find((m) => m.singleton);
-  return singleton ? hasKind(singleton.kind) : false;
-});
-
-function columnLabel(c: Pane): string {
-  if (c.kind === "thread") {
-    const title = c.session?.title.value || "New thread";
-    return c.session?.isSideChat.value ? `Side chat · ${title}` : title;
-  }
-  return paneKindMeta(c.kind).label;
-}
+const hasScratchpad = computed(() => hasScratchpadPane(props.panes));
 
 // ── bare-board chooser ──────────────────────────────────────────────────────
 // The same pane-kind registry the seam menu offers, laid out as a centered pick
-// for a desktop with no windows at all. No singleton greying here: the chooser
-// only shows on a zero-pane board, so nothing is ever already open.
-//
-// On white, the plasma's ridge veins read as a soft cloud; on near-black the
-// same veins glow as high-contrast filaments — the same tuning as the
-// projects-list empty state, so the bare board shares its ambient floor.
-const { scheme } = useTheme();
-const plasmaOpacity = computed(() => (scheme.value === "dark" ? 0.5 : 1));
-
-// Everything before the folder's own name in the project path — the faded lead
-// of the chooser pill. The trailing separator is kept so the two spans read as
-// one continuous path; null when there is no parent (a root-level project).
-const chooserDir = computed(() => {
-  if (!props.projectPath) return null;
-  const cut = props.projectPath.lastIndexOf("/");
-  if (cut <= 0) return null;
-  return props.projectPath.slice(0, cut + 1);
+// for a desktop with no windows at all. The shortcut-chip readers come from
+// the keyboard cluster; the pick leaves as `choose`.
+const { plasmaOpacity, chooserDir, chooserActions, onChoose } = useStripChooser({
+  projectPath: () => props.projectPath,
+  bindingFor,
+  displayTokens,
+  emits: {
+    choose: (kind) => emit("choose", kind),
+  },
 });
 
-const chooserActions = computed(() =>
-  PANE_KINDS.map((meta) => ({
-    kind: meta.kind,
-    label: meta.insertLabel,
-    icon: meta.icon,
-    // The kind's own shortcut, resolved through any user rebind and split into
-    // display chips (⌘-glyphs on mac, words elsewhere) — so the empty state
-    // teaches the gesture that opens each column.
-    keys: displayTokens(bindingFor(meta.shortcutId)),
-  })),
-);
-function onChoose(kind: PaneKind): void {
-  cue("press");
-  emit("choose", kind);
-}
+// ── linking + blank-pane predicates ──────────────────────────────────────────
+// Side-chat seam joints, the seam menu's greyed rows, and the read-stamp
+// watcher (which moves with the panes it watches).
+const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
+  panes: () => props.panes,
+  visible: () => props.visible,
+});
 
-/** Every column is closeable: the board is a desktop, so closing the last window
- *  leaves it bare and the chooser takes over. Nothing is respawned behind it. */
-function canClose(): boolean {
-  return true;
-}
-
-/** Is any blank thread column on the board? Drives the seam menu's greyed
- *  "New thread" row (L3) — board-wide, not only when it's the lone column. */
-const hasBlankThread = computed(() => props.panes.some((p) => isBlankThread(p)));
-
-function paneThreadId(p: Pane): string | null {
-  if (p.kind !== "thread") return null;
-  return p.session?.threadId.value ?? (p.entry.anchor.kind === "thread" ? p.entry.anchor.threadId : null);
-}
-
-function paneSideChatSource(p: Pane): string | null {
-  if (p.kind !== "thread") return null;
-  return (
-    p.session?.sideChatSource.value ??
-    (p.entry.anchor.kind === "thread" ? p.entry.anchor.sideChatSource ?? null : null)
-  );
-}
-
-function isLinkedToNext(i: number): boolean {
-  if (i < 0 || i >= props.panes.length - 1) return false;
-  const current = props.panes[i];
-  const next = props.panes[i + 1];
-  if (!current || !next) return false;
-  if (current.kind !== "thread" || next.kind !== "thread") return false;
-
-  const nextSource = paneSideChatSource(next);
-  if (!nextSource) return false;
-
-  const currentId = paneThreadId(current);
-  const currentSource = paneSideChatSource(current);
-
-  return nextSource === currentId || (Boolean(currentSource) && currentSource === nextSource);
-}
-
-// Reading a thread here is reading it, the same as reading it in the inbox: a
-// thread on screen in a column is not one you have to be told about later. So a
-// visible column stamps its thread visited whenever a turn of it settles under
-// the user's eyes, and the inbox's unread mark answers to that write rather than
-// to which surface made it.
-//
-// Every visible column, not only the focused one — a strip is several threads
-// side by side, and they are all in front of you. The stamp is keyed by the turn
-// it acknowledges, so a settle costs one write however many columns saw it, and
-// a re-render costs none.
-watch(
-  () =>
-    props.panes
-      .filter((p) => p.kind === "thread" && p.session)
-      .map((p) => {
-        // SAFETY: the filter above keeps only thread panes, whose session is a
-        // ThreadSession.
-        const session = p.session as ThreadSession;
-        const block = latestAssistant(session.timelineBlocks.value);
-        return `${session.threadId.value}:${block?.turnId ?? ""}:${block?.state ?? ""}`;
-      })
-      .join("|"),
-  () => {
-    if (props.visible === false) return;
-    for (const pane of props.panes) {
-      if (pane.kind !== "thread" || !pane.session) continue;
-      const threadId = pane.session.threadId.value;
-      if (!threadId) continue;
-      const block = latestAssistant(pane.session.timelineBlocks.value);
-      // A running turn has not said anything yet — the visit that matters is the
-      // one that sees how it ended.
-      if (!block || block.state === "running") continue;
-      markThreadVisited(threadId, block.turnId);
-    }
-  },
-  { immediate: true },
-);
 </script>
 
 <template>
