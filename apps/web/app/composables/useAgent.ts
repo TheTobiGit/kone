@@ -1,7 +1,6 @@
 import { computed, getCurrentInstance, onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from "vue";
 import {
   initialWorkspaceSteps,
-  type WorkspaceStepRow,
 } from "~/utils/workspaceSteps";
 import type {
   ApprovalDecision,
@@ -28,7 +27,6 @@ import type {
 import { useAgentProviders } from "~/composables/useAgentProviders";
 import { agentPersonaForThread, carryThreadAgent } from "~/utils/agents";
 import { isWorkspaceCancel, peelIpcError } from "~/utils/ipcError";
-import { isWorkspacePending } from "~/utils/threadWorkspace";
 import { EFFORT_META } from "~/utils/modelCatalog";
 import { bootMode, MODES } from "~/utils/modelPicker";
 import { activePlanTask } from "~/utils/planTasks";
@@ -71,6 +69,7 @@ import {
   sortQueuedByIds,
   parseQueuedAttachments,
 } from "./session/sessionQueue";
+import { useSessionWorkspace } from "./session/sessionWorkspace";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
@@ -150,57 +149,25 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   /** Agent-named (or first-turn word-fallback) working title. Empty until the
    *  first user turn or a rehydrated/opened thread that already has one. */
   const title = ref("");
-  /** The directory this conversation works in, when it is not the project's own
-   *  checkout. Null for the ordinary case and for a worktree still being built —
-   *  the two are told apart by the pending derivation below, because one has a
-   *  place and the other only has an intention. */
-  const worktreePath = ref<string | null>(null);
-  /** What this conversation asked for, seeded when a stored thread is adopted.
-   *  Null until then, and once a build has settled — the store is the record
-   *  from that point on, and the list row carries the directory once it
-   *  refreshes. */
-  const envMode = ref<ThreadEnvMode | null>(null);
-  /** Whether the worktree this conversation asked for is still being built:
-   *  intent without a place. Derived, not carried, so it can never disagree
-   *  with the two facts behind it — the start below clears the intent when the
-   *  build settles, which is what flips this, because the renderer never learns
-   *  the built directory itself. */
-  const workspacePending = computed(() =>
-    isWorkspacePending({ envMode: envMode.value, worktreePath: worktreePath.value }),
-  );
-  /** The branch a pending worktree was asked for, when the user named one.
-   *  Mirrors the stored request so surfaces can show and re-stage it. */
-  const requestedBranch = ref<string | null>(null);
-  /** The build of this conversation's worktree, step by step, while it happens.
-   *
-   *  Empty at rest and for every thread that never asked for one. It is filled
-   *  when the send stages a worktree and left standing afterwards only if a step
-   *  failed — the stepper is what accounts for the failure, so withdrawing it
-   *  would leave the user with nothing to read. */
-  const workspaceSteps = ref<WorkspaceStepRow[]>([]);
-
-  /** Open the stepper. Called by the send that staged a worktree, so the list is
-   *  on screen before the first report rather than appearing a beat into it. */
-  function beginWorkspaceSteps(): void {
-    workspaceSteps.value = initialWorkspaceSteps();
-  }
-
-  /** Put the stepper away. Only ever the user's choice or a settled build —
-   *  never something that happens to a failure on its own. */
-  function dismissWorkspaceSteps(): void {
-    workspaceSteps.value = [];
-  }
-
-  /** Back out of a worktree still being built.
-   *
-   *  Does not interrupt git. The creation is already running, and what it
-   *  produces is removed once it finishes — so this is "undo whatever
-   *  finishes", not "stop trying". */
-  async function cancelWorkspace(): Promise<void> {
-    const api = bridge();
-    if (!api) return;
-    await api.cancelWorkspace(threadId.value).catch(() => undefined);
-  }
+  // Workspace state lives in the unit — the flat aliases below keep this
+  // session's shape for the return literal. The staged start choice stays
+  // here: start() consumes and clears it, so it never leaves the session.
+  const workspace = useSessionWorkspace({
+    threadId,
+    bridge: ctx.bridge,
+    storeStagedWorkspace: (choice) => {
+      pendingWorkspace = choice;
+    },
+  });
+  const worktreePath = workspace.worktreePath;
+  const envMode = workspace.envMode;
+  const workspacePending = workspace.workspacePending;
+  const requestedBranch = workspace.requestedBranch;
+  const workspaceSteps = workspace.workspaceSteps;
+  const beginWorkspaceSteps = workspace.beginWorkspaceSteps;
+  const dismissWorkspaceSteps = workspace.dismissWorkspaceSteps;
+  const cancelWorkspace = workspace.cancelWorkspace;
+  const stageWorkspace = workspace.stageWorkspace;
   const session = shallowRef<Session | null>(null);
   const sessionState = ref<RuntimeSessionState>("starting");
   const error = ref<string | null>(null);
@@ -688,12 +655,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
 
   /** Start this thread's session. The manager owns the event listener, so this
    *  only spawns the provider process (after an optional rehydrate). */
-  /** Record where this conversation will work. Only meaningful before the first
-   *  start; after that the session is running somewhere and cannot be moved. */
-  function stageWorkspace(choice: SessionStartInput["workspace"]): void {
-    pendingWorkspace = choice;
-  }
-
   async function start(): Promise<void> {
     // Any explicit start satisfies the deferral — otherwise the flag would
     // survive and the first send would start a second time.
