@@ -67,6 +67,7 @@ import {
 } from "./session/sessionQueue";
 import { useSessionWorkspace } from "./session/sessionWorkspace";
 import { useSessionGates } from "./session/sessionGates";
+import { useSessionTurnParams } from "./session/sessionTurnParams";
 
 export type ThreadSession = ReturnType<typeof createThreadSession>;
 
@@ -205,20 +206,31 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const respondUserInput = gates.respondUserInput;
   const respondApproval = gates.respondApproval;
 
-  // The provider is mutable so a thread can switch engines (Codex ↔ Claude).
-  // Because the two are separate CLIs with no shared conversation, a switch is a
-  // fresh session — restart() below tears the old one down and starts anew.
-  const provider = ref<ProviderKind>(options.provider);
+  // Turn params live in the unit — the flat aliases below keep this
+  // session's shape for the return literal. The staged provider resume id
+  // stays here: start() consumes it, and only a provider switch clears it.
+  const turnParams = useSessionTurnParams({
+    options,
+    resolveCwd: ctx.resolveCwd,
+    clearStagedResume: () => {
+      pendingResumeId = undefined;
+    },
+  });
+  const provider = turnParams.provider;
+  const model = turnParams.model;
+  const mode = turnParams.mode;
+  const reasoning = turnParams.reasoning;
+  const serviceTier = turnParams.serviceTier;
+  const contextWindow = turnParams.contextWindow;
+  const setProvider = turnParams.setProvider;
+  const setModel = turnParams.setModel;
+  const setMode = turnParams.setMode;
+  const setReasoning = turnParams.setReasoning;
+  const setServiceTier = turnParams.setServiceTier;
+  const setContextWindow = turnParams.setContextWindow;
   // Module-scope singleton: every thread shares one probe result, so this is a
   // read of shared state, not a per-thread subscription.
   const providers = useAgentProviders();
-  const model = ref(options.model);
-  const mode = ref<InteractionMode>(
-    options.mode ?? bootMode(ctx.resolveCwd() ?? "") ?? "accept-edits",
-  );
-  const reasoning = ref<ReasoningTier>(options.reasoning ?? "medium");
-  const serviceTier = ref<string | undefined>(options.serviceTier);
-  const contextWindow = ref<string | undefined>(options.contextWindow);
 
   // True from the moment a send is accepted until the turn is actually handed to
   // the provider. On a deferred thread that window contains the CLI spawn, so
@@ -1106,35 +1118,6 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     } catch {
       // The turn.aborted event (or its absence) is the source of truth.
     }
-  }
-
-  function setProvider(next: ProviderKind): void {
-    if (next === provider.value) return;
-    provider.value = next;
-    // Resume ids are provider-native. Handing one minted by the previous CLI to
-    // the new one either hard-fails ("conversation id does not exist" — Claude
-    // rethrows on a bad resume) or is silently swallowed into a fresh thread.
-    // Switching engines means this conversation can't be continued in-place.
-    pendingResumeId = undefined;
-    // A model id from the old provider's catalog is meaningless to the new one
-    // (a Cursor `composer-*` id sent to Codex draws a 400 from the upstream API).
-    // Drop it so start() falls back to the new provider's default.
-    model.value = undefined;
-  }
-  function setModel(id: string | undefined): void {
-    model.value = id;
-  }
-  function setMode(next: InteractionMode): void {
-    mode.value = next;
-  }
-  function setReasoning(next: ReasoningTier): void {
-    reasoning.value = next;
-  }
-  function setServiceTier(id: string | undefined): void {
-    serviceTier.value = id;
-  }
-  function setContextWindow(id: string | undefined): void {
-    contextWindow.value = id;
   }
 
   /** Tear down: stop the session process + halt any mock. The manager owns the
