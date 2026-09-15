@@ -399,8 +399,9 @@ describe("v1 baseline migration and schema", () => {
 
   /** A ConversationStore's private open-retry bookkeeping — the unusable flag
    *  and retry cooldown — reached for white-box assertions. */
-  type StoreInternals = { unusable: boolean; retryOpenAfter: number };
-  // SAFETY: white-box seam — s really is the store instance; only private flags are read.
+  type StoreInternals = { dbh: { unusable: boolean; retryOpenAfter: number } };
+  // SAFETY: white-box seam — s really is the store instance; only the connection
+  // holder's private open-retry flags are read through it.
   const storeInternals = (s: InstanceType<typeof ConversationStoreCtor>): StoreInternals =>
     s as StoreInternals;
 
@@ -420,13 +421,13 @@ describe("v1 baseline migration and schema", () => {
       store.listThreads("/p");
       // Still rate-limited to one attempt, but by a cooldown rather than for good.
       expect(logged.filter((l) => l.includes("could not open database")).length).toBe(1);
-      expect(storeInternals(store).unusable).toBe(false);
-      expect(storeInternals(store).retryOpenAfter).toBeGreaterThan(Date.now());
+      expect(storeInternals(store).dbh.unusable).toBe(false);
+      expect(storeInternals(store).dbh.retryOpenAfter).toBeGreaterThan(Date.now());
 
       // Once the file is a real database and the cooldown has passed, the store
       // recovers on its own.
       rmSync(path.join(dir, "kone.sqlite"));
-      storeInternals(store).retryOpenAfter = 0;
+      storeInternals(store).dbh.retryOpenAfter = 0;
       store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
       expect(store.threadMeta("t-1")?.provider).toBe("opencode");
       expect(logged.filter((l) => l.includes("could not open database")).length).toBe(1);
