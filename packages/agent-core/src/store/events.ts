@@ -1,10 +1,46 @@
 import type { ConversationDb } from "./ConversationDb.js";
 import { DatabaseSync } from "../sqlite.js";
 import { cleanCompactedCount } from "../types.js";
-import type { CompactionRecord, RuntimeEvent, TokenUsage } from "../types.js";
+import type { CompactionRecord, RuntimeEvent, RuntimeItem, TokenUsage } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 import { assistantBlockId, withTransaction } from "../conversationMigrations.js";
 import { indexItemRow, indexTurnRows, parentBlockIdForTurn } from "./search.js";
+import { decodeStoredText, encodeTextFallback, rawTextForStorage } from "./itemTextChunks.js";
+
+/** Cap on remembered per-item stream cursors (see `itemCursors`). Completed
+ *  items drop their entry, so the map only grows with never-settling items;
+ *  beyond the cap it is discarded wholesale — every entry is recoverable from
+ *  one indexed row read, so this bounds memory without risking correctness. */
+const MAX_ITEM_CURSORS = 5000;
+
+/** Separator joining the three cursor-map key parts. Written as an escape -
+ *  a literal NUL byte must never sit in source - and safe because NUL cannot
+ *  appear in a thread, turn, or item id (UUIDs, slugs, or provider part ids),
+ *  so the join is unambiguous. */
+const CURSOR_KEY_SEP = "\u0000";
+
+/** Where one streaming item's persisted text ends, without re-reading it.
+ *  `persistedLen` is a JS-string length (UTF-16 code units — the same units
+ *  `String.slice` uses), covering the settled base plus every chunk; the
+ *  event's full snapshot minus that prefix is the new suffix to append. The
+ *  remaining fields are the last-written non-text columns, so an update that
+ *  changes nothing writes nothing. */
+type ItemStreamCursor = {
+  persistedLen: number;
+  nextSeq: number;
+  kind: string;
+  status: string;
+  name: string | null;
+  detail: string | null;
+  tasksJson: string | null;
+  exists: boolean;
+};
+
+/** Map key for one item's stream cursor. See CURSOR_KEY_SEP for why the
+ *  join is unambiguous. */
+function itemCursorKey(threadId: string, turnId: string, itemId: string): string {
+  return `${threadId}${CURSOR_KEY_SEP}${turnId}${CURSOR_KEY_SEP}${itemId}`;
+}
 
 /** Narrow collaborators owned by other repos, injected so ingest never reaches back. */
 export type EventIngestDeps = {
@@ -36,6 +72,13 @@ export class EventIngestRepo {
     private readonly dbh: ConversationDb,
     private readonly deps: EventIngestDeps,
   ) {}
+
+  /** Per-item streaming write cursors, keyed `threadId turnId itemId`. The
+   *  hot path consults this instead of re-reading the accumulated text per
+   *  delta; a miss (a restarted process starts empty) falls back to one
+   *  indexed row read that rebuilds the cursor, so correctness never depends
+   *  on the map surviving. */
+  private readonly itemCursors = new Map<string, ItemStreamCursor>();
 
   /** threadId → the provider conversation id already written for it. Events carry
    *  the id on every envelope (see ProviderRefs), including one per streamed text
@@ -169,36 +212,22 @@ export class EventIngestRepo {
           // of times a turn. `last_activity_at` only needs turn granularity —
           // turn.started and turn.completed already stamp it — so the per-delta
           // churn is pure write amplification with no ordering consequence.
+          //
+          // The same discipline applies to the item row itself: the event
+          // carries the full accumulated text snapshot, so persisting the
+          // snapshot per delta rewrites O(n^2) bytes for an n-byte message.
+          // Streaming events therefore append only the not-yet-persisted
+          // suffix as an ordered chunk row (see streamItemText), and completion
+          // folds the chunks into the row and deletes them (see
+          // completeItemText) — a settled item is exactly one row.
           const it = event.item;
-          this.dbh.prepare(
-            db,
-            `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, name, detail, tasks_json, subagent_tool_use_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
-               kind        = excluded.kind,
-               status      = excluded.status,
-               text        = excluded.text,
-               name        = excluded.name,
-               detail      = excluded.detail,
-               tasks_json  = excluded.tasks_json`,
-          ).run(
-            it.itemId,
-            event.threadId,
-            event.turnId,
-            it.kind,
-            it.status,
-            it.text,
-            it.name ?? null,
-            it.detail ?? null,
-            it.tasks?.length ? JSON.stringify(it.tasks) : null,
-            event.subagentToolUseId ?? null,
-          );
-          // Index on completion only, never on started/updated: `updated`
-          // fires per text delta, so indexing here would rewrite the FTS row
-          // thousands of times a turn for text the next delta supersedes. A
-          // settled item's text is final, and the turn-settle re-sync below
-          // backfills anything that never completed on its own.
           if (event.type === "item.completed") {
+            this.completeItemText(db, event.threadId, event.turnId, it, event.subagentToolUseId ?? null);
+            // Index on completion only, never on started/updated: `updated`
+            // fires per text delta, so indexing here would rewrite the FTS row
+            // thousands of times a turn for text the next delta supersedes. A
+            // settled item's text is final, and the turn-settle re-sync below
+            // backfills anything that never completed on its own.
             indexItemRow(db, {
               threadId: event.threadId,
               turnId: event.turnId,
@@ -209,6 +238,8 @@ export class EventIngestRepo {
               name: it.name ?? null,
               detail: it.detail ?? null,
             });
+          } else {
+            this.streamItemText(db, event.threadId, event.turnId, it, event.subagentToolUseId ?? null);
           }
           break;
         }
@@ -452,6 +483,304 @@ export class EventIngestRepo {
     }
   }
 
+  /** Fold one streaming item event (`started`/`updated`) without rewriting
+   *  the accumulated text. The event carries the full snapshot; the cursor
+   *  remembers how much of it is already persisted, so only the new suffix
+   *  lands as a chunk row, and non-text columns land only when their value
+   *  actually changed — writing an unchanged value into an indexed column
+   *  still forces SQLite to rewrite that index. */
+  private streamItemText(
+    db: DatabaseSync,
+    threadId: string,
+    turnId: string,
+    item: RuntimeItem,
+    subagentToolUseId: string | null,
+  ): void {
+    const key = itemCursorKey(threadId, turnId, item.itemId);
+    let cursor = this.itemCursors.get(key);
+    if (!cursor) {
+      if (this.itemCursors.size >= MAX_ITEM_CURSORS) this.itemCursors.clear();
+      cursor = this.loadItemCursor(db, threadId, turnId, item.itemId);
+      this.itemCursors.set(key, cursor);
+    }
+    const snapshot = item.text;
+    const tasksJson = item.tasks?.length ? JSON.stringify(item.tasks) : null;
+    if (!cursor.exists) {
+      const inserted = this.dbh
+        .prepare(
+          db,
+          `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, text_json, name, detail, tasks_json, subagent_tool_use_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(thread_id, turn_id, item_id) DO NOTHING`,
+        )
+        .run(
+          item.itemId,
+          threadId,
+          turnId,
+          item.kind,
+          item.status,
+          rawTextForStorage(snapshot),
+          encodeTextFallback(snapshot),
+          item.name ?? null,
+          item.detail ?? null,
+          tasksJson,
+          subagentToolUseId,
+        );
+      if (Number(inserted.changes) > 0) {
+        this.itemCursors.set(key, {
+          persistedLen: snapshot.length,
+          nextSeq: 0,
+          kind: item.kind,
+          status: item.status,
+          name: item.name ?? null,
+          detail: item.detail ?? null,
+          tasksJson,
+          exists: true,
+        });
+        return;
+      }
+      // Lost a race the synchronous writer cannot win — the row appeared
+      // under us. Rebuild the cursor from it and continue below as an update.
+      cursor = this.loadItemCursor(db, threadId, turnId, item.itemId);
+      this.itemCursors.set(key, cursor);
+      if (!cursor.exists) return;
+    }
+    if (snapshot.length < cursor.persistedLen) {
+      // The accumulation shrank — the producer revised rather than appended.
+      // A suffix scheme cannot express that, so fold once: the snapshot
+      // becomes the new base and the chunks go away. Rare (streaming text is
+      // append-only in practice), and still a single bounded write.
+      this.dbh
+        .prepare(
+          db,
+          `UPDATE items SET text = ?, text_json = ? WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+        )
+        .run(rawTextForStorage(snapshot), encodeTextFallback(snapshot), threadId, turnId, item.itemId);
+      this.dbh
+        .prepare(
+          db,
+          `DELETE FROM item_text_chunks WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+        )
+        .run(threadId, turnId, item.itemId);
+      cursor.persistedLen = snapshot.length;
+      cursor.nextSeq = 0;
+    } else if (snapshot.length > cursor.persistedLen) {
+      const suffix = snapshot.slice(cursor.persistedLen);
+      this.dbh
+        .prepare(
+          db,
+          `INSERT INTO item_text_chunks (thread_id, turn_id, item_id, seq, text_json, char_len)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(threadId, turnId, item.itemId, cursor.nextSeq, JSON.stringify(suffix), suffix.length);
+      cursor.persistedLen = snapshot.length;
+      cursor.nextSeq += 1;
+    }
+    this.writeChangedItemColumns(db, threadId, turnId, item.itemId, cursor, {
+      kind: item.kind,
+      status: item.status,
+      name: item.name ?? null,
+      detail: item.detail ?? null,
+      tasksJson,
+    });
+  }
+
+  /** Settle one item: the event's snapshot becomes the row's final text, the
+   *  chunk rows are deleted, and the cursor is dropped. Exactly one row write
+   *  plus one chunk delete however long the stream was, so steady-state
+   *  storage never doubles. An event for a never-streamed item (some adapters
+   *  emit `completed` without a preceding `started`) takes the same full-row
+   *  upsert the pre-chunking path wrote. */
+  private completeItemText(
+    db: DatabaseSync,
+    threadId: string,
+    turnId: string,
+    item: RuntimeItem,
+    subagentToolUseId: string | null,
+  ): void {
+    const key = itemCursorKey(threadId, turnId, item.itemId);
+    const cursor = this.itemCursors.get(key) ?? this.loadItemCursor(db, threadId, turnId, item.itemId);
+    const snapshot = item.text;
+    const tasksJson = item.tasks?.length ? JSON.stringify(item.tasks) : null;
+    if (!cursor.exists) {
+      this.dbh
+        .prepare(
+          db,
+          `INSERT INTO items (item_id, thread_id, turn_id, kind, status, text, text_json, name, detail, tasks_json, subagent_tool_use_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
+             kind        = excluded.kind,
+             status      = excluded.status,
+             text        = excluded.text,
+             text_json   = excluded.text_json,
+             name        = excluded.name,
+             detail      = excluded.detail,
+             tasks_json  = excluded.tasks_json`,
+        )
+        .run(
+          item.itemId,
+          threadId,
+          turnId,
+          item.kind,
+          item.status,
+          rawTextForStorage(snapshot),
+          encodeTextFallback(snapshot),
+          item.name ?? null,
+          item.detail ?? null,
+          tasksJson,
+          subagentToolUseId,
+        );
+      this.itemCursors.delete(key);
+      return;
+    }
+    // The final text is written unconditionally: completion runs once per
+    // item (not per delta), and the row must converge to the event's snapshot
+    // whether or not any chunk was appended. Every other column keeps the
+    // changed-only discipline below.
+    this.dbh
+      .prepare(
+        db,
+        `UPDATE items SET text = ?, text_json = ? WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+      )
+      .run(rawTextForStorage(snapshot), encodeTextFallback(snapshot), threadId, turnId, item.itemId);
+    this.writeChangedItemColumns(db, threadId, turnId, item.itemId, cursor, {
+      kind: item.kind,
+      status: item.status,
+      name: item.name ?? null,
+      detail: item.detail ?? null,
+      tasksJson,
+    });
+    this.dbh
+      .prepare(
+        db,
+        `DELETE FROM item_text_chunks WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+      )
+      .run(threadId, turnId, item.itemId);
+    this.itemCursors.delete(key);
+  }
+
+  /** UPDATE only the non-text columns whose incoming value differs from the
+   *  last-written one; a no-change event writes nothing at all. `text` is
+   *  owned by the chunk protocol above, and `subagent_tool_use_id` is
+   *  insert-only (first writer wins, as before). */
+  private writeChangedItemColumns(
+    db: DatabaseSync,
+    threadId: string,
+    turnId: string,
+    itemId: string,
+    cursor: ItemStreamCursor,
+    incoming: { kind: string; status: string; name: string | null; detail: string | null; tasksJson: string | null },
+  ): void {
+    const sets: string[] = [];
+    const args: Array<string | null> = [];
+    if (incoming.kind !== cursor.kind) {
+      sets.push("kind = ?");
+      args.push(incoming.kind);
+      cursor.kind = incoming.kind;
+    }
+    if (incoming.status !== cursor.status) {
+      sets.push("status = ?");
+      args.push(incoming.status);
+      cursor.status = incoming.status;
+    }
+    if (incoming.name !== cursor.name) {
+      sets.push("name = ?");
+      args.push(incoming.name);
+      cursor.name = incoming.name;
+    }
+    if (incoming.detail !== cursor.detail) {
+      sets.push("detail = ?");
+      args.push(incoming.detail);
+      cursor.detail = incoming.detail;
+    }
+    if (incoming.tasksJson !== cursor.tasksJson) {
+      sets.push("tasks_json = ?");
+      args.push(incoming.tasksJson);
+      cursor.tasksJson = incoming.tasksJson;
+    }
+    if (sets.length === 0) return;
+    this.dbh
+      .prepare(
+        db,
+        `UPDATE items SET ${sets.join(", ")} WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+      )
+      .run(...args, threadId, turnId, itemId);
+  }
+
+  /** Rebuild a stream cursor from one indexed row read: the settled base
+   *  plus the chunks' recorded lengths. Lengths are compared in JS-string
+   *  units throughout — SQLite's `length()` counts code points while
+   *  `String.slice` counts UTF-16 code units, so the aggregate sums the
+   *  `char_len` recorded at write time instead, and the base length comes
+   *  from decoding the base here. Runs only on cursor miss (a fresh process,
+   *  or an item first seen mid-stream), never on the hot path. */
+  private loadItemCursor(
+    db: DatabaseSync,
+    threadId: string,
+    turnId: string,
+    itemId: string,
+  ): ItemStreamCursor {
+    const fresh: ItemStreamCursor = {
+      persistedLen: 0,
+      nextSeq: 0,
+      kind: "",
+      status: "",
+      name: null,
+      detail: null,
+      tasksJson: null,
+      exists: false,
+    };
+    // SAFETY: the projection names exactly the selected items columns plus
+    // the two chunk aggregates aliased below.
+    const row = this.dbh
+      .prepare(
+        db,
+        `SELECT kind, status, text, text_json, name, detail, tasks_json,
+           (SELECT COALESCE(MAX(seq), -1) FROM item_text_chunks c
+             WHERE c.thread_id = items.thread_id AND c.turn_id = items.turn_id AND c.item_id = items.item_id) AS max_seq,
+           (SELECT COALESCE(SUM(char_len), 0) FROM item_text_chunks c
+             WHERE c.thread_id = items.thread_id AND c.turn_id = items.turn_id AND c.item_id = items.item_id) AS chunk_len
+         FROM items WHERE thread_id = ? AND turn_id = ? AND item_id = ?`,
+      )
+      .get(threadId, turnId, itemId) as
+      | {
+          kind: string;
+          status: string;
+          text: string | null;
+          text_json: string | null;
+          name: string | null;
+          detail: string | null;
+          tasks_json: string | null;
+          max_seq: number;
+          chunk_len: number;
+        }
+      | undefined;
+    if (!row) return fresh;
+    return {
+      persistedLen: decodeStoredText(row.text, row.text_json).length + row.chunk_len,
+      nextSeq: row.max_seq + 1,
+      kind: row.kind,
+      status: row.status,
+      name: row.name,
+      detail: row.detail,
+      tasksJson: row.tasks_json,
+      exists: true,
+    };
+  }
+
+  /** Drop every cached write cursor for a thread — its rows are gone, so a
+   *  cursor that survived would mis-attribute a future same-id item's prefix.
+   *  Called after a successful delete; a missed call only costs one fallback
+   *  read per item, because the row read rebuilds (or absents) the cursor. */
+  forgetThread(threadId: string): void {
+    this.knownConversationIds.delete(threadId);
+    this.knownResumeAnchors.delete(threadId);
+    const prefix = `${threadId}${CURSOR_KEY_SEP}`;
+    for (const key of this.itemCursors.keys()) {
+      if (key.startsWith(prefix)) this.itemCursors.delete(key);
+    }
+  }
+
   /** Invalidate the stored window fill after a settled compaction: the meter
    *  restarts at the reported post-compaction count, or NULL when the
    *  provider reported none — unknown, not zero. */
@@ -644,6 +973,6 @@ export class EventIngestRepo {
 
   /** Drop cached conversation ids for deleted threads so a reused id re-reads. */
   forgetConversationIds(ids: readonly string[]): void {
-    for (const id of ids) this.knownConversationIds.delete(id);
+    for (const id of ids) this.forgetThread(id);
   }
 }

@@ -5,6 +5,8 @@ import type { ChatAttachment, InteractionMode, ProviderKind, StoredThreadMeta } 
 import { DONE_CLEARED, parseJsonObject, rowToMeta, type ThreadRow, GLOBAL_ASSISTANT_PROJECT_PATH } from "../conversationStoreTypes.js";
 import { indexBlockRow } from "./search.js";
 
+import { itemFullTextSql } from "./itemTextChunks.js";
+
 export class ThreadRepo {
   constructor(private readonly dbh: ConversationDb) {}
 
@@ -394,11 +396,15 @@ export class ThreadRepo {
     if (!db) return [];
     const archivedOnly = options?.archived === true;
     try {
-      // SAFETY: `t.*` plus computed snippet matches ThreadRow.
+      // The snippet reads each candidate's reassembled text (settled base
+      // plus any still-streaming chunks), so a list rendered mid-stream shows
+      // the same partial text the transcript shows — not the stale base.
+      const snippetSql = itemFullTextSql("i");
+      // SAFETY: `t.*` plus the computed snippet is exactly ThreadRow.
       const rows = db
         .prepare(
           `SELECT t.*,
-            (SELECT text FROM items WHERE thread_id = t.thread_id AND kind = 'assistant_text' AND text IS NOT NULL AND trim(text) != '' ORDER BY seq DESC LIMIT 1) AS snippet
+            (SELECT ${snippetSql} FROM items i WHERE i.thread_id = t.thread_id AND i.kind = 'assistant_text' AND TRIM(${snippetSql}) != '' ORDER BY i.seq DESC LIMIT 1) AS snippet
           FROM threads t
             WHERE t.project_path = ?
               AND t.archived_at IS ${archivedOnly ? "NOT NULL" : "NULL"}
