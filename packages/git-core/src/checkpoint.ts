@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { git, GitError, repoRoot, safeRepoPath } from "./core.js";
 import type {
+  CheckpointRestorePreview,
   CreateCheckpointOptions,
   GitCheckpoint,
   RestoreCheckpointOptions,
@@ -254,5 +255,95 @@ export async function dropCheckpoint(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Whether the checkpoint ref still resolves in this repository. A ref whose
+ *  object was garbage-collected (or a ref in a repo that was re-cloned) reads
+ *  false — the caller reports "the snapshot is gone" instead of running a
+ *  restore that could only fail. Never throws: every git failure reads false. */
+export async function checkpointExists(cwd: string, checkpointId: string): Promise<boolean> {
+  const root = await repoRoot(cwd);
+  if (!root) return false;
+  try {
+    await git(root, ["rev-parse", "--verify", `${CHECKPOINT_REF_PREFIX}${checkpointId}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Parse one NUL-separated `ls-tree -r -z` / `ls-files -s -z` entry into its
+// path and blob hash. ls-tree lines read "<mode> <type> <hash>\t<path>";
+// ls-files -s lines read "<mode> <hash> <stage>\t<path>". `hashIndex` names
+// which field carries the hash, so one parser serves both without guessing.
+function parseNullSeparatedEntries(output: string, hashIndex: number): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const entry of output.split("\0")) {
+    if (!entry) continue;
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const filePath = entry.slice(tab + 1);
+    if (!filePath) continue;
+    const fields = entry.slice(0, tab).split(" ");
+    const hash = fields[hashIndex];
+    if (!hash) continue;
+    entries.set(filePath, hash);
+  }
+  return entries;
+}
+
+/** What a hard restore to a checkpoint would change, without changing
+ *  anything. Compares the snapshot's tree against the current worktree (staged
+ *  into a throwaway index, the same read the hard restore's delete pass uses,
+ *  so the two can never disagree about which files exist).
+ *
+ *  `wouldWrite` holds checkpoint files whose content differs — the uncommitted
+ *  work the restore would overwrite, which is why an unforced restore refuses
+ *  when it is non-empty. Throws GitError when `cwd` is not a repo or the
+ *  checkpoint ref is gone. */
+export async function previewCheckpointRestore(
+  cwd: string,
+  checkpointId: string,
+): Promise<CheckpointRestorePreview> {
+  const root = await repoRoot(cwd);
+  if (!root) {
+    throw new GitError(`"${cwd}" is not inside a git repository.`, null);
+  }
+
+  const refPath = `${CHECKPOINT_REF_PREFIX}${checkpointId}`;
+  let commitHash: string;
+  try {
+    commitHash = (await git(root, ["rev-parse", "--verify", refPath])).trim();
+  } catch {
+    throw new GitError(`Checkpoint "${checkpointId}" not found.`, null);
+  }
+
+  const checkpointTree = await git(root, ["ls-tree", "-r", "-z", commitHash]);
+  const checkpointFiles = parseNullSeparatedEntries(checkpointTree, 2);
+
+  let scratch: string | null = null;
+  try {
+    scratch = await mkdtemp(path.join(os.tmpdir(), "kone-checkpoint-prev-"));
+    const env = { GIT_INDEX_FILE: path.join(scratch, "index") };
+    await git(root, ["add", "-A"], env);
+    const currentList = await git(root, ["ls-files", "-s", "-z"], env);
+    const currentFiles = parseNullSeparatedEntries(currentList, 1);
+
+    const wouldWrite: string[] = [];
+    for (const [filePath, hash] of checkpointFiles) {
+      if (currentFiles.get(filePath) !== hash) wouldWrite.push(filePath);
+    }
+    const wouldDelete: string[] = [];
+    for (const filePath of currentFiles.keys()) {
+      if (!checkpointFiles.has(filePath)) wouldDelete.push(filePath);
+    }
+    wouldWrite.sort();
+    wouldDelete.sort();
+    return { wouldWrite, wouldDelete };
+  } finally {
+    if (scratch) {
+      await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }

@@ -693,15 +693,24 @@ export function registerAgentIpc(): void {
     dispatcher.steerThreadTurn(input),
   );
   // Pre-turn repository snapshots. `turn-checkpoints` lists every snapshot
-  // recorded for a thread (oldest first); `revert-turn-checkpoint` restores
-  // the working tree to the tree as it was before the named turn ran. Both
-  // resolve with plain data — a revert that cannot run answers with its
-  // reason rather than throwing, so the renderer can say why.
+  // recorded for a thread (oldest first); `preview-turn-checkpoint` names what
+  // restoring one would change without changing anything; `revert-turn-checkpoint`
+  // restores the working tree to the tree as it was before the named turn ran.
+  // The revert is conservative: without `force` it refuses with `dirty` and the
+  // exact file lists when the tree differs, and the renderer re-issues with
+  // `force` once the user has confirmed them. All three resolve with plain data —
+  // a revert that cannot run answers with its reason rather than throwing, so
+  // the renderer can say why.
   ipcMain.handle("agent:turn-checkpoints", (_event, threadId: string) =>
     svc.listTurnCheckpoints(threadId),
   );
-  ipcMain.handle("agent:revert-turn-checkpoint", (_event, threadId: string, turnId: string) =>
-    svc.revertToTurnCheckpoint(threadId, turnId),
+  ipcMain.handle("agent:preview-turn-checkpoint", (_event, threadId: string, turnId: string) =>
+    svc.previewTurnCheckpoint(threadId, turnId),
+  );
+  ipcMain.handle(
+    "agent:revert-turn-checkpoint",
+    (_event, threadId: string, turnId: string, force?: boolean) =>
+      svc.revertToTurnCheckpoint(threadId, turnId, force),
   );
   // Read a parent thread's spawned children, projected fresh from the store.
   // The spawn events aren't journaled (derived state), so a reloaded renderer
