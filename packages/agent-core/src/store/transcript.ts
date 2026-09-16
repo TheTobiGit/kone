@@ -3,6 +3,7 @@ import { DatabaseSync } from "../sqlite.js";
 import type { StoredThread } from "../types.js";
 import { PAGE_DEFAULT_USER_BLOCKS, PAGE_RAW_FANOUT, assembleBlocks, decodeThreadPageCursor, encodeThreadPageCursor, rowToMeta, type BlockRow, type ItemRow, type StoredThreadPage, type SubagentRow, type ThreadRow, type TurnPartRows, type TurnSpan, type TurnUsageRecord } from "../conversationStoreTypes.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
+import { decodeChunkArray, decodeStoredText, itemChunkArraySql } from "./itemTextChunks.js";
 
 export class TranscriptRepo {
   constructor(private readonly dbh: ConversationDb) {}
@@ -51,16 +52,21 @@ export class TranscriptRepo {
     if (turnIds && turnIds.length === 0) {
       return { itemRows: [], subagentRows: [] };
     }
-    // SAFETY: both branches are `SELECT *` of items — exactly ItemRow.
+    // The chunk expression aggregates each row's pending deltas as a JSON
+    // array in sequence order inside SQLite — one indexed lookup per row,
+    // never one query per item — and rowToItem decodes the array onto the
+    // settled base.
+    // SAFETY: both branches are `SELECT *` of items plus the chunk array
+    // aliased below — exactly ItemRow.
     const itemRows = turnIds
       ? (db
           .prepare(
-            `SELECT * FROM items WHERE thread_id = ? AND turn_id IN (${turnIds.map(() => "?").join(",")})
+            `SELECT *, ${itemChunkArraySql("items")} AS chunk_text FROM items WHERE thread_id = ? AND turn_id IN (${turnIds.map(() => "?").join(",")})
              ORDER BY turn_id, seq`,
           )
           .all(threadId, ...turnIds) as ItemRow[])
       : (db
-          .prepare(`SELECT * FROM items WHERE thread_id = ? ORDER BY turn_id, seq`)
+          .prepare(`SELECT *, ${itemChunkArraySql("items")} AS chunk_text FROM items WHERE thread_id = ? ORDER BY turn_id, seq`)
           .all(threadId) as ItemRow[]);
     // SAFETY: both branches are `SELECT *` of subagents — exactly SubagentRow.
     const subagentRows = turnIds
@@ -300,15 +306,17 @@ export class TranscriptRepo {
         )
         .get(threadId) as { turn_id: string | null } | undefined;
       if (!block?.turn_id) return null;
-      // SAFETY: the projection names only items.text (NOT NULL TEXT).
+      // SAFETY: the projection names the turn's item bases plus each row's
+      // chunk array (see itemChunkArraySql) — the same base-plus-chunks read
+      // loadTurnParts performs.
       const items = db
         .prepare(
-          `SELECT text FROM items
+          `SELECT text, text_json, ${itemChunkArraySql("items")} AS chunk_text FROM items
             WHERE thread_id = ? AND turn_id = ? AND kind = 'assistant_text'
             ORDER BY seq`,
         )
-        .all(threadId, block.turn_id) as Array<{ text: string }>;
-      const text = items.map((i) => i.text).join("").trim();
+        .all(threadId, block.turn_id) as Array<{ text: string | null; text_json: string | null; chunk_text: string | null }>;
+      const text = items.map((i) => decodeStoredText(i.text, i.text_json) + decodeChunkArray(i.chunk_text)).join("").trim();
       return text || null;
     } catch (err) {
       console.error("[conversation-store] latestAssistantText failed:", err);
