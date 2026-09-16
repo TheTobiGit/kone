@@ -26,6 +26,11 @@ import type { InternalSkillsSettings } from "@kone/agent-core/skillsSettings.js"
 import type { QuotaCapableProvider } from "@kone/agent-core/quota/index.js";
 import type { QuotaProviderReport } from "@kone/agent-core/quota/types.js";
 import type { AgentUsageReport, UsageRange } from "@kone/agent-core/usage/report.js";
+import type { ThreadExportOutcome } from "@kone/agent-core/threadExport.js";
+import type {
+  ThreadExportDialogResult,
+  ThreadExportFormat,
+} from "@kone/protocol/thread-export";
 import type { StudioSaveInput } from "./modules/studio/index.js";
 import type {
   ApprovalDecision,
@@ -613,6 +618,23 @@ const api = {
     // touch recency ordering; the title.updated event follows on the stream.
     renameThread: (threadId: string, title: string): Promise<boolean> =>
       ipcRenderer.invoke("agent:rename-thread", threadId, title),
+    // Native save dialog for a thread export — the main process owns the
+    // dialog, the renderer only suggests a file name. A dismissal resolves
+    // `{ canceled: true }`, distinct from the export outcome below.
+    pickExportPath: (
+      suggestedName: string,
+      format: ThreadExportFormat,
+    ): Promise<ThreadExportDialogResult> =>
+      ipcRenderer.invoke("agent:export-thread-dialog", suggestedName, format),
+    // Write the thread's Markdown/JSON transcript to a caller-supplied
+    // absolute path (usually one just picked above). Errors resolve as data,
+    // never a rejection, so the caller renders them instead of catching.
+    exportThread: (
+      threadId: string,
+      format: ThreadExportFormat,
+      filePath: string,
+    ): Promise<ThreadExportOutcome> =>
+      ipcRenderer.invoke("agent:export-thread", threadId, format, filePath),
     // The ONE runtime event stream. Subscribing registers this renderer in the
     // main process; the returned fn unsubscribes and detaches the listener.
     onEvent: (cb: (event: RuntimeEvent) => void): (() => void) => {

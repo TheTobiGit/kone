@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { BrowserWindow, ipcMain, shell } from "electron";
+import path from "node:path";
+import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 
 import { AgentService } from "@kone/agent-core/AgentService.js";
 import { getAttachmentStore } from "@kone/agent-core/AttachmentStore.js";
@@ -61,6 +62,10 @@ import {
 import { localSpendForProvider } from "@kone/agent-core/quota/localSpend.js";
 import { createSidechatThread } from "@kone/agent-core/sidechat.js";
 import { exportThread } from "@kone/agent-core/threadExport.js";
+import {
+  parseThreadExportFormat,
+  type ThreadExportDialogResult,
+} from "@kone/protocol/thread-export";
 import { getSpawnEngine, initSpawnEngine } from "@kone/agent-core/threadSpawn.js";
 import { truncateThreadTitle } from "@kone/agent-core/threadTitle.js";
 import type { UsageRange } from "@kone/agent-core/usage/report.js";
@@ -654,6 +659,36 @@ export function registerAgentIpc(): void {
     "agent:export-thread",
     (_event, threadId: string, format: string, filePath: string) =>
       exportThread(store, threadId, format, filePath),
+  );
+  // Native save dialog for a thread export. The renderer never touches the
+  // filesystem here: it suggests a file name + format, the dialog runs in
+  // this process, and the write itself goes through `agent:export-thread`
+  // with the chosen path. A dismissal resolves `{ canceled: true }` — a
+  // different shape from the export outcome, so the caller can tell "picked
+  // nothing" apart from "wrote nothing".
+  ipcMain.handle(
+    "agent:export-thread-dialog",
+    async (event, suggestedName: string, format: string): Promise<ThreadExportDialogResult> => {
+      const parsed = parseThreadExportFormat(format);
+      const extension = parsed === "json" ? "json" : "md";
+      // The suggested name crosses from the renderer, so only its basename
+      // is honored — a stray directory in it must not redirect the dialog.
+      const base = path.basename(suggestedName).trim();
+      const saveOptions = {
+        title: "Export thread",
+        defaultPath: base.length > 0 ? base : `thread-export.${extension}`,
+        filters:
+          parsed === "json"
+            ? [{ name: "JSON transcript", extensions: ["json"] }]
+            : [{ name: "Markdown transcript", extensions: ["md", "markdown"] }],
+      };
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const picked = owner
+        ? await dialog.showSaveDialog(owner, saveOptions)
+        : await dialog.showSaveDialog(saveOptions);
+      if (picked.canceled || !picked.filePath) return { canceled: true };
+      return { canceled: false, filePath: picked.filePath };
+    },
   );
   ipcMain.handle(
     "agent:history-list",
