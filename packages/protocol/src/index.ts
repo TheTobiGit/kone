@@ -5,5 +5,6 @@
 export * from "./ipcError.js";
 export * from "./planTasks.js";
 export * from "./subagentPresets.js";
+export * from "./threadExport.js";
 export * from "./typography.js";
 export * from "./usageFormat.js";

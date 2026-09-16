@@ -20,6 +20,14 @@
       "types": "./src/subagentPresets.ts",
       "default": "./src/subagentPresets.ts"
     },
+    "./theme-summary": {
+      "types": "./src/themeSummary.ts",
+      "default": "./src/themeSummary.ts"
+    },
+    "./thread-export": {
+      "types": "./src/threadExport.ts",
+      "default": "./src/threadExport.ts"
+    },
     "./typography": {
       "types": "./src/typography.ts",
       "default": "./src/typography.ts"

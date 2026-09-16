@@ -60,6 +60,7 @@ import {
 } from "@kone/agent-core/quota/index.js";
 import { localSpendForProvider } from "@kone/agent-core/quota/localSpend.js";
 import { createSidechatThread } from "@kone/agent-core/sidechat.js";
+import { exportThread } from "@kone/agent-core/threadExport.js";
 import { getSpawnEngine, initSpawnEngine } from "@kone/agent-core/threadSpawn.js";
 import { truncateThreadTitle } from "@kone/agent-core/threadTitle.js";
 import type { UsageRange } from "@kone/agent-core/usage/report.js";
@@ -633,6 +634,16 @@ export function registerAgentIpc(): void {
       if (!page) return null;
       return { ...page, blocks: projectStoredBlocksForIpc(page.blocks) };
     },
+  );
+  // Thread export to Markdown / JSON files. Reads the full stored rows —
+  // never the wire-capped projection — and streams one page at a time, so a
+  // long thread exports with bounded memory. exportThread refuses the same
+  // threads the shared eligibility predicate blocks, so the caller and this
+  // handler cannot disagree about what is exportable.
+  ipcMain.handle(
+    "agent:export-thread",
+    (_event, threadId: string, format: string, filePath: string) =>
+      exportThread(store, threadId, format, filePath),
   );
   ipcMain.handle(
     "agent:history-list",
