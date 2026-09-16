@@ -52,6 +52,7 @@ import {
 import { createMockTurnRunner } from "./agentMock";
 import { getSideChatSource } from "./sideChats";
 import { useCompaction } from "./useCompaction";
+import { useTurnCheckpoints } from "./useTurnCheckpoints";
 import { useSessionReducer } from "./session/sessionReducer";
 import {
   useSessionQueue,
@@ -128,6 +129,11 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
   const seedCompactions = compaction.seedCompactions;
   const noteCompactedBoundary = compaction.noteCompactedBoundary;
   const compactThread = compaction.compactThread;
+  // Checkpoint state lives in the unit beside compactions — the flat aliases
+  // below keep this session's shape for the timeline's restore control.
+  const turnCheckpoints = useTurnCheckpoints({ threadId, bridge: ctx.bridge });
+  const checkpoints = turnCheckpoints.checkpoints;
+  const seedCheckpoints = turnCheckpoints.seedCheckpoints;
   // Gate state lives in the unit — the flat aliases below keep this
   // session's shape for the return literal and the reducer wiring. The refs
   // stay owned here: the reducer and the orphan stashes only write through
@@ -249,6 +255,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     takeOrphanApprovals,
     seedQueuedTurns: (api) => seedQueuedTurns(api),
     seedCompactions,
+    seedCheckpoints,
     seedSpawnedChildren,
   });
   const blocks = transcript.blocks;
@@ -1093,6 +1100,9 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     // Settled compaction boundaries for the timeline markers (see
     // seedCompactions and the compacted reducer case).
     compactions,
+    // Pre-turn snapshots for the timeline's per-turn restore control (see
+    // seedCheckpoints — seeded with the same stored-identity adopt).
+    checkpoints,
     // The stored-transcript read came back empty-handed — what the thread's
     // "didn't load" banner is allowed to key off.
     transcriptLoadFailed,

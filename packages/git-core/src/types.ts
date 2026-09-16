@@ -624,3 +624,16 @@ export type CreateCheckpointOptions = {
 export type RestoreCheckpointOptions = {
   hard?: boolean;
 };
+
+/** What a hard restore to a checkpoint would change in the working tree, by
+ *  repo-relative path (POSIX separators, as git reports them), sorted for a
+ *  stable display order. */
+export type CheckpointRestorePreview = {
+  /** Checkpoint-tracked files whose worktree content differs — modified or
+   *  missing, so the restore rewrites them. Empty means the tracked files
+   *  already match the snapshot. */
+  wouldWrite: string[];
+  /** Current worktree files the checkpoint does not contain — a hard restore
+   *  removes these. Empty means nothing would be deleted. */
+  wouldDelete: string[];
+};

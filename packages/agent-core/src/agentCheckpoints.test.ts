@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 
 import { setUserDataDir } from "./userDataDir.js";
 import { initTestRepo } from "@kone/git-core/testRepo.js";
-import { listCheckpoints } from "@kone/git-core/checkpoint.js";
+import { dropCheckpoint, listCheckpoints } from "@kone/git-core/checkpoint.js";
 import type {
   ProviderAdapter,
   QueuedTurnStore,
@@ -227,7 +227,7 @@ describe("AgentService turn checkpoints", () => {
     }
   });
 
-  test("revertToTurnCheckpoint restores the pre-turn tree", async () => {
+  test("an unforced revert refuses with the exact file lists, then force restores", async () => {
     const repo = await initTestRepo("kone-checkpoint-revert-");
     writeFileSync(path.join(repo, "note.txt"), "v1\n");
     const checkpoints = new FakeCheckpointStore(repo);
@@ -237,10 +237,108 @@ describe("AgentService turn checkpoints", () => {
       const result = await service.sendTurn({ threadId: "t-revert", input: "hi" });
       writeFileSync(path.join(repo, "note.txt"), "v2-after-agent\n");
       writeFileSync(path.join(repo, "added-by-agent.txt"), "new\n");
-      const reverted = await service.revertToTurnCheckpoint("t-revert", result.turnId);
+      // No force: refuse rather than clobber, naming exactly what would change.
+      const refused = await service.revertToTurnCheckpoint("t-revert", result.turnId);
+      expect(refused).toEqual({
+        ok: false,
+        reason: "dirty",
+        wouldWrite: ["note.txt"],
+        wouldDelete: ["added-by-agent.txt"],
+      });
+      // The refusal changed nothing.
+      expect(readFileSync(path.join(repo, "note.txt"), "utf8")).toBe("v2-after-agent\n");
+      expect(existsSync(path.join(repo, "added-by-agent.txt"))).toBe(true);
+      // The preview agrees with the refusal, without changing anything either.
+      expect(await service.previewTurnCheckpoint("t-revert", result.turnId)).toEqual({
+        ok: true,
+        wouldWrite: ["note.txt"],
+        wouldDelete: ["added-by-agent.txt"],
+      });
+      // Forced: the full-tree restore removes the turn's new files and brings
+      // back what it overwrote.
+      const reverted = await service.revertToTurnCheckpoint("t-revert", result.turnId, true);
       expect(reverted).toEqual({ ok: true });
       expect(readFileSync(path.join(repo, "note.txt"), "utf8")).toBe("v1\n");
       expect(existsSync(path.join(repo, "added-by-agent.txt"))).toBe(false);
+      // Repeatable: a second restore previews empty and still succeeds.
+      expect(await service.previewTurnCheckpoint("t-revert", result.turnId)).toEqual({
+        ok: true,
+        wouldWrite: [],
+        wouldDelete: [],
+      });
+      expect(await service.revertToTurnCheckpoint("t-revert", result.turnId)).toEqual({
+        ok: true,
+      });
+      // The transcript is untouched — restoring files never truncates turns.
+      expect(service.listTurnCheckpoints("t-revert")).toHaveLength(1);
+    } finally {
+      await service.stopAll();
+    }
+  });
+
+  test("preview answers missing for an unknown turn", async () => {
+    const repo = await initTestRepo("kone-checkpoint-preview-missing-");
+    const checkpoints = new FakeCheckpointStore(repo);
+    const service = buildService(checkpoints);
+    try {
+      await service.startSession({ threadId: "t-pv", provider: "codex", cwd: repo });
+      expect(await service.previewTurnCheckpoint("t-pv", "nope")).toEqual({
+        ok: false,
+        reason: "missing",
+      });
+    } finally {
+      await service.stopAll();
+    }
+  });
+
+  test("revert answers checkpoint-gone when the git object is gone", async () => {
+    const repo = await initTestRepo("kone-checkpoint-gone-");
+    writeFileSync(path.join(repo, "note.txt"), "v1\n");
+    const checkpoints = new FakeCheckpointStore(repo);
+    const service = buildService(checkpoints);
+    try {
+      await service.startSession({ threadId: "t-gone", provider: "codex", cwd: repo });
+      const result = await service.sendTurn({ threadId: "t-gone", input: "hi" });
+      const row = checkpoints.getTurnCheckpoint("t-gone", result.turnId);
+      expect(row).not.toBeNull();
+      // The row survives but the ref is pruned out from under it — a re-clone
+      // or an aggressive gc leaves exactly this shape behind.
+      expect(await dropCheckpoint(repo, row?.checkpointId ?? "")).toBe(true);
+      expect(await service.previewTurnCheckpoint("t-gone", result.turnId)).toEqual({
+        ok: false,
+        reason: "checkpoint-gone",
+        detail: row?.ref,
+      });
+      expect(await service.revertToTurnCheckpoint("t-gone", result.turnId, true)).toEqual({
+        ok: false,
+        reason: "checkpoint-gone",
+        detail: row?.ref,
+      });
+    } finally {
+      await service.stopAll();
+    }
+  });
+
+  test("revert answers no-workdir when the workspace directory is gone", async () => {
+    const repo = await initTestRepo("kone-checkpoint-moved-");
+    writeFileSync(path.join(repo, "note.txt"), "v1\n");
+    const checkpoints = new FakeCheckpointStore(repo);
+    const service = buildService(checkpoints);
+    try {
+      await service.startSession({ threadId: "t-moved", provider: "codex", cwd: repo });
+      const result = await service.sendTurn({ threadId: "t-moved", input: "hi" });
+      // The worktree the store names was removed from disk out from under it.
+      rmSync(repo, { recursive: true, force: true });
+      expect(await service.previewTurnCheckpoint("t-moved", result.turnId)).toEqual({
+        ok: false,
+        reason: "no-workdir",
+        detail: repo,
+      });
+      expect(await service.revertToTurnCheckpoint("t-moved", result.turnId, true)).toEqual({
+        ok: false,
+        reason: "no-workdir",
+        detail: repo,
+      });
     } finally {
       await service.stopAll();
     }
@@ -293,8 +391,8 @@ describe("AgentService turn checkpoints", () => {
       await service.startSession({ threadId: "t-serial", provider: "codex", cwd: repo });
       const result = await service.sendTurn({ threadId: "t-serial", input: "hi" });
       const [a, b] = await Promise.all([
-        service.revertToTurnCheckpoint("t-serial", result.turnId),
-        service.revertToTurnCheckpoint("t-serial", result.turnId),
+        service.revertToTurnCheckpoint("t-serial", result.turnId, true),
+        service.revertToTurnCheckpoint("t-serial", result.turnId, true),
       ]);
       expect(a).toEqual({ ok: true });
       expect(b).toEqual({ ok: true });

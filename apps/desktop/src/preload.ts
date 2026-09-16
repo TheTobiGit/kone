@@ -11,6 +11,7 @@ import type {
   SubagentPresetRecord,
   NativeSubagentConfig,
   ThreadAgentBinding,
+  TurnCheckpointRecord,
 } from "@kone/agent-core/ConversationStore.js";
 import type { AgentInventory } from "@kone/agent-core/inventory/types.js";
 import type { SkillDetail } from "@kone/agent-core/inventory/skillDetail.js";
@@ -43,6 +44,7 @@ import type {
   ForkThreadAtBlockResult,
   InteractionMode,
   ModelDescriptor,
+  PreviewTurnCheckpointResult,
   ProfileStats,
   ProviderSurfaceSnapshot,
   ProviderConfig,
@@ -51,6 +53,7 @@ import type {
   ProviderSettingsMap,
   ProviderStatus,
   ProviderUpdateResult,
+  RevertTurnCheckpointResult,
   RuntimeEvent,
   SendTurnInput,
   Session,
@@ -484,6 +487,22 @@ const api = {
       ipcRenderer.invoke("agent:queue-reorder", threadId, queueIds),
     steerTurn: (input: SendTurnInput): Promise<TurnStartResult> =>
       ipcRenderer.invoke("agent:steer-turn", input),
+    // Pre-turn repository snapshots for a thread (oldest first); the preview
+    // names what restoring one would change; the revert restores it — refusing
+    // with `dirty` plus the exact file lists unless `force` confirms them.
+    turnCheckpoints: (threadId: string): Promise<TurnCheckpointRecord[]> =>
+      ipcRenderer.invoke("agent:turn-checkpoints", threadId),
+    previewTurnCheckpoint: (
+      threadId: string,
+      turnId: string,
+    ): Promise<PreviewTurnCheckpointResult> =>
+      ipcRenderer.invoke("agent:preview-turn-checkpoint", threadId, turnId),
+    revertTurnCheckpoint: (
+      threadId: string,
+      turnId: string,
+      force?: boolean,
+    ): Promise<RevertTurnCheckpointResult> =>
+      ipcRenderer.invoke("agent:revert-turn-checkpoint", threadId, turnId, force),
     spawnChildren: (threadId: string): Promise<SpawnedThread[]> =>
       ipcRenderer.invoke("agent:spawn-children", threadId),
     // Persisted conversation history (read-only): rehydrate a project's last
