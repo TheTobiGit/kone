@@ -210,8 +210,12 @@ export function summarizeSession(
     projectPath: project?.projectPath,
     projectName: project?.projectName,
     // A side chat is a fork — discriminator checks sourceThreadId, forkContext, or relationship.
+    // An edit fork is not a side chat: it continues the conversation rather
+    // than borrowing it as reference, so it wears no side-chat badge (its
+    // versioned title marks the branch).
     sideChat: Boolean(
-      meta.forkContext || meta.sourceThreadId || meta.relationshipToParent === "side_chat",
+      meta.relationshipToParent === "side_chat" ||
+        ((meta.forkContext || meta.sourceThreadId) && meta.forkContext?.forkKind !== "edit"),
     ),
     done: isThreadDone(meta),
     unread: isThreadUnread(meta),

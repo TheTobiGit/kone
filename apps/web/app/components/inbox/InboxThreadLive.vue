@@ -53,6 +53,9 @@ const emit = defineEmits<{
    *  thread, so showing the composer instead is the portal's call, not this
    *  pane's. */
   "new-thread": [];
+  /** An earlier message was edited into a fork: the portal selects the fork
+   *  the ordinary way, so the pane remounts onto it. */
+  "open-thread": [threadId: string];
 }>();
 
 const { cue } = useSound();
@@ -352,6 +355,16 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
   await s.sendQueuedEntryNow(entry);
 }
 
+/** Edit-and-resend of an earlier message: fork the thread at that block and
+ *  hand the fork to the portal, which selects it the ordinary way. The
+ *  source thread is never mutated. Refused while busy, like every send. */
+async function onEditFork(blockId: string, text: string): Promise<void> {
+  const s = session.value;
+  if (!s || busy.value) return;
+  const forkId = await s.forkAtBlock(blockId, text);
+  if (forkId) emit("open-thread", forkId);
+}
+
 /** Attachments go up one at a time and a failed one is dropped rather than
  *  sinking the whole message — a picture that would not upload is not a reason
  *  to lose what you typed. */
@@ -425,6 +438,7 @@ async function upload(files?: File[]): Promise<ChatAttachment[]> {
         hide-empty-art
         @retry="onSend"
         @resend="onSend"
+        @edit-fork="onEditFork"
         @retry-load="session?.openStored(row.threadId)"
         @load-older="session?.loadOlder()"
       />

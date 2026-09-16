@@ -442,6 +442,30 @@ function openSideChat(paneId: string): void {
     }
   })();
 }
+// Edit-and-resend of an earlier user message: fork the source thread at that
+// block and open the fork as a column beside it. The source column is never
+// touched — its transcript keeps the original message and every reply after
+// it. Refused while the source is busy (forking would slice a moving
+// transcript); the edit control already disables its save while busy, so this
+// is the race guard, and a refusal surfaces on the source session's error
+// like a failed send.
+function openEditFork(paneId: string, blockId: string, text: string): void {
+  const pane = panes.value.find((p) => p.id === paneId);
+  if (pane?.kind !== "thread" || !pane.session) return;
+  if (!text.trim() || pane.session.busy.value) return;
+  const sourceThreadId = pane.session.threadId.value;
+  const sourcePaneId = pane.id;
+  void (async () => {
+    const forkId = await pane.session?.forkAtBlock(blockId, text);
+    if (!forkId) return;
+    const id = await studio.open("thread", {
+      threadId: forkId,
+      near: sourcePaneId,
+      sideChatSource: sourceThreadId,
+    });
+    if (id) void composerRef.value?.wake();
+  })();
+}
 function insertPane(seamIndex: number, kind: "thread" | "terminal" | "scratchpad"): void {
   // Seam `i` sits after pane `i`; a pick inserts to its right.
   void studio.open(kind, { at: seamIndex + 1 });
@@ -1472,6 +1496,7 @@ onBeforeUnmount(() => rowRegistry.unregister(registryPath, rowApi));
         @close="closePane"
         @archive="archivePane"
         @side-chat="openSideChat"
+        @edit-fork="openEditFork"
         @insert-column="insertPane"
         @terminal-write="terminal.write"
         @terminal-resize="terminal.resize"

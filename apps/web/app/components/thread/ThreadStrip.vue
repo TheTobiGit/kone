@@ -106,6 +106,10 @@ const emit = defineEmits<{
   /** Fork a side chat off this thread's column (the per-host-thread "add panel"
    *  creator). Carries the source pane id; ProjectView opens the child beside it. */
   "side-chat": [paneId: string];
+  /** Fork this thread's column at an earlier user block (edit-and-resend of
+   *  that message). Carries the source pane id, the edited block id and the
+   *  edited text; the row forks via IPC and opens the child beside the source. */
+  "edit-fork": [paneId: string, blockId: string, text: string];
   /** Insert a blank thread to the right of seam `seamIndex`. */
   "insert-column": [seamIndex: number, kind: "thread" | "terminal" | "scratchpad"];
   /** Write terminal input data. Keyed by the terminal *session* key, not the pane
@@ -600,6 +604,7 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                     @to-scratchpad="(text) => emit('to-scratchpad', text, c.id)"
                     @retry="(text) => onRetryTurn(c, text)"
                     @resend="(text) => onResendTurn(c, text)"
+                    @edit-fork="(blockId, text) => emit('edit-fork', c.id, blockId, text)"
                     @retry-load="() => onRetryLoad(c)"
                     @load-older="() => onLoadOlder(c)"
                   />

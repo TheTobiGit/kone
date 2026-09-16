@@ -123,8 +123,13 @@ const emit = defineEmits<{
   /** Re-send the user request that precedes a failed turn. The host owns the
    *  send path (ThreadStrip forwards this to the session's `send`). */
   retry: [text: string];
-  /** Edit-and-resend: send the edited text as a NEW user turn. */
+  /** Edit-and-resend of the last user turn: send the edited text as a NEW
+   *  user turn on this thread. */
   resend: [text: string];
+  /** Edit-and-resend of an earlier user turn: fork the thread at that block
+   *  (the source is never mutated) and start the fork's first turn from the
+   *  edited text. The host owns the fork path. */
+  "edit-fork": [blockId: string, text: string];
   /** A stored conversation failed to load its transcript — re-run the open. */
   "retry-load": [];
   /** Load the next older page of a windowed stored thread and prepend it. The
@@ -474,8 +479,9 @@ function addToScratchpad(block: AssistantBlock) {
 // ── retry / edit-and-resend / load-failure ────────────────────────────────────
 // All of these reach the session through the host (ThreadStrip forwards them):
 // `retry` re-sends the user request that precedes a failed turn, `resend` ships
-// the edited text as a NEW user turn (the failed reply stays in the transcript —
-// rolling it back needs store support and is out of scope), and `retry-load`
+// an edit of the last user turn as a NEW turn (the failed reply stays in the
+// transcript), `edit-fork` ships an edit of an earlier turn as the first turn
+// of a fork branched at that block, and `retry-load`
 // re-runs the open of a stored conversation. The buttons here are pure intent —
 // this component never touches the send path itself.
 const dismissedTurnErrors = reactive<Record<string, boolean>>({});
@@ -499,10 +505,12 @@ function dismissTurnError(block: AssistantBlock): void {
   cue("collapse");
 }
 
-// ── edit-and-resend (last user turn only) ─────────────────────────────────────
-// The edit affordance lives on the LAST user turn — the one a follow-up edit
-// could still plausibly replace. Saving ships the text through the host's send
-// path as a new turn; the transcript keeps the original and the reply after it.
+// ── edit-and-resend ──────────────────────────────────────────────────────────
+// The edit affordance lives on every user turn. Saving an edit of the LAST
+// user turn ships the text through the host's send path as a new turn on
+// this thread; saving an edit of any earlier turn forks the thread at that
+// block instead (the transcript keeps the original either way — rolling it
+// back would rewrite history the replies after it already answered).
 const editingUser = ref<string | null>(null);
 const editDraft = ref("");
 const editInput = ref<HTMLTextAreaElement | null>(null);
@@ -533,12 +541,16 @@ function cancelEditUser(): void {
   editDraft.value = "";
 }
 function saveEditUser(): void {
+  const blockId = editingUser.value;
   const text = editDraft.value.trim();
-  if (!text || props.busy) return;
+  if (!blockId || !text || props.busy) return;
   editingUser.value = null;
   editDraft.value = "";
   cue("press");
-  emit("resend", text);
+  // The last user turn is still replaceable by a follow-up; anything earlier
+  // has replies after it, so the edit branches the thread at that block.
+  if (blockId === lastUserBlockId.value) emit("resend", text);
+  else emit("edit-fork", blockId, text);
 }
 
 // ── a stored conversation whose transcript never arrived ─────────────────────
@@ -569,7 +581,8 @@ function dismissLoad(): void {
 // ── helpers ─────────────────────────────────────────────────────────────────────
 // The column's own root — `scroller` anchors on it to find the scroll container.
 const root = ref<HTMLElement | null>(null);
-// The last user block — the edit affordance keys off it (`lastUserBlockId`).
+// The last user block — saving an edit of it resends on this thread, while
+// saving an edit of any earlier block forks (`lastUserBlockId`).
 function lastUserBlock(): ThreadBlock | null {
   for (let i = props.blocks.length - 1; i >= 0; i--) {
     const b = props.blocks[i];
@@ -1113,7 +1126,6 @@ watch(
           </template>
           <template v-else>
             <button
-              v-if="block.id === lastUserBlockId"
               type="button"
               class="foot__copy"
               aria-label="Edit request"

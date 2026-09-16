@@ -67,6 +67,7 @@ import { buildAgentUsageReport } from "@kone/agent-core/usage/buildUsageReport.j
 import type {
   ApprovalDecision,
   CreateSideChatInput,
+  ForkThreadAtBlockInput,
   ProviderConfig,
   ProviderKind,
   RuntimeEvent,
@@ -536,6 +537,15 @@ export function registerAgentIpc(): void {
     }
     return result;
   });
+
+  // Edit-and-resend of an earlier user message (fork, never mutate). The
+  // renderer mints the fork's thread id + request id; a replay of the same
+  // creation resolves "exists" instead of forking twice or dispatching
+  // twice. The fork's first turn is dispatched before this resolves, so the
+  // renderer can open the fork onto a live turn.
+  ipcMain.handle("agent:fork-thread-at-block", (_event, input: ForkThreadAtBlockInput) =>
+    dispatcher.forkThreadTurn(input),
+  );
 
   ipcMain.handle("agent:send-turn", (_event, input: SendTurnInput) =>
     dispatcher.sendThreadTurn(input),

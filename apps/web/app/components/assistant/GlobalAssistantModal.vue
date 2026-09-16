@@ -268,6 +268,18 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
   if (!s) return;
   await s.sendQueuedEntryNow(entry);
 }
+
+/** Edit-and-resend of an earlier message: fork the thread at that block and
+ *  move the modal onto the fork. The source thread keeps the original
+ *  message and every reply after it, readable from the history list. */
+async function onEditFork(blockId: string, text: string): Promise<void> {
+  const s = session.value;
+  if (!s) return;
+  const forkId = await s.forkAtBlock(blockId, text);
+  if (!forkId) return;
+  await s.openStored(forkId);
+  void refreshThreads();
+}
 </script>
 
 <template>
@@ -477,6 +489,7 @@ async function onSendNow(entry: QueuedTurnEntry): Promise<void> {
               :older-error="session?.olderError.value"
               @retry="onSend"
               @resend="onSend"
+              @edit-fork="onEditFork"
               @retry-load="session ? session.openStored(session.threadId.value) : undefined"
               @load-older="session?.loadOlder()"
             />

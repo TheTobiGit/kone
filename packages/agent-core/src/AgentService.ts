@@ -41,6 +41,7 @@ import {
   writeProviderSettings,
 } from "./providerSettings.js";
 import { sidechatBootstrapForTurn } from "./sidechat.js";
+import { forkThreadForEdit } from "./editFork.js";
 import { subagentWakePrompt } from "./subagentWake.js";
 // Resolved at call time, not imported as a value binding: the dispatcher is
 // built after the service (it takes one), so at module load there is nothing to
@@ -52,6 +53,8 @@ import type {
   ChatAttachment,
   CompactThreadResult,
   EmitEvent,
+  ForkThreadAtBlockInput,
+  ForkThreadAtBlockResult,
   ModelDescriptor,
   ProviderAdapter,
   ProviderConfig,
@@ -2007,6 +2010,26 @@ export class AgentService {
   }
 
   // ── subagents (routed; no-op on providers without a nested-agent surface) ──
+
+  /** Fork a thread at one of its user blocks — edit-and-resend of an earlier
+   *  message. The fork copies the transcript prefix and journals the edited
+   *  text; dispatching its first turn is the caller's job (the dispatcher
+   *  starts the fork's session and sends it silent, so the bootstrap hands
+   *  the copied history to the model exactly once).
+   *
+   *  Refuses while the source thread has a turn in flight: forking would slice
+   *  a moving transcript, and the new turn would race the live one. The
+   *  renderer disables the affordance while busy; this is the second guard
+   *  for races. Queued follow-ups are NOT a refusal — they stay on the
+   *  source, and the fork branches from settled history only. */
+  forkThreadForEdit(input: ForkThreadAtBlockInput): ForkThreadAtBlockResult {
+    if (this.isBusy(input.sourceThreadId)) {
+      throw new Error(
+        "A turn is still running on this thread — wait for it to finish (or stop it) before editing an earlier message.",
+      );
+    }
+    return forkThreadForEdit(input);
+  }
 
   /** Stop one nested subagent run without ending the parent turn. */
   async stopSubagent(threadId: string, toolUseId: string): Promise<void> {

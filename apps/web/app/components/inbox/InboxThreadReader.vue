@@ -33,6 +33,9 @@ const emit = defineEmits<{
    *  composer. The portal owns what that means, so it arrives here rather
    *  than being answered in the pane. */
   "new-thread": [];
+  /** An earlier message was edited into a fork — the portal selects the fork
+   *  the ordinary way. */
+  "open-thread": [threadId: string];
 }>();
 
 const projectPath = computed(() => props.row.projectPath ?? null);
@@ -46,6 +49,7 @@ const projectPath = computed(() => props.row.projectPath ?? null);
     :project-path="projectPath"
     :session-key="sessionKey"
     @new-thread="emit('new-thread')"
+    @open-thread="(threadId) => emit('open-thread', threadId)"
   />
 
   <InboxThreadStored v-else :key="row.threadId" :row="row" />

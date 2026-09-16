@@ -32,6 +32,8 @@ import type {
   CompactionRecord,
   CreateSideChatInput,
   CreateSideChatResult,
+  ForkThreadAtBlockInput,
+  ForkThreadAtBlockResult,
   InteractionMode,
   ModelDescriptor,
   ProfileStats,
@@ -436,6 +438,12 @@ const api = {
     // renderer mints the thread id; a replayed id resolves "exists".
     createSideChat: (input: CreateSideChatInput): Promise<CreateSideChatResult> =>
       ipcRenderer.invoke("agent:create-side-chat", input),
+    // Edit-and-resend of an earlier user message: fork the thread at that
+    // block (the source is never mutated) and dispatch the fork's first turn
+    // from the edited text. The renderer mints the fork's ids; a replayed
+    // creation resolves "exists" without dispatching twice.
+    forkThreadAtBlock: (input: ForkThreadAtBlockInput): Promise<ForkThreadAtBlockResult> =>
+      ipcRenderer.invoke("agent:fork-thread-at-block", input),
     interrupt: (threadId: string): Promise<void> =>
       ipcRenderer.invoke("agent:interrupt", threadId),
     stopSession: (threadId: string): Promise<void> =>

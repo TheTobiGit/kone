@@ -13,6 +13,8 @@ import {
 } from "./threadTitle.js";
 import type {
   CompactThreadResult,
+  ForkThreadAtBlockInput,
+  ForkThreadAtBlockResult,
   ThreadWorkspaceStep,
   ProviderKind,
   RuntimeEvent,
@@ -125,6 +127,13 @@ export interface ThreadDispatcher {
     input: SendTurnInput,
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult>;
+  /** Fork a thread at one of its user blocks (edit-and-resend of an earlier
+   *  message) and immediately start a turn on the fork from the edited text.
+   *  The source thread is never mutated. Resolves with the fork's identity —
+   *  the renderer opens it. A dispatch failure after the fork row exists
+   *  still rejects, but the fork itself survives (the renderer minted its
+   *  id, so it can open the transcript and send manually). */
+  forkThreadTurn(input: ForkThreadAtBlockInput): Promise<ForkThreadAtBlockResult>;
   /** Trigger context compaction for a thread. Rejects when the thread is
    *  unknown, has no conversation to compact yet, or the provider supports no
    *  manual compaction — the service owns the busy / single-flight guards.
@@ -328,6 +337,30 @@ class ThreadDispatcherImpl implements ThreadDispatcher {
     options?: StartThreadTurnOptions,
   ): Promise<TurnStartResult> {
     return this.dispatchTurn(input, "steer", options);
+  }
+
+  /** Fork a thread at an earlier user block and start the fork's first turn
+   *  from the edited text. The service owns the fork (including the busy
+   *  refusal); this owns the session lifecycle around it: start the fork's
+   *  session from the source's provider/selection, then send the edited
+   *  message silent — the fork already journaled it, so this only dispatches,
+   *  and the one-shot bootstrap carries the copied prefix to the model. */
+  async forkThreadTurn(input: ForkThreadAtBlockInput): Promise<ForkThreadAtBlockResult> {
+    const created = this.service.forkThreadForEdit(input);
+    if (created.status === "exists") return created;
+    const meta = this.store.threadMeta(created.threadId);
+    if (!meta) throw new Error(`Fork thread ${created.threadId} not found after creation`);
+    const start: SessionStartInput = {
+      threadId: created.threadId,
+      provider: meta.provider,
+      cwd: meta.projectPath,
+    };
+    if (meta.model) start.model = meta.model;
+    if (meta.selection?.mode) start.mode = meta.selection.mode;
+    if (meta.selection?.effort) start.effort = meta.selection.effort;
+    await this.startThread(start);
+    await this.sendThreadTurn({ threadId: created.threadId, input: input.editedText }, { silent: true });
+    return created;
   }
 
   /** Manual context compaction for a thread: the service runs the provider's

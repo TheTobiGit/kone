@@ -8,8 +8,7 @@ import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
-import { LineageRepo } from "./store/lineage.js";
-import { TranscriptRepo } from "./store/transcript.js";
+import { LineageRepo, type ForkThreadAtBlockResult } from "./store/lineage.js";import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { EventIngestRepo } from "./store/events.js";
@@ -417,6 +416,19 @@ export class ConversationStore {
     }>;
   }): boolean {
     return this.lineage.writeForkThread(input);
+  }
+
+  /** @see LineageRepo */
+  forkThreadAtBlock(input: {
+    threadId: string;
+    sourceThreadId: string;
+    blockId: string;
+    editedText: string;
+    editedAt?: number;
+    editedBlockId?: string;
+    requestId?: string;
+  }): ForkThreadAtBlockResult {
+    return this.lineage.forkThreadAtBlock(input);
   }
 
   /** @see LineageRepo */

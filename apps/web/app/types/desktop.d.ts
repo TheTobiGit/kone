@@ -1036,6 +1036,38 @@ export type CreateSideChatResult = {
   status: "created" | "exists";
 };
 
+// ── edit-and-resend fork (mirror packages/agent-core/src/types.ts) ─────────
+// Editing an earlier user message forks the thread at that block instead of
+// mutating it: the prefix is copied verbatim, the edited text is journaled
+// as the fork's newest user block, and the fork's first turn dispatches
+// from it. The renderer mints threadId + requestId with the same
+// exactly-once semantics as side-chat creation.
+
+export type ForkThreadAtBlockInput = {
+  /** Caller-chosen idempotency key. Same requestId replayed with the same
+   *  threadId resolves "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new fork thread. */
+  threadId: string;
+  /** The thread holding the message being edited. */
+  sourceThreadId: string;
+  /** The source thread's user block being replaced. */
+  blockId: string;
+  /** The edited replacement text. */
+  editedText: string;
+};
+
+export type ForkThreadAtBlockResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** `"created"` = the fork was written and its first turn dispatched;
+   *  `"exists"` = a thread with this id was already there (idempotent replay
+   *  — the turn is not dispatched twice). */
+  status: "created" | "exists";
+};
+
 export type ApprovalDecision = "allow-once" | "allow-always" | "reject-once" | "reject-and-stop";
 
 // ── tool approvals (mirror packages/agent-core/src/types.ts) ──────────────────
@@ -1660,7 +1692,15 @@ export type ForkContext = {
   /** One-shot bootstrap flag: `"pending"` until the thread's first turn
    *  completes. Gates the `<sidechat_context>` injection. */
   bootstrapStatus: "pending" | "completed";
+  /** What kind of fork this is. Absent reads as `"side_chat"`. An `"edit"`
+   *  fork is a retry from an edited earlier message: its copied prefix is
+   *  real history shown in the timeline, and its first turn continues the
+   *  conversation. Mirrors packages/agent-core/src/types.ts. */
+  forkKind?: ForkKind;
 };
+
+/** The two user-initiated fork kinds. Mirrors packages/agent-core/src/types.ts. */
+export type ForkKind = "side_chat" | "edit";
 
 /** Where a stored block came from: a live conversation row (`"native"`) or a
  *  fork import (`"fork-import"`). Imported rows carry their original `at` and
@@ -2496,6 +2536,11 @@ export type KoneAgentApi = {
    *  `thread.sidechat-created`; its first send carries the imported-transcript
    *  bootstrap. */
   createSideChat: (input: CreateSideChatInput) => Promise<CreateSideChatResult>;
+  /** Fork a thread at one of its user blocks (edit-and-resend of an earlier
+   *  message). The renderer mints the fork's ids; a replayed creation
+   *  resolves "exists". The fork's first turn is dispatched before this
+   *  resolves, so the caller can open the fork onto a live turn. */
+  forkThreadAtBlock: (input: ForkThreadAtBlockInput) => Promise<ForkThreadAtBlockResult>;
   interrupt: (threadId: string) => Promise<void>;
   stopSession: (threadId: string) => Promise<void>;
   respond: (

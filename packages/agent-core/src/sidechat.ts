@@ -12,6 +12,7 @@ import type {
   StoredThread,
   ThreadLineage,
 } from "./types.js";
+import { isEditForkContext } from "./types.js";
 
 // Side chat creation + context handoff (docs/side-chat-design.md). A side chat
 // is a user-initiated child conversation forked from a parent thread: it
@@ -48,10 +49,25 @@ const BOOTSTRAP_CHAR_BUDGET = Math.floor(SIDECHAT_SEND_TURN_MAX_INPUT_CHARS * 0.
 
 const INTRO = "This sidechat was cloned from an earlier conversation.";
 
+/** Framing for an edit fork's replayed prefix: the copied transcript is the
+ *  conversation's real history up to the edit point — the model continues
+ *  from it — not reference material fenced off from the task. */
+const EDIT_FORK_INTRO =
+  "This thread continues an earlier conversation from an edited message. The transcript below is the conversation's real history up to the edit point.";
+
+export const EDIT_FORK_BOUNDARY_INSTRUCTION =
+  "Continue this conversation from the edited message below. Treat the transcript above as settled history — what was actually said and done — not as reference material. Answer the latest user message directly, building on that history.";
+
 /** The message a too-long first side-chat turn is rejected with, up front,
  *  than silently dropping context). */
 export const SIDECHAT_MESSAGE_TOO_LONG =
   "This message is too long to include the side chat's imported context. Shorten the message and retry.";
+
+/** The message a too-long first edit-fork turn is rejected with. The forked
+ *  history rides the first turn, so an overlong edited message cannot carry
+ *  it — the turn is rejected up front rather than silently dropping history. */
+export const EDIT_FORK_MESSAGE_TOO_LONG =
+  "This message is too long to include the forked conversation's history. Shorten the message and retry.";
 
 /** Collapse run-of-line whitespace so a long message stays a compact block
  */
@@ -105,8 +121,16 @@ function blockText(block: StoredBlock): string {
 export function buildSidechatForkContext(
   thread: Pick<StoredThread, "blocks" | "title" | "branch">,
   maxChars = BOOTSTRAP_CHAR_BUDGET,
+  intro = INTRO,
+  /** Which blocks replay as context. Defaults to fork-imported rows only —
+   *  a side chat's own turns are its live conversation, not its import. An
+   *  edit fork instead replays everything before its edited message (a
+   *  nested fork's intermediate edits are native rows, but they are still
+   *  history the continuation needs). */
+  includeBlock: (block: StoredBlock, index: number, blocks: StoredBlock[]) => boolean = (block) =>
+    block.source === "fork-import",
 ): string | null {
-  const imported = thread.blocks.filter((b) => b.source === "fork-import");
+  const imported = thread.blocks.filter(includeBlock);
   if (imported.length === 0) return null;
   const budget = Math.min(Math.max(0, maxChars), SIDECHAT_TRANSCRIPT_CHAR_BUDGET);
 
@@ -133,7 +157,7 @@ export function buildSidechatForkContext(
     parts.push(line);
     used += line.length + 1;
   };
-  push(INTRO);
+  push(intro);
   if (thread.title) push(`Original conversation title: ${thread.title}`);
   if (thread.branch) push(`Git branch: ${thread.branch}`);
 
@@ -222,26 +246,35 @@ export function buildSidechatForkContext(
 
 /** The `<latest_user_message>`-wrapped boundary block that rides every side
  *  chat's first turn, after the imported-context block. */
-function boundaryBlock(input: string): string {
-  return `<sidechat_boundary>\n${SIDECHAT_BOUNDARY_INSTRUCTION}\n</sidechat_boundary>\n<latest_user_message>\n${input}\n</latest_user_message>`;
+function boundaryBlock(input: string, instruction: string): string {
+  return `<sidechat_boundary>\n${instruction}\n</sidechat_boundary>\n<latest_user_message>\n${input}\n</latest_user_message>`;
 }
 
 /** Assemble the full first-turn prompt: imported context in
  *  `<sidechat_context>…</sidechat_context>`, then the boundary block with the
  *  user's message wrapped in `<latest_user_message>`. */
-export function assembleSidechatPreamble(context: string, input: string): string {
-  return `<sidechat_context>\n${context}\n</sidechat_context>\n\n${boundaryBlock(input)}`;
+export function assembleSidechatPreamble(
+  context: string,
+  input: string,
+  instruction: string = SIDECHAT_BOUNDARY_INSTRUCTION,
+): string {
+  return `<sidechat_context>\n${context}\n</sidechat_context>\n\n${boundaryBlock(input, instruction)}`;
 }
 
 /**
- * The one-shot bootstrap preamble for a side chat's first turn — the fully
+ * The one-shot bootstrap preamble for a fork's first turn — the fully
  * assembled input text (imported context + boundary + the user's message
- * wrapped), or null when no bootstrap applies (not a side chat, already
+ * wrapped), or null when no bootstrap applies (not a fork, already
  * consumed, or nothing to import).
  *
- * Throws {@link SIDECHAT_MESSAGE_TOO_LONG} when the imported context plus the
- * new message would exceed the send-turn cap — the turn is rejected up front
- * rather than silently dropping context.
+ * An edit fork replays its copied prefix the same way a side chat replays
+ * its import, but framed as continuation: the prefix is settled history the
+ * turn builds on, and the boundary names the edited message as the thing to
+ * answer. Side chats keep the reference-only framing.
+ *
+ * Throws when the imported context plus the new message would exceed the
+ * send-turn cap — the turn is rejected up front rather than silently
+ * dropping context.
  */
 export function sidechatBootstrapForTurn(threadId: string, input: string): string | null {
   const store = getConversationStore();
@@ -252,18 +285,28 @@ export function sidechatBootstrapForTurn(threadId: string, input: string): strin
 
   const thread = store.loadThread(threadId);
   if (!thread) return null;
-  const boundary = boundaryBlock(input);
+  const isEdit = isEditForkContext(ctx);
+  const instruction = isEdit ? EDIT_FORK_BOUNDARY_INSTRUCTION : SIDECHAT_BOUNDARY_INSTRUCTION;
+  const tooLong = isEdit ? EDIT_FORK_MESSAGE_TOO_LONG : SIDECHAT_MESSAGE_TOO_LONG;
+  const boundary = boundaryBlock(input, instruction);
   const available = SIDECHAT_SEND_TURN_MAX_INPUT_CHARS - boundary.length - 64;
   if (available <= 0) {
-    throw new Error(SIDECHAT_MESSAGE_TOO_LONG);
+    throw new Error(tooLong);
   }
-  const context = buildSidechatForkContext(thread, available);
+  const context = isEdit
+    ? buildSidechatForkContext(
+        thread,
+        available,
+        EDIT_FORK_INTRO,
+        (_block, index, blocks) => index < blocks.length - 1,
+      )
+    : buildSidechatForkContext(thread, available);
   if (!context) return null;
   // Double-check the assembled prompt fits the cap: the context block itself
   // is budgeted, but the wrapper adds a little on top.
-  const preamble = assembleSidechatPreamble(context, input);
+  const preamble = assembleSidechatPreamble(context, input, instruction);
   if (preamble.length > SIDECHAT_SEND_TURN_MAX_INPUT_CHARS) {
-    throw new Error(SIDECHAT_MESSAGE_TOO_LONG);
+    throw new Error(tooLong);
   }
   return preamble;
 }

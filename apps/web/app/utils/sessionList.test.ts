@@ -88,6 +88,18 @@ describe("summarizeSession — flatten a stored thread into a list row", () => {
     expect(summarizeSession(meta(), false).sideChat).toBe(false);
   });
 
+  test("an edit fork wears no side-chat badge", () => {
+    expect(
+      summarizeSession(
+        meta({
+          sourceThreadId: "thread-parent",
+          forkContext: { ...forkContext(), forkKind: "edit" },
+        }),
+        false,
+      ).sideChat,
+    ).toBe(false);
+  });
+
   test("carries projectPath/projectName only when a project tag is passed", () => {
     const tagged = summarizeSession(meta(), false, { projectPath: "/other", projectName: "Other" });
     expect(tagged.projectPath).toBe("/other");

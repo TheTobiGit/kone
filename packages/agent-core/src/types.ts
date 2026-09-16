@@ -762,6 +762,54 @@ export type ForkContext = {
    *  (see sidechat.ts) so the imported transcript is handed to the model
    *  exactly once. */
   bootstrapStatus: "pending" | "completed";
+  /** What kind of fork this is. Absent reads as `"side_chat"` — every row
+   *  written before the field existed is one. An `"edit"` fork is a retry
+   *  from an edited earlier message: its copied prefix is real history shown
+   *  in the timeline (never hidden like side-chat reference context), and its
+   *  first turn continues the conversation rather than starting a bounded
+   *  side investigation. */
+  forkKind?: ForkKind;
+};
+
+/** The two user-initiated fork kinds. `"side_chat"` borrows the transcript as
+ *  reference-only context for a bounded side investigation; `"edit"` rewinds
+ *  to an earlier user message and continues from an edited replacement. */
+export type ForkKind = "side_chat" | "edit";
+
+/** Whether a stored fork context marks an edit-and-resend retry rather than a
+ *  side chat. Absent `forkKind` is always a side chat. */
+export function isEditForkContext(context: ForkContext | null | undefined): boolean {
+  return context?.forkKind === "edit";
+}
+
+/** Fork a thread at one of its user blocks (edit-and-resend of an earlier
+ *  message). The renderer mints the fork's thread id; blocks 1..N-1 are
+ *  copied verbatim into it and the edited text is journaled as its newest
+ *  user block, so the source thread is never mutated. The fork's first turn
+ *  is dispatched right after creation. */
+export type ForkThreadAtBlockInput = {
+  /** Caller-chosen idempotency key. The same requestId replayed with the same
+   *  threadId resolves as "exists"; replayed with a different threadId is an
+   *  idempotency conflict. */
+  requestId: string;
+  /** Renderer-minted id for the new fork thread. */
+  threadId: string;
+  /** The thread holding the message being edited. */
+  sourceThreadId: string;
+  /** The source thread's user block being replaced. */
+  blockId: string;
+  /** The edited replacement text. */
+  editedText: string;
+};
+
+export type ForkThreadAtBlockResult = {
+  requestId: string;
+  threadId: string;
+  sourceThreadId: string;
+  /** `"created"` = the fork was written and its first turn dispatched;
+   *  `"exists"` = a thread with this id was already there (idempotent replay
+   *  of the same creation — the turn is not dispatched twice). */
+  status: "created" | "exists";
 };
 
 /** Where a stored block came from: a live conversation row (`"native"`) or a
@@ -1300,6 +1348,10 @@ export type RuntimeEvent =
   // The renderer applies the new themeId, mode, or preview overrides in real-time.
   | (BaseEvent & {
       type: "app.theme_mutation";
+      /** The turn the tool call ran in, which is what lets a transcript place
+       *  the change against the call that made it rather than guessing from
+       *  arrival order. Null when the write ran turn-less. */
+      turnId?: string | null;
       themeId?: string;
       mode?: "system" | "dark" | "light";
       preview?: boolean;
