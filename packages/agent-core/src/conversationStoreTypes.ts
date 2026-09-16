@@ -1,4 +1,5 @@
 import type { JsonObject } from "@kone/agent-core/lib-jsonValue.js";
+import { decodeChunkArray, decodeStoredText } from "./store/itemTextChunks.js";
 import type {
   BlockSource,
   ChatAttachment,
@@ -302,6 +303,13 @@ export type ItemRow = {
   kind: string;
   status: string;
   text: string;
+  /** Encoded fallback for the base text when the raw column cannot round-trip
+   *  it (embedded NUL, unpaired surrogate) — null in the common case. */
+  text_json: string | null;
+  /** Pending streaming chunks, present only when the row was read with the
+   *  chunk-array expression (see itemChunkArraySql): a JSON array of the
+   *  JSON-encoded deltas in sequence order, '[]' when settled. */
+  chunk_text?: string | null;
   name: string | null;
   detail: string | null;
   tasks_json: string | null;
@@ -461,7 +469,12 @@ export function rowToItem(row: ItemRow): RuntimeItem {
     itemId: row.item_id,
     kind: row.kind as RuntimeItem["kind"],
     status: row.status as RuntimeItem["status"],
-    text: row.text,
+    // The full text is the settled base (preferring the encoded fallback
+    // when the raw column cannot round-trip it) plus the pending streaming
+    // chunks, which the read query aggregated in sequence order — '[]' when
+    // the row was read without the chunk expression or the item is settled,
+    // so every caller sees the same bytes the writer streamed.
+    text: decodeStoredText(row.text, row.text_json) + decodeChunkArray(row.chunk_text ?? null),
     name: row.name ?? undefined,
     detail: row.detail ?? undefined,
   };
