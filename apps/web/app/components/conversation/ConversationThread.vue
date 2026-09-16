@@ -26,6 +26,7 @@ import SphereFace from "~/components/agent/SphereFace.vue";
 import ExchangeConnector from "~/components/ui/ExchangeConnector.vue";
 import CompactionMarker from "~/components/conversation/CompactionMarker.vue";
 import { agentIdentity } from "~/utils/agentIdentity";
+import { takeSearchJumpFor } from "~/composables/useSearchJump";
 import { dayKey, formatDayDivider } from "~/utils/threadDates";
 import { renderGroups, segText, type RenderGroup, type Segment } from "~/utils/conversationSegments";
 import type { TranscriptMode } from "~/utils/transcriptMode";
@@ -719,6 +720,67 @@ function requestOlder(): void {
   emit("load-older");
 }
 
+// ── arriving from conversation search ───────────────────────────────────────
+// A search hit opens its thread and names one old row to land on. The target
+// waits in the jump state (see useSearchJump) keyed by thread id — claimed
+// here when this column shows that thread, never anywhere else.
+//
+// Landing must expand the window, not fight it: the open window above mounts
+// only a suffix, so the target row is very likely unmounted. Expanding mounts
+// everything already in hand; when the row still isn't there and the store
+// holds an older page, the same load-older affordance above pages it in — a
+// few pages at most, then the thread opens at its newest rather than spinning
+// forever on a row that is gone.
+const searchFlash = ref<string | null>(null);
+const pendingJumpBlock = ref<string | null>(null);
+let jumpPageAttempts = 0;
+const JUMP_MAX_PAGES = 12;
+
+function revealSearchBlock(): void {
+  const blockId = pendingJumpBlock.value;
+  if (!blockId || !import.meta.client) return;
+  // SAFETY: querySelector takes a selector string; the id is escaped so a
+  // hostile block id can only ever match nothing, never break out of it.
+  const el = root.value?.querySelector(`[data-turn-id="${CSS.escape(blockId)}"]`);
+  if (el) {
+    pendingJumpBlock.value = null;
+    initialScrollDoneFor.value = threadKey();
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    searchFlash.value = blockId;
+    window.setTimeout(() => {
+      if (searchFlash.value === blockId) searchFlash.value = null;
+    }, 2600);
+    return;
+  }
+  if (props.hasOlder && !props.loadingOlder && jumpPageAttempts < JUMP_MAX_PAGES) {
+    jumpPageAttempts += 1;
+    emit("load-older");
+    return;
+  }
+  if (!props.hasOlder || jumpPageAttempts >= JUMP_MAX_PAGES) pendingJumpBlock.value = null;
+}
+
+function claimSearchJump(): void {
+  const tid = props.threadId;
+  if (!tid || !import.meta.client) return;
+  const jump = takeSearchJumpFor(tid);
+  if (!jump) return;
+  jumpPageAttempts = 0;
+  pendingJumpBlock.value = jump.blockId;
+  // The target is old by definition — mount everything in hand before looking.
+  showAllExchanges.value = true;
+  void nextTick(() => revealSearchBlock());
+}
+
+watch(
+  () => props.threadId,
+  () => {
+    searchFlash.value = null;
+    pendingJumpBlock.value = null;
+    claimSearchJump();
+  },
+);
+
 // ── top-anchored turn staging & streaming follow ──────────────────────────────
 // When the user submits a new request in a thread with history, we stage that
 // new exchange right at the top of the viewport (where the first request of a
@@ -777,6 +839,9 @@ function threadKey(): string {
 
 function doInitialScroll(): void {
   if (!import.meta.client) return;
+  // A search arrival lands on its row, not on the newest turn — the reveal
+  // above owns the scroll until its target is found or given up on.
+  if (pendingJumpBlock.value) return;
   const key = threadKey();
   if (initialScrollDoneFor.value === key) return;
   if (props.blocks.length === 0) return;
@@ -805,6 +870,7 @@ onMounted(() => {
       window.removeEventListener("keydown", onLightboxKeydown);
     }
   };
+  claimSearchJump();
   doInitialScroll();
 });
 
@@ -818,6 +884,8 @@ watch(
 watch(
   () => props.blocks.length,
   () => {
+    // A paged-in older page may have carried the search target — look again.
+    if (pendingJumpBlock.value) void nextTick(() => revealSearchBlock());
     doInitialScroll();
   },
 );
@@ -963,6 +1031,7 @@ watch(
         block.role === 'user' ? 'turn--you' : 'turn--kone',
         block.role === 'assistant' && block.state !== 'running' ? 'turn--settled' : '',
         block.role === 'assistant' && flash[block.id] ? 'turn--flash' : '',
+        block.id === searchFlash ? 'turn--search-flash' : '',
       ]"
       :initial="block.historical ? false : { opacity: 0, y: 14, x: block.role === 'user' ? 18 : -6 }"
       :animate="{ opacity: 1, y: 0, x: 0 }"
@@ -1591,6 +1660,14 @@ watch(
 }
 .turn--you {
   align-items: flex-end;
+}
+/* The row a conversation-search hit landed on: a quiet accent ring that fades
+   with the flash timer. An outline rather than a wash — the row keeps its own
+   surface and the mark reads as an arrival, not a selection. */
+.turn--search-flash {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 6px;
+  border-radius: 12px;
 }
 
 /* ── The turn's body stack ─────────────────────────────────────────────────── */
