@@ -170,14 +170,14 @@ function tableNames(db: Database): string[] {
 }
 
 describe("v1 baseline migration and schema", () => {
-  test("fresh DB opens at SCHEMA_VERSION = 5 with all baseline tables, columns, and indexes", () => {
+  test("fresh DB opens at SCHEMA_VERSION = 6 with all baseline tables, columns, and indexes", () => {
     const store = freshStore();
     store.ensureThread({ threadId: "t-1", projectPath: "/p", provider: "opencode" });
     const raw = rawDb();
     // SAFETY: SQLite answers this PRAGMA with one row whose only column is user_version.
     const version = raw.prepare("PRAGMA user_version").get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(version.user_version).toBe(5);
+    expect(version.user_version).toBe(6);
 
     const threads = columnNames(raw, "threads");
     for (const col of [
@@ -213,6 +213,7 @@ describe("v1 baseline migration and schema", () => {
       "app_state",
       "schema_migrations",
       "compactions",
+      "turn_checkpoints",
     ]) {
       expect(tables).toContain(table);
     }
@@ -227,6 +228,7 @@ describe("v1 baseline migration and schema", () => {
       { migration_id: 3, name: "Compactions" },
       { migration_id: 4, name: "ThreadWorkspace" },
       { migration_id: 5, name: "RequestedBranch" },
+      { migration_id: 6, name: "TurnCheckpoints" },
     ]);
 
     const idx = raw
@@ -2527,5 +2529,119 @@ describe("thread workspace", () => {
     expect(store.isWorktreePathReferenced("/wt/shared")).toBe(true);
     expect(store.deleteThread("w-kept")).toEqual({ ok: true });
     expect(store.isWorktreePathReferenced("/wt/shared")).toBe(false);
+  });
+});
+
+describe("turn checkpoints (v6)", () => {
+  test("record + get round-trips a (thread, turn) → ref row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "cp-1", projectPath: "/p", provider: "opencode" });
+    expect(
+      store.recordTurnCheckpoint({
+        threadId: "cp-1",
+        turnId: "turn-1",
+        checkpointId: "ck-1",
+        ref: "refs/kone/checkpoints/ck-1",
+        createdAt: 100,
+      }),
+    ).toBe(true);
+    expect(store.getTurnCheckpoint("cp-1", "turn-1")).toEqual({
+      threadId: "cp-1",
+      turnId: "turn-1",
+      checkpointId: "ck-1",
+      ref: "refs/kone/checkpoints/ck-1",
+      createdAt: 100,
+    });
+    expect(store.getTurnCheckpoint("cp-1", "nope")).toBeNull();
+  });
+
+  test("a second record for the same turn keeps the first row", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "cp-2", projectPath: "/p", provider: "opencode" });
+    expect(
+      store.recordTurnCheckpoint({
+        threadId: "cp-2",
+        turnId: "turn-1",
+        checkpointId: "ck-first",
+        ref: "refs/kone/checkpoints/ck-first",
+        createdAt: 100,
+      }),
+    ).toBe(true);
+    expect(
+      store.recordTurnCheckpoint({
+        threadId: "cp-2",
+        turnId: "turn-1",
+        checkpointId: "ck-second",
+        ref: "refs/kone/checkpoints/ck-second",
+        createdAt: 200,
+      }),
+    ).toBe(false);
+    expect(store.getTurnCheckpoint("cp-2", "turn-1")?.checkpointId).toBe("ck-first");
+  });
+
+  test("list returns a thread's checkpoints oldest first", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "cp-3", projectPath: "/p", provider: "opencode" });
+    for (const [turn, at] of [["t3", 300], ["t1", 100], ["t2", 200]] as const) {
+      store.recordTurnCheckpoint({
+        threadId: "cp-3",
+        turnId: turn,
+        checkpointId: `ck-${turn}`,
+        ref: `refs/kone/checkpoints/ck-${turn}`,
+        createdAt: at,
+      });
+    }
+    expect(store.listTurnCheckpoints("cp-3").map((r) => r.turnId)).toEqual(["t1", "t2", "t3"]);
+    expect(store.listTurnCheckpoints("nobody")).toEqual([]);
+  });
+
+  test("delete drops the row and returns it for ref cleanup", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "cp-4", projectPath: "/p", provider: "opencode" });
+    store.recordTurnCheckpoint({
+      threadId: "cp-4",
+      turnId: "turn-1",
+      checkpointId: "ck-1",
+      ref: "refs/kone/checkpoints/ck-1",
+      createdAt: 100,
+    });
+    expect(store.deleteTurnCheckpoint("cp-4", "turn-1")?.checkpointId).toBe("ck-1");
+    expect(store.getTurnCheckpoint("cp-4", "turn-1")).toBeNull();
+    expect(store.deleteTurnCheckpoint("cp-4", "turn-1")).toBeNull();
+  });
+
+  test("prune keeps the newest rows and returns the evicted ones", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "cp-5", projectPath: "/p", provider: "opencode" });
+    for (let i = 1; i <= 5; i++) {
+      store.recordTurnCheckpoint({
+        threadId: "cp-5",
+        turnId: `turn-${i}`,
+        checkpointId: `ck-${i}`,
+        ref: `refs/kone/checkpoints/ck-${i}`,
+        createdAt: i * 100,
+      });
+    }
+    const evicted = store.pruneTurnCheckpoints("cp-5", 2);
+    expect(evicted.map((r) => r.turnId)).toEqual(["turn-1", "turn-2", "turn-3"]);
+    expect(store.listTurnCheckpoints("cp-5").map((r) => r.turnId)).toEqual([
+      "turn-4",
+      "turn-5",
+    ]);
+    expect(store.pruneTurnCheckpoints("cp-5", 10)).toEqual([]);
+  });
+
+  test("checkpoint rows die with their thread", () => {
+    const store = freshStore();
+    store.ensureThread({ threadId: "cp-6", projectPath: "/p", provider: "opencode" });
+    store.recordTurnCheckpoint({
+      threadId: "cp-6",
+      turnId: "turn-1",
+      checkpointId: "ck-1",
+      ref: "refs/kone/checkpoints/ck-1",
+      createdAt: 100,
+    });
+    expect(store.deleteThread("cp-6")).toEqual({ ok: true });
+    expect(store.listTurnCheckpoints("cp-6")).toEqual([]);
   });
 });

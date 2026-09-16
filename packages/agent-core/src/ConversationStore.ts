@@ -8,6 +8,7 @@ import { StatsRepo } from "./store/stats.js";
 import { SubagentPresetRepo } from "./store/subagentPresets.js";
 import { ThreadLifecycleRepo } from "./store/threadLifecycle.js";
 import { QueuedTurnRepo } from "./store/queuedTurns.js";
+import { TurnCheckpointRepo } from "./store/turnCheckpoints.js";
 import { LineageRepo } from "./store/lineage.js";
 import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
@@ -16,7 +17,7 @@ import { EventIngestRepo } from "./store/events.js";
 import type { ChatAttachment, CompactionRecord, ForkContext, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnSpan } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnCheckpointRecord, type TurnSpan } from "./conversationStoreTypes.js";
 import { type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -33,6 +34,7 @@ export class ConversationStore {
   private readonly subagentPresets: SubagentPresetRepo;
   private readonly threadLifecycle: ThreadLifecycleRepo;
   private readonly queuedTurns: QueuedTurnRepo;
+  private readonly turnCheckpoints: TurnCheckpointRepo;
   private readonly lineage: LineageRepo;
   private readonly transcript: TranscriptRepo;
   private readonly roster: RosterRepo;
@@ -61,6 +63,7 @@ export class ConversationStore {
     });
     this.transcript = new TranscriptRepo(this.dbh);
     this.queuedTurns = new QueuedTurnRepo(this.dbh);
+    this.turnCheckpoints = new TurnCheckpointRepo(this.dbh);
     this.roster = new RosterRepo(this.dbh);
     this.subagentPresets = new SubagentPresetRepo(this.dbh);
     this.scratchpads = new ScratchpadRepo(this.dbh);
@@ -227,6 +230,37 @@ export class ConversationStore {
   /** @see QueuedTurnRepo */
   listQueuedTurns(threadId: string): QueuedTurnRow[] {
     return this.queuedTurns.listQueuedTurns(threadId);
+  }
+
+  /** @see TurnCheckpointRepo */
+  recordTurnCheckpoint(input: {
+    threadId: string;
+    turnId: string;
+    checkpointId: string;
+    ref: string;
+    createdAt?: number;
+  }): boolean {
+    return this.turnCheckpoints.recordTurnCheckpoint(input);
+  }
+
+  /** @see TurnCheckpointRepo */
+  getTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null {
+    return this.turnCheckpoints.getTurnCheckpoint(threadId, turnId);
+  }
+
+  /** @see TurnCheckpointRepo */
+  listTurnCheckpoints(threadId: string): TurnCheckpointRecord[] {
+    return this.turnCheckpoints.listTurnCheckpoints(threadId);
+  }
+
+  /** @see TurnCheckpointRepo */
+  deleteTurnCheckpoint(threadId: string, turnId: string): TurnCheckpointRecord | null {
+    return this.turnCheckpoints.deleteTurnCheckpoint(threadId, turnId);
+  }
+
+  /** @see TurnCheckpointRepo */
+  pruneTurnCheckpoints(threadId: string, keep: number): TurnCheckpointRecord[] {
+    return this.turnCheckpoints.pruneTurnCheckpoints(threadId, keep);
   }
 
   /** @see EventIngestRepo */
