@@ -13,10 +13,11 @@ import { TranscriptRepo } from "./store/transcript.js";
 import { RosterRepo } from "./store/roster.js";
 import { ThreadRepo } from "./store/threads.js";
 import { EventIngestRepo } from "./store/events.js";
+import { SearchRepo } from "./store/search.js";
 import type { ChatAttachment, CompactionRecord, ForkContext, InteractionMode, ProfileStats, ProviderKind, RuntimeEvent, StoredThread, StoredThreadMeta, ThreadLineage } from "./types.js";
 import type { UsageRange } from "./usage/report.js";
 import { type AgentCreateInput, type AgentDuplicateInput, type AgentPatch, type AgentRecord, type NativeSubagentConfig, type NativeSubagentConfigPatch, type SubagentPresetCreateInput, type SubagentPresetPatch, type SubagentPresetRecord, type ThreadAgentBinding } from "./rosterRecord.js";
-import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnSpan } from "./conversationStoreTypes.js";
+import { type QueuedTurnEnqueueInput, type QueuedTurnRow, type ScratchpadRecord, type StoredAttachment, type StoredStudioLayout, type StoredThreadPage, type TurnSpan, type ConversationSearchHit, type ConversationSearchOptions } from "./conversationStoreTypes.js";
 import { type ThreadEnvMode, type ThreadWorkspace } from "./threadWorkspace.js";
 import { GLOBAL_ASSISTANT_PROJECT_PATH } from "./conversationStoreTypes.js";
 
@@ -38,6 +39,7 @@ export class ConversationStore {
   private readonly roster: RosterRepo;
   private readonly threads: ThreadRepo;
   private readonly events: EventIngestRepo;
+  private readonly search: SearchRepo;
 
   /** @param userDataDir per-user state dir; defaults to the one the host
    *  injected at startup (see userDataDir.ts). Tests pass a temp dir. */
@@ -67,6 +69,7 @@ export class ConversationStore {
     this.gatewayOps = new GatewayOpRepo(this.dbh);
     this.studio = new StudioRepo(this.dbh);
     this.stats = new StatsRepo(this.dbh);
+    this.search = new SearchRepo(this.dbh);
   }
 
   /** @see ThreadRepo */
@@ -668,6 +671,11 @@ export class ConversationStore {
   /** @see StudioRepo */
   saveStudio(layout: StoredStudioLayout): { savedAt: number } | null {
     return this.studio.saveStudio(layout);
+  }
+
+  /** @see SearchRepo */
+  searchConversations(query: string, options?: ConversationSearchOptions): ConversationSearchHit[] {
+    return this.search.searchConversations(query, options);
   }
 
   /** @see ConversationDb */

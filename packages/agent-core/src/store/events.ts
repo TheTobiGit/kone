@@ -4,6 +4,7 @@ import { cleanCompactedCount } from "../types.js";
 import type { CompactionRecord, RuntimeEvent, TokenUsage } from "../types.js";
 import type { TokenUsageSplits } from "../usage/report.js";
 import { assistantBlockId, withTransaction } from "../conversationMigrations.js";
+import { indexItemRow, indexTurnRows, parentBlockIdForTurn } from "./search.js";
 
 /** Narrow collaborators owned by other repos, injected so ingest never reaches back. */
 export type EventIngestDeps = {
@@ -192,6 +193,23 @@ export class EventIngestRepo {
             it.tasks?.length ? JSON.stringify(it.tasks) : null,
             event.subagentToolUseId ?? null,
           );
+          // Index on completion only, never on started/updated: `updated`
+          // fires per text delta, so indexing here would rewrite the FTS row
+          // thousands of times a turn for text the next delta supersedes. A
+          // settled item's text is final, and the turn-settle re-sync below
+          // backfills anything that never completed on its own.
+          if (event.type === "item.completed") {
+            indexItemRow(db, {
+              threadId: event.threadId,
+              turnId: event.turnId,
+              itemId: it.itemId,
+              blockId: parentBlockIdForTurn(db, event.threadId, event.turnId),
+              at: event.at,
+              text: it.text,
+              name: it.name ?? null,
+              detail: it.detail ?? null,
+            });
+          }
           break;
         }
         case "subagent.started":
@@ -265,6 +283,10 @@ export class EventIngestRepo {
             });
           });
           this.deps.touch(db, event.threadId, event.at);
+          // The turn's text is final now — re-sync the whole turn so items
+          // that streamed without their own completion still land in the
+          // index. One pass per turn, not per delta.
+          indexTurnRows(db, event.threadId, event.turnId);
           break;
         }
         case "turn.aborted": {
@@ -282,6 +304,9 @@ export class EventIngestRepo {
             );
           });
           this.deps.touch(db, event.threadId, event.at);
+          // Same settle re-sync as the completed path: failed text is still
+          // text worth finding.
+          indexTurnRows(db, event.threadId, event.turnId);
           break;
         }
         case "thread.token-usage.updated": {
@@ -375,10 +400,24 @@ export class EventIngestRepo {
         case "session.exited": {
           // Seal any turn left running when the process died — mirrors the
           // renderer marking in-flight assistant blocks as failed.
+          // SAFETY: the projection names only the live items' turn ids, read
+          // before the seal so the index re-sync below can name its turns.
+          const liveTurns = db
+            .prepare(
+              `SELECT DISTINCT turn_id FROM items
+                WHERE thread_id = ? AND status = 'in-progress'`,
+            )
+            .all(event.threadId) as Array<{ turn_id: string }>;
           db.prepare(
             `UPDATE blocks SET state = 'failed', ended_at = ?
              WHERE thread_id = ? AND role = 'assistant' AND state = 'running'`,
           ).run(event.at, event.threadId);
+          // The sealed turns never complete, so they never pass through the
+          // settle re-sync — index their final text here, bounded to the
+          // turns that were actually live.
+          for (const turn of liveTurns) {
+            indexTurnRows(db, event.threadId, turn.turn_id);
+          }
           break;
         }
         case "thread.state.changed": {
