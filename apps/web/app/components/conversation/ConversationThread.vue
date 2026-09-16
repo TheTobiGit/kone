@@ -20,6 +20,7 @@ import MarkdownMessage from "~/components/markdown/MarkdownMessage.vue";
 import FileChip from "~/components/git-space/FileChip.vue";
 import AgentActivity from "~/components/agent/AgentActivity.vue";
 import TurnWorkFold from "~/components/turn/TurnWorkFold.vue";
+import TurnThemeReceipts from "~/components/turn/TurnThemeReceipts.vue";
 import TurnStatusLine from "~/components/turn/TurnStatusLine.vue";
 import AgentFace from "~/components/agent/AgentFace.vue";
 import SphereFace from "~/components/agent/SphereFace.vue";
@@ -1348,6 +1349,17 @@ watch(
             >
               <MarkdownMessage class="answer" :source="segText(grp.seg)" :historical="block.historical" />
             </div>
+            <!-- An appearance change the turn made is still in force whether or
+                 not its work is folded away, and the control that takes it back
+                 belongs with the reply that announced it — so it stands here in
+                 either state. The step row inside the fold reads the same change
+                 the other way, against the call that made it. -->
+            <TurnThemeReceipts
+              class="turn-themes"
+              :items="block.items"
+              :thread-id="threadId"
+              :turn-id="block.turnId"
+            />
           </template>
 
           <!-- Failure note — the error plus Retry (re-sends the request that
@@ -1975,6 +1987,9 @@ watch(
 
 /* Failed turn — the red note plus its action row, mirroring the turn footer's
    quiet mono actions. */
+.turn-themes {
+  margin-top: 1px;
+}
 .turn-fail {
   display: flex;
   flex-direction: column;

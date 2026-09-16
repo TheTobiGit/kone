@@ -322,6 +322,44 @@ describe("appTheme tools", () => {
       }
     });
 
+    // The summary is what is stored against the call and read back later — by an
+    // agent resuming the thread, and by the thread's own transcript. A change
+    // that names only where it landed cannot be read back as a change at all.
+    it("app_set_theme names the theme it replaced in its summary", async () => {
+      const registry = createRegistry(
+        rosterTools({
+          readAppearance: () => ({
+            themeId: "moss",
+            themeLabel: "Moss",
+            mode: "dark",
+            scheme: "dark",
+            locked: false,
+          }),
+        }),
+      );
+
+      const res = await registry.call(makeCtx(), "app_set_theme", { themeId: "nocturne" });
+      expect(res.content[0]?.text).toContain('Applied theme "Nocturne" (nocturne)');
+      expect(res.content[0]?.text).toContain('replacing "Moss" (moss)');
+    });
+
+    it("app_set_theme names no replacement when the theme is already the one on screen", async () => {
+      const registry = createRegistry(
+        rosterTools({
+          readAppearance: () => ({
+            themeId: "nocturne",
+            themeLabel: "Nocturne",
+            mode: "dark",
+            scheme: "dark",
+            locked: false,
+          }),
+        }),
+      );
+
+      const res = await registry.call(makeCtx(), "app_set_theme", { themeId: "nocturne" });
+      expect(res.content[0]?.text).not.toContain("replacing");
+    });
+
     // A theme the agent made itself has to be re-applicable by name afterwards.
     it("app_set_theme applies a custom theme the library reported", async () => {
       const emitted: RuntimeEvent[] = [];

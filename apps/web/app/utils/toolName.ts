@@ -27,6 +27,12 @@ export function canonicalToolName(rawName: string | undefined): string {
     key = key.slice("kone__".length);
   }
   while (key.startsWith("kone_kone_")) key = key.slice("kone_".length);
+  // The app-steering tools are the one family whose own names do NOT start with
+  // the server's, so a CLI that joins server and tool with a single underscore
+  // leaves `kone_app_set_theme` — a spelling the unwrapping above cannot reach,
+  // since it is indistinguishable in shape from a real `kone_`-prefixed tool.
+  // Only the `app_` head tells them apart, and no tool on the server carries it.
+  if (key.startsWith("kone_app_")) key = key.slice("kone_".length);
   return key;
 }
 

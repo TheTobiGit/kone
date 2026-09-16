@@ -17,6 +17,11 @@ import {
   GatewayToolError,
   type GatewayValue,
 } from "../schemas.js";
+import {
+  formatCustomThemeCreated,
+  formatModeApplied,
+  formatThemeApplied,
+} from "@kone/protocol/theme-summary";
 import type { GatewayToolContext, GatewayToolResult, ToolEntry } from "../registry.js";
 import { squash } from "../helpers.js";
 
@@ -420,6 +425,7 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
     if (emit) {
       const mutationEvent: Extract<RuntimeEvent, { type: "app.theme_mutation" }> = {
         threadId: ctx.threadId,
+        turnId: ctx.turnId,
         provider: ctx.provider,
         at: Date.now(),
         source: "kone.store",
@@ -432,11 +438,24 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
       emit(mutationEvent);
     }
 
-    const applied = targetTheme
-      ? `theme "${targetTheme.label}" (${targetTheme.id})`
-      : "appearance mode";
-    const scheme = resolvedScheme ? ` (${resolvedScheme} scheme)` : "";
-    const summary = `Applied ${applied}${appliedMode ? ` in ${appliedMode} mode` : ""}${scheme}.`;
+    // What it replaced belongs in the sentence, not only in structuredContent:
+    // the summary is the part that is stored against the call and read back
+    // later, by the agent resuming this thread and by the thread's own UI. A
+    // change that cannot say what it displaced can only ever be reported as
+    // where things ended up. Both halves of that sentence live in
+    // @kone/protocol/theme-summary, which is also what reads it back.
+    const replaced =
+      targetTheme && previous.known && previous.themeId && previous.themeId !== targetTheme.id
+        ? { id: previous.themeId, label: previous.themeLabel ?? previous.themeId }
+        : null;
+    const summary = targetTheme
+      ? formatThemeApplied({
+          applied: { id: targetTheme.id, label: targetTheme.label },
+          mode: appliedMode ?? null,
+          scheme: resolvedScheme,
+          replaced,
+        })
+      : formatModeApplied(appliedMode ?? "system", resolvedScheme);
 
     return {
       content: [
@@ -482,6 +501,7 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
     if (emit) {
       const previewEvent: Extract<RuntimeEvent, { type: "app.theme_mutation" }> = {
         threadId: ctx.threadId,
+        turnId: ctx.turnId,
         provider: ctx.provider,
         at: Date.now(),
         source: "kone.store",
@@ -521,6 +541,7 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
     if (emit) {
       const customThemeEvent: Extract<RuntimeEvent, { type: "app.theme_mutation" }> = {
         threadId: ctx.threadId,
+        turnId: ctx.turnId,
         provider: ctx.provider,
         at: Date.now(),
         source: "kone.store",
@@ -539,7 +560,16 @@ export function createAppThemeTools(options: AppThemeToolOptions): ToolEntry[] {
       emit(customThemeEvent);
     }
 
-    const summary = `Created and applied custom theme "${params.label}" (\`${params.id}\`) with accent ${params.accent}.`;
+    const previous = currentState();
+    const replaced =
+      previous.known && previous.themeId && previous.themeId !== params.id
+        ? { id: previous.themeId, label: previous.themeLabel ?? previous.themeId }
+        : null;
+    const summary = formatCustomThemeCreated(
+      { id: params.id, label: params.label },
+      params.accent,
+      replaced,
+    );
 
     return {
       content: [{ type: "text", text: summary }],
