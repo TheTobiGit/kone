@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 import type {
   AgentRecord,
+  ConversationSearchHit,
+  ConversationSearchOptions,
   QueuedTurnRow,
   ScratchpadRecord,
   StoredStudioLayout,
@@ -493,6 +495,11 @@ const api = {
         options?: { archived?: boolean },
       ): Promise<StoredThreadMeta[]> =>
         ipcRenderer.invoke("agent:history-list", projectPath, options),
+      // Full-text search over stored conversation text (user prompts + turn
+      // items), ranked with a snippet per hit. Global, or scoped to one
+      // thread via options.threadId. Empty input answers empty.
+      search: (query: string, options?: ConversationSearchOptions): Promise<ConversationSearchHit[]> =>
+        ipcRenderer.invoke("agent:search-conversations", query, options),
       // Hide a thread from the recent list (recoverable), or destroy it outright.
       // Hides (or restores) a thread and its spawned subtree. Returns the
       // store's outcome — a busy refusal (a spawned descendant mid-turn) comes
