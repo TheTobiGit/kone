@@ -63,6 +63,16 @@ export function threadExportBlockedMessage(code: ThreadExportBlockedCode): strin
   }
 }
 
+// ── save dialog ───────────────────────────────────────────────────────────────
+// The native save dialog runs in the desktop main process; the renderer only
+// suggests a file name. A dismissal resolves `{ canceled: true }` —
+// deliberately a different shape from the file outcome below, so a caller can
+// tell "picked nothing" apart from "wrote nothing".
+
+export type ThreadExportDialogResult =
+  | { canceled: true }
+  | { canceled: false; filePath: string };
+
 // ── JSON transcript shape ─────────────────────────────────────────────────────
 // The lossless export: every block in arrival order with its full items,
 // including tool-call bodies at full length. The Markdown export carries a
