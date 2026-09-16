@@ -827,6 +827,32 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     }
   }
 
+  /** Fork this thread at an earlier user block (edit-and-resend). The fork
+   *  copies the transcript prefix, journals the edited text, and dispatches
+   *  its first turn before this resolves — the caller opens the returned
+   *  thread id. Resolves null when refused (a turn is running) or failed;
+   *  failures surface on the session error like a failed send. */
+  async function forkAtBlock(blockId: string, text: string): Promise<string | null> {
+    const trimmed = text.trim();
+    if (!trimmed || busy.value) return null;
+    const api = bridge();
+    if (!api?.forkThreadAtBlock) return null;
+    touch();
+    try {
+      const result = await api.forkThreadAtBlock({
+        requestId: uid(),
+        threadId: uid(),
+        sourceThreadId: threadId.value,
+        blockId,
+        editedText: trimmed,
+      });
+      return result.threadId;
+    } catch (e) {
+      error.value = peelIpcError(e, "Could not fork the thread");
+      return null;
+    }
+  }
+
   /** Upload one picked/dropped/pasted file's bytes to disk (scoped to this
    *  thread) and resolve to the bytes-free ChatAttachment the composer holds and
    *  later sends. In browser dev (no bridge) we synthesize metadata so the
@@ -1118,6 +1144,7 @@ function createThreadSession(ctx: SessionCtx, init: { rehydrate?: boolean } = {}
     restart,
     send,
     steerTurn,
+    forkAtBlock,
     cancelQueuedTurn,
     sendQueuedEntryNow,
     reorderQueuedTurns,

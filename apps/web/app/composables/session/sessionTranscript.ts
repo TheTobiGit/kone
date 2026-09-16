@@ -230,8 +230,15 @@ export function useSessionTranscript(deps: SessionTranscriptDeps) {
       }
     }
     stageResume(stored.conversationId, provider.value, stored.resumeSessionAt);
+    // A side chat hides its fork-imported transcript (reference-only context)
+    // and wears the temporary look; an edit fork is a continuation — its
+    // copied prefix is real history shown in the timeline — so only a
+    // non-edit fork context marks the session. Assigned authoritatively (not
+    // just set-true): the stored context is the durable answer and overrules
+    // the renderer hint map, which may have filed this id as a side chat
+    // before the transcript arrived.
     if (stored.forkContext) {
-      sideChat.value = true;
+      sideChat.value = stored.forkContext.forkKind !== "edit";
       sideChatSource.value = stored.forkContext.sourceThreadId;
       rememberSideChatSource(stored.threadId, stored.forkContext.sourceThreadId);
     }

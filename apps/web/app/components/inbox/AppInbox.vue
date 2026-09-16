@@ -204,6 +204,14 @@ function onPickThread(row: SessionSummary | null): void {
     .catch(() => undefined);
 }
 
+/** An earlier message was edited into a fork from the reading pane: select
+ *  the fork the ordinary way, so the pane remounts onto it. The reader only
+ *  emits this while showing a thread, but the guard keeps the union honest. */
+function onOpenForkThread(threadId: string): void {
+  const reading = pane.value;
+  if (reading.kind !== "reader") return;
+  void onOpenProjectThread(reading.row.projectPath ?? "", threadId, reading.row.projectName ?? undefined);
+}
 /** A parked thread the bots row names, possibly in another project. Resolved
  *  out of that project's stored threads and selected the ordinary way — the
  *  pane remounts onto it and its ask answers inline there. An unfinished thread
@@ -419,6 +427,7 @@ function close(): void {
         :row="pane.row"
         :session-key="pane.sessionKey ?? undefined"
         @new-thread="startNewThread"
+        @open-thread="onOpenForkThread"
       />
     </section>
   </div>
