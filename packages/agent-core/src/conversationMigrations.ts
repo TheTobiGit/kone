@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -464,12 +464,136 @@ function migration0005RequestedBranch(db: DatabaseSync): void {
   addColumn(db, "threads", "requested_branch", "TEXT");
 }
 
+/** Full-text index over conversation text: one row per user block and one
+ *  row per turn item, carrying the thread, the containing block, the
+ *  turn/item identity and the text. The live indexer (store/search.ts) keeps
+ *  it in step at item/turn completion; this migration backfills what is
+ *  already stored so long history is searchable without a reindex command.
+ *
+ *  Rows are copied in bounded batches — a large store must not hold one
+ *  giant statement. Item text follows the same rule the live indexer uses
+ *  (body + tool name + payload joined); blocks index their text as-is.
+ *  Idempotent — a resumed run re-creates the table and re-copies, and the
+ *  delete-before-insert discipline means re-copied rows never duplicate. */
+function migration0006ConversationFts(db: DatabaseSync): void {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS conversation_fts USING fts5(
+      thread_id  UNINDEXED,
+      entry_kind UNINDEXED,
+      block_id   UNINDEXED,
+      turn_id    UNINDEXED,
+      item_id    UNINDEXED,
+      at         UNINDEXED,
+      text,
+      tokenize='porter unicode61'
+    );
+  `);
+
+  const BATCH = 500;
+  // A rung must never assume an earlier rung's tables exist: databases
+  // rebuilt from a partial schema (or stopped mid-ladder) still have to
+  // migrate, so each backfill pass is skipped when its source is absent.
+  // Preparing against a missing table throws, so even the statements stay
+  // inside the guards.
+  if (hasTable(db, "blocks")) {
+    const insertBlock = db.prepare(
+      `INSERT INTO conversation_fts
+         (thread_id, entry_kind, block_id, turn_id, item_id, at, text)
+       VALUES (?, 'block', ?, ?, NULL, ?, ?)`,
+    );
+    let blockOffset = 0;
+    for (;;) {
+      // SAFETY: the projection names exactly the block columns read below.
+      const blocks = db
+        .prepare(
+          `SELECT block_id, thread_id, turn_id, text, at FROM blocks
+            ORDER BY seq ASC
+            LIMIT ? OFFSET ?`,
+        )
+        .all(BATCH, blockOffset) as Array<{
+        block_id: string;
+        thread_id: string;
+        turn_id: string | null;
+        text: string | null;
+        at: number;
+      }>;
+      if (blocks.length === 0) break;
+      for (const block of blocks) {
+        if (!block.text || block.text.trim().length === 0) continue;
+        insertBlock.run(block.thread_id, block.block_id, block.turn_id, block.at, block.text);
+      }
+      if (blocks.length < BATCH) break;
+      blockOffset += blocks.length;
+    }
+  }
+
+  if (hasTable(db, "items")) {
+    const insertItem = db.prepare(
+      `INSERT INTO conversation_fts
+         (thread_id, entry_kind, block_id, turn_id, item_id, at, text)
+       VALUES (?, 'item', ?, ?, ?, ?, ?)`,
+    );
+    // The parent lookup needs the blocks table; without it items still
+    // index, just with no containing block to jump to.
+    const parentBlock = hasTable(db, "blocks")
+      ? db.prepare(
+          `SELECT block_id FROM blocks
+            WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
+            LIMIT 1`,
+        )
+      : null;
+    let itemOffset = 0;
+    for (;;) {
+      // SAFETY: the projection names exactly the item columns read below.
+      const items = db
+        .prepare(
+          `SELECT thread_id, turn_id, item_id, text, name, detail, at FROM items
+            ORDER BY seq ASC
+            LIMIT ? OFFSET ?`,
+        )
+        .all(BATCH, itemOffset) as Array<{
+        thread_id: string;
+        turn_id: string;
+        item_id: string;
+        text: string | null;
+        name: string | null;
+        detail: string | null;
+        at: number;
+      }>;
+      if (items.length === 0) break;
+      for (const item of items) {
+        const parts: string[] = [];
+        if (item.text) parts.push(item.text);
+        if (item.name) parts.push(item.name);
+        if (item.detail) parts.push(item.detail);
+        const combined = parts.join("\n");
+        if (combined.trim().length === 0) continue;
+        // SAFETY: the projection names only blocks.block_id (NOT NULL TEXT).
+        const parent = parentBlock?.get(item.thread_id, item.turn_id) as
+          | { block_id: string }
+          | undefined;
+        insertItem.run(
+          item.thread_id,
+          parent?.block_id ?? null,
+          item.turn_id,
+          item.item_id,
+          item.at,
+          combined,
+        );
+      }
+      if (items.length < BATCH) break;
+      itemOffset += items.length;
+    }
+  }
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
   { id: 3, name: "Compactions", run: migration0003Compactions },
   { id: 4, name: "ThreadWorkspace", run: migration0004ThreadWorkspace },
   { id: 5, name: "RequestedBranch", run: migration0005RequestedBranch },
+  { id: 6, name: "ConversationFts", run: migration0006ConversationFts },
 ];
 
 export interface MigrationOptions {

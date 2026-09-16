@@ -649,6 +649,15 @@ export function registerAgentIpc(): void {
     (_event, projectPath: string, options?: { archived?: boolean }) =>
       store.listThreads(projectPath, options),
   );
+  // Full-text conversation search over user prompts + turn items (FTS5,
+  // ranked with a snippet per hit). Global across threads, or scoped to one
+  // via options.threadId. Empty or unsearchable input answers empty. The
+  // renderer owns the search UI; this only answers the query.
+  ipcMain.handle(
+    "agent:search-conversations",
+    (_event, query: string, options?: { threadId?: string; limit?: number }) =>
+      store.searchConversations(query, options),
+  );
   // Lifetime, fully-local profile stats — aggregated in SQL across every
   // project's threads for the standalone profile board.
   ipcMain.handle("agent:profile-stats", () => store.profileStats());

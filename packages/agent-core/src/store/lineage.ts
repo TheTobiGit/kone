@@ -4,6 +4,7 @@ import { DatabaseSync } from "../sqlite.js";
 import type { ChatAttachment, ForkContext, ProviderKind, RelationshipToParent, StoredThreadMeta, ThreadLineage } from "../types.js";
 import { withTransaction } from "../conversationMigrations.js";
 import { parseJsonObject, rowToMeta, type ThreadRow } from "../conversationStoreTypes.js";
+import { indexBlockRow, indexItemRow } from "./search.js";
 import { WITHOUT_ACTIVE_QUEUE } from "./sql.js";
 import {
   buildEditForkTitle,
@@ -164,6 +165,16 @@ export class LineageRepo {
               block.role === "assistant" ? block.at : null,
               block.attachments?.length ? JSON.stringify(block.attachments) : null,
             );
+            // Imported history is written once and settled by construction,
+            // so it indexes inline — there is no later completion event that
+            // would pick it up.
+            indexBlockRow(db, {
+              threadId: input.threadId,
+              blockId: block.id,
+              turnId,
+              at: block.at,
+              text: block.text,
+            });
             if (turnId) {
               insertNarrativeItem.run(
                 `${block.id}:narrative`,
@@ -172,6 +183,16 @@ export class LineageRepo {
                 block.text,
                 block.at,
               );
+              indexItemRow(db, {
+                threadId: input.threadId,
+                turnId,
+                itemId: `${block.id}:narrative`,
+                blockId: block.id,
+                at: block.at,
+                text: block.text,
+                name: null,
+                detail: null,
+              });
             }
           }
         });
