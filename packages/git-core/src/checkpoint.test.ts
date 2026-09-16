@@ -4,9 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { git, GitError } from "./core.js";
 import {
+  checkpointExists,
   createCheckpoint,
   dropCheckpoint,
   listCheckpoints,
+  previewCheckpointRestore,
   restoreCheckpoint,
 } from "./checkpoint.js";
 
@@ -119,6 +121,49 @@ describe("git-core checkpoint", () => {
 
   it("handles non-existent checkpoint error on restore", async () => {
     await expect(restoreCheckpoint(tempDir, "non-existent-id")).rejects.toThrow(GitError);
+  });
+
+  it("previews an empty diff on a tree that still matches the checkpoint", async () => {
+    const cp = await createCheckpoint(tempDir, { name: "clean-preview" });
+    const preview = await previewCheckpointRestore(tempDir, cp.id);
+    expect(preview).toEqual({ wouldWrite: [], wouldDelete: [] });
+    expect(await checkpointExists(tempDir, cp.id)).toBe(true);
+    expect(await checkpointExists(tempDir, "non-existent-id")).toBe(false);
+  });
+
+  it("previews exactly the files a hard restore would rewrite and remove", async () => {
+    writeFileSync(path.join(tempDir, "tracked.txt"), "checkpoint version\n");
+    const cp = await createCheckpoint(tempDir, { name: "preview-point" });
+
+    // One modified tracked file, one deleted tracked file, one brand-new file.
+    writeFileSync(path.join(tempDir, "tracked.txt"), "worktree version\n");
+    writeFileSync(path.join(tempDir, "file1.txt"), "edited after snapshot\n");
+    writeFileSync(path.join(tempDir, "added-after.txt"), "new file\n");
+
+    const preview = await previewCheckpointRestore(tempDir, cp.id);
+    expect(preview.wouldWrite).toEqual(["file1.txt", "tracked.txt"]);
+    expect(preview.wouldDelete).toEqual(["added-after.txt"]);
+
+    // The preview changes nothing — the worktree diff is still there.
+    expect(readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("worktree version\n");
+    expect(existsSync(path.join(tempDir, "added-after.txt"))).toBe(true);
+  });
+
+  it("previews a deleted checkpoint file as a rewrite, and rejects unknown ids", async () => {
+    const cp = await createCheckpoint(tempDir, { name: "delete-preview" });
+    const before = await previewCheckpointRestore(tempDir, cp.id);
+    expect(before).toEqual({ wouldWrite: [], wouldDelete: [] });
+
+    await git(tempDir, ["rm", "-q", "file1.txt"]);
+    const after = await previewCheckpointRestore(tempDir, cp.id);
+    expect(after.wouldWrite).toEqual(["file1.txt"]);
+    expect(after.wouldDelete).toEqual([]);
+
+    await expect(previewCheckpointRestore(tempDir, "non-existent-id")).rejects.toThrow(GitError);
+    await expect(previewCheckpointRestore(tempDir, cp.id)).resolves.toBeDefined();
+    await dropCheckpoint(tempDir, cp.id);
+    expect(await checkpointExists(tempDir, cp.id)).toBe(false);
+    await expect(previewCheckpointRestore(tempDir, cp.id)).rejects.toThrow(GitError);
   });
 
   it("preserves staged index changes across soft and hard restore", async () => {

@@ -11,6 +11,10 @@
 
 export * from "./types.js";
 export { AgentService } from "./AgentService.js";
+export type {
+  PreviewTurnCheckpointResult,
+  RevertTurnCheckpointResult,
+} from "./AgentService.js";
 export type { ProviderSurfaceSnapshot } from "./providerCache.js";
 export * from "./compaction/index.js";
 export * from "./commandSafety.js";

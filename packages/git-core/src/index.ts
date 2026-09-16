@@ -29,7 +29,9 @@ export {
   killProcessTree,
 } from "./processTree.js";
 export {
+  checkpointExists,
   createCheckpoint,
+  previewCheckpointRestore,
   restoreCheckpoint,
   listCheckpoints,
   dropCheckpoint,

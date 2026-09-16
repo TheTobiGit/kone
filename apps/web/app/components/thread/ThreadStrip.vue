@@ -587,6 +587,7 @@ const { canClose, hasBlankThread, isLinkedToNext } = useStripLinking({
                   <ConversationThread
                     :blocks="c.session.timelineBlocks.value"
                     :compactions="c.session.compactions.value"
+                    :checkpoints="c.session.checkpoints.value"
                     :now="now"
                     :source-key="c.id"
                     :thread-id="anchoredThreadId(c)"
