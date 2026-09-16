@@ -2,7 +2,7 @@ import { copyFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "./sqlite.js";
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Whether `table` already has `column`. Used for idempotent DDL steps. */
 export function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -587,6 +587,27 @@ function migration0006ConversationFts(db: DatabaseSync): void {
   }
 }
 
+/** One pre-turn repository snapshot per turn: which checkpoint ref holds the
+ *  tree as it was before the turn ran. The composite primary key makes a
+ *  second capture for the same turn a no-op — by then the agent has already
+ *  modified the tree, so a fresh snapshot would no longer be the pre-turn
+ *  state and must not clobber the first. Rows die with their thread. */
+function migration0007TurnCheckpoints(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS turn_checkpoints (
+      thread_id     TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+      turn_id       TEXT NOT NULL,
+      checkpoint_id TEXT NOT NULL,
+      ref           TEXT NOT NULL,
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_turn_checkpoints_thread
+      ON turn_checkpoints (thread_id, created_at);
+  `);
+}
+
 export const migrationEntries: readonly MigrationEntry[] = [
   { id: 1, name: "Baseline", run: migration0001Baseline },
   { id: 2, name: "QueuedTurnSortKey", run: migration0002QueuedTurnSortKey },
@@ -594,6 +615,7 @@ export const migrationEntries: readonly MigrationEntry[] = [
   { id: 4, name: "ThreadWorkspace", run: migration0004ThreadWorkspace },
   { id: 5, name: "RequestedBranch", run: migration0005RequestedBranch },
   { id: 6, name: "ConversationFts", run: migration0006ConversationFts },
+  { id: 7, name: "TurnCheckpoints", run: migration0007TurnCheckpoints },
 ];
 
 export interface MigrationOptions {
